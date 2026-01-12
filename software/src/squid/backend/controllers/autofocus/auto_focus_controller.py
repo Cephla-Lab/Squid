@@ -20,8 +20,6 @@ from squid.core.events import (
     SetAutofocusParamsCommand,
     StartAutofocusCommand,
     StopAutofocusCommand,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -106,10 +104,6 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._focus_map_surface: Optional[object] = None
         self.was_live_before_autofocus: bool = False
         self.callback_was_enabled_before_autofocus: bool = False
-
-        self._subscriptions = []
-        if self._event_bus:
-            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def _publish_state_changed(
         self, old_state: AutofocusControllerState, new_state: AutofocusControllerState
@@ -522,7 +516,3 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self.focus_map_coords.append((x, y, z))
         self._log.info(f"Added triple ({x},{y},{z}) to focus map")
 
-    def shutdown(self) -> None:
-        if self._event_bus:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []

@@ -29,7 +29,6 @@ from squid.ui.widgets.camera._common import (
     SetPixelFormatCommand,
     SetROICommand,
     Signal,
-    auto_subscribe,
     handles,
     squid,
 )
@@ -82,9 +81,6 @@ class CameraSettingsWidget(EventBusFrame):
         self._resolution = resolution
         self._binning_options = binning_options or []
         self._current_binning = current_binning
-
-        # Subscribe to state updates using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components(
             include_gain_exposure_time,

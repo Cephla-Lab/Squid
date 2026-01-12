@@ -13,7 +13,6 @@ from qtpy.QtWidgets import (
 from _def import TriggerMode
 from squid.ui.widgets.base import EventBusFrame
 from squid.core.events import (
-    auto_subscribe,
     handles,
     SetTriggerModeCommand,
     SetTriggerFPSCommand,
@@ -45,7 +44,6 @@ class TriggerControlWidget(EventBusFrame):
         self.triggerMode: Optional[str] = TriggerMode.SOFTWARE
         self.add_components()
         self.setFrameStyle(self.Panel | self.Raised)
-        self._subscriptions = auto_subscribe(self, self._bus)
 
     def add_components(self) -> None:
         # line 0: trigger mode

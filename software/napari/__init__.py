@@ -104,5 +104,9 @@ class Viewer:
         self.camera = _DummyCamera()
         self.layers: list[Any] = []
 
+    def bind_key(self, key: str, callback: Any) -> None:
+        """Mock key binding - does nothing in test mode."""
+        pass
+
 
 __all__ = ["Viewer"]

@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
 )
 
 from squid.ui.widgets.base import EventBusFrame
-from squid.core.events import auto_subscribe, handles, DACValueChanged, SetDACCommand
+from squid.core.events import handles, DACValueChanged, SetDACCommand
 
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
@@ -28,9 +28,6 @@ class DACControWidget(EventBusFrame):
 
     def __init__(self, event_bus: "UIEventBus", *args, **kwargs) -> None:
         super().__init__(event_bus, *args, **kwargs)
-
-        # Subscribe to state updates using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)

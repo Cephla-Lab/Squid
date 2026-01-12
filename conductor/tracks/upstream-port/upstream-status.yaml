@@ -1,0 +1,295 @@
+meta:
+  source_branch: upstream/master
+  target_branch: multipoint-refactor
+  cutoff_date: '2025-12-13'
+  created: '2026-01-12'
+  last_verified: '2026-01-12T12:01:52'
+commits:
+  295afbb3:
+    title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
+    status: pending
+  47e7aff7:
+    title: 'feat: Add alignment button for sample registration with previous acquisitions (#448)'
+    status: pending
+  c3322bb1:
+    title: 'fix: Resolve backpressure deadlock with z-stack acquisitions (#446)'
+    status: pending
+  98c50432:
+    title: 'fix: Update stale channel_configuration_manager references after PR #441 (#449)'
+    status: pending
+  '57378358':
+    title: 'feat: Add acquisition throttling settings in Preferences (#444)'
+    status: pending
+  cc205460:
+    title: 'fix: Fix NapariLiveWidget Qt signal connection and camera attribute (#443)'
+    status: pending
+  4234d34b:
+    title: 'feat: NDViewer tab with live viewing and plate navigation (#428)'
+    status: pending
+  3866b183:
+    title: 'refactor: Remove legacy config managers, centralize in ConfigRepository (#441)'
+    status: pending
+  e9c6249b:
+    title: 'fix: Backpressure byte tracking and multiprocessing resource cleanup (#442)'
+    status: pending
+  6bffd2d3:
+    title: 'refactor: Simplify code from PRs 434/436, fix saving path bug, improve status bar (#440)'
+    status: pending
+  13eff115:
+    title: 'refactor: New design for illumination channel configs and acquisition configs (#417)'
+    status: pending
+  97f85d1b:
+    title: 'feat: Add backpressure status bar widget for acquisition monitoring (#438)'
+    status: pending
+  081fd7e9:
+    title: 'feat: Add acquisition backpressure to prevent RAM exhaustion (#436)'
+    status: pending
+  c28b372b:
+    title: 'feat: Add live RAM usage monitoring display in status bar (#434)'
+    status: pending
+  a48fa4bc:
+    title: 'docs: Add simulated disk I/O documentation (#432)'
+    status: pending
+  0ce8d626:
+    title: 'docs: Move dynamic-widget-visibility.md to software/docs/pending (#433)'
+    status: pending
+  b91694f1:
+    title: 'feat: Add simulated disk I/O mode for development (#431)'
+    status: pending
+  fc57e3da:
+    title: 'feat: Persist last used base saving path for multipoint widgets (#430)'
+    status: pending
+  5ad9252a:
+    title: 'fix: Regenerate SimulatedCamera frame when binning changes (#429)'
+    status: pending
+  f8c05d0d:
+    title: 'feat: Add run_acquisition_from_yaml TCP command and CLI script (#422)'
+    status: pending
+  afd71c97:
+    title: 'feat: Add MCP commands for view settings control (RAM debugging) (#425)'
+    status: pending
+  aa817c0b:
+    title: 'chore: Update napari version in setup script and app name (#426)'
+    status: pending
+  2b1e2f6d:
+    title: 'feat: Runtime control of view settings via MCP for RAM debugging (#424)'
+    status: pending
+  98c7fbd6:
+    title: 'feat: Save and restore camera settings on close/startup (#423)'
+    status: pending
+  88db4da8:
+    title: 'feat: Save and load acquisition parameters via YAML (#421)'
+    status: pending
+  e3b55491:
+    title: 'perf: Optimize plate view boundary drawing for large plates (#415)'
+    status: ported
+    ported_in: 692ce880
+    ported_date: '2026-01-12'
+    ported_with:
+    - ee39b87
+    - c10c9ea
+  c10c9eae:
+    title: 'perf: Optimize downsampling with user-selectable interpolation methods (#418)'
+    status: ported
+    ported_in: 692ce880
+    ported_date: '2026-01-12'
+    ported_with:
+    - ee39b87
+    - e3b5549
+  ee39b870:
+    title: 'feat: Add Views tab to Configuration dialog for downsampled view settings (#395)'
+    status: ported
+    ported_in: 692ce880
+    ported_date: '2026-01-12'
+    ported_with:
+    - c10c9ea
+    - e3b5549
+  01cf41ae:
+    title: 'tool: Add timing instrumentation (for downsampled plate view pipeline) (#416)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  0d0e101b:
+    title: 'feat: Add level trigger support for ToupCam cameras (#386)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  3c08a706:
+    title: 'fix: strip inline comments from INI config values (#414)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  9e711ecc:
+    title: 'refactor: Improve microscope.py code quality and API design (#402)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  251baa4e:
+    title: 'fix: Fix semaphore leak in JobRunner multiprocessing primitives (#413)'
+    status: ported
+    ported_in: c9f35752
+    ported_date: '2026-01-12'
+    ported_with:
+    - 01acbf9
+    - 991b08d
+  8273609a:
+    title: 'refactor: move AcquisitionInfo to JobRunner context for metadata consistency (#367)'
+    status: ported
+    ported_in: 345c21d3
+    ported_date: '2026-01-12'
+  01acbf99:
+    title: 'fix: Fix JobRunner.has_pending() to track jobs in progress (#411)'
+    status: ported
+    ported_in: c9f35752
+    ported_date: '2026-01-12'
+    ported_with:
+    - 251baa4
+    - 991b08d
+  785ed6ef:
+    title: 'fix: Prevent segfault on application exit (#410)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  991b08d6:
+    title: 'fix: Improve SurfacePlotWidget Z-stack handling and single FOV support (#409)'
+    status: ported
+    ported_in: c9f35752
+    ported_date: '2026-01-12'
+    ported_with:
+    - 251baa4
+    - 01acbf9
+  d0ce37a7:
+    title: 'feat: Add ZMotorConfig enum and improve piezo-only mode support (#408)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  2a48f9b6:
+    title: 'feat: add Claude Code integration (#405)'
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: Claude Code integration is repository-specific tooling. arch_v2 has its own .claude/ configuration.
+    skip_date: '2026-01-12'
+  2a79ccca:
+    title: 'feat: Add desktop shortcut creation to setup script (#406)'
+    status: ported
+    ported_in: ae2e81eb
+    ported_date: '2026-01-12'
+  6651393e:
+    title: 'feat: Add build flag to disable laser interlock for systems without lasers (#401)'
+    status: ported
+    ported_in: 1eb5b286
+    ported_date: '2026-01-12'
+  3a641bb0:
+    title: 'docs: Improve firmware upload instructions (#400)'
+    status: ported
+    ported_in: 1eb5b286
+    ported_date: '2026-01-12'
+  9db787e0:
+    title: 'feat: Add laser safety interlock functionality (#399)'
+    status: ported
+    ported_in: 1eb5b286
+    ported_date: '2026-01-12'
+  b55ff21c:
+    title: 'feat: Add firmware tests, CI workflow, and firmware-software integration tests (#398)'
+    status: ported
+    ported_in: 1eb5b286
+    ported_date: '2026-01-12'
+  acc5cf7c:
+    title: 'refactor: Reorganize firmware and add PlatformIO support (#397)'
+    status: ported
+    ported_in: 1eb5b286
+    ported_date: '2026-01-12'
+  a4db687a:
+    title: Firmware v3 (#335) (#396)
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  b3859044:
+    title: 'feat: Refactor channel configuration to eliminate duplication across … (#392)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  ad9479d9:
+    title: 'feat: Add downsampled well and plate view for Select Wells mode (#387)'
+    status: ported
+    ported_in: a922e58d
+    ported_date: '2026-01-12'
+  e3e1730e:
+    title: 'fix: Preserve scan size consistency in Select Wells mode (#393)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  67dfbf56:
+    title: 'fix: Resolve test segfaults / hang + Qt compatibility update + .pre-commit-config (#391)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  decdcc7b:
+    title: 'feat: Add Configuration dialog for editing settings via GUI (#389)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  c7bf416a:
+    title: 'fix: Replace napari icon and menu with Cephla''s (#388)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  2fd98163:
+    title: 'fix: Actually free RAM when clearing mosaic view layers (#385)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  f416d581:
+    title: 'feat: Add RAM usage check for mosaic view before acquisition (#382)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  1b71973d:
+    title: 'feat: Add Skip Saving checkbox to multipoint acquisition widgets (#383)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  d8e41e23:
+    title: 'Fix: Use camera exposure time in simulation mode (#381)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  4bfa2a00:
+    title: 'bug fix: switching to 1536 well plate (#380)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  412c81dd:
+    title: Install PyVCAM using pip (#377)
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  9995e5cd:
+    title: 'feat: save log in acquisition folder (#374)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  4e940f75:
+    title: 'bug fix: minor fix for #372 and #373 (#375)'
+    status: ported
+    ported_in: f1725bc5
+    ported_date: '2026-01-12'
+    ported_with:
+    - 6eb3427
+  6eb34276:
+    title: 'gui: 1536 well plate mouse selection (#372)'
+    status: ported
+    ported_in: f1725bc5
+    ported_date: '2026-01-12'
+    ported_with:
+    - 4e940f7
+  1241941e:
+    title: 'gui: add dialog for showing fovs to image in fluidics runs (#373)'
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'
+  7b9d0e3a:
+    title: Fix Laser AF exposure UI to use focus camera limits and laser AF calibration coefficient unit (#371)
+    status: ported
+    ported_in: 962a7956
+    ported_date: '2026-01-12'

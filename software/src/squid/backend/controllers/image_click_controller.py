@@ -8,12 +8,10 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Optional
 
-import squid.core.logging
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     ImageCoordinateClickedCommand,
     ClickToMoveEnabledChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -23,10 +21,8 @@ if TYPE_CHECKING:
     from squid.backend.services import CameraService
     from squid.backend.services import StageService
 
-_log = squid.core.logging.get_logger(__name__)
 
-
-class ImageClickController:
+class ImageClickController(BaseController):
     """Handles image click-to-move functionality.
 
     Subscribes to ImageCoordinateClickedCommand and converts pixel coordinates
@@ -53,16 +49,14 @@ class ImageClickController:
             event_bus: Event bus for publishing/subscribing.
             inverted_objective: Whether the objective is inverted (affects Y sign).
         """
+        super().__init__(event_bus)
         self._objective_store = objective_store
         self._camera_service = camera_service
         self._stage_service = stage_service
-        self._bus = event_bus
         self._inverted_objective = inverted_objective
         self._lock = threading.RLock()
 
         self._click_to_move_enabled = True  # Default enabled
-
-        self._subscriptions = auto_subscribe(self, self._bus)
 
     def set_click_to_move_enabled(self, enabled: bool) -> None:
         """Set whether click-to-move is enabled.
@@ -90,16 +84,16 @@ class ImageClickController:
         """
         with self._lock:
             if not self._click_to_move_enabled:
-                _log.debug(
+                self._log.debug(
                     f"Click to move disabled, ignoring click at x={cmd.x_pixel}, y={cmd.y_pixel}"
                 )
                 return
             if self._stage_service is None:
-                _log.warning("No StageService available; ignoring image click move")
+                self._log.warning("No StageService available; ignoring image click move")
                 return
             blocked_fn = getattr(self._stage_service, "_blocked_for_ui_hardware_commands", None)
             if callable(blocked_fn) and blocked_fn():
-                _log.info("Ignoring image click move due to global mode gate")
+                self._log.info("Ignoring image click move due to global mode gate")
                 return
 
             # Calculate pixel size in um
@@ -115,7 +109,7 @@ class ImageClickController:
             delta_x_mm = pixel_sign_x * pixel_size_um * cmd.x_pixel / 1000.0
             delta_y_mm = pixel_sign_y * pixel_size_um * cmd.y_pixel / 1000.0
 
-            _log.debug(
+            self._log.debug(
                 f"Click to move: click at x={cmd.x_pixel}, y={cmd.y_pixel} -> "
                 f"delta_x={delta_x_mm:.4f}mm, delta_y={delta_y_mm:.4f}mm "
                 f"(pixel_size={pixel_size_um:.3f}um, factor={pixel_size_factor:.3f})"
@@ -128,8 +122,5 @@ class ImageClickController:
             self._stage_service.move_x(delta_x_mm)
             self._stage_service.move_y(delta_y_mm)
         except Exception:
-            _log.exception("Failed to move stage from image click")
+            self._log.exception("Failed to move stage from image click")
 
-    def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []

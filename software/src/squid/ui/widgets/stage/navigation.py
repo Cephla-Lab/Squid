@@ -13,7 +13,6 @@ from squid.ui.widgets.stage._common import (
     QSizePolicy,
     QVBoxLayout,
     StagePositionChanged,
-    auto_subscribe,
     handles,
     squid,
 )
@@ -64,9 +63,6 @@ class NavigationWidget(EventBusFrame):
         self.btn_moveZ_backward: QPushButton
         self.checkbox_clickToMove: QCheckBox
         self.grid: QVBoxLayout
-
-        # Subscribe to position updates using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)

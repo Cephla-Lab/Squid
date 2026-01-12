@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple, TYPE_CHECKING
 
-import squid.core.logging
+from squid.backend.managers.base import BaseManager
 from squid.core.events import (
     EventBus,
     StagePositionChanged,
@@ -11,8 +11,6 @@ from squid.core.events import (
     BinningChanged,
     WellplateFormatChanged,
     NavigationViewerStateChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -30,7 +28,7 @@ class _NavState:
     wellplate_format: Optional[str]
 
 
-class NavigationViewerStateService:
+class NavigationViewerStateService(BaseManager):
     """Backend publisher for NavigationViewerStateChanged.
 
     This keeps other UI widgets from needing direct references to NavigationViewer
@@ -43,10 +41,9 @@ class NavigationViewerStateService:
         camera_service: "CameraService",
         event_bus: EventBus,
     ) -> None:
-        self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        super().__init__(event_bus)
         self._objective_store = objective_store
         self._camera_service = camera_service
-        self._bus = event_bus
 
         self._x_mm: float = 0.0
         self._y_mm: float = 0.0
@@ -54,8 +51,6 @@ class NavigationViewerStateService:
         self._wellplate_format: Optional[str] = None
 
         self._last_published: Optional[_NavState] = None
-
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self._publish_if_changed()
 
@@ -116,7 +111,7 @@ class NavigationViewerStateService:
         if state == self._last_published:
             return
         self._last_published = state
-        self._bus.publish(
+        self._event_bus.publish(
             NavigationViewerStateChanged(
                 x_mm=state.x_mm,
                 y_mm=state.y_mm,
@@ -126,6 +121,3 @@ class NavigationViewerStateService:
             )
         )
 
-    def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []

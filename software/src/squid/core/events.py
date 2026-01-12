@@ -200,36 +200,35 @@ class EventBus:
             self._subscribers.clear()
 
     def drain(self, timeout_s: float = 1.0) -> int:
-        """Drain the queue by processing all pending events.
+        """Wait for the dispatch loop to process all pending events.
 
         Useful for testing to ensure all events have been processed.
+        This method waits for the queue to become empty, allowing the
+        dispatch loop thread to process all events.
 
         Args:
             timeout_s: Maximum time to wait for queue to drain.
 
         Returns:
-            Number of events processed.
+            Number of events observed as processed (approximate).
         """
-        count = 0
         deadline = time.time() + timeout_s
         idle_start: Optional[float] = None
+        stable_duration = 0.05  # Queue must be empty for this long
 
         while time.time() < deadline:
-            remaining = max(0.001, min(0.05, deadline - time.time()))
-            try:
-                event = self._queue.get(timeout=remaining)
-                idle_start = None
-                self._dispatch(event)
-                count += 1
-            except queue.Empty:
+            if self._queue.empty():
                 if idle_start is None:
                     idle_start = time.time()
-                elif time.time() - idle_start >= 0.05:
-                    # Queue stayed empty for a brief period; assume drained
+                elif time.time() - idle_start >= stable_duration:
+                    # Queue has been empty long enough; dispatch loop has finished
                     break
-                continue
+            else:
+                # Queue has items; reset idle timer
+                idle_start = None
+            time.sleep(0.005)
 
-        return count
+        return 0  # We don't track count since dispatch loop processes events
 
 
 # Global event bus instance

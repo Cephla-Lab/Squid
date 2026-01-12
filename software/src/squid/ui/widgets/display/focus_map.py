@@ -115,6 +115,8 @@ class FocusMapWidget(QFrame):
     @handles(ScanCoordinatesUpdated)
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle scan coordinate changes by refreshing cached snapshot."""
+        if not self._allow_updating_focus_points_on_signal:
+            return
         self._refresh_on_snapshot = True
         self._request_scan_snapshot()
 

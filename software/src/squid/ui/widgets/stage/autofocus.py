@@ -10,7 +10,6 @@ from squid.ui.widgets.stage._common import (
     QSpinBox,
     QVBoxLayout,
     Signal,
-    auto_subscribe,
     handles,
     squid,
 )
@@ -36,9 +35,6 @@ class AutoFocusWidget(EventBusFrame):
         self.btn_autofocus: QPushButton
         self.btn_autolevel: QPushButton
         self.grid: QVBoxLayout
-
-        # Subscribe to autofocus state events
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)

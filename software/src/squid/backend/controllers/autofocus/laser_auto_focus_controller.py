@@ -22,6 +22,7 @@ from squid.backend.processing.laser_spot import (
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils.config_utils import LaserAFConfig
 import squid.core.logging
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     Event,
     EventBus,
@@ -43,8 +44,6 @@ from squid.core.events import (
     LaserAFMoveCompleted,
     ObjectiveChanged,
     ProfileChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -75,7 +74,7 @@ class LaserSpotCentroid:
     image: np.ndarray
 
 
-class LaserAutofocusController:
+class LaserAutofocusController(BaseController):
 
     def __init__(
         self,
@@ -88,7 +87,7 @@ class LaserAutofocusController:
         laserAFSettingManager: Optional[LaserAFSettingManager] = None,
         stream_handler: Optional[object] = None,
     ):
-        self._log = squid.core.logging.get_logger(__class__.__name__)
+        super().__init__(event_bus)
 
         self.objectiveStore: Optional[ObjectiveStore] = objectiveStore
         self.laserAFSettingManager: Optional[LaserAFSettingManager] = (
@@ -99,7 +98,6 @@ class LaserAutofocusController:
         self._stage_service: "StageService" = stage_service
         self._peripheral_service: "PeripheralService" = peripheral_service
         self._piezo_service: Optional["PiezoService"] = piezo_service
-        self._event_bus: "EventBus" = event_bus
         self._stream_handler = stream_handler
 
         self._feature_flags = get_feature_flags()
@@ -114,7 +112,6 @@ class LaserAutofocusController:
         self.spot_spacing_pixels: Optional[float] = (
             None  # spacing between the spots from the two interfaces (unit: pixel)
         )
-        self._subscriptions: List[Tuple[type, Any]] = []
         self._last_crop: Optional[np.ndarray] = None
         self._last_crop_bounds: Optional[Tuple[int, int, int, int]] = None
         self._last_spot_metrics: Optional[Tuple[float, float, float]] = None
@@ -124,23 +121,6 @@ class LaserAutofocusController:
         # Load configurations if provided
         if self.laserAFSettingManager:
             self.load_cached_configuration()
-
-        # Subscribe to EventBus commands
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None:
-            return
-        if self._subscriptions:
-            return
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-
-    def shutdown(self) -> None:
-        """Unsubscribe handlers from the EventBus."""
-        if self._event_bus is None or not self._subscriptions:
-            return
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
 
     def _stream_image(self, image: np.ndarray) -> None:
         if self._stream_handler is None:

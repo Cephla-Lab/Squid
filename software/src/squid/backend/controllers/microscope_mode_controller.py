@@ -10,12 +10,11 @@ import threading
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Optional
 
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     SetMicroscopeModeCommand,
     MicroscopeModeChanged,
     UpdateChannelConfigurationCommand,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -35,7 +34,7 @@ class MicroscopeModeState:
     available_modes: tuple[str, ...] = ()
 
 
-class MicroscopeModeController:
+class MicroscopeModeController(BaseController):
     """Manages microscope channel/mode switching.
 
     Coordinates camera settings, illumination, and filters when switching modes.
@@ -53,11 +52,11 @@ class MicroscopeModeController:
         illumination_service: Optional["IlluminationService"] = None,
         objective_store: Optional["ObjectiveStore"] = None,
     ) -> None:
+        super().__init__(event_bus)
         self._camera = camera_service
         self._illumination = illumination_service
         self._filter_wheel = filter_wheel_service
         self._channel_configs = channel_configs
-        self._bus = event_bus
         self._objective_store = objective_store
         self._lock = threading.RLock()
 
@@ -65,10 +64,6 @@ class MicroscopeModeController:
             current_mode=None,
             available_modes=tuple(channel_configs.keys()),
         )
-
-        self._subscriptions = []
-        if self._bus:
-            self._subscriptions = auto_subscribe(self, self._bus)
 
     @property
     def state(self) -> MicroscopeModeState:
@@ -155,8 +150,8 @@ class MicroscopeModeController:
         intensity = getattr(config, "illumination_intensity", None) or getattr(config, "intensity", None)
 
         # Publish outside lock
-        if self._bus:
-            self._bus.publish(
+        if self._event_bus:
+            self._event_bus.publish(
                 MicroscopeModeChanged(
                     configuration_name=mode,
                     exposure_time_ms=exposure,
@@ -164,11 +159,6 @@ class MicroscopeModeController:
                     illumination_intensity=intensity,
                 )
             )
-
-    def shutdown(self) -> None:
-        if self._bus:
-            auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []
 
     def apply_mode_for_acquisition(self, mode: str) -> None:
         """Apply mode settings for acquisition (direct calls for speed).

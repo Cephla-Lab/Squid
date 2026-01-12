@@ -16,13 +16,12 @@ from squid.core.utils.config_utils import ChannelConfig, ChannelMode
 import squid.core.utils.config_utils as utils_config
 import _def
 import squid.core.logging
+from squid.backend.managers.base import BaseManager
 from squid.core.events import (
     UpdateChannelConfigurationCommand,
     ChannelConfigurationsChanged,
     SetConfocalModeCommand,
     ConfocalModeChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -36,7 +35,7 @@ class ConfigType(Enum):
     WIDEFIELD = "widefield"
 
 
-class ChannelConfigurationManager:
+class ChannelConfigurationManager(BaseManager):
     """Manages channel configurations using a two-tier architecture.
 
     The two-tier architecture:
@@ -53,7 +52,6 @@ class ChannelConfigurationManager:
         configurations_path: Path to global configurations folder
     """
 
-    _log: logging.Logger
     config_root: Optional[Path]
     configurations_path: Optional[Path]
     channel_definitions: Optional[ChannelDefinitionsConfig]
@@ -61,15 +59,13 @@ class ChannelConfigurationManager:
     confocal_mode: bool
     all_configs: Dict[ConfigType, Dict[str, ChannelConfig]]
     active_config_type: ConfigType
-    _event_bus: Optional["EventBus"]
 
     def __init__(
         self,
         event_bus: Optional["EventBus"] = None,
         configurations_path: Optional[Path] = None,
     ) -> None:
-        self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._event_bus = event_bus
+        super().__init__(event_bus)
         self.config_root = None
         self.configurations_path = configurations_path
 
@@ -99,11 +95,6 @@ class ChannelConfigurationManager:
         # Load global channel definitions if configurations_path is provided
         if configurations_path:
             self._load_channel_definitions()
-
-        # Subscribe to events if event_bus is provided
-        self._subscriptions = []
-        if self._event_bus:
-            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def set_configurations_path(self, configurations_path: Path) -> None:
         """Set the path to the configurations folder."""
@@ -688,7 +679,3 @@ class ChannelConfigurationManager:
         if cmd.illumination_intensity is not None:
             self.update_configuration(cmd.objective_name, mode.id, "IlluminationIntensity", cmd.illumination_intensity)
 
-    def shutdown(self) -> None:
-        if self._event_bus:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []

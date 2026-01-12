@@ -11,6 +11,7 @@ from typing import Optional, TYPE_CHECKING, Tuple, List
 import numpy as np
 
 import squid.core.logging
+from squid.backend.controllers.base import BaseController
 from squid.core.mode_gate import GlobalMode, GlobalModeGate
 from squid.core.events import (
     EventBus,
@@ -23,8 +24,6 @@ from squid.core.events import (
     StopTrackingCommand,
     TrackingStateChanged,
     TrackingWorkerFinished,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 from squid.backend.processing.tracking_dasiamrpn import Tracker_Image
@@ -54,7 +53,7 @@ class _TrackingRunConfig:
     image_resizing_factor: float
 
 
-class TrackingControllerCore:
+class TrackingControllerCore(BaseController):
     """Backend-only tracking controller (no Qt, services-only hardware access)."""
 
     def __init__(
@@ -69,8 +68,7 @@ class TrackingControllerCore:
         peripheral_service: Optional["PeripheralService"] = None,
         mode_gate: Optional[GlobalModeGate] = None,
     ) -> None:
-        self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._bus = event_bus
+        super().__init__(event_bus)
         self._camera = camera_service
         self._stage = stage_service
         self._live = live_controller
@@ -100,10 +98,8 @@ class TrackingControllerCore:
         self._keep_running = threading.Event()
         self._worker: Optional[_TrackingWorker] = None
 
-        self._subscriptions = auto_subscribe(self, self._bus)
-
     def _publish_tracking_state(self, is_tracking: bool) -> None:
-        self._bus.publish(TrackingStateChanged(is_tracking=is_tracking))
+        self._event_bus.publish(TrackingStateChanged(is_tracking=is_tracking))
 
     @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
@@ -237,7 +233,7 @@ class TrackingControllerCore:
         self._publish_tracking_state(is_tracking=True)
 
         worker = _TrackingWorker(
-            bus=self._bus,
+            bus=self._event_bus,
             camera_service=self._camera,
             stage_service=self._stage,
             live_controller=self._live,
@@ -272,9 +268,6 @@ class TrackingControllerCore:
             worker.restore_after_run()
         self._publish_tracking_state(is_tracking=False)
 
-    def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []
 
 
 class _TrackingWorker(threading.Thread):
@@ -295,7 +288,7 @@ class _TrackingWorker(threading.Thread):
     ) -> None:
         super().__init__(daemon=True)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._bus = bus
+        self._event_bus = bus
         self._camera = camera_service
         self._stage = stage_service
         self._live = live_controller
@@ -346,7 +339,7 @@ class _TrackingWorker(threading.Thread):
                 )
                 self._csv_file.flush()
                 self._run_loop()
-            self._bus.publish(
+            self._event_bus.publish(
                 TrackingWorkerFinished(
                     success=True,
                     aborted=not self._keep_running.is_set(),
@@ -355,7 +348,7 @@ class _TrackingWorker(threading.Thread):
         except Exception as exc:
             msg = str(exc) or exc.__class__.__name__
             self._log.exception("Tracking worker failed")
-            self._bus.publish(
+            self._event_bus.publish(
                 TrackingWorkerFinished(
                     success=False,
                     aborted=not self._keep_running.is_set(),

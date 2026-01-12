@@ -29,7 +29,6 @@ from squid.ui.widgets.camera._common import (
     TriggerMode,
     TriggerModeChanged,
     UpdateChannelConfigurationCommand,
-    auto_subscribe,
     handles,
     squid,
 )
@@ -99,9 +98,6 @@ class LiveControlWidget(EventBusFrame):
         self.update_ui_for_mode(self.currentConfiguration)
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
-
-        # Subscribe to state changes using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._bus)
 
     @handles(AutoLevelCommand)
     def _on_autolevel_command(self, event: AutoLevelCommand) -> None:

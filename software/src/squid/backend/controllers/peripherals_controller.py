@@ -10,6 +10,7 @@ import threading
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Optional
 
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     SetObjectiveCommand,
     SetSpinningDiskPositionCommand,
@@ -22,8 +23,6 @@ from squid.core.events import (
     SpinningDiskStateChanged,
     PiezoPositionChanged,
     PixelSizeChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -58,7 +57,7 @@ class PeripheralsState:
     piezo_position_um: Optional[float] = None
 
 
-class PeripheralsController:
+class PeripheralsController(BaseController):
     """Handles peripheral hardware control.
 
     Manages: objective changer, spinning disk, piezo Z stage.
@@ -75,19 +74,14 @@ class PeripheralsController:
         objective_store: Optional["ObjectiveStore"],
         event_bus: "EventBus",
     ) -> None:
+        super().__init__(event_bus)
         self._objective_service = objective_service
         self._spinning_disk_service = spinning_disk_service
         self._piezo_service = piezo_service
         self._objective_store = objective_store
-        self._bus = event_bus
         self._lock = threading.RLock()
 
         self._state = self._read_initial_state()
-
-        # Subscribe to commands
-        self._subscriptions = []
-        if self._bus:
-            self._subscriptions = auto_subscribe(self, self._bus)
 
     @property
     def state(self) -> PeripheralsState:
@@ -171,7 +165,7 @@ class PeripheralsController:
                     pass  # Objective name not in store
 
         # Publish outside lock
-        self._bus.publish(
+        self._event_bus.publish(
             ObjectiveChanged(
                 position=actual,
                 objective_name=obj_name,
@@ -180,7 +174,7 @@ class PeripheralsController:
         )
 
         if pixel_size:
-            self._bus.publish(PixelSizeChanged(pixel_size_um=pixel_size))
+            self._event_bus.publish(PixelSizeChanged(pixel_size_um=pixel_size))
 
     # --- Spinning Disk ---
 
@@ -237,7 +231,7 @@ class PeripheralsController:
             self._state = replace(self._state, spinning_disk=disk_state)
 
         # Publish outside lock
-        self._bus.publish(
+        self._event_bus.publish(
             SpinningDiskStateChanged(
                 is_disk_in=disk_state.is_disk_in,
                 is_spinning=disk_state.is_spinning,
@@ -263,7 +257,7 @@ class PeripheralsController:
             self._state = replace(self._state, piezo_position_um=actual)
 
         # Publish outside lock
-        self._bus.publish(PiezoPositionChanged(position_um=actual))
+        self._event_bus.publish(PiezoPositionChanged(position_um=actual))
 
     @handles(MovePiezoRelativeCommand)
     def _on_move_piezo_relative(self, cmd: MovePiezoRelativeCommand) -> None:
@@ -277,12 +271,7 @@ class PeripheralsController:
             self._state = replace(self._state, piezo_position_um=actual)
 
         # Publish outside lock
-        self._bus.publish(PiezoPositionChanged(position_um=actual))
-
-    def shutdown(self) -> None:
-        if self._bus:
-            auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []
+        self._event_bus.publish(PiezoPositionChanged(position_um=actual))
 
     # --- Convenience methods ---
 

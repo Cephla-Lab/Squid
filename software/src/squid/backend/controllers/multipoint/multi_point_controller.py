@@ -39,8 +39,6 @@ import squid.core.logging
 from typing import TYPE_CHECKING
 
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     SetFluidicsRoundsCommand,
     SetAcquisitionParametersCommand,
@@ -189,15 +187,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         # Expose stage for convenience (delegates to scanCoordinates)
         self.stage = scan_coordinates.stage if scan_coordinates else None
         self.old_images_per_page: int = 1
-        self._subscriptions = []
-
         self._start_position: Optional[squid.core.abc.Pos] = None
         self._acquisition_context: Optional[AcquisitionContext] = None
         self._per_acq_log_handler: Optional[Any] = None
-
-        # Subscribe to EventBus commands
-        if self._event_bus:
-            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def _start_per_acquisition_log(self) -> None:
         """Start per-acquisition logging if enabled.
@@ -1315,12 +1307,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             f"fov {event.current_fov}/{event.total_fovs}, "
             f"timepoint {event.current_timepoint}/{event.total_timepoints}"
         )
-
-    def shutdown(self) -> None:
-        """Unsubscribe from EventBus handlers."""
-        if self._event_bus:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
 
     def _publish_acquisition_state(
         self,

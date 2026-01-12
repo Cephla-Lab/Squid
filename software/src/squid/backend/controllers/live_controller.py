@@ -26,8 +26,6 @@ from squid.core.events import (
     TriggerModeChanged,
     TriggerFPSChanged,
     FilterAutoSwitchChanged,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 from squid.core.state_machine import StateMachine, InvalidStateForOperation
@@ -97,9 +95,7 @@ class LiveController(StateMachine[LiveControllerState]):
         )
 
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        # Note: StateMachine base class provides self._lock
-        self._bus: EventBus = event_bus
-        self._subscriptions = []
+        # Note: StateMachine base class provides self._lock and _event_bus
         self._camera_service: CameraService = camera_service
         self._camera: str = camera
         self._illumination_service = illumination_service
@@ -157,15 +153,11 @@ class LiveController(StateMachine[LiveControllerState]):
             {StopLiveCommand, SetTriggerModeCommand, SetTriggerFPSCommand, UpdateIlluminationCommand}
         )
 
-        # Subscribe to commands if event bus provided
-        if self._bus:
-            self._subscriptions = auto_subscribe(self, self._bus)
-
     def _publish_state_changed(self, old_state: LiveControllerState, new_state: LiveControllerState) -> None:
         """Publish state change event (StateMachine abstract method)."""
-        if self._bus:
+        if self._event_bus:
             is_live = new_state == LiveControllerState.LIVE
-            self._bus.publish(LiveStateChanged(
+            self._event_bus.publish(LiveStateChanged(
                 camera=self._camera,
                 is_live=is_live,
                 configuration=self.currentConfiguration.name if self.currentConfiguration else None,
@@ -716,8 +708,8 @@ class LiveController(StateMachine[LiveControllerState]):
             self._observable_state = replace(self._observable_state, trigger_mode=cmd.mode)
 
         # Publish outside lock
-        if self._bus:
-            self._bus.publish(TriggerModeChanged(camera=self._camera, mode=cmd.mode))
+        if self._event_bus:
+            self._event_bus.publish(TriggerModeChanged(camera=self._camera, mode=cmd.mode))
 
     @handles(SetTriggerFPSCommand)
     def _on_set_trigger_fps_command(self, cmd: SetTriggerFPSCommand) -> None:
@@ -751,8 +743,8 @@ class LiveController(StateMachine[LiveControllerState]):
             self._observable_state = replace(self._observable_state, trigger_fps=cmd.fps)
 
         # Publish outside lock
-        if self._bus:
-            self._bus.publish(TriggerFPSChanged(camera=self._camera, fps=cmd.fps))
+        if self._event_bus:
+            self._event_bus.publish(TriggerFPSChanged(camera=self._camera, fps=cmd.fps))
 
     @handles(SetFilterAutoSwitchCommand)
     def _on_set_filter_auto_switch(self, cmd: SetFilterAutoSwitchCommand) -> None:
@@ -761,8 +753,8 @@ class LiveController(StateMachine[LiveControllerState]):
             self.enable_channel_auto_filter_switching = cmd.enabled
 
         # Publish state change outside lock
-        if self._bus:
-            self._bus.publish(FilterAutoSwitchChanged(enabled=cmd.enabled))
+        if self._event_bus:
+            self._event_bus.publish(FilterAutoSwitchChanged(enabled=cmd.enabled))
 
     @handles(UpdateIlluminationCommand)
     def _on_update_illumination(self, cmd: UpdateIlluminationCommand) -> None:
@@ -774,8 +766,3 @@ class LiveController(StateMachine[LiveControllerState]):
         """Handle SetDisplayResolutionScalingCommand from EventBus."""
         self.set_display_resolution_scaling(cmd.scaling)
 
-    def shutdown(self) -> None:
-        """Unsubscribe from EventBus handlers."""
-        if self._bus:
-            auto_unsubscribe(self._subscriptions, self._bus)
-        self._subscriptions = []

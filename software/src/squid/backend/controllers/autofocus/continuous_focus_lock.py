@@ -15,6 +15,7 @@ from squid.backend.controllers.autofocus.laser_auto_focus_controller import (
 )
 from squid.backend.services.piezo_service import PiezoService
 from squid.core.config.focus_lock import FocusLockConfig, FocusLockMode
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     AdjustFocusLockTargetCommand,
     EventBus,
@@ -32,13 +33,11 @@ from squid.core.events import (
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
 
-class ContinuousFocusLockController:
+class ContinuousFocusLockController(BaseController):
     """Continuous closed-loop focus lock using laser autofocus."""
 
     def __init__(
@@ -48,10 +47,9 @@ class ContinuousFocusLockController:
         event_bus: EventBus,
         config: Optional[FocusLockConfig] = None,
     ) -> None:
-        self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        super().__init__(event_bus)
         self._laser_af = laser_af
         self._piezo_service = piezo_service
-        self._event_bus = event_bus
         self._config = config or FocusLockConfig()
 
         self._mode: FocusLockMode = self._config.default_mode
@@ -89,8 +87,6 @@ class ContinuousFocusLockController:
 
         # Reference piezo position when lock was set (for search recovery)
         self._locked_piezo_um: float = 0.0
-
-        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     @property
     def mode(self) -> FocusLockMode:
@@ -203,6 +199,7 @@ class ContinuousFocusLockController:
 
     def shutdown(self) -> None:
         self.stop()
+        super().shutdown()
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         if not self.is_running:
@@ -257,10 +254,6 @@ class ContinuousFocusLockController:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
         self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
-
-    def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
 
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""

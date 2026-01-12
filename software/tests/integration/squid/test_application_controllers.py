@@ -42,7 +42,7 @@ class TestLiveControllerEventBus:
 
     def test_live_controller_has_event_bus(self, live_controller, event_bus):
         """LiveController should store EventBus reference."""
-        assert live_controller._bus is event_bus
+        assert live_controller._event_bus is event_bus
 
     def test_live_controller_has_state(self, live_controller):
         state = live_controller.observable_state

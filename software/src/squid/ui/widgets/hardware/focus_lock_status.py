@@ -23,7 +23,6 @@ from qtpy.QtWidgets import (
 import _def
 from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.events import (
-    auto_subscribe,
     handles,
     FocusLockFrameUpdated,
     FocusLockMetricsUpdated,
@@ -628,7 +627,8 @@ class FocusLockStatusWidget(EventBusFrame):
         self._update_collapsed_ui()
 
     def _connect_events(self) -> None:
-        self._subscriptions = auto_subscribe(self, self._bus)
+        # Subscriptions are now handled automatically by EventBusFrame base class
+        pass
 
     def _toggle_collapsed(self) -> None:
         self._collapsed = not self._collapsed

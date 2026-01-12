@@ -41,14 +41,16 @@ from typing import (
     Dict,
     FrozenSet,
     Generic,
+    List,
     Optional,
     Set,
+    Tuple,
     Type,
     TypeVar,
 )
 
 import squid.core.logging
-from squid.core.events import Event, EventBus
+from squid.core.events import Event, EventBus, auto_subscribe, auto_unsubscribe
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -125,6 +127,11 @@ class StateMachine(ABC, Generic[S]):
 
         # State change callbacks
         self._on_state_change_callbacks: list[Callable[[S, S], None]] = []
+
+        # Subscription tracking for @handles decorated methods
+        self._subscriptions: List[Tuple[Type[Event], Callable]] = []
+        if event_bus:
+            self._subscriptions = auto_subscribe(self, event_bus)
 
     @property
     def state(self) -> S:
@@ -288,3 +295,17 @@ class StateMachine(ABC, Generic[S]):
         """
         with self._lock:
             return set(self._transitions.get(self._state, frozenset()))
+
+    def shutdown(self) -> None:
+        """Unsubscribe from all events.
+
+        Subclasses with additional cleanup should override and call super().shutdown()
+        after their cleanup logic:
+
+            def shutdown(self) -> None:
+                self.stop()  # custom cleanup
+                super().shutdown()
+        """
+        if self._event_bus:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions = []

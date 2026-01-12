@@ -11,6 +11,7 @@ import numpy as np
 
 import squid.core.logging
 from squid.core.config.focus_lock import FocusLockConfig, FocusLockMode
+from squid.backend.controllers.base import BaseController
 from squid.core.events import (
     EventBus,
     FocusLockFrameUpdated,
@@ -31,8 +32,6 @@ from squid.core.events import (
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
 )
 
@@ -41,7 +40,7 @@ if TYPE_CHECKING:
     from squid.backend.services.piezo_service import PiezoService
 
 
-class FocusLockSimulator:
+class FocusLockSimulator(BaseController):
     """Focus lock controller that uses the laser AF camera.
 
     Requires laser autofocus to be initialized before it can lock.
@@ -58,8 +57,7 @@ class FocusLockSimulator:
         drift_rate_um_per_s: float = 0.05,
         snr_range: Tuple[float, float] = (8.0, 15.0),
     ) -> None:
-        self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._event_bus = event_bus
+        super().__init__(event_bus)
         self._config = config or FocusLockConfig()
         self._laser_af = laser_autofocus
         self._piezo_service = piezo_service
@@ -127,8 +125,6 @@ class FocusLockSimulator:
         self._auto_search_enabled = self._config.auto_search_enabled
         self._search_phase: str = ""  # "last_position" or "sweep"
         self._search_position: float = 0.0
-
-        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     @handles(LaserAFInitialized)
     def _on_laser_af_initialized(self, event: LaserAFInitialized) -> None:
@@ -228,6 +224,7 @@ class FocusLockSimulator:
     def shutdown(self) -> None:
         """Shutdown simulator and stop background thread."""
         self.stop()
+        super().shutdown()
 
     def set_mode(self, mode: FocusLockMode) -> None:
         """Set focus lock operating mode."""
@@ -335,10 +332,6 @@ class FocusLockSimulator:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
         self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
-
-    def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
 
     def set_lock(self) -> None:
         """Lock at current position.

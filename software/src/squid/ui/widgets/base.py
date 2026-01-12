@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, List, Any, Callable, Dict
+from typing import TYPE_CHECKING, Optional, List, Any, Callable, Dict, Tuple
 from qtpy.QtCore import Qt, QAbstractTableModel, QModelIndex
 from qtpy.QtWidgets import (
     QMainWindow,
@@ -18,6 +18,7 @@ from qtpy.QtGui import QBrush, QColor, QCloseEvent
 import pandas as pd
 
 import squid.core.utils.hardware_utils as utils
+from squid.core.events import auto_subscribe, auto_unsubscribe
 
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint import MultiPointController
@@ -25,7 +26,64 @@ if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
 
 
-class EventBusWidget(QWidget):
+class EventBusSubscriptionMixin:
+    """Mixin providing event bus subscription management with @handles support.
+
+    This mixin provides:
+    - Automatic subscription of @handles decorated methods via auto_subscribe
+    - Manual subscription via _subscribe() method
+    - State caching via _cache_state() and _get_cached_state()
+    - Cleanup via _cleanup_subscriptions()
+
+    Subclasses should call _init_subscriptions(event_bus) in their __init__.
+    """
+
+    _bus: "UIEventBus"
+    _subscriptions: List[Tuple[type, Callable]]
+    _state_cache: Dict[str, Any]
+
+    def _init_subscriptions(self, event_bus: "UIEventBus") -> None:
+        """Initialize event bus subscriptions. Call from __init__."""
+        self._bus = event_bus
+        self._subscriptions = []
+        self._state_cache = {}
+        # Auto-subscribe all @handles decorated methods
+        # UIEventBus has the same interface as EventBus
+        self._subscriptions = auto_subscribe(self, self._bus)  # type: ignore[arg-type]
+
+    def _subscribe(self, event_type: type, handler: Callable) -> None:
+        """Subscribe to an event and track for cleanup."""
+        self._bus.subscribe(event_type, handler)
+        self._subscriptions.append((event_type, handler))
+
+    def _publish(self, event: "Event") -> None:
+        """Publish an event."""
+        self._bus.publish(event)
+
+    def _cache_state(self, key: str, value: Any) -> None:
+        """Cache a state value for later retrieval.
+
+        Use this to remember the last-known state from events,
+        so you can access it later without needing another event.
+        """
+        self._state_cache[key] = value
+
+    def _get_cached_state(self, key: str, default: Any = None) -> Any:
+        """Get a cached state value.
+
+        Returns the default if the key has never been cached.
+        """
+        return self._state_cache.get(key, default)
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
+        # UIEventBus has the same interface as EventBus
+        auto_unsubscribe(self._subscriptions, self._bus)  # type: ignore[arg-type]
+        self._subscriptions = []
+        self._state_cache.clear()
+
+
+class EventBusWidget(EventBusSubscriptionMixin, QWidget):
     """Base widget that communicates via UIEventBus only.
 
     DESIGN RULES FOR SUBCLASSES:
@@ -55,16 +113,20 @@ class EventBusWidget(QWidget):
        - This prevents crashes from worker-thread event callbacks
        - NEVER use raw EventBus in widgets
 
+    6. @handles Decorator:
+       - Use @handles(EventType) to mark methods as event handlers
+       - These are automatically subscribed by the base class
+
     Example:
         class MyWidget(EventBusWidget):
             def __init__(self, event_bus: UIEventBus, parent=None):
                 super().__init__(event_bus, parent)
                 self._setup_ui()
-                self._subscribe(SomeStateEvent, self._on_state_changed)
 
             def _on_button_clicked(self):
                 self._publish(SomeCommand(value=42))
 
+            @handles(SomeStateEvent)
             def _on_state_changed(self, event: SomeStateEvent):
                 self._cache_state("value", event.value)
                 self.label.setText(str(event.value))
@@ -75,52 +137,16 @@ class EventBusWidget(QWidget):
         event_bus: "UIEventBus",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self._bus = event_bus
-        self._subscriptions: List[tuple[type, Callable]] = []
-        self._state_cache: Dict[str, Any] = {}
-
-    def _subscribe(self, event_type: type, handler: Callable) -> None:
-        """Subscribe to an event and track for cleanup."""
-        self._bus.subscribe(event_type, handler)
-        self._subscriptions.append((event_type, handler))
-
-    def _publish(self, event: "Event") -> None:
-        """Publish an event."""
-        self._bus.publish(event)
-
-    def _cache_state(self, key: str, value: Any) -> None:
-        """Cache a state value for later retrieval.
-
-        Use this to remember the last-known state from events,
-        so you can access it later without needing another event.
-        """
-        self._state_cache[key] = value
-
-    def _get_cached_state(self, key: str, default: Any = None) -> Any:
-        """Get a cached state value.
-
-        Returns the default if the key has never been cached.
-        """
-        return self._state_cache.get(key, default)
+        QWidget.__init__(self, parent)
+        self._init_subscriptions(event_bus)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Clean up subscriptions on close."""
         self._cleanup_subscriptions()
         super().closeEvent(event)
 
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        for event_type, handler in self._subscriptions:
-            try:
-                self._bus.unsubscribe(event_type, handler)
-            except Exception:
-                pass  # Ignore cleanup errors
-        self._subscriptions.clear()
-        self._state_cache.clear()
 
-
-class EventBusFrame(QFrame):
+class EventBusFrame(EventBusSubscriptionMixin, QFrame):
     """Base QFrame that communicates via UIEventBus only.
 
     Same design rules as EventBusWidget but inherits from QFrame for widgets
@@ -137,45 +163,16 @@ class EventBusFrame(QFrame):
         event_bus: "UIEventBus",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self._bus = event_bus
-        self._subscriptions: List[tuple[type, Callable]] = []
-        self._state_cache: Dict[str, Any] = {}
-
-    def _subscribe(self, event_type: type, handler: Callable) -> None:
-        """Subscribe to an event and track for cleanup."""
-        self._bus.subscribe(event_type, handler)
-        self._subscriptions.append((event_type, handler))
-
-    def _publish(self, event: "Event") -> None:
-        """Publish an event."""
-        self._bus.publish(event)
-
-    def _cache_state(self, key: str, value: Any) -> None:
-        """Cache a state value for later retrieval."""
-        self._state_cache[key] = value
-
-    def _get_cached_state(self, key: str, default: Any = None) -> Any:
-        """Get a cached state value."""
-        return self._state_cache.get(key, default)
+        QFrame.__init__(self, parent)
+        self._init_subscriptions(event_bus)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Clean up subscriptions on close."""
         self._cleanup_subscriptions()
         super().closeEvent(event)
 
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        for event_type, handler in self._subscriptions:
-            try:
-                self._bus.unsubscribe(event_type, handler)
-            except Exception:
-                pass  # Ignore cleanup errors
-        self._subscriptions.clear()
-        self._state_cache.clear()
 
-
-class EventBusDialog(QDialog):
+class EventBusDialog(EventBusSubscriptionMixin, QDialog):
     """Base QDialog that communicates via UIEventBus only.
 
     Same design rules as EventBusWidget but inherits from QDialog for
@@ -192,42 +189,13 @@ class EventBusDialog(QDialog):
         event_bus: "UIEventBus",
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self._bus = event_bus
-        self._subscriptions: List[tuple[type, Callable]] = []
-        self._state_cache: Dict[str, Any] = {}
-
-    def _subscribe(self, event_type: type, handler: Callable) -> None:
-        """Subscribe to an event and track for cleanup."""
-        self._bus.subscribe(event_type, handler)
-        self._subscriptions.append((event_type, handler))
-
-    def _publish(self, event: "Event") -> None:
-        """Publish an event."""
-        self._bus.publish(event)
-
-    def _cache_state(self, key: str, value: Any) -> None:
-        """Cache a state value for later retrieval."""
-        self._state_cache[key] = value
-
-    def _get_cached_state(self, key: str, default: Any = None) -> Any:
-        """Get a cached state value."""
-        return self._state_cache.get(key, default)
+        QDialog.__init__(self, parent)
+        self._init_subscriptions(event_bus)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Clean up subscriptions on close."""
         self._cleanup_subscriptions()
         super().closeEvent(event)
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        for event_type, handler in self._subscriptions:
-            try:
-                self._bus.unsubscribe(event_type, handler)
-            except Exception:
-                pass  # Ignore cleanup errors
-        self._subscriptions.clear()
-        self._state_cache.clear()
 
 
 def error_dialog(message: str, title: str = "Error") -> None:

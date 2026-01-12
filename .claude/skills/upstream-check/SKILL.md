@@ -1,51 +1,69 @@
 ---
 name: upstream-check
 description: Analyzes upstream commits on master that need porting to arch_v2. Performs semantic analysis of each commit, maps changes to new architecture locations, and presents a structured report for approval before implementation.
-allowed-tools: Bash(git fetch:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Read, Grep, Glob, AskUserQuestion
+allowed-tools: Bash(git fetch:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(python*upstream_tracking*), Read, Write, Edit, Grep, Glob, AskUserQuestion
 ---
 
 # Upstream Check Skill
 
-Analyzes commits on a source branch not in `arch_v2` and helps port them semantically to the new 3-layer architecture.
+Analyzes commits on `upstream/master` not in the current branch and helps port them semantically to the new 3-layer architecture.
 
-## When to Use
+## CRITICAL: No Direct Merges
 
-- Periodically check what upstream changes exist
-- Before merging or rebasing
-- When bugs are reported that might have upstream fixes
+**NEVER merge or cherry-pick directly from upstream.** The arch_v2 architecture has diverged significantly from upstream/master:
+
+- Different directory structure (3-layer: core/backend/ui)
+- Different patterns (EventBus, Services with RLock, etc.)
+- Different file locations and module organization
+
+**All ports must be SEMANTIC** - understand what the upstream commit does, then reimplement it following arch_v2 patterns. Direct patches will not apply cleanly and will break the architecture.
+
+## Tracking System
+
+This skill maintains canonical tracking in:
+- `conductor/tracks/upstream-port/upstream-status.yaml` - canonical status file
+- Git commit trailers (`Ports-Upstream:`, `Skips-Upstream:`) - audit trail
+
+**The skill auto-maintains the YAML file. You never edit it manually.**
 
 ## Workflow
 
-### Step 0: Select Source
+### Step 0: Auto-Discovery
 
-Ask the user which source branch to check for commits:
-
-- **upstream/master** - Cephla-Lab/Squid main repository (recommended for pulling in official changes)
-- **origin/master** - User's fork master branch
-
-Use the AskUserQuestion tool to prompt for this choice.
-
-### Step 1: Fetch and List
-
-Based on the user's selection, fetch and list commits:
+Run the tracking tool to fetch upstream and discover new commits:
 
 ```bash
-# For upstream/master:
-git fetch upstream master
-git log upstream/master --not arch_v2 --oneline
+cd software && python tools/upstream_tracking.py add-pending --fetch
+```
 
-# For origin/master:
-git fetch origin master
-git log origin/master --not arch_v2 --oneline
+This will:
+1. Fetch `upstream/master`
+2. Auto-add any new upstream commits as "pending" to the status file
+3. Show what was added
+
+Then check the summary:
+
+```bash
+python tools/upstream_tracking.py summary
+```
+
+### Step 1: List Pending Commits
+
+Show commits that need attention:
+
+```bash
+python tools/upstream_tracking.py list --status pending
 ```
 
 ### Step 2: Analyze Each Commit
 
-For each commit, extract:
+For each pending commit, extract:
 - **Hash and message**: What was done
 - **Files changed**: Where it was done (old paths)
 - **Diff content**: How it was done
 - **Category**: Bug fix, feature, config, docs, or refactor
+
+Use `git show <hash>` to see the full diff.
 
 ### Step 3: Map to New Architecture
 
@@ -68,16 +86,99 @@ For each commit, present:
 
 Ask user which commits to port:
 - **Approve** - implement the port
-- **Skip** - not needed
+- **Skip** - not needed (requires justification)
 - **Discuss** - need more info
 
-### Step 6: Implement (if approved)
+### Step 6: Implement or Skip
 
-For approved commits:
-1. Implement equivalent change in arch_v2
-2. Follow 3-layer architecture patterns
+#### For approved commits (porting):
+
+1. Mark as in-progress by editing the YAML:
+   ```yaml
+   <hash>:
+     status: in-progress
+     started_date: YYYY-MM-DD
+   ```
+
+2. Implement equivalent change following arch_v2 patterns
 3. Run tests
-4. Create commit referencing original
+4. Create commit with proper format (see below)
+5. Update YAML to mark as ported:
+   ```yaml
+   <hash>:
+     status: ported
+     ported_in: <our-commit-hash>
+     ported_date: YYYY-MM-DD
+   ```
+
+#### For skipped commits:
+
+1. Update YAML with skip information:
+   ```yaml
+   <hash>:
+     status: skipped
+     skip_reason: <not-applicable|superseded|already-fixed|deferred>
+     skip_justification: |
+       <detailed explanation of why this commit is being skipped>
+     skip_date: YYYY-MM-DD
+   ```
+
+2. Create a skip documentation commit (see below)
+
+### Step 7: Verify
+
+After all changes, run verification:
+
+```bash
+python tools/upstream_tracking.py verify
+```
+
+## Commit Message Format
+
+### Port Commits
+
+```
+<type>(<scope>): <description> (<upstream-hash1>, <upstream-hash2>)
+
+<body describing what was ported and any arch_v2 adaptations>
+
+Ports-Upstream: <hash1>
+Ports-Upstream: <hash2>
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
+
+Example:
+```
+feat: Port Views tab to Preferences dialog (ee39b87)
+
+Add Views tab to PreferencesDialog with plate/mosaic view settings.
+Adapted for arch_v2 event-driven architecture.
+
+Ports-Upstream: ee39b87
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
+
+### Skip Documentation Commits
+
+```
+docs(upstream): Skip <hash> - <reason summary>
+
+<justification>
+
+Skips-Upstream: <hash>
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
+
+Example:
+```
+docs(upstream): Skip 2a48f9b - Claude Code integration
+
+Claude Code integration is repository-specific tooling, not
+microscope functionality. arch_v2 has its own .claude/ configuration.
+
+Skips-Upstream: 2a48f9b
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
 
 ## Architecture Rules
 
@@ -86,6 +187,15 @@ When porting, ensure:
 - Services use RLock for thread safety
 - No circular dependencies between layers
 - Extract pure functions where possible
+
+## Skip Reasons
+
+| Reason | When to Use |
+|--------|-------------|
+| `not-applicable` | Commit doesn't apply to arch_v2 (e.g., repo-specific tooling) |
+| `superseded` | arch_v2 has a different/better implementation |
+| `already-fixed` | arch_v2 architecture prevents the bug |
+| `deferred` | Will port later, not priority now |
 
 ## Edge Cases
 
@@ -107,11 +217,10 @@ For changes to specific hardware drivers:
 2. If yes, port to the new driver location
 3. If no, note it but skip (can be added later if needed)
 
-## Tracking
+## Tracking Files
 
-Maintain a log of reviewed/ported commits in `conductor/tracks/upstream-port-log.md` to prevent re-reviewing.
-
-| Upstream Commit | Date Reviewed | Action | arch_v2 Commit |
-|-----------------|---------------|--------|----------------|
-| abc1234 | 2025-01-15 | Ported | xyz7890 |
-| def5678 | 2025-01-15 | Skipped | - |
+| File | Purpose |
+|------|---------|
+| `conductor/tracks/upstream-port/upstream-status.yaml` | Canonical status (auto-maintained) |
+| `conductor/tracks/upstream-port/commits/` | Detailed analysis files for complex ports |
+| `conductor/tracks/upstream-port/README.md` | Overview documentation |
