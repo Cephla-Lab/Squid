@@ -1033,6 +1033,64 @@ class PreferencesDialog(QDialog):
         dev_group.content.addLayout(dev_layout)
         layout.addWidget(dev_group)
 
+        # Acquisition Throttling section
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_layout = QFormLayout()
+
+        self.throttling_enabled_checkbox = QCheckBox()
+        self.throttling_enabled_checkbox.setChecked(
+            self._get_config_bool(
+                "GENERAL", "acquisition_throttling_enabled", control._def.ACQUISITION_THROTTLING_ENABLED
+            )
+        )
+        self.throttling_enabled_checkbox.setToolTip(
+            "When enabled, acquisition pauses when pending jobs or RAM usage exceeds limits.\n"
+            "Prevents RAM exhaustion when acquisition speed exceeds disk write speed."
+        )
+        throttle_layout.addRow("Enable Throttling:", self.throttling_enabled_checkbox)
+
+        self.max_pending_jobs_spinbox = QSpinBox()
+        self.max_pending_jobs_spinbox.setRange(1, 100)
+        self.max_pending_jobs_spinbox.setValue(
+            self._get_config_int("GENERAL", "acquisition_max_pending_jobs", control._def.ACQUISITION_MAX_PENDING_JOBS)
+        )
+        self.max_pending_jobs_spinbox.setToolTip(
+            "Maximum number of jobs in flight before throttling.\n"
+            "Higher values allow more parallelism but use more RAM."
+        )
+        throttle_layout.addRow("Max Pending Jobs:", self.max_pending_jobs_spinbox)
+
+        self.max_pending_mb_spinbox = QDoubleSpinBox()
+        self.max_pending_mb_spinbox.setRange(100.0, 10000.0)
+        self.max_pending_mb_spinbox.setSingleStep(100.0)
+        self.max_pending_mb_spinbox.setValue(
+            self._get_config_float("GENERAL", "acquisition_max_pending_mb", control._def.ACQUISITION_MAX_PENDING_MB)
+        )
+        self.max_pending_mb_spinbox.setSuffix(" MB")
+        self.max_pending_mb_spinbox.setToolTip(
+            "Maximum RAM usage (MB) for pending jobs before throttling.\n"
+            "Higher values allow faster acquisition but risk RAM exhaustion."
+        )
+        throttle_layout.addRow("Max Pending RAM:", self.max_pending_mb_spinbox)
+
+        self.throttle_timeout_spinbox = QDoubleSpinBox()
+        self.throttle_timeout_spinbox.setRange(5.0, 300.0)
+        self.throttle_timeout_spinbox.setSingleStep(5.0)
+        self.throttle_timeout_spinbox.setValue(
+            self._get_config_float(
+                "GENERAL", "acquisition_throttle_timeout_s", control._def.ACQUISITION_THROTTLE_TIMEOUT_S
+            )
+        )
+        self.throttle_timeout_spinbox.setSuffix(" s")
+        self.throttle_timeout_spinbox.setToolTip(
+            "Maximum time to wait when throttled before reporting a warning.\n"
+            "If disk I/O cannot keep up within this time, acquisition logs a warning."
+        )
+        throttle_layout.addRow("Throttle Timeout:", self.throttle_timeout_spinbox)
+
+        throttle_group.content.addLayout(throttle_layout)
+        layout.addWidget(throttle_group)
+
         # Software Position Limits section
         limits_group = CollapsibleGroupBox("Software Position Limits")
         limits_layout = QFormLayout()
@@ -1334,6 +1392,16 @@ class PreferencesDialog(QDialog):
             "true" if self.simulated_io_compression_checkbox.isChecked() else "false",
         )
 
+        # Advanced - Acquisition Throttling
+        self.config.set(
+            "GENERAL",
+            "acquisition_throttling_enabled",
+            "true" if self.throttling_enabled_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "acquisition_max_pending_jobs", str(self.max_pending_jobs_spinbox.value()))
+        self.config.set("GENERAL", "acquisition_max_pending_mb", str(self.max_pending_mb_spinbox.value()))
+        self.config.set("GENERAL", "acquisition_throttle_timeout_s", str(self.throttle_timeout_spinbox.value()))
+
         # Advanced - Position Limits
         self.config.set("SOFTWARE_POS_LIMIT", "x_positive", str(self.limit_x_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "x_negative", str(self.limit_x_neg.value()))
@@ -1439,6 +1507,12 @@ class PreferencesDialog(QDialog):
         control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
         control._def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_io_speed_spinbox.value()
         control._def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_io_compression_checkbox.isChecked()
+
+        # Acquisition throttling settings
+        control._def.ACQUISITION_THROTTLING_ENABLED = self.throttling_enabled_checkbox.isChecked()
+        control._def.ACQUISITION_MAX_PENDING_JOBS = self.max_pending_jobs_spinbox.value()
+        control._def.ACQUISITION_MAX_PENDING_MB = self.max_pending_mb_spinbox.value()
+        control._def.ACQUISITION_THROTTLE_TIMEOUT_S = self.throttle_timeout_spinbox.value()
 
         # Software position limits
         control._def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
@@ -1641,6 +1715,35 @@ class PreferencesDialog(QDialog):
         new_val = self.simulated_io_compression_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Simulate Compression", str(old_val), str(new_val), False))
+
+        # Advanced - Acquisition Throttling (takes effect on next acquisition)
+        old_val = self._get_config_bool(
+            "GENERAL", "acquisition_throttling_enabled", control._def.ACQUISITION_THROTTLING_ENABLED
+        )
+        new_val = self.throttling_enabled_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Acquisition Throttling", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_int(
+            "GENERAL", "acquisition_max_pending_jobs", control._def.ACQUISITION_MAX_PENDING_JOBS
+        )
+        new_val = self.max_pending_jobs_spinbox.value()
+        if old_val != new_val:
+            changes.append(("Max Pending Jobs", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_float(
+            "GENERAL", "acquisition_max_pending_mb", control._def.ACQUISITION_MAX_PENDING_MB
+        )
+        new_val = self.max_pending_mb_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Max Pending RAM", f"{old_val} MB", f"{new_val} MB", False))
+
+        old_val = self._get_config_float(
+            "GENERAL", "acquisition_throttle_timeout_s", control._def.ACQUISITION_THROTTLE_TIMEOUT_S
+        )
+        new_val = self.throttle_timeout_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Throttle Timeout", f"{old_val} s", f"{new_val} s", False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)

@@ -687,7 +687,7 @@ ENABLE_PER_ACQUISITION_LOG = False
 
 # Memory profiling - when enabled, shows real-time RAM usage in status bar during acquisition
 # and logs periodic memory snapshots to help diagnose memory issues
-ENABLE_MEMORY_PROFILING = False
+ENABLE_MEMORY_PROFILING = True
 
 # Simulated disk I/O for development (RAM/speed optimization)
 # When enabled, images are encoded to memory buffers but NOT saved to disk
@@ -699,7 +699,7 @@ SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realist
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
 ACQUISITION_THROTTLING_ENABLED = True
 ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs in flight before throttling
-ACQUISITION_MAX_PENDING_MB = 500.0  # Max pending MB before throttling
+ACQUISITION_MAX_PENDING_MB = 2000.0  # Max pending MB before throttling
 ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Max wait time when throttled
 
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
