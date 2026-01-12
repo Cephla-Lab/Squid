@@ -972,6 +972,15 @@ class MultiPointController:
             self._memory_monitor.stop()
             self._memory_monitor = None
 
+        # Forcefully terminate any remaining job runner processes
+        if self.multiPointWorker is not None:
+            job_runners = getattr(self.multiPointWorker, "_job_runners", [])
+            for job_class, job_runner in job_runners:
+                if job_runner is not None and job_runner.is_alive():
+                    self.log.info(f"Terminating {job_class.__name__} job runner")
+                    job_runner.terminate()
+                    job_runner.join(timeout=1.0)
+
         # Clear worker reference
         self.multiPointWorker = None
         self.thread = None
