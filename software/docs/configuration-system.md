@@ -9,10 +9,10 @@ The configuration system uses a hierarchical structure that separates concerns:
 ```
 software/
 ├── machine_configs/                    # Hardware-specific (per machine)
-│   ├── illumination_channel_config.yaml   # Illumination channels (required)
+│   ├── illumination_channel_config.yaml   # Illumination channels
 │   ├── confocal_config.yaml              # Optional: confocal settings
-│   ├── camera_mappings.yaml              # Optional: multi-camera bindings
-│   └── intensity_calibrations/           # Optional: power calibration CSVs
+│   ├── camera_mappings.yaml              # Camera-hardware bindings
+│   └── intensity_calibrations/           # Power calibration CSVs
 │
 └── user_profiles/                      # User preferences (per profile)
     └── {profile_name}/
@@ -113,7 +113,7 @@ Only create this file if the system has a confocal unit. Its presence indicates 
 ```yaml
 version: 1
 
-# Filter wheel slot mappings (wheel_id -> slot -> filter_name)
+# Filter wheel slot mappings
 filter_wheel_mappings:
   1:  # Filter wheel ID
     1: "Empty"
@@ -135,15 +135,13 @@ objective_specific_properties:
 
 | Field | Description |
 |-------|-------------|
-| `filter_wheel_mappings` | Nested dict: wheel ID → slot number → filter name |
-| `public_properties` | Properties available in `general.yaml` |
-| `objective_specific_properties` | Properties only in objective-specific files |
+| `filter_wheel_mappings` | Wheel ID → slot → filter name |
+| `public_properties` | Settings in `general.yaml` |
+| `objective_specific_properties` | Settings in objective files |
 
-> **Note**: The `confocal_config.yaml.example` file in `machine_configs/` uses a simplified format for reference. When creating your actual config, use the structure shown above which matches the Pydantic model.
+### camera_mappings.yaml
 
-### camera_mappings.yaml (Optional)
-
-Maps camera selections to hardware bindings (dichroic positions, filter wheels). This file is optional and typically only needed for advanced multi-camera setups.
+Maps camera selections to hardware bindings (dichroic positions, filter wheels).
 
 ```yaml
 version: 1

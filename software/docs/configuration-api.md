@@ -437,7 +437,7 @@ generated = ensure_default_configs(
 )
 
 # Check for legacy configs that need migration
-if has_legacy_configs_to_migrate("my_profile", base_path=Path("software/")):
+if has_legacy_configs_to_migrate("my_profile"):
     print("Run migration script first")
 
 # Generate configs programmatically
@@ -455,18 +455,16 @@ general, objectives = generate_default_configs(
 
 ### In Widgets (Qt)
 
-Use `LiveController.get_channels(objective)` for UI access:
+Use `LiveController.get_channels()` for UI access:
 
 ```python
 class MyWidget(QWidget):
-    def __init__(self, liveController, objectiveStore):
+    def __init__(self, liveController):
         self.liveController = liveController
-        self.objectiveStore = objectiveStore
 
     def update_channels(self):
-        # Gets merged channels for current objective with confocal mode applied
-        objective = self.objectiveStore.current_objective
-        channels = self.liveController.get_channels(objective)
+        # Gets merged channels for current objective and confocal mode
+        channels = self.liveController.get_channels()
 
         for channel in channels:
             self.add_channel_button(channel.name, channel.display_color)
