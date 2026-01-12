@@ -327,6 +327,7 @@ class HighContentScreeningGui(QMainWindow):
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
+        self.alignmentWidget: Optional[widgets.AlignmentWidget] = None
         self.imageDisplayWindow: Optional[ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
@@ -488,6 +489,9 @@ class HighContentScreeningGui(QMainWindow):
                 wellSelectionWidget=self.wellSelectionWidget,
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
+
+            # Create alignment widget for sample registration (uses napari viewer)
+            self._setup_alignment_widget()
         else:
             if self._feature_flags.is_enabled("ENABLE_TRACKING"):
                 self.imageDisplayWindow = ImageDisplayWindow(
@@ -1105,11 +1109,17 @@ class HighContentScreeningGui(QMainWindow):
 
     @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
-        """Switch to live tab when main camera goes live."""
-        if getattr(event, "camera", "main") != "main" or not event.is_live:
+        """Switch to live tab when main camera goes live and enable alignment widget."""
+        if getattr(event, "camera", "main") != "main":
             return
-        if hasattr(self, "imageDisplayTabs"):
+        if hasattr(self, "imageDisplayTabs") and event.is_live:
             self.imageDisplayTabs.setCurrentIndex(0)
+        # Enable/disable alignment widget based on live state
+        if self.alignmentWidget is not None:
+            if event.is_live:
+                self.alignmentWidget.enable()
+            else:
+                self.alignmentWidget.disable()
 
     @handles(AcquisitionCoordinates)
     def _on_acquisition_coordinates(self, event: AcquisitionCoordinates) -> None:
@@ -1268,6 +1278,85 @@ class HighContentScreeningGui(QMainWindow):
                 self._log.warning(f"Cannot restore pixel format '{cached_settings.pixel_format}': {e}")
             except Exception as e:
                 self._log.error(f"Error restoring camera pixel format: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Alignment Widget Setup
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _setup_alignment_widget(self) -> None:
+        """Setup the alignment widget for sample registration with previous acquisitions.
+
+        Only created when using napari for live view.
+        """
+        if self.napariLiveWidget is None:
+            return
+
+        try:
+            napari_viewer = self.napariLiveWidget.viewer
+            if napari_viewer is None:
+                self._log.warning("Napari viewer not available for alignment widget")
+                return
+
+            self.alignmentWidget = widgets.AlignmentWidget(napari_viewer)
+
+            # Connect signals
+            self.alignmentWidget.signal_move_to_position.connect(self._alignment_move_to)
+            self.alignmentWidget.signal_request_current_position.connect(
+                self._alignment_provide_position
+            )
+            self.alignmentWidget.signal_offset_set.connect(
+                lambda x, y: self._log.info(f"Alignment offset set: ({x:.4f}, {y:.4f}) mm")
+            )
+            self.alignmentWidget.signal_offset_cleared.connect(
+                lambda: self._log.info("Alignment offset cleared")
+            )
+
+            # Add alignment widget to napari viewer as a dock widget
+            napari_viewer.window.add_dock_widget(
+                self.alignmentWidget,
+                name="Alignment",
+                area="left",
+            )
+
+            # Set alignment widget on multipoint controller
+            multipoint = getattr(self._controllers, "multipoint", None) if self._controllers else None
+            if multipoint is not None:
+                multipoint.set_alignment_widget(self.alignmentWidget)
+            else:
+                self._log.debug("MultiPoint controller not available for alignment widget")
+
+            self._log.info("Alignment widget created and connected")
+        except Exception:
+            self._log.exception("Failed to setup alignment widget")
+            self.alignmentWidget = None
+
+    def _alignment_move_to(self, x_mm: float, y_mm: float) -> None:
+        """Handle alignment widget request to move stage to position."""
+        try:
+            stage_service = self._services.get("stage") if self._services else None
+            if stage_service is not None:
+                stage_service.move_x_to(x_mm)
+                stage_service.move_y_to(y_mm)
+                stage_service.wait_for_idle()
+                self._log.debug(f"Alignment: moved to ({x_mm:.4f}, {y_mm:.4f})")
+            else:
+                self._log.warning("Stage service not available for alignment move")
+        except Exception:
+            self._log.exception("Error during alignment move")
+
+    def _alignment_provide_position(self) -> None:
+        """Provide current stage position to alignment widget."""
+        try:
+            stage_service = self._services.get("stage") if self._services else None
+            if stage_service is not None and self.alignmentWidget is not None:
+                x_mm = stage_service.x_mm
+                y_mm = stage_service.y_mm
+                self.alignmentWidget.set_current_position(x_mm, y_mm)
+                self._log.debug(f"Alignment: provided position ({x_mm:.4f}, {y_mm:.4f})")
+            else:
+                self._log.warning("Stage service or alignment widget not available")
+        except Exception:
+            self._log.exception("Error providing alignment position")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not getattr(self, "_skip_close_confirmation", False):

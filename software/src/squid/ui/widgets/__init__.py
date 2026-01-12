@@ -32,6 +32,7 @@ __all__ = [
     "PiezoWidget",
     "NavigationWidget",
     "AutoFocusWidget",
+    "AlignmentWidget",
     # acquisition
     "FlexibleMultiPointWidget",
     "WellplateMultiPointWidget",
@@ -46,6 +47,7 @@ __all__ = [
     "WaveformDisplay",
     "PlotWidget",
     "SurfacePlotWidget",
+    "NDViewerTab",
     # hardware
     "LaserAutofocusSettingWidget",
     "SpinningDiskConfocalWidget",
@@ -104,6 +106,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     "PiezoWidget": ("squid.ui.widgets.stage", "PiezoWidget"),
     "NavigationWidget": ("squid.ui.widgets.stage", "NavigationWidget"),
     "AutoFocusWidget": ("squid.ui.widgets.stage", "AutoFocusWidget"),
+    "AlignmentWidget": ("squid.ui.widgets.stage", "AlignmentWidget"),
     # acquisition
     "FlexibleMultiPointWidget": ("squid.ui.widgets.acquisition", "FlexibleMultiPointWidget"),
     "WellplateMultiPointWidget": ("squid.ui.widgets.acquisition", "WellplateMultiPointWidget"),
@@ -118,6 +121,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     "WaveformDisplay": ("squid.ui.widgets.display", "WaveformDisplay"),
     "PlotWidget": ("squid.ui.widgets.display", "PlotWidget"),
     "SurfacePlotWidget": ("squid.ui.widgets.display", "SurfacePlotWidget"),
+    "NDViewerTab": ("squid.ui.widgets.display", "NDViewerTab"),
     # hardware
     "LaserAutofocusSettingWidget": ("squid.ui.widgets.hardware", "LaserAutofocusSettingWidget"),
     "SpinningDiskConfocalWidget": ("squid.ui.widgets.hardware", "SpinningDiskConfocalWidget"),

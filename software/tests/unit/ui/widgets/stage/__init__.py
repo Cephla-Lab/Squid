@@ -1,0 +1,1 @@
+# Stage widget tests package

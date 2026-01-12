@@ -118,6 +118,7 @@ class MultiPointWorker:
         fluidics_service: Optional["FluidicsService"] = None,
         nl5_service: Optional["NL5Service"] = None,
         stream_handler: Optional[object] = None,
+        alignment_widget: Optional[object] = None,
     ):
         self._log = squid.core.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
@@ -151,6 +152,7 @@ class MultiPointWorker:
         self._filter_wheel_service = filter_wheel_service
         self._enable_channel_auto_filter_switching = enable_channel_auto_filter_switching
         self._focus_lock_controller = focus_lock_controller
+        self._alignment_widget = alignment_widget
 
         if self._camera_service is None or self._stage_service is None or self._peripheral_service is None:
             raise ValueError(
@@ -961,9 +963,15 @@ class MultiPointWorker:
         self, coordinate_mm: Tuple[float, ...], region_id: str, fov: int
     ) -> None:
         """Move to a coordinate using PositionController."""
-        self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm: float = coordinate_mm[0]
         y_mm: float = coordinate_mm[1]
+
+        # Apply alignment offset if available
+        if self._alignment_widget is not None and getattr(self._alignment_widget, "has_offset", False):
+            x_mm, y_mm = self._alignment_widget.apply_offset(x_mm, y_mm)
+            self._log.info(f"moving to ({x_mm:.4f}, {y_mm:.4f}) [alignment offset applied]")
+        else:
+            self._log.info(f"moving to coordinate {coordinate_mm}")
 
         # Use PositionController for X/Y movement with stabilization
         self._position_controller.move_to_coordinate(x_mm=x_mm, y_mm=y_mm)
@@ -982,10 +990,10 @@ class MultiPointWorker:
             z_mm: float = coordinate_mm[2]
             self._position_controller.move_to_z(z_mm)
 
-        # Register FOV position via ProgressTracker
+        # Register FOV position via ProgressTracker (use actual moved-to position)
         fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
         self._progress_tracker.register_fov(
-            x_mm=x_mm,
+            x_mm=x_mm,  # This is the offset-adjusted position if offset was applied
             y_mm=y_mm,
             fov_width_mm=fov_width_mm,
             fov_height_mm=fov_height_mm,

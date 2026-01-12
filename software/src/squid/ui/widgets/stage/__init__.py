@@ -9,4 +9,14 @@ __all__ = [
     "PiezoWidget",
     "NavigationWidget",
     "AutoFocusWidget",
+    "AlignmentWidget",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy import AlignmentWidget to avoid napari import at module load."""
+    if name == "AlignmentWidget":
+        from squid.ui.widgets.stage.alignment_widget import AlignmentWidget as _AlignmentWidget
+
+        return _AlignmentWidget
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

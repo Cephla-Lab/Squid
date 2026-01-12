@@ -169,6 +169,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._filter_wheel_service = filter_wheel_service
         self._mode_gate = mode_gate
         self._stream_handler = stream_handler
+        self._alignment_widget: Optional[object] = None
 
         if self._stage_service is None or self._camera_service is None or self._peripheral_service is None:
             raise ValueError(
@@ -274,6 +275,14 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             AcquisitionControllerState.RUNNING,
             AcquisitionControllerState.ABORTING,
         )
+
+    def set_alignment_widget(self, widget: Optional[object]) -> None:
+        """Set the alignment widget for offset application during acquisition.
+
+        Args:
+            widget: AlignmentWidget instance with has_offset and apply_offset methods
+        """
+        self._alignment_widget = widget
 
     def update_config(self, **updates: Any) -> None:
         """Update acquisition configuration and apply runtime updates if possible."""
@@ -1015,6 +1024,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 stream_handler=self._stream_handler,
                 focus_lock_controller=self._focus_lock_controller,
                 dependencies=dependencies,
+                alignment_widget=self._alignment_widget,
             )
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
