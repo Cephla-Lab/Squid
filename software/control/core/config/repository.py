@@ -586,26 +586,26 @@ class ConfigRepository:
             if general_config is None:
                 logger.warning("No general config to create objective config from")
                 return False
-            # Create objective config from general config
+            # Create objective config from general config (v1.1 schema)
             obj_config = ObjectiveChannelConfig(
-                version=1,
+                version=1.1,
                 channels=[
                     AcquisitionChannel(
                         name=ch.name,
-                        illumination_settings=IlluminationSettings(
-                            illumination_channels=None,
-                            intensity=dict(ch.illumination_settings.intensity),
-                            z_offset_um=0.0,
+                        display_color=ch.display_color,
+                        camera=ch.camera,
+                        camera_settings=CameraSettings(
+                            exposure_time_ms=ch.camera_settings.exposure_time_ms,
+                            gain_mode=ch.camera_settings.gain_mode,
+                            pixel_format=ch.camera_settings.pixel_format,
                         ),
-                        camera_settings={
-                            cam_id: CameraSettings(
-                                display_color=cam.display_color,
-                                exposure_time_ms=cam.exposure_time_ms,
-                                gain_mode=cam.gain_mode,
-                                pixel_format=cam.pixel_format,
-                            )
-                            for cam_id, cam in ch.camera_settings.items()
-                        },
+                        filter_wheel=None,  # Objective files don't include filter wheel
+                        filter_position=None,
+                        illumination_settings=IlluminationSettings(
+                            illumination_channels=None,  # From general.yaml
+                            intensity=dict(ch.illumination_settings.intensity),
+                            z_offset_um=0.0,  # Placeholder, from general.yaml
+                        ),
                     )
                     for ch in general_config.channels
                 ],
@@ -619,9 +619,8 @@ class ConfigRepository:
 
         # Update the field
         if location == "camera":
-            for cam_settings in acq_channel.camera_settings.values():
-                setattr(cam_settings, field, value)
-                break
+            # v1.1: camera_settings is a single object, not a Dict
+            setattr(acq_channel.camera_settings, field, value)
         elif location == "illumination":
             for key in acq_channel.illumination_settings.intensity:
                 acq_channel.illumination_settings.intensity[key] = value

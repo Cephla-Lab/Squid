@@ -317,7 +317,19 @@ class IlluminationSettings(BaseModel):
 
 
 class ConfocalSettings(BaseModel):
-    """Confocal-specific settings."""
+    """Confocal-specific settings (part of confocal unit hardware).
+
+    Note: Confocal filter wheel is separate from body filter wheel.
+    Body filter wheel uses channel-level filter_wheel/filter_position fields.
+    """
+    # Confocal unit filter wheel (separate from body filter wheel)
+    confocal_filter_wheel: Optional[str] = Field(
+        None, description="Confocal filter wheel name (references filter_wheels.yaml)"
+    )
+    confocal_filter_position: Optional[int] = Field(
+        None, ge=1, description="Position in confocal filter wheel"
+    )
+    # Iris settings
     illumination_iris: Optional[float] = Field(None, description="Illumination iris setting")
     emission_iris: Optional[float] = Field(None, description="Emission iris setting")
 
@@ -693,6 +705,10 @@ def migrate_channel_config_v1_to_v1_1(
 
 1. **Filter wheel association**: Should filter wheels be associated with specific cameras in the registry?
 
-2. **Confocal integration**: How should confocal settings interact with the new filter wheel system?
+2. **Confocal integration**: ✅ **RESOLVED**
+   - Confocal filter wheel is **separate** from body filter wheel
+   - Body filter wheel: `AcquisitionChannel.filter_wheel` / `filter_position`
+   - Confocal filter wheel: `ConfocalSettings.confocal_filter_wheel` / `confocal_filter_position`
+   - Rationale: Physical distinction - confocal filter wheels are built into the confocal unit
 
 3. **Migration UX**: Should migration be automatic on load, or require explicit user action?

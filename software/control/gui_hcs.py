@@ -460,6 +460,12 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
 
+        # Channel Configuration (user-facing acquisition channels)
+        acq_channel_config_action = QAction("Channel Configuration...", self)
+        acq_channel_config_action.setMenuRole(QAction.NoRole)
+        acq_channel_config_action.triggered.connect(self.openAcquisitionChannelConfigEditor)
+        settings_menu.addAction(acq_channel_config_action)
+
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
 
@@ -1609,6 +1615,12 @@ class HighContentScreeningGui(QMainWindow):
 
         config_repo = ConfigRepository()
         dialog = widgets.IlluminationChannelConfiguratorDialog(config_repo, self)
+        dialog.signal_channels_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openAcquisitionChannelConfigEditor(self):
+        """Open the acquisition channel configurator dialog for editing user profiles."""
+        dialog = widgets.AcquisitionChannelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

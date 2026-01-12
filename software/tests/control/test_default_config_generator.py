@@ -56,7 +56,7 @@ class TestDefaultConfigGenerator:
         assert color == DEFAULT_LED_COLOR
 
     def test_create_general_acquisition_channel(self):
-        """Test creating acquisition channel for general.yaml."""
+        """Test creating acquisition channel for general.yaml (v1.1 schema)."""
         ill_channel = IlluminationChannel(
             name="Fluorescence 488nm",
             type=IlluminationType.EPI_ILLUMINATION,
@@ -68,14 +68,14 @@ class TestDefaultConfigGenerator:
         acq_channel = create_general_acquisition_channel(ill_channel, include_confocal=False)
 
         assert acq_channel.name == "Fluorescence 488nm"  # Preserves illumination channel name
-        assert "1" in acq_channel.camera_settings
-        assert acq_channel.camera_settings["1"].exposure_time_ms == DEFAULT_EXPOSURE_TIME_MS
-        assert acq_channel.camera_settings["1"].gain_mode == DEFAULT_GAIN_MODE
+        # v1.1: camera_settings is a single object, not a Dict
+        assert acq_channel.camera_settings.exposure_time_ms == DEFAULT_EXPOSURE_TIME_MS
+        assert acq_channel.camera_settings.gain_mode == DEFAULT_GAIN_MODE
         assert acq_channel.illumination_settings.intensity["Fluorescence 488nm"] == DEFAULT_ILLUMINATION_INTENSITY
         assert acq_channel.confocal_settings is None
 
     def test_create_objective_acquisition_channel_with_confocal(self):
-        """Test creating objective acquisition channel with confocal settings."""
+        """Test creating objective acquisition channel with confocal settings (v1.1 schema)."""
         ill_channel = IlluminationChannel(
             name="Fluorescence 488nm",
             type=IlluminationType.EPI_ILLUMINATION,
@@ -87,8 +87,9 @@ class TestDefaultConfigGenerator:
         acq_channel = create_objective_acquisition_channel(ill_channel, include_confocal=True)
 
         assert acq_channel.confocal_settings is not None
-        assert acq_channel.confocal_settings.filter_wheel_id == 1
-        assert acq_channel.confocal_settings.emission_filter_wheel_position == 1
+        # v1.1: filter wheel fields renamed to confocal_filter_wheel/confocal_filter_position
+        assert acq_channel.confocal_settings.confocal_filter_wheel is None  # No default wheel name
+        assert acq_channel.confocal_settings.confocal_filter_position is None  # Objective-specific
         assert acq_channel.confocal_override is not None
 
     def test_create_objective_acquisition_channel_led_intensity(self):
@@ -143,7 +144,7 @@ class TestDefaultConfigGenerator:
 
         general_config = generate_general_config(illumination_config)
 
-        assert general_config.version == 1
+        assert general_config.version == 1.1  # v1.1 schema
         assert len(general_config.channels) == 2
 
     def test_generate_default_configs(self):
@@ -167,11 +168,11 @@ class TestDefaultConfigGenerator:
             objectives=["10x", "20x"],
         )
 
-        assert general.version == 1
+        assert general.version == 1.1  # v1.1 schema
         assert len(general.channels) == 1
         assert "10x" in objectives
         assert "20x" in objectives
-        assert objectives["10x"].version == 1
+        assert objectives["10x"].version == 1.1  # v1.1 schema
 
     def test_generate_default_configs_with_confocal(self):
         """Test generating default configs with confocal."""

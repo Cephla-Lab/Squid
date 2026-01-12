@@ -50,41 +50,42 @@ channels:
 """
     )
 
-    # Create a general config
+    # Create a general config (v1.1 schema)
     general_yaml = default_profile / "channel_configs" / "general.yaml"
     general_yaml.write_text(
         """
-version: 1
+version: 1.1
+channel_groups: []
 channels:
   - name: "Fluorescence 488nm"
+    display_color: "#00FF00"
+    camera: null
     illumination_settings:
       illumination_channels: ["488nm"]
       intensity:
         "488nm": 50.0
       z_offset_um: 0.0
     camera_settings:
-      camera_1:
-        display_color: "#00FF00"
-        exposure_time_ms: 100.0
-        gain_mode: 0.0
+      exposure_time_ms: 100.0
+      gain_mode: 0.0
 """
     )
 
-    # Create an objective config
+    # Create an objective config (v1.1 schema)
     objective_yaml = default_profile / "channel_configs" / "20x.yaml"
     objective_yaml.write_text(
         """
-version: 1
+version: 1.1
 channels:
   - name: "Fluorescence 488nm"
+    display_color: "#00FF00"
+    camera: null
     illumination_settings:
       intensity:
         "488nm": 75.0
     camera_settings:
-      camera_1:
-        display_color: "#00FF00"
-        exposure_time_ms: 50.0
-        gain_mode: 1.0
+      exposure_time_ms: 50.0
+      gain_mode: 1.0
 """
     )
 
@@ -193,11 +194,11 @@ class TestConfigRepositoryProfileConfigs:
     """Tests for profile config loading and saving."""
 
     def test_get_general_config(self, repo_with_profile):
-        """Test loading general config."""
+        """Test loading general config (v1.1 schema)."""
         config = repo_with_profile.get_general_config()
 
         assert config is not None
-        assert config.version == 1
+        assert config.version == 1.1  # v1.1 schema
         assert len(config.channels) == 1
         assert config.channels[0].name == "Fluorescence 488nm"
 
@@ -222,23 +223,22 @@ class TestConfigRepositoryProfileConfigs:
         assert config is None
 
     def test_save_general_config(self, repo_with_profile, temp_dir):
-        """Test saving general config updates cache."""
+        """Test saving general config updates cache (v1.1 schema)."""
         new_config = GeneralChannelConfig(
-            version=2,
+            version=1.1,
             channels=[
                 AcquisitionChannel(
                     name="Test Channel",
+                    display_color="#FF0000",
+                    camera="camera_1",
                     illumination_settings=IlluminationSettings(
                         illumination_channels=["488nm"],
                         intensity={"488nm": 100.0},
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#FF0000",
-                            exposure_time_ms=200.0,
-                            gain_mode=0.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=200.0,
+                        gain_mode=0.0,
+                    ),
                 )
             ],
         )
@@ -252,25 +252,24 @@ class TestConfigRepositoryProfileConfigs:
         # Check cache was updated
         cached = repo_with_profile.get_general_config()
         assert cached is new_config
-        assert cached.version == 2
+        assert cached.version == 1.1
 
     def test_save_objective_config(self, repo_with_profile, temp_dir):
-        """Test saving objective config."""
+        """Test saving objective config (v1.1 schema)."""
         new_config = ObjectiveChannelConfig(
-            version=1,
+            version=1.1,
             channels=[
                 AcquisitionChannel(
                     name="Test",
+                    display_color="#0000FF",
+                    camera="camera_1",
                     illumination_settings=IlluminationSettings(
                         intensity={"488nm": 30.0},
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#0000FF",
-                            exposure_time_ms=25.0,
-                            gain_mode=2.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=25.0,
+                        gain_mode=2.0,
+                    ),
                 )
             ],
         )
@@ -296,28 +295,29 @@ class TestConfigRepositoryCacheManagement:
     """Tests for cache management."""
 
     def test_set_profile_clears_profile_cache(self, temp_dir):
-        """Test that switching profiles clears the profile cache."""
+        """Test that switching profiles clears the profile cache (v1.1 schema)."""
         user_profiles = temp_dir / "user_profiles"
 
-        # Create two profiles with different configs
+        # Create two profiles with different configs (v1.1 schema)
         for profile in ["profile1", "profile2"]:
             profile_path = user_profiles / profile / "channel_configs"
             profile_path.mkdir(parents=True)
             (user_profiles / profile / "laser_af_configs").mkdir()
             (profile_path / "general.yaml").write_text(
                 f"""
-version: 1
+version: 1.1
+channel_groups: []
 channels:
   - name: "Channel from {profile}"
+    display_color: "#00FF00"
+    camera: null
     illumination_settings:
       illumination_channels: ["488nm"]
       intensity:
         "488nm": 50.0
     camera_settings:
-      camera_1:
-        display_color: "#00FF00"
-        exposure_time_ms: 100.0
-        gain_mode: 0.0
+      exposure_time_ms: 100.0
+      gain_mode: 0.0
 """
             )
 

@@ -477,18 +477,18 @@ class TestValidateChannelGroup:
     """Tests for validate_channel_group function."""
 
     def _make_channel(self, name: str, camera: str = "Main Camera") -> AcquisitionChannel:
-        """Helper to create a test channel."""
+        """Helper to create a test channel (v1.1 schema)."""
         return AcquisitionChannel(
             name=name,
+            display_color="#FFFFFF",
+            camera=camera,
             illumination_settings=IlluminationSettings(
                 intensity={"Test": 20.0},
             ),
-            camera_settings={
-                camera: CameraSettings(
-                    exposure_time_ms=20.0,
-                    gain_mode=0.0,
-                )
-            },
+            camera_settings=CameraSettings(
+                exposure_time_ms=20.0,
+                gain_mode=0.0,
+            ),
         )
 
     def test_valid_sequential_group(self):
@@ -600,10 +600,15 @@ class TestMigrationUtilities:
         assert migrated["version"] == 1.1
 
     def test_migrate_channel_config_preserves_existing_data(self):
-        """Test migration preserves existing channels."""
+        """Test migration preserves existing channel data while adding v1.1 fields."""
         config = {"version": 1, "channels": [{"name": "Test", "value": 42}]}
         migrated = migrate_channel_config_v1_to_v1_1(config)
-        assert migrated["channels"] == [{"name": "Test", "value": 42}]
+        # Original data is preserved
+        assert migrated["channels"][0]["name"] == "Test"
+        assert migrated["channels"][0]["value"] == 42
+        # v1.1 fields are added
+        assert "display_color" in migrated["channels"][0]
+        assert "camera_settings" in migrated["channels"][0]
 
     def test_migrate_channel_config_idempotent(self):
         """Test migrating already-migrated config is no-op."""
@@ -643,6 +648,7 @@ class TestAcquisitionChannelConstraints:
             AcquisitionChannel(
                 name="",
                 illumination_settings=IlluminationSettings(intensity={"Test": 20.0}),
+                camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=0.0),
             )
         assert "String should have at least 1 character" in str(exc_info.value)
 
