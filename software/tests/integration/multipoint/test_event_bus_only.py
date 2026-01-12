@@ -116,6 +116,7 @@ def test_start_requires_base_path(backend_ctx: BackendContext, channels):
 def test_set_acquisition_parameters_command_applies_fields(bus_only_sim: AcquisitionSimulator):
     """Verify SetAcquisitionParametersCommand applies extended fields."""
     focus_map = {"z_offsets": [0.0, 0.5, 1.0]}
+    # Note: gen_focus_map and use_manual_focus_map cannot both be True (validation rule)
     bus_only_sim.publish(
         SetAcquisitionParametersCommand(
             n_x=3,
@@ -123,7 +124,7 @@ def test_set_acquisition_parameters_command_applies_fields(bus_only_sim: Acquisi
             delta_x_mm=0.5,
             delta_y_mm=0.6,
             z_range=(1.0, 2.0),
-            gen_focus_map=True,
+            gen_focus_map=False,
             use_manual_focus_map=True,
             focus_map=focus_map,
             use_fluidics=True,
@@ -138,7 +139,7 @@ def test_set_acquisition_parameters_command_applies_fields(bus_only_sim: Acquisi
     assert controller.deltaX == 0.5
     assert controller.deltaY == 0.6
     assert controller.z_range == (1.0, 2.0)
-    assert controller.gen_focus_map is True
+    assert controller.gen_focus_map is False
     assert controller.use_manual_focus_map is True
     assert controller.focus_map == focus_map
     assert controller.use_fluidics is True

@@ -92,6 +92,10 @@ class ChannelConfigurationManager:
         }
         self.active_config_type = ConfigType.CHANNEL if not _def.ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
 
+        # Cache for ChannelMode objects: {(objective, channel_name): ChannelMode}
+        # This ensures consistent object identity when widgets modify configs
+        self._mode_cache: Dict[tuple, ChannelMode] = {}
+
         # Load global channel definitions if configurations_path is provided
         if configurations_path:
             self._load_channel_definitions()
@@ -327,10 +331,20 @@ class ChannelConfigurationManager:
         Uses effective settings based on current confocal_mode - if confocal mode is active
         and the channel has confocal overrides, those values are used instead of base settings.
 
+        Returns cached ChannelMode if available to ensure consistent object identity.
+        This allows widgets to modify the object and have changes visible to other code
+        that queries for the same configuration.
+
         Note: Settings are lazily initialized with defaults when not found. These in-memory
         defaults are NOT persisted to disk until the user explicitly changes a value.
         This avoids creating files for channels the user hasn't configured yet.
         """
+        cache_key = (objective, channel_def.name, self.confocal_mode)
+
+        # Return cached mode if available
+        if cache_key in self._mode_cache:
+            return self._mode_cache[cache_key]
+
         base_settings = self.objective_settings.get(objective, {}).get(channel_def.name, ObjectiveChannelSettings())
 
         # Get effective settings based on current mode (applies confocal overrides if applicable)
@@ -350,7 +364,7 @@ class ChannelConfigurationManager:
         # disabling unused channels rather than renaming (documented in channel_configuration.md).
         channel_id = hashlib.sha256(channel_def.name.encode()).hexdigest()[:16]
 
-        return ChannelMode(
+        mode = ChannelMode(
             id=channel_id,
             name=channel_def.name,
             exposure_time=settings.exposure_time,
@@ -362,6 +376,10 @@ class ChannelConfigurationManager:
             emission_filter_position=channel_def.emission_filter_position,
             selected=False,
         )
+
+        # Cache the mode for future access
+        self._mode_cache[cache_key] = mode
+        return mode
 
     def get_configurations(self, objective: str, enabled_only: bool = False) -> List[ChannelMode]:
         """Get channel modes for current active type."""
@@ -493,7 +511,11 @@ class ChannelConfigurationManager:
                       for compatibility with hardware APIs that return int.
         """
         # Convert to bool for type safety (XLight returns int 0/1, Dragonfly returns bool)
-        self.confocal_mode = bool(confocal)
+        new_mode = bool(confocal)
+        if new_mode != self.confocal_mode:
+            # Clear cache when confocal mode changes since settings may differ
+            self._mode_cache.clear()
+        self.confocal_mode = new_mode
         self.active_config_type = ConfigType.CONFOCAL if self.confocal_mode else ConfigType.WIDEFIELD
         self._log.info(f"Imaging mode set to: {'confocal' if self.confocal_mode else 'widefield'}")
 
