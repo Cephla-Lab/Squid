@@ -62,23 +62,19 @@ class LaserAFConfig(BaseModel):
     correlation_threshold: float = Field(
         default_factory=lambda: _def.CORRELATION_THRESHOLD, description="Correlation threshold"
     )
-    y_window: int = Field(
-        default_factory=lambda: _def.LASER_AF_Y_WINDOW, description="Y window half-height for detection"
+    # Connected component spot detection parameters
+    cc_threshold: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_THRESHOLD), description="Intensity threshold for binarization"
     )
-    x_window: int = Field(
-        default_factory=lambda: _def.LASER_AF_X_WINDOW, description="X window half-width for detection"
+    cc_min_area: int = Field(
+        default_factory=lambda: _def.LASER_AF_CC_MIN_AREA, description="Minimum component area in pixels"
     )
-    min_peak_width: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_WIDTH), description="Minimum peak width"
+    cc_max_area: int = Field(
+        default_factory=lambda: _def.LASER_AF_CC_MAX_AREA, description="Maximum component area in pixels"
     )
-    min_peak_distance: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_DISTANCE), description="Minimum distance between peaks"
-    )
-    min_peak_prominence: float = Field(
-        default_factory=lambda: _def.LASER_AF_MIN_PEAK_PROMINENCE, description="Minimum peak prominence"
-    )
-    spot_spacing: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_SPOT_SPACING), description="Expected spot spacing"
+    cc_row_tolerance: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_ROW_TOLERANCE),
+        description="Allowed deviation from expected row",
     )
     filter_sigma: Optional[float] = Field(
         default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None to disable)"
@@ -105,18 +101,6 @@ class LaserAFConfig(BaseModel):
     reference_image: Optional[str] = Field(None, description="Base64-encoded reference image data")
     reference_image_shape: Optional[List[int]] = Field(None, description="Shape of reference image array")
     reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
-    reference_intensity_profile: Optional[str] = Field(
-        None, description="Base64-encoded 1D intensity profile for CC check"
-    )
-    reference_intensity_profile_dtype: Optional[str] = Field(
-        None, description="Data type of intensity profile array"
-    )
-    reference_intensity_min: Optional[float] = Field(
-        None, description="Min sum value used for profile normalization"
-    )
-    reference_intensity_max: Optional[float] = Field(
-        None, description="Max sum value used for profile normalization"
-    )
 
     model_config = {"extra": "forbid"}
 
@@ -148,35 +132,3 @@ class LaserAFConfig(BaseModel):
         self.reference_image_shape = list(image.shape)
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
-
-    @property
-    def reference_intensity_profile_array(self) -> Optional[np.ndarray]:
-        """Convert stored base64 intensity profile data back to numpy array."""
-        if self.reference_intensity_profile is None:
-            return None
-        data = base64.b64decode(self.reference_intensity_profile.encode("utf-8"))
-        return np.frombuffer(data, dtype=np.dtype(self.reference_intensity_profile_dtype))
-
-    def set_reference_intensity_profile(
-        self,
-        profile: Optional[np.ndarray],
-        intensity_min: Optional[float] = None,
-        intensity_max: Optional[float] = None,
-    ) -> None:
-        """Convert numpy array to base64 encoded string or clear if None.
-
-        Args:
-            profile: The intensity profile array, or None to clear
-            intensity_min: Min intensity value used for normalization
-            intensity_max: Max intensity value used for normalization
-        """
-        if profile is None:
-            self.reference_intensity_profile = None
-            self.reference_intensity_profile_dtype = None
-            self.reference_intensity_min = None
-            self.reference_intensity_max = None
-            return
-        self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
-        self.reference_intensity_profile_dtype = str(profile.dtype)
-        self.reference_intensity_min = intensity_min
-        self.reference_intensity_max = intensity_max
