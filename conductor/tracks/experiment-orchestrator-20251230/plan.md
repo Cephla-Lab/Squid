@@ -6,6 +6,74 @@ This plan assumes the multipoint refactoring from `conductor/tracks/multipoint-r
 
 ---
 
+## Updates (2025-01-12)
+
+### BaseController Integration
+
+The recent `BaseController`/`BaseManager` refactoring changes how the OrchestratorController should handle event subscriptions. Instead of manual subscription:
+
+```python
+# OLD - Don't use
+def _subscribe_to_commands(self):
+    self._event_bus.subscribe(LoadProtocolCommand, self._on_load_protocol)
+```
+
+Use `@handles` decorators with automatic subscription:
+
+```python
+# NEW - Use this pattern
+from squid.core.events import handles
+
+class OrchestratorController(StateMachine[OrchestratorState]):
+    @handles(LoadProtocolCommand)
+    def _on_load_protocol(self, cmd: LoadProtocolCommand) -> None:
+        ...
+```
+
+StateMachine now calls `auto_subscribe()` in `__init__`, so handlers are automatically registered.
+
+### Pre-flight Validation (NEW)
+
+Add two-stage validation:
+
+1. **Schema validation** (in `loader.py`) - Syntax, required fields, data types
+2. **Pre-flight validation** (before RUNNING state):
+   - All referenced channels exist in ChannelConfigurationManager
+   - Positions file exists and is readable
+   - Fluidics service available if fluidics steps defined
+   - Sufficient disk space for estimated acquisition
+   - Hardware connected (camera, stage, etc.)
+   - Objective matches protocol specification
+
+### Phase 0: Missing Dependencies (NEW)
+
+Before orchestrator implementation, extract these from MultiPointController:
+
+- **ExperimentManager** (`multipoint/experiment_manager.py`) - Folder creation, metadata
+- **AcquisitionPlanner** (`multipoint/acquisition_planner.py`) - Estimation, validation
+- **ImageCaptureExecutor** - Enhance `multipoint/image_capture.py`
+
+### UI Updates
+
+Add **InterventionDialog** for user decisions during errors:
+- Triggered by `UserInterventionRequired` event
+- Shows reason and options (Retry, Skip, Abort)
+- Blocks orchestrator until user responds
+
+### Revised Timeline
+
+| Phase | Description | Effort |
+|-------|-------------|--------|
+| 0 | ExperimentManager + AcquisitionPlanner extraction | 2-3 days |
+| 1 | Protocol schema + loader + pre-flight | 2 days |
+| 2 | CancelToken + State management | 1.5 days |
+| 3 | OrchestratorController + Executors | 3 days |
+| 4 | Performance Mode UI + Intervention dialog | 2-3 days |
+| 5 | Integration + Tests | 2 days |
+| **Total** | | **~13 days** |
+
+---
+
 ## Phase 1: Protocol Definition System
 
 ### 1.1 Protocol Schema (YAML)
@@ -1575,6 +1643,8 @@ class ImagingExecutor:
 
 ## Phase 4: Performance Mode UI
 
+**Integration:** Performance Mode is a **tab in `imageDisplayTabs`** (alongside "Live View", "Mosaic View", etc.) - not a separate window. Users can switch between tabs as needed during experiments.
+
 ### 4.1 Performance Mode Widget
 
 **File:** `software/src/squid/ui/widgets/orchestrator/performance_mode.py`
@@ -1596,13 +1666,14 @@ from squid.backend.controllers.orchestrator.state import (
 
 class PerformanceModeWidget(QWidget):
     """
-    Simplified operator interface for monitoring orchestrated experiments.
+    Tab widget for monitoring orchestrated experiments.
+
+    Added to imageDisplayTabs alongside Live View, Mosaic View, etc.
 
     Shows:
     - Overall progress dashboard
     - Protocol timeline with current position
-    - Intervention controls
-    - Live image preview (optional)
+    - Intervention controls (Start/Pause/Resume/Stop, Skip)
     """
 
     def __init__(self, event_bus: EventBus, parent=None):
@@ -2117,8 +2188,16 @@ def _create_orchestrator(self):
 **File:** `software/src/squid/ui/main_window.py` (additions)
 
 ```python
-# Add menu item or button to open Performance Mode
+# Add Performance Mode as a tab in imageDisplayTabs (in setupImageDisplayTabs)
+def setupImageDisplayTabs(self):
+    # ... existing tabs ...
 
+    # Add Performance Mode tab
+    from squid.ui.widgets.orchestrator.performance_mode import PerformanceModeWidget
+    self.performanceModeWidget = PerformanceModeWidget(self._event_bus)
+    self.imageDisplayTabs.addTab(self.performanceModeWidget, "Performance Mode")
+
+# Add Experiment menu
 def _create_orchestrator_menu(self):
     orchestrator_menu = self.menuBar().addMenu("Experiment")
 
@@ -2128,20 +2207,19 @@ def _create_orchestrator_menu(self):
 
     orchestrator_menu.addSeparator()
 
-    performance_action = QAction("Performance Mode", self)
-    performance_action.triggered.connect(self._show_performance_mode)
-    orchestrator_menu.addAction(performance_action)
+    # Switch to Performance Mode tab
+    goto_action = QAction("Go to Performance Mode", self)
+    goto_action.triggered.connect(self._goto_performance_mode)
+    orchestrator_menu.addAction(goto_action)
 
 def _show_protocol_loader(self):
     from squid.ui.widgets.orchestrator.protocol_loader import ProtocolLoaderDialog
     dialog = ProtocolLoaderDialog(self._event_bus, self)
     dialog.exec_()
 
-def _show_performance_mode(self):
-    from squid.ui.widgets.orchestrator.performance_mode import PerformanceModeWidget
-    # Could be a dockable widget or separate window
-    self._performance_widget = PerformanceModeWidget(self._event_bus)
-    self._performance_widget.show()
+def _goto_performance_mode(self):
+    # Switch to the Performance Mode tab
+    self.imageDisplayTabs.setCurrentWidget(self.performanceModeWidget)
 ```
 
 ### 5.3 Test Structure
