@@ -319,7 +319,8 @@ def convert_xml_channels_to_acquisition_config(
         )
 
         # filter_wheel/filter_position only in general.yaml (v1.1 format)
-        filter_wheel = "Emission" if include_illumination_channels else None
+        # filter_wheel="auto" means single wheel (auto-selected), None means no wheel
+        filter_wheel = "auto" if include_illumination_channels else None
         filter_position = xml_ch["emission_filter_position"] if include_illumination_channels else None
 
         # Create confocal settings if needed (v1.1 format)
@@ -549,7 +550,7 @@ def migrate_profile(
                     exposure_time_ms=xml_ch["exposure_time_ms"],
                     gain_mode=xml_ch["analog_gain"],
                 ),
-                filter_wheel="Emission",
+                filter_wheel="auto",  # Single wheel, auto-selected
                 filter_position=xml_ch["emission_filter_position"],
             )
             general_channels.append(acq_channel)

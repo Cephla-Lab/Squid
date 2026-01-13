@@ -15029,15 +15029,19 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         if filter_wheel_enabled and not wheel_names:
             wheel_names = ["Emission"]
         wheel_combo.addItems(wheel_names)
-        if channel.filter_wheel and channel.filter_wheel in wheel_names:
-            wheel_combo.setCurrentText(channel.filter_wheel)
+        # Handle "auto" sentinel: display the actual wheel name in UI
+        effective_wheel = channel.filter_wheel
+        if effective_wheel == "auto" and self._auto_wheel:
+            effective_wheel = self._auto_wheel
+        if effective_wheel and effective_wheel in wheel_names:
+            wheel_combo.setCurrentText(effective_wheel)
         wheel_combo.currentTextChanged.connect(lambda text, r=row: self._on_wheel_changed(r, text))
         self.table.setCellWidget(row, self.COL_FILTER_WHEEL, wheel_combo)
 
         # Filter position dropdown
         position_combo = QComboBox()
-        # Determine which wheel to use for positions
-        wheel_for_positions = channel.filter_wheel
+        # Determine which wheel to use for positions (resolve "auto" to actual wheel)
+        wheel_for_positions = effective_wheel
         if self._auto_wheel and not wheel_for_positions:
             wheel_for_positions = self._auto_wheel
         self._populate_filter_positions(position_combo, wheel_for_positions, channel.filter_position)
@@ -15260,11 +15264,16 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
                 camera_text = camera_combo.currentText()
                 channel.camera = camera_text if camera_text != "(None)" else None
 
-            # Filter wheel
+            # Filter wheel: None = no wheel, "auto" = single wheel (auto-selected)
             wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
             if wheel_combo and isinstance(wheel_combo, QComboBox):
                 wheel_text = wheel_combo.currentText()
-                channel.filter_wheel = wheel_text if wheel_text != "(None)" else self._auto_wheel
+                if wheel_text == "(None)":
+                    channel.filter_wheel = None  # No filter wheel
+                elif wheel_text == self._auto_wheel:
+                    channel.filter_wheel = "auto"  # Single wheel, auto-selected
+                else:
+                    channel.filter_wheel = wheel_text  # Explicit wheel selection
 
             # Filter position
             position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
@@ -15417,7 +15426,8 @@ class AddAcquisitionChannelDialog(QDialog):
             camera = camera_text if camera_text != "(None)" else None
 
         # Filter wheel and position
-        filter_wheel = self._auto_wheel
+        # Use "auto" for single-wheel systems, None for no wheel, else explicit name
+        filter_wheel = "auto" if self._auto_wheel else None
         filter_position = None
         if self.wheel_combo:
             wheel_text = self.wheel_combo.currentText()
