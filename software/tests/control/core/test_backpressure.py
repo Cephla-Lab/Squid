@@ -30,17 +30,17 @@ def make_test_capture_info(region_id: str = "A1", fov: int = 0, z_index: int = 0
         capture_time=time.time(),
         configuration=AcquisitionChannel(
             name="BF LED matrix full",
+            display_color="#FFFFFF",
+            camera="main",
             illumination_settings=IlluminationSettings(
                 illumination_channels=["LED"],
                 intensity={"LED": 50.0},
                 z_offset_um=0.0,
             ),
-            camera_settings={
-                "main": CameraSettings(
-                    exposure_time_ms=10.0,
-                    gain_mode=1.0,
-                )
-            },
+            camera_settings=CameraSettings(
+                exposure_time_ms=10.0,
+                gain_mode=1.0,
+            ),
         ),
         save_directory="/tmp/test",
         file_id=f"test_{fov}_{z_index}",

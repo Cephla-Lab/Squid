@@ -24,18 +24,17 @@ def make_test_capture_info() -> CaptureInfo:
         capture_time=time.time(),
         configuration=AcquisitionChannel(
             name="BF LED matrix full",
+            display_color="#FFFFFF",
+            camera="camera_1",
             illumination_settings=IlluminationSettings(
                 illumination_channels=["BF LED matrix full"],
                 intensity={"BF LED matrix full": 50.0},
                 z_offset_um=0.0,
             ),
-            camera_settings={
-                "camera_1": CameraSettings(
-                    display_color="#FFFFFF",
-                    exposure_time_ms=10.0,
-                    gain_mode=1.0,
-                )
-            },
+            camera_settings=CameraSettings(
+                exposure_time_ms=10.0,
+                gain_mode=1.0,
+            ),
         ),
         save_directory="/tmp/test",
         file_id="test_0_0",

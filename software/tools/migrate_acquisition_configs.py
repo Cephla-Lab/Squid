@@ -301,14 +301,14 @@ def convert_xml_channels_to_acquisition_config(
             illumination_config=illumination_config,
         )
 
-        # Create camera settings
-        camera_settings = {
-            "1": CameraSettings(
-                display_color=xml_ch["display_color"],
-                exposure_time_ms=xml_ch["exposure_time_ms"],
-                gain_mode=xml_ch["analog_gain"],
-            )
-        }
+        # Create camera settings (v1.1: single object, no display_color)
+        camera_settings = CameraSettings(
+            exposure_time_ms=xml_ch["exposure_time_ms"],
+            gain_mode=xml_ch["analog_gain"],
+        )
+
+        # Display color is now at channel level in v1.1
+        display_color = xml_ch["display_color"]
 
         # Create illumination settings
         # illumination_channels and z_offset_um only in general.yaml, not in objective files
@@ -318,19 +318,18 @@ def convert_xml_channels_to_acquisition_config(
             z_offset_um=xml_ch["z_offset"] if include_illumination_channels else 0.0,
         )
 
-        # emission_filter_wheel_position only in general.yaml
-        emission_filter_wheel_position = (
-            {1: xml_ch["emission_filter_position"]} if include_illumination_channels else None
-        )
+        # filter_wheel/filter_position only in general.yaml (v1.1 format)
+        filter_wheel = "Emission" if include_illumination_channels else None
+        filter_position = xml_ch["emission_filter_position"] if include_illumination_channels else None
 
-        # Create confocal settings if needed
+        # Create confocal settings if needed (v1.1 format)
         confocal_settings = None
         confocal_override = None
 
         if include_confocal:
             confocal_settings = ConfocalSettings(
-                filter_wheel_id=1,
-                emission_filter_wheel_position=xml_ch["emission_filter_position"],
+                confocal_filter_wheel="Confocal",
+                confocal_filter_position=xml_ch["emission_filter_position"],
             )
 
             # Check for confocal override
@@ -342,30 +341,30 @@ def convert_xml_channels_to_acquisition_config(
                         intensity={ill_name: conf_ch["illumination_intensity"]},
                         z_offset_um=conf_ch["z_offset"],
                     ),
-                    camera_settings={
-                        "1": CameraSettings(
-                            display_color=conf_ch["display_color"],
-                            exposure_time_ms=conf_ch["exposure_time_ms"],
-                            gain_mode=conf_ch["analog_gain"],
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=conf_ch["exposure_time_ms"],
+                        gain_mode=conf_ch["analog_gain"],
+                    ),
                     confocal_settings=ConfocalSettings(
-                        filter_wheel_id=1,
-                        emission_filter_wheel_position=conf_ch["emission_filter_position"],
+                        confocal_filter_wheel="Confocal",
+                        confocal_filter_position=conf_ch["emission_filter_position"],
                     ),
                 )
 
+        # Create acquisition channel (v1.1 format)
         acq_channel = AcquisitionChannel(
             name=name,
+            display_color=display_color,
             illumination_settings=illumination_settings,
             camera_settings=camera_settings,
-            emission_filter_wheel_position=emission_filter_wheel_position,
+            filter_wheel=filter_wheel,
+            filter_position=filter_position,
             confocal_settings=confocal_settings,
             confocal_override=confocal_override,
         )
         acq_channels.append(acq_channel)
 
-    return ObjectiveChannelConfig(version=1, channels=acq_channels)
+    return ObjectiveChannelConfig(version=1.1, channels=acq_channels)
 
 
 def convert_laser_af_json_to_yaml(json_path: Path) -> Optional[LaserAFConfig]:
@@ -537,26 +536,25 @@ def migrate_profile(
             )
 
             # general.yaml has illumination_channels, display_color, z_offset_um
-            # emission_filter_wheel_position with filter_wheel_id=1 (only one filter wheel in legacy)
+            # filter_wheel/filter_position (v1.1 format)
             acq_channel = AcquisitionChannel(
                 name=name,
+                display_color=xml_ch["display_color"],
                 illumination_settings=IlluminationSettings(
                     illumination_channels=[ill_name],
                     intensity={ill_name: xml_ch["illumination_intensity"]},
                     z_offset_um=xml_ch["z_offset"],
                 ),
-                camera_settings={
-                    "1": CameraSettings(
-                        display_color=xml_ch["display_color"],
-                        exposure_time_ms=xml_ch["exposure_time_ms"],
-                        gain_mode=xml_ch["analog_gain"],
-                    )
-                },
-                emission_filter_wheel_position={1: xml_ch["emission_filter_position"]},
+                camera_settings=CameraSettings(
+                    exposure_time_ms=xml_ch["exposure_time_ms"],
+                    gain_mode=xml_ch["analog_gain"],
+                ),
+                filter_wheel="Emission",
+                filter_position=xml_ch["emission_filter_position"],
             )
             general_channels.append(acq_channel)
 
-        general_config = GeneralChannelConfig(version=1, channels=general_channels)
+        general_config = GeneralChannelConfig(version=1.1, channels=general_channels, channel_groups=[])
         save_yaml(target_path / "channel_configs" / "general.yaml", general_config, dry_run)
 
     return True

@@ -39,18 +39,17 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
     channels = [
         AcquisitionChannel(
             name=name,
+            display_color="#FFFFFF",
+            camera="camera_1",
             illumination_settings=IlluminationSettings(
                 illumination_channels=[name],
                 intensity={name: 5.0},
                 z_offset_um=0.0,
             ),
-            camera_settings={
-                "camera_1": CameraSettings(
-                    display_color="#FFFFFF",
-                    exposure_time_ms=10.0,
-                    gain_mode=1.0,
-                )
-            },
+            camera_settings=CameraSettings(
+                exposure_time_ms=10.0,
+                gain_mode=1.0,
+            ),
         )
         for name in ["DAPI", "GFP"]
     ]
@@ -206,18 +205,17 @@ def test_job_runner_injects_acquisition_info() -> None:
 
     channel = AcquisitionChannel(
         name="DAPI",
+        display_color="#FFFFFF",
+        camera="camera_1",
         illumination_settings=IlluminationSettings(
             illumination_channels=["DAPI"],
             intensity={"DAPI": 5.0},
             z_offset_um=0.0,
         ),
-        camera_settings={
-            "camera_1": CameraSettings(
-                display_color="#FFFFFF",
-                exposure_time_ms=10.0,
-                gain_mode=1.0,
-            )
-        },
+        camera_settings=CameraSettings(
+            exposure_time_ms=10.0,
+            gain_mode=1.0,
+        ),
     )
 
     capture_info = CaptureInfo(
