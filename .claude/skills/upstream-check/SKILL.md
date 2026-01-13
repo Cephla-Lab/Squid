@@ -30,16 +30,17 @@ Analyzes commits on `upstream/master` not in the current branch and helps port t
 
 | File | When Created | Purpose |
 |------|--------------|---------|
-| `plans/<suite-name>.md` | BEFORE implementation | Plan with checklists |
+| `plans/YYYY-MM-DD-<slug>.md` | BEFORE implementation | Plan with checklists |
 | `commits/<number>-<our-hash>-<slug>.md` | AFTER implementation | Detailed record |
 | `upstream-status.yaml` | Auto-updated | Machine-parseable status |
 
 ### Naming Conventions (Machine-Readable)
 
-**Plan files:** `plans/<suite-name>.md`
-- Use lowercase, hyphenated names
+**Plan files:** `plans/YYYY-MM-DD-<slug>.md`
+- Date is when work started (or skip date for skipped plans)
+- Use lowercase, hyphenated slug
 - Group related upstream commits under one plan
-- Examples: `backpressure-suite.md`, `simulation-suite.md`, `config-refactor.md`
+- Examples: `2026-01-09-backpressure.md`, `2026-01-09-simulation.md`, `2026-01-12-config-skip.md`
 
 **Commit tracking files:** `commits/<NN>-<our-hash>-<slug>.md`
 - `<NN>`: Sequential number (2 digits, zero-padded)
@@ -58,8 +59,8 @@ conductor/tracks/upstream-port/
 ├── README.md                    # Overview and current status
 ├── upstream-status.yaml         # Canonical status (auto-maintained)
 ├── plans/                       # Implementation plans with checklists
-│   ├── backpressure-suite.md
-│   ├── simulation-suite.md
+│   ├── 2026-01-09-backpressure.md
+│   ├── 2026-01-09-simulation.md
 │   └── ...
 └── commits/                     # Per-commit tracking files
     ├── 18-f5130544-backpressure-suite.md
@@ -71,7 +72,7 @@ conductor/tracks/upstream-port/
 
 ## Plan File Format (REQUIRED)
 
-Create in `plans/<suite-name>.md` BEFORE starting implementation:
+Create in `plans/YYYY-MM-DD-<slug>.md` BEFORE starting implementation:
 
 ```markdown
 # <Suite Name>
@@ -187,7 +188,7 @@ Group commits into logical suites (e.g., "backpressure", "acquisition-features")
 
 ### Step 3: Create Plan File
 
-**BEFORE any implementation**, create `plans/<suite-name>.md` with:
+**BEFORE any implementation**, create `plans/YYYY-MM-DD-<slug>.md` with:
 - All upstream commits listed with checkboxes
 - Implementation phases with checkboxes
 - Test requirements
