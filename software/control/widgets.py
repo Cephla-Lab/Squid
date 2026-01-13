@@ -14769,6 +14769,60 @@ class BackpressureMonitorWidget(QWidget):
         super().closeEvent(event)
 
 
+def _populate_filter_positions_for_combo(
+    combo: QComboBox,
+    wheel_name: str,
+    auto_wheel: Optional[str],
+    config_repo,
+    current_position: Optional[int] = None,
+) -> None:
+    """Populate filter position dropdown based on selected wheel.
+
+    Shared helper for AcquisitionChannelConfiguratorDialog and AddAcquisitionChannelDialog.
+
+    Args:
+        combo: The QComboBox to populate
+        wheel_name: Selected wheel name (may be "(None)" or empty)
+        auto_wheel: Auto-assigned wheel name for single-wheel systems
+        config_repo: ConfigRepository instance to look up wheel registry
+        current_position: Position to select after populating (None for first position)
+    """
+    combo.clear()
+
+    # Determine effective wheel (could be auto-assigned)
+    effective_wheel = wheel_name if wheel_name and wheel_name != "(None)" else auto_wheel
+
+    if not effective_wheel:
+        # No wheel available - show disabled N/A
+        combo.addItem("N/A", None)
+        combo.setEnabled(False)
+        return
+
+    # Wheel exists - populate positions WITHOUT N/A
+    combo.setEnabled(True)
+
+    registry = config_repo.get_filter_wheel_registry()
+    wheel = registry.get_wheel_by_name(effective_wheel) if registry else None
+
+    if wheel:
+        # Use positions from registry
+        for pos, filter_name in sorted(wheel.positions.items()):
+            combo.addItem(f"{pos}: {filter_name}", pos)
+    else:
+        # No registry - use default positions 1-8
+        for pos in range(1, 9):
+            combo.addItem(f"Position {pos}", pos)
+
+    # Select current position, or default to first (Position 1)
+    if current_position is not None:
+        for i in range(combo.count()):
+            if combo.itemData(i) == current_position:
+                combo.setCurrentIndex(i)
+                return
+    # Default to first position (index 0)
+    combo.setCurrentIndex(0)
+
+
 class AcquisitionChannelConfiguratorDialog(QDialog):
     """Dialog for editing acquisition channel configurations.
 
@@ -15005,40 +15059,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _populate_filter_positions(self, combo: QComboBox, wheel_name: str, current_position: Optional[int]):
         """Populate filter position dropdown based on selected wheel."""
-        combo.clear()
-
-        # Determine effective wheel (could be auto-assigned)
-        effective_wheel = wheel_name if wheel_name and wheel_name != "(None)" else self._auto_wheel
-
-        if not effective_wheel:
-            # No wheel available - show disabled N/A
-            combo.addItem("N/A", None)
-            combo.setEnabled(False)
-            return
-
-        # Wheel exists - populate positions WITHOUT N/A
-        combo.setEnabled(True)
-
-        registry = self.config_repo.get_filter_wheel_registry()
-        wheel = registry.get_wheel_by_name(effective_wheel) if registry else None
-
-        if wheel:
-            # Use positions from registry
-            for pos, filter_name in sorted(wheel.positions.items()):
-                combo.addItem(f"{pos}: {filter_name}", pos)
-        else:
-            # No registry - use default positions 1-8
-            for pos in range(1, 9):
-                combo.addItem(f"Position {pos}", pos)
-
-        # Select current position, or default to first (Position 1)
-        if current_position is not None:
-            for i in range(combo.count()):
-                if combo.itemData(i) == current_position:
-                    combo.setCurrentIndex(i)
-                    return
-        # Default to first position (index 0)
-        combo.setCurrentIndex(0)
+        _populate_filter_positions_for_combo(combo, wheel_name, self._auto_wheel, self.config_repo, current_position)
 
     def _pick_color(self, row: int):
         """Open color picker for a row."""
@@ -15101,64 +15122,13 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _save_changes(self):
         """Save changes to general.yaml."""
-        from control.models import (
-            AcquisitionChannel,
-            CameraSettings,
-            IlluminationSettings,
-        )
+        # Sync table data to config object
+        self._sync_table_to_config()
 
-        # Build channel list from table
-        for row in range(self.table.rowCount()):
-            channel = self.general_config.channels[row]
-
-            # Enabled
-            checkbox_widget = self.table.cellWidget(row, self.COL_ENABLED)
-            if checkbox_widget:
-                checkbox = checkbox_widget.findChild(QCheckBox)
-                if checkbox:
-                    channel.enabled = checkbox.isChecked()
-
-            # Name
-            name_item = self.table.item(row, self.COL_NAME)
-            if name_item:
-                channel.name = name_item.text().strip()
-
-            # Illumination
-            illum_combo = self.table.cellWidget(row, self.COL_ILLUMINATION)
-            if illum_combo and isinstance(illum_combo, QComboBox):
-                illum_name = illum_combo.currentText()
-                channel.illumination_settings.illumination_channels = [illum_name]
-                # Update intensity dict to match
-                old_intensities = channel.illumination_settings.intensity
-                if illum_name not in old_intensities:
-                    # Get first intensity value or default to 20.0
-                    default_intensity = next(iter(old_intensities.values()), 20.0) if old_intensities else 20.0
-                    channel.illumination_settings.intensity = {illum_name: default_intensity}
-
-            # Camera
-            camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
-            if camera_combo and isinstance(camera_combo, QComboBox):
-                camera_text = camera_combo.currentText()
-                channel.camera = camera_text if camera_text != "(None)" else None
-
-            # Filter wheel
-            wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
-            if wheel_combo and isinstance(wheel_combo, QComboBox):
-                wheel_text = wheel_combo.currentText()
-                channel.filter_wheel = wheel_text if wheel_text != "(None)" else self._auto_wheel
-
-            # Filter position
-            position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
-            if position_combo and isinstance(position_combo, QComboBox):
-                position = position_combo.currentData()
-                if position is None and channel.filter_wheel is not None:
-                    self._log.warning(f"Channel '{channel.name}' has filter wheel but no position selected")
-                channel.filter_position = position
-
-            # Display color (from button property)
-            color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
-            if color_btn:
-                channel.display_color = color_btn.property("color") or "#FFFFFF"
+        # Validate filter wheel/position consistency
+        for channel in self.general_config.channels:
+            if channel.filter_wheel is not None and channel.filter_position is None:
+                self._log.warning(f"Channel '{channel.name}' has filter wheel but no position selected")
 
         # Save to YAML file
         try:
@@ -15403,35 +15373,7 @@ class AddAcquisitionChannelDialog(QDialog):
         """Populate filter position dropdown based on selected wheel."""
         if self.position_combo is None:
             return
-
-        self.position_combo.clear()
-
-        # Determine effective wheel (could be auto-assigned)
-        effective_wheel = wheel_name if wheel_name and wheel_name != "(None)" else self._auto_wheel
-
-        if not effective_wheel:
-            # No wheel available - show disabled N/A
-            self.position_combo.addItem("N/A", None)
-            self.position_combo.setEnabled(False)
-            return
-
-        # Wheel exists - populate positions WITHOUT N/A
-        self.position_combo.setEnabled(True)
-
-        registry = self.config_repo.get_filter_wheel_registry()
-        wheel = registry.get_wheel_by_name(effective_wheel) if registry else None
-
-        if wheel:
-            # Use positions from registry
-            for pos, filter_name in sorted(wheel.positions.items()):
-                self.position_combo.addItem(f"{pos}: {filter_name}", pos)
-        else:
-            # No registry - use default positions 1-8
-            for pos in range(1, 9):
-                self.position_combo.addItem(f"Position {pos}", pos)
-
-        # Default to first position (Position 1)
-        self.position_combo.setCurrentIndex(0)
+        _populate_filter_positions_for_combo(self.position_combo, wheel_name, self._auto_wheel, self.config_repo)
 
     def _pick_color(self):
         """Open color picker."""

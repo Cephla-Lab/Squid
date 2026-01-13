@@ -21,6 +21,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _map_wheel_id_to_name(
+    wheel_id: Any,
+    filter_wheel_registry: Optional["FilterWheelRegistryConfig"],
+    context: str = "",
+) -> Optional[str]:
+    """Map a wheel ID to its name using the registry.
+
+    Args:
+        wheel_id: The wheel ID to map (may be int, str, or other)
+        filter_wheel_registry: Registry to look up wheel names
+        context: Description for warning messages (e.g., "confocal", "override confocal")
+
+    Returns:
+        Wheel name if found, None otherwise
+    """
+    if wheel_id is None or filter_wheel_registry is None:
+        return None
+
+    try:
+        wheel_id_int = int(wheel_id)
+        wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
+        return wheel.name if wheel else None
+    except (ValueError, TypeError):
+        context_msg = f" ({context})" if context else ""
+        logger.warning(f"Invalid wheel_id '{wheel_id}'{context_msg} during migration, skipping wheel mapping")
+        return None
+
+
 def get_config_version(config: Dict[str, Any]) -> float:
     """
     Get the version number from a configuration dictionary.
@@ -155,17 +183,7 @@ def _migrate_channel_v1_to_v1_1(
     if old_filter and isinstance(old_filter, dict):
         wheel_id = next(iter(old_filter.keys()), 1)
         position = old_filter.get(wheel_id, 1)
-        # Map ID to name if registry available
-        if filter_wheel_registry:
-            try:
-                wheel_id_int = int(wheel_id)
-                wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
-                channel["filter_wheel"] = wheel.name if wheel else None
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid wheel_id '{wheel_id}' during migration, skipping wheel mapping")
-                channel["filter_wheel"] = None
-        else:
-            channel["filter_wheel"] = None  # Requires manual mapping
+        channel["filter_wheel"] = _map_wheel_id_to_name(wheel_id, filter_wheel_registry, "channel")
         channel["filter_position"] = position
     else:
         channel["filter_wheel"] = None
@@ -176,54 +194,50 @@ def _migrate_channel_v1_to_v1_1(
     if confocal and isinstance(confocal, dict):
         old_wheel_id = confocal.pop("filter_wheel_id", None)
         old_position = confocal.pop("emission_filter_wheel_position", None)
-        # Map ID to name if registry available
-        if old_wheel_id is not None and filter_wheel_registry:
-            try:
-                wheel_id_int = int(old_wheel_id)
-                wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
-                confocal["confocal_filter_wheel"] = wheel.name if wheel else None
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid confocal wheel_id '{old_wheel_id}' during migration")
-                confocal["confocal_filter_wheel"] = None
-        else:
-            confocal["confocal_filter_wheel"] = None
+        confocal["confocal_filter_wheel"] = _map_wheel_id_to_name(old_wheel_id, filter_wheel_registry, "confocal")
         confocal["confocal_filter_position"] = old_position
 
     # Migrate confocal_override if present
     confocal_override = channel.get("confocal_override")
     if confocal_override and isinstance(confocal_override, dict):
-        # Migrate override camera_settings
-        override_cam_settings = confocal_override.get("camera_settings")
-        if override_cam_settings and isinstance(override_cam_settings, dict):
-            # Check if it's a Dict[str, CameraSettings] or already a single object
-            first_key = next(iter(override_cam_settings.keys()), None)
-            if first_key and isinstance(override_cam_settings.get(first_key), dict):
-                # It's a Dict[str, CameraSettings] - flatten it
-                cam_override = override_cam_settings.get(first_key, {})
-                # Remove display_color if present (it's at channel level now)
-                cam_override.pop("display_color", None)
-                confocal_override["camera_settings"] = {
-                    "exposure_time_ms": cam_override.get("exposure_time_ms", 20.0),
-                    "gain_mode": cam_override.get("gain_mode", 10.0),
-                    "pixel_format": cam_override.get("pixel_format"),
-                }
+        _migrate_confocal_override_v1_to_v1_1(confocal_override, filter_wheel_registry)
 
-        # Migrate override confocal_settings
-        override_confocal = confocal_override.get("confocal_settings")
-        if override_confocal and isinstance(override_confocal, dict):
-            old_wheel_id = override_confocal.pop("filter_wheel_id", None)
-            old_position = override_confocal.pop("emission_filter_wheel_position", None)
-            if old_wheel_id is not None and filter_wheel_registry:
-                try:
-                    wheel_id_int = int(old_wheel_id)
-                    wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
-                    override_confocal["confocal_filter_wheel"] = wheel.name if wheel else None
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid override confocal wheel_id '{old_wheel_id}' during migration")
-                    override_confocal["confocal_filter_wheel"] = None
-            else:
-                override_confocal["confocal_filter_wheel"] = None
-            override_confocal["confocal_filter_position"] = old_position
+
+def _migrate_confocal_override_v1_to_v1_1(
+    confocal_override: Dict[str, Any],
+    filter_wheel_registry: Optional["FilterWheelRegistryConfig"],
+) -> None:
+    """Migrate confocal_override section from v1.0 to v1.1 schema (in-place).
+
+    Args:
+        confocal_override: Confocal override dictionary to migrate
+        filter_wheel_registry: Optional registry to map filter wheel IDs to names
+    """
+    # Migrate override camera_settings
+    override_cam_settings = confocal_override.get("camera_settings")
+    if override_cam_settings and isinstance(override_cam_settings, dict):
+        # Check if it's a Dict[str, CameraSettings] or already a single object
+        first_key = next(iter(override_cam_settings.keys()), None)
+        if first_key and isinstance(override_cam_settings.get(first_key), dict):
+            # It's a Dict[str, CameraSettings] - flatten it
+            cam_override = override_cam_settings.get(first_key, {})
+            # Remove display_color if present (it's at channel level now)
+            cam_override.pop("display_color", None)
+            confocal_override["camera_settings"] = {
+                "exposure_time_ms": cam_override.get("exposure_time_ms", 20.0),
+                "gain_mode": cam_override.get("gain_mode", 10.0),
+                "pixel_format": cam_override.get("pixel_format"),
+            }
+
+    # Migrate override confocal_settings
+    override_confocal = confocal_override.get("confocal_settings")
+    if override_confocal and isinstance(override_confocal, dict):
+        old_wheel_id = override_confocal.pop("filter_wheel_id", None)
+        old_position = override_confocal.pop("emission_filter_wheel_position", None)
+        override_confocal["confocal_filter_wheel"] = _map_wheel_id_to_name(
+            old_wheel_id, filter_wheel_registry, "override confocal"
+        )
+        override_confocal["confocal_filter_position"] = old_position
 
 
 def migrate_illumination_config_v1_to_v1_1(config: Dict[str, Any]) -> Dict[str, Any]:
