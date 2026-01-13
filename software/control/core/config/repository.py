@@ -149,7 +149,8 @@ class ConfigRepository:
             path.parent.mkdir(parents=True, exist_ok=True)
 
             # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
-            data = model.model_dump(exclude_none=False, mode="json")
+            # exclude_none=True omits optional fields when None (cleaner YAML files)
+            data = model.model_dump(exclude_none=True, mode="json")
 
             with open(path, "w") as f:
                 yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
