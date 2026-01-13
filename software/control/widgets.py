@@ -15465,3 +15465,156 @@ class AddAcquisitionChannelDialog(QDialog):
                 pixel_format=None,
             ),
         )
+
+
+class FilterWheelConfiguratorDialog(QDialog):
+    """Dialog for configuring filter wheel position names.
+
+    Edits machine_configs/filter_wheels.yaml to define filter wheels
+    and their position-to-name mappings.
+    """
+
+    signal_config_updated = Signal()
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.registry = None
+        self.setWindowTitle("Filter Wheel Configuration")
+        self.setMinimumSize(500, 400)
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instructions = QLabel(
+            "Configure filter wheel position names. Each position can have a descriptive name\n"
+            "(e.g., 'DAPI emission', 'GFP emission') that will appear in channel configuration."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Wheel selector (for systems with multiple wheels)
+        wheel_layout = QHBoxLayout()
+        wheel_layout.addWidget(QLabel("Filter Wheel:"))
+        self.wheel_combo = QComboBox()
+        self.wheel_combo.currentIndexChanged.connect(self._on_wheel_selected)
+        wheel_layout.addWidget(self.wheel_combo, 1)
+        layout.addLayout(wheel_layout)
+
+        # Positions table
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Position", "Filter Name"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table)
+
+        # Save/Cancel buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_config)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _load_config(self):
+        """Load filter wheel registry from config."""
+        from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition
+
+        self.registry = self.config_repo.get_filter_wheel_registry()
+
+        # If no registry exists, create a default one
+        if self.registry is None:
+            filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+            if filter_wheel_enabled:
+                # Create default "Emission" wheel with 8 positions
+                default_wheel = FilterWheelDefinition(
+                    name="Emission",
+                    id=1,
+                    positions={i: f"Position {i}" for i in range(1, 9)},
+                )
+                self.registry = FilterWheelRegistryConfig(filter_wheels=[default_wheel])
+            else:
+                self.registry = FilterWheelRegistryConfig(filter_wheels=[])
+
+        # Populate wheel combo
+        self.wheel_combo.clear()
+        for wheel in self.registry.filter_wheels:
+            self.wheel_combo.addItem(wheel.name, wheel)
+
+        # Select first wheel
+        if self.wheel_combo.count() > 0:
+            self.wheel_combo.setCurrentIndex(0)
+            self._on_wheel_selected(0)
+        else:
+            self.table.setRowCount(0)
+
+    def _on_wheel_selected(self, index):
+        """Load positions for selected wheel into table."""
+        self.table.setRowCount(0)
+
+        if index < 0:
+            return
+
+        wheel = self.wheel_combo.itemData(index)
+        if wheel is None:
+            return
+
+        # Populate table with positions
+        for pos in sorted(wheel.positions.keys()):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # Position number (read-only)
+            pos_item = QTableWidgetItem(str(pos))
+            pos_item.setFlags(pos_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, pos_item)
+
+            # Filter name (editable)
+            name_item = QTableWidgetItem(wheel.positions[pos])
+            self.table.setItem(row, 1, name_item)
+
+    def _save_config(self):
+        """Save filter wheel configuration to YAML file."""
+        import yaml
+
+        # Sync table data back to current wheel
+        index = self.wheel_combo.currentIndex()
+        if index >= 0:
+            wheel = self.wheel_combo.itemData(index)
+            if wheel:
+                wheel.positions.clear()
+                for row in range(self.table.rowCount()):
+                    pos_item = self.table.item(row, 0)
+                    name_item = self.table.item(row, 1)
+                    if pos_item and name_item:
+                        pos = int(pos_item.text())
+                        name = name_item.text().strip() or f"Position {pos}"
+                        wheel.positions[pos] = name
+
+        # Save to file
+        try:
+            config_path = self.config_repo.machine_configs_path / "filter_wheels.yaml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w") as f:
+                yaml.dump(self.registry.model_dump(), f, default_flow_style=False, sort_keys=False)
+
+            # Invalidate cache in config_repo
+            self.config_repo._machine_cache.pop("filter_wheel_registry", None)
+
+            self.signal_config_updated.emit()
+            QMessageBox.information(self, "Saved", "Filter wheel configuration saved.")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")

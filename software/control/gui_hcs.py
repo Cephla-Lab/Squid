@@ -474,6 +474,11 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
+        # Filter Wheel Configuration (in Advanced menu)
+        filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
+        filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
+        advanced_menu.addAction(filter_wheel_config_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -1628,6 +1633,12 @@ class HighContentScreeningGui(QMainWindow):
         """Open the advanced channel hardware mapping dialog"""
         dialog = widgets.AdvancedChannelMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openFilterWheelConfigEditor(self):
+        """Open the filter wheel configuration dialog"""
+        dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
     def _refresh_channel_lists(self):
