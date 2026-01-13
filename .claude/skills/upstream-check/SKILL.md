@@ -18,6 +18,8 @@ Analyzes commits on `upstream/master` not in the current branch and helps port t
 
 **All ports must be SEMANTIC** - understand what the upstream commit does, then reimplement it following arch_v2 patterns. Direct patches will not apply cleanly and will break the architecture.
 
+**Cutoff date: 2025-12-12** - Only commits on or after this date are tracked. Earlier commits are from before the arch_v2 divergence.
+
 ## Tracking System
 
 This skill maintains canonical tracking in:

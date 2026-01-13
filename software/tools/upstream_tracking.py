@@ -38,9 +38,9 @@ DEFAULT_TARGET_BRANCH = "HEAD"
 STALE_IN_PROGRESS_DAYS = 7
 
 # Cutoff date: commits before this date are from before the arch_v2 divergence
-# and should not be tracked. This is the date of the oldest commit that was
-# semantically ported to arch_v2.
-CUTOFF_DATE = "2025-12-13"
+# and should not be tracked. The oldest ported commit is from 2025-12-13, so we
+# use 2025-12-12 to ensure --since includes that date.
+CUTOFF_DATE = "2025-12-12"
 
 Status = Literal["ported", "skipped", "pending", "in-progress"]
 SkipReason = Literal["not-applicable", "superseded", "already-fixed", "deferred"]
