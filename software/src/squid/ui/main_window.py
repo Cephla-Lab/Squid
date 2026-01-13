@@ -662,6 +662,155 @@ class HighContentScreeningGui(QMainWindow):
         if RUN_FLUIDICS:
             self.imageDisplayTabs.addTab(self.fluidicsWidget, "Fluidics")
 
+        # Orchestrator tab for multi-round experiment automation
+        self._setup_orchestrator_tab()
+
+    def _setup_orchestrator_tab(self) -> None:
+        """Create and add the Orchestrator tab for multi-round experiment automation."""
+        # Only create if orchestrator controller is available
+        if self._controllers is None:
+            self.log.debug("Orchestrator tab not created: controllers is None")
+            return
+        if self._controllers.orchestrator is None:
+            self.log.info("Orchestrator tab not created: orchestrator controller not available")
+            return
+
+        from squid.ui.widgets.orchestrator.orchestrator_widget import (
+            OrchestratorControlPanel,
+            OrchestratorWorkflowTree,
+        )
+        from squid.ui.widgets.orchestrator.warning_panel import WarningPanel
+        from squid.ui.widgets.orchestrator.parameter_panel import ParameterInspectionPanel
+
+        if self._ui_event_bus is None:
+            self.log.warning("UIEventBus not available for OrchestratorWidget")
+            return
+
+        # Create the control panel (status, buttons, progress)
+        self.orchestratorControlPanel = OrchestratorControlPanel(
+            event_bus=self._ui_event_bus,
+            orchestrator=self._controllers.orchestrator,
+            parent=self,
+        )
+
+        # Create the workflow tree
+        self.orchestratorWorkflowTree = OrchestratorWorkflowTree(
+            event_bus=self._ui_event_bus,
+            parent=self,
+        )
+
+        # Create the warning panel
+        self.orchestratorWarningPanel = WarningPanel(
+            event_bus=self._ui_event_bus,
+            parent=self,
+        )
+
+        # Create the parameter inspection panel
+        self.orchestratorParameterPanel = ParameterInspectionPanel(
+            parent=self,
+        )
+
+        # Connect control panel to workflow tree
+        self.orchestratorControlPanel.protocol_loaded.connect(
+            self.orchestratorWorkflowTree.populate_from_protocol
+        )
+
+        # Connect workflow tree selection to parameter panel
+        self.orchestratorWorkflowTree.tree.itemClicked.connect(
+            self._on_workflow_item_clicked
+        )
+
+        # Connect warning panel navigation to workflow tree
+        self.orchestratorWarningPanel.navigate_to_fov.connect(
+            self._on_warning_navigate_to_fov
+        )
+
+        # Create docks
+        dock_workflow = dock.Dock("Workflow", autoOrientation=False)
+        dock_workflow.showTitleBar()
+        dock_workflow.addWidget(self.orchestratorWorkflowTree)
+        dock_workflow.setStretch(x=100, y=100)
+
+        dock_controls = dock.Dock("Controls", autoOrientation=False)
+        dock_controls.showTitleBar()
+        dock_controls.addWidget(self.orchestratorControlPanel)
+        dock_controls.setStretch(x=100, y=100)
+
+        dock_params = dock.Dock("Parameters", autoOrientation=False)
+        dock_params.showTitleBar()
+        dock_params.addWidget(self.orchestratorParameterPanel)
+        dock_params.setStretch(x=100, y=50)
+
+        dock_warnings = dock.Dock("Warnings", autoOrientation=False)
+        dock_warnings.showTitleBar()
+        dock_warnings.addWidget(self.orchestratorWarningPanel)
+        dock_warnings.setStretch(x=100, y=50)
+
+        # Create dock area and arrange docks
+        # Layout: Workflow (left) | Controls (top-right) / Parameters (mid-right) / Warnings (bottom-right)
+        orchestrator_dockArea = dock.DockArea()
+        orchestrator_dockArea.addDock(dock_workflow)
+        orchestrator_dockArea.addDock(dock_controls, "right", relativeTo=dock_workflow)
+        orchestrator_dockArea.addDock(dock_params, "bottom", relativeTo=dock_controls)
+        orchestrator_dockArea.addDock(dock_warnings, "bottom", relativeTo=dock_params)
+
+        self.imageDisplayTabs.addTab(orchestrator_dockArea, "Orchestrator")
+
+    def _on_workflow_item_clicked(self, item, column) -> None:
+        """Handle workflow tree item click to show parameters."""
+        _ = column  # Unused
+        if not hasattr(self, "orchestratorParameterPanel"):
+            return
+
+        # Get the item data to determine what type it is
+        item_data = item.data(0, Qt.UserRole)
+        if item_data is None:
+            return
+
+        if isinstance(item_data, dict):
+            item_type = item_data.get("type", "")
+            if item_type == "round":
+                # Round item
+                self.orchestratorParameterPanel.show_round(
+                    item_data["round_index"],
+                    item_data["round_data"],
+                )
+            elif item_type == "operation":
+                # Operation item
+                self.orchestratorParameterPanel.show_operation(
+                    item_data.get("round_data", {}),
+                    item_data["operation_data"],
+                    item_data.get("op_index", 0),
+                )
+            elif item_type == "fov":
+                # FOV item
+                self.orchestratorParameterPanel.show_fov_summary(
+                    fov_id=item_data["fov_id"],
+                    region_id=item_data.get("region_id", ""),
+                    fov_index=item_data.get("fov_index", 0),
+                    x_mm=item_data.get("x_mm", 0.0),
+                    y_mm=item_data.get("y_mm", 0.0),
+                    status=item_data.get("status", "PENDING"),
+                    z_mm=item_data.get("z_mm", 0.0),
+                )
+
+    def _on_warning_navigate_to_fov(self, fov_id: str) -> None:
+        """Handle warning panel navigation request."""
+        if hasattr(self, "orchestratorWorkflowTree"):
+            # Try to find and select the FOV in the tree
+            tree = self.orchestratorWorkflowTree.tree
+            for i in range(tree.topLevelItemCount()):
+                round_item = tree.topLevelItem(i)
+                for j in range(round_item.childCount()):
+                    op_item = round_item.child(j)
+                    for k in range(op_item.childCount()):
+                        fov_item = op_item.child(k)
+                        item_data = fov_item.data(0, Qt.UserRole)
+                        if isinstance(item_data, dict) and item_data.get("fov_id") == fov_id:
+                            tree.setCurrentItem(fov_item)
+                            tree.scrollToItem(fov_item)
+                            return
+
     def setupRecordTabWidget(self) -> None:
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(

@@ -54,6 +54,15 @@ from squid.core.events import (
     AcquisitionRegionProgress,
     AcquisitionWorkerFinished,
     AcquisitionWorkerProgress,
+    AcquisitionPaused,
+    AcquisitionResumed,
+)
+from squid.backend.controllers.multipoint.events import (
+    JumpToFovCommand,
+    SkipFovCommand,
+    RequeueFovCommand,
+    DeferFovCommand,
+    ReorderFovsCommand,
 )
 
 if TYPE_CHECKING:
@@ -156,6 +165,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         )
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.thread: Optional[Thread] = None
+        self._current_round_index: int = 0
 
         # Store services and event bus
         self._camera_service = camera_service
@@ -844,14 +854,20 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Save coordinates to CSV in top level folder
             try:
                 coordinates_df: pd.DataFrame = pd.DataFrame(
-                    columns=["region", "x (mm)", "y (mm)", "z (mm)"]
+                    columns=["region", "fov", "fov_id", "x (mm)", "y (mm)", "z (mm)"]
                 )
                 for (
                     region_id,
                     coords_list,
                 ) in scan_position_information.scan_region_fov_coords_mm.items():
-                    for coord in coords_list:
-                        row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
+                    for index, coord in enumerate(coords_list):
+                        row = {
+                            "region": region_id,
+                            "fov": index,
+                            "fov_id": f"{region_id}_{index:04d}",
+                            "x (mm)": coord[0],
+                            "y (mm)": coord[1],
+                        }
                         # Add z coordinate if available
                         if len(coord) > 2:
                             row["z (mm)"] = coord[2]
@@ -1026,6 +1042,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 dependencies=dependencies,
                 alignment_widget=self._alignment_widget,
             )
+            self.multiPointWorker.set_current_round_index(self._current_round_index)
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
                 self.multiPointWorker.frame_wait_timeout_override_s = getattr(
@@ -1220,6 +1237,27 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._transition_to(AcquisitionControllerState.ABORTING)
         # Publish aborting state
         self._publish_acquisition_state(in_progress=True, is_aborting=True)
+
+    def request_pause(self) -> bool:
+        """Request a pause at the next safe boundary."""
+        if not self._is_in_state(AcquisitionControllerState.RUNNING):
+            self._log.warning(f"Cannot pause - state is {self.state.name}")
+            return False
+        if self.multiPointWorker is None:
+            return False
+        self.multiPointWorker.request_pause()
+        if self._event_bus:
+            self._event_bus.publish(AcquisitionPaused())
+        return True
+
+    def resume_acquisition(self) -> bool:
+        """Resume a paused acquisition."""
+        if self.multiPointWorker is None:
+            return False
+        self.multiPointWorker.resume()
+        if self._event_bus:
+            self._event_bus.publish(AcquisitionResumed())
+        return True
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""
@@ -1434,3 +1472,61 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 error=exc,
             )
         )
+
+    def set_current_round_index(self, round_index: int) -> None:
+        """Set the current round index for downstream FOV events."""
+        self._current_round_index = round_index
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.set_current_round_index(round_index)
+
+    # =========================================================================
+    # FOV Task Command Handlers
+    # =========================================================================
+
+    @handles(JumpToFovCommand)
+    def _on_jump_to_fov(self, cmd: JumpToFovCommand) -> None:
+        """Handle JumpToFovCommand - non-destructive cursor move."""
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.queue_fov_command(cmd)
+            self._log.info(f"Queued JumpToFovCommand for fov_id={cmd.fov_id}")
+
+    @handles(SkipFovCommand)
+    def _on_skip_fov(self, cmd: SkipFovCommand) -> None:
+        """Handle SkipFovCommand - mark FOV as skipped."""
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.queue_fov_command(cmd)
+            self._log.info(f"Queued SkipFovCommand for fov_id={cmd.fov_id}")
+
+    @handles(RequeueFovCommand)
+    def _on_requeue_fov(self, cmd: RequeueFovCommand) -> None:
+        """Handle RequeueFovCommand - requeue FOV with incremented attempt."""
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.queue_fov_command(cmd)
+            self._log.info(
+                f"Queued RequeueFovCommand for fov_id={cmd.fov_id}, "
+                f"before_current={cmd.before_current}"
+            )
+
+    @handles(DeferFovCommand)
+    def _on_defer_fov(self, cmd: DeferFovCommand) -> None:
+        """Handle DeferFovCommand - mark FOV as deferred."""
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.queue_fov_command(cmd)
+            self._log.info(f"Queued DeferFovCommand for fov_id={cmd.fov_id}")
+
+    @handles(ReorderFovsCommand)
+    def _on_reorder_fovs(self, cmd: ReorderFovsCommand) -> None:
+        """Handle ReorderFovsCommand - reorder pending FOVs."""
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.queue_fov_command(cmd)
+            self._log.info("Queued ReorderFovsCommand")
+
+    def get_fov_task_list(self) -> Optional[Any]:
+        """Get the current FovTaskList from the worker for inspection.
+
+        Returns:
+            The FovTaskList if acquisition is in progress, None otherwise.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker.get_fov_task_list()
+        return None

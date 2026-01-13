@@ -1,0 +1,417 @@
+"""
+Orchestrator state definitions and management.
+
+Defines the state machine for experiment orchestration.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum, auto
+from typing import Any, Dict, Optional, Set
+
+from squid.core.events import Event
+
+
+class OrchestratorState(Enum):
+    """State machine states for the experiment orchestrator."""
+
+    # Initial/terminal states
+    IDLE = auto()  # Not running, ready to start
+    VALIDATING = auto()  # Validating protocol before start
+    COMPLETED = auto()  # Experiment finished successfully
+    FAILED = auto()  # Experiment finished with error
+    ABORTED = auto()  # Experiment was aborted by user
+
+    # Active states
+    INITIALIZING = auto()  # Setting up experiment
+    RUNNING_FLUIDICS = auto()  # Executing fluidics step
+    RUNNING_IMAGING = auto()  # Executing imaging acquisition
+    WAITING_INTERVENTION = auto()  # Paused for operator intervention
+    PAUSED = auto()  # User-requested pause
+    RECOVERING = auto()  # Recovering from pause or error
+
+
+# Valid state transitions
+ORCHESTRATOR_TRANSITIONS: Dict[OrchestratorState, Set[OrchestratorState]] = {
+    OrchestratorState.IDLE: {
+        OrchestratorState.INITIALIZING,
+        OrchestratorState.VALIDATING,
+    },
+    OrchestratorState.VALIDATING: {
+        OrchestratorState.IDLE,
+        OrchestratorState.FAILED,
+    },
+    OrchestratorState.INITIALIZING: {
+        OrchestratorState.RUNNING_FLUIDICS,
+        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.COMPLETED,  # Allow completion if protocol has no actionable operations
+        OrchestratorState.FAILED,
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.RUNNING_FLUIDICS: {
+        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.RUNNING_FLUIDICS,  # Next fluidics step
+        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.PAUSED,
+        OrchestratorState.COMPLETED,
+        OrchestratorState.FAILED,
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.RUNNING_IMAGING: {
+        OrchestratorState.RUNNING_FLUIDICS,
+        OrchestratorState.RUNNING_IMAGING,  # Next imaging round
+        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.PAUSED,
+        OrchestratorState.COMPLETED,
+        OrchestratorState.FAILED,
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.WAITING_INTERVENTION: {
+        OrchestratorState.RUNNING_FLUIDICS,
+        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.PAUSED,
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.PAUSED: {
+        OrchestratorState.RECOVERING,
+        OrchestratorState.RUNNING_FLUIDICS,
+        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.COMPLETED,  # Allow completion if last operation finishes while paused
+        OrchestratorState.FAILED,  # Allow failure if error occurs while paused
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.RECOVERING: {
+        OrchestratorState.RUNNING_FLUIDICS,
+        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.FAILED,
+        OrchestratorState.ABORTED,
+    },
+    OrchestratorState.COMPLETED: {OrchestratorState.IDLE},
+    OrchestratorState.FAILED: {OrchestratorState.IDLE},
+    OrchestratorState.ABORTED: {OrchestratorState.IDLE},
+}
+
+
+@dataclass
+class RoundProgress:
+    """Progress within a single round."""
+
+    round_index: int
+    round_name: str
+    fluidics_step_index: int = 0
+    total_fluidics_steps: int = 0
+    imaging_fov_index: int = 0
+    total_imaging_fovs: int = 0
+    imaging_started: bool = False
+    imaging_completed: bool = False
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+@dataclass
+class ExperimentProgress:
+    """Overall experiment progress."""
+
+    current_round_index: int = 0
+    total_rounds: int = 0
+    current_round: Optional[RoundProgress] = None
+    started_at: Optional[datetime] = None
+    estimated_completion: Optional[datetime] = None
+
+    @property
+    def progress_percent(self) -> float:
+        """Calculate overall progress percentage."""
+        if self.total_rounds == 0:
+            return 0.0
+
+        # Base progress from completed rounds
+        round_progress = self.current_round_index / self.total_rounds
+
+        # Add progress within current round
+        if self.current_round is not None:
+            round_frac = 1.0 / self.total_rounds
+            # Weight imaging more heavily (80% of round time typically)
+            if self.current_round.total_imaging_fovs > 0:
+                imaging_progress = (
+                    self.current_round.imaging_fov_index
+                    / self.current_round.total_imaging_fovs
+                )
+                round_progress += imaging_progress * round_frac * 0.8
+            if self.current_round.total_fluidics_steps > 0:
+                fluidics_progress = (
+                    self.current_round.fluidics_step_index
+                    / self.current_round.total_fluidics_steps
+                )
+                round_progress += fluidics_progress * round_frac * 0.2
+
+        return round_progress * 100.0
+
+
+@dataclass
+class Checkpoint:
+    """Checkpoint for experiment recovery.
+
+    Captures the state needed to resume an experiment after pause/crash.
+    """
+
+    protocol_name: str
+    protocol_version: str
+    experiment_id: str
+    experiment_path: str
+
+    # Position in protocol
+    round_index: int
+    fluidics_step_index: int
+    imaging_fov_index: int
+
+    # Imaging state
+    imaging_z_index: int = 0
+    imaging_channel_index: int = 0
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+    paused_at: Optional[datetime] = None
+
+    # Additional state
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ============================================================================
+# Orchestrator Events
+# ============================================================================
+
+
+@dataclass
+class OrchestratorStateChanged(Event):
+    """Emitted when orchestrator state changes."""
+
+    old_state: str  # OrchestratorState.name
+    new_state: str  # OrchestratorState.name
+    experiment_id: str
+    reason: str = ""
+
+
+@dataclass
+class OrchestratorProgress(Event):
+    """Emitted periodically during experiment execution."""
+
+    experiment_id: str
+    current_round: int
+    total_rounds: int
+    current_round_name: str
+    progress_percent: float
+    eta_seconds: Optional[float] = None
+    current_operation: str = ""  # "fluidics", "imaging", "waiting"
+
+
+@dataclass
+class OrchestratorRoundStarted(Event):
+    """Emitted when a new round begins."""
+
+    experiment_id: str
+    round_index: int
+    round_name: str
+    round_type: str
+
+
+@dataclass
+class OrchestratorRoundCompleted(Event):
+    """Emitted when a round completes."""
+
+    experiment_id: str
+    round_index: int
+    round_name: str
+    success: bool
+    error: Optional[str] = None
+
+
+@dataclass
+class OrchestratorInterventionRequired(Event):
+    """Emitted when operator intervention is needed."""
+
+    experiment_id: str
+    round_index: int
+    round_name: str
+    message: str
+
+
+@dataclass
+class OrchestratorError(Event):
+    """Emitted when an error occurs."""
+
+    experiment_id: str
+    error_type: str
+    message: str
+    recoverable: bool = False
+
+
+# ============================================================================
+# Orchestrator Commands
+# ============================================================================
+
+
+@dataclass
+class StartOrchestratorCommand(Event):
+    """Command to start an orchestrated experiment."""
+
+    protocol_path: str
+    base_path: str
+    experiment_id: Optional[str] = None
+    resume_from_checkpoint: bool = False
+
+
+@dataclass
+class StopOrchestratorCommand(Event):
+    """Command to stop/abort the orchestrator."""
+
+    pass
+
+
+@dataclass
+class PauseOrchestratorCommand(Event):
+    """Command to pause the orchestrator."""
+
+    pass
+
+
+@dataclass
+class ResumeOrchestratorCommand(Event):
+    """Command to resume the orchestrator from pause or intervention."""
+
+    pass
+
+
+@dataclass
+class AcknowledgeInterventionCommand(Event):
+    """Command to acknowledge an intervention and continue."""
+
+    pass
+
+
+@dataclass
+class SkipCurrentRoundCommand(Event):
+    """Command to skip the remainder of the current round."""
+
+    pass
+
+
+@dataclass
+class SkipToRoundCommand(Event):
+    """Command to skip ahead to a specific round index (0-based)."""
+
+    round_index: int
+
+
+# ============================================================================
+# Warning Events and Commands
+# ============================================================================
+
+
+@dataclass
+class WarningRaised(Event):
+    """Emitted when a new warning is generated during acquisition."""
+
+    experiment_id: str
+    category: str  # WarningCategory.name
+    severity: str  # WarningSeverity.name
+    message: str
+    round_index: int
+    round_name: str
+    time_point: int
+    fov_id: Optional[str]
+    fov_index: Optional[int]
+    total_warnings: int
+    warnings_in_category: int
+
+
+@dataclass
+class WarningThresholdReached(Event):
+    """Emitted when warning count reaches a threshold."""
+
+    experiment_id: str
+    threshold_type: str  # "total", "category", "severity"
+    threshold_value: int
+    current_count: int
+    category: Optional[str] = None  # If category-specific threshold
+    should_pause: bool = True
+
+
+@dataclass
+class WarningsCleared(Event):
+    """Emitted when warnings are cleared."""
+
+    experiment_id: str
+    cleared_count: int
+    categories_cleared: Optional[tuple] = None  # None = all categories
+
+
+@dataclass
+class ClearWarningsCommand(Event):
+    """Command to clear accumulated warnings."""
+
+    experiment_id: str
+    categories: Optional[tuple] = None  # None = clear all
+
+
+@dataclass
+class SetWarningThresholdsCommand(Event):
+    """Command to update warning thresholds."""
+
+    pause_after_count: Optional[int] = None
+    pause_on_critical: bool = True
+    pause_on_high: bool = False
+    max_stored_warnings: int = 1000
+
+
+@dataclass
+class AddWarningCommand(Event):
+    """Command to add a warning from other subsystems."""
+
+    category: str  # WarningCategory.name
+    severity: str  # WarningSeverity.name
+    message: str
+    round_index: int = 0
+    round_name: str = ""
+    time_point: int = 0
+    operation_type: str = ""
+    operation_index: int = 0
+    fov_id: Optional[str] = None
+    fov_index: Optional[int] = None
+    context: Optional[Dict[str, Any]] = None
+
+
+# ============================================================================
+# Validation Events and Commands
+# ============================================================================
+
+
+@dataclass
+class ValidateProtocolCommand(Event):
+    """Command to validate a protocol before execution."""
+
+    protocol_path: str
+    base_path: str
+
+
+@dataclass
+class ProtocolValidationStarted(Event):
+    """Emitted when protocol validation begins."""
+
+    protocol_path: str
+
+
+@dataclass
+class ProtocolValidationComplete(Event):
+    """Emitted when protocol validation completes."""
+
+    protocol_name: str
+    valid: bool
+    total_rounds: int
+    estimated_seconds: float
+    estimated_disk_bytes: int
+    operation_estimates: tuple
+    errors: tuple  # Tuple[str, ...]
+    warnings: tuple  # Tuple[str, ...]

@@ -1,0 +1,254 @@
+# 10-Round FISH Protocol
+# Example protocol for fluorescence in situ hybridization experiments
+
+name: "10-Round FISH"
+version: "1.0"
+description: |
+  Standard 10-round FISH protocol with DAPI and Cy5 imaging.
+  Includes wash steps between imaging rounds.
+author: "Squid Team"
+created: "2025-01-01"
+
+# Default settings applied to all rounds
+defaults:
+  imaging:
+    channels: ["DAPI", "Cy5"]
+    z_planes: 5
+    z_step_um: 0.5
+    use_autofocus: false
+    use_focus_lock: true
+
+  fluidics:
+    flow_rate_ul_per_min: 50
+    wash_volume_ul: 500
+
+# Protocol rounds
+rounds:
+  # Round 1 - Initial imaging
+  - name: "Round 1"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_1"
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+      z_planes: 5
+      z_step_um: 0.5
+
+  # Wash 1
+  - name: "Wash 1"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+        repeats: 3
+
+  # Bleach 1
+  - name: "Bleach 1"
+    type: "bleach"
+    metadata:
+      bleach_duration_s: 120
+      bleach_power_percent: 100
+
+  # Rounds 2-10 follow the same pattern...
+  - name: "Round 2"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_2"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 2"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 2"
+    type: "bleach"
+
+  - name: "Round 3"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_3"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 3"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 3"
+    type: "bleach"
+
+  - name: "Round 4"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_4"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 4"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 4"
+    type: "bleach"
+
+  - name: "Round 5"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_5"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  # Final rounds with optional operator intervention
+  - name: "Round 6"
+    type: "imaging"
+    requires_intervention: true
+    intervention_message: "Please check sample condition before continuing"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_6"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 6"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 6"
+    type: "bleach"
+
+  - name: "Round 7"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_7"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 7"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 7"
+    type: "bleach"
+
+  - name: "Round 8"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_8"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 8"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 8"
+    type: "bleach"
+
+  - name: "Round 9"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_9"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  - name: "Wash 9"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "SSC_2x"
+        volume_ul: 500
+        repeats: 3
+
+  - name: "Bleach 9"
+    type: "bleach"
+
+  # Final round - no bleach needed
+  - name: "Round 10"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_mix_10"
+        volume_ul: 100
+      - command: "incubate"
+        duration_s: 300
+    imaging:
+      channels: ["DAPI", "Cy5"]
+
+  # Final wash
+  - name: "Final Wash"
+    type: "wash"
+    fluidics:
+      - command: "wash"
+        solution: "PBS"
+        volume_ul: 1000
+        repeats: 5
+
+# Additional protocol metadata
+metadata:
+  sample_type: "tissue_section"
+  fixation: "4% PFA"
+  permeabilization: "0.1% Triton X-100"
+  estimated_duration_hours: 8

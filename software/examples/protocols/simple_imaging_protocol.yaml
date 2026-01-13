@@ -1,0 +1,52 @@
+name: Simple Multi-Round Imaging
+description: A simple protocol for testing the orchestrator with just imaging rounds
+version: "1.0"
+
+# Output directory for experiment data (can use ~ for home directory)
+output_directory: ~/Downloads/squid_data
+
+rounds:
+  - name: Timepoint 1
+    operations:
+      - type: imaging
+        name: Brightfield + Fluorescence
+        channels:
+          - BF LED matrix full
+          - Fluorescence 488nm
+        fov_config:
+          num_fovs: 9
+          pattern: grid
+
+  - name: Timepoint 2
+    operations:
+      - type: wait
+        name: Incubation
+        duration_seconds: 60
+
+      - type: imaging
+        name: Brightfield + Fluorescence
+        channels:
+          - BF LED matrix full
+          - Fluorescence 488nm
+        fov_config:
+          num_fovs: 9
+          pattern: grid
+
+  - name: Timepoint 3
+    operations:
+      - type: wait
+        name: Incubation
+        duration_seconds: 60
+
+      - type: intervention
+        name: Check Sample
+        message: Please check if cells are still healthy before continuing.
+
+      - type: imaging
+        name: Brightfield + Fluorescence
+        channels:
+          - BF LED matrix full
+          - Fluorescence 488nm
+        fov_config:
+          num_fovs: 9
+          pattern: grid

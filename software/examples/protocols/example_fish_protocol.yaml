@@ -1,0 +1,156 @@
+name: 4-Round FISH Protocol
+description: Example multi-round FISH imaging protocol with fluidics and imaging cycles
+version: "1.0"
+
+# Output directory for experiment data (can use ~ for home directory)
+output_directory: ~/Downloads/squid_data
+
+metadata:
+  author: Lab User
+  created: "2024-01-12"
+  sample_type: fixed_cells
+
+rounds:
+  - name: Hybridization Round 1
+    operations:
+      - type: fluidics
+        name: Wash
+        action: wash
+        reagent: 2X SSC Buffer
+        volume_ul: 500
+        flow_rate_ul_min: 100
+
+      - type: fluidics
+        name: Hybridize Probe Set 1
+        action: dispense
+        reagent: Probe Set A (Cy3, Cy5, FITC)
+        volume_ul: 200
+        flow_rate_ul_min: 50
+
+      - type: wait
+        name: Hybridization Incubation
+        duration_seconds: 1800
+        temperature_c: 37
+
+      - type: fluidics
+        name: Post-Hybridization Wash
+        action: wash
+        reagent: 0.1X SSC Buffer
+        volume_ul: 1000
+        flow_rate_ul_min: 200
+        num_cycles: 3
+
+      - type: imaging
+        name: Acquire Round 1
+        channels:
+          - DAPI
+          - FITC
+          - Cy3
+          - Cy5
+        z_stack:
+          enabled: true
+          num_slices: 15
+          step_um: 0.5
+        fov_config:
+          num_fovs: 25
+          pattern: grid
+          overlap_percent: 10
+
+  - name: Strip Round 1
+    operations:
+      - type: fluidics
+        name: Photobleach
+        action: custom
+        reagent: Photobleaching Buffer
+        volume_ul: 500
+        custom_command: photobleach_all_channels
+
+      - type: fluidics
+        name: Strip Probes
+        action: dispense
+        reagent: Stripping Buffer (70% Formamide)
+        volume_ul: 500
+        flow_rate_ul_min: 100
+
+      - type: wait
+        name: Strip Incubation
+        duration_seconds: 300
+        temperature_c: 37
+
+      - type: fluidics
+        name: Post-Strip Wash
+        action: wash
+        reagent: 2X SSC Buffer
+        volume_ul: 1000
+        flow_rate_ul_min: 200
+        num_cycles: 2
+
+  - name: Hybridization Round 2
+    operations:
+      - type: fluidics
+        name: Hybridize Probe Set 2
+        action: dispense
+        reagent: Probe Set B (Cy3, Cy5, FITC)
+        volume_ul: 200
+        flow_rate_ul_min: 50
+
+      - type: wait
+        name: Hybridization Incubation
+        duration_seconds: 1800
+        temperature_c: 37
+
+      - type: fluidics
+        name: Post-Hybridization Wash
+        action: wash
+        reagent: 0.1X SSC Buffer
+        volume_ul: 1000
+        flow_rate_ul_min: 200
+        num_cycles: 3
+
+      - type: imaging
+        name: Acquire Round 2
+        channels:
+          - DAPI
+          - FITC
+          - Cy3
+          - Cy5
+        z_stack:
+          enabled: true
+          num_slices: 15
+          step_um: 0.5
+        fov_config:
+          num_fovs: 25
+          pattern: grid
+          overlap_percent: 10
+
+  - name: Final Wash and Storage
+    operations:
+      - type: fluidics
+        name: Final Wash
+        action: wash
+        reagent: PBS
+        volume_ul: 2000
+        flow_rate_ul_min: 300
+        num_cycles: 3
+
+      - type: intervention
+        name: User Check
+        message: Please verify sample integrity before storage. Check for photobleaching or sample damage.
+
+      - type: fluidics
+        name: Add Storage Buffer
+        action: dispense
+        reagent: Mounting Medium
+        volume_ul: 300
+        flow_rate_ul_min: 50
+
+settings:
+  autofocus:
+    enabled: true
+    method: laser
+    interval_fovs: 5
+  stage:
+    settling_time_ms: 100
+  error_handling:
+    on_imaging_error: retry_3_times
+    on_fluidics_error: pause_and_alert

@@ -89,6 +89,7 @@ class CaptureInfo:
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
     pixel_size_um: Optional[float] = None  # Per-tile pixel size for mosaic display
+    fov_id: Optional[str] = None  # Stable FOV identifier (e.g., "A1_0001")
 
 
 @dataclass()

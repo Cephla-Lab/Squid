@@ -347,7 +347,7 @@ class CoordinateTracker:
         """Initialize the coordinates DataFrame for a new timepoint."""
         base_columns = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
         piezo_column = ["z_piezo (um)"] if self._use_piezo else []
-        columns = ["region", "fov"] + base_columns + piezo_column
+        columns = ["region", "fov", "fov_id"] + base_columns + piezo_column
         self._coordinates_df = pd.DataFrame(columns=columns)
 
     def record(
@@ -357,6 +357,7 @@ class CoordinateTracker:
         pos: squid.core.abc.Pos,
         fov: Optional[int] = None,
         z_piezo_um: Optional[float] = None,
+        fov_id: Optional[str] = None,
     ) -> None:
         """
         Record a coordinate position.
@@ -384,7 +385,13 @@ class CoordinateTracker:
             piezo_data = {"z_piezo (um)": [z_piezo_um]}
 
         new_row = pd.DataFrame(
-            {"region": [region_id], "fov": [fov], **base_data, **piezo_data}
+            {
+                "region": [region_id],
+                "fov": [fov],
+                "fov_id": [fov_id],
+                **base_data,
+                **piezo_data,
+            }
         )
 
         if self._coordinates_df is None:

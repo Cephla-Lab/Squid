@@ -1,0 +1,11 @@
+{
+  "protocol": "Simple Multi-Round Imaging",
+  "objective": {
+    "magnification": 40.0,
+    "NA": 0.95,
+    "tube_lens_f_mm": 180.0,
+    "name": "40x"
+  },
+  "sensor_pixel_size_um": 7.52,
+  "tube_lens_mm": 50.0
+}

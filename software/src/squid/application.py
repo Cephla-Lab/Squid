@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from squid.backend.controllers.tracking_controller import TrackingControllerCore
     from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
     from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
+    from squid.backend.controllers.orchestrator import OrchestratorController
 
 
 @dataclass
@@ -71,6 +72,7 @@ class Controllers:
     scan_coordinates: Optional["ScanCoordinates"] = None
     image_click: Optional["ImageClickController"] = None
     tracking: Optional["TrackingControllerCore"] = None
+    orchestrator: Optional["OrchestratorController"] = None
 
 
 class ApplicationContext:
@@ -385,6 +387,11 @@ class ApplicationContext:
         # Phase 8: ImageClickController for click-to-move
         self._controllers.image_click = self._build_image_click_controller()
         self._controllers.tracking = self._build_tracking_controller()
+        # Experiment orchestrator for multi-round protocols (FISH, etc.)
+        self._controllers.orchestrator = self._build_orchestrator_controller(
+            multipoint=self._controllers.multipoint,
+            scan_coordinates=self._controllers.scan_coordinates,
+        )
 
         # Backend navigation state publisher (UI can subscribe via UIEventBus).
         try:
@@ -421,6 +428,66 @@ class ApplicationContext:
             channel_config_manager=self._microscope.channel_configuration_manager,
             objective_store=self._microscope.objective_store,
             mode_gate=self.mode_gate,
+        )
+
+    def _build_orchestrator_controller(
+        self,
+        multipoint: Optional[MultiPointController],
+        scan_coordinates: Optional[ScanCoordinates],
+    ) -> Optional["OrchestratorController"]:
+        """Create OrchestratorController for multi-round experiment automation."""
+        if self._microscope is None or self._services is None:
+            return None
+        if multipoint is None:
+            self._log.info("OrchestratorController requires MultiPointController - skipping")
+            return None
+
+        from squid.backend.controllers.orchestrator import (
+            OrchestratorController,
+            ImagingExecutor,
+            FluidicsExecutor,
+        )
+        from squid.backend.controllers.multipoint.experiment_manager import ExperimentManager
+        from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
+
+        camera_service = self._services.get("camera")
+        if camera_service is None:
+            self._log.warning("No camera service available for OrchestratorController")
+            return None
+
+        # Create shared utilities
+        experiment_manager = ExperimentManager(
+            objective_store=self._microscope.objective_store,
+            channel_config_manager=self._microscope.channel_configuration_manager,
+            camera_service=camera_service,
+        )
+        acquisition_planner = AcquisitionPlanner(
+            objective_store=self._microscope.objective_store,
+            channel_config_manager=self._microscope.channel_configuration_manager,
+            camera_service=camera_service,
+        )
+
+        # Create executors
+        imaging_executor = ImagingExecutor(
+            event_bus=event_bus,
+            multipoint_controller=multipoint,
+            scan_coordinates=scan_coordinates,
+        )
+
+        fluidics_service = self._services.get("fluidics")
+        fluidics_executor = FluidicsExecutor(
+            event_bus=event_bus,
+            fluidics_service=fluidics_service,
+        )
+
+        return OrchestratorController(
+            event_bus=event_bus,
+            multipoint_controller=multipoint,
+            experiment_manager=experiment_manager,
+            acquisition_planner=acquisition_planner,
+            imaging_executor=imaging_executor,
+            fluidics_executor=fluidics_executor,
+            scan_coordinates=scan_coordinates,
         )
 
     def _create_microscope_mode_controller(self) -> MicroscopeModeController:

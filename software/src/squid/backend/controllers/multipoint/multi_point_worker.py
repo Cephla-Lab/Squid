@@ -1,6 +1,8 @@
+import hashlib
 import os
 import queue
 import time
+from queue import Empty
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type, TYPE_CHECKING
 
 import imageio as iio
@@ -57,6 +59,7 @@ from squid.backend.controllers.multipoint.progress_tracking import (
     ProgressTracker,
     CoordinateTracker,
 )
+from squid.backend.controllers.orchestrator.state import AddWarningCommand
 from squid.backend.controllers.multipoint.position_zstack import (
     PositionController,
     ZStackConfig,
@@ -66,6 +69,27 @@ from squid.backend.controllers.multipoint.focus_operations import AutofocusExecu
 from squid.backend.controllers.multipoint.backpressure import (
     BackpressureController,
     BackpressureStats,
+)
+from squid.backend.controllers.multipoint.fov_task import (
+    FovStatus,
+    FovTask,
+    FovTaskList,
+)
+from squid.backend.controllers.multipoint.events import (
+    JumpToFovCommand,
+    SkipFovCommand,
+    RequeueFovCommand,
+    DeferFovCommand,
+    ReorderFovsCommand,
+    FovTaskStarted,
+    FovTaskCompleted,
+    FovTaskListChanged,
+)
+from squid.backend.controllers.multipoint.checkpoint import (
+    CheckpointPlanMismatch,
+    MultiPointCheckpoint,
+    get_checkpoint_path,
+    find_latest_checkpoint,
 )
 from squid.core.config.feature_flags import get_feature_flags
 
@@ -177,6 +201,20 @@ class MultiPointWorker:
         self.use_fluidics = acquisition_parameters.use_fluidics
         self._aborted: bool = False
         self._abort_requested = ThreadSafeFlag(initial=False)
+        self._pause_requested = ThreadSafeFlag(initial=False)
+
+        # FOV Task System - first-class FOV tasks with stable IDs
+        self._fov_task_list: Optional[FovTaskList] = None
+        self._fov_command_queue: "queue.Queue[JumpToFovCommand | SkipFovCommand | RequeueFovCommand | DeferFovCommand | ReorderFovsCommand]" = queue.Queue()
+        self._current_round_index: int = 0  # For FOV event context
+
+        # Checkpoint configuration
+        self._checkpoint_enabled: bool = True  # Save checkpoints after each FOV
+        self._checkpoint_interval: int = 1  # Save every N FOVs (1 = every FOV)
+        self._fov_since_checkpoint: int = 0  # Counter for checkpoint interval
+        self._max_checkpoints: int = 5  # Keep last N checkpoints per time point
+        self._resumed_from_checkpoint: bool = False
+
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -438,6 +476,294 @@ class MultiPointWorker:
     def request_abort(self) -> None:
         self._aborted = True
         self._abort_requested.set()
+
+    def request_pause(self) -> None:
+        """Request a pause at the next safe boundary."""
+        self._pause_requested.set()
+
+    def resume(self) -> None:
+        """Resume after a pause request."""
+        self._pause_requested.clear()
+
+    def _wait_if_paused(self) -> None:
+        """Block while paused, returning when resumed or abort requested."""
+        if not self._pause_requested.is_set():
+            return
+
+        self._log.info("Pausing acquisition at FOV boundary")
+        while self._pause_requested.is_set() and not self._abort_requested.is_set():
+            time.sleep(0.1)
+
+    # =========================================================================
+    # FOV Task System Methods
+    # =========================================================================
+    def _build_fov_task_list(self) -> FovTaskList:
+        """Build FovTaskList from scan region coordinates.
+
+        Creates FovTask for each FOV with stable IDs and computes
+        a plan_hash for checkpoint validation.
+
+        Returns:
+            FovTaskList with tasks created from scan_region_fov_coords_mm
+        """
+        tasks: List[FovTask] = []
+        for region_id, coordinates in self.scan_region_fov_coords_mm.items():
+            for index, coord in enumerate(coordinates):
+                task = FovTask.from_coordinate(region_id, index, coord)
+                tasks.append(task)
+
+        # Compute plan_hash from task positions for checkpoint validation
+        hash_data = [
+            (t.fov_id, t.region_id, t.x_mm, t.y_mm, t.z_mm)
+            for t in tasks
+        ]
+        plan_hash = hashlib.sha256(str(hash_data).encode()).hexdigest()[:16]
+
+        task_list = FovTaskList(tasks=tasks, cursor=0, plan_hash=plan_hash)
+        self._log.info(f"Built FOV task list with {len(tasks)} tasks, plan_hash={plan_hash}")
+        return task_list
+
+    def queue_fov_command(
+        self,
+        cmd: "JumpToFovCommand | SkipFovCommand | RequeueFovCommand | DeferFovCommand | ReorderFovsCommand",
+    ) -> None:
+        """Queue a command for processing at next FOV boundary.
+
+        Commands are processed between FOV acquisitions to ensure
+        atomic FOV execution.
+
+        Args:
+            cmd: The command to queue
+        """
+        self._fov_command_queue.put(cmd)
+        self._log.debug(f"Queued FOV command: {type(cmd).__name__} for {cmd.fov_id}")
+
+    def _process_pending_fov_commands(self) -> None:
+        """Process commands from queue.
+
+        Called between FOV acquisitions. All mutations are thread-safe
+        via FovTaskList internal lock.
+        """
+        if self._fov_task_list is None:
+            return
+
+        while True:
+            try:
+                cmd = self._fov_command_queue.get_nowait()
+            except Empty:
+                break
+
+            if cmd.round_index != self._current_round_index or cmd.time_point != self.time_point:
+                self._log.debug(
+                    "Ignoring FOV command for different context: "
+                    f"{type(cmd).__name__} round={cmd.round_index} time_point={cmd.time_point}"
+                )
+                continue
+
+            if isinstance(cmd, JumpToFovCommand):
+                if self._fov_task_list.jump_to(cmd.fov_id):
+                    self._log.info(f"Jumped to FOV {cmd.fov_id}")
+                else:
+                    self._log.warning(f"Failed to jump to FOV {cmd.fov_id}: not found")
+            elif isinstance(cmd, SkipFovCommand):
+                if self._fov_task_list.skip(cmd.fov_id):
+                    self._log.info(f"Skipped FOV {cmd.fov_id}")
+                else:
+                    self._log.warning(f"Failed to skip FOV {cmd.fov_id}")
+            elif isinstance(cmd, RequeueFovCommand):
+                if self._fov_task_list.requeue(cmd.fov_id, cmd.before_current):
+                    self._log.info(
+                        f"Requeued FOV {cmd.fov_id} "
+                        f"({'before' if cmd.before_current else 'after'} current)"
+                    )
+                else:
+                    self._log.warning(f"Failed to requeue FOV {cmd.fov_id}")
+            elif isinstance(cmd, DeferFovCommand):
+                if self._fov_task_list.defer(cmd.fov_id):
+                    self._log.info(f"Deferred FOV {cmd.fov_id}")
+                else:
+                    self._log.warning(f"Failed to defer FOV {cmd.fov_id}")
+            elif isinstance(cmd, ReorderFovsCommand):
+                if self._fov_task_list.reorder(list(cmd.fov_ids)):
+                    self._log.info("Reordered pending FOVs")
+                else:
+                    self._log.warning("Failed to reorder pending FOVs")
+
+            self._publish_fov_task_list_changed()
+
+    def _publish_fov_started(self, task: FovTask) -> None:
+        """Publish FovTaskStarted event."""
+        if self._event_bus is None or self._fov_task_list is None:
+            return
+
+        event = FovTaskStarted(
+            fov_id=task.fov_id,
+            fov_index=task.fov_index,
+            region_id=task.region_id,
+            round_index=self._current_round_index,
+            time_point=self.time_point,
+            x_mm=task.x_mm,
+            y_mm=task.y_mm,
+            attempt=task.attempt,
+            pending_count=self._fov_task_list.pending_count(),
+            completed_count=self._fov_task_list.completed_count(),
+        )
+        self._event_bus.publish(event)
+
+    def _publish_fov_completed(self, task: FovTask) -> None:
+        """Publish FovTaskCompleted event."""
+        if self._event_bus is None:
+            return
+
+        event = FovTaskCompleted(
+            fov_id=task.fov_id,
+            fov_index=task.fov_index,
+            round_index=self._current_round_index,
+            time_point=self.time_point,
+            status=task.status,
+            attempt=task.attempt,
+            error_message=task.error_message,
+        )
+        self._event_bus.publish(event)
+
+    def _publish_fov_task_list_changed(self) -> None:
+        """Publish FovTaskListChanged event."""
+        if self._event_bus is None or self._fov_task_list is None:
+            return
+
+        event = FovTaskListChanged(
+            round_index=self._current_round_index,
+            time_point=self.time_point,
+            cursor=self._fov_task_list.cursor,
+            pending_count=self._fov_task_list.pending_count(),
+            completed_count=self._fov_task_list.completed_count(),
+            skipped_count=self._fov_task_list.skipped_count(),
+            deferred_count=self._fov_task_list.deferred_count(),
+        )
+        self._event_bus.publish(event)
+
+    def get_fov_task_list(self) -> Optional[FovTaskList]:
+        """Get the current FOV task list (for external inspection)."""
+        return self._fov_task_list
+
+    def set_current_round_index(self, round_index: int) -> None:
+        """Set the current round index for event context."""
+        self._current_round_index = round_index
+
+    # =========================================================================
+    # Checkpoint Methods
+    # =========================================================================
+    def _save_checkpoint(self) -> None:
+        """Save current acquisition state to checkpoint file.
+
+        Called periodically during acquisition based on checkpoint_interval.
+        Uses atomic write to prevent corruption.
+        """
+        if not self._checkpoint_enabled or self._fov_task_list is None:
+            return
+
+        if not self.experiment_path:
+            self._log.warning("Cannot save checkpoint: experiment_path not set")
+            return
+
+        try:
+            checkpoint = MultiPointCheckpoint.from_state(
+                experiment_id=self.experiment_ID or "",
+                round_index=self._current_round_index,
+                time_point=self.time_point,
+                fov_task_list=self._fov_task_list,
+            )
+            checkpoint_path = get_checkpoint_path(self.experiment_path, self.time_point)
+            checkpoint.save(checkpoint_path)
+            self._log.debug(f"Saved checkpoint to {checkpoint_path}")
+
+            # Clean up old checkpoints if we have too many
+            self._cleanup_old_checkpoints()
+        except Exception as e:
+            self._log.warning(f"Failed to save checkpoint: {e}")
+
+    def _cleanup_old_checkpoints(self) -> None:
+        """Remove old checkpoint files, keeping only the most recent ones."""
+        if not self.experiment_path:
+            return
+
+        try:
+            from pathlib import Path
+            checkpoint_dir = Path(self.experiment_path) / "checkpoints"
+            if not checkpoint_dir.exists():
+                return
+
+            checkpoints = sorted(checkpoint_dir.glob("checkpoint_t*.json"))
+            if len(checkpoints) > self._max_checkpoints:
+                for old_checkpoint in checkpoints[:-self._max_checkpoints]:
+                    old_checkpoint.unlink()
+                    self._log.debug(f"Removed old checkpoint: {old_checkpoint}")
+        except Exception as e:
+            self._log.warning(f"Failed to cleanup old checkpoints: {e}")
+
+    def resume_from_checkpoint(self, checkpoint_path: Optional[str] = None) -> bool:
+        """Resume acquisition from a checkpoint file.
+
+        Args:
+            checkpoint_path: Path to checkpoint file. If None, finds latest checkpoint.
+
+        Returns:
+            True if successfully resumed, False otherwise.
+
+        Raises:
+            CheckpointPlanMismatch: If checkpoint plan_hash doesn't match current plan
+        """
+        from pathlib import Path
+
+        if not self.experiment_path:
+            self._log.error("Cannot resume: experiment_path not set")
+            return False
+
+        # Find checkpoint file
+        if checkpoint_path is None:
+            found_path = find_latest_checkpoint(self.experiment_path)
+            if found_path is None:
+                self._log.info("No checkpoint found to resume from")
+                return False
+            checkpoint_path = str(found_path)
+
+        self._log.info(f"Attempting to resume from checkpoint: {checkpoint_path}")
+
+        # Build current task list to get plan_hash for validation
+        if self._fov_task_list is None:
+            self._fov_task_list = self._build_fov_task_list()
+
+        current_plan_hash = self._fov_task_list.plan_hash
+
+        # Load checkpoint with plan validation
+        checkpoint = MultiPointCheckpoint.load(
+            Path(checkpoint_path),
+            current_plan_hash=current_plan_hash,
+        )
+
+        # Restore state from checkpoint
+        self._fov_task_list = checkpoint.restore_fov_task_list()
+        self.time_point = checkpoint.time_point
+        self._current_round_index = checkpoint.round_index
+        self._resumed_from_checkpoint = True
+
+        self._log.info(
+            f"Resumed from checkpoint: time_point={self.time_point}, "
+            f"cursor={self._fov_task_list.cursor}, "
+            f"completed={self._fov_task_list.completed_count()}, "
+            f"pending={self._fov_task_list.pending_count()}"
+        )
+        return True
+
+    def set_checkpoint_enabled(self, enabled: bool) -> None:
+        """Enable or disable checkpoint saving."""
+        self._checkpoint_enabled = enabled
+        self._log.info(f"Checkpoint saving {'enabled' if enabled else 'disabled'}")
+
+    def set_checkpoint_interval(self, interval: int) -> None:
+        """Set the checkpoint save interval (save every N FOVs)."""
+        self._checkpoint_interval = max(1, interval)
+        self._log.info(f"Checkpoint interval set to {self._checkpoint_interval}")
 
     def run(self) -> None:
         this_image_callback_id: Optional[str] = None
@@ -948,6 +1274,7 @@ class MultiPointWorker:
         z_level: int,
         pos: squid.core.abc.Pos,
         fov: Optional[int] = None,
+        fov_id: Optional[str] = None,
     ) -> None:
         """Record coordinate via CoordinateTracker."""
         piezo_um = self.z_piezo_um if self.use_piezo else None
@@ -957,6 +1284,7 @@ class MultiPointWorker:
             z_level=z_level,
             pos=pos,
             z_piezo_um=piezo_um,
+            fov_id=fov_id,
         )
         # Update legacy attribute reference
         self.coordinates_pd = self._coordinate_tracker._coordinates_df
@@ -1150,42 +1478,152 @@ class MultiPointWorker:
             return True
 
     def run_coordinate_acquisition(self, current_path: str) -> None:
+        """Execute FOV tasks with command processing at boundaries.
+
+        Key design points:
+        - FovTaskList owns cursor movement (single owner)
+        - Commands processed between FOVs (atomic FOV execution)
+        - Thread-safe via FovTaskList internal lock
+        """
+        # Build task list if not already built (first time point)
+        if self._fov_task_list is None:
+            self._fov_task_list = self._build_fov_task_list()
+        elif self._resumed_from_checkpoint:
+            self._log.info("Using FOV task list from checkpoint for resume")
+        else:
+            # Reset tasks for a new time point, keeping SKIPPED tasks skipped
+            reset_count = self._fov_task_list.reset_for_timepoint()
+            if reset_count > 0:
+                self._log.info(f"Reset {reset_count} tasks for new time point")
+
+        # Compute totals for progress tracking (backward compatibility)
         n_regions: int = len(self.scan_region_coords_mm)
+        self._total_regions = n_regions
+        total_fovs = len(self._fov_task_list)
+        self.num_fovs = total_fovs
+        self.total_scans = total_fovs * self.NZ * len(self.selected_configurations)
 
-        for region_index, (region_id, coordinates) in enumerate(
-            self.scan_region_fov_coords_mm.items()
-        ):
-            # Progress is published via events; callback removed
-            # Track region info for EventBus progress events
-            self._current_region = region_index + 1
-            self._total_regions = n_regions
-            self.num_fovs = len(coordinates)
-            self.total_scans = (
-                self.num_fovs * self.NZ * len(self.selected_configurations)
-            )
+        # Track current region for progress events
+        current_region_id: Optional[str] = None
+        region_index = 0
 
-            for fov, coordinate_mm in enumerate(coordinates):
-                # Just so the job result queues don't get too big, check and print a summary of intermediate results here
+        try:
+            while True:
+                # Process any pending commands (jump, skip, requeue, defer)
+                self._process_pending_fov_commands()
+
+                # Get next task - FovTaskList owns cursor advancement
+                task = self._fov_task_list.advance_and_get()
+                if task is None:
+                    restored = self._fov_task_list.restore_deferred()
+                    if restored > 0:
+                        self._fov_task_list.reset_cursor()
+                        self._log.info(f"Restored {restored} deferred tasks for another pass")
+                        continue
+                    break  # All tasks processed
+
+                # Update region tracking for progress events
+                if task.region_id != current_region_id:
+                    current_region_id = task.region_id
+                    # Find region index
+                    for idx, rid in enumerate(self.scan_region_fov_coords_mm.keys()):
+                        if rid == current_region_id:
+                            region_index = idx
+                            break
+                    self._current_region = region_index + 1
+
+                # Just so the job result queues don't get too big, check and print a summary
                 with self._timing.get_timer("job result summaries"):
                     self._summarize_runner_outputs()
                     if self._abort_requested.is_set():
                         return
 
-                with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm, region_id, fov)
-                with self._timing.get_timer("acquire_at_position"):
-                    self.acquire_at_position(region_id, current_path, fov)
+                # Check for pause/abort
+                self._wait_if_paused()
+                if self._abort_requested.is_set():
+                    return
+
+                # Mark task as executing
+                self._fov_task_list.mark_executing_task(task)
+
+                # Publish FOV started event
+                self._publish_fov_started(task)
+
+                # Execute the FOV
+                has_z = task.metadata.get("has_z", True)
+                if has_z:
+                    coordinate_mm = (task.x_mm, task.y_mm, task.z_mm)
+                else:
+                    coordinate_mm = (task.x_mm, task.y_mm)
+                success = True
+                error_msg: Optional[str] = None
+
+                try:
+                    with self._timing.get_timer("move_to_coordinate"):
+                        self.move_to_coordinate(coordinate_mm, task.region_id, task.fov_index)
+                    with self._timing.get_timer("acquire_at_position"):
+                        self.acquire_at_position(
+                            task.region_id,
+                            current_path,
+                            task.fov_index,
+                            fov_id=task.fov_id,
+                            attempt=task.attempt,
+                        )
+                except Exception as e:
+                    success = False
+                    error_msg = str(e)
+                    self._log.error(f"Error executing FOV {task.fov_id}: {e}")
+
+                # Mark task complete - this advances cursor
+                self._fov_task_list.mark_complete_task(task, success, error_msg)
+
+                # Publish FOV completed event
+                self._publish_fov_completed(task)
+
+                # Save checkpoint periodically
+                self._fov_since_checkpoint += 1
+                if self._fov_since_checkpoint >= self._checkpoint_interval:
+                    self._save_checkpoint()
+                    self._fov_since_checkpoint = 0
 
                 if self._abort_requested.is_set():
                     self.handle_acquisition_abort(current_path)
                     return
+        finally:
+            # Any deferred tasks should have been restored and handled before exit.
+            self._resumed_from_checkpoint = False
 
-    def acquire_at_position(self, region_id: str, current_path: str, fov: int) -> None:
+    def acquire_at_position(
+        self,
+        region_id: str,
+        current_path: str,
+        fov: int,
+        fov_id: Optional[str] = None,
+        attempt: int = 1,
+    ) -> None:
         if not self.perform_autofocus(region_id, fov):
             current_z = self._stage_service.get_position().z_mm
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={current_z} [mm])"
             )
+            if self._event_bus is not None:
+                self._event_bus.publish(
+                    AddWarningCommand(
+                        category="FOCUS",
+                        severity="MEDIUM",
+                        message=(
+                            f"Autofocus failed at region {region_id}, "
+                            f"fov {fov} (z={current_z:.4f} mm)"
+                        ),
+                        round_index=self._current_round_index,
+                        round_name=f"Round {self._current_round_index + 1}",
+                        time_point=self.time_point,
+                        operation_type="imaging",
+                        fov_id=fov_id,
+                        fov_index=fov,
+                        context={"region_id": region_id},
+                    )
+                )
 
         if self.NZ > 1:
             self.prepare_z_stack()
@@ -1210,9 +1648,14 @@ class MultiPointWorker:
 
         try:
             for z_level in range(self.NZ):
-                file_ID: str = (
-                    f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
-                )
+                # Use fov_id if provided (new system), otherwise fall back to legacy format
+                if fov_id is not None:
+                    if attempt == 1:
+                        file_ID = f"{fov_id}_{z_level:0{FILE_ID_PADDING}}"
+                    else:
+                        file_ID = f"{fov_id}_attempt{attempt:02d}_{z_level:0{FILE_ID_PADDING}}"
+                else:
+                    file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
                 acquire_pos: squid.core.abc.Pos = self._stage_service.get_position()
                 metadata: Dict[str, float] = {
@@ -1248,7 +1691,8 @@ class MultiPointWorker:
                     with self._timing.get_timer("acquire_camera_image"):
                         if self._is_rgb_config(config):
                             self.acquire_rgb_image(
-                                config, file_ID, current_path, z_level, region_id, fov
+                                config, file_ID, current_path, z_level, region_id, fov,
+                                fov_id=fov_id,
                             )
                         else:
                             self.acquire_camera_image(
@@ -1259,6 +1703,7 @@ class MultiPointWorker:
                                 region_id=region_id,
                                 fov=fov,
                                 config_idx=config_idx,
+                                fov_id=fov_id,
                             )
 
                     self.handle_z_offset(config, False)
@@ -1281,7 +1726,9 @@ class MultiPointWorker:
                     )
 
                 # updates coordinates df
-                self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+                self.update_coordinates_dataframe(
+                    region_id, z_level, acquire_pos, fov, fov_id=fov_id
+                )
                 # check if the acquisition should be aborted
                 if self._abort_requested.is_set():
                     self.handle_acquisition_abort(current_path)
@@ -1611,6 +2058,7 @@ class MultiPointWorker:
         region_id: str,
         fov: int,
         config_idx: int,
+        fov_id: Optional[str] = None,
     ) -> None:
         self._select_config(config)
 
@@ -1667,6 +2115,7 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
                 pixel_size_um=self._pixel_size_um,
+                fov_id=fov_id,
             )
             self._current_capture_info.set(current_capture_info)
         with self._timing.get_timer("send_trigger"):
@@ -1721,6 +2170,7 @@ class MultiPointWorker:
         k: int,
         region_id: str,
         fov: int,
+        fov_id: Optional[str] = None,
     ) -> None:
         # go through the channels
         rgb_channels: List[str] = [
@@ -1775,6 +2225,7 @@ class MultiPointWorker:
             configuration_idx=config.id,
             time_point=self.time_point,
             pixel_size_um=self._pixel_size_um,
+            fov_id=fov_id,
         )
 
         if len(i_size) == 3:

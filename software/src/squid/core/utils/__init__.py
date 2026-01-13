@@ -13,6 +13,11 @@ from squid.core.utils.cache import (
     get_cached_value,
     set_cached_value,
 )
+from squid.core.utils.cancel_token import (
+    CancelToken,
+    CancellationError,
+    TokenState,
+)
 
 __all__ = [
     "safe_callback",
@@ -26,4 +31,8 @@ __all__ = [
     "save_last_used_saving_path",
     "get_cached_value",
     "set_cached_value",
+    # Cancellation
+    "CancelToken",
+    "CancellationError",
+    "TokenState",
 ]
