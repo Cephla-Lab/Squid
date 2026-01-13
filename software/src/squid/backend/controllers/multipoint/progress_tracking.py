@@ -75,6 +75,7 @@ class ProgressTracker:
         self,
         event_bus: Optional["EventBus"],
         experiment_id: str,
+        base_path: str = "",
     ):
         """
         Initialize the progress tracker.
@@ -82,9 +83,11 @@ class ProgressTracker:
         Args:
             event_bus: EventBus for publishing events (can be None for silent operation)
             experiment_id: Unique identifier for this acquisition
+            base_path: Base directory path for acquisition data
         """
         self._event_bus = event_bus
         self._experiment_id = experiment_id
+        self._base_path = base_path
         self._start_time: Optional[float] = None
         self._af_fov_count: int = 0
 
@@ -122,6 +125,7 @@ class ProgressTracker:
             AcquisitionStarted(
                 experiment_id=self._experiment_id,
                 timestamp=self._start_time,
+                base_path=self._base_path,
             )
         )
 

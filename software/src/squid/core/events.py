@@ -321,6 +321,7 @@ class AcquisitionStarted(Event):
 
     experiment_id: str
     timestamp: float
+    base_path: str = ""
 
 
 @dataclass
