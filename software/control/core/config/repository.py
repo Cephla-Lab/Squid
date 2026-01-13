@@ -143,16 +143,23 @@ class ConfigRepository:
         Save a Pydantic model to a YAML file.
 
         Creates parent directories if needed.
-        Raises on permission or disk errors.
+        Raises on permission or disk errors (after logging).
         """
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
-        data = model.model_dump(exclude_none=False, mode="json")
+            # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
+            data = model.model_dump(exclude_none=False, mode="json")
 
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        logger.debug(f"Saved config to {path}")
+            with open(path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            logger.debug(f"Saved config to {path}")
+        except PermissionError:
+            logger.error(f"Permission denied writing {path}")
+            raise
+        except (OSError, yaml.YAMLError) as e:
+            logger.error(f"Failed to save config to {path}: {e}")
+            raise
 
     def _get_profile_path(self, profile: Optional[str] = None) -> Path:
         """Get path for a profile, defaulting to current profile."""

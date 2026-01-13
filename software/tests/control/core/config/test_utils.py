@@ -229,6 +229,138 @@ class TestGetEffectiveChannels:
         assert result_confocal[0].illumination_settings.intensity["488nm"] == 90.0
 
 
+class TestEnabledChannelFiltering:
+    """Tests for enabled channel filtering behavior."""
+
+    def test_enabled_field_default_is_true(self):
+        """Test that enabled field defaults to True."""
+        channel = AcquisitionChannel(
+            name="Test Channel",
+            display_color="#00FF00",
+            illumination_settings=IlluminationSettings(
+                illumination_channels=["488nm"],
+                intensity={"488nm": 50.0},
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=100.0,
+                gain_mode=0.0,
+            ),
+        )
+        assert channel.enabled is True
+
+    def test_enabled_false_can_be_set(self):
+        """Test that enabled can be set to False."""
+        channel = AcquisitionChannel(
+            name="Test Channel",
+            display_color="#00FF00",
+            enabled=False,
+            illumination_settings=IlluminationSettings(
+                illumination_channels=["488nm"],
+                intensity={"488nm": 50.0},
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=100.0,
+                gain_mode=0.0,
+            ),
+        )
+        assert channel.enabled is False
+
+    def test_enabled_preserved_in_get_effective_channels(self):
+        """Test that enabled=False is preserved through get_effective_channels."""
+        general = GeneralChannelConfig(
+            version=1.1,
+            channels=[
+                AcquisitionChannel(
+                    name="Enabled Channel",
+                    display_color="#00FF00",
+                    enabled=True,
+                    illumination_settings=IlluminationSettings(
+                        illumination_channels=["488nm"],
+                        intensity={"488nm": 50.0},
+                    ),
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
+                ),
+                AcquisitionChannel(
+                    name="Disabled Channel",
+                    display_color="#FF0000",
+                    enabled=False,
+                    illumination_settings=IlluminationSettings(
+                        illumination_channels=["561nm"],
+                        intensity={"561nm": 50.0},
+                    ),
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
+                ),
+            ],
+        )
+
+        # Use empty objective config (not None) since merge_channel_configs expects ObjectiveChannelConfig
+        objective = ObjectiveChannelConfig(version=1.1, channels=[])
+
+        result = get_effective_channels(general, objective, confocal_mode=False)
+
+        assert len(result) == 2
+        enabled_ch = next(ch for ch in result if ch.name == "Enabled Channel")
+        disabled_ch = next(ch for ch in result if ch.name == "Disabled Channel")
+        assert enabled_ch.enabled is True
+        assert disabled_ch.enabled is False
+
+    def test_filter_enabled_channels(self):
+        """Test filtering to only enabled channels (simulates LiveController behavior)."""
+        channels = [
+            AcquisitionChannel(
+                name="Channel A",
+                display_color="#00FF00",
+                enabled=True,
+                illumination_settings=IlluminationSettings(intensity={"488nm": 50.0}),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+            AcquisitionChannel(
+                name="Channel B",
+                display_color="#FF0000",
+                enabled=False,
+                illumination_settings=IlluminationSettings(intensity={"561nm": 50.0}),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+            AcquisitionChannel(
+                name="Channel C",
+                display_color="#0000FF",
+                enabled=True,
+                illumination_settings=IlluminationSettings(intensity={"640nm": 50.0}),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+        ]
+
+        # This is the filtering logic used in LiveController.get_channels()
+        enabled_channels = [ch for ch in channels if ch.enabled]
+
+        assert len(enabled_channels) == 2
+        assert all(ch.enabled for ch in enabled_channels)
+        assert "Channel A" in [ch.name for ch in enabled_channels]
+        assert "Channel B" not in [ch.name for ch in enabled_channels]
+        assert "Channel C" in [ch.name for ch in enabled_channels]
+
+    def test_filter_all_disabled_returns_empty(self):
+        """Test that filtering all-disabled channels returns empty list."""
+        channels = [
+            AcquisitionChannel(
+                name="Channel A",
+                display_color="#00FF00",
+                enabled=False,
+                illumination_settings=IlluminationSettings(intensity={"488nm": 50.0}),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+        ]
+
+        enabled_channels = [ch for ch in channels if ch.enabled]
+        assert enabled_channels == []
+
+
 class TestCopyProfileConfigs:
     """Tests for copy_profile_configs function."""
 

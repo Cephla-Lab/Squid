@@ -14884,7 +14884,13 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         self.illumination_config = self.config_repo.get_illumination_config()
 
         if not self.general_config:
-            self._log.warning("No general config found")
+            self._log.warning("No general config found for current profile")
+            QMessageBox.warning(
+                self,
+                "No Configuration",
+                "No channel configuration found for the current profile.\n"
+                "Please ensure a profile is selected and has been initialized.",
+            )
             return
 
         # Determine column visibility based on registries and .ini settings
@@ -14892,8 +14898,6 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         wheel_names = self.config_repo.get_filter_wheel_names()
 
         # Check if filter wheel is enabled in .ini (even if no filter_wheels.yaml exists)
-        import control._def
-
         filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
 
         # Effective wheels: registry wheels OR implicit "Emission" if .ini enabled
@@ -14967,8 +14971,6 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         wheel_combo.addItem("(None)")
         wheel_names = self.config_repo.get_filter_wheel_names()
         # If filter wheel enabled in .ini but no registry, add default "Emission" wheel
-        import control._def
-
         filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
         if filter_wheel_enabled and not wheel_names:
             wheel_names = ["Emission"]
@@ -15001,7 +15003,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         if position_combo:
             self._populate_filter_positions(position_combo, wheel_name, None)
 
-    def _populate_filter_positions(self, combo: QComboBox, wheel_name: str, current_position: int):
+    def _populate_filter_positions(self, combo: QComboBox, wheel_name: str, current_position: Optional[int]):
         """Populate filter position dropdown based on selected wheel."""
         combo.clear()
 
@@ -15148,7 +15150,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             # Filter position
             position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
             if position_combo and isinstance(position_combo, QComboBox):
-                channel.filter_position = position_combo.currentData()
+                position = position_combo.currentData()
+                if position is None and channel.filter_wheel is not None:
+                    self._log.warning(f"Channel '{channel.name}' has filter wheel but no position selected")
+                channel.filter_position = position
 
             # Display color (from button property)
             color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
@@ -15156,7 +15161,17 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
                 channel.display_color = color_btn.property("color") or "#FFFFFF"
 
         # Save to YAML file
-        self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+        try:
+            self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
+            return
+        except Exception as e:
+            self._log.error(f"Unexpected error saving channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Failed to save configuration:\n{e}")
+            return
+
         self.signal_channels_updated.emit()
         self.accept()
 
@@ -15178,16 +15193,26 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         # Build current config from table (same logic as _save_changes but without saving)
         self._sync_table_to_config()
 
+        if not self.general_config:
+            QMessageBox.warning(self, "Export Failed", "No configuration loaded to export.")
+            return
+
         # Export to YAML
         try:
+            data = self.general_config.model_dump()
             with open(file_path, "w") as f:
-                yaml.dump(self.general_config.model_dump(), f, default_flow_style=False, sort_keys=False)
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
             QMessageBox.information(self, "Export Successful", f"Configuration exported to:\n{file_path}")
+        except (PermissionError, OSError) as e:
+            self._log.warning(f"Failed to write export file {file_path}: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Cannot write to file:\n{e}")
         except Exception as e:
-            QMessageBox.critical(self, "Export Failed", f"Failed to export configuration:\n{e}")
+            self._log.error(f"Unexpected error during export: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Unexpected error:\n{e}")
 
     def _import_config(self):
         """Import channel configuration from a YAML file."""
+        from pydantic import ValidationError
         from control.models import GeneralChannelConfig
         import yaml
 
@@ -15205,9 +15230,20 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         try:
             with open(file_path, "r") as f:
                 data = yaml.safe_load(f)
+            if data is None:
+                raise ValueError("File is empty or contains no valid YAML content")
             imported_config = GeneralChannelConfig.model_validate(data)
-        except Exception as e:
-            QMessageBox.critical(self, "Import Failed", f"Failed to load configuration:\n{e}")
+        except (PermissionError, FileNotFoundError) as e:
+            self._log.warning(f"Cannot read import file {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Cannot read file:\n{e}")
+            return
+        except yaml.YAMLError as e:
+            self._log.warning(f"Invalid YAML in {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"File contains invalid YAML:\n{e}")
+            return
+        except (ValidationError, ValueError) as e:
+            self._log.warning(f"Config validation failed for {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Configuration format error:\n{e}")
             return
 
         # Replace current config
@@ -15215,7 +15251,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
         # Refresh the table
         self.table.setRowCount(0)
-        self._populate_table()
+        self._load_channels()
 
         QMessageBox.information(
             self, "Import Successful", f"Imported {len(imported_config.channels)} channels from:\n{file_path}"
@@ -15616,5 +15652,9 @@ class FilterWheelConfiguratorDialog(QDialog):
             self.signal_config_updated.emit()
             QMessageBox.information(self, "Saved", "Filter wheel configuration saved.")
             self.accept()
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save filter wheel config to {config_path}: {e}")
+            QMessageBox.critical(self, "Error", f"Cannot write configuration file:\n{e}")
         except Exception as e:
+            self._log.error(f"Unexpected error saving filter wheel config: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")

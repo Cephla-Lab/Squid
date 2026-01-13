@@ -157,8 +157,13 @@ def _migrate_channel_v1_to_v1_1(
         position = old_filter.get(wheel_id, 1)
         # Map ID to name if registry available
         if filter_wheel_registry:
-            wheel = filter_wheel_registry.get_wheel_by_id(int(wheel_id))
-            channel["filter_wheel"] = wheel.name if wheel else None
+            try:
+                wheel_id_int = int(wheel_id)
+                wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
+                channel["filter_wheel"] = wheel.name if wheel else None
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid wheel_id '{wheel_id}' during migration, skipping wheel mapping")
+                channel["filter_wheel"] = None
         else:
             channel["filter_wheel"] = None  # Requires manual mapping
         channel["filter_position"] = position
@@ -173,8 +178,13 @@ def _migrate_channel_v1_to_v1_1(
         old_position = confocal.pop("emission_filter_wheel_position", None)
         # Map ID to name if registry available
         if old_wheel_id is not None and filter_wheel_registry:
-            wheel = filter_wheel_registry.get_wheel_by_id(int(old_wheel_id))
-            confocal["confocal_filter_wheel"] = wheel.name if wheel else None
+            try:
+                wheel_id_int = int(old_wheel_id)
+                wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
+                confocal["confocal_filter_wheel"] = wheel.name if wheel else None
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid confocal wheel_id '{old_wheel_id}' during migration")
+                confocal["confocal_filter_wheel"] = None
         else:
             confocal["confocal_filter_wheel"] = None
         confocal["confocal_filter_position"] = old_position
@@ -204,8 +214,13 @@ def _migrate_channel_v1_to_v1_1(
             old_wheel_id = override_confocal.pop("filter_wheel_id", None)
             old_position = override_confocal.pop("emission_filter_wheel_position", None)
             if old_wheel_id is not None and filter_wheel_registry:
-                wheel = filter_wheel_registry.get_wheel_by_id(int(old_wheel_id))
-                override_confocal["confocal_filter_wheel"] = wheel.name if wheel else None
+                try:
+                    wheel_id_int = int(old_wheel_id)
+                    wheel = filter_wheel_registry.get_wheel_by_id(wheel_id_int)
+                    override_confocal["confocal_filter_wheel"] = wheel.name if wheel else None
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid override confocal wheel_id '{old_wheel_id}' during migration")
+                    override_confocal["confocal_filter_wheel"] = None
             else:
                 override_confocal["confocal_filter_wheel"] = None
             override_confocal["confocal_filter_position"] = old_position

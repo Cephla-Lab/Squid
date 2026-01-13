@@ -638,6 +638,158 @@ class TestMigrationUtilities:
         migrated = migrate_illumination_config_v1_to_v1_1(config)
         assert migrated == config
 
+    def test_migrate_extracts_display_color_from_camera_settings(self):
+        """Test display_color is moved from camera_settings to channel level."""
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "camera_settings": {
+                        "camera_1": {
+                            "display_color": "#FF0000",
+                            "exposure_time_ms": 20.0,
+                            "gain_mode": 10.0,
+                        }
+                    },
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config)
+        assert migrated["channels"][0]["display_color"] == "#FF0000"
+        # display_color should not be in camera_settings anymore
+        assert "display_color" not in migrated["channels"][0]["camera_settings"]
+
+    def test_migrate_flattens_camera_settings(self):
+        """Test camera_settings is flattened from Dict to single object."""
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "camera_settings": {
+                        "camera_1": {
+                            "exposure_time_ms": 50.0,
+                            "gain_mode": 5.0,
+                            "pixel_format": "Mono12",
+                        }
+                    },
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config)
+        cam = migrated["channels"][0]["camera_settings"]
+        # Should be a flat dict, not nested
+        assert "camera_1" not in cam
+        assert cam["exposure_time_ms"] == 50.0
+        assert cam["gain_mode"] == 5.0
+        assert cam["pixel_format"] == "Mono12"
+
+    def test_migrate_emission_filter_wheel_position(self):
+        """Test emission_filter_wheel_position converts to filter_wheel/filter_position."""
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "emission_filter_wheel_position": {1: 3},
+                    "camera_settings": {"camera_1": {"exposure_time_ms": 20.0, "gain_mode": 0.0}},
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config)
+        ch = migrated["channels"][0]
+        assert "emission_filter_wheel_position" not in ch
+        assert ch["filter_position"] == 3
+        # Without registry, filter_wheel is None (needs manual mapping)
+        assert ch["filter_wheel"] is None
+
+    def test_migrate_with_filter_wheel_registry(self):
+        """Test migration maps wheel ID to name when registry provided."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[FilterWheelDefinition(name="Emission Wheel", id=1, positions={1: "DAPI", 2: "GFP"})]
+        )
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "emission_filter_wheel_position": {1: 2},
+                    "camera_settings": {"camera_1": {"exposure_time_ms": 20.0, "gain_mode": 0.0}},
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config, filter_wheel_registry=registry)
+        ch = migrated["channels"][0]
+        assert ch["filter_wheel"] == "Emission Wheel"
+        assert ch["filter_position"] == 2
+
+    def test_migrate_with_invalid_wheel_id_graceful(self):
+        """Test migration handles invalid wheel_id gracefully."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[FilterWheelDefinition(name="Emission Wheel", id=1, positions={1: "DAPI"})]
+        )
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    # Invalid wheel ID (string instead of int key)
+                    "emission_filter_wheel_position": {"invalid": 2},
+                    "camera_settings": {"camera_1": {"exposure_time_ms": 20.0, "gain_mode": 0.0}},
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        # Should not raise, should log warning and set filter_wheel to None
+        migrated = migrate_channel_config_v1_to_v1_1(config, filter_wheel_registry=registry)
+        ch = migrated["channels"][0]
+        assert ch["filter_wheel"] is None
+
+    def test_migrate_confocal_override_camera_settings(self):
+        """Test confocal_override.camera_settings is flattened."""
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "camera_settings": {"cam1": {"exposure_time_ms": 20.0, "gain_mode": 0.0}},
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                    "confocal_override": {"camera_settings": {"cam1": {"exposure_time_ms": 100.0, "gain_mode": 20.0}}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config)
+        override_cam = migrated["channels"][0]["confocal_override"]["camera_settings"]
+        assert override_cam["exposure_time_ms"] == 100.0
+        assert override_cam["gain_mode"] == 20.0
+
+    def test_migrate_default_display_color(self):
+        """Test default display_color is used when not in camera_settings."""
+        config = {
+            "version": 1,
+            "channels": [
+                {
+                    "name": "Test",
+                    "camera_settings": {
+                        "camera_1": {
+                            # No display_color
+                            "exposure_time_ms": 20.0,
+                            "gain_mode": 10.0,
+                        }
+                    },
+                    "illumination_settings": {"intensity": {"Test": 20.0}},
+                }
+            ],
+        }
+        migrated = migrate_channel_config_v1_to_v1_1(config)
+        # Should have default display_color
+        assert migrated["channels"][0]["display_color"] == "#FFFFFF"
+
 
 class TestAcquisitionChannelConstraints:
     """Tests for AcquisitionChannel validation constraints."""
