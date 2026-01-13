@@ -178,7 +178,7 @@ class TucsenCamera(AbstractCamera):
             self._config.camera_model == TucsenCameraModel.LIBRA_25
             or self._config.camera_model == TucsenCameraModel.LIBRA_22
         ):
-            self._camera_mode = ModeLibra25.SENSITIVE  # SENSITIVE as default
+            self._camera_mode = ModeLibra.SENSITIVE  # SENSITIVE as default
         elif (
             self._config.camera_model == TucsenCameraModel.ARIES_6506
             or self._config.camera_model == TucsenCameraModel.ARIES_6510
