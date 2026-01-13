@@ -19,13 +19,10 @@ import os
 from typing import Optional, Tuple, List, Callable
 
 from control._def import (
-    LASER_AF_Y_WINDOW,
-    LASER_AF_X_WINDOW,
-    LASER_AF_MIN_PEAK_WIDTH,
-    LASER_AF_MIN_PEAK_DISTANCE,
-    LASER_AF_MIN_PEAK_PROMINENCE,
-    LASER_AF_SPOT_SPACING,
-    INTENSITY_PROFILE_HALF_WIDTH,
+    LASER_AF_CC_THRESHOLD,
+    LASER_AF_CC_MIN_AREA,
+    LASER_AF_CC_MAX_AREA,
+    LASER_AF_CC_ROW_TOLERANCE,
     SpotDetectionMode,
     FocusMeasureOperator,
 )
@@ -208,33 +205,23 @@ def find_spot_location(
     params: Optional[dict] = None,
     filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
-    reference_intensity_min: Optional[float] = None,
-    reference_intensity_max: Optional[float] = None,
-) -> Optional[Tuple[float, float, np.ndarray, float, float]]:
-    """Find the location of a spot in an image.
+) -> Optional[Tuple[float, float]]:
+    """Find the location of a spot in an image using connected components analysis.
 
     Args:
         image: Input grayscale image as numpy array
         mode: Which spot to detect when multiple spots are present
         params: Dictionary of parameters for spot detection. If None, default parameters will be used.
             Supported parameters:
-            - y_window (int): Half-height of y-axis crop (default: 96)
-            - x_window (int): Half-width of centroid window (default: 20)
-            - peak_width (int): Minimum width of peaks (default: 10)
-            - peak_distance (int): Minimum distance between peaks (default: 10)
-            - peak_prominence (float): Minimum peak prominence (default: 100)
-            - intensity_threshold (float): Threshold for intensity filtering (default: 0.1)
-            - spot_spacing (int): Expected spacing between spots for multi-spot modes (default: 100)
+            - threshold (float): Intensity threshold for binarization (default: 8)
+            - min_area (int): Minimum component area in pixels (default: 5)
+            - max_area (int): Maximum component area in pixels (default: 5000)
+            - row_tolerance (float): Allowed deviation from expected row in pixels (default: 50)
         filter_sigma: Sigma for Gaussian filter, or None to skip filtering
         debug_plot: If True, show debug plots
-        reference_intensity_min: Min intensity for normalization. If None, use current image's min.
-        reference_intensity_max: Max intensity for normalization. If None, use current image's max.
 
     Returns:
-        Optional[Tuple[float, float, np.ndarray, float, float]]: (x, y, intensity_profile, intensity_min, intensity_max)
-            where intensity_profile is a 1D array of length 400 (INTENSITY_PROFILE_HALF_WIDTH * 2) centered
-            at the detected peak, and intensity_min/max are the values used for normalization.
-            Returns None if detection fails.
+        Optional[Tuple[float, float]]: (x, y) coordinates of spot centroid, or None if detection fails.
 
     Raises:
         ValueError: If image is invalid or mode is incompatible with detected spots
@@ -243,15 +230,15 @@ def find_spot_location(
     if image is None or not isinstance(image, np.ndarray):
         raise ValueError("Invalid input image")
 
-    # Default parameters
+    if image.size == 0:
+        raise ValueError("Invalid input image")
+
+    # Default parameters for connected component detection
     default_params = {
-        "y_window": LASER_AF_Y_WINDOW,  # Half-height of y-axis crop
-        "x_window": LASER_AF_X_WINDOW,  # Half-width of centroid window
-        "min_peak_width": LASER_AF_MIN_PEAK_WIDTH,  # Minimum width of peaks
-        "min_peak_distance": LASER_AF_MIN_PEAK_DISTANCE,  # Minimum distance between peaks
-        "min_peak_prominence": LASER_AF_MIN_PEAK_PROMINENCE,  # Minimum peak prominence
-        "intensity_threshold": 0.1,  # Threshold for intensity filtering
-        "spot_spacing": LASER_AF_SPOT_SPACING,  # Expected spacing between spots
+        "threshold": LASER_AF_CC_THRESHOLD,
+        "min_area": LASER_AF_CC_MIN_AREA,
+        "max_area": LASER_AF_CC_MAX_AREA,
+        "row_tolerance": LASER_AF_CC_ROW_TOLERANCE,
     }
 
     if params is not None:
@@ -260,188 +247,197 @@ def find_spot_location(
 
     try:
         # Apply Gaussian filter if requested
+        working_image = image.copy()
         if filter_sigma is not None and filter_sigma > 0:
-            filtered = gaussian_filter(image.astype(float), sigma=filter_sigma)
-            image = np.clip(filtered, 0, 255).astype(np.uint8)
+            filtered = gaussian_filter(working_image.astype(float), sigma=filter_sigma)
+            working_image = np.clip(filtered, 0, 255).astype(np.uint8)
 
-        # Get the y position of the spots
-        y_intensity_profile = np.sum(image, axis=1)
-        if np.all(y_intensity_profile == 0):
-            raise ValueError("No spots detected in image")
+        # Quick check - if max intensity below threshold, no spot visible
+        if working_image.max() <= p["threshold"]:
+            raise ValueError("No spot detected: max intensity below threshold")
 
-        peak_y = np.argmax(y_intensity_profile)
+        # Binarize the image
+        binary = (working_image > p["threshold"]).astype(np.uint8)
 
-        # Validate peak_y location
-        if peak_y < p["y_window"] or peak_y > image.shape[0] - p["y_window"]:
-            raise ValueError("Spot too close to image edge")
+        # Find connected components
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
 
-        # Crop along the y axis
-        cropped_image = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
+        # Expected row position (center of image)
+        expected_row = working_image.shape[0] / 2.0
 
-        # Get signal along x (raw intensities)
-        x_intensity_profile_raw = np.sum(cropped_image, axis=0).astype(float)
+        # Filter valid components and collect spot candidates
+        valid_spots = []
+        for i in range(1, num_labels):  # Skip background (label 0)
+            area = stats[i, cv2.CC_STAT_AREA]
+            cx, cy = centroids[i]
 
-        # Compute local min/max for normalization (from sums)
-        local_min = np.min(x_intensity_profile_raw)
-        local_max = np.max(x_intensity_profile_raw)
+            # Size filter
+            if area < p["min_area"] or area > p["max_area"]:
+                continue
 
-        # Normalize intensity profile for peak detection (always use local normalization)
-        if local_max - local_min > 0:
-            x_intensity_profile = (x_intensity_profile_raw - local_min) / (local_max - local_min)
-        else:
-            raise ValueError("Cannot normalize: local_max equals local_min")
+            # Row position filter
+            if abs(cy - expected_row) > p["row_tolerance"]:
+                continue
 
-        # Find all peaks
-        peaks = signal.find_peaks(
-            x_intensity_profile,
-            width=p["min_peak_width"],
-            distance=p["min_peak_distance"],
-            prominence=p["min_peak_prominence"],
-        )
-        peak_locations = peaks[0]
-        peak_properties = peaks[1]
+            # Calculate mean intensity of this component for sorting
+            component_mask = labels == i
+            intensity = working_image[component_mask].mean()
 
-        if len(peak_locations) == 0:
-            raise ValueError("No peaks detected")
+            valid_spots.append(
+                {
+                    "label": i,
+                    "col": cx,
+                    "row": cy,
+                    "area": area,
+                    "intensity": intensity,
+                    "mask": component_mask,
+                }
+            )
+
+        if len(valid_spots) == 0:
+            raise ValueError("No valid spots detected after filtering")
+
+        # Sort spots by x-coordinate (column) for mode-based selection
+        valid_spots.sort(key=lambda s: s["col"])
 
         # Handle different spot detection modes
         if mode == SpotDetectionMode.SINGLE:
-            if len(peak_locations) > 1:
-                raise ValueError(f"Found {len(peak_locations)} peaks but expected single peak")
-            peak_x = peak_locations[0]
-        elif mode == SpotDetectionMode.DUAL_RIGHT:
-            peak_x = peak_locations[-1]
+            if len(valid_spots) > 1:
+                raise ValueError(f"Found {len(valid_spots)} spots but expected single spot")
+            selected_spot = valid_spots[0]
         elif mode == SpotDetectionMode.DUAL_LEFT:
-            peak_x = peak_locations[0]
+            selected_spot = valid_spots[0]  # Leftmost
+        elif mode == SpotDetectionMode.DUAL_RIGHT:
+            selected_spot = valid_spots[-1]  # Rightmost
         elif mode == SpotDetectionMode.MULTI_RIGHT:
-            peak_x = peak_locations[-1]
+            selected_spot = valid_spots[-1]  # Rightmost
         elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
             raise NotImplementedError("MULTI_SECOND_RIGHT is not supported")
-            # if len(peak_locations) < 2:
-            #     raise ValueError("Not enough peaks for MULTI_SECOND_RIGHT mode")
-            # peak_x = peak_locations[-2]
-            # (peak_x, _) = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
-            # peak_x = peak_x - p["spot_spacing"]
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
-        # Extract centered intensity profile from raw values (200 pixels on each side of peak)
-        profile_start = peak_x - INTENSITY_PROFILE_HALF_WIDTH
-        profile_end = peak_x + INTENSITY_PROFILE_HALF_WIDTH
-        profile_length = INTENSITY_PROFILE_HALF_WIDTH * 2
+        # Calculate intensity-weighted centroid for sub-pixel accuracy
+        component_mask = selected_spot["mask"]
+        y_coords, x_coords = np.where(component_mask)
+        intensities = working_image[component_mask].astype(float)
 
-        if profile_start < 0 or profile_end > len(x_intensity_profile_raw):
-            # Handle edge cases with padding
-            centered_profile_raw = np.zeros(profile_length, dtype=x_intensity_profile_raw.dtype)
-            src_start = max(0, profile_start)
-            src_end = min(len(x_intensity_profile_raw), profile_end)
-            dst_start = max(0, -profile_start)
-            dst_end = dst_start + (src_end - src_start)
-            centered_profile_raw[dst_start:dst_end] = x_intensity_profile_raw[src_start:src_end]
-        else:
-            centered_profile_raw = x_intensity_profile_raw[profile_start:profile_end].copy()
+        # Subtract background (minimum intensity in component)
+        intensities = intensities - intensities.min()
 
-        # Normalize the centered profile
-        # Use reference min/max if provided (for measurement), otherwise use local (for initialization)
-        if reference_intensity_min is not None and reference_intensity_max is not None:
-            norm_min = reference_intensity_min
-            norm_max = reference_intensity_max
+        sum_intensity = intensities.sum()
+        if sum_intensity == 0:
+            # Fall back to geometric centroid if all intensities are equal
+            centroid_x = selected_spot["col"]
+            centroid_y = selected_spot["row"]
         else:
-            norm_min = local_min
-            norm_max = local_max
-
-        # Avoid division by zero
-        if norm_max - norm_min > 0:
-            centered_profile = (centered_profile_raw - norm_min) / (norm_max - norm_min)
-        else:
-            centered_profile = np.zeros_like(centered_profile_raw)
+            centroid_x = (x_coords * intensities).sum() / sum_intensity
+            centroid_y = (y_coords * intensities).sum() / sum_intensity
 
         if debug_plot:
-            import matplotlib.pyplot as plt
+            _show_connected_components_debug_plot(
+                working_image,
+                binary,
+                labels,
+                num_labels,
+                valid_spots,
+                selected_spot,
+                centroid_x,
+                centroid_y,
+                expected_row,
+                p,
+                mode,
+            )
 
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
-
-            # Plot original image
-            ax1.imshow(image, cmap="gray")
-            ax1.axhline(y=peak_y, color="r", linestyle="--", label="Peak Y")
-            ax1.axhline(y=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
-            ax1.axhline(y=peak_y + p["y_window"], color="g", linestyle="--")
-            ax1.legend()
-            ax1.set_title("Original Image with Y-crop Lines")
-
-            # Plot Y intensity profile
-            ax2.plot(y_intensity_profile)
-            ax2.axvline(x=peak_y, color="r", linestyle="--", label="Peak Y")
-            ax2.axvline(x=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
-            ax2.axvline(x=peak_y + p["y_window"], color="g", linestyle="--")
-            ax2.legend()
-            ax2.set_title("Y Intensity Profile")
-
-            # Plot X intensity profile and detected peaks
-            ax3.plot(x_intensity_profile, label="Intensity Profile")
-            ax3.plot(peak_locations, x_intensity_profile[peak_locations], "x", color="r", label="All Peaks")
-
-            # Plot prominence for all peaks
-            for peak_idx, prominence in zip(peak_locations, peak_properties["prominences"]):
-                ax3.vlines(
-                    x=peak_idx,
-                    ymin=x_intensity_profile[peak_idx] - prominence,
-                    ymax=x_intensity_profile[peak_idx],
-                    color="g",
-                )
-
-            # Highlight selected peak
-            ax3.plot(peak_x, x_intensity_profile[peak_x], "o", color="yellow", markersize=10, label="Selected Peak")
-            ax3.axvline(x=peak_x, color="yellow", linestyle="--", alpha=0.5)
-
-            ax3.legend()
-            ax3.set_title(f"X Intensity Profile (Mode: {mode.name})")
-
-            plt.tight_layout()
-            plt.show()
-
-        # Calculate centroid in window around selected peak
-        centroid_x, centroid_y = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
-        # Return local min/max (the raw intensity values from this image)
-        return (centroid_x, centroid_y, centered_profile, local_min, local_max)
+        return (centroid_x, centroid_y)
 
     except (ValueError, NotImplementedError) as e:
         raise e
     except Exception:
-        # TODO: this should not be a blank Exception catch, we should jsut return None above if we have a valid "no spots"
-        # case, and let exceptions raise otherwise.
-        _log.exception(f"Error in spot detection")
+        _log.exception("Error in spot detection")
         return None
 
 
-def _calculate_spot_centroid(cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict) -> Tuple[float, float]:
-    """Calculate precise centroid location in window around peak."""
-    h, w = cropped_image.shape
-    x, y = np.meshgrid(range(w), range(h))
+def _show_connected_components_debug_plot(
+    image: np.ndarray,
+    binary: np.ndarray,
+    labels: np.ndarray,
+    num_labels: int,
+    valid_spots: List[dict],
+    selected_spot: dict,
+    centroid_x: float,
+    centroid_y: float,
+    expected_row: float,
+    params: dict,
+    mode: SpotDetectionMode,
+) -> None:
+    """Show debug visualization for connected components spot detection."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
 
-    # Crop region around the peak
-    intensity_window = cropped_image[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
-    x_coords = x[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
-    y_coords = y[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Process intensity values
-    intensity_window = intensity_window.astype(float)
-    intensity_window = intensity_window - np.amin(intensity_window)
-    if np.amax(intensity_window) > 0:  # Avoid division by zero
-        intensity_window[intensity_window / np.amax(intensity_window) < params["intensity_threshold"]] = 0
+    # Plot 1: Original image with centroid
+    ax1 = axes[0, 0]
+    ax1.imshow(image, cmap="gray")
+    ax1.axhline(y=expected_row, color="cyan", linestyle="--", alpha=0.5, label="Expected row")
+    ax1.axhline(y=expected_row - params["row_tolerance"], color="cyan", linestyle=":", alpha=0.3)
+    ax1.axhline(y=expected_row + params["row_tolerance"], color="cyan", linestyle=":", alpha=0.3)
+    ax1.plot(centroid_x, centroid_y, "r+", markersize=20, markeredgewidth=2, label="Detected centroid")
+    ax1.legend(loc="upper right")
+    ax1.set_title(f"Original Image (threshold={params['threshold']})")
 
-    # Calculate centroid
-    sum_intensity = np.sum(intensity_window)
-    if sum_intensity == 0:
-        raise ValueError("No significant intensity in centroid window")
+    # Plot 2: Binary mask
+    ax2 = axes[0, 1]
+    ax2.imshow(binary, cmap="gray")
+    ax2.set_title(f"Binary Mask (threshold > {params['threshold']})")
 
-    centroid_x = np.sum(x_coords * intensity_window) / sum_intensity
-    centroid_y = np.sum(y_coords * intensity_window) / sum_intensity
+    # Plot 3: Connected components with labels
+    ax3 = axes[1, 0]
+    # Create colored label image
+    colored_labels = np.zeros((*labels.shape, 3), dtype=np.uint8)
+    colors = plt.cm.tab20(np.linspace(0, 1, max(num_labels, 20)))
+    for i in range(1, num_labels):
+        colored_labels[labels == i] = (colors[i % 20, :3] * 255).astype(np.uint8)
+    ax3.imshow(colored_labels)
+    # Mark valid spots
+    for spot in valid_spots:
+        ax3.plot(spot["col"], spot["row"], "go", markersize=8)
+    # Mark selected spot
+    ax3.plot(selected_spot["col"], selected_spot["row"], "r*", markersize=15, label="Selected")
+    ax3.legend(loc="upper right")
+    ax3.set_title(f"Connected Components ({num_labels-1} total, {len(valid_spots)} valid)")
 
-    # Convert back to original image coordinates
-    centroid_y = peak_y - params["y_window"] + centroid_y
+    # Plot 4: Zoomed view around selected spot
+    ax4 = axes[1, 1]
+    zoom_size = 100
+    x_center = int(centroid_x)
+    y_center = int(centroid_y)
+    x_start = max(0, x_center - zoom_size)
+    x_end = min(image.shape[1], x_center + zoom_size)
+    y_start = max(0, y_center - zoom_size)
+    y_end = min(image.shape[0], y_center + zoom_size)
+    zoomed = image[y_start:y_end, x_start:x_end]
+    ax4.imshow(zoomed, cmap="gray")
+    # Adjust centroid position for zoomed view
+    local_cx = centroid_x - x_start
+    local_cy = centroid_y - y_start
+    ax4.plot(local_cx, local_cy, "r+", markersize=20, markeredgewidth=2)
+    # Show component boundary
+    zoomed_mask = selected_spot["mask"][y_start:y_end, x_start:x_end]
+    ax4.contour(zoomed_mask, colors="yellow", linewidths=1)
+    ax4.set_title(f"Zoomed View - Mode: {mode.name}\nCentroid: ({centroid_x:.2f}, {centroid_y:.2f})")
 
-    return (centroid_x, centroid_y)
+    # Add info text
+    spot_coords = ", ".join([f"({s['col']:.1f}, {s['row']:.1f})" for s in valid_spots])
+    info_text = (
+        f"Selected spot: area={selected_spot['area']}, intensity={selected_spot['intensity']:.1f}\n"
+        f"All valid spots: [{spot_coords}]"
+    )
+    fig.text(0.5, 0.02, info_text, ha="center", fontsize=9, family="monospace")
+
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.1)
+    plt.show()
 
 
 def get_squid_repo_state_description() -> Optional[str]:

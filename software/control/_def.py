@@ -602,17 +602,12 @@ LASER_AF_RANGE = 100
 DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
 SPOT_CROP_SIZE = 100
 CORRELATION_THRESHOLD = 0.7
-INTENSITY_PROFILE_RMSE_THRESHOLD = (
-    0.2  # Maximum RMSE for intensity profile match (lower is better, profiles normalized 0-1)
-)
-INTENSITY_PROFILE_HALF_WIDTH = 200  # Half-width of centered intensity profile (total length = 400)
 PIXEL_TO_UM_CALIBRATION_DISTANCE = 6.0
-LASER_AF_Y_WINDOW = 96
-LASER_AF_X_WINDOW = 20
-LASER_AF_MIN_PEAK_WIDTH = 10
-LASER_AF_MIN_PEAK_DISTANCE = 10
-LASER_AF_MIN_PEAK_PROMINENCE = 0.20
-LASER_AF_SPOT_SPACING = 100
+# Connected component spot detection parameters
+LASER_AF_CC_THRESHOLD = 8  # Intensity threshold for binarization
+LASER_AF_CC_MIN_AREA = 5  # Minimum component area in pixels
+LASER_AF_CC_MAX_AREA = 5000  # Maximum component area in pixels
+LASER_AF_CC_ROW_TOLERANCE = 50  # Allowed deviation from expected row (pixels)
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 LASER_AF_FILTER_SIGMA = None
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200

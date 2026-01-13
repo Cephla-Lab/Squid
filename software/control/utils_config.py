@@ -18,12 +18,10 @@ from control._def import (
     SPOT_CROP_SIZE,
     CORRELATION_THRESHOLD,
     PIXEL_TO_UM_CALIBRATION_DISTANCE,
-    LASER_AF_Y_WINDOW,
-    LASER_AF_X_WINDOW,
-    LASER_AF_MIN_PEAK_WIDTH,
-    LASER_AF_MIN_PEAK_DISTANCE,
-    LASER_AF_MIN_PEAK_PROMINENCE,
-    LASER_AF_SPOT_SPACING,
+    LASER_AF_CC_THRESHOLD,
+    LASER_AF_CC_MIN_AREA,
+    LASER_AF_CC_MAX_AREA,
+    LASER_AF_CC_ROW_TOLERANCE,
     LASER_AF_FILTER_SIGMA,
 )
 from control._def import SpotDetectionMode
@@ -52,21 +50,16 @@ class LaserAFConfig(BaseModel):
     focus_camera_exposure_time_ms: float = FOCUS_CAMERA_EXPOSURE_TIME_MS
     focus_camera_analog_gain: float = FOCUS_CAMERA_ANALOG_GAIN
     spot_detection_mode: SpotDetectionMode = SpotDetectionMode(LASER_AF_SPOT_DETECTION_MODE)
-    y_window: int = LASER_AF_Y_WINDOW  # Half-height of y-axis crop
-    x_window: int = LASER_AF_X_WINDOW  # Half-width of centroid window
-    min_peak_width: float = LASER_AF_MIN_PEAK_WIDTH  # Minimum width of peaks
-    min_peak_distance: float = LASER_AF_MIN_PEAK_DISTANCE  # Minimum distance between peaks
-    min_peak_prominence: float = LASER_AF_MIN_PEAK_PROMINENCE  # Minimum peak prominence
-    spot_spacing: float = LASER_AF_SPOT_SPACING  # Expected spacing between spots
+    # Connected component spot detection parameters
+    cc_threshold: float = LASER_AF_CC_THRESHOLD  # Intensity threshold for binarization
+    cc_min_area: int = LASER_AF_CC_MIN_AREA  # Minimum component area in pixels
+    cc_max_area: int = LASER_AF_CC_MAX_AREA  # Maximum component area in pixels
+    cc_row_tolerance: float = LASER_AF_CC_ROW_TOLERANCE  # Allowed deviation from expected row
     filter_sigma: Optional[int] = LASER_AF_FILTER_SIGMA  # Sigma for Gaussian filter
     x_reference: Optional[float] = 0  # Reference position in um
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
     reference_image_shape: Optional[tuple] = None
     reference_image_dtype: Optional[str] = None
-    reference_intensity_profile: Optional[str] = None  # Base64 encoded 1D intensity profile for CC check
-    reference_intensity_profile_dtype: Optional[str] = None
-    reference_intensity_min: Optional[float] = None  # Min sum value used for profile normalization
-    reference_intensity_max: Optional[float] = None  # Max sum value used for profile normalization
     initialize_crop_width: int = 1200  # Width of the center crop used for initialization
     initialize_crop_height: int = 800  # Height of the center crop used for initialization
 
@@ -77,14 +70,6 @@ class LaserAFConfig(BaseModel):
             return None
         data = base64.b64decode(self.reference_image.encode("utf-8"))
         return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(self.reference_image_shape)
-
-    @property
-    def reference_intensity_profile_array(self) -> Optional[np.ndarray]:
-        """Convert stored base64 intensity profile data back to numpy array"""
-        if self.reference_intensity_profile is None:
-            return None
-        data = base64.b64decode(self.reference_intensity_profile.encode("utf-8"))
-        return np.frombuffer(data, dtype=np.dtype(self.reference_intensity_profile_dtype))
 
     @field_validator("spot_detection_mode", mode="before")
     @classmethod
@@ -106,30 +91,6 @@ class LaserAFConfig(BaseModel):
         self.reference_image_shape = image.shape
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
-
-    def set_reference_intensity_profile(
-        self,
-        profile: Optional[np.ndarray],
-        intensity_min: Optional[float] = None,
-        intensity_max: Optional[float] = None,
-    ) -> None:
-        """Convert numpy array to base64 encoded string or clear if None.
-
-        Args:
-            profile: The intensity profile array, or None to clear
-            intensity_min: Min intensity value used for normalization
-            intensity_max: Max intensity value used for normalization
-        """
-        if profile is None:
-            self.reference_intensity_profile = None
-            self.reference_intensity_profile_dtype = None
-            self.reference_intensity_min = None
-            self.reference_intensity_max = None
-            return
-        self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
-        self.reference_intensity_profile_dtype = str(profile.dtype)
-        self.reference_intensity_min = intensity_min
-        self.reference_intensity_max = intensity_max
 
     def model_dump(self, serialize=False, **kwargs):
         """Ensure proper serialization of enums to strings"""
