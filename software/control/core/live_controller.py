@@ -441,7 +441,7 @@ class LiveController:
     # set microscope mode
     def set_microscope_mode(self, configuration: "AcquisitionChannel"):
         if configuration is None:
-            self._log.warning("set_microscope_mode() called with None configuration, ignoring")
+            self._log.error("set_microscope_mode() called with None configuration - this is a bug in the caller")
             return
         self.currentConfiguration = configuration
         self._log.info("setting microscope mode to " + self.currentConfiguration.name)

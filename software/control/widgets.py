@@ -12217,7 +12217,13 @@ class LaserAutofocusControlWidget(QFrame):
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()
-        self.laserAutofocusController.measure_displacement()
+        result = self.laserAutofocusController.measure_displacement()
+        if math.isnan(result):
+            QMessageBox.warning(
+                self,
+                "Measurement Failed",
+                "Could not measure displacement. Please ensure the reference position is set.",
+            )
         if was_live:
             self.liveController.start_live()
 

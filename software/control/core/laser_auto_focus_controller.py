@@ -328,7 +328,7 @@ class LaserAutofocusController(QObject):
             return finish_with(float("nan"))  # Signal invalid measurement
 
         if self.laser_af_properties.x_reference is None:
-            self._log.error("Cannot calculate displacement - reference position not set")
+            self._log.warning("Cannot calculate displacement - reference position not set")
             return finish_with(float("nan"))
 
         x, y = result
@@ -475,7 +475,7 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
-        failure_return_value = False, np.array([0.0, 0.0])
+        failure_return_value = False, float("nan")
 
         # Get current spot image
         try:
