@@ -1161,7 +1161,9 @@ class PreferencesDialog(QDialog):
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
-        self.enable_memory_profiling_checkbox.setChecked(control._def.ENABLE_MEMORY_PROFILING)
+        self.enable_memory_profiling_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_memory_profiling", control._def.ENABLE_MEMORY_PROFILING)
+        )
         self.enable_memory_profiling_checkbox.setToolTip(
             "Show real-time RAM usage in status bar during acquisition.\n"
             "Also logs periodic memory snapshots to help diagnose memory issues."
@@ -1793,7 +1795,7 @@ class PreferencesDialog(QDialog):
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         # Advanced - Diagnostics (live update)
-        old_val = self._get_config_bool("GENERAL", "enable_memory_profiling", False)
+        old_val = self._get_config_bool("GENERAL", "enable_memory_profiling", control._def.ENABLE_MEMORY_PROFILING)
         new_val = self.enable_memory_profiling_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable RAM Monitoring", str(old_val), str(new_val), False))

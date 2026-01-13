@@ -68,10 +68,11 @@ class LaserAutofocusController(QObject):
 
     def initialize_manual(self, config: LaserAFConfig) -> None:
         """Initialize laser autofocus with manual parameters."""
+        # x_reference needs adjustment only if set
+        x_ref_adjusted = config.x_reference - config.x_offset if config.x_reference is not None else None
         adjusted_config = config.model_copy(
             update={
-                "x_reference": config.x_reference
-                - config.x_offset,  # self.x_reference is relative to the cropped region
+                "x_reference": x_ref_adjusted,  # self.x_reference is relative to the cropped region
                 "x_offset": int((config.x_offset // 8) * 8),
                 "y_offset": int((config.y_offset // 2) * 2),
                 "width": int((config.width // 8) * 8),
@@ -326,6 +327,10 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to detect laser spot during displacement measurement")
             return finish_with(float("nan"))  # Signal invalid measurement
 
+        if self.laser_af_properties.x_reference is None:
+            self._log.error("Cannot calculate displacement - reference position not set")
+            return finish_with(float("nan"))
+
         x, y = result
         # calculate displacement
         displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
@@ -503,6 +508,10 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to get images for cross-correlation check")
             return failure_return_value
 
+        if self.laser_af_properties.x_reference is None:
+            self._log.error("Cannot verify spot alignment - reference position not set")
+            return failure_return_value
+
         # Crop and normalize current image
         center_x = int(self.laser_af_properties.x_reference)
         center_y = int(current_image.shape[0] / 2)
@@ -580,7 +589,7 @@ class LaserAutofocusController(QObject):
                 }
                 result = utils.find_spot_location(
                     image,
-                    mode=self.laser_af_properties.spot_detection_mode,
+                    mode=self.laser_af_properties.get_spot_detection_mode(),
                     params=spot_detection_params,
                     filter_sigma=self.laser_af_properties.filter_sigma,
                 )
@@ -600,6 +609,7 @@ class LaserAutofocusController(QObject):
 
                 if (
                     self.laser_af_properties.has_reference
+                    and self.laser_af_properties.x_reference is not None
                     and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
                     > self.laser_af_properties.laser_af_range
                 ):
