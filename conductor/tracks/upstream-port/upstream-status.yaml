@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-01-12T21:56:07'
+  last_verified: '2026-01-12T16:01:35'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -31,10 +31,13 @@ commits:
     title: 'fix: Update stale channel_configuration_manager references after PR #441 (#449)'
     status: skipped
     skip_reason: superseded
-    skip_justification: |
-      This commit fixes stale references after PR #441 which removed ChannelConfigurationManager.
+    skip_justification: 'This commit fixes stale references after PR #441 which removed ChannelConfigurationManager.
+
       arch_v2 keeps its own ChannelConfigurationManager which works differently, so this fix
-      doesn't apply. Part of Config Refactor suite marked superseded.
+
+      doesn''t apply. Part of Config Refactor suite marked superseded.
+
+      '
     skip_date: '2026-01-12'
   '57378358':
     title: 'feat: Add acquisition throttling settings in Preferences (#444)'
@@ -47,33 +50,47 @@ commits:
     title: 'fix: Fix NapariLiveWidget Qt signal connection and camera attribute (#443)'
     status: skipped
     skip_reason: already-fixed
-    skip_justification: |
-      arch_v2 NapariLiveWidget already has correct .connect() syntax and
+    skip_justification: 'arch_v2 NapariLiveWidget already has correct .connect() syntax and
+
       takes exposure_limits as constructor parameter rather than accessing
+
       self.camera directly. The arch_v2 design prevents this bug.
+
+      '
     skip_date: '2026-01-12'
   4234d34b:
     title: 'feat: NDViewer tab with live viewing and plate navigation (#428)'
     status: ported
     ported_in: 2327bb84
     ported_date: '2026-01-12'
-    notes: |
-      Ported with arch_v2 EventBus integration. Added ndviewer_light as git submodule
+    notes: 'Ported with arch_v2 EventBus integration. Added ndviewer_light as git submodule
+
       at software/src/squid/ui/widgets/ndviewer_light (using weallen fork). Includes:
+
       - NDViewerTab widget with lazy loading
+
       - Auto-update on AcquisitionStarted event via EventBus
+
       - Plate view → NDViewer FOV navigation on double-click
+
       - Updated fluidics_v2 submodule to weallen fork
+
+      '
   3866b183:
     title: 'refactor: Remove legacy config managers, centralize in ConfigRepository (#441)'
     status: skipped
     skip_reason: superseded
-    skip_justification: |
-      arch_v2 has its own config management architecture using ChannelConfigurationManager
+    skip_justification: 'arch_v2 has its own config management architecture using ChannelConfigurationManager
+
       with JSON format and Pydantic models in core/config/channel_definitions.py. The
+
       upstream ConfigRepository approach (YAML format, user_profiles/ structure) provides
+
       similar functionality but with different design choices. Porting would require
+
       significant refactoring with minimal functional benefit.
+
+      '
     skip_date: '2026-01-12'
   e9c6249b:
     title: 'fix: Backpressure byte tracking and multiprocessing resource cleanup (#442)'
@@ -101,13 +118,19 @@ commits:
     title: 'refactor: New design for illumination channel configs and acquisition configs (#417)'
     status: skipped
     skip_reason: superseded
-    skip_justification: |
-      arch_v2 already has equivalent Pydantic models in core/config/channel_definitions.py
+    skip_justification: 'arch_v2 already has equivalent Pydantic models in core/config/channel_definitions.py
+
       (ChannelDefinition, ObjectiveChannelSettings, ChannelDefinitionsConfig) with similar
+
       two-tier architecture. The upstream approach uses YAML and machine_configs/user_profiles/
+
       structure while arch_v2 uses JSON with configurations/ structure. Both provide
+
       type-safe config management; porting would be significant refactor for organizational
+
       differences rather than new functionality.
+
+      '
     skip_date: '2026-01-12'
   97f85d1b:
     title: 'feat: Add backpressure status bar widget for acquisition monitoring (#438)'
@@ -146,9 +169,11 @@ commits:
     title: 'docs: Add simulated disk I/O documentation (#432)'
     status: skipped
     skip_reason: not-applicable
-    skip_justification: |
-      Documentation for upstream repo. arch_v2 has inline docstrings and tooltips
+    skip_justification: 'Documentation for upstream repo. arch_v2 has inline docstrings and tooltips
+
       in the implementation. No separate docs file needed.
+
+      '
     skip_date: '2026-01-12'
   0ce8d626:
     title: 'docs: Move dynamic-widget-visibility.md to software/docs/pending (#433)'
@@ -161,10 +186,11 @@ commits:
     status: ported
     ported_in: a8121d30
     ported_date: '2026-01-12'
-    notes: |
-      Ported simulated disk I/O mode with arch_v2 adaptations. Uses lazy imports
+    notes: 'Ported simulated disk I/O mode with arch_v2 adaptations. Uses lazy imports
+
       to avoid circular dependencies. Settings UI in Preferences > Advanced.
-    skip_date: '2026-01-12'
+
+      '
   fc57e3da:
     title: 'feat: Persist last used base saving path for multipoint widgets (#430)'
     status: ported
@@ -182,22 +208,32 @@ commits:
     status: ported
     ported_in: 353673d4
     ported_date: '2026-01-12'
-    notes: |
-      Ported with arch_v2 EventBus pattern. TCP server uses EventBus commands exclusively
+    notes: 'Ported with arch_v2 EventBus pattern. TCP server uses EventBus commands exclusively
+
       for decoupled communication rather than direct widget manipulation. Includes:
+
       - TCPControlServer with run_acquisition_from_yaml command
+
       - CLI script at tools/run_acquisition.py
+
       - --start-server flag for main_hcs.py
+
+      '
   afd71c97:
     title: 'feat: Add MCP commands for view settings control (RAM debugging) (#425)'
     status: skipped
     skip_reason: superseded
-    skip_justification: |
-      MCP commands for runtime view settings control. Relies on upstream's control._def
+    skip_justification: 'MCP commands for runtime view settings control. Relies on upstream''s control._def
+
       module-level variables pattern for runtime state. arch_v2 uses EventBus and Pydantic
+
       config for state management instead. Would require significant rearchitecting to
-      adapt to arch_v2's event-driven approach. View settings can be controlled through
-      arch_v2's existing Preferences dialog.
+
+      adapt to arch_v2''s event-driven approach. View settings can be controlled through
+
+      arch_v2''s existing Preferences dialog.
+
+      '
     skip_date: '2026-01-12'
   aa817c0b:
     title: 'chore: Update napari version in setup script and app name (#426)'
@@ -209,11 +245,15 @@ commits:
     title: 'feat: Runtime control of view settings via MCP for RAM debugging (#424)'
     status: skipped
     skip_reason: superseded
-    skip_justification: |
-      Enables runtime control of view settings via MCP by standardizing access to control._def
+    skip_justification: 'Enables runtime control of view settings via MCP by standardizing access to control._def
+
       module variables. arch_v2 uses EventBus and Pydantic config models instead of module-level
+
       variables. The arch_v2 PreferencesDialog already provides view settings control; runtime
+
       MCP control would need to be redesigned around EventBus commands if desired.
+
+      '
     skip_date: '2026-01-12'
   98c7fbd6:
     title: 'feat: Save and restore camera settings on close/startup (#423)'
