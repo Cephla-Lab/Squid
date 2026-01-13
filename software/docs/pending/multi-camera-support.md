@@ -618,53 +618,65 @@ def migrate_channel_config_v1_to_v1_1(
 
 ## Implementation Phases
 
-### Phase 1: Schema and Models (This PR)
+### Phase 1: Schema and Models ✅ COMPLETE
 
 **Scope**: Update Pydantic models and add new config files without breaking existing functionality.
 
-**Files to create**:
-- `control/models/camera_registry.py`
-- `control/models/filter_wheel_config.py`
-- `machine_configs/cameras.yaml.example`
-- `machine_configs/filter_wheels.yaml.example`
+**Files created**:
+- ✅ `control/models/camera_registry.py`
+- ✅ `control/models/filter_wheel_config.py`
+- ✅ `machine_configs/cameras.yaml.example`
+- ✅ `machine_configs/filter_wheels.yaml.example`
 
-**Files to modify**:
-- `control/models/acquisition_config.py` - Update models
-- `control/models/__init__.py` - Export new models
-- `control/core/config/repository.py` - Add loaders for new configs
+**Files modified**:
+- ✅ `control/models/acquisition_config.py` - Updated models with v1.1 schema
+- ✅ `control/models/__init__.py` - Export new models
+- ✅ `control/core/config/repository.py` - Added loaders for new configs
 
 **Migration strategy**:
-- Keep backward compatibility with v1.0 configs
-- Auto-detect version and migrate on load
-- Write v1.1 format on save
+- ✅ Backward compatibility with v1.0 configs
+- ✅ Auto-detect version and migrate on load
+- ✅ Write v1.1 format on save
 
-### Phase 2: UI Integration
+### Phase 2: UI Integration (In Progress)
 
 **Scope**: Update UI to use camera/filter wheel names and support channel groups.
 
-**Changes**:
-- Camera selector dropdown in channel configuration
-- Filter wheel/position selector
-- Channel group editor widget
-- Acquisition setup to select channel groups
+**Completed**:
+- ✅ **Acquisition Channel Configuration dialog** (Settings > Advanced > Acquisition Channel Configuration)
+  - Edit channel parameters (name, LED, exposure, analog gain, illumination intensity)
+  - Filter wheel and position selection (when `USE_EMISSION_FILTER_WHEEL=True`)
+  - Enable/disable channels
+  - Add/remove channels
+  - Export/Import channel configurations to/from YAML files
+- ✅ **Filter Wheel Configuration dialog** (Settings > Advanced > Filter Wheel Configuration)
+  - Configure filter position names (e.g., "DAPI emission" instead of "Position 1")
+  - Saves to `machine_configs/filter_wheels.yaml`
+- ✅ Filter wheel/position selector in Add Channel dialog
+- ✅ Disabled channels filtered from live controller dropdown
+
+**Remaining**:
+- [ ] Camera selector dropdown in channel configuration (for multi-camera)
+- [ ] Channel group editor widget
+- [ ] Acquisition setup to select channel groups
 
 ### Phase 3: Acquisition Engine
 
 **Scope**: Implement multi-camera acquisition with channel groups.
 
 **Changes**:
-- `LiveController` - Support multiple camera instances
-- `MultiPointWorker` - Process channel groups with synchronization
-- Hardware triggering with timing offsets
+- [ ] `LiveController` - Support multiple camera instances
+- [ ] `MultiPointWorker` - Process channel groups with synchronization
+- [ ] Hardware triggering with timing offsets
 
 ### Phase 4: Testing and Documentation
 
 **Scope**: Comprehensive testing and user documentation.
 
 **Deliverables**:
-- Unit tests for new models and migration
-- Integration tests for multi-camera acquisition
-- User documentation updates
+- ✅ Unit tests for new models (v1.1 schema validation)
+- [ ] Integration tests for multi-camera acquisition
+- [ ] User documentation updates
 
 ---
 
