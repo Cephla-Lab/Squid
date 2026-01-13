@@ -279,7 +279,7 @@ cat software/user_profiles/default/channel_configs/general.yaml
 ```
 
 Verify:
-- `version: 1` is present
+- `version: 1.1` is present
 - Channel names match your expectations
 - `illumination_channels` references valid illumination channels
 
