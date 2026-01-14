@@ -14982,6 +14982,17 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
         layout.addLayout(button_layout)
 
+    def _set_buttons_enabled(self, enabled: bool):
+        """Enable or disable action buttons based on config availability."""
+        self.btn_add.setEnabled(enabled)
+        self.btn_remove.setEnabled(enabled)
+        self.btn_move_up.setEnabled(enabled)
+        self.btn_move_down.setEnabled(enabled)
+        self.btn_export.setEnabled(enabled)
+        self.btn_save.setEnabled(enabled)
+        # Import is always enabled since it can create a new config
+        # Cancel is always enabled
+
     def _load_channels(self):
         """Load acquisition channels from general.yaml into the table."""
         self.general_config = self.config_repo.get_general_config()
@@ -14995,7 +15006,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
                 "No channel configuration found for the current profile.\n"
                 "Please ensure a profile is selected and has been initialized.",
             )
+            # Disable buttons when no config is loaded
+            self._set_buttons_enabled(False)
             return
+
+        # Enable buttons when config is loaded
+        self._set_buttons_enabled(True)
 
         # Determine column visibility
         camera_names = self.config_repo.get_camera_names()
@@ -15101,6 +15117,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _add_channel(self):
         """Add a new acquisition channel."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot add channel.")
+            return
+
         dialog = AddAcquisitionChannelDialog(self.config_repo, self)
         if dialog.exec_() == QDialog.Accepted:
             channel = dialog.get_channel()
@@ -15111,6 +15131,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _remove_channel(self):
         """Remove selected channel."""
+        if self.general_config is None:
+            return
+
         current_row = self.table.currentRow()
         if current_row < 0:
             return
@@ -15129,6 +15152,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _move_up(self):
         """Move selected channel up."""
+        if self.general_config is None:
+            return
+
         current_row = self.table.currentRow()
         if current_row <= 0:
             return
@@ -15140,6 +15166,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _move_down(self):
         """Move selected channel down."""
+        if self.general_config is None:
+            return
+
         current_row = self.table.currentRow()
         if current_row < 0 or current_row >= len(self.general_config.channels) - 1:
             return
@@ -15151,6 +15180,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _save_changes(self):
         """Save changes to general.yaml."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot save.")
+            return
+
         # Sync table data to config object
         self._sync_table_to_config()
 
@@ -15270,7 +15303,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _sync_table_to_config(self):
         """Sync table data back to self.general_config without saving to disk."""
-        for row in range(self.table.rowCount()):
+        if self.general_config is None:
+            return
+
+        # Use bounds checking to handle potential table/config mismatch
+        num_rows = min(self.table.rowCount(), len(self.general_config.channels))
+        for row in range(num_rows):
             channel = self.general_config.channels[row]
 
             # Enabled
