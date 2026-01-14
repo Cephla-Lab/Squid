@@ -529,7 +529,8 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
             self.config.write(configfile)
         try:
             self.main_window.close()
-        except:
+        except (AttributeError, RuntimeError):
+            # main_window may be None or already closed
             pass
         self.close()
 
