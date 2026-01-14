@@ -474,10 +474,11 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
-        # Filter Wheel Configuration (in Advanced menu)
-        filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
-        filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
-        advanced_menu.addAction(filter_wheel_config_action)
+        # Filter Wheel Configuration (only shown if filter wheel is enabled)
+        if USE_EMISSION_FILTER_WHEEL:
+            filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
+            filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
+            advanced_menu.addAction(filter_wheel_config_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1647,6 +1648,10 @@ class HighContentScreeningGui(QMainWindow):
             self.liveControlWidget.refresh_mode_list()
         if self.napariLiveWidget:
             self.napariLiveWidget.refresh_mode_list()
+        if self.flexibleMultiPointWidget:
+            self.flexibleMultiPointWidget.refresh_channel_list()
+        if self.wellplateMultiPointWidget:
+            self.wellplateMultiPointWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (

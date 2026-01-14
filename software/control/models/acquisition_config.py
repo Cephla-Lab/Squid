@@ -53,7 +53,9 @@ class ConfocalSettings(BaseModel):
 
     # Confocal unit filter wheel (v1.1: by name instead of ID)
     confocal_filter_wheel: Optional[str] = Field(
-        None, description="Confocal filter wheel name (references filter_wheels.yaml)"
+        None,
+        description="Confocal filter wheel name (references filter_wheels.yaml). "
+        "Use 'auto' to automatically use the single available wheel.",
     )
     confocal_filter_position: Optional[int] = Field(None, ge=1, description="Position in confocal filter wheel")
     # Iris settings (objective-specific)
@@ -125,7 +127,12 @@ class AcquisitionChannel(BaseModel):
     camera_settings: CameraSettings = Field(..., description="Camera settings for this channel")
 
     # Body-level filter wheel (separate from confocal filter wheel)
-    filter_wheel: Optional[str] = Field(None, description="Body filter wheel name (references filter_wheels.yaml)")
+    # "auto" sentinel is resolved by UI at runtime for single-wheel systems
+    filter_wheel: Optional[str] = Field(
+        None,
+        description="Body filter wheel name (references filter_wheels.yaml). "
+        "Use 'auto' to automatically use the single available wheel.",
+    )
     filter_position: Optional[int] = Field(None, ge=1, description="Position in body filter wheel")
 
     # Illumination

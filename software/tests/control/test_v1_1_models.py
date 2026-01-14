@@ -260,6 +260,25 @@ class TestFilterWheelDefinition:
             FilterWheelDefinition(name="Wheel", id=1, positions={1: ""})
         assert "cannot be empty" in str(exc_info.value)
 
+    def test_unnamed_wheel_allowed(self):
+        """Test that unnamed wheel (name=None, id=None) is allowed for single-wheel systems."""
+        wheel = FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"})
+        assert wheel.name is None
+        assert wheel.id is None
+        assert len(wheel.positions) == 2
+
+    def test_name_without_id_rejected(self):
+        """Test that providing name without id is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelDefinition(name="Wheel", positions={1: "Empty"})
+        assert "name and id must both be present or both be absent" in str(exc_info.value)
+
+    def test_id_without_name_rejected(self):
+        """Test that providing id without name is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelDefinition(id=1, positions={1: "Empty"})
+        assert "name and id must both be present or both be absent" in str(exc_info.value)
+
 
 class TestFilterWheelRegistryConfig:
     """Tests for FilterWheelRegistryConfig model."""
@@ -345,6 +364,52 @@ class TestFilterWheelRegistryConfig:
                 ]
             )
         assert "Filter wheel IDs must be unique" in str(exc_info.value)
+
+    def test_single_unnamed_wheel_allowed(self):
+        """Test that single unnamed wheel is allowed in registry."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"}),
+            ]
+        )
+        assert len(registry.filter_wheels) == 1
+        assert registry.filter_wheels[0].name is None
+
+    def test_multi_wheel_requires_names(self):
+        """Test that multi-wheel systems require name and id for each wheel."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelRegistryConfig(
+                filter_wheels=[
+                    FilterWheelDefinition(positions={1: "Empty"}),  # Missing name/id
+                    FilterWheelDefinition(name="Wheel 2", id=2, positions={1: "Empty"}),
+                ]
+            )
+        assert "Multi-wheel systems require name and id" in str(exc_info.value)
+
+    def test_get_first_wheel(self):
+        """Test get_first_wheel() returns first wheel regardless of name."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"}),
+            ]
+        )
+        wheel = registry.get_first_wheel()
+        assert wheel is not None
+        assert wheel.positions[1] == "Empty"
+
+    def test_get_first_wheel_empty_registry(self):
+        """Test get_first_wheel() returns None for empty registry."""
+        registry = FilterWheelRegistryConfig()
+        assert registry.get_first_wheel() is None
+
+    def test_get_wheel_names_excludes_unnamed(self):
+        """Test get_wheel_names() excludes unnamed wheels."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(positions={1: "Empty"}),
+            ]
+        )
+        assert registry.get_wheel_names() == []
 
 
 class TestChannelGroupEntry:
