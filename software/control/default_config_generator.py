@@ -60,7 +60,7 @@ def create_general_acquisition_channel(
     general.yaml defines channel identity and shared settings:
     - display_color: Color for visualization
     - camera: Camera name (optional for single-camera systems)
-    - illumination_channels: Which illumination channels to use
+    - illumination_channel: Which illumination channel to use
     - z_offset_um: Z offset (shared across objectives)
     - filter_wheel/filter_position: Body filter wheel settings
 
@@ -83,11 +83,11 @@ def create_general_acquisition_channel(
         gain_mode=DEFAULT_GAIN_MODE,  # Default, overridden by objective
     )
 
-    # general.yaml: illumination_channels and z_offset_um are the key fields
+    # general.yaml: illumination_channel and z_offset_um are the key fields
     # intensity is included as default but will be overridden by objective files
     illumination_settings = IlluminationSettings(
-        illumination_channels=[illumination_channel.name],
-        intensity={illumination_channel.name: DEFAULT_ILLUMINATION_INTENSITY},  # Default, overridden by objective
+        illumination_channel=illumination_channel.name,
+        intensity=DEFAULT_ILLUMINATION_INTENSITY,  # Default, overridden by objective
         z_offset_um=DEFAULT_Z_OFFSET_UM,
     )
 
@@ -120,7 +120,7 @@ def create_objective_acquisition_channel(
     Create an acquisition channel for objective-specific YAML files (v1.1 schema).
 
     Objective files define per-objective settings: intensity, exposure, gain,
-    confocal iris settings. Does NOT include illumination_channels, display_color,
+    confocal iris settings. Does NOT include illumination_channel, display_color,
     z_offset_um, filter_wheel, filter_position (those are in general.yaml).
 
     Args:
@@ -146,10 +146,10 @@ def create_objective_acquisition_channel(
         pixel_format=None,  # Can be set per objective if needed
     )
 
-    # objective.yaml: intensity only, NO illumination_channels or z_offset_um
+    # objective.yaml: intensity only, NO illumination_channel or z_offset_um
     illumination_settings = IlluminationSettings(
-        illumination_channels=None,  # Not in objective files
-        intensity={illumination_channel.name: default_intensity},
+        illumination_channel=None,  # Not in objective files
+        intensity=default_intensity,
         z_offset_um=0.0,  # Placeholder, z_offset is in general.yaml
     )
 
@@ -167,8 +167,8 @@ def create_objective_acquisition_channel(
         # Create confocal override with same default values
         confocal_override = AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
-                illumination_channels=None,
-                intensity={illumination_channel.name: default_intensity},
+                illumination_channel=None,
+                intensity=default_intensity,
                 z_offset_um=0.0,  # Placeholder
             ),
             camera_settings=CameraSettings(
@@ -205,7 +205,7 @@ def generate_general_config(
     """
     Generate a general.yaml configuration from illumination channels (v1.1 schema).
 
-    general.yaml defines channel identity: display_color, camera, illumination_channels,
+    general.yaml defines channel identity: display_color, camera, illumination_channel,
     filter_wheel, filter_position, base confocal settings.
 
     Args:
@@ -236,7 +236,7 @@ def generate_objective_config(
 
     Objective files define per-objective settings: intensity, exposure, gain,
     confocal iris settings, confocal_override. Does NOT include
-    illumination_channels, filter_wheel, filter_position, or z_offset_um (those are in general.yaml).
+    illumination_channel, filter_wheel, filter_position, or z_offset_um (those are in general.yaml).
 
     Args:
         illumination_config: Available illumination channels
@@ -244,7 +244,7 @@ def generate_objective_config(
         camera_name: Camera name (optional for single-camera systems)
 
     Returns:
-        ObjectiveChannelConfig with default channels (no illumination_channels)
+        ObjectiveChannelConfig with default channels (no illumination_channel)
     """
     channels = []
     for ill_channel in illumination_config.channels:

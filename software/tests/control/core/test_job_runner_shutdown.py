@@ -27,8 +27,8 @@ def make_test_capture_info() -> CaptureInfo:
             display_color="#FFFFFF",
             camera="camera_1",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["BF LED matrix full"],
-                intensity={"BF LED matrix full": 50.0},
+                illumination_channel="BF LED matrix full",
+                intensity=50.0,
                 z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(

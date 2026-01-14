@@ -42,8 +42,8 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             display_color="#FFFFFF",
             camera="camera_1",
             illumination_settings=IlluminationSettings(
-                illumination_channels=[name],
-                intensity={name: 5.0},
+                illumination_channel=name,
+                intensity=5.0,
                 z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(
@@ -208,8 +208,8 @@ def test_job_runner_injects_acquisition_info() -> None:
         display_color="#FFFFFF",
         camera="camera_1",
         illumination_settings=IlluminationSettings(
-            illumination_channels=["DAPI"],
-            intensity={"DAPI": 5.0},
+            illumination_channel="DAPI",
+            intensity=5.0,
             z_offset_um=0.0,
         ),
         camera_settings=CameraSettings(

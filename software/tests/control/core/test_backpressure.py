@@ -33,8 +33,8 @@ def make_test_capture_info(region_id: str = "A1", fov: int = 0, z_index: int = 0
             display_color="#FFFFFF",
             camera="main",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["LED"],
-                intensity={"LED": 50.0},
+                illumination_channel="LED",
+                intensity=50.0,
                 z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(

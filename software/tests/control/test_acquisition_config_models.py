@@ -294,16 +294,16 @@ class TestAcquisitionConfig:
         assert settings.emission_iris is None
 
     def test_illumination_settings_required_fields(self):
-        """Test that illumination_channels and intensity are required."""
+        """Test that intensity is required."""
         settings = IlluminationSettings(
-            illumination_channels=["Fluorescence 488nm"],
-            intensity={"Fluorescence 488nm": 20.0},
+            illumination_channel="Fluorescence 488nm",
+            intensity=20.0,
         )
-        assert len(settings.illumination_channels) == 1
-        assert settings.intensity["Fluorescence 488nm"] == 20.0
+        assert settings.illumination_channel == "Fluorescence 488nm"
+        assert settings.intensity == 20.0
         assert settings.z_offset_um == 0.0  # Default
 
-        # Should fail without required fields
+        # Should fail without required intensity field
         with pytest.raises(ValidationError):
             IlluminationSettings()
 
@@ -314,8 +314,8 @@ class TestAcquisitionConfig:
             display_color="#00FF00",
             camera="Main Camera",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["Fluorescence 488nm"],
-                intensity={"Fluorescence 488nm": 20.0},
+                illumination_channel="Fluorescence 488nm",
+                intensity=20.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=25.0, gain_mode=10.0),
         )
@@ -332,8 +332,8 @@ class TestAcquisitionConfig:
         channel = AcquisitionChannel(
             name="Test Channel",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["488nm"],
-                intensity={"488nm": 50.0},
+                illumination_channel="488nm",
+                intensity=50.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
         )
@@ -344,8 +344,8 @@ class TestAcquisitionConfig:
             name="Disabled Channel",
             enabled=False,
             illumination_settings=IlluminationSettings(
-                illumination_channels=["488nm"],
-                intensity={"488nm": 50.0},
+                illumination_channel="488nm",
+                intensity=50.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
         )
@@ -356,8 +356,8 @@ class TestAcquisitionConfig:
             name="Test",
             enabled=False,
             illumination_settings=IlluminationSettings(
-                illumination_channels=["488nm"],
-                intensity={"488nm": 50.0},
+                illumination_channel="488nm",
+                intensity=50.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
             confocal_override=AcquisitionChannelOverride(
@@ -373,8 +373,8 @@ class TestAcquisitionConfig:
             name="488 nm",
             display_color="#00FF00",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["Fluorescence 488nm"],
-                intensity={"Fluorescence 488nm": 20.0},
+                illumination_channel="Fluorescence 488nm",
+                intensity=20.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=25.0, gain_mode=10.0),
             confocal_settings=ConfocalSettings(
@@ -391,8 +391,8 @@ class TestAcquisitionConfig:
             name="488 nm",
             display_color="#00FF00",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["Fluorescence 488nm"],
-                intensity={"Fluorescence 488nm": 20.0},
+                illumination_channel="Fluorescence 488nm",
+                intensity=20.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=25.0, gain_mode=10.0),
             confocal_override=AcquisitionChannelOverride(
@@ -410,8 +410,8 @@ class TestAcquisitionConfig:
             name="488 nm",
             display_color="#00FF00",
             illumination_settings=IlluminationSettings(
-                illumination_channels=["Fluorescence 488nm"],
-                intensity={"Fluorescence 488nm": 20.0},
+                illumination_channel="Fluorescence 488nm",
+                intensity=20.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=25.0, gain_mode=10.0),
             confocal_override=AcquisitionChannelOverride(
@@ -432,8 +432,8 @@ class TestAcquisitionConfig:
                     name="Channel A",
                     display_color="#00FF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["A"],
-                        intensity={"A": 20.0},
+                        illumination_channel="A",
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
                 ),
@@ -458,8 +458,8 @@ class TestAcquisitionConfig:
                     name="Channel A",
                     display_color="#00FF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["A"],
-                        intensity={"A": 25.0},
+                        illumination_channel="A",
+                        intensity=25.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=30.0, gain_mode=10.0),
                 ),
@@ -542,8 +542,8 @@ class TestMergeChannelConfigs:
                     display_color="#00FF00",
                     camera="Main Camera",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 488nm"],
-                        intensity={"Fluorescence 488nm": 10.0},  # Will be overridden
+                        illumination_channel="Fluorescence 488nm",
+                        intensity=10.0,  # Will be overridden
                         z_offset_um=5.0,  # z_offset is in general
                     ),
                     camera_settings=CameraSettings(
@@ -563,8 +563,8 @@ class TestMergeChannelConfigs:
                     name="488 nm",
                     display_color="#FFFFFF",  # Should be ignored (from general)
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=None,  # Not in objective
-                        intensity={"Fluorescence 488nm": 25.0},
+                        illumination_channel=None,  # Not in objective
+                        intensity=25.0,
                         z_offset_um=0.0,  # Ignored, z_offset is in general
                     ),
                     camera_settings=CameraSettings(
@@ -582,14 +582,14 @@ class TestMergeChannelConfigs:
         ch = merged[0]
 
         # From general
-        assert ch.illumination_settings.illumination_channels == ["Fluorescence 488nm"]
+        assert ch.illumination_settings.illumination_channel == "Fluorescence 488nm"
         assert ch.illumination_settings.z_offset_um == 5.0  # From general
         assert ch.display_color == "#00FF00"  # v1.1: display_color at channel level
         assert ch.filter_wheel == "Emission Wheel"
         assert ch.filter_position == 2
 
         # From objective
-        assert ch.illumination_settings.intensity["Fluorescence 488nm"] == 25.0
+        assert ch.illumination_settings.intensity == 25.0
         assert ch.camera_settings.exposure_time_ms == 30.0
         assert ch.camera_settings.gain_mode == 15.0
         assert ch.camera_settings.pixel_format == "Mono12"
@@ -605,8 +605,8 @@ class TestMergeChannelConfigs:
                     name="405 nm",
                     display_color="#7700FF",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 405nm"],
-                        intensity={"Fluorescence 405nm": 20.0},
+                        illumination_channel="Fluorescence 405nm",
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=20.0,
@@ -624,7 +624,7 @@ class TestMergeChannelConfigs:
         assert len(merged) == 1
         ch = merged[0]
         assert ch.name == "405 nm"
-        assert ch.illumination_settings.intensity["Fluorescence 405nm"] == 20.0
+        assert ch.illumination_settings.intensity == 20.0
         assert ch.camera_settings.exposure_time_ms == 20.0
 
     def test_merge_with_confocal_override(self):
@@ -638,8 +638,8 @@ class TestMergeChannelConfigs:
                     name="488 nm",
                     display_color="#00FF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 488nm"],
-                        intensity={"Fluorescence 488nm": 20.0},
+                        illumination_channel="Fluorescence 488nm",
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
                     confocal_settings=ConfocalSettings(
@@ -657,7 +657,7 @@ class TestMergeChannelConfigs:
                     name="488 nm",
                     display_color="#FFFFFF",
                     illumination_settings=IlluminationSettings(
-                        intensity={"Fluorescence 488nm": 30.0},
+                        intensity=30.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=40.0, gain_mode=15.0),
                     confocal_settings=ConfocalSettings(
@@ -716,8 +716,8 @@ class TestValidateIlluminationReferences:
                     name="488 nm",
                     display_color="#00FF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 488nm"],
-                        intensity={"Fluorescence 488nm": 20.0},
+                        illumination_channel="Fluorescence 488nm",
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
                 ),
@@ -725,8 +725,8 @@ class TestValidateIlluminationReferences:
                     name="Brightfield",
                     display_color="#FFFFFF",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["BF LED full"],
-                        intensity={"BF LED full": 5.0},
+                        illumination_channel="BF LED full",
+                        intensity=5.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=5.0),
                 ),
@@ -737,7 +737,7 @@ class TestValidateIlluminationReferences:
         assert len(errors) == 0
 
     def test_invalid_illumination_channel_reference(self):
-        """Test validation fails with invalid illumination_channels reference."""
+        """Test validation fails with invalid illumination_channel reference."""
         from control.models import validate_illumination_references
 
         ill_config = IlluminationChannelConfig(
@@ -759,8 +759,8 @@ class TestValidateIlluminationReferences:
                     name="561 nm",
                     display_color="#FFFF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 561nm"],  # Does not exist
-                        intensity={"Fluorescence 561nm": 20.0},
+                        illumination_channel="Fluorescence 561nm",  # Does not exist
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
                 ),
@@ -768,43 +768,8 @@ class TestValidateIlluminationReferences:
         )
 
         errors = validate_illumination_references(general, ill_config)
-        assert len(errors) == 2  # One for illumination_channels, one for intensity
+        assert len(errors) == 1  # One for illumination_channel
         assert "Fluorescence 561nm" in errors[0]
-
-    def test_invalid_intensity_key(self):
-        """Test validation fails with invalid intensity key."""
-        from control.models import validate_illumination_references
-
-        ill_config = IlluminationChannelConfig(
-            version=1.1,
-            channels=[
-                IlluminationChannel(
-                    name="Fluorescence 488nm",
-                    type=IlluminationType.EPI_ILLUMINATION,
-                    controller_port="D2",
-                    wavelength_nm=488,
-                ),
-            ],
-        )
-
-        general = GeneralChannelConfig(
-            version=1.1,
-            channels=[
-                AcquisitionChannel(
-                    name="488 nm",
-                    display_color="#00FF00",
-                    illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 488nm"],
-                        intensity={"Wrong Name": 20.0},  # Wrong key
-                    ),
-                    camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
-                ),
-            ],
-        )
-
-        errors = validate_illumination_references(general, ill_config)
-        assert len(errors) == 1
-        assert "Wrong Name" in errors[0]
 
 
 class TestGetIlluminationChannelNames:
@@ -821,8 +786,8 @@ class TestGetIlluminationChannelNames:
                     name="488 nm",
                     display_color="#00FF00",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["Fluorescence 488nm"],
-                        intensity={"Fluorescence 488nm": 20.0},
+                        illumination_channel="Fluorescence 488nm",
+                        intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
                 ),
@@ -830,8 +795,8 @@ class TestGetIlluminationChannelNames:
                     name="Brightfield",
                     display_color="#FFFFFF",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["BF LED full"],
-                        intensity={"BF LED full": 5.0, "BF LED dark field": 10.0},
+                        illumination_channel="BF LED full",
+                        intensity=5.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=5.0),
                 ),
@@ -841,5 +806,4 @@ class TestGetIlluminationChannelNames:
         names = get_illumination_channel_names(config)
         assert "Fluorescence 488nm" in names
         assert "BF LED full" in names
-        assert "BF LED dark field" in names
-        assert len(names) == 3
+        assert len(names) == 2

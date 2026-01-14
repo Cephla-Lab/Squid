@@ -614,8 +614,8 @@ class ConfigRepository:
                         filter_wheel=None,  # Objective files don't include filter wheel
                         filter_position=None,
                         illumination_settings=IlluminationSettings(
-                            illumination_channels=None,  # From general.yaml
-                            intensity=dict(ch.illumination_settings.intensity),
+                            illumination_channel=None,  # From general.yaml
+                            intensity=ch.illumination_settings.intensity,
                             z_offset_um=0.0,  # Placeholder, from general.yaml
                         ),
                     )
@@ -634,8 +634,7 @@ class ConfigRepository:
             # v1.1: camera_settings is a single object, not a Dict
             setattr(acq_channel.camera_settings, field, value)
         elif location == "illumination":
-            for key in acq_channel.illumination_settings.intensity:
-                acq_channel.illumination_settings.intensity[key] = value
+            acq_channel.illumination_settings.intensity = value
 
         # Save
         self.save_objective_config(profile, objective, obj_config)

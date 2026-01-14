@@ -61,9 +61,8 @@ channels:
     display_color: "#00FF00"
     camera: null
     illumination_settings:
-      illumination_channels: ["488nm"]
-      intensity:
-        "488nm": 50.0
+      illumination_channel: "488nm"
+      intensity: 50.0
       z_offset_um: 0.0
     camera_settings:
       exposure_time_ms: 100.0
@@ -81,8 +80,7 @@ channels:
     display_color: "#00FF00"
     camera: null
     illumination_settings:
-      intensity:
-        "488nm": 75.0
+      intensity: 75.0
     camera_settings:
       exposure_time_ms: 50.0
       gain_mode: 1.0
@@ -214,7 +212,7 @@ class TestConfigRepositoryProfileConfigs:
         config = repo_with_profile.get_objective_config("20x")
 
         assert config is not None
-        assert config.channels[0].illumination_settings.intensity["488nm"] == 75.0
+        assert config.channels[0].illumination_settings.intensity == 75.0
 
     def test_get_objective_config_returns_none_when_missing(self, repo_with_profile):
         """Test that missing objective config returns None."""
@@ -232,8 +230,8 @@ class TestConfigRepositoryProfileConfigs:
                     display_color="#FF0000",
                     camera="camera_1",
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["488nm"],
-                        intensity={"488nm": 100.0},
+                        illumination_channel="488nm",
+                        intensity=100.0,
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=200.0,
@@ -264,7 +262,7 @@ class TestConfigRepositoryProfileConfigs:
                     display_color="#0000FF",
                     camera="camera_1",
                     illumination_settings=IlluminationSettings(
-                        intensity={"488nm": 30.0},
+                        intensity=30.0,
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=25.0,
@@ -312,9 +310,8 @@ channels:
     display_color: "#00FF00"
     camera: null
     illumination_settings:
-      illumination_channels: ["488nm"]
-      intensity:
-        "488nm": 50.0
+      illumination_channel: "488nm"
+      intensity: 50.0
     camera_settings:
       exposure_time_ms: 100.0
       gain_mode: 0.0

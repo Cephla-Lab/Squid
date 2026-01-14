@@ -6,13 +6,14 @@ These models define user-facing acquisition settings. They are organized as:
 - {objective}.yaml: Objective-specific overrides with optional confocal_override
 
 The merge logic combines these two configs:
-- From general.yaml: name, enabled, display_color, camera, illumination_channels, filter_wheel,
+- From general.yaml: name, enabled, display_color, camera, illumination_channel, filter_wheel,
                      filter_position, z_offset_um, confocal_settings (confocal_filter_wheel, confocal_filter_position)
 - From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override (iris settings)
 
 Schema versions:
 - v1.0: Original schema with camera_settings as Dict[str, CameraSettings], display_color in CameraSettings
 - v1.1: Single camera per channel, display_color at channel level, filter_wheel by name, channel groups
+- v1.2: Single illumination_channel per acquisition channel (was list), intensity as float (was dict)
 """
 
 import logging
@@ -68,26 +69,17 @@ class ConfocalSettings(BaseModel):
 class IlluminationSettings(BaseModel):
     """Illumination configuration for an acquisition channel.
 
-    Note: illumination_channels is required in general.yaml but should be
+    Note: illumination_channel is required in general.yaml but should be
     omitted in objective-specific files (which only contain overrides).
     """
 
-    illumination_channels: Optional[List[str]] = Field(
-        None, description="Names of illumination channels from illumination_channel_config (only in general.yaml)"
+    illumination_channel: Optional[str] = Field(
+        None, description="Illumination channel name from illumination_channel_config (only in general.yaml)"
     )
-    intensity: Dict[str, float] = Field(..., description="Channel name -> intensity percentage mapping")
+    intensity: float = Field(..., ge=0, le=100, description="Illumination intensity percentage (0-100)")
     z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     model_config = {"extra": "forbid"}
-
-    @field_validator("intensity")
-    @classmethod
-    def validate_intensity_range(cls, v: Dict[str, float]) -> Dict[str, float]:
-        """Validate that intensity values are in range [0, 100]."""
-        for name, value in v.items():
-            if not 0 <= value <= 100:
-                raise ValueError(f"Intensity for '{name}' must be 0-100, got {value}")
-        return v
 
 
 class AcquisitionChannelOverride(BaseModel):
@@ -184,32 +176,18 @@ class AcquisitionChannel(BaseModel):
 
     @property
     def illumination_intensity(self) -> float:
-        """Primary illumination channel intensity."""
-        if self.illumination_settings.illumination_channels:
-            ch_name = self.illumination_settings.illumination_channels[0]
-            return self.illumination_settings.intensity.get(ch_name, 20.0)
-        # Fall back to first intensity value if no channels specified
-        if self.illumination_settings.intensity:
-            return next(iter(self.illumination_settings.intensity.values()))
-        return 20.0
+        """Illumination intensity percentage."""
+        return self.illumination_settings.intensity
 
     @illumination_intensity.setter
     def illumination_intensity(self, value: float) -> None:
-        """Set primary illumination channel intensity."""
-        if self.illumination_settings.illumination_channels:
-            ch_name = self.illumination_settings.illumination_channels[0]
-            self.illumination_settings.intensity[ch_name] = value
-        elif self.illumination_settings.intensity:
-            # Update first intensity value
-            first_key = next(iter(self.illumination_settings.intensity.keys()))
-            self.illumination_settings.intensity[first_key] = value
+        """Set illumination intensity percentage."""
+        self.illumination_settings.intensity = value
 
     @property
     def primary_illumination_channel(self) -> Optional[str]:
-        """Name of the primary illumination channel."""
-        if self.illumination_settings.illumination_channels:
-            return self.illumination_settings.illumination_channels[0]
-        return None
+        """Name of the illumination channel."""
+        return self.illumination_settings.illumination_channel
 
     @property
     def z_offset(self) -> float:
@@ -363,7 +341,7 @@ def merge_channel_configs(
     Merge general.yaml and objective.yaml into final acquisition channels (v1.1 schema).
 
     The merge takes:
-    - From general: name, display_color, camera, illumination_channels, filter_wheel, filter_position,
+    - From general: name, display_color, camera, illumination_channel, filter_wheel, filter_position,
                     z_offset_um, base confocal_settings (confocal_filter_wheel, confocal_filter_position)
     - From objective: intensity, exposure_time_ms, gain_mode, pixel_format,
                       confocal iris settings, confocal_override
@@ -387,10 +365,10 @@ def merge_channel_configs(
             continue
 
         # Merge illumination settings
-        # general: illumination_channels, z_offset_um
+        # general: illumination_channel, z_offset_um
         # objective: intensity
         merged_illumination = IlluminationSettings(
-            illumination_channels=gen_channel.illumination_settings.illumination_channels,
+            illumination_channel=gen_channel.illumination_settings.illumination_channel,
             intensity=obj_channel.illumination_settings.intensity,
             z_offset_um=gen_channel.illumination_settings.z_offset_um,  # From general
         )
@@ -440,7 +418,7 @@ def validate_illumination_references(
     illumination_config: "IlluminationChannelConfig",
 ) -> List[str]:
     """
-    Validate that all illumination_channels references in acquisition config
+    Validate that all illumination_channel references in acquisition config
     exist in illumination_channel_config.yaml.
 
     Args:
@@ -451,28 +429,16 @@ def validate_illumination_references(
         List of error messages. Empty list if all references are valid.
     """
     errors = []
-
-    # Build set of valid illumination channel names
     valid_names: Set[str] = {ch.name for ch in illumination_config.channels}
 
     for acq_channel in config.channels:
-        ill_channels = acq_channel.illumination_settings.illumination_channels
-        if ill_channels:
-            for ill_name in ill_channels:
-                if ill_name not in valid_names:
-                    errors.append(
-                        f"Acquisition channel '{acq_channel.name}' references "
-                        f"illumination channel '{ill_name}' which does not exist in "
-                        f"illumination_channel_config.yaml"
-                    )
-
-        # Also validate intensity dict keys
-        for intensity_key in acq_channel.illumination_settings.intensity.keys():
-            if intensity_key not in valid_names:
-                errors.append(
-                    f"Acquisition channel '{acq_channel.name}' has intensity for "
-                    f"'{intensity_key}' which does not exist in illumination_channel_config.yaml"
-                )
+        ill_channel = acq_channel.illumination_settings.illumination_channel
+        if ill_channel and ill_channel not in valid_names:
+            errors.append(
+                f"Acquisition channel '{acq_channel.name}' references "
+                f"illumination channel '{ill_channel}' which does not exist in "
+                f"illumination_channel_config.yaml"
+            )
 
     return errors
 
@@ -489,9 +455,8 @@ def get_illumination_channel_names(config: GeneralChannelConfig) -> Set[str]:
     """
     names: Set[str] = set()
     for acq_channel in config.channels:
-        if acq_channel.illumination_settings.illumination_channels:
-            names.update(acq_channel.illumination_settings.illumination_channels)
-        names.update(acq_channel.illumination_settings.intensity.keys())
+        if acq_channel.illumination_settings.illumination_channel:
+            names.add(acq_channel.illumination_settings.illumination_channel)
     return names
 
 

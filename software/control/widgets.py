@@ -15044,10 +15044,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             illum_names = [ch.name for ch in self.illumination_config.channels]
             illum_combo.addItems(illum_names)
             # Set current illumination
-            if channel.illumination_settings.illumination_channels:
-                current_illum = channel.illumination_settings.illumination_channels[0]
-                if current_illum in illum_names:
-                    illum_combo.setCurrentText(current_illum)
+            current_illum = channel.illumination_settings.illumination_channel
+            if current_illum and current_illum in illum_names:
+                illum_combo.setCurrentText(current_illum)
         self.table.setCellWidget(row, self.COL_ILLUMINATION, illum_combo)
 
         # Camera dropdown
@@ -15289,12 +15288,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             # Illumination
             illum_combo = self.table.cellWidget(row, self.COL_ILLUMINATION)
             if illum_combo and isinstance(illum_combo, QComboBox):
-                illum_name = illum_combo.currentText()
-                channel.illumination_settings.illumination_channels = [illum_name]
-                old_intensities = channel.illumination_settings.intensity
-                if illum_name not in old_intensities:
-                    default_intensity = next(iter(old_intensities.values()), 20.0) if old_intensities else 20.0
-                    channel.illumination_settings.intensity = {illum_name: default_intensity}
+                channel.illumination_settings.illumination_channel = illum_combo.currentText()
 
             # Camera
             camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
@@ -15454,8 +15448,8 @@ class AddAcquisitionChannelDialog(QDialog):
             filter_wheel=filter_wheel,
             filter_position=filter_position,
             illumination_settings=IlluminationSettings(
-                illumination_channels=[illum_name],
-                intensity={illum_name: 20.0},
+                illumination_channel=illum_name,
+                intensity=20.0,
                 z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(
