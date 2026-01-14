@@ -15,6 +15,8 @@ from control.models import (
     IlluminationSettings,
     CameraSettings,
 )
+from control.models.camera_registry import CameraRegistryConfig, CameraDefinition
+from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition
 
 
 @pytest.fixture
@@ -404,3 +406,236 @@ channels:
 
         with pytest.raises(ValueError, match="No profile set"):
             repo.get_general_config()
+
+
+class TestConfigRepositoryCameraRegistry:
+    """Tests for camera registry methods."""
+
+    def test_get_camera_registry(self, temp_dir):
+        """Test loading camera registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "cameras.yaml").write_text(
+            """
+version: 1.1
+cameras:
+  - name: "Main Camera"
+    serial_number: "ABC123"
+    model: "Hamamatsu C15440"
+  - name: "Side Camera"
+    serial_number: "DEF456"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry = repo.get_camera_registry()
+
+        assert registry is not None
+        assert len(registry.cameras) == 2
+        assert registry.cameras[0].name == "Main Camera"
+        assert registry.cameras[0].serial_number == "ABC123"
+
+    def test_get_camera_registry_returns_none_when_missing(self, temp_dir):
+        """Test that missing cameras.yaml returns None."""
+        (temp_dir / "machine_configs").mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry = repo.get_camera_registry()
+
+        assert registry is None
+
+    def test_get_camera_registry_cached(self, temp_dir):
+        """Test that camera registry is cached."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "cameras.yaml").write_text(
+            """
+version: 1.1
+cameras:
+  - name: "Test"
+    serial_number: "XYZ"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry1 = repo.get_camera_registry()
+        registry2 = repo.get_camera_registry()
+
+        assert registry1 is registry2
+
+    def test_get_camera_names(self, temp_dir):
+        """Test get_camera_names returns camera names from registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "cameras.yaml").write_text(
+            """
+version: 1.1
+cameras:
+  - name: "Main Camera"
+    serial_number: "ABC"
+  - name: "Secondary Camera"
+    serial_number: "DEF"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        names = repo.get_camera_names()
+
+        assert names == ["Main Camera", "Secondary Camera"]
+
+    def test_get_camera_names_returns_empty_when_no_registry(self, temp_dir):
+        """Test get_camera_names returns empty list when no registry."""
+        (temp_dir / "machine_configs").mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        names = repo.get_camera_names()
+
+        assert names == []
+
+    def test_save_camera_registry(self, temp_dir):
+        """Test saving camera registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        new_registry = CameraRegistryConfig(
+            version=1.1,
+            cameras=[
+                CameraDefinition(name="New Camera", serial_number="NEW123"),
+            ],
+        )
+
+        repo.save_camera_registry(new_registry)
+
+        # Verify file was written
+        path = machine_configs / "cameras.yaml"
+        assert path.exists()
+
+        # Verify cache was updated
+        cached = repo.get_camera_registry()
+        assert cached is new_registry
+
+
+class TestConfigRepositoryFilterWheelRegistry:
+    """Tests for filter wheel registry methods."""
+
+    def test_get_filter_wheel_registry(self, temp_dir):
+        """Test loading filter wheel registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
+version: 1.1
+filter_wheels:
+  - name: "Emission Wheel"
+    id: 1
+    positions:
+      1: "Empty"
+      2: "BP 525/50"
+      3: "BP 600/50"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry = repo.get_filter_wheel_registry()
+
+        assert registry is not None
+        assert len(registry.filter_wheels) == 1
+        assert registry.filter_wheels[0].name == "Emission Wheel"
+        assert registry.filter_wheels[0].positions[2] == "BP 525/50"
+
+    def test_get_filter_wheel_registry_returns_none_when_missing(self, temp_dir):
+        """Test that missing filter_wheels.yaml returns None."""
+        (temp_dir / "machine_configs").mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry = repo.get_filter_wheel_registry()
+
+        assert registry is None
+
+    def test_get_filter_wheel_registry_cached(self, temp_dir):
+        """Test that filter wheel registry is cached."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
+version: 1.1
+filter_wheels:
+  - name: "Test Wheel"
+    id: 1
+    positions:
+      1: "Empty"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        registry1 = repo.get_filter_wheel_registry()
+        registry2 = repo.get_filter_wheel_registry()
+
+        assert registry1 is registry2
+
+    def test_get_filter_wheel_names(self, temp_dir):
+        """Test get_filter_wheel_names returns wheel names from registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
+version: 1.1
+filter_wheels:
+  - name: "Emission Wheel"
+    id: 1
+    positions:
+      1: "Empty"
+  - name: "Excitation Wheel"
+    id: 2
+    positions:
+      1: "Empty"
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        names = repo.get_filter_wheel_names()
+
+        assert names == ["Emission Wheel", "Excitation Wheel"]
+
+    def test_get_filter_wheel_names_returns_empty_when_no_registry(self, temp_dir):
+        """Test get_filter_wheel_names returns empty list when no registry."""
+        (temp_dir / "machine_configs").mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        names = repo.get_filter_wheel_names()
+
+        assert names == []
+
+    def test_save_filter_wheel_registry(self, temp_dir):
+        """Test saving filter wheel registry."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+
+        repo = ConfigRepository(base_path=temp_dir)
+        new_registry = FilterWheelRegistryConfig(
+            version=1.1,
+            filter_wheels=[
+                FilterWheelDefinition(
+                    name="New Wheel",
+                    id=1,
+                    positions={1: "Empty", 2: "Filter A"},
+                ),
+            ],
+        )
+
+        repo.save_filter_wheel_registry(new_registry)
+
+        # Verify file was written
+        path = machine_configs / "filter_wheels.yaml"
+        assert path.exists()
+
+        # Verify cache was updated
+        cached = repo.get_filter_wheel_registry()
+        assert cached is new_registry
