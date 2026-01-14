@@ -16,7 +16,7 @@ Channel name mapping logic:
 - For fluorescence channels (name contains "Fluorescence" or wavelength pattern like "488 nm"),
   the script extracts the wavelength and finds the matching illumination channel
   in illumination_channel_config.yaml by wavelength_nm field
-- The matched illumination channel name is used in "illumination_channels" field
+- The matched illumination channel name is used in "illumination_channel" field
 
 Usage:
     python tools/migrate_acquisition_configs.py [options]
@@ -104,7 +104,7 @@ def get_illumination_channel_name(
     illumination_config: IlluminationChannelConfig,
 ) -> str:
     """
-    Determine the illumination channel name to use in illumination_channels field.
+    Determine the illumination channel name to use in illumination_channel field.
 
     Logic:
     1. If the channel name contains "Fluorescence" or a wavelength pattern,
@@ -279,7 +279,7 @@ def convert_xml_channels_to_acquisition_config(
         illumination_config: Illumination channel config for name lookup
         include_confocal: Whether to include confocal settings (currently unused)
         confocal_channels: Channels for confocal overrides (currently unused)
-        include_illumination_channels: Whether to include illumination_channels field
+        include_illumination_channels: Whether to include illumination_channel field
             (True for general.yaml, False for objective-specific files)
     """
     # Build lookup for confocal overrides by name
@@ -293,7 +293,7 @@ def convert_xml_channels_to_acquisition_config(
         # Use old channel name as the acquisition channel name
         name = xml_ch["name"]
 
-        # Find the illumination channel name to use in illumination_channels field
+        # Find the illumination channel name to use in illumination_channel field
         # For fluorescence channels, this extracts wavelength and finds matching channel
         ill_name = get_illumination_channel_name(
             xml_channel_name=name,
@@ -311,10 +311,10 @@ def convert_xml_channels_to_acquisition_config(
         display_color = xml_ch["display_color"]
 
         # Create illumination settings
-        # illumination_channels and z_offset_um only in general.yaml, not in objective files
+        # illumination_channel and z_offset_um only in general.yaml, not in objective files
         illumination_settings = IlluminationSettings(
-            illumination_channels=[ill_name] if include_illumination_channels else None,
-            intensity={ill_name: xml_ch["illumination_intensity"]},
+            illumination_channel=ill_name if include_illumination_channels else None,
+            intensity=xml_ch["illumination_intensity"],
             z_offset_um=xml_ch["z_offset"] if include_illumination_channels else 0.0,
         )
 
@@ -338,8 +338,8 @@ def convert_xml_channels_to_acquisition_config(
                 conf_ch = confocal_by_name[name]
                 confocal_override = AcquisitionChannelOverride(
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=None,  # Overrides don't need illumination_channels
-                        intensity={ill_name: conf_ch["illumination_intensity"]},
+                        illumination_channel=None,  # Overrides don't need illumination_channel
+                        intensity=conf_ch["illumination_intensity"],
                         z_offset_um=conf_ch["z_offset"],
                     ),
                     camera_settings=CameraSettings(
@@ -512,13 +512,13 @@ def migrate_profile(
             logger.warning(f"  No channels extracted from {channel_xml} - file may be corrupt or empty")
 
         if xml_channels:
-            # Convert to new format (objective files don't have illumination_channels)
+            # Convert to new format (objective files don't have illumination_channel)
             obj_config = convert_xml_channels_to_acquisition_config(
                 xml_channels,
                 illumination_config,
                 include_confocal=False,
                 confocal_channels=None,
-                include_illumination_channels=False,  # Objective files don't have illumination_channels
+                include_illumination_channels=False,  # Objective files don't have illumination_channel
             )
             save_yaml(obj_target_channel, obj_config, dry_run)
 
@@ -535,28 +535,28 @@ def migrate_profile(
 
     # Create general.yaml from collected channels
     if all_channels:
-        # For general.yaml: illumination_channels, display_color, z_offset_um,
+        # For general.yaml: illumination_channel, display_color, z_offset_um,
         # emission_filter_wheel_position, intensity, exposure, gain
         general_channels = []
         for xml_ch in all_channels:
             # Use old channel name as the acquisition channel name
             name = xml_ch["name"]
 
-            # Find the illumination channel name to use in illumination_channels field
+            # Find the illumination channel name to use in illumination_channel field
             ill_name = get_illumination_channel_name(
                 xml_channel_name=name,
                 illumination_source=xml_ch["illumination_source"],
                 illumination_config=illumination_config,
             )
 
-            # general.yaml has illumination_channels, display_color, z_offset_um
+            # general.yaml has illumination_channel, display_color, z_offset_um
             # filter_wheel/filter_position (v1.1 format)
             acq_channel = AcquisitionChannel(
                 name=name,
                 display_color=xml_ch["display_color"],
                 illumination_settings=IlluminationSettings(
-                    illumination_channels=[ill_name],
-                    intensity={ill_name: xml_ch["illumination_intensity"]},
+                    illumination_channel=ill_name,
+                    intensity=xml_ch["illumination_intensity"],
                     z_offset_um=xml_ch["z_offset"],
                 ),
                 camera_settings=CameraSettings(

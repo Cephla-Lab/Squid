@@ -71,7 +71,7 @@ class TestDefaultConfigGenerator:
         # v1.1: camera_settings is a single object, not a Dict
         assert acq_channel.camera_settings.exposure_time_ms == DEFAULT_EXPOSURE_TIME_MS
         assert acq_channel.camera_settings.gain_mode == DEFAULT_GAIN_MODE
-        assert acq_channel.illumination_settings.intensity["Fluorescence 488nm"] == DEFAULT_ILLUMINATION_INTENSITY
+        assert acq_channel.illumination_settings.intensity == DEFAULT_ILLUMINATION_INTENSITY
         assert acq_channel.confocal_settings is None
 
     def test_create_objective_acquisition_channel_with_confocal(self):
@@ -107,7 +107,7 @@ class TestDefaultConfigGenerator:
             source_code=11,
         )
         laser_acq = create_objective_acquisition_channel(laser_channel)
-        assert laser_acq.illumination_settings.intensity["Fluorescence 488nm"] == DEFAULT_ILLUMINATION_INTENSITY
+        assert laser_acq.illumination_settings.intensity == DEFAULT_ILLUMINATION_INTENSITY
 
         # USB LED source should get lower intensity of 5
         led_channel = IlluminationChannel(
@@ -118,7 +118,7 @@ class TestDefaultConfigGenerator:
             source_code=0,
         )
         led_acq = create_objective_acquisition_channel(led_channel)
-        assert led_acq.illumination_settings.intensity["BF LED matrix"] == DEFAULT_LED_ILLUMINATION_INTENSITY
+        assert led_acq.illumination_settings.intensity == DEFAULT_LED_ILLUMINATION_INTENSITY
         assert DEFAULT_LED_ILLUMINATION_INTENSITY == 5.0
 
     def test_generate_general_config(self):

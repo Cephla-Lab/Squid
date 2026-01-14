@@ -541,7 +541,7 @@ class TestValidateChannelGroup:
             display_color="#FFFFFF",
             camera=camera,
             illumination_settings=IlluminationSettings(
-                intensity={"Test": 20.0},
+                intensity=20.0,
             ),
             camera_settings=CameraSettings(
                 exposure_time_ms=20.0,
@@ -616,7 +616,7 @@ class TestAcquisitionChannelConstraints:
         with pytest.raises(ValidationError) as exc_info:
             AcquisitionChannel(
                 name="",
-                illumination_settings=IlluminationSettings(intensity={"Test": 20.0}),
+                illumination_settings=IlluminationSettings(intensity=20.0),
                 camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=0.0),
             )
         assert "String should have at least 1 character" in str(exc_info.value)
@@ -642,17 +642,21 @@ class TestAcquisitionChannelConstraints:
     def test_intensity_below_zero_rejected(self):
         """Test that intensity below 0 is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            IlluminationSettings(intensity={"Test": -10.0})
-        assert "must be 0-100" in str(exc_info.value)
+            IlluminationSettings(intensity=-10.0)
+        assert "greater than or equal to 0" in str(exc_info.value)
 
     def test_intensity_above_100_rejected(self):
         """Test that intensity above 100 is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            IlluminationSettings(intensity={"Test": 150.0})
-        assert "must be 0-100" in str(exc_info.value)
+            IlluminationSettings(intensity=150.0)
+        assert "less than or equal to 100" in str(exc_info.value)
 
     def test_valid_intensity_range(self):
         """Test that valid intensity values are accepted."""
-        settings = IlluminationSettings(intensity={"Test": 0.0, "Test2": 100.0, "Test3": 50.0})
-        assert settings.intensity["Test"] == 0.0
-        assert settings.intensity["Test2"] == 100.0
+        settings = IlluminationSettings(intensity=50.0)
+        assert settings.intensity == 50.0
+        # Also test boundary values
+        settings_zero = IlluminationSettings(intensity=0.0)
+        assert settings_zero.intensity == 0.0
+        settings_max = IlluminationSettings(intensity=100.0)
+        assert settings_max.intensity == 100.0
