@@ -1107,3 +1107,46 @@ class TestIlluminationChannelValidation:
                 controller_port="D2",
                 wavelength_nm=-488,
             )
+
+    def test_illumination_channel_excitation_filter_wheel(self):
+        """Test illumination channel with excitation filter wheel fields."""
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        channel = IlluminationChannel(
+            name="488nm with filter",
+            type=IlluminationType.EPI_ILLUMINATION,
+            controller_port="D2",
+            wavelength_nm=488,
+            excitation_filter_wheel="Excitation Filter Wheel",
+            excitation_filter_position=2,
+        )
+        assert channel.excitation_filter_wheel == "Excitation Filter Wheel"
+        assert channel.excitation_filter_position == 2
+
+    def test_illumination_channel_excitation_filter_optional(self):
+        """Test that excitation filter fields are optional."""
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        channel = IlluminationChannel(
+            name="488nm Laser",
+            type=IlluminationType.EPI_ILLUMINATION,
+            controller_port="D2",
+            wavelength_nm=488,
+        )
+        assert channel.excitation_filter_wheel is None
+        assert channel.excitation_filter_position is None
+
+    def test_illumination_channel_excitation_filter_position_must_be_positive(self):
+        """Test that excitation filter position must be >= 1."""
+        from pydantic import ValidationError
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        with pytest.raises(ValidationError) as exc_info:
+            IlluminationChannel(
+                name="Invalid",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port="D2",
+                excitation_filter_wheel="Test",
+                excitation_filter_position=0,  # Must be >= 1
+            )
+        assert "greater than or equal to 1" in str(exc_info.value)

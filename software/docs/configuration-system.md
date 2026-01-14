@@ -92,6 +92,9 @@ channels:
     controller_port: D2
     wavelength_nm: 488
     intensity_calibration_file: 488.csv
+    # Optional: excitation filter (rare, most systems don't have this)
+    excitation_filter_wheel: "Excitation Filter Wheel"
+    excitation_filter_position: 2
 
   # ... additional channels
 ```
@@ -107,6 +110,8 @@ channels:
 | `channels[].controller_port` | Port name (D1-D8 for lasers, USB1-USB8 for LED) |
 | `channels[].wavelength_nm` | Wavelength in nm (null for LED) |
 | `channels[].intensity_calibration_file` | CSV file in `intensity_calibrations/` |
+| `channels[].excitation_filter_wheel` | Optional: name of excitation filter wheel |
+| `channels[].excitation_filter_position` | Optional: position in excitation filter wheel |
 
 ### cameras.yaml (Optional, v1.1)
 
@@ -184,7 +189,10 @@ filter_wheels:
 - If `filter_wheels.yaml` doesn't exist, filter wheel settings in channels are ignored
 - Filter names appear in UI dropdowns for channel configuration
 - Position numbers must be ≥ 1
-- The `type` field helps identify the purpose of each filter wheel in multi-wheel systems
+
+**Excitation vs Emission Filter Wheels:**
+- **Emission filter wheels** (most common, 0-1 per system): Referenced by acquisition channels via `filter_wheel` and `filter_position` fields in user profile configs
+- **Excitation filter wheels** (rare): Referenced by illumination channels via `excitation_filter_wheel` and `excitation_filter_position` fields in machine config
 
 ### confocal_config.yaml (Optional)
 
