@@ -361,18 +361,13 @@ When the system has a confocal unit and confocal mode is enabled, the `confocal_
   # ... base settings ...
   confocal_override:
     illumination_settings:
-      illumination_channel: null
       intensity: 50.0   # Higher intensity for confocal
-      z_offset_um: 0.0
     camera_settings:
-      '1':
-        display_color: '#1FFF00'
-        exposure_time_ms: 100.0        # Longer exposure for confocal
-        gain_mode: 2.0
-        pixel_format: null
+      exposure_time_ms: 100.0        # Longer exposure for confocal
+      gain_mode: 2.0
     confocal_settings:
-      filter_wheel_id: 1
-      emission_filter_wheel_position: 2  # Different filter for confocal
+      confocal_filter_wheel: "Confocal"
+      confocal_filter_position: 2  # Different filter for confocal
       illumination_iris: 50.0
       emission_iris: 50.0
 ```

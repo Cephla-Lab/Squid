@@ -295,24 +295,49 @@ effective = channel.get_effective_settings(confocal_mode=True)
 # Returns new AcquisitionChannel with confocal_override applied
 ```
 
-**Nested structures:**
+**Nested structures (v1.1 schema):**
 ```python
-# Camera settings (by camera ID)
-for cam_id, cam_settings in channel.camera_settings.items():
-    print(f"Camera {cam_id}:")
-    print(f"  Exposure: {cam_settings.exposure_time_ms}")
-    print(f"  Gain: {cam_settings.gain_mode}")
-    print(f"  Color: {cam_settings.display_color}")
+# Camera settings (single object in v1.1)
+cam = channel.camera_settings
+print(f"Exposure: {cam.exposure_time_ms} ms")
+print(f"Gain: {cam.gain_mode}")
 
-# Illumination settings
+# Illumination settings (single channel, scalar intensity in v1.1)
 ill = channel.illumination_settings
-for ch_name, intensity in ill.intensity.items():
-    print(f"{ch_name}: {intensity}%")
+print(f"Channel: {ill.illumination_channel}")
+print(f"Intensity: {ill.intensity}%")
+print(f"Z offset: {ill.z_offset_um} um")
 
 # Confocal settings (if present)
 if channel.confocal_settings:
-    print(f"Filter wheel: {channel.confocal_settings.filter_wheel_id}")
-    print(f"Filter position: {channel.confocal_settings.emission_filter_wheel_position}")
+    print(f"Filter wheel: {channel.confocal_settings.confocal_filter_wheel}")
+    print(f"Filter position: {channel.confocal_settings.confocal_filter_position}")
+```
+
+**Field validation constraints:**
+```python
+# All models use Pydantic validation. Key constraints:
+#
+# CameraSettings:
+#   - exposure_time_ms: > 0
+#   - gain_mode: >= 0
+#
+# IlluminationSettings:
+#   - intensity: 0-100 (percentage)
+#
+# ConfocalSettings:
+#   - confocal_filter_position: >= 1
+#   - illumination_iris: 0-100 (percentage)
+#   - emission_iris: 0-100 (percentage)
+#
+# AcquisitionChannel:
+#   - name: min 1 character
+#   - display_color: hex format (#RRGGBB)
+#
+# IlluminationChannel:
+#   - name: min 1 character
+#   - controller_port: D1-D8 or USB1-USB8
+#   - wavelength_nm: > 0 if provided
 ```
 
 ### GeneralChannelConfig & ObjectiveChannelConfig

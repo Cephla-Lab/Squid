@@ -45,13 +45,16 @@ class CameraRegistryConfig(BaseModel):
     def unique_names_and_serials(cls, v: List[CameraDefinition]) -> List[CameraDefinition]:
         """Validate that camera names and serial numbers are unique."""
         names = [c.name for c in v]
+        serials = [c.serial_number for c in v]
+
         if len(names) != len(set(names)):
             duplicates = [n for n in set(names) if names.count(n) > 1]
             raise ValueError(f"Camera names must be unique. Duplicates: {duplicates}")
-        serials = [c.serial_number for c in v]
+
         if len(serials) != len(set(serials)):
             duplicates = [s for s in set(serials) if serials.count(s) > 1]
             raise ValueError(f"Camera serial numbers must be unique. Duplicates: {duplicates}")
+
         return v
 
     def get_camera_by_name(self, name: str) -> Optional[CameraDefinition]:

@@ -102,16 +102,14 @@ class FilterWheelRegistryConfig(BaseModel):
 
         # Rule 2: Names must be unique (filter out None for single-wheel case)
         names = [w.name for w in v if w.name is not None]
-        unique_names = set(names)
-        if len(names) != len(unique_names):
-            duplicates = [n for n in unique_names if names.count(n) > 1]
+        if len(names) != len(set(names)):
+            duplicates = [n for n in set(names) if names.count(n) > 1]
             raise ValueError(f"Filter wheel names must be unique. Duplicates: {duplicates}")
 
         # Rule 3: IDs must be unique (filter out None for single-wheel case)
         ids = [w.id for w in v if w.id is not None]
-        unique_ids = set(ids)
-        if len(ids) != len(unique_ids):
-            duplicates = [i for i in unique_ids if ids.count(i) > 1]
+        if len(ids) != len(set(ids)):
+            duplicates = [i for i in set(ids) if ids.count(i) > 1]
             raise ValueError(f"Filter wheel IDs must be unique. Duplicates: {duplicates}")
         return v
 

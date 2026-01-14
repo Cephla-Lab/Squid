@@ -572,9 +572,7 @@ def validate_channel_group(
 
         # Warn if channel in simultaneous mode has no camera assigned
         if group.synchronization == SynchronizationMode.SIMULTANEOUS and channel.camera is None:
-            errors.append(
-                f"Channel '{entry.name}' has no camera assigned but is in " f"simultaneous group '{group.name}'"
-            )
+            errors.append(f"Channel '{entry.name}' has no camera assigned but is in simultaneous group '{group.name}'")
 
         # Warn if offset specified for sequential mode
         if group.synchronization == SynchronizationMode.SEQUENTIAL and entry.offset_us != 0:

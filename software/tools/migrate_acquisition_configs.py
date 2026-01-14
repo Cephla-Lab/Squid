@@ -425,27 +425,13 @@ def save_yaml(path: Path, model: Any, dry_run: bool = False) -> None:
         logger.info(f"  [DRY RUN] Would create: {path}")
         return
 
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = model.model_dump(exclude_none=False) if hasattr(model, "model_dump") else dict(model)
 
-        if hasattr(model, "model_dump"):
-            data = model.model_dump(exclude_none=False)
-        else:
-            data = dict(model)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-        logger.info(f"  Created: {path}")
-    except PermissionError:
-        logger.error(f"  Permission denied writing to {path}")
-        raise
-    except yaml.YAMLError as e:
-        logger.error(f"  Failed to serialize data for {path}: {e}")
-        raise
-    except OSError as e:
-        logger.error(f"  Failed to save {path}: {e}")
-        raise
+    logger.info(f"  Created: {path}")
 
 
 def create_backup(source_dir: Path, dry_run: bool = False) -> Optional[Path]:
