@@ -229,6 +229,10 @@ class ConfigRepository:
         except FileNotFoundError as e:
             # Expected if illumination config doesn't exist yet
             logger.warning(f"Could not generate default configs (missing required config): {e}")
+        except (PermissionError, OSError) as e:
+            logger.error(f"Failed to generate default configs (filesystem error): {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error generating default configs: {e}")
 
         self.set_profile(profile)
 

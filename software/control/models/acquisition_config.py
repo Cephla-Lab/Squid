@@ -7,8 +7,8 @@ These models define user-facing acquisition settings. They are organized as:
 
 The merge logic combines these two configs:
 - From general.yaml: name, enabled, display_color, camera, illumination_channels, filter_wheel,
-                     filter_position, z_offset_um, confocal_filter_wheel, confocal_filter_position
-- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal iris settings
+                     filter_position, z_offset_um, confocal_settings (confocal_filter_wheel, confocal_filter_position)
+- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override (iris settings)
 
 Schema versions:
 - v1.0: Original schema with camera_settings as Dict[str, CameraSettings], display_color in CameraSettings
@@ -592,6 +592,12 @@ def validate_channel_group(
         # Get camera from channel (v1.1 schema)
         cameras_used.append(channel.camera)
 
+        # Warn if channel in simultaneous mode has no camera assigned
+        if group.synchronization == SynchronizationMode.SIMULTANEOUS and channel.camera is None:
+            errors.append(
+                f"Channel '{entry.name}' has no camera assigned but is in " f"simultaneous group '{group.name}'"
+            )
+
         # Warn if offset specified for sequential mode
         if group.synchronization == SynchronizationMode.SEQUENTIAL and entry.offset_us != 0:
             errors.append(
@@ -599,10 +605,11 @@ def validate_channel_group(
                 f"but group '{group.name}' is sequential (offset will be ignored)"
             )
 
-    # For simultaneous mode, all cameras must be different
+    # For simultaneous mode, all cameras must be different (excluding None which is already warned)
     if group.synchronization == SynchronizationMode.SIMULTANEOUS:
-        if len(cameras_used) != len(set(cameras_used)):
-            duplicate_cameras = [c for c in set(cameras_used) if cameras_used.count(c) > 1]
+        non_null_cameras = [c for c in cameras_used if c is not None]
+        if len(non_null_cameras) != len(set(non_null_cameras)):
+            duplicate_cameras = [c for c in set(non_null_cameras) if non_null_cameras.count(c) > 1]
             errors.append(
                 f"Group '{group.name}' uses simultaneous mode but has "
                 f"multiple channels on same camera: {duplicate_cameras}"

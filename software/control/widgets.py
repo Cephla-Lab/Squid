@@ -10,6 +10,8 @@ from typing import Optional, TYPE_CHECKING
 
 import psutil
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
 
@@ -14809,6 +14811,9 @@ def _populate_filter_positions_for_combo(
         for pos, filter_name in sorted(wheel.positions.items()):
             combo.addItem(f"{pos}: {filter_name}", pos)
     else:
+        # Log warning if we expected to find a wheel but didn't
+        if effective_wheel:
+            logger.warning(f"Filter wheel '{effective_wheel}' not found in registry, using default positions")
         # No registry - use default positions 1-8
         for pos in range(1, 9):
             combo.addItem(f"Position {pos}", pos)
@@ -15098,7 +15103,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
                 f"Remove channel '{name_item.text()}'?",
                 QMessageBox.Yes | QMessageBox.No,
             )
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.Yes and current_row < len(self.general_config.channels):
                 del self.general_config.channels[current_row]
                 self._load_channels()
 
@@ -15130,9 +15135,21 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         self._sync_table_to_config()
 
         # Validate filter wheel/position consistency
+        warnings = []
         for channel in self.general_config.channels:
             if channel.filter_wheel is not None and channel.filter_position is None:
-                self._log.warning(f"Channel '{channel.name}' has filter wheel but no position selected")
+                warnings.append(f"Channel '{channel.name}' has filter wheel but no position selected")
+                self._log.warning(warnings[-1])
+
+        if warnings:
+            reply = QMessageBox.warning(
+                self,
+                "Configuration Warning",
+                "Some channels have incomplete filter settings:\n\n" + "\n".join(warnings) + "\n\nSave anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         # Save to YAML file
         try:
@@ -15591,22 +15608,18 @@ class FilterWheelConfiguratorDialog(QDialog):
                         name = name_item.text().strip() or f"Position {pos}"
                         wheel.positions[pos] = name
 
-        # Save to file
+        # Save to file using repository (ensures consistent serialization)
         try:
-            config_path = self.config_repo.machine_configs_path / "filter_wheels.yaml"
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, "w") as f:
-                yaml.dump(self.registry.model_dump(), f, default_flow_style=False, sort_keys=False)
-
-            # Invalidate cache in config_repo
-            self.config_repo._machine_cache.pop("filter_wheel_registry", None)
-
+            self.config_repo.save_filter_wheel_registry(self.registry)
             self.signal_config_updated.emit()
             QMessageBox.information(self, "Saved", "Filter wheel configuration saved.")
             self.accept()
         except (PermissionError, OSError) as e:
-            self._log.error(f"Failed to save filter wheel config to {config_path}: {e}")
+            self._log.error(f"Failed to save filter wheel config: {e}")
             QMessageBox.critical(self, "Error", f"Cannot write configuration file:\n{e}")
+        except yaml.YAMLError as e:
+            self._log.error(f"Failed to serialize filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Configuration data could not be serialized:\n{e}")
         except Exception as e:
-            self._log.error(f"Unexpected error saving filter wheel config: {e}")
+            self._log.exception(f"Unexpected error saving filter wheel config: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")

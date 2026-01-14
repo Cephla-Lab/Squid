@@ -265,24 +265,27 @@ Defines channel identity and settings shared across all objectives.
 version: 1.1
 channels:
   - name: Fluorescence 488 nm Ex
+    enabled: true
+    display_color: '#1FFF00'        # Green for 488nm (channel-level in v1.1)
+    camera: null                    # null = auto-use single camera
+    filter_wheel: auto              # "auto" = single wheel, auto-selected
+    filter_position: 2              # Filter position for this channel
     illumination_settings:
       illumination_channels:
         - Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
       intensity:
         Fluorescence 488 nm Ex: 20.0
       z_offset_um: 0.0
-    camera_settings:
-      '1':                          # Camera ID
-        display_color: '#1FFF00'    # Green for 488nm
-        exposure_time_ms: 20.0
-        gain_mode: 10.0
-        pixel_format: null
-    emission_filter_wheel_position:
-      '1': 1                        # Wheel ID → position
-    confocal_settings: null
-    confocal_override: null
+    camera_settings:                # Single object in v1.1 (not dict)
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
 
   - name: BF LED matrix full
+    enabled: true
+    display_color: '#FFFFFF'        # White for brightfield
+    camera: null
+    filter_wheel: auto
+    filter_position: 1
     illumination_settings:
       illumination_channels:
         - BF LED matrix full
@@ -290,15 +293,8 @@ channels:
         BF LED matrix full: 5.0
       z_offset_um: 0.0
     camera_settings:
-      '1':
-        display_color: '#FFFFFF'    # White for brightfield
-        exposure_time_ms: 20.0
-        gain_mode: 10.0
-        pixel_format: null
-    emission_filter_wheel_position:
-      '1': 1
-    confocal_settings: null
-    confocal_override: null
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
 ```
 
 **Fields owned by general.yaml:**
@@ -308,7 +304,8 @@ channels:
 | `illumination_channels` | Which illumination channels to use (references machine config) |
 | `display_color` | Hex color for UI visualization |
 | `z_offset_um` | Z offset applied when switching to this channel |
-| `emission_filter_wheel_position` | Filter wheel positions |
+| `filter_wheel` | Filter wheel name ("auto" for single wheel, null for none) |
+| `filter_position` | Filter position in the wheel |
 
 ### channel_configs/{objective}.yaml
 
@@ -319,19 +316,12 @@ version: 1.1
 channels:
   - name: Fluorescence 488 nm Ex
     illumination_settings:
-      illumination_channels: null   # NOT in objective files
       intensity:
         Fluorescence 488 nm Ex: 35.0   # Higher intensity for 20x
-      z_offset_um: 0.0              # Placeholder (comes from general)
     camera_settings:
-      '1':
-        display_color: '#1FFF00'
-        exposure_time_ms: 50.0      # Longer exposure for 20x
-        gain_mode: 5.0              # Lower gain for 20x
-        pixel_format: null
-    emission_filter_wheel_position: null  # NOT in objective files
-    confocal_settings: null
-    confocal_override: null         # Only if confocal present
+      exposure_time_ms: 50.0           # Longer exposure for 20x
+      gain_mode: 5.0                   # Lower gain for 20x
+    confocal_override: null            # Only if confocal present
 ```
 
 **Fields owned by objective files:**
@@ -354,7 +344,7 @@ When loading channels for an objective, the system merges `general.yaml` with `{
 | `illumination_channels` | general | Hardware reference doesn't change |
 | `display_color` | general | Consistent UI colors |
 | `z_offset_um` | general | Usually constant per channel |
-| `emission_filter_wheel_position` | general | Filter setup |
+| `filter_wheel, filter_position` | general | Filter setup |
 | `intensity` | objective | Varies by magnification |
 | `exposure_time_ms` | objective | Varies by magnification |
 | `gain_mode` | objective | Varies by magnification |

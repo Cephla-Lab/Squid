@@ -423,17 +423,27 @@ def save_yaml(path: Path, model: Any, dry_run: bool = False) -> None:
         logger.info(f"  [DRY RUN] Would create: {path}")
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    if hasattr(model, "model_dump"):
-        data = model.model_dump(exclude_none=False)
-    else:
-        data = dict(model)
+        if hasattr(model, "model_dump"):
+            data = model.model_dump(exclude_none=False)
+        else:
+            data = dict(model)
 
-    with open(path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        with open(path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-    logger.info(f"  Created: {path}")
+        logger.info(f"  Created: {path}")
+    except PermissionError:
+        logger.error(f"  Permission denied writing to {path}")
+        raise
+    except yaml.YAMLError as e:
+        logger.error(f"  Failed to serialize data for {path}: {e}")
+        raise
+    except OSError as e:
+        logger.error(f"  Failed to save {path}: {e}")
+        raise
 
 
 def create_backup(source_dir: Path, dry_run: bool = False) -> Optional[Path]:
@@ -497,6 +507,9 @@ def migrate_profile(
         # Parse channel configurations XML
         channel_xml = obj_source / "channel_configurations.xml"
         xml_channels = parse_xml_config(channel_xml)
+
+        if not xml_channels and channel_xml.exists():
+            logger.warning(f"  No channels extracted from {channel_xml} - file may be corrupt or empty")
 
         if xml_channels:
             # Convert to new format (objective files don't have illumination_channels)
