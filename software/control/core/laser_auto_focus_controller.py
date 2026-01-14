@@ -146,6 +146,7 @@ class LaserAutofocusController(QObject):
                 self.laser_af_properties.initialize_crop_width,
                 self.laser_af_properties.initialize_crop_height,
             ),
+            ignore_row_tolerance=True,  # Spot can be anywhere on full frame during init
         )
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
@@ -379,6 +380,9 @@ class LaserAutofocusController(QObject):
                 self._log.info(f"Z search: moving to {target_pos_um:.1f} um (delta: {move_um:+.1f} um)")
                 self._move_z(move_um)
                 current_pos_um = target_pos_um
+                # Wait for piezo to settle
+                if self.piezo is not None:
+                    time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
             else:
                 self._log.info(f"Z search: checking current position {target_pos_um:.1f} um")
 
@@ -688,6 +692,7 @@ class LaserAutofocusController(QObject):
         self,
         remove_background: bool = False,
         use_center_crop: Optional[Tuple[int, int]] = None,
+        ignore_row_tolerance: bool = False,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
@@ -697,6 +702,7 @@ class LaserAutofocusController(QObject):
         Args:
             remove_background: Apply background removal using top-hat filter
             use_center_crop: (width, height) to crop around center before detection
+            ignore_row_tolerance: If True, disable row tolerance filtering (for initialization)
 
         Returns:
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
@@ -728,11 +734,13 @@ class LaserAutofocusController(QObject):
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
                 # calculate centroid using connected components parameters
+                # Use large row_tolerance during initialization when spot location is unknown
+                row_tolerance = image.shape[0] if ignore_row_tolerance else self.laser_af_properties.cc_row_tolerance
                 spot_detection_params = {
                     "threshold": self.laser_af_properties.cc_threshold,
                     "min_area": self.laser_af_properties.cc_min_area,
                     "max_area": self.laser_af_properties.cc_max_area,
-                    "row_tolerance": self.laser_af_properties.cc_row_tolerance,
+                    "row_tolerance": row_tolerance,
                 }
 
                 result = utils.find_spot_location(
