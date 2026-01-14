@@ -6,11 +6,19 @@ wheel names to hardware identifiers and provides filter position mappings.
 """
 
 import logging
+from enum import Enum
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
+
+
+class FilterWheelType(str, Enum):
+    """Type of filter wheel based on its position in the optical path."""
+
+    EXCITATION = "excitation"  # Filters light before sample (excitation filters)
+    EMISSION = "emission"  # Filters light after sample (emission filters)
 
 
 class FilterWheelDefinition(BaseModel):
@@ -24,6 +32,9 @@ class FilterWheelDefinition(BaseModel):
         None, min_length=1, description="User-friendly filter wheel name (optional for single wheel)"
     )
     id: Optional[int] = Field(None, ge=0, description="Hardware ID for controller (optional for single wheel)")
+    type: Optional[FilterWheelType] = Field(
+        None, description="Filter wheel type: excitation (before sample) or emission (after sample)"
+    )
     positions: Dict[int, str] = Field(..., description="Slot number -> filter name")
 
     model_config = {"extra": "forbid"}
@@ -155,3 +166,15 @@ class FilterWheelRegistryConfig(BaseModel):
         if wheel:
             return wheel.get_filter_name(position)
         return None
+
+    def get_wheels_by_type(self, wheel_type: FilterWheelType) -> List[FilterWheelDefinition]:
+        """Get all filter wheels of a specific type."""
+        return [wheel for wheel in self.filter_wheels if wheel.type == wheel_type]
+
+    def get_excitation_wheels(self) -> List[FilterWheelDefinition]:
+        """Get all excitation filter wheels."""
+        return self.get_wheels_by_type(FilterWheelType.EXCITATION)
+
+    def get_emission_wheels(self) -> List[FilterWheelDefinition]:
+        """Get all emission filter wheels."""
+        return self.get_wheels_by_type(FilterWheelType.EMISSION)

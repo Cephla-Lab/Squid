@@ -28,6 +28,7 @@ from control.models.camera_registry import (
     CameraRegistryConfig,
 )
 from control.models.filter_wheel_config import (
+    FilterWheelType,
     FilterWheelDefinition,
     FilterWheelRegistryConfig,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "CameraDefinition",
     "CameraRegistryConfig",
     # Filter Wheel Registry (v1.1)
+    "FilterWheelType",
     "FilterWheelDefinition",
     "FilterWheelRegistryConfig",
     # Acquisition

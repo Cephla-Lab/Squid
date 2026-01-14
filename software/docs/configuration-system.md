@@ -152,6 +152,7 @@ filter_wheels:
   # Emission filter wheel
   - name: "Emission Filter Wheel"
     id: 1                          # Hardware ID for controller
+    type: emission                 # Filters light after sample
     positions:
       1: "Empty"
       2: "BP 525/50"               # GFP emission
@@ -162,6 +163,7 @@ filter_wheels:
   # Excitation filter wheel (optional)
   - name: "Excitation Filter Wheel"
     id: 2
+    type: excitation              # Filters light before sample
     positions:
       1: "Empty"
       2: "BP 470/40"               # GFP excitation
@@ -175,12 +177,14 @@ filter_wheels:
 | `version` | Schema version (`1.1`) |
 | `filter_wheels[].name` | User-friendly name (must be unique) |
 | `filter_wheels[].id` | Hardware ID for controller (must be unique) |
+| `filter_wheels[].type` | Filter wheel type: `excitation` or `emission` (optional) |
 | `filter_wheels[].positions` | Map of slot number → filter name |
 
 **Usage:**
 - If `filter_wheels.yaml` doesn't exist, filter wheel settings in channels are ignored
 - Filter names appear in UI dropdowns for channel configuration
 - Position numbers must be ≥ 1
+- The `type` field helps identify the purpose of each filter wheel in multi-wheel systems
 
 ### confocal_config.yaml (Optional)
 

@@ -15,6 +15,7 @@ from control.models import (
     CameraRegistryConfig,
     FilterWheelDefinition,
     FilterWheelRegistryConfig,
+    FilterWheelType,
     ChannelGroup,
     ChannelGroupEntry,
     SynchronizationMode,
@@ -279,6 +280,45 @@ class TestFilterWheelDefinition:
             FilterWheelDefinition(id=1, positions={1: "Empty"})
         assert "name and id must both be present or both be absent" in str(exc_info.value)
 
+    def test_filter_wheel_with_type_emission(self):
+        """Test creating a filter wheel with emission type."""
+        wheel = FilterWheelDefinition(
+            name="Emission Filter Wheel",
+            id=1,
+            type=FilterWheelType.EMISSION,
+            positions={1: "Empty", 2: "BP 525/50"},
+        )
+        assert wheel.type == FilterWheelType.EMISSION
+
+    def test_filter_wheel_with_type_excitation(self):
+        """Test creating a filter wheel with excitation type."""
+        wheel = FilterWheelDefinition(
+            name="Excitation Filter Wheel",
+            id=2,
+            type=FilterWheelType.EXCITATION,
+            positions={1: "Empty", 2: "BP 470/40"},
+        )
+        assert wheel.type == FilterWheelType.EXCITATION
+
+    def test_filter_wheel_type_optional(self):
+        """Test that type field is optional."""
+        wheel = FilterWheelDefinition(
+            name="Filter Wheel",
+            id=1,
+            positions={1: "Empty"},
+        )
+        assert wheel.type is None
+
+    def test_filter_wheel_type_from_string(self):
+        """Test that type can be set from string value."""
+        wheel = FilterWheelDefinition(
+            name="Emission Filter Wheel",
+            id=1,
+            type="emission",
+            positions={1: "Empty"},
+        )
+        assert wheel.type == FilterWheelType.EMISSION
+
 
 class TestFilterWheelRegistryConfig:
     """Tests for FilterWheelRegistryConfig model."""
@@ -410,6 +450,54 @@ class TestFilterWheelRegistryConfig:
             ]
         )
         assert registry.get_wheel_names() == []
+
+    def test_get_wheels_by_type(self):
+        """Test filtering wheels by type."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Emission", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Excitation", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Untyped", id=3, positions={1: "Empty"}),
+            ]
+        )
+        emission_wheels = registry.get_wheels_by_type(FilterWheelType.EMISSION)
+        assert len(emission_wheels) == 1
+        assert emission_wheels[0].name == "Emission"
+
+    def test_get_excitation_wheels(self):
+        """Test convenience method for excitation wheels."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Ex1", id=1, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Ex2", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Em1", id=3, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ]
+        )
+        excitation = registry.get_excitation_wheels()
+        assert len(excitation) == 2
+        assert {w.name for w in excitation} == {"Ex1", "Ex2"}
+
+    def test_get_emission_wheels(self):
+        """Test convenience method for emission wheels."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Ex1", id=1, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Em1", id=2, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ]
+        )
+        emission = registry.get_emission_wheels()
+        assert len(emission) == 1
+        assert emission[0].name == "Em1"
+
+    def test_get_wheels_by_type_empty_result(self):
+        """Test getting wheels by type when none match."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Emission", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ]
+        )
+        excitation = registry.get_excitation_wheels()
+        assert excitation == []
 
 
 class TestChannelGroupEntry:
