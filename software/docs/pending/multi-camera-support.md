@@ -103,10 +103,8 @@ channels:
     filter_wheel: null                     # NEW: references filter_wheels.yaml by name
     filter_position: null                  # NEW: position in that wheel
     illumination_settings:
-      illumination_channels:
-        - BF LED matrix full
-      intensity:
-        BF LED matrix full: 20.0
+      illumination_channel: BF LED matrix full
+      intensity: 20.0
       z_offset_um: 0.0
     confocal_settings: null
     confocal_override: null
@@ -130,10 +128,8 @@ channels:
     filter_wheel: null
     filter_position: null
     illumination_settings:
-      illumination_channels:
-        - BF LED matrix full
-      intensity:
-        BF LED matrix full: 20.0
+      illumination_channel: BF LED matrix full
+      intensity: 20.0
       z_offset_um: 0.0
     confocal_settings: null
     confocal_override: null
@@ -148,10 +144,8 @@ channels:
     filter_wheel: "Emission Filter Wheel"
     filter_position: 2
     illumination_settings:
-      illumination_channels:
-        - Fluorescence 488 nm Ex
-      intensity:
-        Fluorescence 488 nm Ex: 20.0
+      illumination_channel: Fluorescence 488 nm Ex
+      intensity: 20.0
       z_offset_um: 0.0
     confocal_settings: null
     confocal_override: null
@@ -307,10 +301,10 @@ class CameraSettings(BaseModel):
 
 class IlluminationSettings(BaseModel):
     """Illumination settings for an acquisition channel."""
-    illumination_channels: Optional[List[str]] = Field(
-        None, description="Names of illumination channels (only in general.yaml)"
+    illumination_channel: Optional[str] = Field(
+        None, description="Name of illumination channel (only in general.yaml)"
     )
-    intensity: Dict[str, float] = Field(..., description="Channel name -> intensity %")
+    intensity: float = Field(..., ge=0, le=100, description="Intensity percentage (0-100)")
     z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     model_config = {"extra": "forbid"}

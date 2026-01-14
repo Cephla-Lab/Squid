@@ -271,10 +271,8 @@ channels:
     filter_wheel: auto              # "auto" = single wheel, auto-selected
     filter_position: 2              # Filter position for this channel
     illumination_settings:
-      illumination_channels:
-        - Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
-      intensity:
-        Fluorescence 488 nm Ex: 20.0
+      illumination_channel: Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
+      intensity: 20.0
       z_offset_um: 0.0
     camera_settings:                # Single object in v1.1 (not dict)
       exposure_time_ms: 20.0
@@ -287,10 +285,8 @@ channels:
     filter_wheel: auto
     filter_position: 1
     illumination_settings:
-      illumination_channels:
-        - BF LED matrix full
-      intensity:
-        BF LED matrix full: 5.0
+      illumination_channel: BF LED matrix full
+      intensity: 5.0
       z_offset_um: 0.0
     camera_settings:
       exposure_time_ms: 20.0
@@ -301,7 +297,7 @@ channels:
 
 | Field | Description |
 |-------|-------------|
-| `illumination_channels` | Which illumination channels to use (references machine config) |
+| `illumination_channel` | Which illumination channel to use (references machine config) |
 | `display_color` | Hex color for UI visualization |
 | `z_offset_um` | Z offset applied when switching to this channel |
 | `filter_wheel` | Filter wheel name ("auto" for single wheel, null for none) |
@@ -316,8 +312,7 @@ version: 1.1
 channels:
   - name: Fluorescence 488 nm Ex
     illumination_settings:
-      intensity:
-        Fluorescence 488 nm Ex: 35.0   # Higher intensity for 20x
+      intensity: 35.0   # Higher intensity for 20x
     camera_settings:
       exposure_time_ms: 50.0           # Longer exposure for 20x
       gain_mode: 5.0                   # Lower gain for 20x
@@ -341,7 +336,7 @@ When loading channels for an objective, the system merges `general.yaml` with `{
 | Field | Source | Rationale |
 |-------|--------|-----------|
 | `name` | general | Channel identity |
-| `illumination_channels` | general | Hardware reference doesn't change |
+| `illumination_channel` | general | Hardware reference doesn't change |
 | `display_color` | general | Consistent UI colors |
 | `z_offset_um` | general | Usually constant per channel |
 | `filter_wheel, filter_position` | general | Filter setup |
@@ -366,9 +361,8 @@ When the system has a confocal unit and confocal mode is enabled, the `confocal_
   # ... base settings ...
   confocal_override:
     illumination_settings:
-      illumination_channels: null
-      intensity:
-        Fluorescence 488 nm Ex: 50.0   # Higher intensity for confocal
+      illumination_channel: null
+      intensity: 50.0   # Higher intensity for confocal
       z_offset_um: 0.0
     camera_settings:
       '1':
@@ -505,7 +499,7 @@ This file captures the exact settings used, including:
 
 ### "Illumination channel not found"
 
-- The `illumination_channels` field in `general.yaml` must reference channels defined in `illumination_channel_config.yaml`
+- The `illumination_channel` field in `general.yaml` must reference a channel defined in `illumination_channel_config.yaml`
 - Check for typos in channel names
 
 ### "Profile not found"
