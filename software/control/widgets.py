@@ -1328,7 +1328,8 @@ class PreferencesDialog(QDialog):
         if not self.config.has_section(section):
             self.config.add_section(section)
 
-    def _apply_settings(self):
+    def _apply_settings(self) -> bool:
+        """Apply settings to config file. Returns True on success, False on failure."""
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -1467,7 +1468,7 @@ class PreferencesDialog(QDialog):
                     f"System error: {e}"
                 ),
             )
-            return
+            return False
 
         # Update runtime values for settings that can be applied live
         try:
@@ -1476,6 +1477,7 @@ class PreferencesDialog(QDialog):
             self._log.exception("Failed to apply live settings")
 
         self.signal_config_changed.emit()
+        return True
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
@@ -1859,7 +1861,8 @@ class PreferencesDialog(QDialog):
 
         # For single change, save directly without confirmation
         if len(changes) == 1:
-            self._apply_settings()
+            if not self._apply_settings():
+                return  # Save failed, dialog stays open
             if requires_restart:
                 QMessageBox.information(
                     self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
@@ -1910,8 +1913,9 @@ class PreferencesDialog(QDialog):
         layout.addLayout(button_layout)
 
         if dialog.exec_() == QDialog.Accepted:
-            self._apply_settings()
-            self.accept()
+            if self._apply_settings():
+                self.accept()
+            # If save failed, dialog stays open (error already shown)
 
 
 class StageUtils(QDialog):
