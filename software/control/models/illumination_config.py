@@ -6,10 +6,13 @@ machine-specific (not user-specific). They map illumination sources to
 controller ports and serial command codes.
 """
 
+import logging
 from enum import Enum
 from typing import ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class IlluminationType(str, Enum):
@@ -127,6 +130,8 @@ class IlluminationChannelConfig(BaseModel):
         for ch in self.channels:
             if ch.name == name:
                 return ch
+        available = [ch.name for ch in self.channels]
+        logger.debug(f"Illumination channel not found by name: '{name}'. Available: {available}")
         return None
 
     def get_channel_by_source_code(self, source_code: int) -> Optional[IlluminationChannel]:
@@ -134,6 +139,7 @@ class IlluminationChannelConfig(BaseModel):
         for ch in self.channels:
             if self.get_source_code(ch) == source_code:
                 return ch
+        logger.debug(f"Illumination channel not found by source code: {source_code}")
         return None
 
     def get_available_ports(self) -> List[str]:

@@ -6,9 +6,12 @@ to hardware identifiers (serial numbers). This allows users to configure
 channels using camera names instead of serial numbers.
 """
 
+import logging
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class CameraDefinition(BaseModel):
@@ -56,6 +59,7 @@ class CameraRegistryConfig(BaseModel):
         for camera in self.cameras:
             if camera.name == name:
                 return camera
+        logger.debug(f"Camera not found by name: '{name}'. Available: {self.get_camera_names()}")
         return None
 
     def get_camera_by_sn(self, serial_number: str) -> Optional[CameraDefinition]:
@@ -63,6 +67,7 @@ class CameraRegistryConfig(BaseModel):
         for camera in self.cameras:
             if camera.serial_number == serial_number:
                 return camera
+        logger.debug(f"Camera not found by serial number: '{serial_number}'")
         return None
 
     def get_camera_names(self) -> List[str]:

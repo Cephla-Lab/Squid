@@ -5,9 +5,12 @@ This module defines the filter wheel registry that maps user-friendly filter
 wheel names to hardware identifiers and provides filter position mappings.
 """
 
+import logging
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class FilterWheelDefinition(BaseModel):
@@ -117,6 +120,7 @@ class FilterWheelRegistryConfig(BaseModel):
         for wheel in self.filter_wheels:
             if wheel.name == name:
                 return wheel
+        logger.debug(f"Filter wheel not found by name: '{name}'. Available: {self.get_wheel_names()}")
         return None
 
     def get_wheel_by_id(self, wheel_id: int) -> Optional[FilterWheelDefinition]:
@@ -124,6 +128,8 @@ class FilterWheelRegistryConfig(BaseModel):
         for wheel in self.filter_wheels:
             if wheel.id == wheel_id:
                 return wheel
+        available_ids = [w.id for w in self.filter_wheels if w.id is not None]
+        logger.debug(f"Filter wheel not found by ID: {wheel_id}. Available IDs: {available_ids}")
         return None
 
     def get_wheel_names(self) -> List[str]:
