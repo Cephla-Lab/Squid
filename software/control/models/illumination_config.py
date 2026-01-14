@@ -30,10 +30,16 @@ class IlluminationChannel(BaseModel):
     - USB1-USB8: LED matrix patterns (transillumination)
     """
 
-    name: str = Field(..., description="Unique name for this illumination channel")
+    name: str = Field(..., min_length=1, description="Unique name for this illumination channel")
     type: IlluminationType = Field(..., description="Type of illumination")
-    controller_port: str = Field(..., description="Controller port (D1-D5 for lasers, USB1-USB8 for LED patterns)")
-    wavelength_nm: Optional[int] = Field(None, description="Wavelength in nm (for epi-illumination channels)")
+    controller_port: str = Field(
+        ...,
+        pattern=r"^(D[1-8]|USB[1-8])$",
+        description="Controller port (D1-D8 for lasers, USB1-USB8 for LED patterns)",
+    )
+    wavelength_nm: Optional[int] = Field(
+        None, gt=0, description="Wavelength in nm (for epi-illumination channels, must be positive)"
+    )
     intensity_calibration_file: Optional[str] = Field(
         None, description="Reference to calibration CSV file in intensity_calibrations/"
     )

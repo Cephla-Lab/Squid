@@ -59,9 +59,13 @@ class ConfocalSettings(BaseModel):
         "Use 'auto' to automatically use the single available wheel.",
     )
     confocal_filter_position: Optional[int] = Field(None, ge=1, description="Position in confocal filter wheel")
-    # Iris settings (objective-specific)
-    illumination_iris: Optional[float] = Field(None, description="Illumination iris setting (objective-specific)")
-    emission_iris: Optional[float] = Field(None, description="Emission iris setting (objective-specific)")
+    # Iris settings (objective-specific), 0-100% of aperture
+    illumination_iris: Optional[float] = Field(
+        None, ge=0, le=100, description="Illumination iris aperture percentage (0-100, objective-specific)"
+    )
+    emission_iris: Optional[float] = Field(
+        None, ge=0, le=100, description="Emission iris aperture percentage (0-100, objective-specific)"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -110,7 +114,9 @@ class AcquisitionChannel(BaseModel):
 
     name: str = Field(..., min_length=1, description="Display name for this acquisition channel")
     enabled: bool = Field(True, description="Whether channel is enabled for selection in UI")
-    display_color: str = Field("#FFFFFF", description="Hex color for UI visualization")
+    display_color: str = Field(
+        "#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$", description="Hex color for UI visualization (e.g., '#FF0000')"
+    )
 
     # Camera assignment (optional for single-camera systems)
     camera: Optional[str] = Field(
