@@ -807,3 +807,303 @@ class TestGetIlluminationChannelNames:
         assert "Fluorescence 488nm" in names
         assert "BF LED full" in names
         assert len(names) == 2
+
+
+class TestFieldValidationConstraints:
+    """Tests for Pydantic field validation constraints added in v1.1."""
+
+    def test_display_color_valid_hex(self):
+        """Test that valid hex colors are accepted."""
+        channel = AcquisitionChannel(
+            name="Test",
+            display_color="#FF0000",
+            illumination_settings=IlluminationSettings(intensity=50.0),
+            camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
+        )
+        assert channel.display_color == "#FF0000"
+
+    def test_display_color_lowercase_hex_accepted(self):
+        """Test that lowercase hex colors are accepted."""
+        channel = AcquisitionChannel(
+            name="Test",
+            display_color="#aabbcc",
+            illumination_settings=IlluminationSettings(intensity=50.0),
+            camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
+        )
+        assert channel.display_color == "#aabbcc"
+
+    def test_display_color_invalid_format_rejected(self):
+        """Test that invalid color format is rejected."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            AcquisitionChannel(
+                name="Test",
+                display_color="FF0000",  # Missing #
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
+            )
+        assert "pattern" in str(exc_info.value).lower() or "string" in str(exc_info.value).lower()
+
+    def test_display_color_short_hex_rejected(self):
+        """Test that short hex colors (3 digits) are rejected."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AcquisitionChannel(
+                name="Test",
+                display_color="#F00",  # Short form not accepted
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
+            )
+
+    def test_confocal_iris_valid_range(self):
+        """Test that iris values in 0-100 range are accepted."""
+        from control.models import ConfocalSettings
+
+        settings = ConfocalSettings(
+            illumination_iris=50.0,
+            emission_iris=75.0,
+        )
+        assert settings.illumination_iris == 50.0
+        assert settings.emission_iris == 75.0
+
+    def test_confocal_iris_boundary_values(self):
+        """Test iris accepts boundary values (0 and 100)."""
+        from control.models import ConfocalSettings
+
+        settings = ConfocalSettings(
+            illumination_iris=0.0,
+            emission_iris=100.0,
+        )
+        assert settings.illumination_iris == 0.0
+        assert settings.emission_iris == 100.0
+
+    def test_confocal_iris_out_of_range_rejected(self):
+        """Test that iris values outside 0-100 are rejected."""
+        from pydantic import ValidationError
+        from control.models import ConfocalSettings
+
+        with pytest.raises(ValidationError) as exc_info:
+            ConfocalSettings(illumination_iris=150.0)
+        assert "less than or equal to 100" in str(exc_info.value)
+
+        with pytest.raises(ValidationError) as exc_info:
+            ConfocalSettings(emission_iris=-10.0)
+        assert "greater than or equal to 0" in str(exc_info.value)
+
+    def test_illumination_intensity_valid_range(self):
+        """Test that intensity in 0-100 range is accepted."""
+        settings = IlluminationSettings(intensity=50.0)
+        assert settings.intensity == 50.0
+
+    def test_illumination_intensity_out_of_range_rejected(self):
+        """Test that intensity outside 0-100 is rejected."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            IlluminationSettings(intensity=150.0)
+
+        with pytest.raises(ValidationError):
+            IlluminationSettings(intensity=-10.0)
+
+    def test_exposure_time_must_be_positive(self):
+        """Test that exposure_time_ms must be > 0."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            CameraSettings(exposure_time_ms=0.0, gain_mode=0.0)
+
+        with pytest.raises(ValidationError):
+            CameraSettings(exposure_time_ms=-10.0, gain_mode=0.0)
+
+    def test_gain_mode_must_be_non_negative(self):
+        """Test that gain_mode must be >= 0."""
+        from pydantic import ValidationError
+
+        # Valid: 0 is acceptable
+        settings = CameraSettings(exposure_time_ms=10.0, gain_mode=0.0)
+        assert settings.gain_mode == 0.0
+
+        # Invalid: negative
+        with pytest.raises(ValidationError):
+            CameraSettings(exposure_time_ms=10.0, gain_mode=-1.0)
+
+
+class TestGeneralChannelConfigGroups:
+    """Tests for GeneralChannelConfig channel group methods."""
+
+    def test_get_group_by_name_found(self):
+        """Test finding a channel group by name."""
+        from control.models import ChannelGroup, ChannelGroupEntry, SynchronizationMode
+
+        config = GeneralChannelConfig(
+            version=1.1,
+            channels=[
+                AcquisitionChannel(
+                    name="DAPI",
+                    display_color="#0000FF",
+                    illumination_settings=IlluminationSettings(intensity=20.0),
+                    camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=0.0),
+                ),
+                AcquisitionChannel(
+                    name="GFP",
+                    display_color="#00FF00",
+                    illumination_settings=IlluminationSettings(intensity=30.0),
+                    camera_settings=CameraSettings(exposure_time_ms=30.0, gain_mode=0.0),
+                ),
+            ],
+            channel_groups=[
+                ChannelGroup(
+                    name="Nuclear Stain",
+                    channels=[
+                        ChannelGroupEntry(name="DAPI"),
+                    ],
+                    synchronization=SynchronizationMode.SEQUENTIAL,
+                ),
+            ],
+        )
+
+        group = config.get_group_by_name("Nuclear Stain")
+        assert group is not None
+        assert group.name == "Nuclear Stain"
+        assert len(group.channels) == 1
+
+    def test_get_group_by_name_not_found(self):
+        """Test returning None when group name not found."""
+        config = GeneralChannelConfig(
+            version=1.1,
+            channels=[
+                AcquisitionChannel(
+                    name="Test",
+                    display_color="#FF0000",
+                    illumination_settings=IlluminationSettings(intensity=20.0),
+                    camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=0.0),
+                ),
+            ],
+            channel_groups=[],
+        )
+
+        group = config.get_group_by_name("Nonexistent Group")
+        assert group is None
+
+    def test_get_group_names(self):
+        """Test getting list of all group names."""
+        from control.models import ChannelGroup, ChannelGroupEntry
+
+        config = GeneralChannelConfig(
+            version=1.1,
+            channels=[
+                AcquisitionChannel(
+                    name="Ch1",
+                    display_color="#FF0000",
+                    illumination_settings=IlluminationSettings(intensity=20.0),
+                    camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=0.0),
+                ),
+                AcquisitionChannel(
+                    name="Ch2",
+                    display_color="#00FF00",
+                    illumination_settings=IlluminationSettings(intensity=30.0),
+                    camera_settings=CameraSettings(exposure_time_ms=30.0, gain_mode=0.0),
+                ),
+            ],
+            channel_groups=[
+                ChannelGroup(
+                    name="Group A",
+                    channels=[ChannelGroupEntry(name="Ch1")],
+                ),
+                ChannelGroup(
+                    name="Group B",
+                    channels=[ChannelGroupEntry(name="Ch2")],
+                ),
+            ],
+        )
+
+        names = config.get_group_names()
+        assert "Group A" in names
+        assert "Group B" in names
+        assert len(names) == 2
+
+
+class TestIlluminationChannelValidation:
+    """Tests for IlluminationChannel validation constraints."""
+
+    def test_illumination_channel_empty_name_rejected(self):
+        """Test that empty illumination channel name is rejected."""
+        from pydantic import ValidationError
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        with pytest.raises(ValidationError) as exc_info:
+            IlluminationChannel(
+                name="",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port="D1",
+            )
+        assert "at least 1 character" in str(exc_info.value)
+
+    def test_illumination_channel_invalid_port_rejected(self):
+        """Test that invalid controller port is rejected."""
+        from pydantic import ValidationError
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        with pytest.raises(ValidationError) as exc_info:
+            IlluminationChannel(
+                name="Test",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port="INVALID",  # Should be D1-D8 or USB1-USB8
+            )
+        assert "pattern" in str(exc_info.value).lower() or "string" in str(exc_info.value).lower()
+
+    def test_illumination_channel_valid_ports(self):
+        """Test that valid controller ports are accepted."""
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        # Laser ports
+        for port in ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]:
+            channel = IlluminationChannel(
+                name=f"Channel {port}",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port=port,
+            )
+            assert channel.controller_port == port
+
+        # USB ports
+        for port in ["USB1", "USB2", "USB3", "USB4", "USB5", "USB6", "USB7", "USB8"]:
+            channel = IlluminationChannel(
+                name=f"LED {port}",
+                type=IlluminationType.TRANSILLUMINATION,
+                controller_port=port,
+            )
+            assert channel.controller_port == port
+
+    def test_illumination_channel_positive_wavelength(self):
+        """Test that wavelength must be positive if provided."""
+        from pydantic import ValidationError
+        from control.models.illumination_config import IlluminationChannel, IlluminationType
+
+        # Valid: positive wavelength
+        channel = IlluminationChannel(
+            name="488nm Laser",
+            type=IlluminationType.EPI_ILLUMINATION,
+            controller_port="D2",
+            wavelength_nm=488,
+        )
+        assert channel.wavelength_nm == 488
+
+        # Invalid: zero wavelength
+        with pytest.raises(ValidationError):
+            IlluminationChannel(
+                name="Invalid",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port="D2",
+                wavelength_nm=0,
+            )
+
+        # Invalid: negative wavelength
+        with pytest.raises(ValidationError):
+            IlluminationChannel(
+                name="Invalid",
+                type=IlluminationType.EPI_ILLUMINATION,
+                controller_port="D2",
+                wavelength_nm=-488,
+            )
