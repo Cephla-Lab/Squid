@@ -270,6 +270,7 @@ def convert_xml_channels_to_acquisition_config(
     include_confocal: bool = False,
     confocal_channels: Optional[List[Dict[str, Any]]] = None,
     include_illumination_channels: bool = False,
+    confocal_filter_wheel: str = "Confocal",
 ) -> ObjectiveChannelConfig:
     """
     Convert parsed XML channels to ObjectiveChannelConfig.
@@ -277,10 +278,11 @@ def convert_xml_channels_to_acquisition_config(
     Args:
         xml_channels: Channels from channel_configurations.xml
         illumination_config: Illumination channel config for name lookup
-        include_confocal: Whether to include confocal settings (currently unused)
-        confocal_channels: Channels for confocal overrides (currently unused)
+        include_confocal: Whether to include confocal settings
+        confocal_channels: Channels for confocal overrides
         include_illumination_channels: Whether to include illumination_channel field
             (True for general.yaml, False for objective-specific files)
+        confocal_filter_wheel: Name of confocal filter wheel (default: "Confocal")
     """
     # Build lookup for confocal overrides by name
     confocal_by_name = {}
@@ -329,7 +331,7 @@ def convert_xml_channels_to_acquisition_config(
 
         if include_confocal:
             confocal_settings = ConfocalSettings(
-                confocal_filter_wheel="Confocal",
+                confocal_filter_wheel=confocal_filter_wheel,
                 confocal_filter_position=xml_ch["emission_filter_position"],
             )
 
@@ -347,7 +349,7 @@ def convert_xml_channels_to_acquisition_config(
                         gain_mode=conf_ch["analog_gain"],
                     ),
                     confocal_settings=ConfocalSettings(
-                        confocal_filter_wheel="Confocal",
+                        confocal_filter_wheel=confocal_filter_wheel,
                         confocal_filter_position=conf_ch["emission_filter_position"],
                     ),
                 )
