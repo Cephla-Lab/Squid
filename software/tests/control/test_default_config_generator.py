@@ -18,6 +18,8 @@ from control.default_config_generator import (
 )
 from control.models import (
     ConfocalConfig,
+    FilterWheelDefinition,
+    FilterWheelType,
     IlluminationChannel,
     IlluminationChannelConfig,
 )
@@ -190,7 +192,12 @@ class TestDefaultConfigGenerator:
         )
 
         confocal_config = ConfocalConfig(
-            filter_wheel_mappings={1: {1: "Filter"}},
+            filter_wheels=[
+                FilterWheelDefinition(
+                    type=FilterWheelType.EMISSION,
+                    positions={1: "Filter"},
+                ),
+            ],
         )
 
         general, objectives = generate_default_configs(

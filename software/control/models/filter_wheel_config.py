@@ -7,7 +7,7 @@ wheel names to hardware identifiers and provides filter position mappings.
 
 import logging
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -21,19 +21,109 @@ class FilterWheelType(str, Enum):
     EMISSION = "emission"  # Filters light after sample (emission filters)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SHARED FILTER WHEEL VALIDATION HELPERS
+# Used by both FilterWheelRegistryConfig and ConfocalConfig
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def apply_single_filter_wheel_defaults(wheels: List[Any]) -> List[Any]:
+    """
+    Apply defaults to a single filter wheel in raw data.
+
+    For single-wheel systems, applies default id=1 and name based on type.
+    Handles both dict and FilterWheelDefinition inputs.
+
+    Args:
+        wheels: List of wheels (dicts or FilterWheelDefinition objects)
+
+    Returns:
+        Modified list with defaults applied (may contain dicts)
+    """
+    if len(wheels) != 1:
+        return wheels
+
+    wheel = wheels[0]
+    if isinstance(wheel, dict):
+        if wheel.get("id") is None:
+            wheel["id"] = 1
+        if wheel.get("name") is None:
+            wheel_type = wheel.get("type", "emission")
+            if isinstance(wheel_type, FilterWheelType):
+                wheel_type = wheel_type.value
+            wheel["name"] = f"{wheel_type.title()} Wheel"
+    elif hasattr(wheel, "model_dump"):  # Pydantic model
+        wheel_dict = wheel.model_dump()
+        if wheel_dict.get("id") is None:
+            wheel_dict["id"] = 1
+        if wheel_dict.get("name") is None:
+            wheel_type = wheel_dict.get("type", "emission")
+            if isinstance(wheel_type, FilterWheelType):
+                wheel_type = wheel_type.value
+            wheel_dict["name"] = f"{wheel_type.title()} Wheel"
+        return [wheel_dict]
+
+    return wheels
+
+
+def validate_filter_wheel_list(wheels: List["FilterWheelDefinition"], context: str = "Filter wheel") -> None:
+    """
+    Validate a list of filter wheels.
+
+    Checks:
+    - Multiple wheels require id and name for all
+    - Names must be unique
+    - IDs must be unique
+
+    Args:
+        wheels: List of FilterWheelDefinition objects
+        context: Context string for error messages
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if len(wheels) == 0:
+        return
+
+    if len(wheels) > 1:
+        # Multiple wheels: require id and name for all
+        for i, wheel in enumerate(wheels):
+            if wheel.id is None:
+                raise ValueError(
+                    f"{context} at index {i} (type: {wheel.type.value}) missing required 'id' "
+                    f"(required when multiple wheels exist)"
+                )
+            if wheel.name is None:
+                raise ValueError(
+                    f"{context} at index {i} (type: {wheel.type.value}) missing required 'name' "
+                    f"(required when multiple wheels exist)"
+                )
+
+    # Validate uniqueness
+    names = [w.name for w in wheels if w.name is not None]
+    ids = [w.id for w in wheels if w.id is not None]
+
+    if len(names) != len(set(names)):
+        duplicates = [n for n in set(names) if names.count(n) > 1]
+        raise ValueError(f"{context} names must be unique. Duplicates: {duplicates}")
+
+    if len(ids) != len(set(ids)):
+        duplicates = [i for i in set(ids) if ids.count(i) > 1]
+        raise ValueError(f"{context} IDs must be unique. Duplicates: {duplicates}")
+
+
 class FilterWheelDefinition(BaseModel):
     """A filter wheel in the system.
 
-    For single-wheel systems, name and id can be omitted (None).
+    For single-wheel systems, name and id are optional (defaults applied).
     For multi-wheel systems, name and id are required to distinguish wheels.
+    Type is always required for UI categorization.
     """
 
-    name: Optional[str] = Field(
-        None, min_length=1, description="User-friendly filter wheel name (optional for single wheel)"
-    )
-    id: Optional[int] = Field(None, ge=0, description="Hardware ID for controller (optional for single wheel)")
-    type: Optional[FilterWheelType] = Field(
-        None, description="Filter wheel type: excitation (before sample) or emission (after sample)"
+    name: Optional[str] = Field(None, min_length=1, description="User-friendly filter wheel name")
+    id: Optional[int] = Field(None, ge=1, description="Filter wheel ID for hardware bindings")
+    type: FilterWheelType = Field(
+        ..., description="Filter wheel type: excitation (before sample) or emission (after sample)"
     )
     positions: Dict[int, str] = Field(..., description="Slot number -> filter name")
 
@@ -49,13 +139,6 @@ class FilterWheelDefinition(BaseModel):
             if not name or not name.strip():
                 raise ValueError(f"Filter name at position {pos} cannot be empty")
         return v
-
-    @model_validator(mode="after")
-    def validate_name_id_consistency(self) -> "FilterWheelDefinition":
-        """Ensure name and id are either both present or both absent."""
-        if (self.name is None) != (self.id is None):
-            raise ValueError("name and id must both be present or both be absent")
-        return self
 
     def get_filter_name(self, position: int) -> Optional[str]:
         """Get filter name at a position."""
@@ -79,12 +162,20 @@ class FilterWheelDefinition(BaseModel):
 
 class FilterWheelRegistryConfig(BaseModel):
     """
-    Registry of available filter wheels.
+    Registry of available filter wheels (standalone, not part of confocal).
 
-    This configuration defines all filter wheels in the system with their
-    positions and filter names. Channels reference filter wheels by name.
+    This configuration defines standalone filter wheels in the system.
+    Filter wheels that are part of confocal hardware should be defined
+    in confocal_config.yaml instead.
 
     Location: machine_configs/filter_wheels.yaml
+
+    Validation rules:
+    - Single wheel: name and id are optional (defaults: id=1, name="{Type} Wheel")
+    - Multiple wheels: name and id are required for all wheels
+    - Names must be unique
+    - IDs must be unique
+    - Type is always required
     """
 
     version: float = Field(1.1, description="Configuration format version")
@@ -92,37 +183,22 @@ class FilterWheelRegistryConfig(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("filter_wheels")
+    @model_validator(mode="before")
     @classmethod
-    def validate_filter_wheels(cls, v: List[FilterWheelDefinition]) -> List[FilterWheelDefinition]:
-        """Validate filter wheel collection rules.
+    def apply_single_wheel_defaults(cls, data: Any) -> Any:
+        """Apply defaults for single-wheel systems before object creation."""
+        if not isinstance(data, dict):
+            return data
 
-        Rules:
-        1. Multi-wheel systems require name and id for each wheel
-        2. Names must be unique (excluding None for single-wheel)
-        3. IDs must be unique (excluding None for single-wheel)
-        """
-        # Rule 1: Multi-wheel systems require name and id for each wheel
-        if len(v) > 1:
-            for i, wheel in enumerate(v):
-                if wheel.name is None or wheel.id is None:
-                    raise ValueError(
-                        f"Multi-wheel systems require name and id for each wheel. "
-                        f"Wheel at index {i} is missing name or id."
-                    )
+        wheels = data.get("filter_wheels", [])
+        data["filter_wheels"] = apply_single_filter_wheel_defaults(wheels)
+        return data
 
-        # Rule 2: Names must be unique (filter out None for single-wheel case)
-        names = [w.name for w in v if w.name is not None]
-        if len(names) != len(set(names)):
-            duplicates = [n for n in set(names) if names.count(n) > 1]
-            raise ValueError(f"Filter wheel names must be unique. Duplicates: {duplicates}")
-
-        # Rule 3: IDs must be unique (filter out None for single-wheel case)
-        ids = [w.id for w in v if w.id is not None]
-        if len(ids) != len(set(ids)):
-            duplicates = [i for i in set(ids) if ids.count(i) > 1]
-            raise ValueError(f"Filter wheel IDs must be unique. Duplicates: {duplicates}")
-        return v
+    @model_validator(mode="after")
+    def validate_filter_wheels(self) -> "FilterWheelRegistryConfig":
+        """Validate filter wheels after object creation."""
+        validate_filter_wheel_list(self.filter_wheels, context="Filter wheel")
+        return self
 
     def get_wheel_by_name(self, name: str) -> Optional[FilterWheelDefinition]:
         """Get filter wheel by user-friendly name."""
@@ -142,16 +218,17 @@ class FilterWheelRegistryConfig(BaseModel):
         return None
 
     def get_wheel_names(self) -> List[str]:
-        """Get list of all filter wheel names for UI dropdowns.
-
-        Only returns named wheels - unnamed single-wheel systems return empty list.
-        """
+        """Get list of all filter wheel names for UI dropdowns."""
         return [wheel.name for wheel in self.filter_wheels if wheel.name is not None]
 
-    def get_first_wheel(self) -> Optional[FilterWheelDefinition]:
-        """Get the first (or only) filter wheel, regardless of name.
+    def get_wheel_ids(self) -> List[int]:
+        """Get list of all filter wheel IDs."""
+        return [wheel.id for wheel in self.filter_wheels if wheel.id is not None]
 
-        Useful for single-wheel systems where the wheel may be unnamed.
+    def get_first_wheel(self) -> Optional[FilterWheelDefinition]:
+        """Get the first (or only) filter wheel.
+
+        Useful for single-wheel systems.
         """
         return self.filter_wheels[0] if self.filter_wheels else None
 

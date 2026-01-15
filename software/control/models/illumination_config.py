@@ -35,7 +35,8 @@ class IlluminationChannel(BaseModel):
     Excitation filter wheel (optional):
     - Most systems don't have an excitation filter wheel
     - If present, the excitation filter is paired with the illumination channel
-    - References a filter wheel defined in filter_wheels.yaml
+    - If single excitation wheel: only excitation_filter_position needed
+    - If multiple excitation wheels: excitation_filter_wheel_id required
     """
 
     name: str = Field(..., min_length=1, description="Unique name for this illumination channel")
@@ -51,10 +52,24 @@ class IlluminationChannel(BaseModel):
     intensity_calibration_file: Optional[str] = Field(
         None, description="Reference to calibration CSV file in intensity_calibrations/"
     )
-    excitation_filter_wheel: Optional[str] = Field(
-        None, description="Name of excitation filter wheel (references filter_wheels.yaml)"
+
+    # Excitation filter (optional)
+    excitation_filter_wheel_id: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Excitation filter wheel ID (required if multiple excitation wheels exist)",
     )
-    excitation_filter_position: Optional[int] = Field(None, ge=1, description="Position in excitation filter wheel")
+    excitation_filter_position: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Position in excitation filter wheel",
+    )
+
+    # Deprecated: use excitation_filter_wheel_id instead
+    excitation_filter_wheel: Optional[str] = Field(
+        None,
+        description="[DEPRECATED] Use excitation_filter_wheel_id instead. Name of excitation filter wheel.",
+    )
 
     model_config = {"extra": "allow"}  # Allow extra fields during transition
 

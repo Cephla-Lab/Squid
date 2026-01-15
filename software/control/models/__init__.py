@@ -4,9 +4,10 @@ Pydantic models for acquisition configuration.
 This package contains models for:
 - IlluminationChannelConfig: Hardware-level illumination channel definitions
 - ConfocalConfig: Optional confocal unit configuration
-- CameraMappingsConfig: Camera to dichroic/filter wheel bindings
+- CameraMappingsConfig: Camera to dichroic/filter wheel bindings (legacy)
 - CameraRegistryConfig: Camera name to serial number mapping (v1.1)
 - FilterWheelRegistryConfig: Filter wheel definitions (v1.1)
+- HardwareBindingsConfig: Camera to filter wheel bindings with source-qualified refs (v1.1)
 - AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
 - ChannelGroup: Multi-camera channel grouping (v1.1)
 - LaserAFConfig: Laser autofocus configuration
@@ -31,6 +32,12 @@ from control.models.filter_wheel_config import (
     FilterWheelType,
     FilterWheelDefinition,
     FilterWheelRegistryConfig,
+)
+from control.models.hardware_bindings import (
+    FilterWheelReference,
+    HardwareBindingsConfig,
+    FILTER_WHEEL_SOURCE_CONFOCAL,
+    FILTER_WHEEL_SOURCE_STANDALONE,
 )
 from control.models.acquisition_config import (
     CameraSettings,
@@ -70,6 +77,11 @@ __all__ = [
     "FilterWheelType",
     "FilterWheelDefinition",
     "FilterWheelRegistryConfig",
+    # Hardware Bindings (v1.1)
+    "FilterWheelReference",
+    "HardwareBindingsConfig",
+    "FILTER_WHEEL_SOURCE_CONFOCAL",
+    "FILTER_WHEEL_SOURCE_STANDALONE",
     # Acquisition
     "CameraSettings",
     "ConfocalSettings",

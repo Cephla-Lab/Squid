@@ -196,19 +196,22 @@ filter_wheels:
 
 ### confocal_config.yaml (Optional)
 
-Only create this file if the system has a confocal unit. Its presence indicates that confocal settings should be included in acquisition configs.
+Only create this file if the system has a confocal unit. Its presence indicates that confocal settings should be included in acquisition configs. Filter wheels built into the confocal unit are defined here (not in `filter_wheels.yaml`).
 
 ```yaml
 version: 1
 
-# Filter wheel slot mappings (wheel_id -> slot -> filter_name)
-filter_wheel_mappings:
-  1:  # Filter wheel ID
-    1: "Empty"
-    2: "BP 525/50"
-    3: "BP 600/50"
-    4: "BP 700/75"
-    5: "LP 650"
+# Filter wheels built into the confocal unit
+filter_wheels:
+  - name: "Emission Wheel"
+    id: 1
+    type: emission
+    positions:
+      1: "Empty"
+      2: "BP 525/50"
+      3: "BP 600/50"
+      4: "BP 700/75"
+      5: "LP 650"
 
 # Properties available for configuration
 public_properties:
@@ -223,11 +226,9 @@ objective_specific_properties:
 
 | Field | Description |
 |-------|-------------|
-| `filter_wheel_mappings` | Nested dict: wheel ID → slot number → filter name |
+| `filter_wheels` | List of filter wheel definitions (same format as `filter_wheels.yaml`) |
 | `public_properties` | Properties available in `general.yaml` |
 | `objective_specific_properties` | Properties only in objective-specific files |
-
-> **Note**: The `confocal_config.yaml.example` file in `machine_configs/` uses a simplified format for reference. When creating your actual config, use the structure shown above which matches the Pydantic model.
 
 ### camera_mappings.yaml (Legacy)
 

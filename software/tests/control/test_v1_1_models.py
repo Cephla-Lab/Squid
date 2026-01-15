@@ -16,6 +16,10 @@ from control.models import (
     FilterWheelDefinition,
     FilterWheelRegistryConfig,
     FilterWheelType,
+    FilterWheelReference,
+    HardwareBindingsConfig,
+    FILTER_WHEEL_SOURCE_CONFOCAL,
+    FILTER_WHEEL_SOURCE_STANDALONE,
     ChannelGroup,
     ChannelGroupEntry,
     SynchronizationMode,
@@ -30,19 +34,29 @@ class TestCameraDefinition:
     """Tests for CameraDefinition model."""
 
     def test_camera_definition_creation(self):
-        """Test creating a camera definition with required fields."""
+        """Test creating a camera definition with all fields."""
         camera = CameraDefinition(
             name="Main Camera",
+            id=1,
             serial_number="ABC12345",
         )
         assert camera.name == "Main Camera"
+        assert camera.id == 1
         assert camera.serial_number == "ABC12345"
         assert camera.model is None
+
+    def test_camera_definition_minimal(self):
+        """Test creating a camera with only required serial_number."""
+        camera = CameraDefinition(serial_number="ABC12345")
+        assert camera.serial_number == "ABC12345"
+        assert camera.name is None
+        assert camera.id is None
 
     def test_camera_definition_with_model(self):
         """Test camera definition with optional model field."""
         camera = CameraDefinition(
             name="Main Camera",
+            id=1,
             serial_number="ABC12345",
             model="Hamamatsu C15440",
         )
@@ -57,7 +71,7 @@ class TestCameraDefinition:
     def test_camera_definition_empty_serial_rejected(self):
         """Test that empty serial number is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            CameraDefinition(name="Main Camera", serial_number="")
+            CameraDefinition(serial_number="")
         assert "String should have at least 1 character" in str(exc_info.value)
 
     def test_camera_definition_extra_fields_rejected(self):
@@ -65,10 +79,17 @@ class TestCameraDefinition:
         with pytest.raises(ValidationError) as exc_info:
             CameraDefinition(
                 name="Main Camera",
+                id=1,
                 serial_number="ABC12345",
                 unknown_field="value",
             )
         assert "Extra inputs are not permitted" in str(exc_info.value)
+
+    def test_camera_definition_invalid_id_rejected(self):
+        """Test that non-positive ID is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            CameraDefinition(id=0, serial_number="ABC12345")
+        assert "greater than or equal to 1" in str(exc_info.value)
 
 
 class TestCameraRegistryConfig:
@@ -80,22 +101,44 @@ class TestCameraRegistryConfig:
         assert registry.version == 1.1
         assert registry.cameras == []
 
-    def test_registry_with_cameras(self):
-        """Test registry with multiple cameras."""
+    def test_registry_with_single_camera_defaults(self):
+        """Test that single camera gets default id=1 and name='Camera'."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", serial_number="DEF67890"),
+                CameraDefinition(serial_number="ABC12345"),
+            ]
+        )
+        assert len(registry.cameras) == 1
+        assert registry.cameras[0].id == 1
+        assert registry.cameras[0].name == "Camera"
+
+    def test_registry_with_cameras(self):
+        """Test registry with multiple cameras (requires explicit id)."""
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
             ]
         )
         assert len(registry.cameras) == 2
+
+    def test_multi_camera_requires_id(self):
+        """Test that multiple cameras require explicit id."""
+        with pytest.raises(ValidationError) as exc_info:
+            CameraRegistryConfig(
+                cameras=[
+                    CameraDefinition(name="Main Camera", serial_number="ABC12345"),
+                    CameraDefinition(name="Side Camera", serial_number="DEF67890"),
+                ]
+            )
+        assert "missing required 'id'" in str(exc_info.value)
 
     def test_get_camera_by_name_found(self):
         """Test finding camera by name."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
             ]
         )
         camera = registry.get_camera_by_name("Main Camera")
@@ -106,7 +149,7 @@ class TestCameraRegistryConfig:
         """Test returning None when camera name not found."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
             ]
         )
         camera = registry.get_camera_by_name("Unknown Camera")
@@ -116,18 +159,30 @@ class TestCameraRegistryConfig:
         """Test finding camera by serial number."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
             ]
         )
         camera = registry.get_camera_by_sn("ABC12345")
         assert camera is not None
         assert camera.name == "Main Camera"
 
+    def test_get_camera_by_id_found(self):
+        """Test finding camera by ID."""
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
+            ]
+        )
+        camera = registry.get_camera_by_id(2)
+        assert camera is not None
+        assert camera.name == "Side Camera"
+
     def test_get_serial_number_mapping(self):
         """Test name to serial number mapping."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
             ]
         )
         sn = registry.get_serial_number("Main Camera")
@@ -137,8 +192,8 @@ class TestCameraRegistryConfig:
         """Test getting list of all camera names."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
             ]
         )
         names = registry.get_camera_names()
@@ -149,8 +204,8 @@ class TestCameraRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             CameraRegistryConfig(
                 cameras=[
-                    CameraDefinition(name="Main Camera", serial_number="ABC12345"),
-                    CameraDefinition(name="Main Camera", serial_number="DEF67890"),
+                    CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
+                    CameraDefinition(name="Main Camera", id=2, serial_number="DEF67890"),
                 ]
             )
         assert "Camera names must be unique" in str(exc_info.value)
@@ -160,32 +215,67 @@ class TestCameraRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             CameraRegistryConfig(
                 cameras=[
-                    CameraDefinition(name="Camera 1", serial_number="ABC12345"),
-                    CameraDefinition(name="Camera 2", serial_number="ABC12345"),
+                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345"),
+                    CameraDefinition(name="Camera 2", id=2, serial_number="ABC12345"),
                 ]
             )
         assert "Camera serial numbers must be unique" in str(exc_info.value)
+
+    def test_duplicate_camera_ids_rejected(self):
+        """Test that duplicate camera IDs are rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            CameraRegistryConfig(
+                cameras=[
+                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345"),
+                    CameraDefinition(name="Camera 2", id=1, serial_number="DEF67890"),
+                ]
+            )
+        assert "Camera IDs must be unique" in str(exc_info.value)
 
 
 class TestFilterWheelDefinition:
     """Tests for FilterWheelDefinition model."""
 
     def test_filter_wheel_creation(self):
-        """Test creating a filter wheel definition."""
+        """Test creating a filter wheel definition with all fields."""
         wheel = FilterWheelDefinition(
             name="Emission Filter Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty", 2: "BP 525/50", 3: "BP 600/50"},
         )
         assert wheel.name == "Emission Filter Wheel"
         assert wheel.id == 1
+        assert wheel.type == FilterWheelType.EMISSION
         assert len(wheel.positions) == 3
+
+    def test_filter_wheel_minimal(self):
+        """Test creating a filter wheel with only required fields (type, positions)."""
+        wheel = FilterWheelDefinition(
+            type=FilterWheelType.EMISSION,
+            positions={1: "Empty", 2: "BP 525/50"},
+        )
+        assert wheel.type == FilterWheelType.EMISSION
+        assert wheel.name is None
+        assert wheel.id is None
+        assert len(wheel.positions) == 2
+
+    def test_filter_wheel_type_required(self):
+        """Test that type field is required."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelDefinition(
+                name="Filter Wheel",
+                id=1,
+                positions={1: "Empty"},
+            )
+        assert "Field required" in str(exc_info.value)
 
     def test_get_filter_name_valid_position(self):
         """Test getting filter name at valid position."""
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty", 2: "BP 525/50"},
         )
         assert wheel.get_filter_name(1) == "Empty"
@@ -196,6 +286,7 @@ class TestFilterWheelDefinition:
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty"},
         )
         assert wheel.get_filter_name(99) is None
@@ -205,6 +296,7 @@ class TestFilterWheelDefinition:
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty", 2: "BP 525/50"},
         )
         assert wheel.get_position_by_filter("BP 525/50") == 2
@@ -214,6 +306,7 @@ class TestFilterWheelDefinition:
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty"},
         )
         assert wheel.get_position_by_filter("Unknown") is None
@@ -223,6 +316,7 @@ class TestFilterWheelDefinition:
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={1: "Empty", 2: "BP 525/50", 3: "BP 600/50"},
         )
         names = wheel.get_filter_names()
@@ -233,6 +327,7 @@ class TestFilterWheelDefinition:
         wheel = FilterWheelDefinition(
             name="Test Wheel",
             id=1,
+            type=FilterWheelType.EMISSION,
             positions={3: "C", 1: "A", 2: "B"},
         )
         assert wheel.get_positions() == [1, 2, 3]
@@ -240,45 +335,26 @@ class TestFilterWheelDefinition:
     def test_empty_name_rejected(self):
         """Test that empty wheel name is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(name="", id=1, positions={1: "Empty"})
+            FilterWheelDefinition(name="", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"})
         assert "String should have at least 1 character" in str(exc_info.value)
 
-    def test_negative_id_rejected(self):
-        """Test that negative hardware ID is rejected."""
+    def test_invalid_id_rejected(self):
+        """Test that non-positive ID is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(name="Wheel", id=-1, positions={1: "Empty"})
-        assert "greater than or equal to 0" in str(exc_info.value)
+            FilterWheelDefinition(name="Wheel", id=0, type=FilterWheelType.EMISSION, positions={1: "Empty"})
+        assert "greater than or equal to 1" in str(exc_info.value)
 
     def test_position_zero_rejected(self):
         """Test that position 0 is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(name="Wheel", id=1, positions={0: "Empty"})
+            FilterWheelDefinition(name="Wheel", id=1, type=FilterWheelType.EMISSION, positions={0: "Empty"})
         assert "Position 0 must be >= 1" in str(exc_info.value)
 
     def test_empty_filter_name_rejected(self):
         """Test that empty filter name is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(name="Wheel", id=1, positions={1: ""})
+            FilterWheelDefinition(name="Wheel", id=1, type=FilterWheelType.EMISSION, positions={1: ""})
         assert "cannot be empty" in str(exc_info.value)
-
-    def test_unnamed_wheel_allowed(self):
-        """Test that unnamed wheel (name=None, id=None) is allowed for single-wheel systems."""
-        wheel = FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"})
-        assert wheel.name is None
-        assert wheel.id is None
-        assert len(wheel.positions) == 2
-
-    def test_name_without_id_rejected(self):
-        """Test that providing name without id is rejected."""
-        with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(name="Wheel", positions={1: "Empty"})
-        assert "name and id must both be present or both be absent" in str(exc_info.value)
-
-    def test_id_without_name_rejected(self):
-        """Test that providing id without name is rejected."""
-        with pytest.raises(ValidationError) as exc_info:
-            FilterWheelDefinition(id=1, positions={1: "Empty"})
-        assert "name and id must both be present or both be absent" in str(exc_info.value)
 
     def test_filter_wheel_with_type_emission(self):
         """Test creating a filter wheel with emission type."""
@@ -300,15 +376,6 @@ class TestFilterWheelDefinition:
         )
         assert wheel.type == FilterWheelType.EXCITATION
 
-    def test_filter_wheel_type_optional(self):
-        """Test that type field is optional."""
-        wheel = FilterWheelDefinition(
-            name="Filter Wheel",
-            id=1,
-            positions={1: "Empty"},
-        )
-        assert wheel.type is None
-
     def test_filter_wheel_type_from_string(self):
         """Test that type can be set from string value."""
         wheel = FilterWheelDefinition(
@@ -329,21 +396,43 @@ class TestFilterWheelRegistryConfig:
         assert registry.version == 1.1
         assert registry.filter_wheels == []
 
-    def test_registry_with_wheels(self):
-        """Test registry with multiple filter wheels."""
+    def test_single_wheel_defaults(self):
+        """Test that single wheel gets default id=1 and name from type."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
-                FilterWheelDefinition(name="Wheel 1", id=1, positions={1: "Empty"}),
-                FilterWheelDefinition(name="Wheel 2", id=2, positions={1: "Empty"}),
+                FilterWheelDefinition(type=FilterWheelType.EMISSION, positions={1: "Empty", 2: "BP 525/50"}),
+            ]
+        )
+        assert len(registry.filter_wheels) == 1
+        assert registry.filter_wheels[0].id == 1
+        assert registry.filter_wheels[0].name == "Emission Wheel"
+
+    def test_registry_with_wheels(self):
+        """Test registry with multiple filter wheels (requires explicit id/name)."""
+        registry = FilterWheelRegistryConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Wheel 1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Wheel 2", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
             ]
         )
         assert len(registry.filter_wheels) == 2
+
+    def test_multi_wheel_requires_id(self):
+        """Test that multiple wheels require explicit id."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelRegistryConfig(
+                filter_wheels=[
+                    FilterWheelDefinition(name="Wheel 1", type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                    FilterWheelDefinition(name="Wheel 2", type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                ]
+            )
+        assert "missing required 'id'" in str(exc_info.value)
 
     def test_get_wheel_by_name(self):
         """Test finding wheel by name."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
-                FilterWheelDefinition(name="Emission", id=1, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Emission", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
             ]
         )
         wheel = registry.get_wheel_by_name("Emission")
@@ -354,7 +443,7 @@ class TestFilterWheelRegistryConfig:
         """Test finding wheel by hardware ID."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
-                FilterWheelDefinition(name="Emission", id=1, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Emission", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
             ]
         )
         wheel = registry.get_wheel_by_id(1)
@@ -365,7 +454,7 @@ class TestFilterWheelRegistryConfig:
         """Test getting hardware ID for wheel name."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
-                FilterWheelDefinition(name="Emission", id=5, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Emission", id=5, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
             ]
         )
         assert registry.get_hardware_id("Emission") == 5
@@ -377,6 +466,7 @@ class TestFilterWheelRegistryConfig:
                 FilterWheelDefinition(
                     name="Emission",
                     id=1,
+                    type=FilterWheelType.EMISSION,
                     positions={1: "Empty", 2: "BP 525/50"},
                 ),
             ]
@@ -388,8 +478,8 @@ class TestFilterWheelRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             FilterWheelRegistryConfig(
                 filter_wheels=[
-                    FilterWheelDefinition(name="Wheel", id=1, positions={1: "Empty"}),
-                    FilterWheelDefinition(name="Wheel", id=2, positions={1: "Empty"}),
+                    FilterWheelDefinition(name="Wheel", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                    FilterWheelDefinition(name="Wheel", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
                 ]
             )
         assert "Filter wheel names must be unique" in str(exc_info.value)
@@ -399,38 +489,19 @@ class TestFilterWheelRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             FilterWheelRegistryConfig(
                 filter_wheels=[
-                    FilterWheelDefinition(name="Wheel 1", id=1, positions={1: "Empty"}),
-                    FilterWheelDefinition(name="Wheel 2", id=1, positions={1: "Empty"}),
+                    FilterWheelDefinition(name="Wheel 1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                    FilterWheelDefinition(
+                        name="Wheel 2", id=1, type=FilterWheelType.EXCITATION, positions={1: "Empty"}
+                    ),
                 ]
             )
         assert "Filter wheel IDs must be unique" in str(exc_info.value)
 
-    def test_single_unnamed_wheel_allowed(self):
-        """Test that single unnamed wheel is allowed in registry."""
-        registry = FilterWheelRegistryConfig(
-            filter_wheels=[
-                FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"}),
-            ]
-        )
-        assert len(registry.filter_wheels) == 1
-        assert registry.filter_wheels[0].name is None
-
-    def test_multi_wheel_requires_names(self):
-        """Test that multi-wheel systems require name and id for each wheel."""
-        with pytest.raises(ValidationError) as exc_info:
-            FilterWheelRegistryConfig(
-                filter_wheels=[
-                    FilterWheelDefinition(positions={1: "Empty"}),  # Missing name/id
-                    FilterWheelDefinition(name="Wheel 2", id=2, positions={1: "Empty"}),
-                ]
-            )
-        assert "Multi-wheel systems require name and id" in str(exc_info.value)
-
     def test_get_first_wheel(self):
-        """Test get_first_wheel() returns first wheel regardless of name."""
+        """Test get_first_wheel() returns first wheel."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
-                FilterWheelDefinition(positions={1: "Empty", 2: "BP 525/50"}),
+                FilterWheelDefinition(type=FilterWheelType.EMISSION, positions={1: "Empty", 2: "BP 525/50"}),
             ]
         )
         wheel = registry.get_first_wheel()
@@ -442,22 +513,12 @@ class TestFilterWheelRegistryConfig:
         registry = FilterWheelRegistryConfig()
         assert registry.get_first_wheel() is None
 
-    def test_get_wheel_names_excludes_unnamed(self):
-        """Test get_wheel_names() excludes unnamed wheels."""
-        registry = FilterWheelRegistryConfig(
-            filter_wheels=[
-                FilterWheelDefinition(positions={1: "Empty"}),
-            ]
-        )
-        assert registry.get_wheel_names() == []
-
     def test_get_wheels_by_type(self):
         """Test filtering wheels by type."""
         registry = FilterWheelRegistryConfig(
             filter_wheels=[
                 FilterWheelDefinition(name="Emission", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
                 FilterWheelDefinition(name="Excitation", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
-                FilterWheelDefinition(name="Untyped", id=3, positions={1: "Empty"}),
             ]
         )
         emission_wheels = registry.get_wheels_by_type(FilterWheelType.EMISSION)
@@ -498,6 +559,183 @@ class TestFilterWheelRegistryConfig:
         )
         excitation = registry.get_excitation_wheels()
         assert excitation == []
+
+
+class TestFilterWheelReference:
+    """Tests for FilterWheelReference model (source-qualified references)."""
+
+    def test_reference_with_id(self):
+        """Test creating a reference with ID."""
+        ref = FilterWheelReference(source="confocal", id=1)
+        assert ref.source == "confocal"
+        assert ref.id == 1
+        assert ref.name is None
+
+    def test_reference_with_name(self):
+        """Test creating a reference with name."""
+        ref = FilterWheelReference(source="standalone", name="Emission Wheel")
+        assert ref.source == "standalone"
+        assert ref.id is None
+        assert ref.name == "Emission Wheel"
+
+    def test_parse_confocal_id(self):
+        """Test parsing 'confocal.1' format."""
+        ref = FilterWheelReference.parse("confocal.1")
+        assert ref.source == "confocal"
+        assert ref.id == 1
+        assert ref.name is None
+
+    def test_parse_standalone_id(self):
+        """Test parsing 'standalone.2' format."""
+        ref = FilterWheelReference.parse("standalone.2")
+        assert ref.source == "standalone"
+        assert ref.id == 2
+
+    def test_parse_with_name(self):
+        """Test parsing 'source.name' format."""
+        ref = FilterWheelReference.parse("standalone.Emission Wheel")
+        assert ref.source == "standalone"
+        assert ref.name == "Emission Wheel"
+        assert ref.id is None
+
+    def test_to_string_with_id(self):
+        """Test converting reference with ID to string."""
+        ref = FilterWheelReference(source="confocal", id=1)
+        assert ref.to_string() == "confocal.1"
+
+    def test_to_string_with_name(self):
+        """Test converting reference with name to string."""
+        ref = FilterWheelReference(source="standalone", name="Emission")
+        assert ref.to_string() == "standalone.Emission"
+
+    def test_invalid_source_rejected(self):
+        """Test that invalid source is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelReference(source="invalid", id=1)
+        assert "Invalid source" in str(exc_info.value)
+
+    def test_missing_identifier_rejected(self):
+        """Test that missing both id and name is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelReference(source="confocal")
+        assert "Either 'id' or 'name' must be specified" in str(exc_info.value)
+
+    def test_parse_no_dot_rejected(self):
+        """Test that reference without dot is rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            FilterWheelReference.parse("confocal1")
+        assert "Expected 'source.id'" in str(exc_info.value)
+
+    def test_parse_empty_identifier_rejected(self):
+        """Test that empty identifier is rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            FilterWheelReference.parse("confocal.")
+        assert "identifier is empty" in str(exc_info.value)
+
+    def test_both_id_and_name_rejected(self):
+        """Test that specifying both id and name is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            FilterWheelReference(source="confocal", id=1, name="Emission")
+        assert "Cannot specify both" in str(exc_info.value)
+
+
+class TestHardwareBindingsConfig:
+    """Tests for HardwareBindingsConfig model."""
+
+    def test_empty_bindings(self):
+        """Test creating empty hardware bindings."""
+        bindings = HardwareBindingsConfig()
+        assert bindings.version == 1.1
+        assert bindings.emission_filter_wheels == {}
+
+    def test_single_camera_binding(self):
+        """Test binding a single camera to a wheel."""
+        bindings = HardwareBindingsConfig(emission_filter_wheels={1: "confocal.1"})
+        ref = bindings.get_emission_wheel_ref(1)
+        assert ref is not None
+        assert ref.source == "confocal"
+        assert ref.id == 1
+
+    def test_multi_camera_bindings(self):
+        """Test binding multiple cameras to different wheels."""
+        bindings = HardwareBindingsConfig(
+            emission_filter_wheels={
+                1: "confocal.1",
+                2: "standalone.Emission Wheel",
+            }
+        )
+        ref1 = bindings.get_emission_wheel_ref(1)
+        ref2 = bindings.get_emission_wheel_ref(2)
+        assert ref1.source == "confocal"
+        assert ref1.id == 1
+        assert ref2.source == "standalone"
+        assert ref2.name == "Emission Wheel"
+
+    def test_get_nonexistent_binding(self):
+        """Test that nonexistent binding returns None."""
+        bindings = HardwareBindingsConfig()
+        assert bindings.get_emission_wheel_ref(99) is None
+
+    def test_set_binding_by_id(self):
+        """Test setting a binding using wheel ID."""
+        bindings = HardwareBindingsConfig()
+        bindings.set_emission_wheel_binding(1, "confocal", wheel_id=2)
+        ref = bindings.get_emission_wheel_ref(1)
+        assert ref.source == "confocal"
+        assert ref.id == 2
+
+    def test_set_binding_by_name(self):
+        """Test setting a binding using wheel name."""
+        bindings = HardwareBindingsConfig()
+        bindings.set_emission_wheel_binding(1, "standalone", wheel_name="Main Emission")
+        ref = bindings.get_emission_wheel_ref(1)
+        assert ref.source == "standalone"
+        assert ref.name == "Main Emission"
+
+    def test_get_all_emission_wheel_refs(self):
+        """Test getting all emission wheel references."""
+        bindings = HardwareBindingsConfig(
+            emission_filter_wheels={
+                1: "confocal.1",
+                2: "standalone.2",
+            }
+        )
+        all_refs = bindings.get_all_emission_wheel_refs()
+        assert len(all_refs) == 2
+        assert 1 in all_refs
+        assert 2 in all_refs
+
+    def test_source_constants(self):
+        """Test that source constants are correct."""
+        assert FILTER_WHEEL_SOURCE_CONFOCAL == "confocal"
+        assert FILTER_WHEEL_SOURCE_STANDALONE == "standalone"
+
+    def test_invalid_reference_rejected_at_load(self):
+        """Test that invalid reference strings are rejected at load time."""
+        with pytest.raises(ValidationError) as exc_info:
+            HardwareBindingsConfig(emission_filter_wheels={1: "invalid_source.1"})
+        assert "Invalid emission wheel references" in str(exc_info.value)
+        assert "Invalid source" in str(exc_info.value)
+
+    def test_malformed_reference_rejected_at_load(self):
+        """Test that malformed reference strings are rejected at load time."""
+        with pytest.raises(ValidationError) as exc_info:
+            HardwareBindingsConfig(emission_filter_wheels={1: "no_dot_here"})
+        assert "Invalid emission wheel references" in str(exc_info.value)
+        assert "Expected 'source.id'" in str(exc_info.value)
+
+    def test_multiple_invalid_references_all_reported(self):
+        """Test that all invalid references are reported together."""
+        with pytest.raises(ValidationError) as exc_info:
+            HardwareBindingsConfig(
+                emission_filter_wheels={
+                    1: "invalid.1",
+                    2: "also_invalid",
+                }
+            )
+        error_str = str(exc_info.value)
+        assert "Camera 1" in error_str
+        assert "Camera 2" in error_str
 
 
 class TestChannelGroupEntry:

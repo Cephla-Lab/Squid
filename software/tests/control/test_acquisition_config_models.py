@@ -21,6 +21,8 @@ from control.models import (
     CameraSettings,
     ConfocalConfig,
     ConfocalSettings,
+    FilterWheelDefinition,
+    FilterWheelType,
     GeneralChannelConfig,
     IlluminationChannel,
     IlluminationChannelConfig,
@@ -173,22 +175,35 @@ class TestConfocalConfig:
         """Test creating a confocal config."""
         config = ConfocalConfig(
             version=1,
-            filter_wheel_mappings={
-                1: {1: "ET520/40", 2: "ET680/42"},
-                2: {1: "ET750/60"},
-            },
+            filter_wheels=[
+                FilterWheelDefinition(
+                    name="Emission 1",
+                    id=1,
+                    type=FilterWheelType.EMISSION,
+                    positions={1: "ET520/40", 2: "ET680/42"},
+                ),
+                FilterWheelDefinition(
+                    name="Emission 2",
+                    id=2,
+                    type=FilterWheelType.EMISSION,
+                    positions={1: "ET750/60"},
+                ),
+            ],
             public_properties=["emission_filter_wheel_position"],
             objective_specific_properties=["illumination_iris", "emission_iris"],
         )
         assert config.version == 1
-        assert len(config.filter_wheel_mappings) == 2
+        assert len(config.filter_wheels) == 2
 
     def test_confocal_config_get_filter_name(self):
         """Test getting filter name by wheel and slot."""
         config = ConfocalConfig(
-            filter_wheel_mappings={
-                1: {1: "ET520/40", 2: "ET680/42"},
-            },
+            filter_wheels=[
+                FilterWheelDefinition(
+                    type=FilterWheelType.EMISSION,
+                    positions={1: "ET520/40", 2: "ET680/42"},
+                ),
+            ],
         )
 
         assert config.get_filter_name(1, 1) == "ET520/40"
@@ -208,10 +223,92 @@ class TestConfocalConfig:
         assert config.has_property("nonexistent") is False
 
     def test_confocal_config_empty(self):
-        """Test confocal config with no mappings."""
+        """Test confocal config with no filter wheels."""
         config = ConfocalConfig()
-        assert config.filter_wheel_mappings is None
+        assert config.filter_wheels == []
         assert config.get_filter_name(1, 1) is None
+
+    def test_confocal_config_get_wheel_names(self):
+        """Test getting list of confocal filter wheel names."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Em1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Em2", id=2, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ],
+        )
+        names = config.get_wheel_names()
+        assert names == ["Em1", "Em2"]
+
+    def test_confocal_config_get_wheel_ids(self):
+        """Test getting list of confocal filter wheel IDs."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Em1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Em2", id=2, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ],
+        )
+        ids = config.get_wheel_ids()
+        assert ids == [1, 2]
+
+    def test_confocal_config_get_first_wheel(self):
+        """Test get_first_wheel() returns first wheel."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="First", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Second", id=2, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ],
+        )
+        first = config.get_first_wheel()
+        assert first is not None
+        assert first.name == "First"
+
+    def test_confocal_config_get_first_wheel_empty(self):
+        """Test get_first_wheel() returns None when empty."""
+        config = ConfocalConfig()
+        assert config.get_first_wheel() is None
+
+    def test_confocal_config_get_wheels_by_type(self):
+        """Test filtering confocal wheels by type."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Em1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Ex1", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Em2", id=3, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+            ],
+        )
+        emission = config.get_wheels_by_type(FilterWheelType.EMISSION)
+        assert len(emission) == 2
+        assert all(w.type == FilterWheelType.EMISSION for w in emission)
+
+    def test_confocal_config_get_emission_wheels(self):
+        """Test convenience method for emission wheels."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Em1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Ex1", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+            ],
+        )
+        emission = config.get_emission_wheels()
+        assert len(emission) == 1
+        assert emission[0].name == "Em1"
+
+    def test_confocal_config_get_excitation_wheels(self):
+        """Test convenience method for excitation wheels."""
+        config = ConfocalConfig(
+            filter_wheels=[
+                FilterWheelDefinition(name="Em1", id=1, type=FilterWheelType.EMISSION, positions={1: "Empty"}),
+                FilterWheelDefinition(name="Ex1", id=2, type=FilterWheelType.EXCITATION, positions={1: "Empty"}),
+            ],
+        )
+        excitation = config.get_excitation_wheels()
+        assert len(excitation) == 1
+        assert excitation[0].name == "Ex1"
+
+    def test_confocal_config_version_is_float(self):
+        """Test that confocal config version is float for consistency."""
+        config = ConfocalConfig()
+        assert isinstance(config.version, float)
+        assert config.version == 1.0
 
 
 class TestCameraMappingsConfig:
