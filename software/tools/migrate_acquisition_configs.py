@@ -60,8 +60,14 @@ from control.models import (
 )
 from control.models.illumination_config import IlluminationType
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+# Use squid logging when imported as module, standalone basicConfig when run directly
+try:
+    import squid.logging
+
+    logger = squid.logging.get_logger("migrate_acquisition_configs")
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    logger = logging.getLogger(__name__)
 
 
 def extract_wavelength_from_name(channel_name: str) -> Optional[int]:
@@ -464,6 +470,10 @@ def migrate_profile(
     """
     Migrate a single profile from old format to new format.
 
+    The migration creates:
+    - general.yaml: Union of all channels across all objectives (defines channel identity)
+    - {objective}.yaml: Objective-specific overrides (exposure, intensity, gain)
+
     Returns True if migration was successful.
     """
     logger.info(f"Migrating profile: {profile_name}")
@@ -486,47 +496,27 @@ def migrate_profile(
 
     logger.info(f"  Found objectives: {', '.join(objectives)}")
 
-    # Migrate each objective
-    all_channels = []  # Collect all channels for general.yaml
+    # First pass: Collect ALL channels from ALL objectives to build general.yaml
+    # Use dict to deduplicate by channel name, keeping first occurrence's settings
+    all_channels_by_name: Dict[str, Dict[str, Any]] = {}
+    objective_channels: Dict[str, List[Dict[str, Any]]] = {}  # Store per-objective channels
 
     for objective in objectives:
         obj_source = source_path / objective
-        obj_target_channel = target_path / "channel_configs" / f"{objective}.yaml"
-        obj_target_laser = target_path / "laser_af_configs" / f"{objective}.yaml"
-
-        # Parse channel configurations XML
         channel_xml = obj_source / "channel_configurations.xml"
         xml_channels = parse_xml_config(channel_xml)
 
         if xml_channels:
-            # Convert to new format (objective files don't have illumination_channels)
-            obj_config = convert_xml_channels_to_acquisition_config(
-                xml_channels,
-                illumination_config,
-                include_confocal=False,
-                confocal_channels=None,
-                include_illumination_channels=False,  # Objective files don't have illumination_channels
-            )
-            save_yaml(obj_target_channel, obj_config, dry_run)
+            objective_channels[objective] = xml_channels
+            for xml_ch in xml_channels:
+                ch_name = xml_ch["name"]
+                if ch_name not in all_channels_by_name:
+                    all_channels_by_name[ch_name] = xml_ch
 
-            # Collect channels for general.yaml (from first objective)
-            if not all_channels:
-                all_channels = xml_channels
-
-        # Migrate laser AF settings (optional, only exists when channel XML exists)
-        laser_af_json = obj_source / "laser_af_settings.json"
-        if laser_af_json.exists():
-            laser_af_config = convert_laser_af_json_to_yaml(laser_af_json)
-            if laser_af_config:
-                save_yaml(obj_target_laser, laser_af_config, dry_run)
-
-    # Create general.yaml from collected channels
-    if all_channels:
-        # For general.yaml: illumination_channels, display_color, z_offset_um,
-        # emission_filter_wheel_position, intensity, exposure, gain
+    # Create general.yaml from union of all channels
+    if all_channels_by_name:
         general_channels = []
-        for xml_ch in all_channels:
-            # Use old channel name as the acquisition channel name
+        for xml_ch in all_channels_by_name.values():
             name = xml_ch["name"]
 
             # Find the illumination channel name to use in illumination_channels field
@@ -558,6 +548,32 @@ def migrate_profile(
 
         general_config = GeneralChannelConfig(version=1, channels=general_channels)
         save_yaml(target_path / "channel_configs" / "general.yaml", general_config, dry_run)
+
+    # Second pass: Create objective-specific override files
+    for objective in objectives:
+        obj_source = source_path / objective
+        obj_target_channel = target_path / "channel_configs" / f"{objective}.yaml"
+        obj_target_laser = target_path / "laser_af_configs" / f"{objective}.yaml"
+
+        xml_channels = objective_channels.get(objective, [])
+
+        if xml_channels:
+            # Create objective config with only override values (no illumination_channels)
+            obj_config = convert_xml_channels_to_acquisition_config(
+                xml_channels,
+                illumination_config,
+                include_confocal=False,
+                confocal_channels=None,
+                include_illumination_channels=False,  # Objective files only have overrides
+            )
+            save_yaml(obj_target_channel, obj_config, dry_run)
+
+        # Migrate laser AF settings
+        laser_af_json = obj_source / "laser_af_settings.json"
+        if laser_af_json.exists():
+            laser_af_config = convert_laser_af_json_to_yaml(laser_af_json)
+            if laser_af_config:
+                save_yaml(obj_target_laser, laser_af_config, dry_run)
 
     return True
 
