@@ -399,34 +399,42 @@ class TestAcquisitionConfig:
             CameraSettings()
 
     def test_confocal_settings_defaults(self):
-        """Test confocal settings have correct defaults (schema v1.0)."""
+        """Test confocal settings have correct defaults (schema v1.0).
+
+        Note: confocal_filter_wheel and confocal_filter_position removed in v1.0.
+        Filter wheel is now resolved via hardware_bindings.yaml based on camera ID.
+        """
         settings = ConfocalSettings()
-        # v1.0: filter wheel fields renamed to confocal_filter_wheel/confocal_filter_position
-        assert settings.confocal_filter_wheel is None
-        assert settings.confocal_filter_position is None
+        # Only iris settings remain (objective-specific)
         assert settings.illumination_iris is None
         assert settings.emission_iris is None
 
     def test_illumination_settings_required_fields(self):
-        """Test that intensity is required."""
+        """Test that intensity is required.
+
+        Note: z_offset_um moved to AcquisitionChannel level in v1.0.
+        """
         settings = IlluminationSettings(
             illumination_channel="Fluorescence 488nm",
             intensity=20.0,
         )
         assert settings.illumination_channel == "Fluorescence 488nm"
         assert settings.intensity == 20.0
-        assert settings.z_offset_um == 0.0  # Default
 
         # Should fail without required intensity field
         with pytest.raises(ValidationError):
             IlluminationSettings()
 
     def test_acquisition_channel_creation(self):
-        """Test creating an acquisition channel (schema v1.0)."""
+        """Test creating an acquisition channel (schema v1.0).
+
+        Note: camera is now int ID (null for single-camera systems).
+        confocal_settings removed; iris settings in confocal_override only.
+        """
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
-            camera="Main Camera",
+            camera=1,  # Camera ID (int), not name
             illumination_settings=IlluminationSettings(
                 illumination_channel="Fluorescence 488nm",
                 intensity=20.0,
@@ -435,9 +443,9 @@ class TestAcquisitionConfig:
         )
         assert channel.name == "488 nm"
         assert channel.display_color == "#00FF00"
-        assert channel.camera == "Main Camera"
+        assert channel.camera == 1
         assert channel.camera_settings.exposure_time_ms == 25.0
-        assert channel.confocal_settings is None
+        assert channel.z_offset_um == 0.0  # Default
         assert channel.confocal_override is None
 
     def test_acquisition_channel_enabled_field(self):
@@ -482,7 +490,12 @@ class TestAcquisitionConfig:
         assert effective.enabled is False
 
     def test_acquisition_channel_with_confocal(self):
-        """Test acquisition channel with confocal settings (schema v1.0)."""
+        """Test acquisition channel with confocal override (schema v1.0).
+
+        Note: confocal_settings removed from channel level.
+        Confocal iris settings are now in confocal_override only.
+        Filter wheel is resolved via hardware_bindings.yaml.
+        """
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
@@ -491,13 +504,16 @@ class TestAcquisitionConfig:
                 intensity=20.0,
             ),
             camera_settings=CameraSettings(exposure_time_ms=25.0, gain_mode=10.0),
-            confocal_settings=ConfocalSettings(
-                confocal_filter_wheel="Emission Wheel",
-                confocal_filter_position=2,
+            confocal_override=AcquisitionChannelOverride(
+                confocal_settings=ConfocalSettings(
+                    illumination_iris=50.0,
+                    emission_iris=75.0,
+                ),
             ),
         )
-        assert channel.confocal_settings is not None
-        assert channel.confocal_settings.confocal_filter_position == 2
+        assert channel.confocal_override is not None
+        assert channel.confocal_override.confocal_settings.illumination_iris == 50.0
+        assert channel.confocal_override.confocal_settings.emission_iris == 75.0
 
     def test_acquisition_channel_effective_settings_no_confocal(self):
         """Test get_effective_settings without confocal mode (schema v1.0)."""
@@ -645,7 +661,10 @@ class TestMergeChannelConfigs:
     """Tests for merge_channel_configs function (schema v1.0)."""
 
     def test_merge_basic(self):
-        """Test basic merge of general and objective configs (schema v1.0)."""
+        """Test basic merge of general and objective configs (schema v1.0).
+
+        Note: camera is now int ID, z_offset_um is at channel level.
+        """
         from control.models import merge_channel_configs
 
         general = GeneralChannelConfig(
@@ -654,16 +673,16 @@ class TestMergeChannelConfigs:
                 AcquisitionChannel(
                     name="488 nm",
                     display_color="#00FF00",
-                    camera="Main Camera",
+                    camera=1,  # Camera ID (int)
                     illumination_settings=IlluminationSettings(
                         illumination_channel="Fluorescence 488nm",
                         intensity=10.0,  # Will be overridden
-                        z_offset_um=5.0,  # z_offset is in general
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=10.0,  # Will be overridden
                         gain_mode=5.0,  # Will be overridden
                     ),
+                    z_offset_um=5.0,  # z_offset is at channel level
                     filter_wheel="Emission Wheel",
                     filter_position=2,
                 ),
@@ -679,7 +698,6 @@ class TestMergeChannelConfigs:
                     illumination_settings=IlluminationSettings(
                         illumination_channel=None,  # Not in objective
                         intensity=25.0,
-                        z_offset_um=0.0,  # Ignored, z_offset is in general
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=30.0,
@@ -697,10 +715,11 @@ class TestMergeChannelConfigs:
 
         # From general
         assert ch.illumination_settings.illumination_channel == "Fluorescence 488nm"
-        assert ch.illumination_settings.z_offset_um == 5.0  # From general
+        assert ch.z_offset_um == 5.0  # From general (at channel level)
         assert ch.display_color == "#00FF00"  # v1.0: display_color at channel level
         assert ch.filter_wheel == "Emission Wheel"
         assert ch.filter_position == 2
+        assert ch.camera == 1  # Camera ID from general
 
         # From objective
         assert ch.illumination_settings.intensity == 25.0
@@ -742,7 +761,12 @@ class TestMergeChannelConfigs:
         assert ch.camera_settings.exposure_time_ms == 20.0
 
     def test_merge_with_confocal_override(self):
-        """Test merge preserves confocal_override from objective (schema v1.0)."""
+        """Test merge preserves confocal_override from objective (schema v1.0).
+
+        Note: confocal_settings removed from channel level.
+        Iris settings are now in confocal_override only.
+        Filter wheel is resolved via hardware_bindings.yaml.
+        """
         from control.models import merge_channel_configs
 
         general = GeneralChannelConfig(
@@ -756,10 +780,7 @@ class TestMergeChannelConfigs:
                         intensity=20.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=20.0, gain_mode=10.0),
-                    confocal_settings=ConfocalSettings(
-                        confocal_filter_wheel="Emission Wheel",
-                        confocal_filter_position=2,
-                    ),
+                    filter_position=2,  # Filter position at channel level
                 ),
             ],
         )
@@ -774,12 +795,12 @@ class TestMergeChannelConfigs:
                         intensity=30.0,
                     ),
                     camera_settings=CameraSettings(exposure_time_ms=40.0, gain_mode=15.0),
-                    confocal_settings=ConfocalSettings(
-                        illumination_iris=50.0,
-                        emission_iris=60.0,
-                    ),
                     confocal_override=AcquisitionChannelOverride(
                         camera_settings=CameraSettings(exposure_time_ms=80.0, gain_mode=20.0),
+                        confocal_settings=ConfocalSettings(
+                            illumination_iris=50.0,
+                            emission_iris=60.0,
+                        ),
                     ),
                 ),
             ],
@@ -788,15 +809,14 @@ class TestMergeChannelConfigs:
         merged = merge_channel_configs(general, objective)
         ch = merged[0]
 
-        # Confocal settings should be merged
-        assert ch.confocal_settings.confocal_filter_wheel == "Emission Wheel"  # From general
-        assert ch.confocal_settings.confocal_filter_position == 2  # From general
-        assert ch.confocal_settings.illumination_iris == 50.0  # From objective
-        assert ch.confocal_settings.emission_iris == 60.0  # From objective
+        # Filter position from general
+        assert ch.filter_position == 2
 
-        # Confocal override should be preserved from objective
+        # Confocal override should be preserved from objective (iris settings)
         assert ch.confocal_override is not None
         assert ch.confocal_override.camera_settings.exposure_time_ms == 80.0
+        assert ch.confocal_override.confocal_settings.illumination_iris == 50.0
+        assert ch.confocal_override.confocal_settings.emission_iris == 60.0
 
 
 class TestValidateIlluminationReferences:

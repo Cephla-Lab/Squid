@@ -1,11 +1,14 @@
 """
-Unit tests for v1.1 configuration models.
+Unit tests for v1.0 configuration models.
 
-Tests the new models introduced in schema v1.1:
+Tests the new models introduced in schema v1.0:
 - CameraRegistryConfig and CameraDefinition
 - FilterWheelRegistryConfig and FilterWheelDefinition
 - ChannelGroup, ChannelGroupEntry, SynchronizationMode
+- HardwareBindingsConfig and FilterWheelReference
 """
+
+from typing import Optional
 
 import pytest
 from pydantic import ValidationError
@@ -919,8 +922,11 @@ class TestChannelGroup:
 class TestValidateChannelGroup:
     """Tests for validate_channel_group function."""
 
-    def _make_channel(self, name: str, camera: str = "Main Camera") -> AcquisitionChannel:
-        """Helper to create a test channel (v1.1 schema)."""
+    def _make_channel(self, name: str, camera: Optional[int] = 1) -> AcquisitionChannel:
+        """Helper to create a test channel (v1.0 schema).
+
+        Note: camera is now int ID (null for single-camera systems).
+        """
         return AcquisitionChannel(
             name=name,
             display_color="#FFFFFF",
@@ -975,10 +981,10 @@ class TestValidateChannelGroup:
         assert "offset will be ignored" in errors[0]
 
     def test_duplicate_camera_in_simultaneous_mode(self):
-        """Test error when same camera used twice in simultaneous mode."""
+        """Test error when same camera ID used twice in simultaneous mode."""
         channels = [
-            self._make_channel("Channel A", camera="Main Camera"),
-            self._make_channel("Channel B", camera="Main Camera"),
+            self._make_channel("Channel A", camera=1),
+            self._make_channel("Channel B", camera=1),  # Same camera ID
         ]
         group = ChannelGroup(
             name="Test",

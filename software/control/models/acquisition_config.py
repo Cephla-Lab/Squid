@@ -6,14 +6,18 @@ These models define user-facing acquisition settings. They are organized as:
 - {objective}.yaml: Objective-specific overrides with optional confocal_override
 
 The merge logic combines these two configs:
-- From general.yaml: name, enabled, display_color, camera, illumination_channel, filter_wheel,
-                     filter_position, z_offset_um, confocal_settings (confocal_filter_wheel, confocal_filter_position)
+- From general.yaml: name, enabled, display_color, camera (ID), illumination_channel, filter_wheel,
+                     filter_position, z_offset_um
 - From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override (iris settings)
 
-Schema versions:
-- v1.0: Original schema with camera_settings as Dict[str, CameraSettings], display_color in CameraSettings
-- v1.0: Single camera per channel, display_color at channel level, filter_wheel by name, channel groups
-- v1.2: Single illumination_channel per acquisition channel (was list), intensity as float (was dict)
+Filter wheel resolution:
+- hardware_bindings.yaml maps camera ID → filter wheel reference (confocal or standalone)
+- Channel config specifies filter_position; actual wheel is resolved via hardware binding
+- filter_wheel field is optional override (default "auto" uses hardware binding)
+
+Camera identification:
+- Single camera: camera field is null (no cameras.yaml needed)
+- Multi-camera: camera field is integer ID (references cameras.yaml)
 """
 
 import logging
@@ -46,26 +50,20 @@ class CameraSettings(BaseModel):
 
 
 class ConfocalSettings(BaseModel):
-    """Confocal-specific settings (part of confocal unit hardware).
+    """Confocal-specific settings for objective-specific tuning.
 
-    The confocal unit has its own filter wheel, separate from body-level filter wheels.
-    Filter settings here apply only when confocal is in the light path.
+    These settings are used in confocal_override (objective.yaml) to provide
+    iris aperture settings when confocal mode is active.
+
+    Note: Filter wheel selection is handled via hardware_bindings.yaml, not here.
+    The camera's bound filter wheel (confocal or standalone) is resolved at runtime.
     """
 
-    # Confocal unit filter wheel (v1.0: by name instead of ID)
-    confocal_filter_wheel: Optional[str] = Field(
-        None,
-        description="Confocal filter wheel name (references filter_wheels.yaml). "
-        "Use 'auto' to automatically use the single available wheel.",
-    )
-    confocal_filter_position: Optional[int] = Field(None, ge=1, description="Position in confocal filter wheel")
     # Iris settings (objective-specific), 0-100% of aperture
     illumination_iris: Optional[float] = Field(
-        None, ge=0, le=100, description="Illumination iris aperture percentage (0-100, objective-specific)"
+        None, ge=0, le=100, description="Illumination iris aperture percentage (0-100)"
     )
-    emission_iris: Optional[float] = Field(
-        None, ge=0, le=100, description="Emission iris aperture percentage (0-100, objective-specific)"
-    )
+    emission_iris: Optional[float] = Field(None, ge=0, le=100, description="Emission iris aperture percentage (0-100)")
 
     model_config = {"extra": "forbid"}
 
@@ -81,7 +79,6 @@ class IlluminationSettings(BaseModel):
         None, description="Illumination channel name from illumination_channel_config (only in general.yaml)"
     )
     intensity: float = Field(..., ge=0, le=100, description="Illumination intensity percentage (0-100)")
-    z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     model_config = {"extra": "forbid"}
 
@@ -105,11 +102,11 @@ class AcquisitionChannelOverride(BaseModel):
 class AcquisitionChannel(BaseModel):
     """A single acquisition channel configuration (v1.0 schema).
 
-    Key changes from v1.0:
-    - display_color moved from camera_settings to channel level
-    - camera field added for camera name reference
-    - camera_settings is now a single object, not Dict
-    - filter_wheel/filter_position replace emission_filter_wheel_position
+    Key changes in v1.0:
+    - camera field is integer ID (references cameras.yaml), null for single-camera
+    - filter_wheel resolved via hardware_bindings.yaml based on camera ID
+    - z_offset_um at channel level (not in illumination_settings)
+    - confocal_settings removed (iris settings in confocal_override only)
     """
 
     name: str = Field(..., min_length=1, description="Display name for this acquisition channel")
@@ -119,30 +116,29 @@ class AcquisitionChannel(BaseModel):
     )
 
     # Camera assignment (optional for single-camera systems)
-    camera: Optional[str] = Field(
-        None, description="Camera name (references cameras.yaml). Optional for single-camera systems."
+    camera: Optional[int] = Field(
+        None, ge=1, description="Camera ID (references cameras.yaml). Null for single-camera systems."
     )
     camera_settings: CameraSettings = Field(..., description="Camera settings for this channel")
 
-    # Body-level filter wheel (separate from confocal filter wheel)
-    # "auto" sentinel is resolved by UI at runtime for single-wheel systems
+    # Filter wheel - resolved via hardware_bindings.yaml based on camera ID
+    # "auto" = use camera's bound wheel from hardware_bindings, or specific name to override
     filter_wheel: Optional[str] = Field(
         None,
-        description="Body filter wheel name (references filter_wheels.yaml). "
-        "Use 'auto' to automatically use the single available wheel.",
+        description="Filter wheel override. 'auto' = use camera's hardware binding, "
+        "or specify wheel name to override. Null = no filter wheel.",
     )
-    filter_position: Optional[int] = Field(None, ge=1, description="Position in body filter wheel")
+    filter_position: Optional[int] = Field(None, ge=1, description="Position in filter wheel")
+
+    # Z offset applied when switching to this channel
+    z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     # Illumination
     illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
 
-    # Confocal (has its own filter wheel in confocal_settings)
-    confocal_settings: Optional[ConfocalSettings] = Field(
-        None, description="Confocal settings (only if confocal in light path)"
-    )
-    # Objective-specific override for confocal mode
+    # Objective-specific override for confocal mode (iris settings)
     confocal_override: Optional[AcquisitionChannelOverride] = Field(
-        None, description="Settings to use when in confocal mode"
+        None, description="Confocal iris settings (objective-specific)"
     )
 
     model_config = {"extra": "forbid"}
@@ -198,7 +194,7 @@ class AcquisitionChannel(BaseModel):
     @property
     def z_offset(self) -> float:
         """Z offset in micrometers."""
-        return self.illumination_settings.z_offset_um
+        return self.z_offset_um
 
     @property
     def emission_filter_position(self) -> Optional[int]:
@@ -259,10 +255,6 @@ class AcquisitionChannel(BaseModel):
         if self.confocal_override.camera_settings:
             merged_camera = self.confocal_override.camera_settings
 
-        merged_confocal = self.confocal_settings
-        if self.confocal_override.confocal_settings:
-            merged_confocal = self.confocal_override.confocal_settings
-
         return AcquisitionChannel(
             name=self.name,
             enabled=self.enabled,
@@ -271,9 +263,9 @@ class AcquisitionChannel(BaseModel):
             camera_settings=merged_camera,
             filter_wheel=self.filter_wheel,
             filter_position=self.filter_position,
+            z_offset_um=self.z_offset_um,
             illumination_settings=merged_illumination,
-            confocal_settings=merged_confocal,
-            confocal_override=None,  # Already applied
+            confocal_override=self.confocal_override,  # Keep for iris settings access
         )
 
 
@@ -347,10 +339,9 @@ def merge_channel_configs(
     Merge general.yaml and objective.yaml into final acquisition channels (v1.0 schema).
 
     The merge takes:
-    - From general: name, display_color, camera, illumination_channel, filter_wheel, filter_position,
-                    z_offset_um, base confocal_settings (confocal_filter_wheel, confocal_filter_position)
-    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format,
-                      confocal iris settings, confocal_override
+    - From general: name, display_color, camera (ID), illumination_channel, filter_wheel,
+                    filter_position, z_offset_um
+    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override
 
     Args:
         general: General channel configuration (defines channel identity)
@@ -371,12 +362,11 @@ def merge_channel_configs(
             continue
 
         # Merge illumination settings
-        # general: illumination_channel, z_offset_um
+        # general: illumination_channel
         # objective: intensity
         merged_illumination = IlluminationSettings(
             illumination_channel=gen_channel.illumination_settings.illumination_channel,
             intensity=obj_channel.illumination_settings.intensity,
-            z_offset_um=gen_channel.illumination_settings.z_offset_um,  # From general
         )
 
         # Merge camera settings (v1.0: single object, not Dict)
@@ -388,31 +378,17 @@ def merge_channel_configs(
             pixel_format=obj_channel.camera_settings.pixel_format,
         )
 
-        # Merge confocal settings
-        # general: confocal_filter_wheel, confocal_filter_position
-        # objective: illumination_iris, emission_iris
-        merged_confocal = None
-        if gen_channel.confocal_settings or obj_channel.confocal_settings:
-            gen_confocal = gen_channel.confocal_settings or ConfocalSettings()
-            obj_confocal = obj_channel.confocal_settings or ConfocalSettings()
-            merged_confocal = ConfocalSettings(
-                confocal_filter_wheel=gen_confocal.confocal_filter_wheel,
-                confocal_filter_position=gen_confocal.confocal_filter_position,
-                illumination_iris=obj_confocal.illumination_iris,
-                emission_iris=obj_confocal.emission_iris,
-            )
-
         merged_channel = AcquisitionChannel(
             name=gen_channel.name,
             enabled=gen_channel.enabled,  # From general
             display_color=gen_channel.display_color,  # From general
-            camera=gen_channel.camera,  # From general
+            camera=gen_channel.camera,  # From general (camera ID)
             camera_settings=merged_camera,
             filter_wheel=gen_channel.filter_wheel,  # From general
             filter_position=gen_channel.filter_position,  # From general
+            z_offset_um=gen_channel.z_offset_um,  # From general
             illumination_settings=merged_illumination,
-            confocal_settings=merged_confocal,
-            confocal_override=obj_channel.confocal_override,  # From objective only
+            confocal_override=obj_channel.confocal_override,  # From objective (iris settings)
         )
         merged_channels.append(merged_channel)
 
@@ -559,20 +535,20 @@ def validate_channel_group(
     """
     errors = []
 
-    # Track cameras used (v1.0: camera field on channel)
-    cameras_used = []
+    # Track cameras used (v1.0: camera field is int ID)
+    cameras_used: List[Optional[int]] = []
     for entry in group.channels:
         channel = next((c for c in channels if c.name == entry.name), None)
         if channel is None:
             errors.append(f"Channel '{entry.name}' not found in channels list")
             continue
 
-        # Get camera from channel (v1.0 schema)
+        # Get camera ID from channel (v1.0 schema)
         cameras_used.append(channel.camera)
 
         # Warn if channel in simultaneous mode has no camera assigned
         if group.synchronization == SynchronizationMode.SIMULTANEOUS and channel.camera is None:
-            errors.append(f"Channel '{entry.name}' has no camera assigned but is in simultaneous group '{group.name}'")
+            errors.append(f"Channel '{entry.name}' has no camera ID but is in simultaneous group '{group.name}'")
 
         # Warn if offset specified for sequential mode
         if group.synchronization == SynchronizationMode.SEQUENTIAL and entry.offset_us != 0:
@@ -588,7 +564,7 @@ def validate_channel_group(
             duplicate_cameras = [c for c in set(non_null_cameras) if non_null_cameras.count(c) > 1]
             errors.append(
                 f"Group '{group.name}' uses simultaneous mode but has "
-                f"multiple channels on same camera: {duplicate_cameras}"
+                f"multiple channels on same camera ID: {duplicate_cameras}"
             )
 
     return errors

@@ -60,6 +60,7 @@ channels:
     )
 
     # Create a general config (schema v1.0)
+    # Note: z_offset_um is at channel level, not in illumination_settings
     general_yaml = default_profile / "channel_configs" / "general.yaml"
     general_yaml.write_text(
         """
@@ -69,10 +70,10 @@ channels:
   - name: "Fluorescence 488nm"
     display_color: "#00FF00"
     camera: null
+    z_offset_um: 0.0
     illumination_settings:
       illumination_channel: "488nm"
       intensity: 50.0
-      z_offset_um: 0.0
     camera_settings:
       exposure_time_ms: 100.0
       gain_mode: 0.0
@@ -230,14 +231,17 @@ class TestConfigRepositoryProfileConfigs:
         assert config is None
 
     def test_save_general_config(self, repo_with_profile, temp_dir):
-        """Test saving general config updates cache (schema v1.0)."""
+        """Test saving general config updates cache (schema v1.0).
+
+        Note: camera is now int ID (null for single-camera systems).
+        """
         new_config = GeneralChannelConfig(
             version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Test Channel",
                     display_color="#FF0000",
-                    camera="camera_1",
+                    camera=1,  # Camera ID (int), not name
                     illumination_settings=IlluminationSettings(
                         illumination_channel="488nm",
                         intensity=100.0,
@@ -262,14 +266,17 @@ class TestConfigRepositoryProfileConfigs:
         assert cached.version == 1.0
 
     def test_save_objective_config(self, repo_with_profile, temp_dir):
-        """Test saving objective config (schema v1.0)."""
+        """Test saving objective config (schema v1.0).
+
+        Note: camera is now int ID (null for single-camera systems).
+        """
         new_config = ObjectiveChannelConfig(
             version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Test",
                     display_color="#0000FF",
-                    camera="camera_1",
+                    camera=1,  # Camera ID (int), not name
                     illumination_settings=IlluminationSettings(
                         intensity=30.0,
                     ),
