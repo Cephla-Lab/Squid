@@ -307,13 +307,9 @@ channels:
     camera: null                    # null = auto-use single camera
     filter_wheel: auto              # "auto" = single wheel, auto-selected
     filter_position: 2              # Filter position for this channel
+    z_offset_um: 0.0                # Z offset applied when switching to this channel
     illumination_settings:
       illumination_channel: Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
-      intensity: 20.0
-      z_offset_um: 0.0
-    camera_settings:
-      exposure_time_ms: 20.0
-      gain_mode: 10.0
 
   - name: BF LED matrix full
     enabled: true
@@ -321,24 +317,23 @@ channels:
     camera: null
     filter_wheel: auto
     filter_position: 1
+    z_offset_um: 0.0
     illumination_settings:
       illumination_channel: BF LED matrix full
-      intensity: 5.0
-      z_offset_um: 0.0
-    camera_settings:
-      exposure_time_ms: 20.0
-      gain_mode: 10.0
 ```
 
 **Fields owned by general.yaml:**
 
 | Field | Description |
 |-------|-------------|
-| `illumination_channel` | Which illumination channel to use (references machine config) |
+| `name` | Channel name (unique identifier) |
+| `enabled` | Whether channel is available for acquisition |
 | `display_color` | Hex color for UI visualization |
-| `z_offset_um` | Z offset applied when switching to this channel |
+| `camera` | Camera name (null = auto-use single camera) |
 | `filter_wheel` | Filter wheel name ("auto" for single wheel, null for none) |
 | `filter_position` | Filter position in the wheel |
+| `z_offset_um` | Z offset applied when switching to this channel |
+| `illumination_channel` | Which illumination channel to use (references machine config) |
 
 ### channel_configs/{objective}.yaml
 
