@@ -39,6 +39,9 @@ def apply_single_filter_wheel_defaults(wheels: List[Any]) -> List[Any]:
 
     Returns:
         Modified list with defaults applied (may contain dicts)
+
+    Raises:
+        ValueError: If wheel is not a dict or Pydantic model
     """
     if len(wheels) != 1:
         return wheels
@@ -62,6 +65,11 @@ def apply_single_filter_wheel_defaults(wheels: List[Any]) -> List[Any]:
                 wheel_type = wheel_type.value
             wheel_dict["name"] = f"{wheel_type.title()} Wheel"
         return [wheel_dict]
+    else:
+        # Unexpected type - this is a configuration error
+        raise ValueError(
+            f"Filter wheel definition must be a dict or Pydantic model, " f"got {type(wheel).__name__}: {wheel!r}"
+        )
 
     return wheels
 

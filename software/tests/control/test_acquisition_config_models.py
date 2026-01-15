@@ -310,6 +310,23 @@ class TestConfocalConfig:
         assert isinstance(config.version, float)
         assert config.version == 1.0
 
+    def test_confocal_config_single_wheel_defaults(self):
+        """Test that single confocal wheel gets default id=1 and name from type."""
+        # When only one wheel is provided without id/name, defaults should be applied
+        config = ConfocalConfig(
+            filter_wheels=[FilterWheelDefinition(type=FilterWheelType.EMISSION, positions={1: "Empty"})]
+        )
+        assert config.filter_wheels[0].id == 1
+        assert config.filter_wheels[0].name == "Emission Wheel"
+
+    def test_confocal_config_single_excitation_wheel_defaults(self):
+        """Test that single excitation wheel gets correct default name."""
+        config = ConfocalConfig(
+            filter_wheels=[FilterWheelDefinition(type=FilterWheelType.EXCITATION, positions={1: "Empty"})]
+        )
+        assert config.filter_wheels[0].id == 1
+        assert config.filter_wheels[0].name == "Excitation Wheel"
+
 
 class TestCameraMappingsConfig:
     """Tests for CameraMappingsConfig model."""

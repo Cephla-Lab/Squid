@@ -638,6 +638,43 @@ class TestFilterWheelReference:
             FilterWheelReference(source="confocal", id=1, name="Emission")
         assert "Cannot specify both" in str(exc_info.value)
 
+    def test_parse_name_with_dots(self):
+        """Test parsing name containing dots (split on first dot only)."""
+        ref = FilterWheelReference.parse("standalone.BP 525/50.nm Filter")
+        assert ref.source == "standalone"
+        assert ref.name == "BP 525/50.nm Filter"
+        assert ref.id is None
+
+    def test_parse_empty_source_rejected(self):
+        """Test that empty source is rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            FilterWheelReference.parse(".1")
+        assert "source is empty" in str(exc_info.value)
+
+    def test_reference_is_frozen(self):
+        """Test that FilterWheelReference is immutable (frozen)."""
+        ref = FilterWheelReference(source="confocal", id=1)
+        with pytest.raises(ValidationError):
+            ref.id = 2  # Should fail because model is frozen
+
+    def test_reference_hashable(self):
+        """Test that FilterWheelReference can be used as dict key."""
+        ref1 = FilterWheelReference(source="confocal", id=1)
+        ref2 = FilterWheelReference(source="confocal", id=1)
+        # Should be able to use as dict key
+        d = {ref1: "value"}
+        assert d[ref2] == "value"  # Same content should hash the same
+
+    def test_source_enum_values(self):
+        """Test that FilterWheelSource enum has expected values."""
+        from control.models.hardware_bindings import FilterWheelSource
+
+        assert FilterWheelSource.CONFOCAL.value == "confocal"
+        assert FilterWheelSource.STANDALONE.value == "standalone"
+        # String comparison should work (str inheritance)
+        assert FilterWheelSource.CONFOCAL == "confocal"
+        assert FilterWheelSource.STANDALONE == "standalone"
+
 
 class TestHardwareBindingsConfig:
     """Tests for HardwareBindingsConfig model."""
@@ -736,6 +773,28 @@ class TestHardwareBindingsConfig:
         error_str = str(exc_info.value)
         assert "Camera 1" in error_str
         assert "Camera 2" in error_str
+
+    def test_serialization_to_strings(self):
+        """Test that bindings serialize back to strings for YAML output."""
+        bindings = HardwareBindingsConfig(
+            emission_filter_wheels={
+                1: "confocal.1",
+                2: "standalone.Emission Wheel",
+            }
+        )
+        # model_dump should serialize references to strings
+        dumped = bindings.model_dump()
+        assert dumped["emission_filter_wheels"][1] == "confocal.1"
+        assert dumped["emission_filter_wheels"][2] == "standalone.Emission Wheel"
+
+    def test_remove_binding(self):
+        """Test removing a binding."""
+        bindings = HardwareBindingsConfig(emission_filter_wheels={1: "confocal.1", 2: "standalone.1"})
+        assert bindings.remove_emission_wheel_binding(1) is True
+        assert len(bindings.emission_filter_wheels) == 1
+        assert bindings.get_emission_wheel_ref(1) is None
+        # Removing non-existent binding returns False
+        assert bindings.remove_emission_wheel_binding(99) is False
 
 
 class TestChannelGroupEntry:

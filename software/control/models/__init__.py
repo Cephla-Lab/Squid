@@ -34,6 +34,7 @@ from control.models.filter_wheel_config import (
     FilterWheelRegistryConfig,
 )
 from control.models.hardware_bindings import (
+    FilterWheelSource,
     FilterWheelReference,
     HardwareBindingsConfig,
     FILTER_WHEEL_SOURCE_CONFOCAL,
@@ -78,6 +79,7 @@ __all__ = [
     "FilterWheelDefinition",
     "FilterWheelRegistryConfig",
     # Hardware Bindings (v1.1)
+    "FilterWheelSource",
     "FilterWheelReference",
     "HardwareBindingsConfig",
     "FILTER_WHEEL_SOURCE_CONFOCAL",

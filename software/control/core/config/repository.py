@@ -40,6 +40,7 @@ from control.models import (
     merge_channel_configs,
 )
 from control.models.hardware_bindings import (
+    FilterWheelSource,
     FilterWheelReference,
     HardwareBindingsConfig,
     FILTER_WHEEL_SOURCE_CONFOCAL,
@@ -532,7 +533,7 @@ class ConfigRepository:
             FilterWheelDefinition if found, None otherwise
         """
         all_wheels = self.get_all_filter_wheels()
-        source_wheels = all_wheels.get(ref.source, [])
+        source_wheels = all_wheels.get(ref.source.value, [])
 
         for wheel in source_wheels:
             if ref.id is not None and wheel.id == ref.id:
@@ -540,7 +541,16 @@ class ConfigRepository:
             if ref.name is not None and wheel.name == ref.name:
                 return wheel
 
-        logger.debug(f"Filter wheel not found: {ref}. " f"Available in {ref.source}: {[w.name for w in source_wheels]}")
+        available_info = (
+            f"Available in '{ref.source.value}': {[w.name for w in source_wheels]}"
+            if source_wheels
+            else f"No wheels found in source '{ref.source.value}'"
+        )
+        logger.warning(
+            f"Filter wheel reference not found: {ref}. {available_info}. "
+            f"Check that hardware_bindings.yaml references match your "
+            f"filter_wheels.yaml or confocal.yaml."
+        )
         return None
 
     def get_effective_emission_wheel(self, camera_id: int) -> Optional[FilterWheelDefinition]:

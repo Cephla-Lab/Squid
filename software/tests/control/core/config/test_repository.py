@@ -679,8 +679,13 @@ emission_filter_wheels:
 
         assert bindings is not None
         assert len(bindings.emission_filter_wheels) == 2
-        assert bindings.emission_filter_wheels[1] == "confocal.1"
-        assert bindings.emission_filter_wheels[2] == "standalone.1"
+        # Now stores FilterWheelReference objects instead of strings
+        ref1 = bindings.emission_filter_wheels[1]
+        ref2 = bindings.emission_filter_wheels[2]
+        assert ref1.source.value == "confocal"
+        assert ref1.id == 1
+        assert ref2.source.value == "standalone"
+        assert ref2.id == 1
 
     def test_get_hardware_bindings_returns_none_when_missing(self, temp_dir):
         """Test that missing hardware_bindings.yaml returns None."""
