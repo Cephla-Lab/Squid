@@ -68,7 +68,7 @@ def apply_single_filter_wheel_defaults(wheels: List[Any]) -> List[Any]:
     else:
         # Unexpected type - this is a configuration error
         raise ValueError(
-            f"Filter wheel definition must be a dict or Pydantic model, " f"got {type(wheel).__name__}: {wheel!r}"
+            f"Filter wheel definition must be a dict or Pydantic model, got {type(wheel).__name__}: {wheel!r}"
         )
 
     return wheels

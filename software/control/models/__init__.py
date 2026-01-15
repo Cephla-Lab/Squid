@@ -5,8 +5,12 @@ This package contains models for:
 - IlluminationChannelConfig: Hardware-level illumination channel definitions
 - ConfocalConfig: Optional confocal unit configuration
 - CameraMappingsConfig: Camera to dichroic/filter wheel bindings (legacy)
-- CameraRegistryConfig: Camera name to serial number mapping - FilterWheelRegistryConfig: Filter wheel definitions - HardwareBindingsConfig: Camera to filter wheel bindings with source-qualified refs - AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
-- ChannelGroup: Multi-camera channel grouping - LaserAFConfig: Laser autofocus configuration
+- CameraRegistryConfig: Camera name to serial number mapping
+- FilterWheelRegistryConfig: Filter wheel definitions
+- HardwareBindingsConfig: Camera to filter wheel bindings with source-qualified refs
+- AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
+- ChannelGroup: Multi-camera channel grouping
+- LaserAFConfig: Laser autofocus configuration
 """
 
 from control.models.illumination_config import (
@@ -67,12 +71,15 @@ __all__ = [
     "CameraHardwareInfo",
     "CameraPropertyBindings",
     "CameraMappingsConfig",
-    # Camera Registry     "CameraDefinition",
+    # Camera Registry
+    "CameraDefinition",
     "CameraRegistryConfig",
-    # Filter Wheel Registry     "FilterWheelType",
+    # Filter Wheel Registry
+    "FilterWheelType",
     "FilterWheelDefinition",
     "FilterWheelRegistryConfig",
-    # Hardware Bindings     "FilterWheelSource",
+    # Hardware Bindings
+    "FilterWheelSource",
     "FilterWheelReference",
     "HardwareBindingsConfig",
     "FILTER_WHEEL_SOURCE_CONFOCAL",
@@ -89,7 +96,8 @@ __all__ = [
     "merge_channel_configs",
     "validate_illumination_references",
     "get_illumination_channel_names",
-    # Channel Groups     "SynchronizationMode",
+    # Channel Groups
+    "SynchronizationMode",
     "ChannelGroupEntry",
     "ChannelGroup",
     "validate_channel_group",
