@@ -5,12 +5,8 @@ This package contains models for:
 - IlluminationChannelConfig: Hardware-level illumination channel definitions
 - ConfocalConfig: Optional confocal unit configuration
 - CameraMappingsConfig: Camera to dichroic/filter wheel bindings (legacy)
-- CameraRegistryConfig: Camera name to serial number mapping (v1.1)
-- FilterWheelRegistryConfig: Filter wheel definitions (v1.1)
-- HardwareBindingsConfig: Camera to filter wheel bindings with source-qualified refs (v1.1)
-- AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
-- ChannelGroup: Multi-camera channel grouping (v1.1)
-- LaserAFConfig: Laser autofocus configuration
+- CameraRegistryConfig: Camera name to serial number mapping - FilterWheelRegistryConfig: Filter wheel definitions - HardwareBindingsConfig: Camera to filter wheel bindings with source-qualified refs - AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
+- ChannelGroup: Multi-camera channel grouping - LaserAFConfig: Laser autofocus configuration
 """
 
 from control.models.illumination_config import (
@@ -52,7 +48,7 @@ from control.models.acquisition_config import (
     merge_channel_configs,
     validate_illumination_references,
     get_illumination_channel_names,
-    # v1.1 Channel Groups
+    # Channel Groups
     SynchronizationMode,
     ChannelGroupEntry,
     ChannelGroup,
@@ -71,15 +67,12 @@ __all__ = [
     "CameraHardwareInfo",
     "CameraPropertyBindings",
     "CameraMappingsConfig",
-    # Camera Registry (v1.1)
-    "CameraDefinition",
+    # Camera Registry     "CameraDefinition",
     "CameraRegistryConfig",
-    # Filter Wheel Registry (v1.1)
-    "FilterWheelType",
+    # Filter Wheel Registry     "FilterWheelType",
     "FilterWheelDefinition",
     "FilterWheelRegistryConfig",
-    # Hardware Bindings (v1.1)
-    "FilterWheelSource",
+    # Hardware Bindings     "FilterWheelSource",
     "FilterWheelReference",
     "HardwareBindingsConfig",
     "FILTER_WHEEL_SOURCE_CONFOCAL",
@@ -96,8 +89,7 @@ __all__ = [
     "merge_channel_configs",
     "validate_illumination_references",
     "get_illumination_channel_names",
-    # Channel Groups (v1.1)
-    "SynchronizationMode",
+    # Channel Groups     "SynchronizationMode",
     "ChannelGroupEntry",
     "ChannelGroup",
     "validate_channel_group",

@@ -59,11 +59,11 @@ channels:
 """
     )
 
-    # Create a general config (v1.1 schema)
+    # Create a general config (schema v1.0)
     general_yaml = default_profile / "channel_configs" / "general.yaml"
     general_yaml.write_text(
         """
-version: 1.1
+version: 1.0
 channel_groups: []
 channels:
   - name: "Fluorescence 488nm"
@@ -79,11 +79,11 @@ channels:
 """
     )
 
-    # Create an objective config (v1.1 schema)
+    # Create an objective config (schema v1.0)
     objective_yaml = default_profile / "channel_configs" / "20x.yaml"
     objective_yaml.write_text(
         """
-version: 1.1
+version: 1.0
 channels:
   - name: "Fluorescence 488nm"
     display_color: "#00FF00"
@@ -201,11 +201,11 @@ class TestConfigRepositoryProfileConfigs:
     """Tests for profile config loading and saving."""
 
     def test_get_general_config(self, repo_with_profile):
-        """Test loading general config (v1.1 schema)."""
+        """Test loading general config (schema v1.0)."""
         config = repo_with_profile.get_general_config()
 
         assert config is not None
-        assert config.version == 1.1  # v1.1 schema
+        assert config.version == 1.0  # schema v1.0
         assert len(config.channels) == 1
         assert config.channels[0].name == "Fluorescence 488nm"
 
@@ -230,9 +230,9 @@ class TestConfigRepositoryProfileConfigs:
         assert config is None
 
     def test_save_general_config(self, repo_with_profile, temp_dir):
-        """Test saving general config updates cache (v1.1 schema)."""
+        """Test saving general config updates cache (schema v1.0)."""
         new_config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Test Channel",
@@ -259,12 +259,12 @@ class TestConfigRepositoryProfileConfigs:
         # Check cache was updated
         cached = repo_with_profile.get_general_config()
         assert cached is new_config
-        assert cached.version == 1.1
+        assert cached.version == 1.0
 
     def test_save_objective_config(self, repo_with_profile, temp_dir):
-        """Test saving objective config (v1.1 schema)."""
+        """Test saving objective config (schema v1.0)."""
         new_config = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Test",
@@ -302,17 +302,17 @@ class TestConfigRepositoryCacheManagement:
     """Tests for cache management."""
 
     def test_set_profile_clears_profile_cache(self, temp_dir):
-        """Test that switching profiles clears the profile cache (v1.1 schema)."""
+        """Test that switching profiles clears the profile cache (schema v1.0)."""
         user_profiles = temp_dir / "user_profiles"
 
-        # Create two profiles with different configs (v1.1 schema)
+        # Create two profiles with different configs (schema v1.0)
         for profile in ["profile1", "profile2"]:
             profile_path = user_profiles / profile / "channel_configs"
             profile_path.mkdir(parents=True)
             (user_profiles / profile / "laser_af_configs").mkdir()
             (profile_path / "general.yaml").write_text(
                 f"""
-version: 1.1
+version: 1.0
 channel_groups: []
 channels:
   - name: "Channel from {profile}"
@@ -425,7 +425,7 @@ class TestConfigRepositoryCameraRegistry:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"
     id: 1
@@ -461,7 +461,7 @@ cameras:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Test"
     serial_number: "XYZ"
@@ -481,7 +481,7 @@ cameras:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"
     id: 1
@@ -513,7 +513,7 @@ cameras:
 
         repo = ConfigRepository(base_path=temp_dir)
         new_registry = CameraRegistryConfig(
-            version=1.1,
+            version=1.0,
             cameras=[
                 CameraDefinition(name="New Camera", serial_number="NEW123"),
             ],
@@ -540,7 +540,7 @@ class TestConfigRepositoryFilterWheelRegistry:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -576,7 +576,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Test Wheel"
     id: 1
@@ -599,7 +599,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -635,7 +635,7 @@ filter_wheels:
 
         repo = ConfigRepository(base_path=temp_dir)
         new_registry = FilterWheelRegistryConfig(
-            version=1.1,
+            version=1.0,
             filter_wheels=[
                 FilterWheelDefinition(
                     name="New Wheel",
@@ -667,7 +667,7 @@ class TestConfigRepositoryHardwareBindings:
 
         (machine_configs / "hardware_bindings.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
   2: "standalone.1"
@@ -703,7 +703,7 @@ emission_filter_wheels:
 
         (machine_configs / "hardware_bindings.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
 """
@@ -722,7 +722,7 @@ emission_filter_wheels:
 
         repo = ConfigRepository(base_path=temp_dir)
         new_bindings = HardwareBindingsConfig(
-            version=1.1,
+            version=1.0,
             emission_filter_wheels={1: "standalone.1"},
         )
 
@@ -747,7 +747,7 @@ class TestConfigRepositoryFilterWheelAggregation:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -799,7 +799,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Standalone Emission"
     id: 1
@@ -845,7 +845,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -874,7 +874,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -907,7 +907,7 @@ class TestConfigRepositoryResolveWheelReference:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -961,7 +961,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -984,7 +984,7 @@ filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -1012,7 +1012,7 @@ class TestConfigRepositoryEffectiveEmissionWheel:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -1024,7 +1024,7 @@ filter_wheels:
 
         (machine_configs / "hardware_bindings.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 emission_filter_wheels:
   1: "standalone.1"
 """
@@ -1043,7 +1043,7 @@ emission_filter_wheels:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     id: 1
@@ -1055,7 +1055,7 @@ filter_wheels:
 
         (machine_configs / "hardware_bindings.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 emission_filter_wheels:
   1: "standalone.1"
 """
@@ -1074,7 +1074,7 @@ emission_filter_wheels:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"
     serial_number: "ABC123"
@@ -1083,7 +1083,7 @@ cameras:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission
@@ -1105,7 +1105,7 @@ filter_wheels:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"
     id: 1
@@ -1118,7 +1118,7 @@ cameras:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission
@@ -1140,7 +1140,7 @@ filter_wheels:
 
         (machine_configs / "cameras.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"
     serial_number: "ABC123"
@@ -1149,7 +1149,7 @@ cameras:
 
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel 1"
     id: 1
@@ -1189,7 +1189,7 @@ filter_wheels:
 
         (machine_configs / "hardware_bindings.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
 """
@@ -1209,7 +1209,7 @@ emission_filter_wheels:
         # Only filter_wheels.yaml exists - no cameras.yaml
         (machine_configs / "filter_wheels.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission

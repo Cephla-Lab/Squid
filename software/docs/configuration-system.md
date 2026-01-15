@@ -10,11 +10,10 @@ The configuration system uses a hierarchical structure that separates concerns:
 software/
 ├── machine_configs/                    # Hardware-specific (per machine)
 │   ├── illumination_channel_config.yaml   # Illumination channels (required)
-│   ├── cameras.yaml                      # Optional: camera registry (v1.1)
-│   ├── filter_wheels.yaml                # Optional: standalone filter wheels (v1.1)
-│   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings (v1.1)
+│   ├── cameras.yaml                      # Optional: camera registry
+│   ├── filter_wheels.yaml                # Optional: standalone filter wheels
+│   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings
 │   ├── confocal_config.yaml              # Optional: confocal settings + wheels
-│   ├── camera_mappings.yaml              # Legacy: multi-camera bindings
 │   └── intensity_calibrations/           # Optional: power calibration CSVs
 │
 └── user_profiles/                      # User preferences (per profile)
@@ -43,7 +42,7 @@ software/
    - Invalid configurations fail fast with clear error messages
 
 4. **Schema Versioning**
-   - Every YAML file includes a `version` field (currently `1.1`)
+   - Every YAML file includes a `version` field (currently `1.0`)
    - Enables future schema migrations without breaking existing configs
 
 ---
@@ -57,7 +56,7 @@ Machine configs define the physical hardware setup. These files live in `machine
 Defines all available illumination channels on the microscope.
 
 ```yaml
-version: 1.1
+version: 1.0
 
 # Controller port to source code mapping
 # D1-D8: Laser channels, USB1-USB8: LED matrix patterns
@@ -104,7 +103,7 @@ channels:
 
 | Field | Description |
 |-------|-------------|
-| `version` | Schema version (currently `1.1`) |
+| `version` | Schema version (currently `1.0`) |
 | `controller_port_mapping` | Maps port names to internal source codes |
 | `channels[].name` | Unique identifier for the channel |
 | `channels[].type` | `epi_illumination` (lasers) or `transillumination` (LED) |
@@ -114,12 +113,12 @@ channels:
 | `channels[].excitation_filter_wheel` | Optional: name of excitation filter wheel |
 | `channels[].excitation_filter_position` | Optional: position in excitation filter wheel |
 
-### cameras.yaml (Optional, v1.1)
+### cameras.yaml (Optional)
 
 Maps user-friendly camera names to hardware serial numbers. This enables users to select cameras by name in the UI rather than cryptic serial numbers. **Optional for single-camera systems.**
 
 ```yaml
-version: 1.1
+version: 1.0
 
 cameras:
   # Primary imaging camera
@@ -137,7 +136,7 @@ cameras:
 
 | Field | Description |
 |-------|-------------|
-| `version` | Schema version (`1.1`) |
+| `version` | Schema version (`1.0`) |
 | `cameras[].name` | User-friendly name (must be unique) |
 | `cameras[].serial_number` | Hardware serial number (must be unique) |
 | `cameras[].model` | Optional: camera model for reference |
@@ -147,12 +146,12 @@ cameras:
 - Camera names appear in dropdowns when configuring channels
 - Multi-camera systems require this file to map channels to specific cameras
 
-### filter_wheels.yaml (Optional, v1.1)
+### filter_wheels.yaml (Optional)
 
 Defines all filter wheels with their positions and installed filters. Channels reference filter wheels by name.
 
 ```yaml
-version: 1.1
+version: 1.0
 
 filter_wheels:
   # Emission filter wheel
@@ -180,7 +179,7 @@ filter_wheels:
 
 | Field | Description |
 |-------|-------------|
-| `version` | Schema version (`1.1`) |
+| `version` | Schema version (`1.0`) |
 | `filter_wheels[].name` | User-friendly name (must be unique) |
 | `filter_wheels[].id` | Hardware ID for controller (must be unique) |
 | `filter_wheels[].type` | Filter wheel type: `excitation` or `emission` (optional) |
@@ -234,7 +233,7 @@ objective_specific_properties:
 | `public_properties` | Properties available in `general.yaml` |
 | `objective_specific_properties` | Properties only in objective-specific files |
 
-### hardware_bindings.yaml (Optional, v1.1)
+### hardware_bindings.yaml (Optional)
 
 Maps cameras to their associated filter wheels using **source-qualified references**. This file is only needed for multi-camera systems where each camera uses a different emission filter wheel.
 
@@ -249,7 +248,7 @@ References use the format `source.identifier` where identifier can be an ID or n
 - `standalone.Emission Wheel` - standalone wheel named "Emission Wheel"
 
 ```yaml
-version: 1.1
+version: 1.0
 
 emission_filter_wheels:
   # Camera ID -> source-qualified wheel reference
@@ -262,7 +261,7 @@ emission_filter_wheels:
 
 | Field | Description |
 |-------|-------------|
-| `version` | Schema version (`1.1`) |
+| `version` | Schema version (`1.0`) |
 | `emission_filter_wheels` | Map of camera ID to source-qualified wheel reference |
 
 **Implicit Binding (Single Camera + Single Wheel):**
@@ -273,25 +272,6 @@ If `hardware_bindings.yaml` doesn't exist and the system has exactly one camera 
 - Multi-camera systems with separate emission wheels per camera
 - Systems where camera 1 should use a confocal wheel and camera 2 a standalone wheel
 - Any setup where automatic binding won't work correctly
-
-### camera_mappings.yaml (Legacy)
-
-> **Note**: This file is deprecated in v1.1. Use `cameras.yaml`, `filter_wheels.yaml`, and `hardware_bindings.yaml` instead for new setups.
-
-Maps camera selections to hardware bindings (dichroic positions, filter wheels). This file is optional and typically only needed for advanced multi-camera setups.
-
-```yaml
-version: 1
-
-hardware_connection_info:
-  "1":
-    filter_wheel_id: 1
-    confocal_settings: null
-
-property_bindings:
-  camera_1:
-    dichroic_position: 1
-```
 
 ---
 
@@ -319,11 +299,11 @@ User profiles store acquisition settings that vary by user or experiment. Each p
 Defines channel identity and settings shared across all objectives.
 
 ```yaml
-version: 1.1
+version: 1.0
 channels:
   - name: Fluorescence 488 nm Ex
     enabled: true
-    display_color: '#1FFF00'        # Green for 488nm (channel-level in v1.1)
+    display_color: '#1FFF00'        # Green for 488nm
     camera: null                    # null = auto-use single camera
     filter_wheel: auto              # "auto" = single wheel, auto-selected
     filter_position: 2              # Filter position for this channel
@@ -331,7 +311,7 @@ channels:
       illumination_channel: Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
       intensity: 20.0
       z_offset_um: 0.0
-    camera_settings:                # Single object in v1.1 (not dict)
+    camera_settings:
       exposure_time_ms: 20.0
       gain_mode: 10.0
 
@@ -365,7 +345,7 @@ channels:
 Per-objective overrides. These settings are merged with `general.yaml`.
 
 ```yaml
-version: 1.1
+version: 1.0
 channels:
   - name: Fluorescence 488 nm Ex
     illumination_settings:
@@ -434,7 +414,7 @@ When the system has a confocal unit and confocal mode is enabled, the `confocal_
 Laser autofocus configuration per objective. Contains calibration data and detection parameters.
 
 ```yaml
-version: 1.1
+version: 1.0
 
 # Crop region
 x_offset: 0

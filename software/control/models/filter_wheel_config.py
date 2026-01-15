@@ -186,7 +186,7 @@ class FilterWheelRegistryConfig(BaseModel):
     - Type is always required
     """
 
-    version: float = Field(1.1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
     filter_wheels: List[FilterWheelDefinition] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}

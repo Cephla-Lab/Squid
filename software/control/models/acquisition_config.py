@@ -1,5 +1,5 @@
 """
-Acquisition channel configuration models (v1.1 schema).
+Acquisition channel configuration models (v1.0 schema).
 
 These models define user-facing acquisition settings. They are organized as:
 - general.yaml: Shared settings across all objectives
@@ -12,7 +12,7 @@ The merge logic combines these two configs:
 
 Schema versions:
 - v1.0: Original schema with camera_settings as Dict[str, CameraSettings], display_color in CameraSettings
-- v1.1: Single camera per channel, display_color at channel level, filter_wheel by name, channel groups
+- v1.0: Single camera per channel, display_color at channel level, filter_wheel by name, channel groups
 - v1.2: Single illumination_channel per acquisition channel (was list), intensity as float (was dict)
 """
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class CameraSettings(BaseModel):
     """Per-camera settings in an acquisition channel.
 
-    Note: In v1.1, display_color moved to AcquisitionChannel level.
+    Note: In v1.0, display_color moved to AcquisitionChannel level.
     """
 
     exposure_time_ms: float = Field(..., gt=0, description="Exposure time in milliseconds")
@@ -52,7 +52,7 @@ class ConfocalSettings(BaseModel):
     Filter settings here apply only when confocal is in the light path.
     """
 
-    # Confocal unit filter wheel (v1.1: by name instead of ID)
+    # Confocal unit filter wheel (v1.0: by name instead of ID)
     confocal_filter_wheel: Optional[str] = Field(
         None,
         description="Confocal filter wheel name (references filter_wheels.yaml). "
@@ -103,7 +103,7 @@ class AcquisitionChannelOverride(BaseModel):
 
 
 class AcquisitionChannel(BaseModel):
-    """A single acquisition channel configuration (v1.1 schema).
+    """A single acquisition channel configuration (v1.0 schema).
 
     Key changes from v1.0:
     - display_color moved from camera_settings to channel level
@@ -254,7 +254,7 @@ class AcquisitionChannel(BaseModel):
         if self.confocal_override.illumination_settings:
             merged_illumination = self.confocal_override.illumination_settings
 
-        # For v1.1, camera_settings is a single object
+        # For v1.0, camera_settings is a single object
         merged_camera = self.camera_settings
         if self.confocal_override.camera_settings:
             merged_camera = self.confocal_override.camera_settings
@@ -284,13 +284,13 @@ class GeneralChannelConfig(BaseModel):
     This file defines the base acquisition channels that are available.
     Objective-specific files can override these settings.
 
-    v1.1 adds channel_groups for multi-camera acquisition support.
+    v1.0 adds channel_groups for multi-camera acquisition support.
     """
 
     version: Union[int, float] = Field(1, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels")
     channel_groups: List["ChannelGroup"] = Field(
-        default_factory=list, description="Channel groups for multi-camera acquisition (v1.1+)"
+        default_factory=list, description="Channel groups for multi-camera acquisition (v1.0+)"
     )
 
     model_config = {"extra": "forbid"}
@@ -344,7 +344,7 @@ def merge_channel_configs(
     objective: ObjectiveChannelConfig,
 ) -> List[AcquisitionChannel]:
     """
-    Merge general.yaml and objective.yaml into final acquisition channels (v1.1 schema).
+    Merge general.yaml and objective.yaml into final acquisition channels (v1.0 schema).
 
     The merge takes:
     - From general: name, display_color, camera, illumination_channel, filter_wheel, filter_position,
@@ -379,7 +379,7 @@ def merge_channel_configs(
             z_offset_um=gen_channel.illumination_settings.z_offset_um,  # From general
         )
 
-        # Merge camera settings (v1.1: single object, not Dict)
+        # Merge camera settings (v1.0: single object, not Dict)
         # general: (nothing - display_color is now at channel level)
         # objective: exposure_time_ms, gain_mode, pixel_format
         merged_camera = CameraSettings(
@@ -483,7 +483,7 @@ class AcquisitionOutputConfig(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Channel Groups (v1.1)
+# Channel Groups (v1.0)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -559,7 +559,7 @@ def validate_channel_group(
     """
     errors = []
 
-    # Track cameras used (v1.1: camera field on channel)
+    # Track cameras used (v1.0: camera field on channel)
     cameras_used = []
     for entry in group.channels:
         channel = next((c for c in channels if c.name == entry.name), None)
@@ -567,7 +567,7 @@ def validate_channel_group(
             errors.append(f"Channel '{entry.name}' not found in channels list")
             continue
 
-        # Get camera from channel (v1.1 schema)
+        # Get camera from channel (v1.0 schema)
         cameras_used.append(channel.camera)
 
         # Warn if channel in simultaneous mode has no camera assigned

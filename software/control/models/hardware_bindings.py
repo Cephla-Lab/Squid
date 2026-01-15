@@ -147,7 +147,7 @@ class HardwareBindingsConfig(BaseModel):
         ```
     """
 
-    version: float = Field(1.1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
 
     emission_filter_wheels: Dict[int, FilterWheelReference] = Field(
         default_factory=dict,

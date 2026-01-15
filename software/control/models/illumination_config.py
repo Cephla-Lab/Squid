@@ -97,7 +97,7 @@ class IlluminationChannelConfig(BaseModel):
         "D8",
     ]
 
-    version: float = Field(1.1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
     controller_port_mapping: Dict[str, int] = Field(
         default_factory=lambda: {
             # Laser ports

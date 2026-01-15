@@ -384,7 +384,7 @@ class TestAcquisitionConfig:
     """Tests for acquisition channel config models."""
 
     def test_camera_settings_required_fields(self):
-        """Test that exposure_time_ms and gain_mode are required (v1.1 schema)."""
+        """Test that exposure_time_ms and gain_mode are required (schema v1.0)."""
         # Should work with required fields
         settings = CameraSettings(
             exposure_time_ms=20.0,
@@ -399,9 +399,9 @@ class TestAcquisitionConfig:
             CameraSettings()
 
     def test_confocal_settings_defaults(self):
-        """Test confocal settings have correct defaults (v1.1 schema)."""
+        """Test confocal settings have correct defaults (schema v1.0)."""
         settings = ConfocalSettings()
-        # v1.1: filter wheel fields renamed to confocal_filter_wheel/confocal_filter_position
+        # v1.0: filter wheel fields renamed to confocal_filter_wheel/confocal_filter_position
         assert settings.confocal_filter_wheel is None
         assert settings.confocal_filter_position is None
         assert settings.illumination_iris is None
@@ -422,7 +422,7 @@ class TestAcquisitionConfig:
             IlluminationSettings()
 
     def test_acquisition_channel_creation(self):
-        """Test creating an acquisition channel (v1.1 schema)."""
+        """Test creating an acquisition channel (schema v1.0)."""
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
@@ -441,7 +441,7 @@ class TestAcquisitionConfig:
         assert channel.confocal_override is None
 
     def test_acquisition_channel_enabled_field(self):
-        """Test enabled field in acquisition channel (v1.1 schema)."""
+        """Test enabled field in acquisition channel (schema v1.0)."""
         # Default should be enabled=True
         channel = AcquisitionChannel(
             name="Test Channel",
@@ -482,7 +482,7 @@ class TestAcquisitionConfig:
         assert effective.enabled is False
 
     def test_acquisition_channel_with_confocal(self):
-        """Test acquisition channel with confocal settings (v1.1 schema)."""
+        """Test acquisition channel with confocal settings (schema v1.0)."""
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
@@ -500,7 +500,7 @@ class TestAcquisitionConfig:
         assert channel.confocal_settings.confocal_filter_position == 2
 
     def test_acquisition_channel_effective_settings_no_confocal(self):
-        """Test get_effective_settings without confocal mode (v1.1 schema)."""
+        """Test get_effective_settings without confocal mode (schema v1.0)."""
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
@@ -519,7 +519,7 @@ class TestAcquisitionConfig:
         assert effective.camera_settings.exposure_time_ms == 25.0
 
     def test_acquisition_channel_effective_settings_with_confocal(self):
-        """Test get_effective_settings with confocal mode (v1.1 schema)."""
+        """Test get_effective_settings with confocal mode (schema v1.0)."""
         channel = AcquisitionChannel(
             name="488 nm",
             display_color="#00FF00",
@@ -538,9 +538,9 @@ class TestAcquisitionConfig:
         assert effective.camera_settings.exposure_time_ms == 50.0
 
     def test_general_channel_config(self):
-        """Test GeneralChannelConfig creation and methods (v1.1 schema)."""
+        """Test GeneralChannelConfig creation and methods (schema v1.0)."""
         config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel A",
@@ -554,7 +554,7 @@ class TestAcquisitionConfig:
             ],
         )
 
-        assert config.version == 1.1
+        assert config.version == 1.0
         assert len(config.channels) == 1
 
         found = config.get_channel_by_name("Channel A")
@@ -564,9 +564,9 @@ class TestAcquisitionConfig:
         assert config.get_channel_by_name("Nonexistent") is None
 
     def test_objective_channel_config(self):
-        """Test ObjectiveChannelConfig creation (v1.1 schema)."""
+        """Test ObjectiveChannelConfig creation (schema v1.0)."""
         config = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel A",
@@ -580,7 +580,7 @@ class TestAcquisitionConfig:
             ],
         )
 
-        assert config.version == 1.1
+        assert config.version == 1.0
         found = config.get_channel_by_name("Channel A")
         assert found is not None
 
@@ -642,14 +642,14 @@ class TestLaserAFConfig:
 
 
 class TestMergeChannelConfigs:
-    """Tests for merge_channel_configs function (v1.1 schema)."""
+    """Tests for merge_channel_configs function (schema v1.0)."""
 
     def test_merge_basic(self):
-        """Test basic merge of general and objective configs (v1.1 schema)."""
+        """Test basic merge of general and objective configs (schema v1.0)."""
         from control.models import merge_channel_configs
 
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -671,7 +671,7 @@ class TestMergeChannelConfigs:
         )
 
         objective = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -698,7 +698,7 @@ class TestMergeChannelConfigs:
         # From general
         assert ch.illumination_settings.illumination_channel == "Fluorescence 488nm"
         assert ch.illumination_settings.z_offset_um == 5.0  # From general
-        assert ch.display_color == "#00FF00"  # v1.1: display_color at channel level
+        assert ch.display_color == "#00FF00"  # v1.0: display_color at channel level
         assert ch.filter_wheel == "Emission Wheel"
         assert ch.filter_position == 2
 
@@ -709,11 +709,11 @@ class TestMergeChannelConfigs:
         assert ch.camera_settings.pixel_format == "Mono12"
 
     def test_merge_no_objective_override(self):
-        """Test merge when objective has no override for a channel (v1.1 schema)."""
+        """Test merge when objective has no override for a channel (schema v1.0)."""
         from control.models import merge_channel_configs
 
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="405 nm",
@@ -730,7 +730,7 @@ class TestMergeChannelConfigs:
             ],
         )
 
-        objective = ObjectiveChannelConfig(version=1.1, channels=[])
+        objective = ObjectiveChannelConfig(version=1.0, channels=[])
 
         merged = merge_channel_configs(general, objective)
 
@@ -742,11 +742,11 @@ class TestMergeChannelConfigs:
         assert ch.camera_settings.exposure_time_ms == 20.0
 
     def test_merge_with_confocal_override(self):
-        """Test merge preserves confocal_override from objective (v1.1 schema)."""
+        """Test merge preserves confocal_override from objective (schema v1.0)."""
         from control.models import merge_channel_configs
 
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -765,7 +765,7 @@ class TestMergeChannelConfigs:
         )
 
         objective = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -800,14 +800,14 @@ class TestMergeChannelConfigs:
 
 
 class TestValidateIlluminationReferences:
-    """Tests for validate_illumination_references function (v1.1 schema)."""
+    """Tests for validate_illumination_references function (schema v1.0)."""
 
     def test_valid_references(self):
         """Test validation passes with valid references."""
         from control.models import validate_illumination_references
 
         ill_config = IlluminationChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 IlluminationChannel(
                     name="Fluorescence 488nm",
@@ -824,7 +824,7 @@ class TestValidateIlluminationReferences:
         )
 
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -855,7 +855,7 @@ class TestValidateIlluminationReferences:
         from control.models import validate_illumination_references
 
         ill_config = IlluminationChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 IlluminationChannel(
                     name="Fluorescence 488nm",
@@ -867,7 +867,7 @@ class TestValidateIlluminationReferences:
         )
 
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="561 nm",
@@ -887,14 +887,14 @@ class TestValidateIlluminationReferences:
 
 
 class TestGetIlluminationChannelNames:
-    """Tests for get_illumination_channel_names function (v1.1 schema)."""
+    """Tests for get_illumination_channel_names function (schema v1.0)."""
 
     def test_get_names(self):
         """Test extracting illumination channel names from config."""
         from control.models import get_illumination_channel_names
 
         config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="488 nm",
@@ -1052,7 +1052,7 @@ class TestGeneralChannelConfigGroups:
         from control.models import ChannelGroup, ChannelGroupEntry, SynchronizationMode
 
         config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="DAPI",
@@ -1086,7 +1086,7 @@ class TestGeneralChannelConfigGroups:
     def test_get_group_by_name_not_found(self):
         """Test returning None when group name not found."""
         config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Test",
@@ -1106,7 +1106,7 @@ class TestGeneralChannelConfigGroups:
         from control.models import ChannelGroup, ChannelGroupEntry
 
         config = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Ch1",

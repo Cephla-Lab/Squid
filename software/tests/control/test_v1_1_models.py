@@ -98,7 +98,7 @@ class TestCameraRegistryConfig:
     def test_empty_registry(self):
         """Test creating an empty camera registry."""
         registry = CameraRegistryConfig()
-        assert registry.version == 1.1
+        assert registry.version == 1.0
         assert registry.cameras == []
 
     def test_registry_with_single_camera_defaults(self):
@@ -393,7 +393,7 @@ class TestFilterWheelRegistryConfig:
     def test_empty_registry(self):
         """Test creating an empty filter wheel registry."""
         registry = FilterWheelRegistryConfig()
-        assert registry.version == 1.1
+        assert registry.version == 1.0
         assert registry.filter_wheels == []
 
     def test_single_wheel_defaults(self):
@@ -682,7 +682,7 @@ class TestHardwareBindingsConfig:
     def test_empty_bindings(self):
         """Test creating empty hardware bindings."""
         bindings = HardwareBindingsConfig()
-        assert bindings.version == 1.1
+        assert bindings.version == 1.0
         assert bindings.emission_filter_wheels == {}
 
     def test_single_camera_binding(self):
