@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools"))
 
+from control._def import SpotDetectionMode
 from migrate_acquisition_configs import (
     convert_channel_definitions_to_illumination_config,
     convert_laser_af_json_to_yaml,
@@ -169,7 +170,7 @@ class TestMigrationHelpers:
             assert config.pixel_to_um == 0.75
             assert config.has_reference is True
             assert config.laser_af_averaging_n == 5
-            assert config.spot_detection_mode == "dual_left"
+            assert config.spot_detection_mode == SpotDetectionMode.DUAL_LEFT
             assert config.reference_image == "base64data"
             assert config.reference_image_shape == [256, 1024]
             assert config.reference_image_dtype == "float32"

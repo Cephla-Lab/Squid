@@ -40,8 +40,8 @@ class LaserAFConfig(BaseModel):
     # Detection parameters
     laser_af_range: float = Field(100.0, description="Autofocus search range in um")
     laser_af_averaging_n: int = Field(3, description="Number of measurements to average")
-    spot_detection_mode: str = Field(
-        SpotDetectionMode.DUAL_RIGHT.value,
+    spot_detection_mode: SpotDetectionMode = Field(
+        SpotDetectionMode.DUAL_RIGHT,
         description="Spot detection mode (single, dual_left, dual_right)",
     )
     displacement_success_window_um: float = Field(1.0, description="Acceptable displacement window in um")
@@ -74,11 +74,11 @@ class LaserAFConfig(BaseModel):
 
     def get_spot_detection_mode(self) -> SpotDetectionMode:
         """Get the SpotDetectionMode enum value."""
-        return SpotDetectionMode(self.spot_detection_mode)
+        return self.spot_detection_mode
 
     def set_spot_detection_mode(self, mode: SpotDetectionMode) -> None:
         """Set the spot detection mode from enum."""
-        self.spot_detection_mode = mode.value
+        self.spot_detection_mode = mode
 
     @property
     def reference_image_cropped(self) -> Optional[np.ndarray]:
