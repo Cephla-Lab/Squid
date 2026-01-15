@@ -115,19 +115,21 @@ channels:
 
 ### cameras.yaml (Optional)
 
-Maps user-friendly camera names to hardware serial numbers. This enables users to select cameras by name in the UI rather than cryptic serial numbers. **Optional for single-camera systems.**
+Maps camera IDs to hardware serial numbers. **Optional for single-camera systems.**
 
 ```yaml
 version: 1.0
 
 cameras:
   # Primary imaging camera
-  - name: "Main Camera"
+  - id: 1                          # Camera ID (used in channel configs and hardware_bindings)
+    name: "Main Camera"            # User-friendly name for UI
     serial_number: "ABC12345"      # Camera serial number (from manufacturer)
     model: "Hamamatsu C15440"      # Optional: displayed in UI for reference
 
   # Secondary camera for simultaneous imaging
-  - name: "Side Camera"
+  - id: 2
+    name: "Side Camera"
     serial_number: "DEF67890"
     model: "Basler acA2040"
 ```
@@ -137,14 +139,16 @@ cameras:
 | Field | Description |
 |-------|-------------|
 | `version` | Schema version (`1.0`) |
-| `cameras[].name` | User-friendly name (must be unique) |
+| `cameras[].id` | Camera ID (must be unique, used in channel configs) |
+| `cameras[].name` | User-friendly name for UI (must be unique) |
 | `cameras[].serial_number` | Hardware serial number (must be unique) |
 | `cameras[].model` | Optional: camera model for reference |
 
 **Usage:**
 - If `cameras.yaml` doesn't exist, the system assumes single-camera mode
-- Camera names appear in dropdowns when configuring channels
-- Multi-camera systems require this file to map channels to specific cameras
+- Single camera: `id` and `name` are optional (defaults applied)
+- Multi-camera: `id` and `name` are required for all cameras
+- Channel configs use the `id` field to reference cameras (e.g., `camera: 1`)
 
 ### filter_wheels.yaml (Optional)
 
@@ -304,9 +308,9 @@ channels:
   - name: Fluorescence 488 nm Ex
     enabled: true
     display_color: '#1FFF00'        # Green for 488nm
-    camera: null                    # null = auto-use single camera
-    filter_wheel: auto              # "auto" = single wheel, auto-selected
-    filter_position: 2              # Filter position for this channel
+    camera: null                    # null = single camera, or int ID for multi-camera
+    filter_wheel: auto              # "auto" = use camera's hardware binding
+    filter_position: 2              # Position in filter wheel (resolved via hardware_bindings)
     z_offset_um: 0.0                # Z offset applied when switching to this channel
     illumination_settings:
       illumination_channel: Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
@@ -322,6 +326,15 @@ channels:
       illumination_channel: BF LED matrix full
 ```
 
+**Camera field:**
+- Single camera: `camera: null` (no `cameras.yaml` needed)
+- Multi-camera: `camera: 1` or `camera: 2` (integer ID from `cameras.yaml`)
+
+**Filter wheel resolution:**
+- `filter_wheel: auto` uses the camera's bound wheel from `hardware_bindings.yaml`
+- Override with specific wheel name if needed (e.g., `filter_wheel: "Emission Wheel"`)
+- `filter_position` specifies which slot in the resolved wheel
+
 **Fields owned by general.yaml:**
 
 | Field | Description |
@@ -329,8 +342,8 @@ channels:
 | `name` | Channel name (unique identifier) |
 | `enabled` | Whether channel is available for acquisition |
 | `display_color` | Hex color for UI visualization |
-| `camera` | Camera name (null = auto-use single camera) |
-| `filter_wheel` | Filter wheel name ("auto" for single wheel, null for none) |
+| `camera` | Camera ID (null = single camera, int for multi-camera) |
+| `filter_wheel` | "auto" (use hardware binding) or wheel name override |
 | `filter_position` | Filter position in the wheel |
 | `z_offset_um` | Z offset applied when switching to this channel |
 | `illumination_channel` | Which illumination channel to use (references machine config) |
@@ -344,11 +357,14 @@ version: 1.0
 channels:
   - name: Fluorescence 488 nm Ex
     illumination_settings:
-      intensity: 35.0   # Higher intensity for 20x
+      intensity: 35.0                  # Higher intensity for 20x
     camera_settings:
       exposure_time_ms: 50.0           # Longer exposure for 20x
       gain_mode: 5.0                   # Lower gain for 20x
-    confocal_override: null            # Only if confocal present
+    confocal_override:                 # Only if confocal present
+      confocal_settings:
+        illumination_iris: 50.0        # Iris aperture (0-100%)
+        emission_iris: 75.0
 ```
 
 **Fields owned by objective files:**
@@ -359,7 +375,7 @@ channels:
 | `exposure_time_ms` | Camera exposure time |
 | `gain_mode` | Camera analog gain |
 | `pixel_format` | Camera pixel format |
-| `confocal_override` | Settings for confocal mode |
+| `confocal_override` | Confocal mode settings (iris aperture) |
 
 ### Merge Logic
 
@@ -370,39 +386,40 @@ When loading channels for an objective, the system merges `general.yaml` with `{
 | `name` | general | Channel identity |
 | `illumination_channel` | general | Hardware reference doesn't change |
 | `display_color` | general | Consistent UI colors |
+| `camera` | general | Camera assignment (ID) |
 | `z_offset_um` | general | Usually constant per channel |
-| `filter_wheel, filter_position` | general | Filter setup |
+| `filter_wheel, filter_position` | general | Filter setup (wheel resolved via hardware_bindings) |
 | `intensity` | objective | Varies by magnification |
 | `exposure_time_ms` | objective | Varies by magnification |
 | `gain_mode` | objective | Varies by magnification |
 | `pixel_format` | objective | May vary by objective |
-| `confocal_override` | objective | Objective-specific confocal tuning |
+| `confocal_override` | objective | Objective-specific iris settings |
 
 **Merge process:**
 1. Start with channel from `general.yaml`
 2. Find matching channel in `{objective}.yaml` by name
 3. Replace objective-owned fields with objective values
-4. If `confocal_mode` is active, apply `confocal_override`
+4. If `confocal_mode` is active, apply `confocal_override` (iris settings)
 
 ### Confocal Override
 
-When the system has a confocal unit and confocal mode is enabled, the `confocal_override` section replaces base settings:
+When the system has a confocal unit and confocal mode is enabled, the `confocal_override` section can override base settings:
 
 ```yaml
 - name: Fluorescence 488 nm Ex
   # ... base settings ...
   confocal_override:
     illumination_settings:
-      intensity: 50.0   # Higher intensity for confocal
+      intensity: 50.0              # Higher intensity for confocal
     camera_settings:
-      exposure_time_ms: 100.0        # Longer exposure for confocal
+      exposure_time_ms: 100.0      # Longer exposure for confocal
       gain_mode: 2.0
     confocal_settings:
-      confocal_filter_wheel: "Confocal"
-      confocal_filter_position: 2  # Different filter for confocal
-      illumination_iris: 50.0
-      emission_iris: 50.0
+      illumination_iris: 50.0      # Confocal iris aperture (0-100%)
+      emission_iris: 75.0
 ```
+
+Note: Filter wheel selection is resolved via `hardware_bindings.yaml` based on camera ID. The confocal's filter wheel is used when the camera is bound to a confocal wheel reference (e.g., `confocal.1`).
 
 ### laser_af_configs/{objective}.yaml
 
