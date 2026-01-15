@@ -457,6 +457,7 @@ class Microcontroller:
             raise ValueError("You must pass in an AbstractCephlaSerial device for the microcontroller instance to use.")
 
         self._serial = serial_device
+        self._is_simulated = isinstance(serial_device, SimSerial)
 
         self.tx_buffer_length = MicrocontrollerDef.CMD_LENGTH
         self.rx_buffer_length = MicrocontrollerDef.MSG_LENGTH
@@ -515,6 +516,8 @@ class Microcontroller:
             time.sleep(0.5)
 
     def _warn_if_reads_stale(self):
+        if self._is_simulated:
+            return
         now = time.time()
         last_read = float(
             self._last_successful_read_time
