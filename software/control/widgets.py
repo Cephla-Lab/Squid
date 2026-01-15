@@ -10,6 +10,8 @@ from typing import Optional, TYPE_CHECKING
 
 import psutil
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
 
@@ -527,7 +529,8 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
             self.config.write(configfile)
         try:
             self.main_window.close()
-        except:
+        except (AttributeError, RuntimeError):
+            # main_window may be None or already closed
             pass
         self.close()
 
@@ -1327,7 +1330,8 @@ class PreferencesDialog(QDialog):
         if not self.config.has_section(section):
             self.config.add_section(section)
 
-    def _apply_settings(self):
+    def _apply_settings(self) -> bool:
+        """Apply settings to config file. Returns True on success, False on failure."""
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -1466,7 +1470,7 @@ class PreferencesDialog(QDialog):
                     f"System error: {e}"
                 ),
             )
-            return
+            return False
 
         # Update runtime values for settings that can be applied live
         try:
@@ -1475,6 +1479,7 @@ class PreferencesDialog(QDialog):
             self._log.exception("Failed to apply live settings")
 
         self.signal_config_changed.emit()
+        return True
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
@@ -1858,7 +1863,8 @@ class PreferencesDialog(QDialog):
 
         # For single change, save directly without confirmation
         if len(changes) == 1:
-            self._apply_settings()
+            if not self._apply_settings():
+                return  # Save failed, dialog stays open
             if requires_restart:
                 QMessageBox.information(
                     self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
@@ -1909,8 +1915,9 @@ class PreferencesDialog(QDialog):
         layout.addLayout(button_layout)
 
         if dialog.exec_() == QDialog.Accepted:
-            self._apply_settings()
-            self.accept()
+            if self._apply_settings():
+                self.accept()
+            # If save failed, dialog stays open (error already shown)
 
 
 class StageUtils(QDialog):
@@ -5246,6 +5253,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
 
+    def refresh_channel_list(self):
+        """Refresh the channel list after configuration changes."""
+        # Remember currently selected channels
+        selected_names = [item.text() for item in self.list_configurations.selectedItems()]
+
+        # Clear and repopulate
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        for config in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective):
+            self.list_configurations.addItem(config.name)
+
+        # Restore selection where possible
+        for i in range(self.list_configurations.count()):
+            item = self.list_configurations.item(i)
+            if item.text() in selected_names:
+                item.setSelected(True)
+        self.list_configurations.blockSignals(False)
+
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
@@ -7807,6 +7832,24 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
+
+    def refresh_channel_list(self):
+        """Refresh the channel list after configuration changes."""
+        # Remember currently selected channels
+        selected_names = [item.text() for item in self.list_configurations.selectedItems()]
+
+        # Clear and repopulate
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
+            self.list_configurations.addItem(config.name)
+
+        # Restore selection where possible
+        for i in range(self.list_configurations.count()):
+            item = self.list_configurations.item(i)
+            if item.text() in selected_names:
+                item.setSelected(True)
+        self.list_configurations.blockSignals(False)
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -14791,3 +14834,860 @@ class BackpressureMonitorWidget(QWidget):
             self._log.debug(f"Error stopping monitoring on close: {e}")
 
         super().closeEvent(event)
+
+
+def _is_filter_wheel_enabled() -> bool:
+    """Check if filter wheel is enabled in .ini configuration."""
+    return getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+
+
+def _populate_filter_positions_for_combo(
+    combo: QComboBox,
+    channel_wheel: Optional[str],
+    config_repo,
+    current_position: Optional[int] = None,
+) -> None:
+    """Populate filter position dropdown, auto-resolving single-wheel systems.
+
+    Args:
+        combo: The QComboBox to populate
+        channel_wheel: Raw filter_wheel value from channel (None, "auto", or wheel name)
+        config_repo: ConfigRepository instance
+        current_position: Position to select (None for first position)
+    """
+    combo.clear()
+
+    registry = config_repo.get_filter_wheel_registry()
+    has_registry = registry and registry.filter_wheels
+
+    # No filter wheel system at all
+    if not has_registry and not _is_filter_wheel_enabled():
+        combo.addItem("N/A", None)
+        combo.setEnabled(False)
+        return
+
+    # Resolve wheel: explicit name, or auto-select if single wheel
+    wheel = None
+    if channel_wheel and channel_wheel not in ("(None)", "auto"):
+        # Explicit wheel name specified
+        wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
+        if not wheel and registry:
+            logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
+    elif has_registry and len(registry.filter_wheels) == 1:
+        # Single wheel system - auto-select
+        wheel = registry.get_first_wheel()
+
+    if not wheel:
+        # No wheel resolved - check if we should show default positions or N/A
+        if has_registry or _is_filter_wheel_enabled():
+            # Filter wheel exists but no selection - show default positions
+            combo.setEnabled(True)
+            for pos in range(1, 9):
+                combo.addItem(f"Position {pos}", pos)
+        else:
+            combo.addItem("N/A", None)
+            combo.setEnabled(False)
+            return
+    else:
+        # Populate from wheel's actual positions
+        combo.setEnabled(True)
+        for pos, filter_name in sorted(wheel.positions.items()):
+            combo.addItem(f"{pos}: {filter_name}", pos)
+
+    # Select current position, or default to first
+    if current_position is not None:
+        for i in range(combo.count()):
+            if combo.itemData(i) == current_position:
+                combo.setCurrentIndex(i)
+                return
+    combo.setCurrentIndex(0)
+
+
+class AcquisitionChannelConfiguratorDialog(QDialog):
+    """Dialog for editing acquisition channel configurations.
+
+    Edits user_profiles/{profile}/channel_configs/general.yaml.
+    Unlike IlluminationChannelConfiguratorDialog (hardware), this edits
+    user-facing channel settings like enabled state, display color, camera,
+    and filter wheel assignments.
+    """
+
+    signal_channels_updated = Signal()
+
+    # Column indices for the channels table
+    COL_ENABLED = 0
+    COL_NAME = 1
+    COL_ILLUMINATION = 2
+    COL_CAMERA = 3
+    COL_FILTER_WHEEL = 4
+    COL_FILTER_POSITION = 5
+    COL_DISPLAY_COLOR = 6
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.general_config = None
+        self.illumination_config = None
+        self.setWindowTitle("Acquisition Channel Configuration")
+        self.setMinimumSize(700, 400)
+        self._setup_ui()
+        self._load_channels()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Info label
+        info_label = QLabel(
+            "Configure acquisition channels for the current profile. "
+            "Changes affect how channels appear in the live view and acquisition panels."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # Table for acquisition channels
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(
+            ["Enabled", "Name", "Illumination", "Camera", "Filter Wheel", "Filter", "Color"]
+        )
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.COL_DISPLAY_COLOR, QHeaderView.Fixed)
+        self.table.setColumnWidth(self.COL_DISPLAY_COLOR, 60)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        layout.addWidget(self.table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        self.btn_add = QPushButton("Add Channel")
+        self.btn_add.setAutoDefault(False)
+        self.btn_add.setDefault(False)
+        self.btn_add.clicked.connect(self._add_channel)
+        button_layout.addWidget(self.btn_add)
+
+        self.btn_remove = QPushButton("Remove Channel")
+        self.btn_remove.setAutoDefault(False)
+        self.btn_remove.setDefault(False)
+        self.btn_remove.clicked.connect(self._remove_channel)
+        button_layout.addWidget(self.btn_remove)
+
+        self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.setAutoDefault(False)
+        self.btn_move_up.clicked.connect(self._move_up)
+        button_layout.addWidget(self.btn_move_up)
+
+        self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.setAutoDefault(False)
+        self.btn_move_down.clicked.connect(self._move_down)
+        button_layout.addWidget(self.btn_move_down)
+
+        button_layout.addSpacing(20)
+
+        self.btn_export = QPushButton("Export...")
+        self.btn_export.setAutoDefault(False)
+        self.btn_export.clicked.connect(self._export_config)
+        button_layout.addWidget(self.btn_export)
+
+        self.btn_import = QPushButton("Import...")
+        self.btn_import.setAutoDefault(False)
+        self.btn_import.clicked.connect(self._import_config)
+        button_layout.addWidget(self.btn_import)
+
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.setAutoDefault(False)
+        self.btn_save.clicked.connect(self._save_changes)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setAutoDefault(False)
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _set_buttons_enabled(self, enabled: bool):
+        """Enable or disable action buttons based on config availability."""
+        self.btn_add.setEnabled(enabled)
+        self.btn_remove.setEnabled(enabled)
+        self.btn_move_up.setEnabled(enabled)
+        self.btn_move_down.setEnabled(enabled)
+        self.btn_export.setEnabled(enabled)
+        self.btn_save.setEnabled(enabled)
+        # Import is always enabled since it can create a new config
+        # Cancel is always enabled
+
+    def _load_channels(self):
+        """Load acquisition channels from general.yaml into the table."""
+        self.general_config = self.config_repo.get_general_config()
+        self.illumination_config = self.config_repo.get_illumination_config()
+
+        if not self.general_config:
+            self._log.warning("No general config found for current profile")
+            QMessageBox.warning(
+                self,
+                "No Configuration",
+                "No channel configuration found for the current profile.\n"
+                "Please ensure a profile is selected and has been initialized.",
+            )
+            # Disable buttons when no config is loaded
+            self._set_buttons_enabled(False)
+            return
+
+        # Enable buttons when config is loaded
+        self._set_buttons_enabled(True)
+
+        # Determine column visibility
+        camera_names = self.config_repo.get_camera_names()
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        has_any_wheel = wheel_names or _is_filter_wheel_enabled()
+
+        # Hide Camera column if single camera (0 or 1)
+        if len(camera_names) <= 1:
+            self.table.setColumnHidden(self.COL_CAMERA, True)
+
+        # Hide Filter Wheel column if single wheel (auto-assigned)
+        if len(wheel_names) <= 1:
+            self.table.setColumnHidden(self.COL_FILTER_WHEEL, True)
+
+        # Hide Filter Position column only if NO wheels at all
+        if not has_any_wheel:
+            self.table.setColumnHidden(self.COL_FILTER_POSITION, True)
+
+        self.table.setRowCount(len(self.general_config.channels))
+
+        for row, channel in enumerate(self.general_config.channels):
+            self._populate_row(row, channel)
+
+    def _populate_row(self, row: int, channel):
+        """Populate a table row with channel data."""
+        from control.models import AcquisitionChannel
+
+        # Enabled checkbox
+        checkbox_widget = QWidget()
+        checkbox_layout = QHBoxLayout(checkbox_widget)
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        checkbox_layout.setAlignment(Qt.AlignCenter)
+        checkbox = QCheckBox()
+        enabled = channel.enabled if hasattr(channel, "enabled") else True
+        checkbox.setChecked(enabled)
+        checkbox_layout.addWidget(checkbox)
+        self.table.setCellWidget(row, self.COL_ENABLED, checkbox_widget)
+
+        # Name (editable text)
+        name_item = QTableWidgetItem(channel.name)
+        self.table.setItem(row, self.COL_NAME, name_item)
+
+        # Illumination dropdown
+        illum_combo = QComboBox()
+        if self.illumination_config:
+            illum_names = [ch.name for ch in self.illumination_config.channels]
+            illum_combo.addItems(illum_names)
+            # Set current illumination
+            current_illum = channel.illumination_settings.illumination_channel
+            if current_illum and current_illum in illum_names:
+                illum_combo.setCurrentText(current_illum)
+        self.table.setCellWidget(row, self.COL_ILLUMINATION, illum_combo)
+
+        # Camera dropdown
+        camera_combo = QComboBox()
+        camera_combo.addItem("(None)")
+        camera_names = self.config_repo.get_camera_names()
+        camera_combo.addItems(camera_names)
+        if channel.camera and channel.camera in camera_names:
+            camera_combo.setCurrentText(channel.camera)
+        self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
+
+        # Filter wheel dropdown
+        wheel_combo = QComboBox()
+        wheel_combo.addItem("(None)")
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        wheel_combo.addItems(wheel_names)
+        # Set selection if channel has explicit wheel name
+        if channel.filter_wheel and channel.filter_wheel in wheel_names:
+            wheel_combo.setCurrentText(channel.filter_wheel)
+        wheel_combo.currentTextChanged.connect(lambda text, r=row: self._on_wheel_changed(r, text))
+        self.table.setCellWidget(row, self.COL_FILTER_WHEEL, wheel_combo)
+
+        # Filter position dropdown - function auto-resolves single-wheel systems
+        position_combo = QComboBox()
+        _populate_filter_positions_for_combo(
+            position_combo, channel.filter_wheel, self.config_repo, channel.filter_position
+        )
+        self.table.setCellWidget(row, self.COL_FILTER_POSITION, position_combo)
+
+        # Display color (color picker button - fills cell width)
+        color = channel.display_color if hasattr(channel, "display_color") else "#FFFFFF"
+        color_btn = QPushButton()
+        color_btn.setStyleSheet(f"background-color: {color};")
+        color_btn.setProperty("color", color)
+        color_btn.clicked.connect(lambda _checked, r=row: self._pick_color(r))
+        self.table.setCellWidget(row, self.COL_DISPLAY_COLOR, color_btn)
+
+    def _on_wheel_changed(self, row: int, wheel_name: str):
+        """Update filter position options when wheel selection changes."""
+        position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+        if position_combo:
+            _populate_filter_positions_for_combo(position_combo, wheel_name, self.config_repo)
+
+    def _pick_color(self, row: int):
+        """Open color picker for a row."""
+        color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
+        current_color = QColor(color_btn.property("color") if color_btn else "#FFFFFF")
+        color = QColorDialog.getColor(current_color, self, "Select Display Color")
+        if color.isValid():
+            color_btn.setStyleSheet(f"background-color: {color.name()};")
+            color_btn.setProperty("color", color.name())
+
+    def _add_channel(self):
+        """Add a new acquisition channel."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot add channel.")
+            return
+
+        dialog = AddAcquisitionChannelDialog(self.config_repo, self)
+        if dialog.exec_() == QDialog.Accepted:
+            channel = dialog.get_channel()
+            if channel:
+                self.general_config.channels.append(channel)
+                # Reload table
+                self._load_channels()
+
+    def _remove_channel(self):
+        """Remove selected channel."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            return
+
+        name_item = self.table.item(current_row, self.COL_NAME)
+        if name_item:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                f"Remove channel '{name_item.text()}'?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes and current_row < len(self.general_config.channels):
+                del self.general_config.channels[current_row]
+                self._load_channels()
+
+    def _move_up(self):
+        """Move selected channel up."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row <= 0:
+            return
+
+        channels = self.general_config.channels
+        channels[current_row - 1], channels[current_row] = channels[current_row], channels[current_row - 1]
+        self._load_channels()
+        self.table.selectRow(current_row - 1)
+
+    def _move_down(self):
+        """Move selected channel down."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row < 0 or current_row >= len(self.general_config.channels) - 1:
+            return
+
+        channels = self.general_config.channels
+        channels[current_row], channels[current_row + 1] = channels[current_row + 1], channels[current_row]
+        self._load_channels()
+        self.table.selectRow(current_row + 1)
+
+    def _save_changes(self):
+        """Save changes to general.yaml."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot save.")
+            return
+
+        # Sync table data to config object
+        self._sync_table_to_config()
+
+        # Validate filter wheel/position consistency
+        warnings = []
+        for channel in self.general_config.channels:
+            if channel.filter_wheel is not None and channel.filter_position is None:
+                warnings.append(f"Channel '{channel.name}' has filter wheel but no position selected")
+                self._log.warning(warnings[-1])
+
+        if warnings:
+            reply = QMessageBox.warning(
+                self,
+                "Configuration Warning",
+                "Some channels have incomplete filter settings:\n\n" + "\n".join(warnings) + "\n\nSave anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Save to YAML file
+        try:
+            self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
+            return
+        except Exception as e:
+            self._log.error(f"Unexpected error saving channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Failed to save configuration:\n{e}")
+            return
+
+        self.signal_channels_updated.emit()
+        self.accept()
+
+    def _export_config(self):
+        """Export current channel configuration to a YAML file."""
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get save file path
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Channel Configuration",
+            "channel_config.yaml",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Build current config from table (same logic as _save_changes but without saving)
+        self._sync_table_to_config()
+
+        if not self.general_config:
+            QMessageBox.warning(self, "Export Failed", "No configuration loaded to export.")
+            return
+
+        # Export to YAML
+        try:
+            data = self.general_config.model_dump()
+            with open(file_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            QMessageBox.information(self, "Export Successful", f"Configuration exported to:\n{file_path}")
+        except (PermissionError, OSError) as e:
+            self._log.warning(f"Failed to write export file {file_path}: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Cannot write to file:\n{e}")
+        except Exception as e:
+            self._log.error(f"Unexpected error during export: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Unexpected error:\n{e}")
+
+    def _import_config(self):
+        """Import channel configuration from a YAML file."""
+        from pydantic import ValidationError
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get file path
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Channel Configuration",
+            "",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Load and validate
+        try:
+            with open(file_path, "r") as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                raise ValueError("File is empty or contains no valid YAML content")
+            imported_config = GeneralChannelConfig.model_validate(data)
+        except (PermissionError, FileNotFoundError) as e:
+            self._log.warning(f"Cannot read import file {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Cannot read file:\n{e}")
+            return
+        except yaml.YAMLError as e:
+            self._log.warning(f"Invalid YAML in {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"File contains invalid YAML:\n{e}")
+            return
+        except (ValidationError, ValueError) as e:
+            self._log.warning(f"Config validation failed for {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Configuration format error:\n{e}")
+            return
+
+        # Replace current config
+        self.general_config = imported_config
+
+        # Refresh the table
+        self.table.setRowCount(0)
+        self._load_channels()
+
+        QMessageBox.information(
+            self, "Import Successful", f"Imported {len(imported_config.channels)} channels from:\n{file_path}"
+        )
+
+    def _sync_table_to_config(self):
+        """Sync table data back to self.general_config without saving to disk."""
+        if self.general_config is None:
+            return
+
+        # Use bounds checking to handle potential table/config mismatch
+        num_rows = min(self.table.rowCount(), len(self.general_config.channels))
+        for row in range(num_rows):
+            channel = self.general_config.channels[row]
+
+            # Enabled
+            checkbox_widget = self.table.cellWidget(row, self.COL_ENABLED)
+            if checkbox_widget:
+                checkbox = checkbox_widget.findChild(QCheckBox)
+                if checkbox:
+                    channel.enabled = checkbox.isChecked()
+
+            # Name
+            name_item = self.table.item(row, self.COL_NAME)
+            if name_item:
+                channel.name = name_item.text().strip()
+
+            # Illumination
+            illum_combo = self.table.cellWidget(row, self.COL_ILLUMINATION)
+            if illum_combo and isinstance(illum_combo, QComboBox):
+                channel.illumination_settings.illumination_channel = illum_combo.currentText()
+
+            # Camera
+            camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
+            if camera_combo and isinstance(camera_combo, QComboBox):
+                camera_text = camera_combo.currentText()
+                channel.camera = camera_text if camera_text != "(None)" else None
+
+            # Filter wheel: None = no selection, else explicit wheel name
+            wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
+            if wheel_combo and isinstance(wheel_combo, QComboBox):
+                wheel_text = wheel_combo.currentText()
+                channel.filter_wheel = wheel_text if wheel_text != "(None)" else None
+
+            # Filter position
+            position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+            if position_combo and isinstance(position_combo, QComboBox):
+                channel.filter_position = position_combo.currentData()
+
+            # Display color
+            color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
+            if color_btn:
+                channel.display_color = color_btn.property("color") or "#FFFFFF"
+
+
+class AddAcquisitionChannelDialog(QDialog):
+    """Dialog for adding a new acquisition channel."""
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self.config_repo = config_repo
+        self._display_color = "#FFFFFF"
+        self.setWindowTitle("Add Acquisition Channel")
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QFormLayout(self)
+
+        # Name
+        self.name_edit = QLineEdit()
+        layout.addRow("Name:", self.name_edit)
+
+        # Illumination source dropdown
+        self.illumination_combo = QComboBox()
+        illum_config = self.config_repo.get_illumination_config()
+        if illum_config:
+            self.illumination_combo.addItems([ch.name for ch in illum_config.channels])
+        layout.addRow("Illumination:", self.illumination_combo)
+
+        # Camera dropdown (hidden if single camera - 0 or 1 cameras)
+        camera_names = self.config_repo.get_camera_names()
+        if len(camera_names) > 1:
+            self.camera_combo = QComboBox()
+            self.camera_combo.addItem("(None)")
+            self.camera_combo.addItems(camera_names)
+            layout.addRow("Camera:", self.camera_combo)
+        else:
+            self.camera_combo = None
+
+        # Filter wheel dropdown (hidden if single wheel - 0 or 1 wheels)
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        has_any_wheel = wheel_names or _is_filter_wheel_enabled()
+
+        # Show wheel dropdown only for multi-wheel systems
+        if len(wheel_names) > 1:
+            self.wheel_combo = QComboBox()
+            self.wheel_combo.addItem("(None)")
+            self.wheel_combo.addItems(wheel_names)
+            self.wheel_combo.currentTextChanged.connect(self._on_wheel_changed)
+            layout.addRow("Filter Wheel:", self.wheel_combo)
+        else:
+            self.wheel_combo = None
+
+        # Filter position dropdown (shown if any filter wheels exist)
+        if has_any_wheel:
+            self.position_combo = QComboBox()
+            # Populate positions - function auto-resolves single-wheel systems
+            _populate_filter_positions_for_combo(self.position_combo, None, self.config_repo)
+            layout.addRow("Filter Position:", self.position_combo)
+        else:
+            self.position_combo = None
+
+        # Display color
+        self.color_btn = QPushButton()
+        self.color_btn.setFixedSize(60, 25)
+        self.color_btn.setStyleSheet(f"background-color: {self._display_color}; border: 1px solid #888;")
+        self.color_btn.clicked.connect(self._pick_color)
+        layout.addRow("Display Color:", self.color_btn)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.btn_ok = QPushButton("Add")
+        self.btn_ok.clicked.connect(self._validate_and_accept)
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_ok)
+        button_layout.addWidget(self.btn_cancel)
+        layout.addRow(button_layout)
+
+    def _on_wheel_changed(self, wheel_name: str):
+        """Update filter position options when wheel selection changes."""
+        if self.position_combo is not None:
+            _populate_filter_positions_for_combo(self.position_combo, wheel_name, self.config_repo)
+
+    def _pick_color(self):
+        """Open color picker."""
+        color = QColorDialog.getColor(QColor(self._display_color), self, "Select Display Color")
+        if color.isValid():
+            self._display_color = color.name()
+            self.color_btn.setStyleSheet(f"background-color: {self._display_color}; border: 1px solid #888;")
+
+    def _validate_and_accept(self):
+        """Validate input before accepting."""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
+            return
+
+        # Check for duplicate names
+        general_config = self.config_repo.get_general_config()
+        if general_config:
+            existing_names = [ch.name for ch in general_config.channels]
+            if name in existing_names:
+                QMessageBox.warning(self, "Validation Error", f"Channel '{name}' already exists.")
+                return
+
+        self.accept()
+
+    def get_channel(self):
+        """Build AcquisitionChannel from dialog inputs."""
+        from control.models import (
+            AcquisitionChannel,
+            CameraSettings,
+            IlluminationSettings,
+        )
+
+        name = self.name_edit.text().strip()
+        illum_name = self.illumination_combo.currentText()
+
+        # Camera
+        camera = None
+        if self.camera_combo:
+            camera_text = self.camera_combo.currentText()
+            camera = camera_text if camera_text != "(None)" else None
+
+        # Filter wheel and position
+        filter_wheel = None
+        if self.wheel_combo:
+            wheel_text = self.wheel_combo.currentText()
+            filter_wheel = wheel_text if wheel_text != "(None)" else None
+        filter_position = self.position_combo.currentData() if self.position_combo else None
+
+        return AcquisitionChannel(
+            name=name,
+            enabled=True,
+            display_color=self._display_color,
+            camera=camera,
+            filter_wheel=filter_wheel,
+            filter_position=filter_position,
+            illumination_settings=IlluminationSettings(
+                illumination_channel=illum_name,
+                intensity=20.0,
+                z_offset_um=0.0,
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=20.0,
+                gain_mode=10.0,
+                pixel_format=None,
+            ),
+        )
+
+
+class FilterWheelConfiguratorDialog(QDialog):
+    """Dialog for configuring filter wheel position names.
+
+    Edits machine_configs/filter_wheels.yaml to define filter wheels
+    and their position-to-name mappings.
+    """
+
+    signal_config_updated = Signal()
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.registry = None
+        self.setWindowTitle("Filter Wheel Configuration")
+        self.setMinimumSize(500, 400)
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instructions = QLabel(
+            "Configure filter wheel position names. Each position can have a descriptive name\n"
+            "(e.g., 'DAPI emission', 'GFP emission') that will appear in channel configuration."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Wheel selector (hidden for single-wheel systems)
+        self.wheel_layout = QHBoxLayout()
+        self.wheel_label = QLabel("Filter Wheel:")
+        self.wheel_layout.addWidget(self.wheel_label)
+        self.wheel_combo = QComboBox()
+        self.wheel_combo.currentIndexChanged.connect(self._on_wheel_selected)
+        self.wheel_layout.addWidget(self.wheel_combo, 1)
+        layout.addLayout(self.wheel_layout)
+
+        # Positions table
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Position", "Filter Name"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table)
+
+        # Save/Cancel buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_config)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _load_config(self):
+        """Load filter wheel registry from config."""
+        from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition
+
+        self.registry = self.config_repo.get_filter_wheel_registry()
+
+        # Check if filter wheel is enabled in .ini
+        filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+
+        # If no registry exists but filter wheel is enabled, create one with an unnamed wheel
+        if self.registry is None:
+            if filter_wheel_enabled:
+                # Create unnamed wheel with default positions
+                default_positions = {i: f"Position {i}" for i in range(1, 9)}
+                self.registry = FilterWheelRegistryConfig(
+                    filter_wheels=[FilterWheelDefinition(positions=default_positions)]
+                )
+            else:
+                self.registry = FilterWheelRegistryConfig(filter_wheels=[])
+
+        # For single wheel systems: remove name if present (migrate from old "Emission" name)
+        is_single_wheel = len(self.registry.filter_wheels) == 1
+        if is_single_wheel:
+            wheel = self.registry.filter_wheels[0]
+            if wheel.name is not None or wheel.id is not None:
+                self.registry.filter_wheels[0] = FilterWheelDefinition(positions=wheel.positions)
+
+        # Hide wheel selector for single-wheel systems
+        self.wheel_label.setVisible(not is_single_wheel)
+        self.wheel_combo.setVisible(not is_single_wheel)
+
+        # Populate wheel combo (for multi-wheel systems)
+        self.wheel_combo.clear()
+        for wheel in self.registry.filter_wheels:
+            display_name = wheel.name or "(Unnamed)"
+            self.wheel_combo.addItem(display_name, wheel)
+
+        # Select first wheel and load its positions
+        if self.wheel_combo.count() > 0:
+            self.wheel_combo.setCurrentIndex(0)
+            self._on_wheel_selected(0)
+        else:
+            self.table.setRowCount(0)
+
+    def _on_wheel_selected(self, index):
+        """Load positions for selected wheel into table."""
+        self.table.setRowCount(0)
+
+        if index < 0:
+            return
+
+        wheel = self.wheel_combo.itemData(index)
+        if wheel is None:
+            return
+
+        # Populate table with positions
+        for pos in sorted(wheel.positions.keys()):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # Position number (read-only)
+            pos_item = QTableWidgetItem(str(pos))
+            pos_item.setFlags(pos_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, pos_item)
+
+            # Filter name (editable)
+            name_item = QTableWidgetItem(wheel.positions[pos])
+            self.table.setItem(row, 1, name_item)
+
+    def _save_config(self):
+        """Save filter wheel configuration to YAML file."""
+        import yaml
+
+        # Sync table data back to current wheel
+        index = self.wheel_combo.currentIndex()
+        if index >= 0:
+            wheel = self.wheel_combo.itemData(index)
+            if wheel:
+                wheel.positions.clear()
+                for row in range(self.table.rowCount()):
+                    pos_item = self.table.item(row, 0)
+                    name_item = self.table.item(row, 1)
+                    if pos_item and name_item:
+                        pos = int(pos_item.text())
+                        name = name_item.text().strip() or f"Position {pos}"
+                        wheel.positions[pos] = name
+
+        # Save to file using repository (ensures consistent serialization)
+        try:
+            self.config_repo.save_filter_wheel_registry(self.registry)
+            self.signal_config_updated.emit()
+            QMessageBox.information(self, "Saved", "Filter wheel configuration saved.")
+            self.accept()
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Cannot write configuration file:\n{e}")
+        except yaml.YAMLError as e:
+            self._log.error(f"Failed to serialize filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Configuration data could not be serialized:\n{e}")
+        except Exception as e:
+            self._log.exception(f"Unexpected error saving filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")

@@ -6,10 +6,13 @@ machine-specific (not user-specific). They map illumination sources to
 controller ports and serial command codes.
 """
 
+import logging
 from enum import Enum
 from typing import ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class IlluminationType(str, Enum):
@@ -28,14 +31,44 @@ class IlluminationChannel(BaseModel):
     Controller ports:
     - D1-D5: Laser channels (epi-illumination)
     - USB1-USB8: LED matrix patterns (transillumination)
+
+    Excitation filter wheel (optional):
+    - Most systems don't have an excitation filter wheel
+    - If present, the excitation filter is paired with the illumination channel
+    - If single excitation wheel: only excitation_filter_position needed
+    - If multiple excitation wheels: excitation_filter_wheel_id required
     """
 
-    name: str = Field(..., description="Unique name for this illumination channel")
+    name: str = Field(..., min_length=1, description="Unique name for this illumination channel")
     type: IlluminationType = Field(..., description="Type of illumination")
-    controller_port: str = Field(..., description="Controller port (D1-D5 for lasers, USB1-USB8 for LED patterns)")
-    wavelength_nm: Optional[int] = Field(None, description="Wavelength in nm (for epi-illumination channels)")
+    controller_port: str = Field(
+        ...,
+        pattern=r"^(D[1-8]|USB[1-8])$",
+        description="Controller port (D1-D8 for lasers, USB1-USB8 for LED patterns)",
+    )
+    wavelength_nm: Optional[int] = Field(
+        None, gt=0, description="Wavelength in nm (for epi-illumination channels, must be positive)"
+    )
     intensity_calibration_file: Optional[str] = Field(
         None, description="Reference to calibration CSV file in intensity_calibrations/"
+    )
+
+    # Excitation filter (optional)
+    excitation_filter_wheel_id: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Excitation filter wheel ID (required if multiple excitation wheels exist)",
+    )
+    excitation_filter_position: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Position in excitation filter wheel",
+    )
+
+    # Deprecated: use excitation_filter_wheel_id instead
+    excitation_filter_wheel: Optional[str] = Field(
+        None,
+        description="[DEPRECATED] Use excitation_filter_wheel_id instead. Name of excitation filter wheel.",
     )
 
     model_config = {"extra": "allow"}  # Allow extra fields during transition
@@ -64,7 +97,7 @@ class IlluminationChannelConfig(BaseModel):
         "D8",
     ]
 
-    version: int = Field(1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
     controller_port_mapping: Dict[str, int] = Field(
         default_factory=lambda: {
             # Laser ports
@@ -121,6 +154,8 @@ class IlluminationChannelConfig(BaseModel):
         for ch in self.channels:
             if ch.name == name:
                 return ch
+        available = [ch.name for ch in self.channels]
+        logger.debug(f"Illumination channel not found by name: '{name}'. Available: {available}")
         return None
 
     def get_channel_by_source_code(self, source_code: int) -> Optional[IlluminationChannel]:
@@ -128,6 +163,7 @@ class IlluminationChannelConfig(BaseModel):
         for ch in self.channels:
             if self.get_source_code(ch) == source_code:
                 return ch
+        logger.debug(f"Illumination channel not found by source code: {source_code}")
         return None
 
     def get_available_ports(self) -> List[str]:

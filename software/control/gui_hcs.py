@@ -460,6 +460,12 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
 
+        # Channel Configuration (user-facing acquisition channels)
+        acq_channel_config_action = QAction("Channel Configuration...", self)
+        acq_channel_config_action.setMenuRole(QAction.NoRole)
+        acq_channel_config_action.triggered.connect(self.openAcquisitionChannelConfigEditor)
+        settings_menu.addAction(acq_channel_config_action)
+
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
 
@@ -467,6 +473,12 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action = QAction("Illumination Channel Configuration", self)
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
+
+        # Filter Wheel Configuration (only shown if filter wheel is enabled)
+        if USE_EMISSION_FILTER_WHEEL:
+            filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
+            filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
+            advanced_menu.addAction(filter_wheel_config_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1612,10 +1624,22 @@ class HighContentScreeningGui(QMainWindow):
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
+    def openAcquisitionChannelConfigEditor(self):
+        """Open the acquisition channel configurator dialog for editing user profiles."""
+        dialog = widgets.AcquisitionChannelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_channels_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
     def openAdvancedChannelMapping(self):
         """Open the advanced channel hardware mapping dialog"""
         dialog = widgets.AdvancedChannelMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openFilterWheelConfigEditor(self):
+        """Open the filter wheel configuration dialog"""
+        dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
     def _refresh_channel_lists(self):
@@ -1624,6 +1648,10 @@ class HighContentScreeningGui(QMainWindow):
             self.liveControlWidget.refresh_mode_list()
         if self.napariLiveWidget:
             self.napariLiveWidget.refresh_mode_list()
+        if self.flexibleMultiPointWidget:
+            self.flexibleMultiPointWidget.refresh_channel_list()
+        if self.wellplateMultiPointWidget:
+            self.wellplateMultiPointWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
