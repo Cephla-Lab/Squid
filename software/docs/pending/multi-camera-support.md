@@ -169,7 +169,7 @@ channel_groups:
 
 ### Objective Config Updates
 
-Objective-specific files (`{objective}.yaml`) follow the same v1.1 schema but typically only override:
+Objective-specific files (`{objective}.yaml`) follow the same v1.0 schema but typically only override:
 - `camera_settings` (exposure, gain)
 - `illumination_settings.intensity`
 - `confocal_override`
@@ -200,7 +200,7 @@ class CameraDefinition(BaseModel):
 
 class CameraRegistryConfig(BaseModel):
     """Registry of available cameras."""
-    version: float = Field(1.1)
+    version: float = Field(1.0)
     cameras: List[CameraDefinition] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -255,7 +255,7 @@ class FilterWheelDefinition(BaseModel):
 
 class FilterWheelRegistryConfig(BaseModel):
     """Registry of available filter wheels."""
-    version: float = Field(1.1)
+    version: float = Field(1.0)
     filter_wheels: List[FilterWheelDefinition] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -311,21 +311,21 @@ class IlluminationSettings(BaseModel):
 
 
 class ConfocalSettings(BaseModel):
-    """Confocal-specific settings (part of confocal unit hardware).
+    """Confocal-specific settings for objective-specific tuning.
 
-    Note: Confocal filter wheel is separate from body filter wheel.
-    Body filter wheel uses channel-level filter_wheel/filter_position fields.
+    These settings are used in confocal_override (objective.yaml) to provide
+    iris aperture settings when confocal mode is active.
+
+    Note: Filter wheel selection is handled via hardware_bindings.yaml, not here.
+    The camera's bound filter wheel (confocal or standalone) is resolved at runtime.
     """
-    # Confocal unit filter wheel (separate from body filter wheel)
-    confocal_filter_wheel: Optional[str] = Field(
-        None, description="Confocal filter wheel name (references filter_wheels.yaml)"
+    # Iris settings (objective-specific), 0-100% of aperture
+    illumination_iris: Optional[float] = Field(
+        None, ge=0, le=100, description="Illumination iris aperture percentage (0-100)"
     )
-    confocal_filter_position: Optional[int] = Field(
-        None, ge=1, description="Position in confocal filter wheel"
+    emission_iris: Optional[float] = Field(
+        None, ge=0, le=100, description="Emission iris aperture percentage (0-100)"
     )
-    # Iris settings
-    illumination_iris: Optional[float] = Field(None, description="Illumination iris setting")
-    emission_iris: Optional[float] = Field(None, description="Emission iris setting")
 
     model_config = {"extra": "forbid"}
 
@@ -345,9 +345,9 @@ class AcquisitionChannel(BaseModel):
     display_color: str = Field('#FFFFFF', description="Hex color for UI visualization")
 
     # Camera assignment (optional for single-camera systems)
-    camera: Optional[str] = Field(
-        None,
-        description="Camera name (references cameras.yaml). Optional for single-camera systems."
+    camera: Optional[int] = Field(
+        None, ge=1,
+        description="Camera ID (references cameras.yaml). Null for single-camera systems."
     )
     camera_settings: CameraSettings = Field(..., description="Camera settings")
 
@@ -551,62 +551,14 @@ def validate_channel_references(
 
 ## Migration
 
-### v1.0 to v1.1 Migration
+### Legacy (Pre-YAML) to v1.0 Migration
 
-```python
-def migrate_channel_config_v1_to_v1_1(
-    config: dict,
-    default_camera: str = "Main Camera"
-) -> dict:
-    """Migrate channel config from v1.0 to v1.1.
+Migration from legacy XML/JSON configs to v1.0 schema is handled by the migration script
+in `tools/migrate_acquisition_configs.py`. Since the original v1.0 schema was never
+released, there is no v1.0 → v1.0 migration needed.
 
-    Args:
-        config: v1.0 config dict
-        default_camera: Camera name to assign to all channels
-
-    Returns:
-        v1.1 config dict
-    """
-    for channel in config.get('channels', []):
-        # Extract camera_settings dict
-        old_camera_settings = channel.pop('camera_settings', {})
-
-        # Get first (and only) camera's settings
-        camera_id = next(iter(old_camera_settings.keys()), '1')
-        cam_settings = old_camera_settings.get(camera_id, {})
-
-        # Move display_color to channel level
-        channel['display_color'] = cam_settings.pop('display_color', '#FFFFFF')
-
-        # Add camera reference
-        channel['camera'] = default_camera
-
-        # Flatten camera_settings to single object
-        channel['camera_settings'] = {
-            'exposure_time_ms': cam_settings.get('exposure_time_ms', 20.0),
-            'gain_mode': cam_settings.get('gain_mode', 10.0),
-            'pixel_format': cam_settings.get('pixel_format'),
-        }
-
-        # Convert emission_filter_wheel_position to filter_wheel + filter_position
-        old_filter = channel.pop('emission_filter_wheel_position', None)
-        if old_filter:
-            wheel_id = next(iter(old_filter.keys()), 1)
-            # Note: Actual wheel name must be set by user or derived from filter_wheels.yaml
-            channel['filter_wheel'] = None  # Requires manual mapping
-            channel['filter_position'] = old_filter.get(wheel_id, 1)
-        else:
-            channel['filter_wheel'] = None
-            channel['filter_position'] = None
-
-    # Initialize empty channel_groups
-    if 'channel_groups' not in config:
-        config['channel_groups'] = []
-
-    config['version'] = 1.1
-
-    return config
-```
+See [Configuration Migration](../configuration-migration.md) for details on running
+the migration script.
 
 ---
 
@@ -623,14 +575,13 @@ def migrate_channel_config_v1_to_v1_1(
 - ✅ `machine_configs/filter_wheels.yaml.example`
 
 **Files modified**:
-- ✅ `control/models/acquisition_config.py` - Updated models with v1.1 schema
+- ✅ `control/models/acquisition_config.py` - Updated models with v1.0 schema
 - ✅ `control/models/__init__.py` - Export new models
 - ✅ `control/core/config/repository.py` - Added loaders for new configs
 
 **Migration strategy**:
-- ✅ Backward compatibility with v1.0 configs
-- ✅ Auto-detect version and migrate on load
-- ✅ Write v1.1 format on save
+- ✅ Legacy pre-YAML configs migrated via `tools/migrate_acquisition_configs.py`
+- ✅ Write v1.0 format on save
 
 ### Phase 2: UI Integration (In Progress)
 
@@ -668,7 +619,7 @@ def migrate_channel_config_v1_to_v1_1(
 **Scope**: Comprehensive testing and user documentation.
 
 **Deliverables**:
-- ✅ Unit tests for new models (v1.1 schema validation)
+- ✅ Unit tests for new models (v1.0 schema validation)
 - [ ] Integration tests for multi-camera acquisition
 - [ ] User documentation updates
 
@@ -689,11 +640,11 @@ def migrate_channel_config_v1_to_v1_1(
 
 | File | Changes |
 |------|---------|
-| `control/models/acquisition_config.py` | Restructure for v1.1 schema |
+| `control/models/acquisition_config.py` | Restructure for v1.0 schema |
 | `control/models/__init__.py` | Export new models |
 | `control/core/config/repository.py` | Load new config files |
-| `control/core/config/utils.py` | Migration utilities |
-| `user_profiles/*/channel_configs/*.yaml` | Schema v1.0 → v1.1 |
+| `control/core/config/utils.py` | Validation utilities |
+| `user_profiles/*/channel_configs/*.yaml` | New v1.0 schema format |
 
 ---
 
@@ -702,9 +653,9 @@ def migrate_channel_config_v1_to_v1_1(
 ### Resolved
 
 1. **Default camera behavior**: ✅ **RESOLVED**
-   - The `camera` field is **optional** (`Optional[str]`)
-   - Single-camera systems: No `cameras.yaml` needed, `camera` field can be omitted
-   - Multi-camera systems: `cameras.yaml` required, `camera` field required per channel
+   - The `camera` field is **optional** (`Optional[int]`)
+   - Single-camera systems: No `cameras.yaml` needed, `camera: null`
+   - Multi-camera systems: `cameras.yaml` required, `camera` is integer ID
    - Validation: If multiple cameras exist and `camera` is `None`, raise error
 
 ### Open Questions
@@ -712,9 +663,10 @@ def migrate_channel_config_v1_to_v1_1(
 1. **Filter wheel association**: Should filter wheels be associated with specific cameras in the registry?
 
 2. **Confocal integration**: ✅ **RESOLVED**
-   - Confocal filter wheel is **separate** from body filter wheel
-   - Body filter wheel: `AcquisitionChannel.filter_wheel` / `filter_position`
-   - Confocal filter wheel: `ConfocalSettings.confocal_filter_wheel` / `confocal_filter_position`
-   - Rationale: Physical distinction - confocal filter wheels are built into the confocal unit
+   - Filter wheel resolution via `hardware_bindings.yaml` using source-qualified references
+   - Channel config: `AcquisitionChannel.filter_position` (wheel resolved from camera binding)
+   - Confocal wheels referenced as `confocal.1` or `confocal.name` in hardware_bindings
+   - Standalone wheels referenced as `standalone.1` or `standalone.name`
+   - ConfocalSettings only contains iris aperture settings (illumination_iris, emission_iris)
 
 3. **Migration UX**: Should migration be automatic on load, or require explicit user action?

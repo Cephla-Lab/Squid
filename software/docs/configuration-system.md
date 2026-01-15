@@ -312,8 +312,12 @@ channels:
     filter_wheel: auto              # "auto" = use camera's hardware binding
     filter_position: 2              # Position in filter wheel (resolved via hardware_bindings)
     z_offset_um: 0.0                # Z offset applied when switching to this channel
+    camera_settings:                # Required: camera exposure and gain
+      exposure_time_ms: 20.0        # Default, overridden by objective
+      gain_mode: 10.0               # Default, overridden by objective
     illumination_settings:
       illumination_channel: Fluorescence 488 nm Ex    # References illumination_channel_config.yaml
+      intensity: 20.0               # Default, overridden by objective
 
   - name: BF LED matrix full
     enabled: true
@@ -322,8 +326,12 @@ channels:
     filter_wheel: auto
     filter_position: 1
     z_offset_um: 0.0
+    camera_settings:
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
     illumination_settings:
       illumination_channel: BF LED matrix full
+      intensity: 5.0                # Lower intensity for LED
 ```
 
 **Camera field:**
@@ -347,6 +355,8 @@ channels:
 | `filter_position` | Filter position in the wheel |
 | `z_offset_um` | Z offset applied when switching to this channel |
 | `illumination_channel` | Which illumination channel to use (references machine config) |
+| `camera_settings` | Required: exposure_time_ms and gain_mode (defaults, overridden by objective) |
+| `intensity` | Required: illumination intensity (default, overridden by objective) |
 
 ### channel_configs/{objective}.yaml
 

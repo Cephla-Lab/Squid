@@ -100,13 +100,13 @@ if config_repo.has_confocal():
 # Camera mappings (legacy)
 camera_config = config_repo.get_camera_mappings()
 
-# Camera registry (v1.1)
+# Camera registry (v1.0)
 camera_registry = config_repo.get_camera_registry()
 if camera_registry:
     camera_names = camera_registry.get_camera_names()
     serial = camera_registry.get_serial_number("Main Camera")
 
-# Filter wheel registry (v1.1)
+# Filter wheel registry (v1.0)
 filter_wheel_registry = config_repo.get_filter_wheel_registry()
 if filter_wheel_registry:
     wheel_names = filter_wheel_registry.get_wheel_names()
@@ -295,23 +295,26 @@ effective = channel.get_effective_settings(confocal_mode=True)
 # Returns new AcquisitionChannel with confocal_override applied
 ```
 
-**Nested structures (v1.1 schema):**
+**Nested structures (v1.0 schema):**
 ```python
-# Camera settings (single object in v1.1)
+# Camera settings (single object in v1.0)
 cam = channel.camera_settings
 print(f"Exposure: {cam.exposure_time_ms} ms")
 print(f"Gain: {cam.gain_mode}")
 
-# Illumination settings (single channel, scalar intensity in v1.1)
+# Illumination settings (single channel, scalar intensity in v1.0)
 ill = channel.illumination_settings
 print(f"Channel: {ill.illumination_channel}")
 print(f"Intensity: {ill.intensity}%")
-print(f"Z offset: {ill.z_offset_um} um")
 
-# Confocal settings (if present)
-if channel.confocal_settings:
-    print(f"Filter wheel: {channel.confocal_settings.confocal_filter_wheel}")
-    print(f"Filter position: {channel.confocal_settings.confocal_filter_position}")
+# Z offset is at channel level (not in illumination_settings)
+print(f"Z offset: {channel.z_offset_um} um")
+
+# Confocal override settings (objective-specific iris settings)
+if channel.confocal_override and channel.confocal_override.confocal_settings:
+    cs = channel.confocal_override.confocal_settings
+    print(f"Illumination iris: {cs.illumination_iris}%")
+    print(f"Emission iris: {cs.emission_iris}%")
 ```
 
 **Field validation constraints:**
@@ -325,14 +328,15 @@ if channel.confocal_settings:
 # IlluminationSettings:
 #   - intensity: 0-100 (percentage)
 #
-# ConfocalSettings:
-#   - confocal_filter_position: >= 1
+# ConfocalSettings (used in confocal_override):
 #   - illumination_iris: 0-100 (percentage)
 #   - emission_iris: 0-100 (percentage)
 #
 # AcquisitionChannel:
 #   - name: min 1 character
 #   - display_color: hex format (#RRGGBB)
+#   - camera: >= 1 if provided (null for single-camera)
+#   - filter_position: >= 1 if provided
 #
 # IlluminationChannel:
 #   - name: min 1 character
@@ -420,7 +424,7 @@ if config:
 
 ### CameraMappingsConfig (Legacy)
 
-> **Note**: Deprecated in v1.1. Use `CameraRegistryConfig` and `FilterWheelRegistryConfig` instead.
+> **Note**: Deprecated in v1.0. Use `CameraRegistryConfig` and `FilterWheelRegistryConfig` instead.
 
 ```python
 from control.models import CameraMappingsConfig
@@ -438,7 +442,7 @@ if config:
         ...
 ```
 
-### CameraRegistryConfig (v1.1)
+### CameraRegistryConfig (v1.0)
 
 Maps user-friendly camera names to hardware serial numbers.
 
@@ -467,14 +471,16 @@ if registry:
 
 # Create programmatically
 registry = CameraRegistryConfig(
-    version=1.1,
+    version=1.0,
     cameras=[
         CameraDefinition(
+            id=1,
             name="Main Camera",
             serial_number="ABC12345",
             model="Hamamatsu C15440"
         ),
         CameraDefinition(
+            id=2,
             name="Side Camera",
             serial_number="DEF67890"
         ),
@@ -483,7 +489,7 @@ registry = CameraRegistryConfig(
 config_repo.save_camera_registry(registry)
 ```
 
-### FilterWheelRegistryConfig (v1.1)
+### FilterWheelRegistryConfig (v1.0)
 
 Defines filter wheels with positions and installed filters.
 
@@ -522,7 +528,7 @@ if registry:
 
 # Create programmatically
 registry = FilterWheelRegistryConfig(
-    version=1.1,
+    version=1.0,
     filter_wheels=[
         FilterWheelDefinition(
             name="Emission Filter Wheel",
