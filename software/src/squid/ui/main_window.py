@@ -121,8 +121,8 @@ SINGLE_WINDOW = True  # set to False if use separate windows for display and con
 if USE_JUPYTER_CONSOLE:
     from squid.ui.console import JupyterWidget
 
-if RUN_FLUIDICS:
-    from squid.backend.drivers.fluidics.fluidics import Fluidics
+# Legacy Fluidics import removed - now using FluidicsService from ApplicationContext
+# See: squid/backend/services/fluidics_service.py
 
 # Import the custom widget
 from squid.ui.widgets.custom_multipoint import TemplateMultiPointWidget
@@ -203,7 +203,7 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
-        self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
+        # Legacy self.fluidics removed - FluidicsService now accessed via self._services.get("fluidics")
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
         self.channelConfigurationManager: ChannelConfigurationManager = (
@@ -659,7 +659,7 @@ class HighContentScreeningGui(QMainWindow):
                 laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME
             )
 
-        if RUN_FLUIDICS:
+        if RUN_FLUIDICS and self.fluidicsWidget is not None:
             self.imageDisplayTabs.addTab(self.fluidicsWidget, "Fluidics")
 
         # Orchestrator tab for multi-round experiment automation
@@ -1415,11 +1415,11 @@ class HighContentScreeningGui(QMainWindow):
         # Apply binning
         try:
             self.camera.set_binning(*cached_settings.binning)
-            self._log.info(f"Restored camera binning: {cached_settings.binning}")
+            self.log.info(f"Restored camera binning: {cached_settings.binning}")
         except ValueError as e:
-            self._log.warning(f"Cannot restore binning {cached_settings.binning} - not supported: {e}")
+            self.log.warning(f"Cannot restore binning {cached_settings.binning} - not supported: {e}")
         except Exception as e:
-            self._log.error(f"Error restoring camera binning: {e}")
+            self.log.error(f"Error restoring camera binning: {e}")
 
         # Apply pixel format if available
         if cached_settings.pixel_format:
@@ -1427,11 +1427,11 @@ class HighContentScreeningGui(QMainWindow):
                 from squid.core.config import CameraPixelFormat
                 pixel_format = CameraPixelFormat.from_string(cached_settings.pixel_format)
                 self.camera.set_pixel_format(pixel_format)
-                self._log.info(f"Restored camera pixel format: {cached_settings.pixel_format}")
+                self.log.info(f"Restored camera pixel format: {cached_settings.pixel_format}")
             except (KeyError, ValueError) as e:
-                self._log.warning(f"Cannot restore pixel format '{cached_settings.pixel_format}': {e}")
+                self.log.warning(f"Cannot restore pixel format '{cached_settings.pixel_format}': {e}")
             except Exception as e:
-                self._log.error(f"Error restoring camera pixel format: {e}")
+                self.log.error(f"Error restoring camera pixel format: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Alignment Widget Setup

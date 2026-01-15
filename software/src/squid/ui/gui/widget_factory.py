@@ -333,9 +333,17 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
 
 
 def create_fluidics_widget(gui: "HighContentScreeningGui") -> None:
-    """Create fluidics widget if enabled."""
+    """Create fluidics widget if enabled.
+
+    Creates the widget even if the service isn't fully available,
+    allowing users to select a config file from the UI.
+    """
     if _FEATURE_FLAGS.is_enabled("RUN_FLUIDICS"):
-        gui.fluidicsWidget = widgets.FluidicsWidget(gui.fluidics, event_bus=gui._ui_event_bus)
+        fluidics_service = gui._services.get("fluidics")
+        # Create widget even if service is None - widget handles this gracefully
+        gui.fluidicsWidget = widgets.FluidicsWidget(
+            fluidics_service, event_bus=gui._ui_event_bus
+        )
 
 
 def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:

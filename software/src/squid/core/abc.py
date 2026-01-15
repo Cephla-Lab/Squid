@@ -1062,3 +1062,248 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Close the camera.
         """
         pass
+
+
+# ============================================================================
+# Fluidics Controller Interface
+# ============================================================================
+
+
+class FluidicsOperationStatus(enum.Enum):
+    """Status of a fluidics operation."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    ASPIRATING = "aspirating"  # Drawing liquid into syringe
+    DISPENSING = "dispensing"  # Pushing liquid out of syringe
+    VALVE_SWITCHING = "valve_switching"  # Switching to a different port
+    INCUBATING = "incubating"
+    COMPLETED = "completed"
+    ERROR = "error"
+    ABORTED = "aborted"
+
+
+@dataclass(frozen=True)
+class FluidicsStatus:
+    """Current status of the fluidics system."""
+
+    status: FluidicsOperationStatus
+    current_port: Optional[int] = None
+    current_solution: Optional[str] = None
+    syringe_volume_ul: float = 0.0
+    is_busy: bool = False
+    error_message: Optional[str] = None
+
+
+# Type alias for phase change callback
+# Signature: (phase, port, solution, volume_ul, flow_rate_ul_per_min) -> None
+FluidicsPhaseCallback = Callable[
+    [str, Optional[int], Optional[str], Optional[float], Optional[float]], None
+]
+
+# Type alias for progress callback
+# Signature: (operation, progress_percent, elapsed_s, remaining_s, syringe_volume_ul) -> None
+FluidicsProgressCallback = Callable[
+    [str, float, float, float, float], None
+]
+
+
+class AbstractFluidicsController(ABC):
+    """Abstract base class for fluidics controllers.
+
+    Provides a unified interface for different fluidics hardware implementations
+    (e.g., MERFISH operations, open chamber systems, simulation).
+
+    The ABC defines operations for:
+    - Flow control (dispensing solutions at specified rates)
+    - Priming and washing
+    - Abort/control mechanisms
+    - Status/query methods
+
+    Thread safety is handled by the FluidicsService layer, not the driver.
+    """
+
+    # Lifecycle methods
+    @abstractmethod
+    def initialize(self) -> bool:
+        """Initialize hardware connections.
+
+        Returns:
+            True if initialization successful, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close connections and release resources.
+
+        Should empty syringe to waste before closing if applicable.
+        """
+        pass
+
+    # Operation methods
+    @abstractmethod
+    def flow_solution(
+        self,
+        port: int,
+        volume_ul: float,
+        flow_rate_ul_per_min: float,
+        fill_tubing_with_port: Optional[int] = None,
+    ) -> bool:
+        """Flow solution from specified port.
+
+        Args:
+            port: Port number to flow from
+            volume_ul: Volume to flow in microliters
+            flow_rate_ul_per_min: Flow rate in microliters per minute
+            fill_tubing_with_port: Optional port to fill tubing with after flow
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def prime(
+        self,
+        ports: list[int],
+        volume_ul: float,
+        flow_rate_ul_per_min: float,
+        final_port: int,
+    ) -> bool:
+        """Prime tubing with solutions from specified ports.
+
+        Args:
+            ports: List of ports to prime
+            volume_ul: Volume per port in microliters
+            flow_rate_ul_per_min: Flow rate in microliters per minute
+            final_port: Port to leave selected after priming
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def wash(
+        self,
+        wash_port: int,
+        volume_ul: float,
+        flow_rate_ul_per_min: float,
+        repeats: int = 1,
+    ) -> bool:
+        """Wash with solution from specified port.
+
+        Args:
+            wash_port: Port number for wash solution
+            volume_ul: Volume per wash cycle in microliters
+            flow_rate_ul_per_min: Flow rate in microliters per minute
+            repeats: Number of wash cycles
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def empty_syringe(self) -> bool:
+        """Empty syringe contents to waste.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        pass
+
+    # Abort/Control methods
+    @abstractmethod
+    def abort(self) -> None:
+        """Set abort flag to stop pending operations.
+
+        Current hardware operation may complete, but subsequent operations
+        will return early until reset_abort() is called.
+        """
+        pass
+
+    @abstractmethod
+    def reset_abort(self) -> None:
+        """Clear abort flag to allow new operations.
+
+        Must be called before new operations after an abort.
+        """
+        pass
+
+    # Status/Query methods
+    @abstractmethod
+    def get_status(self) -> FluidicsStatus:
+        """Get current status of the fluidics system.
+
+        Returns:
+            FluidicsStatus with current state information.
+        """
+        pass
+
+    @abstractmethod
+    def get_port_name(self, port: int) -> Optional[str]:
+        """Get solution name for a port number.
+
+        Args:
+            port: Port number
+
+        Returns:
+            Solution name if mapped, None otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def get_port_for_solution(self, solution_name: str) -> Optional[int]:
+        """Get port number for a solution name.
+
+        Args:
+            solution_name: Name of the solution (case-insensitive)
+
+        Returns:
+            Port number if found, None otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def get_available_ports(self) -> list[int]:
+        """Get list of configured port numbers.
+
+        Returns:
+            Sorted list of available port numbers.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def is_busy(self) -> bool:
+        """Check if an operation is in progress.
+
+        Returns:
+            True if hardware is busy, False otherwise.
+        """
+        pass
+
+    # Callback methods (optional, non-abstract for backwards compatibility)
+    def set_phase_callback(self, callback: Optional["FluidicsPhaseCallback"]) -> None:
+        """Set callback for phase change notifications.
+
+        Default no-op implementation for backwards compatibility.
+
+        Args:
+            callback: Callback function or None to disable.
+                      Signature: (phase, port, solution, volume_ul, flow_rate) -> None
+        """
+        pass
+
+    def set_progress_callback(self, callback: Optional["FluidicsProgressCallback"]) -> None:
+        """Set callback for progress updates during long operations.
+
+        Default no-op implementation for backwards compatibility.
+
+        Args:
+            callback: Callback function or None to disable.
+                      Signature: (operation, progress_percent, elapsed_s, remaining_s, syringe_volume_ul) -> None
+        """
+        pass

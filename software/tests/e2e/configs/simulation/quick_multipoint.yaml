@@ -1,0 +1,25 @@
+# Quick Multipoint Acquisition
+# Single round, multi-channel, minimal z-stack
+# For testing coordinate/region handling
+# Recommended: 2-4 FOVs across 1-2 regions
+
+name: Quick Multipoint
+version: "1.0"
+description: Fast multipoint acquisition for testing region handling
+
+defaults:
+  imaging:
+    z_planes: 2
+    z_step_um: 2.0
+    use_autofocus: false
+    skip_saving: true
+
+rounds:
+  - name: Multipoint Scan
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+      z_planes: 2
+      z_step_um: 2.0
+      skip_saving: true

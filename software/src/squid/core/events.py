@@ -994,6 +994,163 @@ class FluidicsInitialized(Event):
     pass
 
 
+@dataclass
+class FluidicsOperationStarted(Event):
+    """Emitted BEFORE a fluidics driver method is called.
+
+    Allows UI to show operation in progress.
+
+    Note: Would ideally be frozen=True but Event base class is not frozen.
+    """
+
+    operation: str  # "flow", "prime", "wash", "empty_syringe"
+    port: Optional[int] = None
+    solution: Optional[str] = None
+    volume_ul: float = 0.0
+    flow_rate_ul_per_min: float = 0.0
+
+
+@dataclass
+class FluidicsOperationProgress(Event):
+    """Emitted periodically during long fluidics operations.
+
+    Provides real-time progress feedback for flow operations.
+    Emitted every ~1 second during flow/wash/prime operations.
+    """
+
+    operation: str
+    progress_percent: float
+    elapsed_seconds: float
+    remaining_seconds: Optional[float] = None
+    syringe_volume_ul: Optional[float] = None
+
+
+@dataclass
+class FluidicsPhaseChanged(Event):
+    """Emitted when operation phase changes within a fluidics operation.
+
+    Provides real-time feedback about what the hardware is doing:
+    - aspirating: Drawing liquid into syringe from a port
+    - dispensing: Pushing liquid out of syringe to a port
+    - valve_switching: Moving selector valve to a different port
+
+    This enables UI to show detailed state (e.g., "Aspirating from port 5").
+    """
+
+    phase: str  # "aspirating", "dispensing", "valve_switching"
+    port: Optional[int] = None
+    solution: Optional[str] = None
+    volume_ul: Optional[float] = None
+    flow_rate_ul_per_min: Optional[float] = None
+
+
+@dataclass
+class FluidicsOperationCompleted(Event):
+    """Emitted AFTER a fluidics driver method returns.
+
+    Contains success/failure status and timing information.
+    """
+
+    operation: str
+    success: bool
+    error_message: Optional[str] = None
+    duration_seconds: float = 0.0
+
+
+@dataclass
+class FluidicsIncubationStarted(Event):
+    """Emitted when an incubation period begins.
+
+    Incubation is a timed wait period after flowing a solution,
+    allowing reagents to bind or react.
+    """
+
+    duration_seconds: float
+    solution: Optional[str] = None
+
+
+@dataclass
+class FluidicsIncubationProgress(Event):
+    """Emitted periodically (~1 second) during incubation.
+
+    Allows UI to display countdown timer.
+    """
+
+    elapsed_seconds: float
+    remaining_seconds: float
+    progress_percent: float
+
+
+@dataclass
+class FluidicsIncubationCompleted(Event):
+    """Emitted when incubation ends (completed or aborted).
+
+    Args:
+        completed: True if incubation finished normally, False if aborted.
+    """
+
+    completed: bool
+
+
+@dataclass
+class FluidicsStatusChanged(Event):
+    """Emitted when fluidics system status changes.
+
+    Fired after operations complete or on error. The status field uses
+    FluidicsOperationStatus.value string for serialization compatibility.
+    """
+
+    status: str  # FluidicsOperationStatus.value string for serialization
+    current_port: Optional[int] = None
+    current_solution: Optional[str] = None
+    syringe_volume_ul: Optional[float] = None
+    is_busy: bool = False
+    error_message: Optional[str] = None
+
+
+@dataclass
+class FluidicsSequenceStarted(Event):
+    """Emitted when a fluidics sequence begins execution.
+
+    A sequence is a series of operations (flow, incubate, etc.) loaded
+    from a CSV file and executed step by step.
+    """
+
+    sequence_name: str
+    total_steps: int
+
+
+@dataclass
+class FluidicsSequenceStepStarted(Event):
+    """Emitted when a step within a sequence begins.
+
+    Provides context about the current position in the sequence and
+    what operation is being performed.
+    """
+
+    step_index: int  # 0-based index
+    total_steps: int
+    step_description: str  # Human-readable description of current step
+    next_step_description: Optional[str] = None  # Preview of next step
+
+
+@dataclass
+class FluidicsSequenceCompleted(Event):
+    """Emitted when a fluidics sequence finishes (completed or aborted).
+
+    Args:
+        sequence_name: Name of the completed sequence.
+        success: True if all steps completed, False if aborted or errored.
+        steps_completed: Number of steps that were executed.
+        total_steps: Total steps in the sequence.
+    """
+
+    sequence_name: str
+    success: bool
+    steps_completed: int
+    total_steps: int
+
+
 # ============================================================================
 # Laser Autofocus Events
 # ============================================================================

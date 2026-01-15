@@ -51,10 +51,9 @@ if _def.USE_XERYON:
 else:
     ObjectiveChanger2PosController = TypeVar("ObjectiveChanger2PosController")
 
-if _def.RUN_FLUIDICS:
-    from squid.backend.drivers.fluidics.fluidics import Fluidics
-else:
-    Fluidics = TypeVar("Fluidics")
+# Legacy Fluidics import removed - now using FluidicsService from ApplicationContext
+# The Fluidics parameter in MicroscopeAddons is deprecated and always None
+Fluidics = TypeVar("Fluidics")  # Type stub for backward compatibility
 
 if _def.ENABLE_NL5:
     import squid.backend.drivers.peripherals.nl5 as NL5

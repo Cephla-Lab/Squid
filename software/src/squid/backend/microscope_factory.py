@@ -99,13 +99,11 @@ def build_microscope_addons(
             squid.core.config.get_autofocus_camera_config(), simulated=simulated
         )
 
-    fluidics = None
-    if _def.RUN_FLUIDICS:
-        from squid.backend.drivers.fluidics.fluidics import Fluidics
-
-        fluidics = Fluidics(
-            config_path=_def.FLUIDICS_CONFIG_PATH, simulation=simulated
-        )
+    # Legacy fluidics removed - now handled by FluidicsService in ApplicationContext
+    # The new FluidicsService uses AbstractFluidicsController implementations:
+    # - SimulatedFluidicsController for simulation
+    # - MERFISHFluidicsDriver for real hardware
+    # See: application.py _build_fluidics_driver()
 
     piezo_stage = None
     if _def.HAS_OBJECTIVE_PIEZO:
@@ -151,7 +149,7 @@ def build_microscope_addons(
         emission_filter_wheel,
         objective_changer,
         camera_focus,
-        fluidics,
+        None,  # fluidics - now handled by FluidicsService
         piezo_stage,
         sci_microscopy_led_array,
     )

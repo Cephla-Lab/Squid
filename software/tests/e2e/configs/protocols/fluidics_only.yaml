@@ -1,0 +1,51 @@
+name: Fluidics Only Protocol
+version: "1.0"
+description: Fluidics-only workflow for testing pump and valve control
+
+defaults:
+  fluidics:
+    flow_rate_ul_per_min: 100.0
+
+rounds:
+  # Prime the system
+  - name: System Prime
+    type: wash
+    fluidics:
+      - command: prime
+        solution: wash_buffer
+
+  # Staining sequence
+  - name: Stain Application
+    type: wash
+    fluidics:
+      - command: flow
+        solution: stain_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - command: incubate
+        duration_s: 0.1  # Short for testing
+      - command: wash
+        volume_ul: 200
+        repeats: 3
+
+  # Second stain
+  - name: Secondary Stain
+    type: wash
+    fluidics:
+      - command: flow
+        solution: stain_2
+        volume_ul: 150
+        flow_rate_ul_per_min: 75
+      - command: incubate
+        duration_s: 0.1
+      - command: wash
+        volume_ul: 300
+        repeats: 2
+
+  # Final rinse
+  - name: Final Rinse
+    type: wash
+    fluidics:
+      - command: wash
+        solution: rinse_buffer
+        volume_ul: 500

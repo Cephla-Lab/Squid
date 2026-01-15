@@ -393,6 +393,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 OrchestratorState.ABORTED,
             ):
                 self._transition_to(OrchestratorState.IDLE)
+                # Reset fluidics abort state from any previous abort
+                if self._fluidics_executor is not None:
+                    fluidics_svc = self._fluidics_executor._fluidics_service
+                    if fluidics_svc is not None:
+                        fluidics_svc.reset_abort()
             else:
                 _log.warning("Cannot start: orchestrator not idle")
                 return False
@@ -481,6 +486,13 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             if self._imaging_executor is not None:
                 self._imaging_executor.resume()
             self._cancel_token.resume()
+
+            # Reset fluidics abort state in case we paused during abort
+            if self._fluidics_executor is not None:
+                fluidics_svc = self._fluidics_executor._fluidics_service
+                if fluidics_svc is not None:
+                    fluidics_svc.reset_abort()
+
             if self._resume_state in (
                 OrchestratorState.RUNNING_FLUIDICS,
                 OrchestratorState.RUNNING_IMAGING,
@@ -506,6 +518,13 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             OrchestratorState.ABORTED,
         ):
             self._cancel_token.cancel("User abort")
+
+            # Abort fluidics service directly to interrupt incubation
+            if self._fluidics_executor is not None:
+                fluidics_svc = self._fluidics_executor._fluidics_service
+                if fluidics_svc is not None:
+                    fluidics_svc.abort()
+
             # State transition happens in worker thread
             return True
 

@@ -1,0 +1,23 @@
+name: Tiled Z-Stack Imaging
+version: "1.0"
+description: Grid imaging with z-stacks for comprehensive e2e validation
+
+defaults:
+  imaging:
+    z_planes: 5
+    z_step_um: 1.0
+    use_autofocus: false
+    use_focus_lock: false
+    skip_saving: true
+
+rounds:
+  - name: Tiled Acquisition
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+        - "Fluorescence 488 nm Ex"
+      z_planes: 5
+      z_step_um: 1.0
+      use_autofocus: false
+      skip_saving: true

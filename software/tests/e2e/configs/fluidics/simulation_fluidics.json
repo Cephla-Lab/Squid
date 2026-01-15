@@ -1,0 +1,58 @@
+{
+  "microcontroller": {
+    "serial_number": "SIMULATION"
+  },
+  "syringe_pump": {
+    "serial_number": "SIMULATION",
+    "volume_ul": 5000,
+    "ports_allowed": [1, 2, 3],
+    "waste_port": 3,
+    "extract_port": 2,
+    "dispense_port": null,
+    "speed_code_limit": 10
+  },
+  "selector_valves": {
+    "valve_ids_allowed": [0, 1, 2],
+    "number_of_ports": {
+      "0": 10,
+      "1": 10,
+      "2": 10
+    },
+    "tubing_fluid_amount_to_valve_ul": {
+      "0": 800,
+      "1": 1000,
+      "2": 1140
+    },
+    "reagent_name_mapping": {
+      "port_1": "probe_1",
+      "port_2": "probe_2",
+      "port_3": "probe_3",
+      "port_4": "probe_4",
+      "port_5": "stain_1",
+      "port_6": "stain_2",
+      "port_25": "wash_buffer",
+      "port_26": "imaging_buffer",
+      "port_27": "cleavage_buffer",
+      "port_28": "rinse_buffer"
+    },
+    "tubing_fluid_amount_to_port_ul": {}
+  },
+  "solution_port_mapping": {
+    "probe_1": 1,
+    "probe_2": 2,
+    "probe_3": 3,
+    "probe_4": 4,
+    "stain_1": 5,
+    "stain_2": 6,
+    "wash_buffer": 25,
+    "imaging_buffer": 26,
+    "cleavage_buffer": 27,
+    "rinse_buffer": 28
+  },
+  "limits": {
+    "max_flow_rate_ul_per_min": 1000.0,
+    "min_flow_rate_ul_per_min": 1.0,
+    "max_volume_ul": 5000.0
+  },
+  "application": "E2E_TESTING"
+}

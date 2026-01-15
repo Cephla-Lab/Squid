@@ -1,0 +1,51 @@
+name: Intervention Protocol
+version: "1.0"
+description: Protocol requiring operator intervention between rounds
+
+defaults:
+  imaging:
+    z_planes: 1
+    z_step_um: 0.5
+    use_autofocus: false
+    skip_saving: true
+
+rounds:
+  # Initial imaging
+  - name: Pre-Intervention Imaging
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+      z_planes: 1
+      skip_saving: true
+
+  # Operator intervention required
+  - name: Sample Change
+    type: custom
+    requires_intervention: true
+    intervention_message: "Please replace sample and adjust focus. Press acknowledge when ready to continue."
+
+  # Post-intervention imaging
+  - name: Post-Intervention Imaging
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+      z_planes: 1
+      skip_saving: true
+
+  # Another intervention for demonstration
+  - name: Final Check
+    type: custom
+    requires_intervention: true
+    intervention_message: "Verify sample integrity before final acquisition."
+
+  # Final acquisition
+  - name: Final Imaging
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+        - "Fluorescence 488 nm Ex"
+      z_planes: 1
+      skip_saving: true

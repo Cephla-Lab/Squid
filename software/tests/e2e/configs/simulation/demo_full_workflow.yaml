@@ -1,0 +1,64 @@
+# Demo Full Workflow
+# Complete fluidics + imaging workflow (realistic but fast)
+# 3 rounds: Setup -> Imaging -> Cleanup
+# Recommended: 1-2 FOVs
+#
+# Fluidics sequence: ../fluidics/demo_full_workflow_sequences.csv
+
+name: Demo Full Workflow
+version: "1.0"
+description: Complete demonstration workflow with fluidics and imaging
+
+# Reference to matching fluidics CSV for manual testing
+metadata:
+  fluidics_sequence_csv: "../fluidics/demo_full_workflow_sequences.csv"
+
+defaults:
+  imaging:
+    channels:
+      - "BF LED matrix full"
+    z_planes: 1
+    use_autofocus: false
+  fluidics:
+    flow_rate_ul_per_min: 500.0
+
+rounds:
+  # Setup: Prime and prepare sample
+  # Matches CSV protocol "Sample Preparation"
+  - name: Sample Preparation
+    type: wash
+    fluidics:
+      - command: flow
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 500
+      - command: flow
+        solution: imaging_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 500
+      - command: incubate
+        duration_s: 3.0
+
+  # Main imaging (no fluidics)
+  - name: Main Acquisition
+    type: imaging
+    imaging:
+      channels:
+        - "BF LED matrix full"
+        - "Fluorescence 488 nm Ex"
+      z_planes: 3
+      z_step_um: 1.0
+
+  # Cleanup
+  # Matches CSV protocol "Sample Cleanup"
+  - name: Sample Cleanup
+    type: wash
+    fluidics:
+      - command: flow
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 500
+      - command: flow
+        solution: imaging_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 500

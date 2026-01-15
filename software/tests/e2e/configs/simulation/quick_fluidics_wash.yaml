@@ -1,0 +1,46 @@
+# Quick Fluidics Wash Sequence
+# 3 wash cycles, no imaging
+#
+# Fluidics sequence: ../fluidics/quick_fluidics_wash_sequences.csv
+
+name: Quick Wash Sequence
+version: "1.0"
+description: Fast fluidics wash sequence for manual testing
+
+# Reference to matching fluidics CSV for manual testing
+metadata:
+  fluidics_sequence_csv: "../fluidics/quick_fluidics_wash_sequences.csv"
+
+defaults:
+  fluidics:
+    flow_rate_ul_per_min: 500.0
+
+rounds:
+  # Matches CSV protocol "Initial Rinse"
+  - name: Initial Rinse
+    type: wash
+    fluidics:
+      - command: flow
+        solution: wash_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 1000
+
+  # Matches CSV protocol "Main Wash"
+  - name: Main Wash
+    type: wash
+    fluidics:
+      - command: flow
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 500
+      - command: incubate
+        duration_s: 3.0
+
+  # Matches CSV protocol "Final Rinse"
+  - name: Final Rinse
+    type: wash
+    fluidics:
+      - command: flow
+        solution: imaging_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 1000

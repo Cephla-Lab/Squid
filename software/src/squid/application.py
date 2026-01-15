@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
     from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
     from squid.backend.controllers.orchestrator import OrchestratorController
+    from squid.core.abc import AbstractFluidicsController
 
 
 @dataclass
@@ -732,6 +733,103 @@ class ApplicationContext:
         if self._controllers and self._controllers.microscope_mode:
             self._refresh_channel_configs(self._controllers.microscope_mode)
 
+    def _build_fluidics_driver(self) -> Optional["AbstractFluidicsController"]:
+        """Build fluidics driver based on configuration.
+
+        Returns:
+            AbstractFluidicsController if configured and available, None otherwise.
+
+        Creates SimulatedFluidicsController in simulation mode or when
+        fluidics_v2 submodule is not available. Creates MERFISHFluidicsDriver
+        for real hardware.
+        """
+        import sys
+        from pathlib import Path
+
+        try:
+            import _def as _config
+        except Exception:
+            _config = None
+
+        # Check if fluidics should be enabled
+        run_fluidics = _config is not None and getattr(_config, "RUN_FLUIDICS", False)
+        if not run_fluidics:
+            self._log.debug("Fluidics disabled (RUN_FLUIDICS=False or no _def)")
+            return None
+
+        # Resolve paths relative to software/ directory
+        # application.py is at software/src/squid/application.py
+        software_dir = Path(__file__).parent.parent.parent
+
+        # Get config file path
+        fluidics_config_path = getattr(_config, "FLUIDICS_CONFIG_PATH", None)
+        if fluidics_config_path:
+            config_path = Path(fluidics_config_path)
+        else:
+            # Default to configurations/fluidics_simulation.json
+            config_path = software_dir / "configurations" / "fluidics_simulation.json"
+
+        if not config_path.exists():
+            self._log.warning(f"Fluidics config not found: {config_path}")
+            return None
+
+        # In simulation mode, use SimulatedFluidicsController
+        if self._simulation:
+            self._log.info("Using SimulatedFluidicsController for simulation mode")
+            from squid.backend.drivers.fluidics import SimulatedFluidicsController
+
+            driver = SimulatedFluidicsController(
+                config_path=str(config_path),
+                simulate_timing=False,
+            )
+            if driver.initialize():
+                return driver
+            else:
+                self._log.error("Failed to initialize SimulatedFluidicsController")
+                return None
+
+        # Real hardware mode - try to use MERFISHFluidicsDriver
+        try:
+            # Add fluidics_v2 to path
+            fluidics_v2_path = software_dir / "fluidics_v2" / "software"
+            if fluidics_v2_path.exists() and str(fluidics_v2_path) not in sys.path:
+                sys.path.insert(0, str(fluidics_v2_path))
+
+            from squid.backend.drivers.fluidics import MERFISHFluidicsDriver
+
+            driver = MERFISHFluidicsDriver(
+                config_path=str(config_path),
+                simulation=False,
+            )
+            if driver.initialize():
+                self._log.info("MERFISHFluidicsDriver initialized successfully")
+                return driver
+            else:
+                self._log.error("Failed to initialize MERFISHFluidicsDriver")
+                return None
+
+        except ImportError as e:
+            self._log.warning(
+                f"fluidics_v2 module not available: {e}. "
+                f"Falling back to SimulatedFluidicsController"
+            )
+            # Fall back to simulation
+            from squid.backend.drivers.fluidics import SimulatedFluidicsController
+
+            driver = SimulatedFluidicsController(
+                config_path=str(config_path),
+                simulate_timing=False,
+            )
+            if driver.initialize():
+                return driver
+            else:
+                self._log.error("Failed to initialize fallback SimulatedFluidicsController")
+                return None
+
+        except Exception as e:
+            self._log.exception(f"Error initializing fluidics driver: {e}")
+            return None
+
     def _build_services(self) -> None:
         """Build service layer."""
         from squid.backend.services import (
@@ -810,11 +908,11 @@ class ApplicationContext:
         )
 
         # Fluidics service (for MERFISH and other fluidics-based protocols)
-        fluidics = getattr(self._microscope.addons, "fluidics", None)
-        if fluidics:
+        fluidics_driver = self._build_fluidics_driver()
+        if fluidics_driver is not None:
             self._services.register(
                 "fluidics",
-                FluidicsService(fluidics, event_bus),
+                FluidicsService(fluidics_driver, event_bus, mode_gate=self.mode_gate),
             )
 
         objective_changer = getattr(self._microscope.addons, "objective_changer", None)
@@ -1085,10 +1183,5 @@ class ApplicationContext:
             except Exception:
                 self._log.exception("Failed to shut down CellX during shutdown")
 
-        if _def is not None and getattr(_def, "RUN_FLUIDICS", False):
-            try:
-                fluidics = getattr(self._microscope.addons, "fluidics", None)
-                if fluidics is not None:
-                    fluidics.close()
-            except Exception:
-                self._log.exception("Failed to shut down fluidics during shutdown")
+        # Note: FluidicsService.shutdown() handles driver.close() automatically
+        # when the service registry shuts down services.

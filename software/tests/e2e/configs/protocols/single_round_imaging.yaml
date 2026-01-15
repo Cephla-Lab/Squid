@@ -1,0 +1,21 @@
+name: Single Round Imaging
+version: "1.0"
+description: Minimal single-round imaging protocol for e2e validation
+
+defaults:
+  imaging:
+    z_planes: 1
+    z_step_um: 0.5
+    use_autofocus: false
+    use_focus_lock: false
+    skip_saving: true
+
+rounds:
+  - name: Imaging
+    type: imaging
+    imaging:
+      channels: ["BF LED matrix full"]
+      z_planes: 1
+      z_step_um: 0.5
+      use_autofocus: false
+      skip_saving: true

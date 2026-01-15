@@ -1,0 +1,5 @@
+protocol,operation,solution,volume_ul,flow_rate_ul_per_min,incubation_time_s
+Initial Rinse,flow,wash_buffer,300,1000,0
+Main Wash,flow,wash_buffer,500,500,0
+Main Wash,incubate,wash_buffer,0,0,3
+Final Rinse,flow,imaging_buffer,300,1000,0
