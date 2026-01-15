@@ -52,61 +52,56 @@ def get_display_color_for_channel(channel: IlluminationChannel) -> str:
 def create_general_acquisition_channel(
     illumination_channel: IlluminationChannel,
     include_confocal: bool = False,
-    camera_name: Optional[str] = None,
+    camera_id: Optional[int] = None,
 ) -> AcquisitionChannel:
     """
-    Create an acquisition channel for general.yaml (v1.1 schema).
+    Create an acquisition channel for general.yaml (v1.0 schema).
 
     general.yaml defines channel identity and shared settings:
     - display_color: Color for visualization
-    - camera: Camera name (optional for single-camera systems)
+    - camera: Camera ID (optional for single-camera systems)
     - illumination_channel: Which illumination channel to use
-    - z_offset_um: Z offset (shared across objectives)
-    - filter_wheel/filter_position: Body filter wheel settings
+    - z_offset_um: Z offset (shared across objectives, at channel level)
+    - filter_wheel/filter_position: Filter wheel settings (resolved via hardware_bindings)
 
     Default values are included for exposure, gain, and intensity but these
     are expected to be overridden by objective-specific files.
 
     Args:
         illumination_channel: The illumination channel to create from
-        include_confocal: Whether to include confocal settings
-        camera_name: Camera name (optional for single-camera systems)
+        include_confocal: Whether to include confocal settings (unused in v1.0 - iris in objective only)
+        camera_id: Camera ID (optional for single-camera systems)
 
     Returns:
         AcquisitionChannel for general.yaml
     """
     display_color = get_display_color_for_channel(illumination_channel)
 
-    # v1.1: camera_settings is a single object, display_color is at channel level
+    # v1.0: camera_settings is a single object, display_color is at channel level
     camera_settings = CameraSettings(
         exposure_time_ms=DEFAULT_EXPOSURE_TIME_MS,  # Default, overridden by objective
         gain_mode=DEFAULT_GAIN_MODE,  # Default, overridden by objective
     )
 
-    # general.yaml: illumination_channel and z_offset_um are the key fields
+    # general.yaml: illumination_channel is the key field
     # intensity is included as default but will be overridden by objective files
     illumination_settings = IlluminationSettings(
         illumination_channel=illumination_channel.name,
         intensity=DEFAULT_ILLUMINATION_INTENSITY,  # Default, overridden by objective
-        z_offset_um=DEFAULT_Z_OFFSET_UM,
     )
 
-    confocal_settings = None
-    if include_confocal:
-        confocal_settings = ConfocalSettings(
-            confocal_filter_wheel=None,  # No default wheel name
-            confocal_filter_position=1,
-        )
+    # Note: confocal_settings removed in v1.0 - filter wheel resolved via hardware_bindings
+    # iris settings only in confocal_override (objective files)
 
     return AcquisitionChannel(
         name=illumination_channel.name,
-        display_color=display_color,  # v1.1: at channel level
-        camera=camera_name,  # v1.1: optional camera name
+        display_color=display_color,  # v1.0: at channel level
+        camera=camera_id,  # v1.0: optional camera ID (int), null for single-camera
         camera_settings=camera_settings,
-        filter_wheel=None,  # v1.1: body filter wheel name (no default)
-        filter_position=1,  # v1.1: default position
+        filter_wheel=None,  # v1.0: resolved via hardware_bindings (no default)
+        filter_position=1,  # v1.0: default position
+        z_offset_um=DEFAULT_Z_OFFSET_UM,  # v1.0: at channel level
         illumination_settings=illumination_settings,
-        confocal_settings=confocal_settings,
         confocal_override=None,  # No confocal_override in general.yaml
     )
 
@@ -114,19 +109,19 @@ def create_general_acquisition_channel(
 def create_objective_acquisition_channel(
     illumination_channel: IlluminationChannel,
     include_confocal: bool = False,
-    camera_name: Optional[str] = None,
+    camera_id: Optional[int] = None,
 ) -> AcquisitionChannel:
     """
-    Create an acquisition channel for objective-specific YAML files (v1.1 schema).
+    Create an acquisition channel for objective-specific YAML files (v1.0 schema).
 
     Objective files define per-objective settings: intensity, exposure, gain,
-    confocal iris settings. Does NOT include illumination_channel, display_color,
-    z_offset_um, filter_wheel, filter_position (those are in general.yaml).
+    confocal iris settings (in confocal_override). Does NOT include illumination_channel,
+    display_color, z_offset_um, filter_wheel, filter_position (those are in general.yaml).
 
     Args:
         illumination_channel: The illumination channel to create from
-        include_confocal: Whether to include confocal settings
-        camera_name: Camera name (optional for single-camera systems)
+        include_confocal: Whether to include confocal_override with iris settings
+        camera_id: Camera ID (optional for single-camera systems)
 
     Returns:
         AcquisitionChannel for objective YAML
@@ -139,37 +134,28 @@ def create_objective_acquisition_channel(
     else:
         default_intensity = DEFAULT_ILLUMINATION_INTENSITY
 
-    # v1.1: camera_settings is a single object
+    # v1.0: camera_settings is a single object
     camera_settings = CameraSettings(
         exposure_time_ms=DEFAULT_EXPOSURE_TIME_MS,
         gain_mode=DEFAULT_GAIN_MODE,
         pixel_format=None,  # Can be set per objective if needed
     )
 
-    # objective.yaml: intensity only, NO illumination_channel or z_offset_um
+    # objective.yaml: intensity only, NO illumination_channel (from general.yaml)
     illumination_settings = IlluminationSettings(
         illumination_channel=None,  # Not in objective files
         intensity=default_intensity,
-        z_offset_um=0.0,  # Placeholder, z_offset is in general.yaml
     )
 
-    confocal_settings = None
     confocal_override = None
 
     if include_confocal:
-        # objective.yaml: only iris settings, filter wheel is in general.yaml
-        confocal_settings = ConfocalSettings(
-            confocal_filter_wheel=None,  # From general.yaml
-            confocal_filter_position=None,  # From general.yaml
-            illumination_iris=None,  # Objective-specific
-            emission_iris=None,  # Objective-specific
-        )
-        # Create confocal override with same default values
+        # v1.0: confocal_override contains only iris settings (objective-specific)
+        # Filter wheel resolved via hardware_bindings, not stored in config
         confocal_override = AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
                 illumination_channel=None,
                 intensity=default_intensity,
-                z_offset_um=0.0,  # Placeholder
             ),
             camera_settings=CameraSettings(
                 exposure_time_ms=DEFAULT_EXPOSURE_TIME_MS,
@@ -177,22 +163,20 @@ def create_objective_acquisition_channel(
                 pixel_format=None,
             ),
             confocal_settings=ConfocalSettings(
-                confocal_filter_wheel=None,
-                confocal_filter_position=1,
-                illumination_iris=None,
-                emission_iris=None,
+                illumination_iris=None,  # Objective-specific
+                emission_iris=None,  # Objective-specific
             ),
         )
 
     return AcquisitionChannel(
         name=illumination_channel.name,
-        display_color=display_color,  # v1.1: at channel level (placeholder, from general.yaml)
-        camera=camera_name,  # v1.1: optional camera name (from general.yaml)
+        display_color=display_color,  # v1.0: at channel level (placeholder, from general.yaml)
+        camera=camera_id,  # v1.0: optional camera ID (from general.yaml)
         camera_settings=camera_settings,
         filter_wheel=None,  # Not in objective files
         filter_position=None,  # Not in objective files
+        z_offset_um=DEFAULT_Z_OFFSET_UM,  # v1.0: at channel level (placeholder, from general.yaml)
         illumination_settings=illumination_settings,
-        confocal_settings=confocal_settings,
         confocal_override=confocal_override,
     )
 
@@ -200,18 +184,18 @@ def create_objective_acquisition_channel(
 def generate_general_config(
     illumination_config: IlluminationChannelConfig,
     include_confocal: bool = False,
-    camera_name: Optional[str] = None,
+    camera_id: Optional[int] = None,
 ) -> GeneralChannelConfig:
     """
-    Generate a general.yaml configuration from illumination channels (v1.1 schema).
+    Generate a general.yaml configuration from illumination channels (v1.0 schema).
 
     general.yaml defines channel identity: display_color, camera, illumination_channel,
-    filter_wheel, filter_position, base confocal settings.
+    filter_wheel, filter_position, z_offset_um.
 
     Args:
         illumination_config: Available illumination channels
-        include_confocal: Whether to include confocal settings
-        camera_name: Camera name (optional for single-camera systems)
+        include_confocal: Whether to include confocal settings (unused in v1.0 - iris in objective only)
+        camera_id: Camera ID (optional for single-camera systems)
 
     Returns:
         GeneralChannelConfig with default channels
@@ -219,29 +203,29 @@ def generate_general_config(
     channels = []
     for ill_channel in illumination_config.channels:
         acq_channel = create_general_acquisition_channel(
-            ill_channel, include_confocal=include_confocal, camera_name=camera_name
+            ill_channel, include_confocal=include_confocal, camera_id=camera_id
         )
         channels.append(acq_channel)
 
-    return GeneralChannelConfig(version=1.1, channels=channels, channel_groups=[])
+    return GeneralChannelConfig(version=1.0, channels=channels, channel_groups=[])
 
 
 def generate_objective_config(
     illumination_config: IlluminationChannelConfig,
     include_confocal: bool = False,
-    camera_name: Optional[str] = None,
+    camera_id: Optional[int] = None,
 ) -> ObjectiveChannelConfig:
     """
-    Generate an objective-specific configuration (v1.1 schema).
+    Generate an objective-specific configuration (v1.0 schema).
 
     Objective files define per-objective settings: intensity, exposure, gain,
-    confocal iris settings, confocal_override. Does NOT include
+    confocal iris settings (in confocal_override). Does NOT include
     illumination_channel, filter_wheel, filter_position, or z_offset_um (those are in general.yaml).
 
     Args:
         illumination_config: Available illumination channels
-        include_confocal: Whether to include confocal settings
-        camera_name: Camera name (optional for single-camera systems)
+        include_confocal: Whether to include confocal_override with iris settings
+        camera_id: Camera ID (optional for single-camera systems)
 
     Returns:
         ObjectiveChannelConfig with default channels (no illumination_channel)
@@ -249,18 +233,18 @@ def generate_objective_config(
     channels = []
     for ill_channel in illumination_config.channels:
         acq_channel = create_objective_acquisition_channel(
-            ill_channel, include_confocal=include_confocal, camera_name=camera_name
+            ill_channel, include_confocal=include_confocal, camera_id=camera_id
         )
         channels.append(acq_channel)
 
-    return ObjectiveChannelConfig(version=1.1, channels=channels)
+    return ObjectiveChannelConfig(version=1.0, channels=channels)
 
 
 def generate_default_configs(
     illumination_config: IlluminationChannelConfig,
     confocal_config: Optional[ConfocalConfig],
     objectives: Optional[List[str]] = None,
-    camera_name: Optional[str] = None,
+    camera_id: Optional[int] = None,
 ) -> Tuple[GeneralChannelConfig, Dict[str, ObjectiveChannelConfig]]:
     """
     Generate default acquisition configs for all objectives.
@@ -269,7 +253,7 @@ def generate_default_configs(
         illumination_config: Available illumination channels
         confocal_config: Confocal configuration (None if no confocal)
         objectives: List of objectives to generate configs for (default: standard set)
-        camera_name: Camera name (optional for single-camera systems)
+        camera_id: Camera ID (optional for single-camera systems)
 
     Returns:
         Tuple of (general_config, {objective: objective_config})
@@ -280,13 +264,13 @@ def generate_default_configs(
     include_confocal = confocal_config is not None
 
     general_config = generate_general_config(
-        illumination_config, include_confocal=include_confocal, camera_name=camera_name
+        illumination_config, include_confocal=include_confocal, camera_id=camera_id
     )
 
     objective_configs = {}
     for objective in objectives:
         objective_configs[objective] = generate_objective_config(
-            illumination_config, include_confocal=include_confocal, camera_name=camera_name
+            illumination_config, include_confocal=include_confocal, camera_id=camera_id
         )
 
     return general_config, objective_configs

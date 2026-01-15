@@ -26,11 +26,11 @@ from control.models import (
 
 @pytest.fixture
 def sample_channel():
-    """Create a sample acquisition channel (v1.1 schema)."""
+    """Create a sample acquisition channel (v1.0 schema)."""
     return AcquisitionChannel(
         name="Test Channel",
         display_color="#00FF00",
-        camera="camera_1",
+        camera=1,  # v1.0: camera is int ID, null for single-camera
         illumination_settings=IlluminationSettings(
             illumination_channel="488nm",
             intensity=50.0,
@@ -44,11 +44,11 @@ def sample_channel():
 
 @pytest.fixture
 def sample_channel_with_confocal_override():
-    """Create a channel with confocal override settings (v1.1 schema)."""
+    """Create a channel with confocal override settings (v1.0 schema)."""
     return AcquisitionChannel(
         name="Confocal Channel",
         display_color="#00FF00",
-        camera="camera_1",
+        camera=1,  # v1.0: camera is int ID
         illumination_settings=IlluminationSettings(
             illumination_channel="488nm",
             intensity=50.0,
@@ -57,10 +57,7 @@ def sample_channel_with_confocal_override():
             exposure_time_ms=100.0,
             gain_mode=0.0,
         ),
-        confocal_settings=ConfocalSettings(
-            confocal_filter_wheel="Emission Wheel",
-            confocal_filter_position=2,
-        ),
+        # v1.0: confocal_override contains iris settings only (no confocal_settings at channel level)
         confocal_override=AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
                 illumination_channel="488nm",
@@ -69,6 +66,10 @@ def sample_channel_with_confocal_override():
             camera_settings=CameraSettings(
                 exposure_time_ms=200.0,  # Longer exposure for confocal
                 gain_mode=1.0,
+            ),
+            confocal_settings=ConfocalSettings(
+                illumination_iris=50.0,
+                emission_iris=50.0,
             ),
         ),
     )
@@ -94,13 +95,13 @@ class TestApplyConfocalOverride:
         assert result[0].illumination_settings.intensity == 50.0
 
     def test_applies_override_when_confocal_mode_true(self, sample_channel_with_confocal_override):
-        """Test that confocal override is applied when confocal_mode is True (v1.1 schema)."""
+        """Test that confocal override is applied when confocal_mode is True (v1.0 schema)."""
         channels = [sample_channel_with_confocal_override]
         result = apply_confocal_override(channels, confocal_mode=True)
 
         # Should have override values
         assert result[0].illumination_settings.intensity == 75.0
-        # v1.1: camera_settings is a single object, not a Dict
+        # v1.0: camera_settings is a single object, not a Dict
         assert result[0].camera_settings.exposure_time_ms == 200.0
         assert result[0].camera_settings.gain_mode == 1.0
 
@@ -122,32 +123,32 @@ class TestApplyConfocalOverride:
 
 
 class TestGetEffectiveChannels:
-    """Tests for get_effective_channels function (v1.1 schema)."""
+    """Tests for get_effective_channels function (v1.0 schema)."""
 
     def test_merges_general_and_objective(self):
-        """Test that general and objective configs are merged (v1.1 schema)."""
+        """Test that general and objective configs are merged (v1.0 schema)."""
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
                     display_color="#00FF00",
-                    camera="camera_1",
+                    camera=1,  # v1.0: camera is int ID
                     illumination_settings=IlluminationSettings(
                         illumination_channel="488nm",
                         intensity=50.0,
-                        z_offset_um=5.0,
                     ),
                     camera_settings=CameraSettings(
                         exposure_time_ms=100.0,
                         gain_mode=0.0,
                     ),
+                    z_offset_um=5.0,  # v1.0: at channel level
                 )
             ],
         )
 
         objective = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
@@ -169,22 +170,22 @@ class TestGetEffectiveChannels:
         ch = result[0]
         # From general: illumination_channel, z_offset_um, display_color
         assert ch.illumination_settings.illumination_channel == "488nm"
-        assert ch.illumination_settings.z_offset_um == 5.0
-        assert ch.display_color == "#00FF00"  # v1.1: at channel level
+        assert ch.z_offset_um == 5.0  # v1.0: at channel level
+        assert ch.display_color == "#00FF00"  # v1.0: at channel level
         # From objective: intensity, exposure_time_ms, gain_mode
         assert ch.illumination_settings.intensity == 75.0
         assert ch.camera_settings.exposure_time_ms == 50.0
         assert ch.camera_settings.gain_mode == 1.0
 
     def test_applies_confocal_override_when_mode_true(self):
-        """Test that confocal override is applied when confocal_mode is True (v1.1 schema)."""
+        """Test that confocal override is applied when confocal_mode is True (v1.0 schema)."""
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
                     display_color="#00FF00",
-                    camera="camera_1",
+                    camera=1,  # v1.0: camera is int ID
                     illumination_settings=IlluminationSettings(
                         illumination_channel="488nm",
                         intensity=50.0,
@@ -198,7 +199,7 @@ class TestGetEffectiveChannels:
         )
 
         objective = ObjectiveChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
@@ -268,7 +269,7 @@ class TestEnabledChannelFiltering:
     def test_enabled_preserved_in_get_effective_channels(self):
         """Test that enabled=False is preserved through get_effective_channels."""
         general = GeneralChannelConfig(
-            version=1.1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Enabled Channel",
@@ -300,7 +301,7 @@ class TestEnabledChannelFiltering:
         )
 
         # Use empty objective config (not None) since merge_channel_configs expects ObjectiveChannelConfig
-        objective = ObjectiveChannelConfig(version=1.1, channels=[])
+        objective = ObjectiveChannelConfig(version=1.0, channels=[])
 
         result = get_effective_channels(general, objective, confocal_mode=False)
 
@@ -382,15 +383,16 @@ class TestCopyProfileConfigs:
         (source / "channel_configs").mkdir(parents=True)
         (source / "laser_af_configs").mkdir(parents=True)
 
-        # Write some config files (v1.1 schema)
+        # Write some config files (v1.0 schema)
         (source / "channel_configs" / "general.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 channel_groups: []
 channels:
   - name: "Test"
     display_color: "#00FF00"
     camera: null
+    z_offset_um: 0.0
     illumination_settings:
       illumination_channel: "488nm"
       intensity: 50.0
@@ -401,11 +403,12 @@ channels:
         )
         (source / "channel_configs" / "20x.yaml").write_text(
             """
-version: 1.1
+version: 1.0
 channels:
   - name: "Test"
     display_color: "#00FF00"
     camera: null
+    z_offset_um: 0.0
     illumination_settings:
       intensity: 75.0
     camera_settings:
