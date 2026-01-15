@@ -436,8 +436,15 @@ class LaserAutofocusController(QObject):
         else:
             original_z_um = self.stage.get_pos().z_mm * 1000
 
+        # Debug timestamp for characterization mode
+        debug_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") if self.characterization_mode else None
+
         current_displacement_um = self.measure_displacement()
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
+
+        # Debug: save image after measurement (after search if triggered)
+        if self.characterization_mode and self.image is not None:
+            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_1_measurement.bmp", self.image)
 
         if math.isnan(current_displacement_um):
             self._log.error("Cannot move to target: failed to measure current displacement")
@@ -454,6 +461,11 @@ class LaserAutofocusController(QObject):
 
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
+
+        # Debug: save image used for cross-correlation verification
+        if self.characterization_mode and self.image is not None:
+            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_2_cc_verify.bmp", self.image)
+
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
