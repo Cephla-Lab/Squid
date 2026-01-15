@@ -11,8 +11,9 @@ software/
 ├── machine_configs/                    # Hardware-specific (per machine)
 │   ├── illumination_channel_config.yaml   # Illumination channels (required)
 │   ├── cameras.yaml                      # Optional: camera registry (v1.1)
-│   ├── filter_wheels.yaml                # Optional: filter wheel registry (v1.1)
-│   ├── confocal_config.yaml              # Optional: confocal settings
+│   ├── filter_wheels.yaml                # Optional: standalone filter wheels (v1.1)
+│   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings (v1.1)
+│   ├── confocal_config.yaml              # Optional: confocal settings + wheels
 │   ├── camera_mappings.yaml              # Legacy: multi-camera bindings
 │   └── intensity_calibrations/           # Optional: power calibration CSVs
 │
@@ -189,6 +190,7 @@ filter_wheels:
 - If `filter_wheels.yaml` doesn't exist, filter wheel settings in channels are ignored
 - Filter names appear in UI dropdowns for channel configuration
 - Position numbers must be ≥ 1
+- Wheels here are referenced with the `standalone` source prefix in `hardware_bindings.yaml` (e.g., `standalone.1`)
 
 **Excitation vs Emission Filter Wheels:**
 - **Emission filter wheels** (most common, 0-1 per system): Referenced by acquisition channels via `filter_wheel` and `filter_position` fields in user profile configs
@@ -197,6 +199,8 @@ filter_wheels:
 ### confocal_config.yaml (Optional)
 
 Only create this file if the system has a confocal unit. Its presence indicates that confocal settings should be included in acquisition configs. Filter wheels built into the confocal unit are defined here (not in `filter_wheels.yaml`).
+
+> **Note**: Filter wheels in this file are referenced with the `confocal` source prefix in `hardware_bindings.yaml` (e.g., `confocal.1`), while wheels in `filter_wheels.yaml` use the `standalone` source prefix.
 
 ```yaml
 version: 1
@@ -230,9 +234,49 @@ objective_specific_properties:
 | `public_properties` | Properties available in `general.yaml` |
 | `objective_specific_properties` | Properties only in objective-specific files |
 
+### hardware_bindings.yaml (Optional, v1.1)
+
+Maps cameras to their associated filter wheels using **source-qualified references**. This file is only needed for multi-camera systems where each camera uses a different emission filter wheel.
+
+**Source-Qualified References:**
+
+Filter wheels can come from two sources:
+- **`standalone`**: Defined in `filter_wheels.yaml`
+- **`confocal`**: Defined in `confocal_config.yaml`
+
+References use the format `source.identifier` where identifier can be an ID or name:
+- `confocal.1` - confocal wheel with ID 1
+- `standalone.Emission Wheel` - standalone wheel named "Emission Wheel"
+
+```yaml
+version: 1.1
+
+emission_filter_wheels:
+  # Camera ID -> source-qualified wheel reference
+  1: confocal.1                    # Camera 1 uses confocal wheel ID 1
+  2: standalone.1                  # Camera 2 uses standalone wheel ID 1
+  3: "standalone.Side Emission"    # Camera 3 uses standalone wheel by name
+```
+
+**Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `version` | Schema version (`1.1`) |
+| `emission_filter_wheels` | Map of camera ID to source-qualified wheel reference |
+
+**Implicit Binding (Single Camera + Single Wheel):**
+
+If `hardware_bindings.yaml` doesn't exist and the system has exactly one camera and one emission filter wheel, the binding is implicit - no configuration needed.
+
+**When to Create This File:**
+- Multi-camera systems with separate emission wheels per camera
+- Systems where camera 1 should use a confocal wheel and camera 2 a standalone wheel
+- Any setup where automatic binding won't work correctly
+
 ### camera_mappings.yaml (Legacy)
 
-> **Note**: This file is deprecated in v1.1. Use `cameras.yaml` and `filter_wheels.yaml` instead for new setups.
+> **Note**: This file is deprecated in v1.1. Use `cameras.yaml`, `filter_wheels.yaml`, and `hardware_bindings.yaml` instead for new setups.
 
 Maps camera selections to hardware bindings (dichroic positions, filter wheels). This file is optional and typically only needed for advanced multi-camera setups.
 
