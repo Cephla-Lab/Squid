@@ -532,7 +532,10 @@ class ScanCoordinates:
         def sort_key(item):
             key, coord = item
             if "manual" in key:
-                return (0, coord[1], coord[0])  # Manual coords: sort by y, then x
+                # Preserve drawing order by using the index from the region name
+                num = key[6:]  # Everything after "manual"
+                index = int(num) if num else 0
+                return (0, index, 0)  # Manual coords: preserve drawing order
             else:
                 letters = "".join(c for c in key if c.isalpha())
                 numbers = "".join(c for c in key if c.isdigit())
@@ -546,14 +549,22 @@ class ScanCoordinates:
         sorted_items = sorted(self.region_centers.items(), key=sort_key)
 
         if self.acquisition_pattern == "S-Pattern":
-            # Group by row and reverse alternate rows
-            rows = itertools.groupby(sorted_items, key=lambda x: x[1][1] if "manual" in x[0] else x[0][0])
-            sorted_items = []
-            for i, (_, group) in enumerate(rows):
-                row = list(group)
-                if i % 2 == 1:
-                    row.reverse()
-                sorted_items.extend(row)
+            # Separate manual and well regions - only apply S-Pattern to wells
+            manual_items = [(k, v) for k, v in sorted_items if "manual" in k]
+            well_items = [(k, v) for k, v in sorted_items if "manual" not in k]
+
+            # Apply S-Pattern only to well regions (group by row and reverse alternate rows)
+            if well_items:
+                rows = itertools.groupby(well_items, key=lambda x: x[0][0])
+                well_items = []
+                for i, (_, group) in enumerate(rows):
+                    row = list(group)
+                    if i % 2 == 1:
+                        row.reverse()
+                    well_items.extend(row)
+
+            # Manual regions first (in drawing order), then wells
+            sorted_items = manual_items + well_items
 
         # Update dictionaries efficiently
         self.region_centers = {k: v for k, v in sorted_items}
