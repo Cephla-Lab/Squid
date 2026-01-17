@@ -537,7 +537,7 @@ class ScanCoordinates:
         Returns 0 for 'manual', or the number for 'manual0', 'manual1', etc.
         This index represents the order in which the user drew the regions.
         """
-        suffix = key[len("manual"):]
+        suffix = key[len("manual") :]
         return int(suffix) if suffix else 0
 
     def sort_coordinates(self):
