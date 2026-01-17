@@ -523,6 +523,23 @@ class ScanCoordinates:
             and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
         )
 
+    def _is_manual_region(self, key: str) -> bool:
+        """Check if a region key represents a manually-drawn region.
+
+        Manual regions are named 'manual' or 'manual0', 'manual1', etc.
+        Using startswith avoids false positives like 'xymanual' or 'manual_well'.
+        """
+        return key.startswith("manual")
+
+    def _get_manual_region_index(self, key: str) -> int:
+        """Extract the numeric index from a manual region name.
+
+        Returns 0 for 'manual', or the number for 'manual0', 'manual1', etc.
+        This index represents the order in which the user drew the regions.
+        """
+        suffix = key[len("manual"):]
+        return int(suffix) if suffix else 0
+
     def sort_coordinates(self):
         self._log.info(f"Acquisition pattern: {self.acquisition_pattern}")
 
@@ -531,29 +548,31 @@ class ScanCoordinates:
 
         def sort_key(item):
             key, coord = item
-            if "manual" in key:
-                # Preserve drawing order by using the index from the region name
-                num = key[6:]  # Everything after "manual"
-                index = int(num) if num else 0
-                return (0, index, 0)  # Manual coords: preserve drawing order
-            else:
-                letters = "".join(c for c in key if c.isalpha())
-                numbers = "".join(c for c in key if c.isdigit())
+            if self._is_manual_region(key):
+                # Manual regions preserve drawing order (the index from region name)
+                # They sort before wells (priority 0 vs 1)
+                return (0, self._get_manual_region_index(key), 0)
 
-                letter_value = 0
-                for i, letter in enumerate(reversed(letters)):
-                    letter_value += (ord(letter) - ord("A")) * (26**i)
+            # Well regions sort by row letter, then column number (e.g., A1, A2, B1, B2)
+            letters = "".join(c for c in key if c.isalpha())
+            numbers = "".join(c for c in key if c.isdigit())
 
-                return (1, letter_value, int(numbers))  # Well coords: sort by letter value, then number
+            # Convert multi-letter row (e.g., "AA") to numeric value
+            letter_value = 0
+            for i, letter in enumerate(reversed(letters)):
+                letter_value += (ord(letter) - ord("A")) * (26**i)
+
+            return (1, letter_value, int(numbers))
 
         sorted_items = sorted(self.region_centers.items(), key=sort_key)
 
         if self.acquisition_pattern == "S-Pattern":
-            # Separate manual and well regions - only apply S-Pattern to wells
-            manual_items = [(k, v) for k, v in sorted_items if "manual" in k]
-            well_items = [(k, v) for k, v in sorted_items if "manual" not in k]
+            # S-Pattern only applies to well plates - manual regions stay in drawing order
+            # because the user's drawing order already represents their intended path
+            manual_items = [(k, v) for k, v in sorted_items if self._is_manual_region(k)]
+            well_items = [(k, v) for k, v in sorted_items if not self._is_manual_region(k)]
 
-            # Apply S-Pattern only to well regions (group by row and reverse alternate rows)
+            # Reverse alternate rows to create serpentine path (reduces stage travel)
             if well_items:
                 rows = itertools.groupby(well_items, key=lambda x: x[0][0])
                 well_items = []
@@ -563,7 +582,6 @@ class ScanCoordinates:
                         row.reverse()
                     well_items.extend(row)
 
-            # Manual regions first (in drawing order), then wells
             sorted_items = manual_items + well_items
 
         # Update dictionaries efficiently
