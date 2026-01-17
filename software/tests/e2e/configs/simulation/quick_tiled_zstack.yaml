@@ -5,6 +5,7 @@
 name: Quick Tiled Z-Stack
 version: "1.0"
 description: Fast tiled imaging with z-stack for manual testing
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
 
 defaults:
   imaging:

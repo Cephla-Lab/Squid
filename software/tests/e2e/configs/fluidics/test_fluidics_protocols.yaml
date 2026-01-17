@@ -1,0 +1,161 @@
+# Test Fluidics Protocols for E2E Testing
+# These are simulated protocols with minimal durations
+
+protocols:
+  # FISH Round 1 protocols
+  probe_1_hybridization:
+    description: "Deliver probe set 1 for hybridization"
+    steps:
+      - operation: flow
+        solution: probe_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+        description: "Flow probe 1 to chamber"
+      - operation: incubate
+        duration_s: 2
+        description: "Brief hybridization (simulated)"
+
+  strip_fluorophores:
+    description: "Strip fluorophores between rounds"
+    steps:
+      - operation: flow
+        solution: strip_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        description: "Flow strip buffer"
+      - operation: incubate
+        duration_s: 1
+        description: "Brief strip incubation"
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+        description: "Wash away stripped fluorophores"
+
+  # FISH Round 2 protocols
+  probe_2_hybridization:
+    description: "Deliver probe set 2 for hybridization"
+    steps:
+      - operation: flow
+        solution: probe_2
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+        description: "Flow probe 2 to chamber"
+      - operation: incubate
+        duration_s: 2
+        description: "Brief hybridization (simulated)"
+
+  # Common protocols
+  final_wash:
+    description: "Final wash and storage"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 100
+        repeats: 3
+        description: "Final wash cycles"
+      - operation: aspirate
+        description: "Remove excess liquid"
+
+  # For quick_fish_2round.yaml
+  hybridization_1:
+    description: "Hybridization round 1"
+    steps:
+      - operation: flow
+        solution: hyb_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  hybridization_2:
+    description: "Hybridization round 2"
+    steps:
+      - operation: flow
+        solution: hyb_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  # For demo_full_workflow.yaml
+  sample_preparation:
+    description: "Prepare sample with initial wash"
+    steps:
+      - operation: prime
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+        repeats: 2
+
+  sample_cleanup:
+    description: "Clean up sample after imaging"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+      - operation: aspirate
+
+  # For fluidics_only.yaml
+  system_prime:
+    description: "Prime the fluidics system"
+    steps:
+      - operation: prime
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 200
+
+  stain_application:
+    description: "Apply primary stain"
+    steps:
+      - operation: flow
+        solution: stain_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 25
+      - operation: incubate
+        duration_s: 2
+
+  secondary_stain:
+    description: "Apply secondary stain"
+    steps:
+      - operation: flow
+        solution: stain_2
+        volume_ul: 100
+        flow_rate_ul_per_min: 25
+      - operation: incubate
+        duration_s: 2
+
+  final_rinse:
+    description: "Final rinse"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+
+  # For quick_fluidics_wash.yaml
+  initial_rinse:
+    description: "Initial rinse"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 100
+
+  main_wash:
+    description: "Main wash cycle"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2

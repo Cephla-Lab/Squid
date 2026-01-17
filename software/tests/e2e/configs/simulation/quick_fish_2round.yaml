@@ -1,16 +1,12 @@
 # Quick 2-Round FISH Simulation
 # Realistic structure, fast execution
 # 2 FOVs recommended
-#
-# Fluidics sequence: ../fluidics/quick_fish_2round_sequences.csv
 
 name: Quick 2-Round FISH
 version: "1.0"
 description: Fast 2-round FISH simulation for manual testing
-
-# Reference to matching fluidics CSV for manual testing
-metadata:
-  fluidics_sequence_csv: "../fluidics/quick_fish_2round_sequences.csv"
+fov_positions_file: ../fov_positions/test_2fov_simple.csv
+fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
 
 defaults:
   imaging:
@@ -20,43 +16,21 @@ defaults:
     z_planes: 3
     z_step_um: 1.0
     use_autofocus: false
-  fluidics:
-    flow_rate_ul_per_min: 500.0
 
 rounds:
-  # Round 1: Hybridization 1 (matches CSV protocol "Hybridization 1")
+  # Round 1: Hybridization 1
   - name: Hybridization 1
     type: imaging
-    fluidics:
-      - command: flow
-        solution: probe_1
-        volume_ul: 100
-        flow_rate_ul_per_min: 500
-      - command: incubate
-        duration_s: 2.0
-      - command: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 500
+    fluidics_protocol: hybridization_1
     imaging:
       channels: ["Fluorescence 488 nm Ex"]
       z_planes: 3
       z_step_um: 1.0
 
-  # Round 2: Hybridization 2 (matches CSV protocol "Hybridization 2")
+  # Round 2: Hybridization 2
   - name: Hybridization 2
     type: imaging
-    fluidics:
-      - command: flow
-        solution: probe_2
-        volume_ul: 100
-        flow_rate_ul_per_min: 500
-      - command: incubate
-        duration_s: 2.0
-      - command: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 500
+    fluidics_protocol: hybridization_2
     imaging:
       channels: ["Fluorescence 488 nm Ex"]
       z_planes: 3

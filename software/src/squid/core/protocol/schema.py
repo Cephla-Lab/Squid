@@ -17,20 +17,13 @@ Example protocol:
 
     rounds:
       - name: "Round 1"
-        fluidics:
-          - command: "flow"
-            solution: "probe_mix_1"
-            volume_ul: 100
-            flow_rate_ul_per_min: 50
+        fluidics_protocol: "probe_delivery_1"  # References named protocol
         imaging:
           channels: ["DAPI", "Cy3"]
 
       - name: "Wash"
         type: "wash"
-        fluidics:
-          - command: "flow"
-            solution: "wash_buffer"
-            volume_ul: 500
+        fluidics_protocol: "standard_wash"  # References named protocol
 """
 
 from enum import Enum
@@ -125,13 +118,13 @@ class Round(BaseModel):
     """A single experimental round.
 
     A round typically consists of:
-    1. Optional fluidics operations (buffer exchange, staining, etc.)
+    1. Optional fluidics protocol (buffer exchange, staining, etc.)
     2. Optional imaging acquisition
 
     Attributes:
         name: Human-readable name for the round
         type: Type of round (imaging, wash, bleach, custom)
-        fluidics: List of fluidics operations
+        fluidics_protocol: Name of the fluidics protocol to run (from fluidics_protocols.yaml)
         imaging: Imaging configuration (None to skip imaging)
         requires_intervention: If True, pause for operator intervention
         intervention_message: Message to show during intervention pause
@@ -140,7 +133,7 @@ class Round(BaseModel):
 
     name: str
     type: RoundType = RoundType.IMAGING
-    fluidics: List[FluidicsStep] = Field(default_factory=list)
+    fluidics_protocol: Optional[str] = None
     imaging: Optional[ImagingStep] = None
     requires_intervention: bool = False
     intervention_message: str = ""
@@ -182,6 +175,11 @@ class ExperimentProtocol(BaseModel):
         created: Creation date string
         defaults: Default settings for imaging and fluidics
         rounds: List of experimental rounds
+        fov_positions_file: Optional path to CSV file with FOV positions
+            CSV format: region_id,x_mm,y_mm,z_mm (one FOV per row)
+            If specified, FOVs are loaded from this file at protocol load time.
+            If not specified, FOVs must be loaded via GUI before starting.
+        output_directory: Optional default output directory for experiment data
         metadata: Additional protocol-level metadata
     """
 
@@ -192,6 +190,9 @@ class ExperimentProtocol(BaseModel):
     created: str = ""
     defaults: ProtocolDefaults = Field(default_factory=ProtocolDefaults)
     rounds: List[Round] = Field(default_factory=list)
+    fov_positions_file: Optional[str] = None
+    fluidics_protocols_file: Optional[str] = None
+    output_directory: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("rounds")
@@ -220,6 +221,8 @@ class ExperimentProtocol(BaseModel):
         """Apply protocol defaults to a round.
 
         Returns a new Round with defaults applied where values were not specified.
+        Note: Fluidics defaults are now applied by the FluidicsController when
+        executing named protocols.
         """
         merged_imaging = None
         if round_.imaging is not None:
@@ -257,33 +260,10 @@ class ExperimentProtocol(BaseModel):
                 skip_saving=imaging.skip_saving,
             )
 
-        fluidics_defaults = self.defaults.fluidics
-        merged_fluidics = []
-        for step in round_.fluidics:
-            step_fields = step.model_fields_set
-            volume_ul = step.volume_ul
-            if step.command == FluidicsCommand.WASH and "volume_ul" not in step_fields:
-                volume_ul = fluidics_defaults.wash_volume_ul
-
-            flow_rate_ul_per_min = step.flow_rate_ul_per_min
-            if "flow_rate_ul_per_min" not in step_fields:
-                flow_rate_ul_per_min = fluidics_defaults.flow_rate_ul_per_min
-
-            merged_fluidics.append(
-                FluidicsStep(
-                    command=step.command,
-                    solution=step.solution,
-                    volume_ul=volume_ul,
-                    flow_rate_ul_per_min=flow_rate_ul_per_min,
-                    duration_s=step.duration_s,
-                    repeats=step.repeats,
-                )
-            )
-
         return Round(
             name=round_.name,
             type=round_.type,
-            fluidics=merged_fluidics,
+            fluidics_protocol=round_.fluidics_protocol,
             imaging=merged_imaging,
             requires_intervention=round_.requires_intervention,
             intervention_message=round_.intervention_message,

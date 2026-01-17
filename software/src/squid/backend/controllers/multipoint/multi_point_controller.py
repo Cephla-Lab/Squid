@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING
 
 from squid.core.events import (
     handles,
-    SetFluidicsRoundsCommand,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
     SetAcquisitionChannelsCommand,
@@ -1283,12 +1282,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     # =========================================================================
     # EventBus Command Handlers
     # =========================================================================
-
-    @handles(SetFluidicsRoundsCommand)
-    def _on_set_fluidics_rounds(self, cmd: SetFluidicsRoundsCommand) -> None:
-        """Handle SetFluidicsRoundsCommand from EventBus."""
-        if self._fluidics_service is not None:
-            self._fluidics_service.set_rounds(cmd.rounds)
 
     @handles(SetAcquisitionParametersCommand)
     def _on_set_acquisition_parameters(self, cmd: SetAcquisitionParametersCommand) -> None:

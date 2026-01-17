@@ -64,9 +64,6 @@ from squid.backend.controllers.orchestrator.orchestrator_controller import (
 from squid.backend.controllers.orchestrator.imaging_executor import (
     ImagingExecutor,
 )
-from squid.backend.controllers.orchestrator.fluidics_executor import (
-    FluidicsExecutor,
-)
 
 __all__ = [
     # State
@@ -120,5 +117,4 @@ __all__ = [
     "OrchestratorController",
     # Executors
     "ImagingExecutor",
-    "FluidicsExecutor",
 ]

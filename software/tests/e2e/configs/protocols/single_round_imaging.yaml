@@ -1,6 +1,7 @@
 name: Single Round Imaging
 version: "1.0"
 description: Minimal single-round imaging protocol for e2e validation
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
 
 defaults:
   imaging:

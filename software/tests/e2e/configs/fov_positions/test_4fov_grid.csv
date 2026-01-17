@@ -1,0 +1,5 @@
+region_id,x_mm,y_mm,z_mm
+Region1,0.0,0.0,0.0
+Region1,0.5,0.0,0.0
+Region1,0.0,0.5,0.0
+Region1,0.5,0.5,0.0

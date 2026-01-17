@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import os
 import queue
@@ -7,6 +8,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type, TYPE
 
 import imageio as iio
 import numpy as np
+import pandas as pd
 
 from _def import (
     Acquisition,
@@ -787,18 +789,14 @@ class MultiPointWorker:
                     break
 
                 if self._fluidics_service and self.use_fluidics:
-                    # Pause focus lock to prevent corrections during fluid motion
+                    # Deprecated: multipoint fluidics integration will be removed in favor of the orchestrator.
+                    # Keep for backwards compatibility with legacy workflows.
                     fluidics_focus_paused = False
                     if self._autofocus_executor.is_focus_lock_active():
                         fluidics_focus_paused = self._autofocus_executor.pause_focus_lock()
 
                     try:
-                        self._fluidics_service.update_port(
-                            self.time_point
-                        )  # use the port in PORT_LIST
-                        # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
-                        self._fluidics_service.run_before_imaging()
-                        self._fluidics_service.wait_for_completion()
+                        self._run_fluidics_phase("before_imaging", self.time_point)
                     finally:
                         # Resume focus lock before imaging
                         if fluidics_focus_paused:
@@ -811,15 +809,14 @@ class MultiPointWorker:
                     self.run_single_time_point()
 
                 if self._fluidics_service and self.use_fluidics:
-                    # Pause focus lock during post-imaging fluidics
+                    # Deprecated: multipoint fluidics integration will be removed in favor of the orchestrator.
+                    # Keep for backwards compatibility with legacy workflows.
                     fluidics_focus_paused = False
                     if self._autofocus_executor.is_focus_lock_active():
                         fluidics_focus_paused = self._autofocus_executor.pause_focus_lock()
 
                     try:
-                        # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
-                        self._fluidics_service.run_after_imaging()
-                        self._fluidics_service.wait_for_completion()
+                        self._run_fluidics_phase("after_imaging", self.time_point)
                     finally:
                         # Resume focus lock for next timepoint
                         if fluidics_focus_paused:
@@ -1201,6 +1198,20 @@ class MultiPointWorker:
 
             # Final drain of results
             self._summarize_runner_outputs(drain_all=True)
+
+    # ---------------------------------------------------------------------
+    # Legacy fluidics integration (removed)
+    # ---------------------------------------------------------------------
+    # NOTE: Legacy multipoint fluidics has been removed. Use the orchestrator
+    # with FluidicsController for experiment workflows that need fluidics.
+
+    def _run_fluidics_phase(self, phase: str, time_point: int) -> None:
+        """Run legacy multipoint fluidics phase - DEPRECATED/REMOVED.
+
+        This method is a no-op. Legacy multipoint fluidics has been removed
+        in favor of the orchestrator with FluidicsController.
+        """
+        pass
 
     def run_single_time_point(self) -> None:
         try:

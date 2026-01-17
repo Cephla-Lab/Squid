@@ -15,7 +15,6 @@ import threading
 import time
 from typing import Optional, TYPE_CHECKING
 
-import pandas as pd
 
 import squid.core.logging
 from squid.backend.services.base import BaseService
@@ -77,8 +76,6 @@ class FluidicsService(BaseService):
         self._lock = threading.RLock()
         self._abort_incubation = threading.Event()
         self._is_incubating = False
-        self._sequences: Optional[pd.DataFrame] = None
-
         # Set up callbacks if driver supports them
         if driver is not None:
             if hasattr(driver, "set_phase_callback"):
@@ -662,6 +659,12 @@ class FluidicsService(BaseService):
             return None
         return self._driver.get_port_for_solution(name)
 
+    def get_port_name(self, port: int) -> Optional[str]:
+        """Get solution name for a port number."""
+        if self._driver is None:
+            return None
+        return self._driver.get_port_name(port)
+
     def get_available_solutions(self) -> dict[str, int]:
         """Get mapping of solution names to port numbers.
 
@@ -687,35 +690,6 @@ class FluidicsService(BaseService):
         if self._driver is None:
             return []
         return self._driver.get_available_ports()
-
-    def set_sequences(self, sequences: pd.DataFrame) -> None:
-        """Store fluidics sequences for orchestrator access.
-
-        This allows the GUI widget to load sequences that the orchestrator
-        can then execute. Sequences are stored as a DataFrame.
-
-        Args:
-            sequences: DataFrame with sequence data (from CSV)
-        """
-        with self._lock:
-            self._sequences = sequences.copy()
-        _log.info(f"Stored {len(sequences)} fluidics sequences")
-
-    def get_sequences(self) -> Optional[pd.DataFrame]:
-        """Get stored fluidics sequences.
-
-        Returns:
-            DataFrame with sequences if set, None otherwise.
-        """
-        with self._lock:
-            if self._sequences is not None:
-                return self._sequences.copy()
-            return None
-
-    def clear_sequences(self) -> None:
-        """Clear stored sequences."""
-        with self._lock:
-            self._sequences = None
 
     def shutdown(self) -> None:
         """Clean shutdown of the service and driver."""

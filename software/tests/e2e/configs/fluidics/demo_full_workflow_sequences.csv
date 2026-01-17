@@ -1,6 +1,0 @@
-protocol,operation,solution,volume_ul,flow_rate_ul_per_min,incubation_time_s
-Sample Preparation,flow,wash_buffer,100,500,0
-Sample Preparation,flow,imaging_buffer,200,500,0
-Sample Preparation,incubate,imaging_buffer,0,0,3
-Sample Cleanup,flow,wash_buffer,500,500,0
-Sample Cleanup,flow,imaging_buffer,300,500,0

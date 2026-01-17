@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
     from squid.backend.managers.scan_coordinates import ScanCoordinates
     from squid.backend.controllers.orchestrator.imaging_executor import ImagingExecutor
-    from squid.backend.controllers.orchestrator.fluidics_executor import FluidicsExecutor
+    from squid.backend.controllers.fluidics_controller import FluidicsController
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -94,7 +94,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             multipoint_controller=multipoint,
             experiment_manager=experiment_manager,
             acquisition_planner=planner,
-            fluidics_executor=fluidics,
+            fluidics_controller=fluidics_controller,
         )
 
         # Start via command
@@ -122,7 +122,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         experiment_manager: "ExperimentManager",
         acquisition_planner: "AcquisitionPlanner",
         imaging_executor: Optional["ImagingExecutor"] = None,
-        fluidics_executor: Optional["FluidicsExecutor"] = None,
+        fluidics_controller: Optional["FluidicsController"] = None,
         scan_coordinates: Optional["ScanCoordinates"] = None,
     ):
         """Initialize the orchestrator.
@@ -133,7 +133,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             experiment_manager: ExperimentManager for folder/metadata
             acquisition_planner: AcquisitionPlanner for validation
             imaging_executor: Optional ImagingExecutor for imaging rounds
-            fluidics_executor: Optional FluidicsExecutor for fluidics steps
+            fluidics_controller: Optional FluidicsController for fluidics protocols
             scan_coordinates: ScanCoordinates for imaging positions
         """
         super().__init__(
@@ -148,7 +148,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._experiment_manager = experiment_manager
         self._planner = acquisition_planner
         self._imaging_executor = imaging_executor
-        self._fluidics_executor = fluidics_executor
+        self._fluidics_controller = fluidics_controller
         self._scan_coordinates = scan_coordinates
         self._checkpoint_manager = CheckpointManager()
         self._protocol_loader = ProtocolLoader()
@@ -304,8 +304,28 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
-            # Create validator
-            validator = ProtocolValidator()
+            # Load fluidics protocols if specified in the protocol
+            # (This adds to any already-loaded protocols from the Fluidics widget)
+            if protocol.fluidics_protocols_file and self._fluidics_controller is not None:
+                from pathlib import Path
+                fluidics_file = protocol.fluidics_protocols_file
+                # Resolve relative paths relative to protocol file
+                if not Path(fluidics_file).is_absolute():
+                    protocol_dir = Path(cmd.protocol_path).parent
+                    fluidics_file = str(protocol_dir / fluidics_file)
+                if Path(fluidics_file).exists():
+                    count = self._fluidics_controller.load_protocols(fluidics_file)
+                    _log.info(f"Loaded {count} fluidics protocols from {fluidics_file}")
+                else:
+                    _log.warning(f"Fluidics protocols file not found: {fluidics_file}")
+
+            # Create validator with available fluidics protocols
+            available_fluidics = None
+            if self._fluidics_controller is not None:
+                available_fluidics = set(self._fluidics_controller.list_protocols())
+            validator = ProtocolValidator(
+                available_fluidics_protocols=available_fluidics,
+            )
 
             # Get FOV count from scan coordinates if available
             fov_count = 1
@@ -393,11 +413,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 OrchestratorState.ABORTED,
             ):
                 self._transition_to(OrchestratorState.IDLE)
-                # Reset fluidics abort state from any previous abort
-                if self._fluidics_executor is not None:
-                    fluidics_svc = self._fluidics_executor._fluidics_service
-                    if fluidics_svc is not None:
-                        fluidics_svc.reset_abort()
+                # FluidicsController resets abort state when run_protocol() is called
             else:
                 _log.warning("Cannot start: orchestrator not idle")
                 return False
@@ -410,6 +426,20 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             self._protocol = self._protocol_loader.load(protocol_path)
             _log.info(f"Loaded protocol: {self._protocol.name}")
+
+            # Load fluidics protocols if specified
+            if self._protocol.fluidics_protocols_file and self._fluidics_controller is not None:
+                from pathlib import Path
+                fluidics_file = self._protocol.fluidics_protocols_file
+                # Resolve relative paths relative to protocol file
+                if not Path(fluidics_file).is_absolute():
+                    protocol_dir = Path(protocol_path).parent
+                    fluidics_file = str(protocol_dir / fluidics_file)
+                if Path(fluidics_file).exists():
+                    count = self._fluidics_controller.load_protocols(fluidics_file)
+                    _log.info(f"Loaded {count} fluidics protocols from {fluidics_file}")
+                else:
+                    _log.warning(f"Fluidics protocols file not found: {fluidics_file}")
 
             # Capture user-visible label (unique ID set once context is created)
             self._experiment_label = experiment_id or self._protocol.name
@@ -487,11 +517,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._imaging_executor.resume()
             self._cancel_token.resume()
 
-            # Reset fluidics abort state in case we paused during abort
-            if self._fluidics_executor is not None:
-                fluidics_svc = self._fluidics_executor._fluidics_service
-                if fluidics_svc is not None:
-                    fluidics_svc.reset_abort()
+            # FluidicsController will reset abort state when next protocol is run
 
             if self._resume_state in (
                 OrchestratorState.RUNNING_FLUIDICS,
@@ -519,11 +545,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         ):
             self._cancel_token.cancel("User abort")
 
-            # Abort fluidics service directly to interrupt incubation
-            if self._fluidics_executor is not None:
-                fluidics_svc = self._fluidics_executor._fluidics_service
-                if fluidics_svc is not None:
-                    fluidics_svc.abort()
+            # Stop fluidics controller to interrupt any running protocol
+            if self._fluidics_controller is not None:
+                self._fluidics_controller.stop()
 
             # State transition happens in worker thread
             return True
@@ -732,7 +756,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         """Execute a single round."""
         _log.info(
             f"Executing round {round_idx}: name={round_.name}, type={round_.type}, "
-            f"fluidics={len(round_.fluidics)}, imaging={round_.imaging is not None}"
+            f"fluidics_protocol={round_.fluidics_protocol}, imaging={round_.imaging is not None}"
         )
         self._publish_round_started(round_idx, round_.name, round_.type.value)
 
@@ -740,10 +764,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         if round_.requires_intervention:
             self._wait_for_intervention(round_idx, round_)
 
-        # Execute fluidics steps
-        if round_.fluidics:
+        # Execute fluidics protocol
+        if round_.fluidics_protocol:
             self._transition_to(OrchestratorState.RUNNING_FLUIDICS)
-            self._execute_fluidics(round_idx, round_, resume_step_index=resume_fluidics_step)
+            self._execute_fluidics(round_idx, round_.fluidics_protocol)
 
         # Execute imaging
         if round_.imaging is not None:
@@ -759,50 +783,75 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     def _execute_fluidics(
         self,
         round_idx: int,
-        round_: Round,
-        *,
-        resume_step_index: int = 0,
+        protocol_name: str,
     ) -> None:
-        """Execute fluidics steps for a round."""
+        """Execute a fluidics protocol for a round.
+
+        Args:
+            round_idx: Index of the current round
+            protocol_name: Name of the fluidics protocol to run
+        """
         if self._progress.current_round is None or self._cancel_token is None:
             return
 
-        total_steps = sum(step.repeats for step in round_.fluidics)
-        self._progress.current_round.total_fluidics_steps = total_steps
-        step_counter = min(resume_step_index, total_steps)
-        skip_remaining = step_counter
-        self._progress.current_round.fluidics_step_index = step_counter
+        _log.info(f"Round {round_idx}: Running fluidics protocol '{protocol_name}'")
 
-        for step_idx, step in enumerate(round_.fluidics):
-            self._cancel_token.check_point()
+        if self._fluidics_controller is None:
+            # No fluidics controller - simulate
+            _log.debug(f"[SIMULATED] Fluidics protocol: {protocol_name}")
+            return
 
-            for repeat_idx in range(step.repeats):
-                self._cancel_token.check_point()
+        # Check for cancellation before starting
+        self._cancel_token.check_point()
 
-                self._progress.current_round.fluidics_step_index = step_counter
-                self._save_checkpoint()
+        # Start the protocol
+        success = self._fluidics_controller.run_protocol(protocol_name)
+        if not success:
+            raise RuntimeError(f"Failed to start fluidics protocol: {protocol_name}")
 
-                if skip_remaining > 0:
-                    skip_remaining -= 1
-                    continue
+        # Wait for protocol completion by polling controller state
+        import time
+        from squid.backend.controllers.fluidics_controller import FluidicsControllerState
 
-                _log.info(
-                    f"Round {round_idx}: Fluidics step {step_counter + 1}/{total_steps} "
-                    f"({step.command.value}, repeat {repeat_idx + 1}/{step.repeats})"
-                )
+        while True:
+            # Check for orchestrator abort
+            if self._cancel_token.is_cancelled:
+                self._fluidics_controller.stop()
+                raise CancellationError("Fluidics cancelled by orchestrator")
 
-                # Execute fluidics command via executor
-                if self._fluidics_executor is not None:
-                    success = self._fluidics_executor.execute(step, self._cancel_token)
-                    if not success:
-                        raise RuntimeError(f"Fluidics step failed: {step.command.value}")
-                else:
-                    # No fluidics hardware - log and continue
-                    _log.debug(f"[SIMULATED] Fluidics step: {step.command.value}")
+            # Check controller state
+            state = self._fluidics_controller.state
+            if state in (
+                FluidicsControllerState.IDLE,
+                FluidicsControllerState.COMPLETED,
+                FluidicsControllerState.FAILED,
+                FluidicsControllerState.STOPPED,
+            ):
+                break
 
-                step_counter += 1
-                self._progress.current_round.fluidics_step_index = step_counter
+            # Update progress based on controller's step tracking
+            if self._progress.current_round is not None:
+                self._progress.current_round.fluidics_step_index = self._fluidics_controller.current_step_index
+                self._progress.current_round.total_fluidics_steps = self._fluidics_controller.total_steps
                 self._publish_progress()
+
+            time.sleep(0.1)
+
+        terminal_state = self._fluidics_controller.last_terminal_state
+        last_result = self._fluidics_controller.last_result
+        if terminal_state == FluidicsControllerState.FAILED or (
+            last_result is not None and not last_result.success
+        ):
+            raise RuntimeError(f"Fluidics protocol '{protocol_name}' failed")
+        if terminal_state == FluidicsControllerState.STOPPED:
+            raise CancellationError(f"Fluidics protocol '{protocol_name}' was stopped")
+        if terminal_state is None:
+            _log.warning(
+                "Fluidics protocol '%s' finished without terminal state",
+                protocol_name,
+            )
+
+        _log.info(f"Round {round_idx}: Fluidics protocol '{protocol_name}' completed")
 
     def _execute_imaging(
         self,

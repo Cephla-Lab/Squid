@@ -14,6 +14,7 @@ Usage:
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
@@ -35,6 +36,7 @@ from squid.core.events import (
     handles,
     event_bus,
     ObjectiveChanged,
+    LoadFluidicsProtocolsCommand,
 )
 from squid.core.mode_gate import GlobalModeGate
 from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
@@ -446,8 +448,8 @@ class ApplicationContext:
         from squid.backend.controllers.orchestrator import (
             OrchestratorController,
             ImagingExecutor,
-            FluidicsExecutor,
         )
+        from squid.backend.controllers.fluidics_controller import FluidicsController
         from squid.backend.controllers.multipoint.experiment_manager import ExperimentManager
         from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
 
@@ -475,11 +477,37 @@ class ApplicationContext:
             scan_coordinates=scan_coordinates,
         )
 
+        # Create fluidics controller
+        # Pass both direct service reference and registry for late-binding support
+        # (service may be initialized later via FluidicsWidget)
         fluidics_service = self._services.get("fluidics")
-        fluidics_executor = FluidicsExecutor(
+        fluidics_controller = FluidicsController(
             event_bus=event_bus,
             fluidics_service=fluidics_service,
+            service_registry=self._services,
         )
+        # Optionally load named fluidics protocols from config.
+        try:
+            import _def as _config
+        except Exception:
+            _config = None
+        protocols_path = None
+        if _config is not None:
+            protocols_path = getattr(_config, "FLUIDICS_PROTOCOLS_PATH", None)
+        if protocols_path:
+            path = Path(protocols_path)
+            if not path.is_absolute():
+                base_dir = getattr(_config, "PROJECT_ROOT", None)
+                if base_dir is not None:
+                    path = (base_dir / path).resolve()
+                else:
+                    path = path.resolve()
+            try:
+                event_bus.publish(LoadFluidicsProtocolsCommand(path=str(path)))
+            except Exception:
+                self._log.exception(
+                    f"Failed to load fluidics protocols from {path}"
+                )
 
         return OrchestratorController(
             event_bus=event_bus,
@@ -487,7 +515,7 @@ class ApplicationContext:
             experiment_manager=experiment_manager,
             acquisition_planner=acquisition_planner,
             imaging_executor=imaging_executor,
-            fluidics_executor=fluidics_executor,
+            fluidics_controller=fluidics_controller,
             scan_coordinates=scan_coordinates,
         )
 

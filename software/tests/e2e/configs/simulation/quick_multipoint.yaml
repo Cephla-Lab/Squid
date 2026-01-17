@@ -6,6 +6,7 @@
 name: Quick Multipoint
 version: "1.0"
 description: Fast multipoint acquisition for testing region handling
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
 
 defaults:
   imaging:

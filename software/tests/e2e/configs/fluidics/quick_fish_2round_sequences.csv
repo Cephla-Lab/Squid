@@ -1,7 +1,0 @@
-protocol,operation,solution,volume_ul,flow_rate_ul_per_min,incubation_time_s
-Hybridization 1,flow,probe_1,100,500,0
-Hybridization 1,incubate,probe_1,0,0,2
-Hybridization 1,flow,wash_buffer,200,500,0
-Hybridization 2,flow,probe_2,100,500,0
-Hybridization 2,incubate,probe_2,0,0,2
-Hybridization 2,flow,wash_buffer,200,500,0

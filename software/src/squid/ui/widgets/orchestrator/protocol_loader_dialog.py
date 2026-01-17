@@ -3,7 +3,7 @@ Protocol Loader Dialog for selecting and validating experiment protocols.
 """
 
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -52,6 +52,8 @@ class ProtocolLoaderDialog(QDialog):
         self._available_channels = available_channels or []
         self._default_path = default_path
         self._current_protocol: Optional[ExperimentProtocol] = None
+        self._fov_positions: Dict[str, List[Tuple[float, float, float]]] = {}
+        self._fov_path: Optional[str] = None
 
         self.setWindowTitle("Load Experiment Protocol")
         self.setMinimumSize(600, 500)
@@ -101,6 +103,27 @@ class ProtocolLoaderDialog(QDialog):
         output_layout.addWidget(output_browse_btn)
 
         layout.addWidget(output_group)
+
+        # FOV Positions section
+        fov_group = QGroupBox("FOV Positions")
+        fov_layout = QVBoxLayout(fov_group)
+
+        fov_file_layout = QHBoxLayout()
+        self._fov_path_edit = QLineEdit()
+        self._fov_path_edit.setPlaceholderText("Select FOV positions file (CSV)...")
+        self._fov_path_edit.setReadOnly(True)
+        fov_file_layout.addWidget(self._fov_path_edit)
+
+        fov_browse_btn = QPushButton("Browse...")
+        fov_browse_btn.clicked.connect(self._on_fov_browse_clicked)
+        fov_file_layout.addWidget(fov_browse_btn)
+        fov_layout.addLayout(fov_file_layout)
+
+        self._fov_status_label = QLabel("No FOV positions loaded")
+        self._fov_status_label.setStyleSheet("color: #888;")
+        fov_layout.addWidget(self._fov_status_label)
+
+        layout.addWidget(fov_group)
 
         # Experiment ID
         id_layout = QHBoxLayout()
@@ -153,6 +176,83 @@ class ProtocolLoaderDialog(QDialog):
             self._output_edit.setText(path)
             self._validate_inputs()
 
+    def _on_fov_browse_clicked(self) -> None:
+        """Handle FOV positions file browse."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select FOV Positions File",
+            "",
+            "CSV Files (*.csv);;All Files (*.*)",
+        )
+        if path:
+            self._load_fov_positions(path)
+
+    def _load_fov_positions(self, path: str) -> None:
+        """Load FOV positions from a CSV file.
+
+        CSV format: region_id,x_mm,y_mm,z_mm
+        First row is header (skipped).
+
+        Args:
+            path: Path to the CSV file
+        """
+        import csv
+
+        try:
+            positions: Dict[str, List[Tuple[float, float, float]]] = {}
+
+            with open(path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                # Skip header row
+                header = next(reader, None)
+                if header is None:
+                    raise ValueError("Empty CSV file")
+
+                for row_num, row in enumerate(reader, start=2):
+                    if len(row) < 4:
+                        _log.warning(f"Row {row_num}: Expected 4 columns (region_id,x,y,z), got {len(row)}")
+                        continue
+
+                    region_id = row[0].strip()
+                    try:
+                        x = float(row[1])
+                        y = float(row[2])
+                        z = float(row[3])
+                    except ValueError as e:
+                        _log.warning(f"Row {row_num}: Invalid numeric value: {e}")
+                        continue
+
+                    if region_id not in positions:
+                        positions[region_id] = []
+                    positions[region_id].append((x, y, z))
+
+            total_fovs = sum(len(coords) for coords in positions.values())
+            num_regions = len(positions)
+
+            if total_fovs == 0:
+                self._fov_status_label.setText("No valid FOV positions found in file")
+                self._fov_status_label.setStyleSheet("color: #f44336;")
+                self._fov_positions = {}
+                self._fov_path = None
+                self._fov_path_edit.clear()
+            else:
+                self._fov_positions = positions
+                self._fov_path = path
+                self._fov_path_edit.setText(path)
+                self._fov_status_label.setText(
+                    f"Loaded {total_fovs} FOVs in {num_regions} region(s)"
+                )
+                self._fov_status_label.setStyleSheet("color: #4CAF50;")
+
+            self._validate_inputs()
+
+        except Exception as e:
+            _log.error(f"Failed to load FOV positions: {e}")
+            self._fov_status_label.setText(f"Error: {e}")
+            self._fov_status_label.setStyleSheet("color: #f44336;")
+            self._fov_positions = {}
+            self._fov_path = None
+
     def _load_protocol(self, path: str) -> None:
         """Load and preview a protocol."""
         try:
@@ -167,6 +267,19 @@ class ProtocolLoaderDialog(QDialog):
                 output_dir = str(Path(output_dir).expanduser())
                 if not self._output_edit.text():
                     self._output_edit.setText(output_dir)
+
+            # Auto-load FOV positions from protocol if specified
+            if self._current_protocol.fov_positions_file:
+                fov_file = self._current_protocol.fov_positions_file
+                # Resolve relative paths relative to protocol file
+                if not Path(fov_file).is_absolute():
+                    protocol_dir = Path(path).parent
+                    fov_file = str(protocol_dir / fov_file)
+                if Path(fov_file).exists():
+                    self._load_fov_positions(fov_file)
+                else:
+                    self._fov_status_label.setText(f"FOV file not found: {fov_file}")
+                    self._fov_status_label.setStyleSheet("color: #f44336;")
 
             self._validate_inputs()
 
@@ -207,7 +320,7 @@ class ProtocolLoaderDialog(QDialog):
 
         for i, r in enumerate(p.rounds):
             has_imaging = "+" if r.imaging else "-"
-            has_fluidics = "+" if r.fluidics else "-"
+            has_fluidics = "+" if r.fluidics_protocol else "-"
             intervention = " [!]" if r.requires_intervention else ""
             lines.append(
                 f"  {i + 1}. {r.name} [{r.type.value}] "
@@ -237,13 +350,39 @@ class ProtocolLoaderDialog(QDialog):
             )
 
     def _validate_inputs(self) -> None:
-        """Validate all inputs and enable/disable start button."""
+        """Validate all inputs and enable/disable start button.
+
+        Requirements for starting:
+        1. Protocol must be loaded
+        2. Output path must be valid
+        3. If protocol has imaging rounds, FOV positions must be loaded
+        """
         output_path = self._output_edit.text().strip()
         valid = (
             self._current_protocol is not None
             and bool(output_path)
             and Path(output_path).exists()
         )
+
+        # Check FOV requirement for imaging protocols
+        fov_required = False
+        fov_loaded = bool(self._fov_positions)
+
+        if self._current_protocol is not None:
+            # Check if any round has imaging
+            fov_required = self._current_protocol.total_imaging_rounds() > 0
+
+        if fov_required and not fov_loaded:
+            self._validation_label.setText(
+                '<span style="color: orange;">FOV positions required for imaging rounds</span>'
+            )
+            valid = False
+        elif valid and fov_required and fov_loaded:
+            total_fovs = sum(len(coords) for coords in self._fov_positions.values())
+            self._validation_label.setText(
+                f'<span style="color: green;">Ready: {total_fovs} FOVs loaded</span>'
+            )
+
         self._start_btn.setEnabled(valid)
 
     def _on_start_clicked(self) -> None:
@@ -296,3 +435,20 @@ class ProtocolLoaderDialog(QDialog):
     def experiment_id(self) -> str:
         """Experiment ID."""
         return self.get_experiment_id()
+
+    def get_fov_positions(self) -> Dict[str, List[Tuple[float, float, float]]]:
+        """Get the loaded FOV positions.
+
+        Returns:
+            Dict mapping region_id to list of (x_mm, y_mm, z_mm) tuples
+        """
+        return self._fov_positions.copy()
+
+    def get_fov_path(self) -> Optional[str]:
+        """Get the path to the loaded FOV positions file."""
+        return self._fov_path
+
+    @property
+    def fov_positions(self) -> Dict[str, List[Tuple[float, float, float]]]:
+        """FOV positions dict."""
+        return self.get_fov_positions()

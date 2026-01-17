@@ -6,7 +6,7 @@ Provides dockable widgets for the orchestrator:
 - OrchestratorWorkflowTree: Hierarchical workflow display
 """
 
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QFont, QColor, QBrush
 
-from squid.core.events import handles, auto_subscribe, auto_unsubscribe
+from squid.core.events import handles, auto_subscribe, auto_unsubscribe, LoadScanCoordinatesCommand
 from squid.backend.controllers.orchestrator import (
     OrchestratorState,
     OrchestratorStateChanged,
@@ -83,6 +83,7 @@ class OrchestratorControlPanel(QWidget):
     progress_updated = pyqtSignal(int, int, float, str)  # current, total, percent, name
     intervention_required = pyqtSignal(str)  # message
     error_occurred = pyqtSignal(str, str)  # type, message
+    fov_positions_changed = pyqtSignal(dict)  # FOV positions dict
     protocol_loaded = pyqtSignal(dict)  # protocol data
     validation_complete = pyqtSignal(object)  # ValidationSummary
 
@@ -100,6 +101,7 @@ class OrchestratorControlPanel(QWidget):
         self._protocol_path: Optional[str] = None
         self._base_path: Optional[str] = None
         self._experiment_id: Optional[str] = None
+        self._fov_positions: Dict[str, List[Tuple[float, float, float]]] = {}
 
         self._setup_ui()
         self._connect_signals()
@@ -372,6 +374,7 @@ class OrchestratorControlPanel(QWidget):
             self._protocol_path = dialog.get_protocol_path()
             self._base_path = dialog.get_output_path()
             self._experiment_id = dialog.get_experiment_id()
+            self._fov_positions = dialog.get_fov_positions()
 
             if self._protocol_path and self._base_path:
                 self._load_protocol(self._protocol_path)
@@ -387,16 +390,35 @@ class OrchestratorControlPanel(QWidget):
 
             self._protocol_data = protocol_data
             protocol_name = protocol_data.get("name", Path(protocol_path).stem)
+
+            # Check if protocol has imaging rounds
+            rounds = protocol_data.get("rounds", [])
+            has_imaging = any(r.get("imaging") is not None for r in rounds)
+
+            # Update status label
+            fov_count = sum(len(coords) for coords in self._fov_positions.values())
+            if has_imaging:
+                if fov_count > 0:
+                    fov_status = f"({fov_count} FOVs loaded)"
+                else:
+                    fov_status = "(FOVs required)"
+            else:
+                fov_status = "(no imaging)"
+
             self._experiment_label.setText(
                 f"Protocol: {protocol_name}\n"
-                f"Experiment: {self._experiment_id or 'Unnamed'}"
+                f"Experiment: {self._experiment_id or 'Unnamed'} {fov_status}"
             )
 
-            # Emit signal to update workflow tree
+            # Emit FOV positions first, then protocol (so tree has positions when populating)
+            self.fov_positions_changed.emit(self._fov_positions)
             self.protocol_loaded.emit(protocol_data)
-            self._start_btn.setEnabled(True)
+
+            # Enable Start only if FOVs loaded for imaging protocols
+            can_start = not has_imaging or fov_count > 0
+            self._start_btn.setEnabled(can_start)
             self._validate_btn.setEnabled(True)
-            _log.info(f"Protocol loaded: {protocol_path}")
+            _log.info(f"Protocol loaded: {protocol_path}, can_start={can_start}")
 
         except Exception as e:
             _log.error(f"Failed to load protocol: {e}")
@@ -412,6 +434,21 @@ class OrchestratorControlPanel(QWidget):
         if self._protocol_path is None or self._base_path is None:
             _log.warning("No protocol loaded")
             return
+
+        # Load FOV positions into ScanCoordinates before starting
+        if self._fov_positions:
+            # Convert to the format expected by LoadScanCoordinatesCommand
+            region_fov_coords: Dict[str, Tuple[Tuple[float, ...], ...]] = {}
+            for region_id, coords in self._fov_positions.items():
+                region_fov_coords[region_id] = tuple(tuple(c) for c in coords)
+
+            self._event_bus.publish(
+                LoadScanCoordinatesCommand(
+                    region_fov_coordinates=region_fov_coords,
+                )
+            )
+            _log.info(f"Loaded {sum(len(c) for c in self._fov_positions.values())} FOV positions")
+
         success = self._orchestrator.start_experiment(
             protocol_path=self._protocol_path,
             base_path=self._base_path,
@@ -530,10 +567,19 @@ class OrchestratorWorkflowTree(QWidget):
         self._current_highlight: Optional[str] = None  # Currently highlighted fov_id
         self._current_round_index: int = 0
         self._current_time_point: int = 0
+        self._fov_positions: Dict[str, List[Tuple[float, float, float]]] = {}
 
         self._setup_ui()
         self._connect_signals()
         self._subscribe_events()
+
+    def set_fov_positions(self, positions: Dict[str, List[Tuple[float, float, float]]]) -> None:
+        """Set FOV positions to display in the workflow tree.
+
+        Args:
+            positions: Dict mapping region_id to list of (x_mm, y_mm, z_mm) tuples
+        """
+        self._fov_positions = positions
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -610,8 +656,13 @@ class OrchestratorWorkflowTree(QWidget):
 
         for round_idx, round_data in enumerate(rounds):
             round_name = round_data.get("name", f"Round {round_idx + 1}")
+            # Avoid redundant "Round X: Round X" display
+            if round_name.lower().startswith("round"):
+                display_name = round_name
+            else:
+                display_name = f"Round {round_idx + 1}: {round_name}"
             round_item = QTreeWidgetItem([
-                f"Round {round_idx + 1}: {round_name}",
+                display_name,
                 "pending",
                 "",  # Time estimate (populated if available)
                 ""   # Details
@@ -716,13 +767,44 @@ class OrchestratorWorkflowTree(QWidget):
         op_idx: int,
         operation: Dict[str, Any]
     ) -> None:
+        # Use loaded FOV positions if available
+        if self._fov_positions:
+            fov_idx = 0
+            for region_id, coords in self._fov_positions.items():
+                for coord_idx, (x_mm, y_mm, z_mm) in enumerate(coords):
+                    fov_id = f"{region_id}_{coord_idx:04d}"
+                    pos_str = f"({x_mm:.3f}, {y_mm:.3f})"
+                    fov_item = QTreeWidgetItem([
+                        f"{region_id} - FOV {coord_idx + 1}",
+                        "pending",
+                        "",
+                        pos_str
+                    ])
+                    fov_item.setForeground(1, QBrush(STATUS_COLORS["pending"]))
+                    fov_item.setData(0, Qt.ItemDataRole.UserRole, {
+                        "type": "fov",
+                        "fov_id": fov_id,
+                        "region_id": region_id,
+                        "fov_index": fov_idx,
+                        "x_mm": x_mm,
+                        "y_mm": y_mm,
+                        "z_mm": z_mm,
+                        "status": "PENDING",
+                    })
+                    parent_item.addChild(fov_item)
+                    self._tree_items[(round_idx, op_idx, fov_idx)] = fov_item
+                    self._fov_items[fov_id] = fov_item
+                    fov_idx += 1
+            return
+
+        # Fall back to fov_config if no positions loaded
         fov_config = operation.get("fov_config", {})
         num_fovs = fov_config.get("num_fovs", 0)
 
         if num_fovs == 0:
-            fov_item = QTreeWidgetItem(["FOVs determined at runtime", "", "", ""])
+            fov_item = QTreeWidgetItem(["No FOV positions loaded", "", "", ""])
             fov_item.setFlags(Qt.ItemFlag.NoItemFlags)
-            fov_item.setForeground(0, QBrush(QColor("#888888")))
+            fov_item.setForeground(0, QBrush(QColor("#f44336")))  # Red to indicate error
             parent_item.addChild(fov_item)
             return
 

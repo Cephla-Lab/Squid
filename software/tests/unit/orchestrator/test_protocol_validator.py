@@ -207,7 +207,12 @@ class TestProtocolValidator:
 
     @pytest.fixture
     def complex_protocol(self) -> ExperimentProtocol:
-        """Create a complex test protocol with defaults."""
+        """Create a complex test protocol with defaults.
+
+        Note: Fluidics steps are now referenced via fluidics_protocol (string)
+        rather than inline FluidicsStep objects. The validator estimates
+        fluidics time based on the protocol reference, not inline steps.
+        """
         return ExperimentProtocol(
             name="Complex Protocol",
             version="1.0",
@@ -221,44 +226,20 @@ class TestProtocolValidator:
                 Round(
                     name="Round 1",
                     type=RoundType.IMAGING,
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.FLOW,
-                            solution="probe_mix_1",
-                            volume_ul=100.0,
-                            flow_rate_ul_per_min=50.0,
-                        ),
-                        FluidicsStep(
-                            command=FluidicsCommand.INCUBATE,
-                            duration_s=300.0,
-                        ),
-                    ],
+                    fluidics_protocol="probe_1_hybridization",
                     imaging=ImagingStep(),  # Uses defaults
                 ),
                 Round(
                     name="Wash",
                     type=RoundType.WASH,
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.WASH,
-                            solution="PBS",
-                            volume_ul=500.0,
-                        ),
-                    ],
+                    fluidics_protocol="wash_protocol",
                 ),
                 Round(
                     name="Round 2",
                     type=RoundType.IMAGING,
                     requires_intervention=True,
                     intervention_message="Change slide",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.FLOW,
-                            solution="probe_mix_2",
-                            volume_ul=100.0,
-                            flow_rate_ul_per_min=50.0,
-                        ),
-                    ],
+                    fluidics_protocol="probe_2_hybridization",
                     imaging=ImagingStep(
                         channels=["DAPI", "Cy3"],  # Override default channels
                     ),
@@ -308,9 +289,9 @@ class TestProtocolValidator:
         imaging_ops = [op for op in summary.operation_estimates if op.operation_type == "imaging"]
         assert len(imaging_ops) == 2  # Round 1 and Round 2
 
-        # Should have fluidics estimates
+        # Should have fluidics estimates for each round with fluidics_protocol
         fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
-        assert len(fluidics_ops) == 3  # Round 1, Wash, Round 2
+        assert len(fluidics_ops) == 3  # Round 1, Wash, Round 2 all have fluidics_protocol
 
     def test_time_estimation(self, simple_protocol):
         """Test time estimation scales with FOV count."""
@@ -355,118 +336,60 @@ class TestProtocolValidator:
         assert len(imaging_ops) == 1
         assert imaging_ops[0].estimated_disk_bytes == 0
 
+    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
     def test_fluidics_time_from_volume_and_rate(self):
-        """Test fluidics time calculated from volume and flow rate."""
-        protocol = ExperimentProtocol(
-            name="Fluidics Protocol",
-            rounds=[
-                Round(
-                    name="Flow",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.FLOW,
-                            solution="buffer",
-                            volume_ul=1000.0,  # 1 mL
-                            flow_rate_ul_per_min=100.0,  # 100 uL/min
-                        ),
-                    ],
-                ),
-            ],
-        )
+        """Test fluidics time calculated from volume and flow rate.
 
-        validator = ProtocolValidator()
-        summary = validator.validate(protocol, fov_count=1)
+        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
+        The new schema uses fluidics_protocol (string reference) instead.
+        Fluidics timing is now estimated from the loaded FluidicsProtocol files.
+        """
+        pass
 
-        # 1000 uL at 100 uL/min = 10 minutes = 600 seconds
-        fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
-        assert len(fluidics_ops) == 1
-        assert fluidics_ops[0].estimated_seconds == 600.0
-
+    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
     def test_incubate_time_from_duration(self):
-        """Test incubate time uses duration_s directly."""
-        protocol = ExperimentProtocol(
-            name="Incubate Protocol",
-            rounds=[
-                Round(
-                    name="Incubate",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.INCUBATE,
-                            duration_s=300.0,  # 5 minutes
-                        ),
-                    ],
-                ),
-            ],
-        )
+        """Test incubate time uses duration_s directly.
 
-        validator = ProtocolValidator()
-        summary = validator.validate(protocol, fov_count=1)
+        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
+        The new schema uses fluidics_protocol (string reference) instead.
+        """
+        pass
 
-        fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
-        assert len(fluidics_ops) == 1
-        assert fluidics_ops[0].estimated_seconds == 300.0
-
+    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
     def test_validate_fluidics_missing_volume(self):
-        """Test validation error for FLOW without volume."""
-        protocol = ExperimentProtocol(
-            name="Bad Fluidics",
-            rounds=[
-                Round(
-                    name="Flow",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.FLOW,
-                            solution="buffer",
-                            # Missing volume_ul
-                        ),
-                    ],
-                ),
-            ],
-        )
+        """Test validation error for FLOW without volume.
 
-        validator = ProtocolValidator()
-        summary = validator.validate(protocol, fov_count=1)
+        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
+        The new schema uses fluidics_protocol (string reference) instead.
+        Inline fluidics step validation is no longer applicable.
+        """
+        pass
 
-        assert summary.valid is False
-        assert any("volume_ul" in err for err in summary.errors)
-
+    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
     def test_validate_fluidics_missing_duration(self):
-        """Test validation error for INCUBATE without duration."""
-        protocol = ExperimentProtocol(
-            name="Bad Incubate",
-            rounds=[
-                Round(
-                    name="Incubate",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.INCUBATE,
-                            # Missing duration_s
-                        ),
-                    ],
-                ),
-            ],
-        )
+        """Test validation error for INCUBATE without duration.
 
-        validator = ProtocolValidator()
-        summary = validator.validate(protocol, fov_count=1)
-
-        assert summary.valid is False
-        assert any("duration_s" in err for err in summary.errors)
+        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
+        The new schema uses fluidics_protocol (string reference) instead.
+        Inline fluidics step validation is no longer applicable.
+        """
+        pass
 
     def test_validate_warns_long_experiment(self):
         """Test warning for experiments > 24 hours."""
-        # Create a protocol that will estimate > 24 hours
+        # Create a protocol that will estimate > 24 hours (86400s)
+        # Need enough rounds with fluidics + imaging to exceed threshold
         rounds = []
-        for i in range(100):
+        for i in range(210):  # 210 rounds to exceed 24h threshold
             rounds.append(
                 Round(
                     name=f"Round {i}",
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.INCUBATE,
-                            duration_s=1800.0,  # 30 min each
-                        ),
-                    ],
+                    type=RoundType.IMAGING,
+                    fluidics_protocol=f"long_protocol_{i}",
+                    imaging=ImagingStep(
+                        channels=["DAPI", "Cy3", "Cy5"],  # 3 channels
+                        z_planes=5,  # 5 z-planes
+                    ),
                 )
             )
 
@@ -476,9 +399,10 @@ class TestProtocolValidator:
         )
 
         validator = ProtocolValidator()
-        summary = validator.validate(protocol, fov_count=1)
+        # Use 100 FOVs to make imaging take longer
+        summary = validator.validate(protocol, fov_count=100)
 
-        # Should have a warning about long experiment
+        # Should have a warning about long experiment (>24 hours)
         assert summary.has_warnings
         assert any("hours" in w for w in summary.warnings)
 

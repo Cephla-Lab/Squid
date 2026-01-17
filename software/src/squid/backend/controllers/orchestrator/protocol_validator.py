@@ -9,8 +9,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 import squid.core.logging
 from squid.core.protocol import (
     ExperimentProtocol,
-    FluidicsCommand,
-    FluidicsStep,
     ImagingStep,
     Round,
 )
@@ -40,6 +38,7 @@ class ProtocolValidator:
     def __init__(
         self,
         available_channels: Optional[Set[str]] = None,
+        available_fluidics_protocols: Optional[Set[str]] = None,
         timing_estimates: Optional[Dict[str, float]] = None,
         disk_estimates: Optional[Dict[str, Any]] = None,
         camera_resolution: Tuple[int, int] = (2048, 2048),
@@ -49,11 +48,14 @@ class ProtocolValidator:
         Args:
             available_channels: Set of channel names available on this microscope.
                 If None, channel validation is skipped.
+            available_fluidics_protocols: Set of fluidics protocol names that have
+                been loaded. If None, fluidics protocol validation is skipped.
             timing_estimates: Custom timing estimates (overrides defaults).
             disk_estimates: Custom disk usage estimates (overrides defaults).
             camera_resolution: Camera resolution (width, height) for disk estimation.
         """
         self._available_channels = available_channels
+        self._available_fluidics_protocols = available_fluidics_protocols
         self._timing = {**DEFAULT_TIMING_ESTIMATES, **(timing_estimates or {})}
         self._disk = {**DEFAULT_DISK_ESTIMATES, **(disk_estimates or {})}
         self._camera_resolution = camera_resolution
@@ -175,9 +177,9 @@ class ProtocolValidator:
         )
 
         # Validate and estimate fluidics
-        if round_.fluidics:
-            fluidics_estimate = self._validate_fluidics(
-                round_.fluidics, round_idx, round_.name
+        if round_.fluidics_protocol:
+            fluidics_estimate = self._validate_fluidics_protocol(
+                round_.fluidics_protocol, round_idx, round_.name
             )
             estimates.append(fluidics_estimate)
 
@@ -202,16 +204,16 @@ class ProtocolValidator:
 
         return estimates
 
-    def _validate_fluidics(
+    def _validate_fluidics_protocol(
         self,
-        steps: List[FluidicsStep],
+        protocol_name: str,
         round_idx: int,
         round_name: str,
     ) -> OperationEstimate:
-        """Validate fluidics steps and estimate time.
+        """Validate fluidics protocol reference and estimate time.
 
         Args:
-            steps: List of fluidics steps.
+            protocol_name: Name of the fluidics protocol to run.
             round_idx: Index of the round.
             round_name: Name of the round.
 
@@ -220,70 +222,33 @@ class ProtocolValidator:
         """
         errors: List[str] = []
         warnings: List[str] = []
-        total_seconds = 0.0
 
-        for step_idx, step in enumerate(steps):
-            step_time = self._estimate_fluidics_step_time(step)
-            total_seconds += step_time * step.repeats
+        # Validate protocol exists if we have a list of available protocols
+        if self._available_fluidics_protocols is not None:
+            if protocol_name not in self._available_fluidics_protocols:
+                errors.append(
+                    f"Round '{round_name}': Fluidics protocol '{protocol_name}' "
+                    f"not found. Available protocols: "
+                    f"{', '.join(sorted(self._available_fluidics_protocols)) or 'none'}"
+                )
 
-            # Validate step configuration
-            if step.command in (FluidicsCommand.FLOW, FluidicsCommand.WASH):
-                if step.volume_ul is None:
-                    errors.append(
-                        f"Round '{round_name}' fluidics step {step_idx + 1}: "
-                        f"{step.command.value} requires volume_ul"
-                    )
-                if step.solution is None:
-                    warnings.append(
-                        f"Round '{round_name}' fluidics step {step_idx + 1}: "
-                        f"no solution specified"
-                    )
+        # Estimate time - use a default estimate since we don't have step details
+        # The actual time will be determined by the FluidicsController
+        estimated_seconds = self._timing.get("fluidics_protocol_default_seconds", 60.0)
 
-            if step.command == FluidicsCommand.INCUBATE:
-                if step.duration_s is None:
-                    errors.append(
-                        f"Round '{round_name}' fluidics step {step_idx + 1}: "
-                        f"incubate requires duration_s"
-                    )
-
-        description = f"{len(steps)} fluidics step(s)"
+        description = f"Fluidics protocol: {protocol_name}"
 
         return OperationEstimate(
             operation_type="fluidics",
             round_index=round_idx,
             round_name=round_name,
             description=description,
-            estimated_seconds=total_seconds,
+            estimated_seconds=estimated_seconds,
             estimated_disk_bytes=0,
             valid=len(errors) == 0,
             validation_errors=tuple(errors),
             validation_warnings=tuple(warnings),
         )
-
-    def _estimate_fluidics_step_time(self, step: FluidicsStep) -> float:
-        """Estimate time for a single fluidics step.
-
-        Args:
-            step: The fluidics step.
-
-        Returns:
-            Estimated time in seconds.
-        """
-        if step.command == FluidicsCommand.INCUBATE:
-            return step.duration_s or 0.0
-
-        if step.command == FluidicsCommand.PRIME:
-            return self._timing["fluidics_prime_seconds"]
-
-        if step.command == FluidicsCommand.WASH:
-            return self._timing["fluidics_wash_seconds"]
-
-        if step.command in (FluidicsCommand.FLOW, FluidicsCommand.ASPIRATE):
-            if step.volume_ul and step.flow_rate_ul_per_min:
-                return (step.volume_ul / step.flow_rate_ul_per_min) * 60.0
-            return self._timing["fluidics_per_step_seconds"]
-
-        return self._timing["fluidics_per_step_seconds"]
 
     def _validate_imaging(
         self,

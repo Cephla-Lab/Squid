@@ -1,6 +1,7 @@
 name: Tiled Z-Stack Imaging
 version: "1.0"
 description: Grid imaging with z-stacks for comprehensive e2e validation
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
 
 defaults:
   imaging:

@@ -282,7 +282,7 @@ class MERFISHFluidicsDriver(AbstractFluidicsController):
                 syringe_vol = 0.0
                 if self._syringe_pump is not None:
                     try:
-                        syringe_vol = float(self._syringe_pump.current_volume_ul)
+                        syringe_vol = float(self._syringe_pump.get_current_volume())
                     except Exception:
                         pass
                 try:

@@ -28,8 +28,8 @@ from squid.backend.controllers.orchestrator import (
     OrchestratorError,
     WarningRaised,
     ImagingExecutor,
-    FluidicsExecutor,
 )
+from squid.backend.controllers.fluidics_controller import FluidicsController
 from squid.backend.controllers.multipoint.experiment_manager import ExperimentManager
 from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
 
@@ -146,8 +146,8 @@ class OrchestratorSimulator(BaseSimulator):
             scan_coordinates=ctx.scan_coordinates,
         )
 
-        # Create fluidics executor (simulated)
-        fluidics_executor = FluidicsExecutor(event_bus=ctx.event_bus)
+        # Create fluidics controller (simulated - no fluidics_service)
+        fluidics_controller = FluidicsController(event_bus=ctx.event_bus)
 
         # Create orchestrator
         self._orchestrator = OrchestratorController(
@@ -156,7 +156,7 @@ class OrchestratorSimulator(BaseSimulator):
             experiment_manager=experiment_manager,
             acquisition_planner=acquisition_planner,
             imaging_executor=self._imaging_executor,
-            fluidics_executor=fluidics_executor,
+            fluidics_controller=fluidics_controller,
             scan_coordinates=ctx.scan_coordinates,
         )
 

@@ -72,10 +72,11 @@ def mock_imaging_executor():
 
 
 @pytest.fixture
-def mock_fluidics_executor():
-    """Create a mock FluidicsExecutor."""
+def mock_fluidics_controller():
+    """Create a mock FluidicsController."""
     mock = MagicMock()
-    mock.execute.return_value = True
+    mock.run_protocol.return_value = True
+    mock.is_available = True
     return mock
 
 
@@ -115,7 +116,7 @@ def orchestrator(
     mock_experiment_manager,
     mock_acquisition_planner,
     mock_imaging_executor,
-    mock_fluidics_executor,
+    mock_fluidics_controller,
 ):
     """Create an OrchestratorController for testing."""
     return OrchestratorController(
@@ -124,7 +125,7 @@ def orchestrator(
         experiment_manager=mock_experiment_manager,
         acquisition_planner=mock_acquisition_planner,
         imaging_executor=mock_imaging_executor,
-        fluidics_executor=mock_fluidics_executor,
+        fluidics_controller=mock_fluidics_controller,
     )
 
 

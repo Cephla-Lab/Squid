@@ -342,7 +342,10 @@ def create_fluidics_widget(gui: "HighContentScreeningGui") -> None:
         fluidics_service = gui._services.get("fluidics")
         # Create widget even if service is None - widget handles this gracefully
         gui.fluidicsWidget = widgets.FluidicsWidget(
-            fluidics_service, event_bus=gui._ui_event_bus
+            fluidics_service,
+            event_bus=gui._ui_event_bus,
+            service_registry=gui._services,
+            is_simulation=getattr(gui, "_is_simulation", False),
         )
 
 

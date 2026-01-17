@@ -1152,6 +1152,143 @@ class FluidicsSequenceCompleted(Event):
 
 
 # ============================================================================
+# Fluidics Controller Events
+# ============================================================================
+
+
+@dataclass
+class RunFluidicsProtocolCommand(Event):
+    """Command to run a named fluidics protocol.
+
+    The FluidicsController will look up the protocol by name and execute it.
+    """
+
+    protocol_name: str
+
+
+@dataclass
+class LoadFluidicsProtocolsCommand(Event):
+    """Command to load fluidics protocols from a YAML file."""
+
+    path: str
+
+
+@dataclass
+class PauseFluidicsCommand(Event):
+    """Command to pause fluidics protocol execution.
+
+    The controller will pause at the next checkpoint (between steps).
+    """
+
+    pass
+
+
+@dataclass
+class ResumeFluidicsCommand(Event):
+    """Command to resume paused fluidics protocol execution."""
+
+    pass
+
+
+@dataclass
+class StopFluidicsCommand(Event):
+    """Command to stop fluidics protocol execution.
+
+    Aborts the current operation and transitions to STOPPED state.
+    """
+
+    pass
+
+
+@dataclass
+class SkipFluidicsStepCommand(Event):
+    """Command to skip the current step and move to the next one.
+
+    Args:
+        empty_syringe: If True, empty syringe to waste before next step.
+    """
+
+    empty_syringe: bool = True
+
+
+@dataclass
+class FluidicsControllerStateChanged(Event):
+    """Emitted when the FluidicsController state machine changes state.
+
+    Args:
+        old_state: Previous state name (e.g., "IDLE", "RUNNING")
+        new_state: New state name
+        protocol_name: Name of currently loaded/running protocol, if any
+    """
+
+    old_state: str
+    new_state: str
+    protocol_name: Optional[str] = None
+
+
+@dataclass
+class FluidicsProtocolStarted(Event):
+    """Emitted when a named protocol begins execution.
+
+    Provides protocol metadata for UI progress display.
+    """
+
+    protocol_name: str
+    total_steps: int
+    estimated_duration_s: float
+
+
+@dataclass
+class FluidicsProtocolStepStarted(Event):
+    """Emitted when a step within a protocol begins execution.
+
+    Provides context about the current position and operation.
+    """
+
+    protocol_name: str
+    step_index: int  # 0-based, incremented for each repeat
+    total_steps: int  # Total steps including repeats
+    step_description: str
+    next_step_description: Optional[str] = None
+    estimated_remaining_s: Optional[float] = None
+
+
+@dataclass
+class FluidicsProtocolCompleted(Event):
+    """Emitted when a protocol finishes (completed, stopped, or failed).
+
+    Args:
+        protocol_name: Name of the protocol that was running.
+        success: True if all steps completed successfully.
+        steps_completed: Number of steps that were executed.
+        total_steps: Total steps in the protocol.
+        error_message: Error message if success is False.
+    """
+
+    protocol_name: str
+    success: bool
+    steps_completed: int
+    total_steps: int
+    error_message: Optional[str] = None
+
+
+@dataclass
+class FluidicsProtocolsLoaded(Event):
+    """Emitted when fluidics protocols are loaded."""
+
+    path: str
+    protocols: Dict[str, Any]
+
+
+@dataclass
+class FluidicsProtocolsLoadFailed(Event):
+    """Emitted when fluidics protocol loading fails."""
+
+    path: str
+    error_message: str
+
+
+# ============================================================================
 # Laser Autofocus Events
 # ============================================================================
 

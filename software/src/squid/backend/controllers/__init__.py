@@ -28,6 +28,12 @@ from squid.backend.controllers.multipoint import (
     MultiPointWorker,
 )
 
+# Fluidics controller
+from squid.backend.controllers.fluidics_controller import (
+    FluidicsController,
+    FluidicsControllerState,
+)
+
 __all__ = [
     # Base
     "BaseController",
@@ -44,4 +50,7 @@ __all__ = [
     # Multipoint
     "MultiPointController",
     "MultiPointWorker",
+    # Fluidics
+    "FluidicsController",
+    "FluidicsControllerState",
 ]

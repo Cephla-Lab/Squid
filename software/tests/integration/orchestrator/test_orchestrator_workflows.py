@@ -30,13 +30,7 @@ from tests.harness import BackendContext, EventMonitor
 from squid.core.events import EventBus, event_bus, AcquisitionFinished
 from squid.core.utils.cancel_token import CancelToken
 from squid.core.protocol import (
-    ExperimentProtocol,
-    Round,
-    RoundType,
     ImagingStep,
-    FluidicsStep,
-    FluidicsCommand,
-    ProtocolLoader,
 )
 from squid.backend.controllers.orchestrator import (
     OrchestratorController,
@@ -77,7 +71,7 @@ from squid.backend.controllers.orchestrator.warnings import (
 )
 from squid.backend.controllers.orchestrator.warning_manager import WarningManager
 from squid.backend.controllers.orchestrator.imaging_executor import ImagingExecutor
-from squid.backend.controllers.orchestrator.fluidics_executor import FluidicsExecutor
+from squid.backend.controllers.fluidics_controller import FluidicsController
 from squid.backend.controllers.multipoint.experiment_manager import ExperimentManager
 from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
 from squid.backend.controllers.multipoint.events import FovTaskStarted, FovTaskCompleted
@@ -184,12 +178,7 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
             {
                 "name": "Fluidics Round",
                 "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics": [
-                    {
-                        "command": "incubate",
-                        "duration_s": 0.1,  # Short for testing
-                    }
-                ],
+                "fluidics_protocol": "test_incubate",  # Named protocol reference
             },
             {
                 "name": "Imaging Round 2",
@@ -249,7 +238,7 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
 
 @pytest.fixture
 def fluidics_heavy_protocol(tmp_path) -> str:
-    """Create a protocol with multiple fluidics steps."""
+    """Create a protocol with multiple fluidics rounds."""
     protocol_dict = {
         "name": "Fluidics Heavy",
         "version": "1.0",
@@ -258,21 +247,12 @@ def fluidics_heavy_protocol(tmp_path) -> str:
             {
                 "name": "Prime",
                 "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics": [
-                    {"command": "prime", "solution": "buffer_a"},
-                ],
+                "fluidics_protocol": "test_prime",  # Named protocol reference
             },
             {
                 "name": "Stain",
                 "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics": [
-                    {"command": "flow", "solution": "stain_1", "volume_ul": 100},
-                    {
-                        "command": "incubate",
-                        "duration_s": 0.05,
-                    },  # Very short for testing
-                    {"command": "wash", "volume_ul": 200, "repeats": 2},
-                ],
+                "fluidics_protocol": "test_stain",  # Named protocol reference
             },
         ],
     }
@@ -302,11 +282,13 @@ def mock_imaging_executor():
 
 
 @pytest.fixture
-def mock_fluidics_executor():
-    """Create a mock fluidics executor that completes immediately."""
-    mock = MagicMock(spec=FluidicsExecutor)
-    mock.execute.return_value = True
-    mock.execute_sequence.return_value = True
+def mock_fluidics_controller():
+    """Create a mock fluidics controller that completes immediately."""
+    mock = MagicMock(spec=FluidicsController)
+    mock.run_protocol.return_value = True
+    mock.state = MagicMock()
+    mock.state.value = "IDLE"
+    mock.is_available = True
     return mock
 
 
@@ -352,7 +334,7 @@ def mock_acquisition_planner():
 def orchestrator_with_mocks(
     backend_ctx: BackendContext,
     mock_imaging_executor,
-    mock_fluidics_executor,
+    mock_fluidics_controller,
     mock_experiment_manager,
     mock_acquisition_planner,
 ):
@@ -363,7 +345,7 @@ def orchestrator_with_mocks(
         experiment_manager=mock_experiment_manager,
         acquisition_planner=mock_acquisition_planner,
         imaging_executor=mock_imaging_executor,
-        fluidics_executor=mock_fluidics_executor,
+        fluidics_controller=mock_fluidics_controller,
         scan_coordinates=backend_ctx.scan_coordinates,
     )
     yield orchestrator
@@ -426,7 +408,7 @@ def real_orchestrator(backend_ctx: BackendContext):
         multipoint_controller=backend_ctx.multipoint_controller,
         scan_coordinates=backend_ctx.scan_coordinates,
     )
-    fluidics_executor = FluidicsExecutor(event_bus=backend_ctx.event_bus)
+    fluidics_controller = FluidicsController(event_bus=backend_ctx.event_bus)
 
     orchestrator = OrchestratorController(
         event_bus=backend_ctx.event_bus,
@@ -434,7 +416,7 @@ def real_orchestrator(backend_ctx: BackendContext):
         experiment_manager=experiment_manager,
         acquisition_planner=acquisition_planner,
         imaging_executor=imaging_executor,
-        fluidics_executor=fluidics_executor,
+        fluidics_controller=fluidics_controller,
         scan_coordinates=backend_ctx.scan_coordinates,
     )
     yield orchestrator
@@ -1130,8 +1112,8 @@ class TestCheckpointAndRecovery:
         """Test that checkpoint is saved when pausing."""
         # Create real mocks with known paths
         mock_imaging_executor = MagicMock(spec=ImagingExecutor)
-        mock_fluidics_executor = MagicMock(spec=FluidicsExecutor)
-        mock_fluidics_executor.execute.return_value = True
+        mock_fluidics_controller = MagicMock(spec=FluidicsController)
+        mock_fluidics_controller.run_protocol.return_value = True
         mock_acquisition_planner = MagicMock()
 
         # Create experiment directory
@@ -1154,7 +1136,7 @@ class TestCheckpointAndRecovery:
             experiment_manager=mock_experiment_manager,
             acquisition_planner=mock_acquisition_planner,
             imaging_executor=mock_imaging_executor,
-            fluidics_executor=mock_fluidics_executor,
+            fluidics_controller=mock_fluidics_controller,
         )
 
         # Make imaging block so we can pause
@@ -1209,8 +1191,8 @@ class TestCheckpointAndRecovery:
         # Create real mocks with known paths
         mock_imaging_executor = MagicMock(spec=ImagingExecutor)
         mock_imaging_executor.execute.return_value = True
-        mock_fluidics_executor = MagicMock(spec=FluidicsExecutor)
-        mock_fluidics_executor.execute.return_value = True
+        mock_fluidics_controller = MagicMock(spec=FluidicsController)
+        mock_fluidics_controller.run_protocol.return_value = True
         mock_acquisition_planner = MagicMock()
 
         # Create experiment directory
@@ -1233,7 +1215,7 @@ class TestCheckpointAndRecovery:
             experiment_manager=mock_experiment_manager,
             acquisition_planner=mock_acquisition_planner,
             imaging_executor=mock_imaging_executor,
-            fluidics_executor=mock_fluidics_executor,
+            fluidics_controller=mock_fluidics_controller,
         )
 
         # Create a fake checkpoint that should be cleared
@@ -1263,7 +1245,7 @@ class TestCheckpointAndRecovery:
         multi_round_protocol: str,
         tmp_experiment_dir: str,
         mock_imaging_executor,
-        mock_fluidics_executor,
+        mock_fluidics_controller,
         mock_experiment_manager,
         mock_acquisition_planner,
     ):
@@ -1297,7 +1279,7 @@ class TestCheckpointAndRecovery:
             experiment_manager=mock_experiment_manager,
             acquisition_planner=mock_acquisition_planner,
             imaging_executor=mock_imaging_executor,
-            fluidics_executor=mock_fluidics_executor,
+            fluidics_controller=mock_fluidics_controller,
         )
 
         # Start with resume
@@ -1999,16 +1981,16 @@ class TestErrorHandling:
         errors = [e for e in event_collector if isinstance(e, OrchestratorError)]
         assert len(errors) >= 1
 
-    def test_fluidics_executor_failure(
+    def test_fluidics_controller_failure(
         self,
         orchestrator_with_mocks: OrchestratorController,
         fluidics_heavy_protocol: str,
         tmp_experiment_dir: str,
-        mock_fluidics_executor,
+        mock_fluidics_controller,
     ):
-        """Test handling of fluidics executor failure."""
+        """Test handling of fluidics controller failure."""
         orchestrator = orchestrator_with_mocks
-        mock_fluidics_executor.execute.return_value = False
+        mock_fluidics_controller.run_protocol.return_value = False
 
         orchestrator.start_experiment(
             protocol_path=fluidics_heavy_protocol,
@@ -2203,60 +2185,45 @@ class TestImagingExecutor:
         executor.shutdown()
 
 
-class TestFluidicsExecutor:
-    """Integration tests for FluidicsExecutor."""
+class TestFluidicsController:
+    """Integration tests for FluidicsController."""
 
-    def test_fluidics_executor_incubate(self):
-        """Test fluidics executor INCUBATE command."""
-        executor = FluidicsExecutor(event_bus=MagicMock())
+    def test_fluidics_controller_initial_state(self):
+        """Test fluidics controller starts in IDLE state."""
+        from squid.backend.controllers.fluidics_controller import FluidicsControllerState
 
-        step = FluidicsStep(
-            command=FluidicsCommand.INCUBATE,
-            duration_s=0.1,  # Short for testing
-        )
-        cancel_token = CancelToken()
+        controller = FluidicsController(event_bus=MagicMock())
+        assert controller.state == FluidicsControllerState.IDLE
 
-        result = executor.execute(step, cancel_token)
-        assert result is True
+    def test_fluidics_controller_run_protocol_without_service(self):
+        """Test that run_protocol simulates when no service is available."""
+        controller = FluidicsController(event_bus=MagicMock())
 
-    def test_fluidics_executor_sequence(self):
-        """Test executing a sequence of fluidics steps."""
-        executor = FluidicsExecutor(event_bus=MagicMock())
+        # Without a fluidics service, the controller should return False
+        # (no protocols loaded, protocol not found)
+        result = controller.run_protocol("nonexistent_protocol")
+        assert result is False
 
-        steps = [
-            FluidicsStep(command=FluidicsCommand.PRIME, solution="buffer"),
-            FluidicsStep(command=FluidicsCommand.INCUBATE, duration_s=0.05),
-            FluidicsStep(command=FluidicsCommand.WASH, volume_ul=100),
-        ]
-        cancel_token = CancelToken()
+    def test_fluidics_controller_pause_when_idle_fails(self):
+        """Test that pause fails when controller is idle."""
+        controller = FluidicsController(event_bus=MagicMock())
 
-        result = executor.execute_sequence(steps, cancel_token)
-        assert result is True
+        result = controller.pause()
+        assert result is False
 
-    def test_fluidics_executor_respects_cancel_token(self):
-        """Test that fluidics executor respects cancel token."""
-        executor = FluidicsExecutor(event_bus=MagicMock())
+    def test_fluidics_controller_stop_when_idle_fails(self):
+        """Test that stop fails when controller is idle."""
+        controller = FluidicsController(event_bus=MagicMock())
 
-        step = FluidicsStep(
-            command=FluidicsCommand.INCUBATE,
-            duration_s=10.0,  # Long duration
-        )
-        cancel_token = CancelToken()
+        result = controller.stop()
+        assert result is False
 
-        # Cancel after short delay
-        def cancel_later():
-            time.sleep(0.2)
-            cancel_token.cancel("Test cancel")
+    def test_fluidics_controller_is_available_without_service(self):
+        """Test is_available property without fluidics service."""
+        controller = FluidicsController(event_bus=MagicMock())
 
-        cancel_thread = threading.Thread(target=cancel_later)
-        cancel_thread.start()
-
-        from squid.core.utils.cancel_token import CancellationError
-
-        with pytest.raises(CancellationError):
-            executor.execute(step, cancel_token)
-
-        cancel_thread.join()
+        # Without a fluidics service, the controller is not available
+        assert controller.is_available is False
 
 
 # =============================================================================

@@ -15,6 +15,11 @@ from squid.core.protocol.loader import (
     ProtocolLoader,
     ProtocolValidationError,
 )
+from squid.core.protocol.fluidics_protocol import (
+    FluidicsProtocol,
+    FluidicsProtocolStep,
+    FluidicsProtocolFile,
+)
 
 __all__ = [
     # Schema
@@ -24,6 +29,10 @@ __all__ = [
     "ImagingStep",
     "RoundType",
     "FluidicsCommand",
+    # Fluidics protocols
+    "FluidicsProtocol",
+    "FluidicsProtocolStep",
+    "FluidicsProtocolFile",
     # Loader
     "ProtocolLoader",
     "ProtocolValidationError",

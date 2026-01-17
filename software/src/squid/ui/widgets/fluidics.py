@@ -5,8 +5,6 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-import pandas as pd
-
 import squid.core.logging
 from qtpy.QtCore import Signal, QDateTime, QTimer, Qt
 from qtpy.QtGui import QBrush, QColor, QFont
@@ -38,8 +36,11 @@ from qtpy.QtWidgets import (
     QSplitter,
 )
 
-from squid.ui.widgets.base import PandasTableModel
 from squid.core.events import (
+    RunFluidicsProtocolCommand,
+    LoadFluidicsProtocolsCommand,
+    StopFluidicsCommand,
+    SkipFluidicsStepCommand,
     FluidicsOperationStarted,
     FluidicsOperationCompleted,
     FluidicsOperationProgress,
@@ -48,13 +49,18 @@ from squid.core.events import (
     FluidicsIncubationProgress,
     FluidicsIncubationCompleted,
     FluidicsStatusChanged,
-    FluidicsSequenceStarted,
-    FluidicsSequenceStepStarted,
-    FluidicsSequenceCompleted,
+    FluidicsControllerStateChanged,
+    FluidicsProtocolStarted,
+    FluidicsProtocolStepStarted,
+    FluidicsProtocolCompleted,
+    FluidicsProtocolsLoaded,
+    FluidicsProtocolsLoadFailed,
 )
+from squid.core.protocol import FluidicsProtocol, FluidicsProtocolFile
 
 if TYPE_CHECKING:
     from squid.backend.services.fluidics_service import FluidicsService
+    from squid.backend.services import ServiceRegistry
     from squid.ui.ui_event_bus import UIEventBus
 
 
@@ -77,16 +83,20 @@ class FluidicsWidget(QWidget):
         self,
         fluidics_service: Optional["FluidicsService"],
         event_bus: "UIEventBus",
+        service_registry: Optional["ServiceRegistry"] = None,
+        is_simulation: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._service = fluidics_service
         self._event_bus = event_bus
+        self._service_registry = service_registry
+        self._is_simulation = is_simulation
 
-        # Sequence data (loaded from CSV)
-        self._sequence_df: Optional[pd.DataFrame] = None
-        self._protocol_groups: dict[str, pd.DataFrame] = {}
+        # Protocol data (loaded from YAML)
+        self._protocols: dict[str, FluidicsProtocol] = {}
+        self._protocols_path: Optional[str] = None
         self._available_solutions: list[str] = []
         self._config_path: Optional[str] = None
 
@@ -94,15 +104,11 @@ class FluidicsWidget(QWidget):
         self._operation_start_time: Optional[QDateTime] = None
         self._operation_est_duration: Optional[float] = None
 
-        # Sequence execution tracking
-        self._is_sequence_running: bool = False
-        self._sequence_name: str = ""
-        self._sequence_current_step: int = 0
-        self._sequence_total_steps: int = 0
-
-        # Skip step control
-        self._skip_requested: bool = False
-        self._empty_on_skip: bool = True
+        # Protocol execution tracking
+        self._is_protocol_running: bool = False
+        self._protocol_name: str = ""
+        self._protocol_current_step: int = 0
+        self._protocol_total_steps: int = 0
 
         # Get available solutions from service if available
         self._refresh_solutions()
@@ -116,6 +122,7 @@ class FluidicsWidget(QWidget):
 
         # Update UI state based on service availability
         self._update_service_status()
+        self._load_protocols_from_config()
 
     @property
     def _is_available(self) -> bool:
@@ -142,10 +149,21 @@ class FluidicsWidget(QWidget):
             self._event_bus.subscribe(FluidicsIncubationProgress, self._on_incubation_progress)
             self._event_bus.subscribe(FluidicsIncubationCompleted, self._on_incubation_completed)
             self._event_bus.subscribe(FluidicsStatusChanged, self._on_status_changed)
-            # Sequence progress events
-            self._event_bus.subscribe(FluidicsSequenceStarted, self._on_sequence_started)
-            self._event_bus.subscribe(FluidicsSequenceStepStarted, self._on_sequence_step_started)
-            self._event_bus.subscribe(FluidicsSequenceCompleted, self._on_sequence_completed)
+            # Protocol execution events
+            self._event_bus.subscribe(
+                FluidicsControllerStateChanged, self._on_controller_state_changed
+            )
+            self._event_bus.subscribe(FluidicsProtocolStarted, self._on_protocol_started)
+            self._event_bus.subscribe(
+                FluidicsProtocolStepStarted, self._on_protocol_step_started
+            )
+            self._event_bus.subscribe(
+                FluidicsProtocolCompleted, self._on_protocol_completed
+            )
+            self._event_bus.subscribe(FluidicsProtocolsLoaded, self._on_protocols_loaded)
+            self._event_bus.subscribe(
+                FluidicsProtocolsLoadFailed, self._on_protocols_load_failed
+            )
 
     def _setup_ui(self) -> None:
         """Set up the widget UI."""
@@ -343,15 +361,15 @@ class FluidicsWidget(QWidget):
         parent_layout.addWidget(self.progress_group, 1)  # Stretch factor 1 for equal sizing
 
     def _setup_sequence_progress_panel(self, parent_layout: QHBoxLayout) -> None:
-        """Set up the sequence progress tracking panel (always visible)."""
-        self.sequence_progress_group = QGroupBox("Sequence Progress")
+        """Set up the protocol progress tracking panel (always visible)."""
+        self.sequence_progress_group = QGroupBox("Protocol Progress")
         seq_layout = QVBoxLayout()
         seq_layout.setContentsMargins(10, 10, 10, 10)
         seq_layout.setSpacing(8)
 
         # Sequence name and step counter row
         header_row = QHBoxLayout()
-        seq_label = QLabel("Sequence:")
+        seq_label = QLabel("Protocol:")
         seq_label.setStyleSheet("color: #888;")
         header_row.addWidget(seq_label)
 
@@ -561,15 +579,15 @@ class FluidicsWidget(QWidget):
         status_group.setLayout(status_layout)
         parent_layout.addWidget(status_group)
 
-        # Load Sequences button at bottom of left panel
-        self.btn_load_sequences = QPushButton("Load Sequences from CSV...")
+        # Load Protocols button at bottom of left panel
+        self.btn_load_sequences = QPushButton("Load Protocols (YAML)...")
         parent_layout.addWidget(self.btn_load_sequences)
 
         # Add stretch to push controls to top
         parent_layout.addStretch()
 
         # Connect signals
-        self.btn_load_sequences.clicked.connect(self._load_sequences)
+        self.btn_load_sequences.clicked.connect(self._load_protocols)
         self.btn_prime_start.clicked.connect(self._start_prime)
         self.btn_cleanup_start.clicked.connect(self._start_wash)
         self.btn_manual_flow.clicked.connect(self._start_manual_flow)
@@ -644,13 +662,8 @@ class FluidicsWidget(QWidget):
 
         self.btn_execute_selected = QPushButton("Run Protocol")
         self.btn_execute_selected.setMinimumWidth(100)
-        self.btn_execute_selected.clicked.connect(self._execute_selected_sequence)
+        self.btn_execute_selected.clicked.connect(self._run_selected_protocol)
         exec_row.addWidget(self.btn_execute_selected)
-
-        self.btn_execute_all = QPushButton("Run All")
-        self.btn_execute_all.setMinimumWidth(80)
-        self.btn_execute_all.clicked.connect(self._execute_all_sequences)
-        exec_row.addWidget(self.btn_execute_all)
 
         exec_row.addStretch()
 
@@ -729,27 +742,53 @@ class FluidicsWidget(QWidget):
 
         try:
             # Import here to avoid circular imports
-            from squid.backend.drivers.fluidics import SimulatedFluidicsController
+            import sys
+            from squid.backend.drivers.fluidics import (
+                MERFISHFluidicsDriver,
+                SimulatedFluidicsController,
+            )
             from squid.backend.services.fluidics_service import FluidicsService
             from squid.core.events import event_bus
 
-            # Create driver with timing simulation enabled
-            driver = SimulatedFluidicsController(
-                config_path=self._config_path,
-                simulate_timing=True,
-            )
+            # Prefer registry event bus if available to keep UI in sync.
+            core_bus = event_bus
+            if self._service_registry is not None:
+                core_bus = getattr(self._service_registry, "_event_bus", event_bus)
 
-            if not driver.initialize():
-                self._log_status("ERROR: Failed to initialize fluidics driver")
+            driver = None
+            if self._is_simulation:
+                driver = SimulatedFluidicsController(
+                    config_path=self._config_path,
+                    simulate_timing=True,
+                )
+            else:
+                # Ensure fluidics_v2 is importable for real hardware.
+                software_dir = Path(__file__).parent.parent.parent.parent.parent
+                fluidics_v2_path = software_dir / "fluidics_v2" / "software"
+                if fluidics_v2_path.exists() and str(fluidics_v2_path) not in sys.path:
+                    sys.path.insert(0, str(fluidics_v2_path))
+                driver = MERFISHFluidicsDriver(
+                    config_path=self._config_path,
+                    simulation=False,
+                )
+
+            if driver is None or not driver.initialize():
+                mode = "simulation" if self._is_simulation else "hardware"
+                self._log_status(f"ERROR: Failed to initialize fluidics ({mode})")
                 QMessageBox.critical(
                     self,
                     "Initialization Failed",
-                    "Failed to initialize the fluidics driver. Check the config file.",
+                    "Failed to initialize the fluidics driver. Check the config file and hardware.",
                 )
                 return
 
             # Create service
-            self._service = FluidicsService(driver, event_bus)
+            self._service = FluidicsService(driver, core_bus)
+            if self._service_registry is not None:
+                existing = self._service_registry.get("fluidics")
+                if existing is not None:
+                    existing.shutdown()
+                self._service_registry.register("fluidics", self._service)
             self._log_status("Fluidics initialized successfully!")
 
             # Refresh UI
@@ -795,6 +834,12 @@ class FluidicsWidget(QWidget):
         self.log_message_signal.emit(msg)
         self._enable_controls(False)
 
+        # Update port/solution display if provided
+        if event.port is not None:
+            self.lbl_current_port.setText(str(event.port))
+        if event.solution:
+            self.lbl_current_solution.setText(f"({event.solution})")
+
         # Show progress panel with operation details
         self.lbl_operation.setText(event.operation.upper())
         flow_details = ""
@@ -803,6 +848,10 @@ class FluidicsWidget(QWidget):
         if event.flow_rate_ul_per_min:
             flow_details += f" @ {event.flow_rate_ul_per_min:.0f} uL/min"
         self.lbl_flow_details.setText(flow_details or "--")
+
+        # Update status LED to running
+        self._update_status_led("running")
+        self.lbl_state.setText("RUNNING")
 
         # Estimate duration for progress tracking
         if event.volume_ul > 0 and event.flow_rate_ul_per_min > 0:
@@ -970,138 +1019,192 @@ class FluidicsWidget(QWidget):
         self.status_led.setStyleSheet(f"color: {color}; font-size: 20px;")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Sequence Event Handlers
+    # Protocol Event Handlers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _on_sequence_started(self, event: FluidicsSequenceStarted) -> None:
-        """Handle sequence started event."""
-        self._is_sequence_running = True
-        self._sequence_name = event.sequence_name
-        self._sequence_current_step = 0
-        self._sequence_total_steps = event.total_steps
+    def _on_controller_state_changed(
+        self, event: FluidicsControllerStateChanged
+    ) -> None:
+        """Handle controller state transitions."""
+        self.log_message_signal.emit(
+            f"Protocol state: {event.old_state} -> {event.new_state}"
+        )
+
+    def _on_protocol_started(self, event: FluidicsProtocolStarted) -> None:
+        """Handle protocol started event."""
+        self._is_protocol_running = True
+        self._protocol_name = event.protocol_name
+        self._protocol_current_step = 0
+        self._protocol_total_steps = event.total_steps
 
         # Update UI
-        self.lbl_sequence_name.setText(event.sequence_name)
+        self.lbl_sequence_name.setText(event.protocol_name)
         self.lbl_step_counter.setText(f"0 of {event.total_steps}")
         self.sequence_progress_bar.setValue(0)
         self.lbl_current_step.setText("Starting...")
         self.lbl_next_step.setText("--")
 
-        # Enable skip button during sequence execution
+        # Enable skip button during protocol execution
         self.btn_skip_step.setEnabled(True)
+        self._enable_controls(False)
 
         self.log_message_signal.emit(
-            f"Starting sequence '{event.sequence_name}' with {event.total_steps} steps"
+            f"Starting protocol '{event.protocol_name}' with {event.total_steps} steps"
         )
 
-    def _on_sequence_step_started(self, event: FluidicsSequenceStepStarted) -> None:
-        """Handle sequence step started event."""
-        self._sequence_current_step = event.step_index + 1  # Convert to 1-based for display
+    def _on_protocol_step_started(self, event: FluidicsProtocolStepStarted) -> None:
+        """Handle protocol step started event."""
+        self._protocol_current_step = event.step_index + 1  # Convert to 1-based for display
 
         # Update step counter
-        self.lbl_step_counter.setText(f"{self._sequence_current_step} of {event.total_steps}")
+        self.lbl_step_counter.setText(f"{self._protocol_current_step} of {event.total_steps}")
 
         # Update progress bar
         if event.total_steps > 0:
             progress = int((event.step_index / event.total_steps) * 100)
             self.sequence_progress_bar.setValue(progress)
 
-        # Highlight current step in tree view
+        # Highlight current step in table
         self._highlight_current_step(event.step_index)
 
         # Update step descriptions
         self.lbl_current_step.setText(event.step_description)
-        self.lbl_next_step.setText(event.next_step_description or "End of sequence")
+        self.lbl_next_step.setText(event.next_step_description or "End of protocol")
 
         self.log_message_signal.emit(
-            f"Step {self._sequence_current_step}/{event.total_steps}: {event.step_description}"
+            f"Step {self._protocol_current_step}/{event.total_steps}: {event.step_description}"
         )
 
-    def _on_sequence_completed(self, event: FluidicsSequenceCompleted) -> None:
-        """Handle sequence completed event."""
-        self._is_sequence_running = False
+    def _on_protocol_completed(self, event: FluidicsProtocolCompleted) -> None:
+        """Handle protocol completed event."""
+        self._is_protocol_running = False
 
         # Disable skip button
         self.btn_skip_step.setEnabled(False)
 
-        # Clear step highlighting in tree
+        # Clear step highlighting
         self._clear_step_highlights()
 
         # Update progress to 100% if successful
         if event.success:
             self.sequence_progress_bar.setValue(100)
             self.lbl_step_counter.setText(f"{event.steps_completed} of {event.total_steps}")
-            self.lbl_current_step.setText("Sequence completed")
+            self.lbl_current_step.setText("Protocol completed")
             self.log_message_signal.emit(
-                f"Sequence '{event.sequence_name}' completed successfully"
+                f"Protocol '{event.protocol_name}' completed successfully"
             )
         else:
-            self.lbl_current_step.setText("Sequence aborted")
+            self.lbl_current_step.setText("Protocol aborted")
             self.log_message_signal.emit(
-                f"Sequence '{event.sequence_name}' aborted at step {event.steps_completed}/{event.total_steps}"
+                f"Protocol '{event.protocol_name}' aborted at step {event.steps_completed}/{event.total_steps}"
             )
 
         self.lbl_next_step.setText("--")
+
+        # Reset operation progress panel to idle state
+        self.lbl_operation.setText("Idle")
+        self.lbl_flow_details.setText("--")
+        self.operation_progress_bar.setValue(0)
+        self.lbl_time_remaining.setText("--:--")
+
+        # Reset status dashboard
+        self._update_status_led("idle")
+        self.lbl_state.setText("IDLE")
+
+        self._enable_controls(True)
+
+    def _on_protocols_loaded(self, event: FluidicsProtocolsLoaded) -> None:
+        """Handle protocol load events."""
+        self._protocols = event.protocols
+        self._protocols_path = event.path
+        self._populate_protocols_list()
+        self._enable_controls(True)
+        self._log_status(
+            f"Loaded {len(event.protocols)} protocols from {event.path}"
+        )
+
+    def _on_protocols_load_failed(self, event: FluidicsProtocolsLoadFailed) -> None:
+        """Handle protocol load failures."""
+        self._log_status(
+            f"Error loading protocols from {event.path}: {event.error_message}"
+        )
+        QMessageBox.warning(
+            self,
+            "Protocol Load Failed",
+            f"Failed to load protocols from {event.path}:\n{event.error_message}",
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # User Actions
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _load_sequences(self) -> None:
-        """Open file dialog to load sequences from CSV."""
+    def _load_protocols(self) -> None:
+        """Open file dialog to load protocols from YAML."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Fluidics Sequences", "", "CSV Files (*.csv);;All Files (*)"
+            self, "Load Fluidics Protocols", "", "YAML Files (*.yaml *.yml);;All Files (*)"
         )
 
         if file_path:
-            self._log_status(f"Loading sequences from {file_path}")
+            self._log_status(f"Loading protocols from {file_path}")
             try:
-                self._sequence_df = pd.read_csv(file_path)
-                # Remove 'include' column if present
-                if "include" in self._sequence_df.columns:
-                    self._sequence_df.drop("include", axis=1, inplace=True)
-
-                # Populate protocols list
-                self._populate_protocols_list()
-                self._log_status(f"Loaded {len(self._sequence_df)} steps")
-
-                # Store sequences on service for orchestrator access
-                if self._service is not None:
-                    self._service.set_sequences(self._sequence_df)
+                self._load_protocols_from_path(file_path, publish=True)
 
             except Exception as e:
-                self._log_status(f"Error loading sequences: {str(e)}")
-                self._log.exception(f"Error loading sequences: {e}")
+                self._log_status(f"Error loading protocols: {str(e)}")
+                self._log.exception(f"Error loading protocols: {e}")
 
-    def _populate_protocols_list(self) -> None:
-        """Populate the protocols list from loaded sequence data."""
-        self.protocols_list.clear()
-        self.steps_table.setRowCount(0)
-        self._protocol_groups: dict[str, pd.DataFrame] = {}
-
-        if self._sequence_df is None or len(self._sequence_df) == 0:
+    def _load_protocols_from_config(self) -> None:
+        """Load protocols from configured path, if provided."""
+        try:
+            import _def as _config
+        except Exception:
             return
 
-        # Check if there's a 'protocol' or 'sequence' column for grouping
-        group_col = None
-        for col in ["protocol", "sequence", "group", "name"]:
-            if col in self._sequence_df.columns:
-                group_col = col
-                break
+        protocols_path = getattr(_config, "FLUIDICS_PROTOCOLS_PATH", None)
+        if not protocols_path:
+            return
 
-        if group_col:
-            # Group steps by protocol
-            for protocol_name, group in self._sequence_df.groupby(group_col):
-                name = str(protocol_name)
-                self._protocol_groups[name] = group
-                item = QListWidgetItem(name)
-                item.setData(Qt.UserRole, name)
-                self.protocols_list.addItem(item)
-        else:
-            # No grouping column - create a single "All Steps" protocol
-            self._protocol_groups["All Steps"] = self._sequence_df
-            item = QListWidgetItem("All Steps")
-            item.setData(Qt.UserRole, "All Steps")
+        path = Path(protocols_path)
+        if not path.is_absolute():
+            base_dir = getattr(_config, "PROJECT_ROOT", None)
+            if base_dir is not None:
+                path = (base_dir / path).resolve()
+            else:
+                path = path.resolve()
+
+        if not path.exists():
+            self._log_status(f"Fluidics protocols not found: {path}")
+            return
+
+        try:
+            self._load_protocols_from_path(str(path), publish=True)
+        except Exception as exc:
+            self._log_status(f"Error loading protocols: {exc}")
+            self._log.exception("Error loading protocols: %s", exc)
+
+    def _load_protocols_from_path(self, path: str, publish: bool = True) -> None:
+        """Load protocols from YAML and update UI."""
+        self._protocols_path = path
+        protocol_file = FluidicsProtocolFile.load_from_yaml(path)
+        self._protocols = protocol_file.protocols
+        self._populate_protocols_list()
+        self._enable_controls(True)
+        self._log_status(f"Loaded {len(self._protocols)} protocols")
+
+        if publish and self._event_bus is not None:
+            self._event_bus.publish(LoadFluidicsProtocolsCommand(path=path))
+
+    def _populate_protocols_list(self) -> None:
+        """Populate the protocols list from loaded protocol data."""
+        self.protocols_list.clear()
+        self.steps_table.setRowCount(0)
+
+        if not self._protocols:
+            return
+
+        for protocol_name in self._protocols:
+            item = QListWidgetItem(protocol_name)
+            item.setData(Qt.UserRole, protocol_name)
             self.protocols_list.addItem(item)
 
         # Select first protocol
@@ -1115,59 +1218,54 @@ class FluidicsWidget(QWidget):
             return
 
         protocol_name = current.data(Qt.UserRole)
-        if protocol_name not in self._protocol_groups:
+        if protocol_name not in self._protocols:
             return
 
-        group = self._protocol_groups[protocol_name]
-        self._populate_steps_table(group)
+        protocol = self._protocols[protocol_name]
+        self._populate_steps_table(protocol)
 
-    def _populate_steps_table(self, group: pd.DataFrame) -> None:
-        """Populate the steps table with steps from a protocol group."""
-        self.steps_table.setRowCount(len(group))
+    def _populate_steps_table(self, protocol: FluidicsProtocol) -> None:
+        """Populate the steps table with steps from a protocol."""
+        self.steps_table.setRowCount(len(protocol.steps))
 
         # Default text color for table items (light gray for dark theme compatibility)
         default_text_color = QColor("#e0e0e0")
 
-        for row_num, (idx, row) in enumerate(group.iterrows()):
+        for row_num, step in enumerate(protocol.steps):
             # Column 0: Step number
             step_item = QTableWidgetItem(str(row_num + 1))
-            step_item.setData(Qt.UserRole, idx)  # Store DataFrame index
             step_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 0, step_item)
 
             # Column 1: Operation
-            operation = ""
-            if "operation" in row.index and pd.notna(row["operation"]):
-                operation = str(row["operation"])
+            operation = step.operation.value
+            if step.repeats > 1:
+                operation = f"{operation} x{step.repeats}"
             op_item = QTableWidgetItem(operation)
             op_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 1, op_item)
 
             # Column 2: Solution
-            solution = ""
-            if "solution" in row.index and pd.notna(row["solution"]):
-                solution = str(row["solution"])
+            solution = step.solution or ""
             sol_item = QTableWidgetItem(solution)
             sol_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 2, sol_item)
 
             # Column 3: Volume
             volume = ""
-            if "volume_ul" in row.index and pd.notna(row["volume_ul"]):
-                volume = f"{row['volume_ul']} uL"
+            if step.volume_ul is not None:
+                volume = f"{step.volume_ul} uL"
             vol_item = QTableWidgetItem(volume)
             vol_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 3, vol_item)
 
             # Column 4: Incubation
             incubation = ""
-            if "incubation_time_s" in row.index and pd.notna(row["incubation_time_s"]):
-                time_s = row["incubation_time_s"]
-                if time_s > 0:
-                    if time_s >= 60:
-                        incubation = f"{time_s / 60:.1f} min"
-                    else:
-                        incubation = f"{time_s} s"
+            if step.duration_s is not None and step.duration_s > 0:
+                if step.duration_s >= 60:
+                    incubation = f"{step.duration_s / 60:.1f} min"
+                else:
+                    incubation = f"{step.duration_s} s"
             inc_item = QTableWidgetItem(incubation)
             inc_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 4, inc_item)
@@ -1364,65 +1462,68 @@ class FluidicsWidget(QWidget):
         self._log_status("EMERGENCY STOP")
         if self._service is not None:
             self._service.abort()
-        # Also stop any sequence in progress
-        self._is_sequence_running = False
-        self._skip_requested = False
+        if self._event_bus is not None:
+            self._event_bus.publish(StopFluidicsCommand())
+        self._is_protocol_running = False
 
         # Reset progress UI
         self._reset_progress_ui()
 
     def _skip_current_step(self) -> None:
-        """Skip to the next step in the sequence."""
-        if not self._is_sequence_running:
-            self._log_status("No sequence running to skip")
+        """Skip to the next step in the protocol."""
+        if not self._is_protocol_running:
+            self._log_status("No protocol running to skip")
             return
 
-        current_step = self._sequence_current_step
-        total_steps = self._sequence_total_steps
+        current_step = self._protocol_current_step
+        total_steps = self._protocol_total_steps
+        empty_on_skip = self.chk_empty_on_skip.isChecked()
         self._log.info(f"Skip button clicked for step {current_step}/{total_steps}")
         self._log_status(f"Skip requested (step {current_step}/{total_steps})")
 
-        # Set skip flag BEFORE calling abort
-        self._skip_requested = True
-        self._empty_on_skip = self.chk_empty_on_skip.isChecked()
-        self._log.debug(f"Skip flags set: _skip_requested=True, _empty_on_skip={self._empty_on_skip}")
-
-        # Abort current operation to unblock the background thread
-        if self._service is not None:
-            try:
-                self._service.abort()
-                self._log_status("Abort signal sent")
-                self._log.debug("Abort signal sent to service")
-            except Exception as e:
-                self._log.warning(f"Error calling abort: {e}")
-                self._log_status(f"Warning: abort error: {e}")
+        if self._event_bus is not None:
+            self._event_bus.publish(
+                SkipFluidicsStepCommand(empty_syringe=empty_on_skip)
+            )
 
     def _reset_progress_ui(self) -> None:
         """Reset the progress UI to initial state."""
         # Clear step highlighting
         self._clear_step_highlights()
 
-        # Reset progress panel
+        # Reset protocol progress panel
         self.lbl_sequence_name.setText("--")
         self.lbl_step_counter.setText("0 of 0")
         self.sequence_progress_bar.setValue(0)
         self.lbl_current_step.setText("--")
         self.lbl_next_step.setText("--")
+        self._protocol_current_step = 0
+        self._protocol_total_steps = 0
+
+        # Reset operation progress panel
+        self.lbl_operation.setText("Idle")
+        self.lbl_flow_details.setText("--")
+        self.operation_progress_bar.setValue(0)
+        self.lbl_time_remaining.setText("--:--")
+
+        # Reset status dashboard
+        self._update_status_led("idle")
+        self.lbl_state.setText("IDLE")
 
         # Disable skip button
         self.btn_skip_step.setEnabled(False)
 
-    def _execute_selected_sequence(self) -> None:
-        """Execute the currently selected protocol."""
-        self._log.info("_execute_selected_sequence called")
+    def _run_selected_protocol(self) -> None:
+        """Run the currently selected protocol."""
+        self._log.info("_run_selected_protocol called")
         self._log_status("Run Protocol clicked")
 
         if not self._is_available:
             QMessageBox.warning(self, "Not Available", "Fluidics not initialized")
             return
 
-        if self._sequence_df is None or len(self._sequence_df) == 0:
-            QMessageBox.warning(self, "No Sequences", "Please load sequences first")
+        if not self._protocols:
+            QMessageBox.warning(self, "No Protocols", "Please load protocols first")
             return
 
         # Get selected protocol
@@ -1432,256 +1533,21 @@ class FluidicsWidget(QWidget):
             return
 
         protocol_name = current_item.data(Qt.UserRole)
-        if protocol_name not in self._protocol_groups:
-            self._log.warning(f"Protocol '{protocol_name}' not found in groups: {list(self._protocol_groups.keys())}")
+        if protocol_name not in self._protocols:
+            self._log.warning(
+                "Protocol '%s' not found in list: %s",
+                protocol_name,
+                list(self._protocols.keys()),
+            )
             QMessageBox.warning(self, "Error", f"Protocol '{protocol_name}' not found")
             return
 
-        # Get row indices for this protocol
-        group = self._protocol_groups[protocol_name]
-        row_indexes = list(group.index)
+        self._log_status(f"Starting protocol: {protocol_name}")
+        if self._event_bus is not None:
+            self._event_bus.publish(
+                RunFluidicsProtocolCommand(protocol_name=protocol_name)
+            )
 
-        self._log_status(f"Executing protocol: {protocol_name} ({len(row_indexes)} steps)")
-        self._execute_sequence_rows(row_indexes, protocol_name)
-
-    def _execute_all_sequences(self) -> None:
-        """Execute all loaded sequences in order."""
-        if not self._is_available:
-            QMessageBox.warning(self, "Not Available", "Fluidics not initialized")
-            return
-
-        if self._sequence_df is None or len(self._sequence_df) == 0:
-            QMessageBox.warning(self, "No Sequences", "Please load sequences first")
-            return
-
-        row_indexes = list(range(len(self._sequence_df)))
-        self._execute_sequence_rows(row_indexes, "All Protocols")
-
-    def _execute_sequence_rows(self, row_indexes: list[int], sequence_name: Optional[str] = None) -> None:
-        """Execute a list of sequence rows by index.
-
-        This is the core sequence execution method that publishes
-        sequence progress events for UI tracking.
-        """
-        if self._sequence_df is None or self._service is None:
-            return
-
-        # Extract sequence steps
-        df = self._sequence_df.iloc[row_indexes].copy()
-        total_steps = len(df)
-
-        if total_steps == 0:
-            self._log_status("No steps to execute")
-            return
-
-        # Generate sequence name if not provided
-        if sequence_name is None:
-            if len(row_indexes) == 1:
-                sequence_name = f"Step {row_indexes[0] + 1}"
-            elif len(row_indexes) == len(self._sequence_df):
-                sequence_name = "All sequences"
-            else:
-                sequence_name = f"Steps {row_indexes[0] + 1}-{row_indexes[-1] + 1}"
-
-        # Run in background thread
-        def do_execute():
-            try:
-                if self._service is None or self._event_bus is None:
-                    return
-
-                # Publish sequence started
-                self._event_bus.publish(FluidicsSequenceStarted(
-                    sequence_name=sequence_name,
-                    total_steps=total_steps,
-                ))
-
-                steps_completed = 0
-
-                for i, (idx, row) in enumerate(df.iterrows()):
-                    self._log.debug(f"Loop iteration {i + 1}/{total_steps}: _is_sequence_running={self._is_sequence_running}, _skip_requested={self._skip_requested}")
-
-                    if not self._is_sequence_running:
-                        # Aborted via emergency stop
-                        self._log.info(f"Sequence aborted: _is_sequence_running=False at step {i + 1}")
-                        break
-
-                    # Build step description
-                    step_desc = self._build_step_description(row)
-                    next_desc = None
-                    if i + 1 < total_steps:
-                        next_row = df.iloc[i + 1]
-                        next_desc = self._build_step_description(next_row)
-
-                    # Publish step started
-                    self._event_bus.publish(FluidicsSequenceStepStarted(
-                        step_index=i,
-                        total_steps=total_steps,
-                        step_description=step_desc,
-                        next_step_description=next_desc,
-                    ))
-
-                    # Execute the step
-                    success = self._execute_single_step(row)
-                    self._log.debug(f"Step {i + 1} execution returned: success={success}, skip_requested={self._skip_requested}")
-
-                    # Check if skip was requested (abort called during step)
-                    if self._skip_requested:
-                        self._log.info(f"Skip handler triggered for step {i + 1}")
-                        self._skip_requested = False
-                        self.log_message_signal.emit(f"Skipping step {i + 1}")
-
-                        # Reset abort flag FIRST so subsequent operations work
-                        try:
-                            if self._service is not None:
-                                self._service.reset_abort()
-                                self._log.debug("Abort flag reset successfully")
-                        except Exception as e:
-                            self._log.warning(f"Error resetting abort: {e}")
-                            self.log_message_signal.emit(f"Warning: error resetting abort: {e}")
-
-                        # Empty syringe if requested
-                        if self._empty_on_skip and self._service is not None:
-                            self.log_message_signal.emit("Emptying syringe before skip...")
-                            try:
-                                self._service.empty_syringe()
-                                self._log.debug("Empty syringe completed")
-                            except Exception as e:
-                                self._log.warning(f"Empty syringe error: {e}")
-                                self.log_message_signal.emit(f"Empty syringe error: {e}")
-
-                        steps_completed = i + 1
-                        self._log.info(f"Continuing to step {i + 2} after skip")
-                        continue  # Skip to next step
-
-                    # Only check success if skip was NOT requested
-                    # (abort during step returns False but we still want to continue)
-                    if not success:
-                        self.log_message_signal.emit(f"Step {i + 1} failed, aborting sequence")
-                        self._log.warning(f"Step {i + 1} failed with success=False, breaking loop")
-                        break
-
-                    steps_completed = i + 1
-                    self._log.debug(f"Step {i + 1} completed normally")
-
-                # Publish sequence completed
-                self._event_bus.publish(FluidicsSequenceCompleted(
-                    sequence_name=sequence_name,
-                    success=steps_completed == total_steps and self._is_sequence_running,
-                    steps_completed=steps_completed,
-                    total_steps=total_steps,
-                ))
-
-            except Exception as e:
-                self.log_message_signal.emit(f"Sequence execution error: {e}")
-                if self._event_bus is not None:
-                    self._event_bus.publish(FluidicsSequenceCompleted(
-                        sequence_name=sequence_name,
-                        success=False,
-                        steps_completed=0,
-                        total_steps=total_steps,
-                    ))
-
-        self._is_sequence_running = True
-        threading.Thread(target=do_execute, daemon=True).start()
-
-    def _build_step_description(self, row: pd.Series) -> str:
-        """Build a human-readable description for a sequence step."""
-        parts = []
-
-        # Check for operation type
-        if "operation" in row.index:
-            val = row["operation"]
-            if pd.notna(val):
-                parts.append(str(val).capitalize())
-
-        # Add solution info
-        if "solution" in row.index:
-            val = row["solution"]
-            if pd.notna(val):
-                parts.append(str(val))
-
-        # Add volume info
-        if "volume_ul" in row.index:
-            val = row["volume_ul"]
-            if pd.notna(val):
-                parts.append(f"{val} uL")
-
-        # Add flow rate info
-        if "flow_rate_ul_per_min" in row.index:
-            val = row["flow_rate_ul_per_min"]
-            if pd.notna(val):
-                parts.append(f"@ {val} uL/min")
-
-        # Add incubation time
-        if "incubation_time_s" in row.index:
-            val = row["incubation_time_s"]
-            if pd.notna(val) and float(val) > 0:
-                parts.append(f"(incubate {val}s)")
-
-        return " ".join(parts) if parts else "Unknown step"
-
-    def _execute_single_step(self, row: pd.Series) -> bool:
-        """Execute a single sequence step.
-
-        Returns True if successful, False if failed or aborted.
-        Note: When skip is requested, the loop should check _skip_requested
-        flag rather than relying solely on this return value.
-        """
-        if self._service is None:
-            return False
-
-        try:
-            # Get step parameters with safe defaults
-            solution = ""
-            if "solution" in row.index and pd.notna(row["solution"]):
-                solution = str(row["solution"])
-
-            volume_ul = 0.0
-            if "volume_ul" in row.index and pd.notna(row["volume_ul"]):
-                volume_ul = float(row["volume_ul"])
-
-            flow_rate = 500.0
-            if "flow_rate_ul_per_min" in row.index and pd.notna(row["flow_rate_ul_per_min"]):
-                flow_rate = float(row["flow_rate_ul_per_min"])
-
-            incubation_time_s = 0.0
-            if "incubation_time_s" in row.index and pd.notna(row["incubation_time_s"]):
-                incubation_time_s = float(row["incubation_time_s"])
-
-            # Execute flow if volume specified
-            if volume_ul > 0 and solution:
-                self._log.debug(f"Calling flow_solution_by_name: {solution} {volume_ul}ul @ {flow_rate}ul/min")
-                try:
-                    success = self._service.flow_solution_by_name(
-                        solution_name=solution,
-                        volume_ul=volume_ul,
-                        flow_rate_ul_per_min=flow_rate,
-                    )
-                except Exception as flow_err:
-                    self._log.warning(f"Flow operation raised exception: {flow_err}")
-                    self.log_message_signal.emit(f"Flow error: {flow_err}")
-                    return False
-                if not success:
-                    self._log.debug("Flow operation returned False (possibly aborted)")
-                    return False
-
-            # Execute incubation if specified
-            if incubation_time_s > 0:
-                success = self._service.incubate(
-                    duration_seconds=incubation_time_s,
-                    solution=solution if solution else None,
-                )
-                if not success:
-                    self._log.debug("Incubation returned False (possibly aborted)")
-                    return False
-
-            return True
-
-        except Exception as e:
-            self._log.exception(f"Error executing step: {e}")
-            # Also emit to UI log so user can see the error
-            self.log_message_signal.emit(f"Step error: {e}")
-            return False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1752,14 +1618,14 @@ class FluidicsWidget(QWidget):
         """Enable or disable control buttons based on service availability."""
         # Only enable if service is available AND we want them enabled
         actually_enabled = enabled and self._is_available
+        has_protocols = bool(self._protocols)
 
-        self.btn_load_sequences.setEnabled(enabled)  # Always allow loading sequences
+        self.btn_load_sequences.setEnabled(enabled)  # Always allow loading protocols
         self.btn_prime_start.setEnabled(actually_enabled)
         self.btn_cleanup_start.setEnabled(actually_enabled)
         self.btn_manual_flow.setEnabled(actually_enabled)
         self.btn_empty_syringe_pump.setEnabled(actually_enabled)
-        self.btn_execute_selected.setEnabled(actually_enabled)
-        self.btn_execute_all.setEnabled(actually_enabled)
+        self.btn_execute_selected.setEnabled(actually_enabled and has_protocols)
 
     def _log_status(self, message: str) -> None:
         """Log a status message to the status text area."""

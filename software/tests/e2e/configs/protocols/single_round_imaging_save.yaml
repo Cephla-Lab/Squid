@@ -1,6 +1,7 @@
 name: Single Round Imaging (Save)
 version: "1.0"
 description: Single-round imaging with saving enabled for e2e output validation
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
 
 defaults:
   imaging:

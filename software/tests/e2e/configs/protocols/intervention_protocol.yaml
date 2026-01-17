@@ -1,6 +1,7 @@
 name: Intervention Protocol
 version: "1.0"
 description: Protocol requiring operator intervention between rounds
+fov_positions_file: ../fov_positions/test_2fov_simple.csv
 
 defaults:
   imaging:

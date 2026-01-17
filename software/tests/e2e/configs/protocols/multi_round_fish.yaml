@@ -1,6 +1,8 @@
 name: 4-Round FISH Protocol
 version: "1.0"
 description: Multi-round FISH experiment with fluidics and imaging for e2e validation
+fov_positions_file: ../fov_positions/test_4fov_grid.csv
+fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
 
 defaults:
   imaging:
@@ -11,24 +13,12 @@ defaults:
     z_step_um: 0.5
     use_autofocus: false
     skip_saving: true
-  fluidics:
-    flow_rate_ul_per_min: 100.0
-    wash_volume_ul: 500.0
 
 rounds:
   # Round 1: Hybridization with probe set 1
   - name: Round 1 - Hybridization
     type: imaging
-    fluidics:
-      - command: flow
-        solution: probe_1
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-      - command: incubate
-        duration_s: 0.5  # Short for testing
-      - command: wash
-        volume_ul: 500
-        repeats: 2
+    fluidics_protocol: probe_1_hybridization
     imaging:
       channels:
         - "Fluorescence 405 nm Ex"
@@ -39,29 +29,12 @@ rounds:
   # Round 1: Strip fluorophores
   - name: Round 1 - Strip
     type: wash
-    fluidics:
-      - command: flow
-        solution: cleavage_buffer
-        volume_ul: 300
-        flow_rate_ul_per_min: 50
-      - command: incubate
-        duration_s: 0.2
-      - command: wash
-        volume_ul: 500
+    fluidics_protocol: strip_fluorophores
 
   # Round 2: Hybridization with probe set 2
   - name: Round 2 - Hybridization
     type: imaging
-    fluidics:
-      - command: flow
-        solution: probe_2
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-      - command: incubate
-        duration_s: 0.5
-      - command: wash
-        volume_ul: 500
-        repeats: 2
+    fluidics_protocol: probe_2_hybridization
     imaging:
       channels:
         - "Fluorescence 488 nm Ex"
@@ -72,7 +45,4 @@ rounds:
   # Final wash and storage
   - name: Final Wash
     type: wash
-    fluidics:
-      - command: wash
-        solution: imaging_buffer
-        volume_ul: 1000
+    fluidics_protocol: final_wash

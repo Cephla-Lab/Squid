@@ -1108,8 +1108,9 @@ XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
 # fluidics
-RUN_FLUIDICS = False
+RUN_FLUIDICS = True
 FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
+FLUIDICS_PROTOCOLS_PATH = None  # Optional path to fluidics_protocols.yaml
 
 USE_TEMPLATE_MULTIPOINT = False
 

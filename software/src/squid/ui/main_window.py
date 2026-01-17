@@ -163,6 +163,7 @@ class HighContentScreeningGui(QMainWindow):
         self._feature_flags = get_feature_flags()
         self._services = services  # Store for passing to widgets
         self._controllers = controllers
+        self._is_simulation = is_simulation
         # Use the registry's bus if it exposes one, otherwise fall back to the global instance
         self._event_bus = getattr(services, "_event_bus", None) or event_bus
 
@@ -711,6 +712,9 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         # Connect control panel to workflow tree
+        self.orchestratorControlPanel.fov_positions_changed.connect(
+            self.orchestratorWorkflowTree.set_fov_positions
+        )
         self.orchestratorControlPanel.protocol_loaded.connect(
             self.orchestratorWorkflowTree.populate_from_protocol
         )

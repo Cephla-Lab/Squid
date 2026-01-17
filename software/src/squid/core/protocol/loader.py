@@ -13,7 +13,6 @@ from pydantic import ValidationError
 import squid.core.logging
 from squid.core.protocol.schema import (
     ExperimentProtocol,
-    FluidicsStep,
     ImagingStep,
     Round,
     RoundType,
@@ -149,26 +148,19 @@ class ProtocolLoader:
             except ValueError:
                 pass  # Let Pydantic handle the error
 
-        # Parse fluidics steps
+        # Reject legacy inline fluidics steps (use fluidics_protocol instead).
         if "fluidics" in result:
-            result["fluidics"] = [
-                self._parse_fluidics_step(f) for f in result["fluidics"]
-            ]
+            round_name = result.get("name", "<unknown>")
+            raise ProtocolValidationError(
+                f"Round '{round_name}' uses legacy 'fluidics' steps; "
+                "use 'fluidics_protocol' to reference named protocols."
+            )
+
+        # fluidics_protocol is just a string reference, no parsing needed
 
         # Parse imaging step
         if "imaging" in result and result["imaging"] is not None:
             result["imaging"] = self._parse_imaging_step(result["imaging"])
-
-        return result
-
-    def _parse_fluidics_step(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a fluidics step, handling type conversions."""
-        result = dict(data)
-
-        # Convert command string to enum
-        if "command" in result and isinstance(result["command"], str):
-            # The enum value is already the string, so this should work
-            pass
 
         return result
 
@@ -275,19 +267,12 @@ class ProtocolLoader:
         rounds: List[Round] = []
 
         for i in range(1, num_rounds + 1):
-            # Imaging round
+            # Imaging round with fluidics protocol reference
             rounds.append(
                 Round(
                     name=f"Round {i}",
                     type=RoundType.IMAGING,
-                    fluidics=[
-                        FluidicsStep(
-                            command="flow",
-                            solution=f"probe_mix_{i}",
-                            volume_ul=100,
-                            flow_rate_ul_per_min=50,
-                        )
-                    ],
+                    fluidics_protocol=f"probe_delivery_{i}",
                     imaging=ImagingStep(
                         channels=channels,
                         z_planes=z_planes,
@@ -302,14 +287,7 @@ class ProtocolLoader:
                     Round(
                         name=f"Wash {i}",
                         type=RoundType.WASH,
-                        fluidics=[
-                            FluidicsStep(
-                                command="wash",
-                                solution="wash_buffer",
-                                volume_ul=500,
-                                flow_rate_ul_per_min=100,
-                            )
-                        ],
+                        fluidics_protocol="standard_wash",
                         imaging=None,
                     )
                 )

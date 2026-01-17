@@ -1,7 +1,0 @@
-protocol,operation,solution,volume_ul,flow_rate_ul_per_min,incubation_time_s
-Rinse,flow,wash_buffer,300,500,0
-Stain,flow,stain_1,150,200,0
-Stain,incubate,stain_1,0,0,5
-Wash,flow,wash_buffer,300,500,0
-Wash,flow,wash_buffer,300,500,0
-Imaging Prep,flow,imaging_buffer,200,300,0

@@ -213,9 +213,27 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             end_syringe_vol: Ending syringe volume for interpolation.
         """
         if not self._simulate_timing:
-            # Even without timing simulation, update syringe volume immediately
-            if end_syringe_vol is not None:
+            # Even without timing simulation, update syringe volume and emit progress
+            if start_syringe_vol is None:
+                start_syringe_vol = self._syringe_volume_ul
+            if end_syringe_vol is None:
+                end_syringe_vol = self._syringe_volume_ul
+            else:
                 self._syringe_volume_ul = end_syringe_vol
+
+            # Emit initial progress (0%)
+            if self._progress_callback:
+                try:
+                    self._progress_callback(operation, 0.0, 0.0, 0.0, start_syringe_vol)
+                except Exception as e:
+                    _log.warning(f"Progress callback error: {e}")
+
+            # Emit final progress (100%) so GUI updates
+            if self._progress_callback:
+                try:
+                    self._progress_callback(operation, 100.0, 0.0, 0.0, end_syringe_vol)
+                except Exception as e:
+                    _log.warning(f"Progress callback error: {e}")
             return
 
         if flow_rate_ul_per_min <= 0:

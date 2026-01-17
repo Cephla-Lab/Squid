@@ -77,7 +77,12 @@ class ParameterInspectionPanel(QWidget):
             round_data: Round configuration dictionary
         """
         round_name = round_data.get("name", f"Round {round_index + 1}")
-        self._header_label.setText(f"Round {round_index + 1}: {round_name}")
+        # Avoid redundant "Round X: Round X" display
+        if round_name.lower().startswith("round"):
+            display_name = round_name
+        else:
+            display_name = f"Round {round_index + 1}: {round_name}"
+        self._header_label.setText(display_name)
 
         self._table.setRowCount(0)
 
