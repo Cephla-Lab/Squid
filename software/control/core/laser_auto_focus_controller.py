@@ -598,7 +598,7 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
-        failure_return_value = False, np.array([0.0, 0.0])
+        failure_return_value = False, 0.0
 
         # Get current spot image
         try:
