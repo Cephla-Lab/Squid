@@ -505,7 +505,7 @@ class TucsenCamera(AbstractCamera):
     def get_exposure_limits(self) -> Tuple[float, float]:
         if self._model_properties.is_genicam:
             param_info = self._get_genicam_parameter("ExposureTime")
-            return param_info["min"], param_info["max"]
+            return param_info["min"] / 1000.0, param_info["max"] / 1000.0  # read in us, convert to ms
         else:
             prop = TUCAM_PROP_ATTR()
             prop.idProp = TUCAM_IDPROP.TUIDP_EXPOSURETM.value
