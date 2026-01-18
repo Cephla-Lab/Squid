@@ -67,6 +67,7 @@ class Optospin(AbstractFilterWheelController):
     def initialize(self, filter_wheel_indices: List[int]):
         self._available_filter_wheels = filter_wheel_indices
         self.set_speed(self._config.speed_hz)
+        self.get_filter_wheel_position()
 
     @property
     def available_filter_wheels(self) -> List[int]:
