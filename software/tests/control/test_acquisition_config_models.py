@@ -35,6 +35,7 @@ from control.models.illumination_config import (
     DEFAULT_WAVELENGTH_COLORS,
     IlluminationType,
 )
+from control._def import SpotDetectionMode
 
 
 class TestIlluminationChannelConfig:
@@ -615,7 +616,7 @@ class TestLaserAFConfig:
         assert config.pixel_to_um == 1.0
         assert config.has_reference is False
         assert config.laser_af_range == 100.0
-        assert config.spot_detection_mode == "dual_right"
+        assert config.spot_detection_mode == SpotDetectionMode.DUAL_RIGHT
 
     def test_laser_af_config_custom_values(self):
         """Test LaserAFConfig with custom values."""
@@ -634,7 +635,7 @@ class TestLaserAFConfig:
         assert config.height == 512
         assert config.pixel_to_um == 0.5
         assert config.has_reference is True
-        assert config.spot_detection_mode == "single"
+        assert config.spot_detection_mode == SpotDetectionMode.SINGLE
 
     def test_laser_af_config_with_reference_image(self):
         """Test LaserAFConfig with reference image data."""

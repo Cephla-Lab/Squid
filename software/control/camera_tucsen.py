@@ -38,6 +38,18 @@ class ModeFL26BW(Enum):
     SENBIN = (0, 1)
 
 
+class ModeLibra(Enum):
+    # TODO: Add support for Libra25 model
+    """
+    Store setting values for TUIDC_RESOLUTION here.
+    Libra25 has two binning modes: Sensitive (2600 x 2048), and Resolution (5200 x 4096).
+    Libra22: Sensitive (2048 x 2048), Resolution (4096 x 4096)
+    These 4 modes should be available in each of the binning modes as well.
+    """
+    RESOLUTION = 0
+    SENSITIVE = 1
+
+
 class ModeAries(Enum):
     """
     Aries modes values are a combination of image mode and binning.
@@ -52,7 +64,7 @@ class ModeAries(Enum):
 class TucsenModelProperties(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     binning_to_set_value: Dict[Tuple[int, int], int]
-    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries], float]
+    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries, ModeLibra], float]
     pixel_size_um: float
     has_temperature_control: bool
     is_genicam: bool
@@ -163,6 +175,11 @@ class TucsenCamera(AbstractCamera):
         elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
         elif (
+            self._config.camera_model == TucsenCameraModel.LIBRA_25
+            or self._config.camera_model == TucsenCameraModel.LIBRA_22
+        ):
+            self._camera_mode = ModeLibra.SENSITIVE  # SENSITIVE as default
+        elif (
             self._config.camera_model == TucsenCameraModel.ARIES_6506
             or self._config.camera_model == TucsenCameraModel.ARIES_6510
         ):
@@ -252,6 +269,23 @@ class TucsenCamera(AbstractCamera):
                     (2, 2): (1600, 1600),
                     (4, 4): (800, 800),
                 }
+        elif camera_model == TucsenCameraModel.LIBRA_25 or camera_model == TucsenCameraModel.LIBRA_22:
+            # TODO: Support binning for LIBRA_25 and LIBRA_22 model
+            binning_to_resolution = {
+                (1, 1): (5200, 4096),
+                (2, 2): (2600, 2048),  # 2x2 binning should be the default
+            }
+            binning_to_set_value = {
+                (1, 1): ModeLibra.RESOLUTION,
+                (2, 2): ModeLibra.SENSITIVE,
+            }
+            mode_to_line_rate_us = {
+                ModeLibra.RESOLUTION: 34.67,
+                ModeLibra.SENSITIVE: 6.31,
+            }
+            pixel_size_um = 3.76
+            has_temperature_control = True
+            is_genicam = False
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
 
@@ -471,7 +505,7 @@ class TucsenCamera(AbstractCamera):
     def get_exposure_limits(self) -> Tuple[float, float]:
         if self._model_properties.is_genicam:
             param_info = self._get_genicam_parameter("ExposureTime")
-            return param_info["min"], param_info["max"]
+            return param_info["min"] / 1000.0, param_info["max"] / 1000.0  # read in us, convert to ms
         else:
             prop = TUCAM_PROP_ATTR()
             prop.idProp = TUCAM_IDPROP.TUIDP_EXPOSURETM.value

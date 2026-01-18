@@ -1164,7 +1164,9 @@ class PreferencesDialog(QDialog):
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
-        self.enable_memory_profiling_checkbox.setChecked(control._def.ENABLE_MEMORY_PROFILING)
+        self.enable_memory_profiling_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_memory_profiling", control._def.ENABLE_MEMORY_PROFILING)
+        )
         self.enable_memory_profiling_checkbox.setToolTip(
             "Show real-time RAM usage in status bar during acquisition.\n"
             "Also logs periodic memory snapshots to help diagnose memory issues."
@@ -1798,7 +1800,7 @@ class PreferencesDialog(QDialog):
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         # Advanced - Diagnostics (live update)
-        old_val = self._get_config_bool("GENERAL", "enable_memory_profiling", False)
+        old_val = self._get_config_bool("GENERAL", "enable_memory_profiling", control._def.ENABLE_MEMORY_PROFILING)
         new_val = self.enable_memory_profiling_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable RAM Monitoring", str(old_val), str(new_val), False))
@@ -9766,6 +9768,7 @@ class AlignmentWidget(QWidget):
         """Complete the confirmation step with current position."""
         if self._reference_fov_position is None:
             self._log.error("Cannot confirm: no reference position set")
+            QMessageBox.warning(self, "Alignment Error", "No reference position set. Please load an acquisition first.")
             return
 
         ref_x, ref_y = self._reference_fov_position
@@ -9892,6 +9895,7 @@ class AlignmentWidget(QWidget):
     def _add_reference_layer(self, image: np.ndarray):
         """Add reference image as a napari layer with magenta/green overlay."""
         self._modified_live_view = False
+        self._contrast_connected = False
         if "Live View" in self.viewer.layers:
             live_layer = self.viewer.layers["Live View"]
             self._original_live_opacity = live_layer.opacity
@@ -9900,6 +9904,8 @@ class AlignmentWidget(QWidget):
             live_layer.opacity = 1.0
             live_layer.blending = "additive"
             live_layer.colormap = "green"
+            live_layer.events.contrast_limits.connect(self._sync_contrast_limits)
+            self._contrast_connected = True
             self._modified_live_view = True
         else:
             self._log.warning("Live View layer not found - reference image will be shown alone")
@@ -9915,16 +9921,28 @@ class AlignmentWidget(QWidget):
                 colormap="magenta",
                 blending="additive",
             )
+        # Sync initial contrast limits from Live View
+        if self._contrast_connected and self.REFERENCE_LAYER_NAME in self.viewer.layers:
+            ref_layer = self.viewer.layers[self.REFERENCE_LAYER_NAME]
+            ref_layer.contrast_limits = live_layer.contrast_limits
         self._log.debug("Reference layer added to napari viewer")
 
+    def _sync_contrast_limits(self, event):
+        """Sync contrast limits from Live View to reference layer."""
+        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
+            self.viewer.layers[self.REFERENCE_LAYER_NAME].contrast_limits = event.value
+
     def _remove_reference_layer(self):
-        """Remove reference layer and restore live view opacity."""
+        """Remove reference layer and restore live view settings."""
         if self.REFERENCE_LAYER_NAME in self.viewer.layers:
             self.viewer.layers.remove(self.REFERENCE_LAYER_NAME)
             self._log.debug("Reference layer removed from napari viewer")
 
         if getattr(self, "_modified_live_view", False) and "Live View" in self.viewer.layers:
             live_layer = self.viewer.layers["Live View"]
+            if getattr(self, "_contrast_connected", False):
+                live_layer.events.contrast_limits.disconnect(self._sync_contrast_limits)
+                self._contrast_connected = False
             live_layer.opacity = self._original_live_opacity
             live_layer.blending = self._original_live_blending
             live_layer.colormap = self._original_live_colormap
@@ -12258,7 +12276,13 @@ class LaserAutofocusControlWidget(QFrame):
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()
-        self.laserAutofocusController.measure_displacement()
+        result = self.laserAutofocusController.measure_displacement()
+        if math.isnan(result):
+            QMessageBox.warning(
+                self,
+                "Measurement Failed",
+                "Could not measure displacement. Please ensure the reference position is set.",
+            )
         if was_live:
             self.liveController.start_live()
 

@@ -136,6 +136,7 @@ class IlluminationController:
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             # self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], self.intensity_settings[channel])
             self.microcontroller.turn_on_illumination()
+            self.microcontroller.wait_till_operation_is_completed()
 
         self.is_on[channel] = True
 
@@ -147,6 +148,7 @@ class IlluminationController:
             self.light_source.set_shutter_state(self.channel_mappings_software[channel], on=False)
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             self.microcontroller.turn_off_illumination()
+            self.microcontroller.wait_till_operation_is_completed()
 
         self.is_on[channel] = False
 

@@ -106,5 +106,8 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="5453", ATTRS{idProduct}=="e426", GROUP="use
 # FL 26BW
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="5453", ATTRS{idProduct}=="e423", GROUP="users", MODE="0666"
 
-# FL 26BW
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="5453", ATTRS{idProduct}=="e423", GROUP="users", MODE="0666"
+# 400 BSI V3
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="5453", ATTRS{idProduct}=="e419", GROUP="users", MODE="0666"
+
+# Libra 25
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="5453", ATTRS{idProduct}=="e437", GROUP="users", MODE="0666"

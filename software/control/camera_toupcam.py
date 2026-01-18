@@ -355,7 +355,7 @@ class ToupcamCamera(AbstractCamera):
             exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
         )
-        if self._hw_set_strobe_delay_ms_fn:
+        if self._hw_set_strobe_delay_ms_fn and self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
 
         if send_exposure:
