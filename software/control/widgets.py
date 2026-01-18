@@ -2973,7 +2973,7 @@ class CameraSettingsWidget(QFrame):
 
         self.entry_ROI_offset_x = QSpinBox()
         roi_info = self.camera.get_region_of_interest()
-        (max_x, max_y) = self.camera.get_resolution()
+        max_x, max_y = self.camera.get_resolution()
         self.entry_ROI_offset_x.setValue(roi_info[0])
         self.entry_ROI_offset_x.setSingleStep(8)
         self.entry_ROI_offset_x.setFixedWidth(60)
@@ -3196,8 +3196,8 @@ class CameraSettingsWidget(QFrame):
         def round_to_8(val):
             return int(8 * val // 8)
 
-        (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        x_offset, y_offset, width, height = self.camera.get_region_of_interest()
+        x_max, y_max = self.camera.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
@@ -9947,6 +9947,7 @@ class NapariLiveWidget(QWidget):
         self.fps_trigger = 10
         self.fps_display = 10
         self.contrastManager = contrastManager
+        self.is_switching_mode = False  # Guard to prevent duplicate MCU commands during mode switch
 
         self.initNapariViewer()
         self.addNapariGrayclipColormap()
@@ -10267,14 +10268,20 @@ class NapariLiveWidget(QWidget):
         self.update_ui_for_mode(maybe_new_config)
 
     def update_ui_for_mode(self, config):
-        self.live_configuration = config
-        self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
-        if self.live_configuration:
-            self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-            self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-            self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+        try:
+            self.is_switching_mode = True
+            self.live_configuration = config
+            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if self.live_configuration:
+                self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
+                self.entry_analogGain.setValue(self.live_configuration.analog_gain)
+                self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+        finally:
+            self.is_switching_mode = False
 
     def update_config_exposure_time(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.exposure_time = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "ExposureTime", new_value
@@ -10282,6 +10289,8 @@ class NapariLiveWidget(QWidget):
         self.signal_newExposureTime.emit(new_value)
 
     def update_config_analog_gain(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.analog_gain = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "AnalogGain", new_value
@@ -10289,6 +10298,8 @@ class NapariLiveWidget(QWidget):
         self.signal_newAnalogGain.emit(new_value)
 
     def update_config_illumination_intensity(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.illumination_intensity = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "IlluminationIntensity", new_value
