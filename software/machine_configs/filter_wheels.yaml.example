@@ -1,4 +1,4 @@
-# Filter Wheel Registry Configuration (v1.1)
+# Filter Wheel Registry Configuration (v1.0)
 #
 # This file defines all filter wheels in the system with their positions
 # and installed filters. Acquisition channels reference filter wheels by name.
@@ -8,12 +8,13 @@
 #
 # Copy this file to filter_wheels.yaml and edit for your system.
 
-version: 1.1
+version: 1.0
 
 filter_wheels:
   # Emission filter wheel (after sample, before camera)
   - name: "Emission Filter Wheel"
     id: 1                          # Hardware ID for controller
+    type: emission                 # Required: emission or excitation
     positions:
       1: "Empty"
       2: "BP 525/50"               # GFP emission
@@ -24,6 +25,7 @@ filter_wheels:
   # Example: Excitation filter wheel (for LED/lamp systems)
   # - name: "Excitation Filter Wheel"
   #   id: 2
+  #   type: excitation
   #   positions:
   #     1: "Empty"
   #     2: "BP 470/40"             # GFP excitation
@@ -32,12 +34,14 @@ filter_wheels:
   # Example: Multi-camera system with separate filter wheels
   # - name: "Camera 1 Filter Wheel"
   #   id: 1
+  #   type: emission
   #   positions:
   #     1: "Empty"
   #     2: "BP 525/50"
   #
   # - name: "Camera 2 Filter Wheel"
   #   id: 2
+  #   type: emission
   #   positions:
   #     1: "Empty"
   #     2: "BP 600/50"

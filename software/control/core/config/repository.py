@@ -40,7 +40,6 @@ from control.models import (
     merge_channel_configs,
 )
 from control.models.hardware_bindings import (
-    FilterWheelSource,
     FilterWheelReference,
     HardwareBindingsConfig,
     FILTER_WHEEL_SOURCE_CONFOCAL,

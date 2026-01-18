@@ -22,9 +22,9 @@ Camera identification:
 
 import logging
 from enum import Enum
-from typing import Dict, List, Optional, Set, Union, TYPE_CHECKING
+from typing import List, Optional, Set, Union, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from control.models.illumination_config import IlluminationChannelConfig

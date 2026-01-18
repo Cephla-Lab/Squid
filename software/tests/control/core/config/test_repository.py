@@ -17,7 +17,6 @@ from control.models import (
 )
 from control.models.camera_registry import CameraRegistryConfig, CameraDefinition
 from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition, FilterWheelType
-from control.models.confocal_config import ConfocalConfig
 from control.models.hardware_bindings import (
     HardwareBindingsConfig,
     FilterWheelReference,
