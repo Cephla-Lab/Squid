@@ -53,6 +53,7 @@ class LaserAutofocusController(QObject):
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
+        self.debug_image = None  # for characterization mode - only stores image on successful detection
 
         # Load configurations if available
         self.load_cached_configuration()
@@ -333,6 +334,8 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
+        # Reset debug image so characterization mode only saves successful detections
+        self.debug_image = None
 
         def finish_with(um: float) -> float:
             self.signal_displacement_um.emit(um)
@@ -476,9 +479,9 @@ class LaserAutofocusController(QObject):
         current_displacement_um = self.measure_displacement()
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
 
-        # Debug: save image after measurement (after search if triggered)
-        if self.characterization_mode and self.image is not None:
-            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_1_measurement.bmp", self.image)
+        # Debug: save image after measurement (only if detection was successful)
+        if self.characterization_mode and self.debug_image is not None:
+            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_1_measurement.bmp", self.debug_image)
 
         if math.isnan(current_displacement_um):
             self._log.error("Cannot move to target: failed to measure current displacement")
@@ -496,9 +499,9 @@ class LaserAutofocusController(QObject):
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
 
-        # Debug: save image used for cross-correlation verification
-        if self.characterization_mode and self.image is not None:
-            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_2_cc_verify.bmp", self.image)
+        # Debug: save image used for cross-correlation verification (only if detection was successful)
+        if self.characterization_mode and self.debug_image is not None:
+            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_2_cc_verify.bmp", self.debug_image)
 
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
@@ -542,6 +545,9 @@ class LaserAutofocusController(QObject):
         if not self.is_initialized:
             self._log.error("Laser autofocus is not initialized, cannot set reference")
             return False
+
+        # Reset image so we only use image from successful detection
+        self.image = None
 
         # turn on the laser
         try:
@@ -634,6 +640,9 @@ class LaserAutofocusController(QObject):
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
         failure_return_value = False, float("nan")
+        # Reset image so CC verify saves its own image, not the measurement image
+        self.image = None
+        self.debug_image = None
 
         # Get current spot image
         try:
@@ -769,7 +778,8 @@ class LaserAutofocusController(QObject):
                     self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
-                self.image = image  # store for debugging # TODO: add to return instead of storing
+                original_image = image.copy()  # Keep copy for debugging
+                self.image = original_image  # Always store latest frame for error debugging
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
@@ -823,6 +833,9 @@ class LaserAutofocusController(QObject):
                         f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm), skipping it."
                     )
                     continue
+
+                # Store debug_image only after successful detection (for characterization mode)
+                self.debug_image = original_image
 
                 tmp_x += x
                 tmp_y += y
