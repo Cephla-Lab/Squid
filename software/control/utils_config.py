@@ -14,7 +14,7 @@ from control._def import (
     LASER_AF_CROP_WIDTH,
     LASER_AF_CROP_HEIGHT,
     LASER_AF_SPOT_DETECTION_MODE,
-    DISPLACEMENT_SUCCESS_WINDOW_UM,
+    DISPLACEMENT_SUCCESS_WINDOW_PIXELS,
     SPOT_CROP_SIZE,
     CORRELATION_THRESHOLD,
     PIXEL_TO_UM_CALIBRATION_DISTANCE,
@@ -22,6 +22,7 @@ from control._def import (
     LASER_AF_CC_MIN_AREA,
     LASER_AF_CC_MAX_AREA,
     LASER_AF_CC_ROW_TOLERANCE,
+    LASER_AF_CC_MAX_ASPECT_RATIO,
     LASER_AF_FILTER_SIGMA,
 )
 from control._def import SpotDetectionMode
@@ -37,8 +38,8 @@ class LaserAFConfig(BaseModel):
     pixel_to_um: float = 1
     has_reference: bool = False  # Track if reference has been set
     laser_af_averaging_n: int = LASER_AF_AVERAGING_N
-    displacement_success_window_um: float = (
-        DISPLACEMENT_SUCCESS_WINDOW_UM  # if the displacement is within this window, we consider the move successful
+    displacement_success_window_pixels: float = (
+        DISPLACEMENT_SUCCESS_WINDOW_PIXELS  # Max displacement from reference x to accept detection (pixels)
     )
     spot_crop_size: int = SPOT_CROP_SIZE  # Size of region to crop around spot for correlation
     correlation_threshold: float = CORRELATION_THRESHOLD  # Minimum correlation coefficient for valid alignment
@@ -55,6 +56,7 @@ class LaserAFConfig(BaseModel):
     cc_min_area: int = LASER_AF_CC_MIN_AREA  # Minimum component area in pixels
     cc_max_area: int = LASER_AF_CC_MAX_AREA  # Maximum component area in pixels
     cc_row_tolerance: float = LASER_AF_CC_ROW_TOLERANCE  # Allowed deviation from expected row
+    cc_max_aspect_ratio: float = LASER_AF_CC_MAX_ASPECT_RATIO  # Maximum aspect ratio for valid spot
     filter_sigma: Optional[int] = LASER_AF_FILTER_SIGMA  # Sigma for Gaussian filter
     x_reference: Optional[float] = 0  # Reference position in um
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check

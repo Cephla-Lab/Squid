@@ -23,6 +23,7 @@ from control._def import (
     LASER_AF_CC_MIN_AREA,
     LASER_AF_CC_MAX_AREA,
     LASER_AF_CC_ROW_TOLERANCE,
+    LASER_AF_CC_MAX_ASPECT_RATIO,
     SpotDetectionMode,
     FocusMeasureOperator,
 )
@@ -217,6 +218,7 @@ def find_spot_location(
             - min_area (int): Minimum component area in pixels (default: 5)
             - max_area (int): Maximum component area in pixels (default: 5000)
             - row_tolerance (float): Allowed deviation from expected row in pixels (default: 50)
+            - max_aspect_ratio (float): Maximum aspect ratio for valid spot (default: 2.5)
         filter_sigma: Sigma for Gaussian filter, or None to skip filtering
         debug_plot: If True, show debug plots
 
@@ -239,6 +241,7 @@ def find_spot_location(
         "min_area": LASER_AF_CC_MIN_AREA,
         "max_area": LASER_AF_CC_MAX_AREA,
         "row_tolerance": LASER_AF_CC_ROW_TOLERANCE,
+        "max_aspect_ratio": LASER_AF_CC_MAX_ASPECT_RATIO,
     }
 
     if params is not None:
@@ -270,6 +273,8 @@ def find_spot_location(
         for i in range(1, num_labels):  # Skip background (label 0)
             area = stats[i, cv2.CC_STAT_AREA]
             cx, cy = centroids[i]
+            width = stats[i, cv2.CC_STAT_WIDTH]
+            height = stats[i, cv2.CC_STAT_HEIGHT]
 
             # Size filter
             if area < p["min_area"] or area > p["max_area"]:
@@ -277,6 +282,11 @@ def find_spot_location(
 
             # Row position filter
             if abs(cy - expected_row) > p["row_tolerance"]:
+                continue
+
+            # Aspect ratio filter (max of w/h or h/w, so always >= 1)
+            aspect_ratio = max(width / height, height / width) if height > 0 and width > 0 else float("inf")
+            if aspect_ratio > p["max_aspect_ratio"]:
                 continue
 
             # Calculate mean intensity of this component for sorting
