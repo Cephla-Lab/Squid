@@ -1,4 +1,4 @@
-"""Unit tests for ProtocolValidator."""
+"""Unit tests for ProtocolValidator (V2 protocol format)."""
 
 import pytest
 
@@ -7,12 +7,13 @@ from squid.core.protocol import (
     FluidicsCommand,
     FluidicsStep,
     ImagingStep,
+    InterventionStep,
     Round,
-    RoundType,
-)
-from squid.core.protocol.schema import (
-    ImagingDefaults,
-    ProtocolDefaults,
+    FluidicsProtocol,
+    FluidicsProtocolStep,
+    ImagingConfig,
+    ZStackConfig,
+    FocusConfig,
 )
 from squid.backend.controllers.orchestrator.validation import (
     OperationEstimate,
@@ -119,7 +120,7 @@ class TestValidationSummary:
             protocol_name="Test",
             total_rounds=5,
             total_estimated_seconds=0.0,
-            total_disk_bytes=1024 ** 3 * 2,  # 2 GB
+            total_disk_bytes=1024**3 * 2,  # 2 GB
             operation_estimates=(),
             errors=(),
             warnings=(),
@@ -174,32 +175,42 @@ class TestValidationSummary:
 
 
 class TestProtocolValidator:
-    """Tests for ProtocolValidator class."""
+    """Tests for ProtocolValidator class with V2 protocol format."""
 
     @pytest.fixture
     def simple_protocol(self) -> ExperimentProtocol:
-        """Create a simple test protocol."""
+        """Create a simple V2 test protocol."""
         return ExperimentProtocol(
             name="Test Protocol",
-            version="1.0",
-            rounds=[
-                Round(
-                    name="Round 1",
-                    type=RoundType.IMAGING,
-                    imaging=ImagingStep(
-                        channels=["DAPI", "FITC"],
-                        z_planes=5,
-                    ),
-                ),
-                Round(
-                    name="Wash",
-                    type=RoundType.WASH,
-                    fluidics=[
-                        FluidicsStep(
-                            command=FluidicsCommand.WASH,
+            version="2.0",
+            fluidics_protocols={
+                "wash": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(
+                            operation=FluidicsCommand.WASH,
                             solution="PBS",
                             volume_ul=500.0,
                         ),
+                    ],
+                ),
+            },
+            imaging_configs={
+                "standard": ImagingConfig(
+                    channels=["DAPI", "FITC"],
+                    z_stack=ZStackConfig(planes=5),
+                ),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        ImagingStep(config="standard"),
+                    ],
+                ),
+                Round(
+                    name="Wash",
+                    steps=[
+                        FluidicsStep(protocol="wash"),
                     ],
                 ),
             ],
@@ -207,48 +218,62 @@ class TestProtocolValidator:
 
     @pytest.fixture
     def complex_protocol(self) -> ExperimentProtocol:
-        """Create a complex test protocol with defaults.
-
-        Note: Fluidics steps are now referenced via fluidics_protocol (string)
-        rather than inline FluidicsStep objects. The validator estimates
-        fluidics time based on the protocol reference, not inline steps.
-        """
+        """Create a complex V2 test protocol with multiple step types."""
         return ExperimentProtocol(
             name="Complex Protocol",
-            version="1.0",
-            defaults=ProtocolDefaults(
-                imaging=ImagingDefaults(
-                    channels=["DAPI", "Cy3", "Cy5"],
-                    z_planes=3,
+            version="2.0",
+            fluidics_protocols={
+                "probe_1": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(operation=FluidicsCommand.FLOW, solution="probe1", volume_ul=100),
+                        FluidicsProtocolStep(operation=FluidicsCommand.INCUBATE, duration_s=1800),
+                    ],
                 ),
-            ),
+                "probe_2": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(operation=FluidicsCommand.FLOW, solution="probe2", volume_ul=100),
+                        FluidicsProtocolStep(operation=FluidicsCommand.INCUBATE, duration_s=1800),
+                    ],
+                ),
+                "wash": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(operation=FluidicsCommand.WASH, solution="PBS", volume_ul=500),
+                    ],
+                ),
+            },
+            imaging_configs={
+                "default_imaging": ImagingConfig(
+                    channels=["DAPI", "Cy3", "Cy5"],
+                    z_stack=ZStackConfig(planes=3),
+                ),
+                "reduced_imaging": ImagingConfig(
+                    channels=["DAPI", "Cy3"],
+                    z_stack=ZStackConfig(planes=3),
+                ),
+            },
             rounds=[
                 Round(
                     name="Round 1",
-                    type=RoundType.IMAGING,
-                    fluidics_protocol="probe_1_hybridization",
-                    imaging=ImagingStep(),  # Uses defaults
-                ),
-                Round(
-                    name="Wash",
-                    type=RoundType.WASH,
-                    fluidics_protocol="wash_protocol",
+                    steps=[
+                        FluidicsStep(protocol="probe_1"),
+                        ImagingStep(config="default_imaging"),
+                        FluidicsStep(protocol="wash"),
+                    ],
                 ),
                 Round(
                     name="Round 2",
-                    type=RoundType.IMAGING,
-                    requires_intervention=True,
-                    intervention_message="Change slide",
-                    fluidics_protocol="probe_2_hybridization",
-                    imaging=ImagingStep(
-                        channels=["DAPI", "Cy3"],  # Override default channels
-                    ),
+                    steps=[
+                        InterventionStep(message="Change slide"),
+                        FluidicsStep(protocol="probe_2"),
+                        ImagingStep(config="reduced_imaging"),
+                        FluidicsStep(protocol="wash"),
+                    ],
                 ),
             ],
         )
 
     def test_validate_simple_protocol(self, simple_protocol):
-        """Test validating a simple protocol."""
+        """Test validating a simple V2 protocol."""
         validator = ProtocolValidator()
         summary = validator.validate(simple_protocol, fov_count=10)
 
@@ -275,23 +300,27 @@ class TestProtocolValidator:
         assert summary.valid is True
 
     def test_validate_complex_protocol(self, complex_protocol):
-        """Test validating a complex protocol with fluidics and interventions."""
+        """Test validating a complex protocol with fluidics, imaging, and interventions."""
         validator = ProtocolValidator()
         summary = validator.validate(complex_protocol, fov_count=20)
 
         assert summary.valid is True
-        assert summary.total_rounds == 3
+        assert summary.total_rounds == 2
 
         # Should have multiple operation estimates
-        assert len(summary.operation_estimates) > 3
+        assert len(summary.operation_estimates) > 2
 
         # Should have imaging estimates
         imaging_ops = [op for op in summary.operation_estimates if op.operation_type == "imaging"]
         assert len(imaging_ops) == 2  # Round 1 and Round 2
 
-        # Should have fluidics estimates for each round with fluidics_protocol
+        # Should have fluidics estimates
         fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
-        assert len(fluidics_ops) == 3  # Round 1, Wash, Round 2 all have fluidics_protocol
+        assert len(fluidics_ops) == 4  # probe_1, wash, probe_2, wash
+
+        # Should have intervention estimate
+        intervention_ops = [op for op in summary.operation_estimates if op.operation_type == "intervention"]
+        assert len(intervention_ops) == 1
 
     def test_time_estimation(self, simple_protocol):
         """Test time estimation scales with FOV count."""
@@ -317,13 +346,16 @@ class TestProtocolValidator:
         """Test that skip_saving=True excludes disk estimation."""
         protocol = ExperimentProtocol(
             name="Preview Protocol",
+            imaging_configs={
+                "preview": ImagingConfig(
+                    channels=["DAPI"],
+                    skip_saving=True,
+                ),
+            },
             rounds=[
                 Round(
                     name="Preview",
-                    imaging=ImagingStep(
-                        channels=["DAPI"],
-                        skip_saving=True,
-                    ),
+                    steps=[ImagingStep(config="preview")],
                 ),
             ],
         )
@@ -336,71 +368,118 @@ class TestProtocolValidator:
         assert len(imaging_ops) == 1
         assert imaging_ops[0].estimated_disk_bytes == 0
 
-    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
-    def test_fluidics_time_from_volume_and_rate(self):
-        """Test fluidics time calculated from volume and flow rate.
-
-        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
-        The new schema uses fluidics_protocol (string reference) instead.
-        Fluidics timing is now estimated from the loaded FluidicsProtocol files.
-        """
-        pass
-
-    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
-    def test_incubate_time_from_duration(self):
-        """Test incubate time uses duration_s directly.
-
-        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
-        The new schema uses fluidics_protocol (string reference) instead.
-        """
-        pass
-
-    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
-    def test_validate_fluidics_missing_volume(self):
-        """Test validation error for FLOW without volume.
-
-        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
-        The new schema uses fluidics_protocol (string reference) instead.
-        Inline fluidics step validation is no longer applicable.
-        """
-        pass
-
-    @pytest.mark.skip(reason="Schema changed: inline fluidics steps replaced by fluidics_protocol references")
-    def test_validate_fluidics_missing_duration(self):
-        """Test validation error for INCUBATE without duration.
-
-        NOTE: This test used the old schema where Round had inline FluidicsStep objects.
-        The new schema uses fluidics_protocol (string reference) instead.
-        Inline fluidics step validation is no longer applicable.
-        """
-        pass
-
-    def test_validate_warns_long_experiment(self):
-        """Test warning for experiments > 24 hours."""
-        # Create a protocol that will estimate > 24 hours (86400s)
-        # Need enough rounds with fluidics + imaging to exceed threshold
-        rounds = []
-        for i in range(210):  # 210 rounds to exceed 24h threshold
-            rounds.append(
-                Round(
-                    name=f"Round {i}",
-                    type=RoundType.IMAGING,
-                    fluidics_protocol=f"long_protocol_{i}",
-                    imaging=ImagingStep(
-                        channels=["DAPI", "Cy3", "Cy5"],  # 3 channels
-                        z_planes=5,  # 5 z-planes
-                    ),
-                )
-            )
-
+    def test_fluidics_time_from_protocol(self):
+        """Test fluidics time estimated from FluidicsProtocol steps."""
         protocol = ExperimentProtocol(
-            name="Long Protocol",
-            rounds=rounds,
+            name="Fluidics Time Test",
+            fluidics_protocols={
+                "incubate": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(operation=FluidicsCommand.INCUBATE, duration_s=600),  # 10 min
+                    ],
+                ),
+            },
+            imaging_configs={
+                "minimal": ImagingConfig(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="incubate"),
+                        ImagingStep(config="minimal"),
+                    ],
+                ),
+            ],
         )
 
         validator = ProtocolValidator()
-        # Use 100 FOVs to make imaging take longer
-        summary = validator.validate(protocol, fov_count=100)
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
+        assert len(fluidics_ops) == 1
+        # Should estimate ~600s for the incubation
+        assert fluidics_ops[0].estimated_seconds >= 600
+
+    def test_validate_missing_fluidics_protocol(self):
+        """Test validation error for missing fluidics protocol reference."""
+        protocol = ExperimentProtocol(
+            name="Missing Fluidics",
+            imaging_configs={
+                "standard": ImagingConfig(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="nonexistent_protocol"),
+                        ImagingStep(config="standard"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator()
+        summary = validator.validate(protocol, fov_count=1)
+
+        assert summary.has_errors
+        assert any("nonexistent_protocol" in err for err in summary.errors)
+
+    def test_validate_missing_imaging_config(self):
+        """Test validation error for missing imaging config reference."""
+        protocol = ExperimentProtocol(
+            name="Missing Config",
+            imaging_configs={
+                "standard": ImagingConfig(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        ImagingStep(config="nonexistent_config"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator()
+        summary = validator.validate(protocol, fov_count=1)
+
+        assert summary.has_errors
+        assert any("nonexistent_config" in err for err in summary.errors)
+
+    def test_validate_warns_long_experiment(self):
+        """Test warning for experiments > 24 hours."""
+        # Create a protocol with long incubation to exceed 24h
+        protocol = ExperimentProtocol(
+            name="Long Protocol",
+            fluidics_protocols={
+                "long_incubate": FluidicsProtocol(
+                    steps=[
+                        FluidicsProtocolStep(operation=FluidicsCommand.INCUBATE, duration_s=43200),  # 12 hours
+                    ],
+                ),
+            },
+            imaging_configs={
+                "standard": ImagingConfig(
+                    channels=["DAPI", "Cy3", "Cy5"],
+                    z_stack=ZStackConfig(planes=5),
+                ),
+            },
+            rounds=[
+                Round(
+                    name=f"Round {i}",
+                    steps=[
+                        FluidicsStep(protocol="long_incubate"),
+                        ImagingStep(config="standard"),
+                    ],
+                )
+                for i in range(3)  # 3 rounds x 12h = 36 hours
+            ],
+        )
+
+        validator = ProtocolValidator()
+        summary = validator.validate(protocol, fov_count=10)
 
         # Should have a warning about long experiment (>24 hours)
         assert summary.has_warnings
@@ -415,13 +494,16 @@ class TestProtocolValidator:
 
         protocol = ExperimentProtocol(
             name="Test",
+            imaging_configs={
+                "with_af": ImagingConfig(
+                    channels=["DAPI"],
+                    focus=FocusConfig(enabled=True, method="contrast"),
+                ),
+            },
             rounds=[
                 Round(
                     name="Round 1",
-                    imaging=ImagingStep(
-                        channels=["DAPI"],
-                        use_autofocus=True,
-                    ),
+                    steps=[ImagingStep(config="with_af")],
                 ),
             ],
         )
@@ -439,10 +521,13 @@ class TestProtocolValidator:
         """Test disk estimation with custom camera resolution."""
         protocol = ExperimentProtocol(
             name="Test",
+            imaging_configs={
+                "standard": ImagingConfig(channels=["DAPI"]),
+            },
             rounds=[
                 Round(
                     name="Round 1",
-                    imaging=ImagingStep(channels=["DAPI"]),
+                    steps=[ImagingStep(config="standard")],
                 ),
             ],
         )
@@ -471,8 +556,8 @@ class TestProtocolValidator:
 
         assert validator.estimate_disk_formatted(500) == "500 B"
         assert validator.estimate_disk_formatted(1024 * 500) == "500.0 KB"
-        assert validator.estimate_disk_formatted(1024 ** 2 * 500) == "500.0 MB"
-        assert validator.estimate_disk_formatted(1024 ** 3 * 2) == "2.0 GB"
+        assert validator.estimate_disk_formatted(1024**2 * 500) == "500.0 MB"
+        assert validator.estimate_disk_formatted(1024**3 * 2) == "2.0 GB"
 
 
 class TestDefaultEstimates:
@@ -482,7 +567,6 @@ class TestDefaultEstimates:
         """Test that default timing estimates are defined."""
         assert "stage_move_seconds" in DEFAULT_TIMING_ESTIMATES
         assert "autofocus_seconds" in DEFAULT_TIMING_ESTIMATES
-        assert "fluidics_per_step_seconds" in DEFAULT_TIMING_ESTIMATES
 
     def test_default_disk_estimates_exist(self):
         """Test that default disk estimates are defined."""

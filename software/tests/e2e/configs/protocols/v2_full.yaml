@@ -1,0 +1,142 @@
+# V2 Full-Featured Protocol
+# Demonstrates all V2 protocol capabilities.
+
+name: "V2 Full Feature Test"
+version: "2.0"
+description: "Full-featured protocol demonstrating all V2 capabilities"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  initial_wash:
+    description: "Initial chamber wash"
+    steps:
+      - operation: flow
+        solution: pbs
+        volume_ul: 1000
+        flow_rate_ul_per_min: 200
+      - operation: aspirate
+
+  probe_hybridize_1:
+    description: "Probe set 1 hybridization"
+    steps:
+      - operation: flow
+        solution: probe_mix_1
+        volume_ul: 150
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1800
+        description: "30 min hybridization"
+
+  probe_hybridize_2:
+    description: "Probe set 2 hybridization"
+    steps:
+      - operation: flow
+        solution: probe_mix_2
+        volume_ul: 150
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1800
+        description: "30 min hybridization"
+
+  stringent_wash:
+    description: "Stringent wash to remove unbound probes"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+        repeats: 3
+      - operation: incubate
+        duration_s: 60
+
+  strip:
+    description: "Strip probes for next round"
+    steps:
+      - operation: flow
+        solution: strip_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+      - operation: incubate
+        duration_s: 300
+      - operation: flow
+        solution: pbs
+        volume_ul: 500
+
+imaging_configs:
+  dapi_only:
+    description: "DAPI reference imaging"
+    channels:
+      - DAPI
+    z_stack:
+      planes: 1
+    focus:
+      enabled: true
+      method: laser
+
+  fish_multichannel:
+    description: "Multi-channel FISH imaging with overrides"
+    channels:
+      - DAPI
+      - name: Cy3
+        exposure_time_ms: 150
+        illumination_intensity: 60
+      - name: Cy5
+        exposure_time_ms: 200
+        illumination_intensity: 80
+      - name: Cy7
+        exposure_time_ms: 300
+        illumination_intensity: 90
+    z_stack:
+      planes: 7
+      step_um: 0.5
+      direction: from_center
+    focus:
+      enabled: true
+      method: laser
+      interval_fovs: 5
+
+  quick_check:
+    description: "Quick QC imaging without saving"
+    channels:
+      - DAPI
+    z_stack:
+      planes: 1
+    focus:
+      enabled: false
+    skip_saving: true
+
+rounds:
+  # Initial setup
+  - name: "Setup"
+    steps:
+      - step_type: fluidics
+        protocol: initial_wash
+      - step_type: intervention
+        message: "Verify sample is properly mounted and in focus"
+      - step_type: imaging
+        config: dapi_only
+
+  # Hybridization rounds with repeat
+  - name: "Hybridization Round {i}"
+    repeat: 2
+    steps:
+      - step_type: fluidics
+        protocol: probe_hybridize_{i}
+      - step_type: fluidics
+        protocol: stringent_wash
+      - step_type: imaging
+        config: fish_multichannel
+      - step_type: fluidics
+        protocol: strip
+
+  # Final QC
+  - name: "Final QC"
+    steps:
+      - step_type: imaging
+        config: quick_check
+      - step_type: intervention
+        message: "Review acquisition quality before completing experiment"

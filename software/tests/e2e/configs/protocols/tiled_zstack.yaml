@@ -1,24 +1,35 @@
-name: Tiled Z-Stack Imaging
-version: "1.0"
-description: Grid imaging with z-stacks for comprehensive e2e validation
-fov_positions_file: ../fov_positions/test_4fov_grid.csv
+# Tiled Z-Stack Imaging (V2 Format)
+# Grid imaging with z-stacks for comprehensive e2e validation
 
-defaults:
-  imaging:
-    z_planes: 5
-    z_step_um: 1.0
-    use_autofocus: false
-    use_focus_lock: false
+name: "Tiled Z-Stack Imaging"
+version: "2.0"
+description: "Grid imaging with z-stacks for comprehensive e2e validation"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+imaging_configs:
+  tiled_zstack:
+    description: "Multi-channel tiled z-stack"
+    channels:
+      - "BF LED matrix full"
+      - "Fluorescence 488 nm Ex"
+    z_stack:
+      planes: 5
+      step_um: 1.0
+      direction: from_center
+    focus:
+      enabled: false
     skip_saving: true
 
+fov_sets:
+  main: ../fov_positions/test_4fov_grid.csv
+
 rounds:
-  - name: Tiled Acquisition
-    type: imaging
-    imaging:
-      channels:
-        - "BF LED matrix full"
-        - "Fluorescence 488 nm Ex"
-      z_planes: 5
-      z_step_um: 1.0
-      use_autofocus: false
-      skip_saving: true
+  - name: "Tiled Acquisition"
+    steps:
+      - step_type: imaging
+        config: tiled_zstack
+        fovs: main

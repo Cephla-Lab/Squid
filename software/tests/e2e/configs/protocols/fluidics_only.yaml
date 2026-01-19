@@ -1,25 +1,74 @@
-name: Fluidics Only Protocol
-version: "1.0"
-description: Fluidics-only workflow for testing pump and valve control
-fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+# Fluidics Only Protocol (V2 Format)
+# Fluidics-only workflow for testing pump and valve control
+
+name: "Fluidics Only Protocol"
+version: "2.0"
+description: "Fluidics-only workflow for testing pump and valve control"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  system_prime:
+    description: "Prime the fluidics system"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 200
+
+  stain_application:
+    description: "Apply primary stain"
+    steps:
+      - operation: flow
+        solution: stain_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 25
+      - operation: incubate
+        duration_s: 2
+
+  secondary_stain:
+    description: "Apply secondary stain"
+    steps:
+      - operation: flow
+        solution: stain_2
+        volume_ul: 100
+        flow_rate_ul_per_min: 25
+      - operation: incubate
+        duration_s: 2
+
+  final_rinse:
+    description: "Final rinse"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
 
 rounds:
   # Prime the system
-  - name: System Prime
-    type: wash
-    fluidics_protocol: system_prime
+  - name: "System Prime"
+    steps:
+      - step_type: fluidics
+        protocol: system_prime
 
   # Staining sequence
-  - name: Stain Application
-    type: wash
-    fluidics_protocol: stain_application
+  - name: "Stain Application"
+    steps:
+      - step_type: fluidics
+        protocol: stain_application
 
   # Second stain
-  - name: Secondary Stain
-    type: wash
-    fluidics_protocol: secondary_stain
+  - name: "Secondary Stain"
+    steps:
+      - step_type: fluidics
+        protocol: secondary_stain
 
   # Final rinse
-  - name: Final Rinse
-    type: wash
-    fluidics_protocol: final_rinse
+  - name: "Final Rinse"
+    steps:
+      - step_type: fluidics
+        protocol: final_rinse

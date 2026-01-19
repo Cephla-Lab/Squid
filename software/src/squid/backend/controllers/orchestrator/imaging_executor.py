@@ -3,21 +3,27 @@ Imaging executor for orchestrated experiments.
 
 Delegates imaging rounds to MultiPointController for actual image acquisition.
 Bridges the orchestrator's round-based model with multipoint's acquisition model.
+
+V2 Support:
+    - execute_with_config() for ImagingConfig-based imaging
+    - Channel overrides via ChannelConfigurationManager
+    - Focus interval configuration via AutofocusExecutor
 """
 
 import os
 import threading
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List, Union
 
 import squid.core.logging
 from squid.core.events import EventBus, handles, auto_subscribe, auto_unsubscribe
 from squid.core.events import AcquisitionFinished
 from squid.core.utils.cancel_token import CancelToken, CancellationError
-from squid.core.protocol import ImagingStep
+from squid.core.protocol import ImagingConfig, ChannelConfigOverride
 
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint import MultiPointController
     from squid.backend.managers.scan_coordinates import ScanCoordinates
+    from squid.backend.managers.channel_config_manager import ChannelConfigurationManager
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -28,6 +34,11 @@ class ImagingExecutor:
     The ImagingExecutor bridges the orchestrator's per-round imaging model
     with the MultiPointController's acquisition system.
 
+    V2 Protocol Support:
+        - execute_with_config(): Execute imaging using ImagingConfig
+        - Channel overrides applied via ChannelConfigurationManager
+        - Focus interval configuration via AutofocusExecutor
+
     Usage:
         executor = ImagingExecutor(
             event_bus=event_bus,
@@ -35,10 +46,12 @@ class ImagingExecutor:
             scan_coordinates=scan_coords,
         )
 
-        success = executor.execute(
-            imaging_step=round_.imaging,
+        # V2 style with ImagingConfig
+        success = executor.execute_with_config(
+            imaging_config=config,
             output_path="/data/experiments/round_001",
             cancel_token=cancel_token,
+            round_index=0,
         )
     """
 
@@ -47,6 +60,7 @@ class ImagingExecutor:
         event_bus: EventBus,
         multipoint_controller: "MultiPointController",
         scan_coordinates: Optional["ScanCoordinates"] = None,
+        channel_config_manager: Optional["ChannelConfigurationManager"] = None,
     ):
         """Initialize the imaging executor.
 
@@ -54,10 +68,12 @@ class ImagingExecutor:
             event_bus: EventBus for event communication
             multipoint_controller: MultiPointController for acquisitions
             scan_coordinates: ScanCoordinates with FOV positions
+            channel_config_manager: ChannelConfigurationManager for channel overrides
         """
         self._event_bus = event_bus
         self._multipoint = multipoint_controller
         self._scan_coordinates = scan_coordinates
+        self._channel_config_manager = channel_config_manager
 
         # Synchronization for acquisition completion
         self._acquisition_complete = threading.Event()
@@ -85,44 +101,105 @@ class ImagingExecutor:
             return bool(self._multipoint.resume_acquisition())
         return False
 
-    def execute(
+    def execute_with_config(
         self,
-        imaging_step: ImagingStep,
+        imaging_config: ImagingConfig,
         output_path: str,
         cancel_token: CancelToken,
+        round_index: int,
+        resume_fov_index: int = 0,
         experiment_id: Optional[str] = None,
-        round_index: Optional[int] = None,
     ) -> bool:
-        """Execute imaging for a round.
+        """Execute imaging using a V2 ImagingConfig.
 
         Configures the MultiPointController with the imaging parameters
-        and runs the acquisition. Blocks until acquisition completes.
+        from the ImagingConfig and runs the acquisition.
 
         Args:
-            imaging_step: ImagingStep from protocol defining channels, z-planes, etc.
+            imaging_config: ImagingConfig defining channels, z-stack, focus settings
             output_path: Base path where images should be saved
             cancel_token: CancelToken for pause/abort support
-            experiment_id: Optional experiment identifier
-            round_index: Optional round index for FOV event context
+            round_index: Round index for experiment ID and FOV context
+            resume_fov_index: FOV index to resume from (0 = start from beginning)
+            experiment_id: Optional experiment ID override. If not provided,
+                          auto-generates as "round_{round_index:03d}"
 
         Returns:
             True if imaging completed successfully, False otherwise
         """
+        if experiment_id is None:
+            experiment_id = f"round_{round_index:03d}"
         self._current_experiment_id = experiment_id
         self._acquisition_complete.clear()
         self._acquisition_success = False
         self._acquisition_error = None
 
         try:
-            # Configure multipoint for this round's imaging
-            if round_index is not None and hasattr(self._multipoint, "set_current_round_index"):
+            # Get channel names
+            channel_names = imaging_config.get_channel_names()
+
+            # Configure multipoint base path and experiment ID
+            self._multipoint.base_path = output_path
+            self._multipoint.experiment_ID = experiment_id
+
+            # Set round index if supported
+            if hasattr(self._multipoint, "set_current_round_index"):
                 self._multipoint.set_current_round_index(round_index)
-            self._configure_acquisition(imaging_step, output_path, experiment_id)
+
+            # Configure z-stack
+            direction_map = {
+                "from_center": "FROM CENTER",
+                "from_bottom": "FROM BOTTOM",
+                "from_top": "FROM TOP",
+            }
+            self._multipoint.update_config(
+                **{
+                    "zstack.nz": imaging_config.z_stack.planes,
+                    "zstack.delta_z_um": imaging_config.z_stack.step_um,
+                    "zstack.stacking_direction": direction_map[imaging_config.z_stack.direction],
+                }
+            )
+
+            # Configure focus
+            focus = imaging_config.focus
+            self._multipoint.update_config(
+                **{
+                    "focus.do_contrast_af": focus.enabled and focus.method == "contrast",
+                    "focus.do_reflection_af": focus.enabled and focus.method == "laser",
+                }
+            )
+
+            # Configure autofocus executor with interval if available
+            if hasattr(self._multipoint, "_autofocus_executor") and self._multipoint._autofocus_executor:
+                self._multipoint._autofocus_executor.configure(
+                    do_autofocus=focus.enabled and focus.method == "contrast",
+                    do_reflection_af=focus.enabled and focus.method == "laser",
+                    fovs_per_af=focus.interval_fovs if focus.enabled else None,
+                )
+
+            # Configure skip_saving
+            self._multipoint.update_config(skip_saving=imaging_config.skip_saving)
+
+            # Set selected channels
+            if hasattr(self._multipoint, "set_selected_configurations"):
+                self._multipoint.set_selected_configurations(channel_names)
+
+            # Apply channel overrides
+            self._apply_channel_overrides(imaging_config.channels)
+
+            # Set start FOV index for resume support
+            if resume_fov_index > 0 and hasattr(self._multipoint, "set_start_fov_index"):
+                self._multipoint.set_start_fov_index(resume_fov_index)
+                _log.info(f"Set start FOV index to {resume_fov_index} for resume")
+
+            # Create output directory
+            os.makedirs(os.path.join(output_path, experiment_id), exist_ok=True)
 
             # Start the acquisition
             _log.info(
-                f"Starting imaging: channels={imaging_step.channels}, "
-                f"z_planes={imaging_step.z_planes}"
+                f"Starting imaging: channels={channel_names}, "
+                f"z_planes={imaging_config.z_stack.planes}, "
+                f"focus={imaging_config.focus.method if imaging_config.focus.enabled else 'disabled'}"
             )
             self._multipoint.run_acquisition(acquire_current_fov=False)
 
@@ -150,53 +227,57 @@ class ImagingExecutor:
         finally:
             self._current_experiment_id = None
 
-    def _configure_acquisition(
+    def _apply_channel_overrides(
         self,
-        imaging_step: ImagingStep,
-        base_path: str,
-        experiment_id: Optional[str],
+        channels: List[Union[str, ChannelConfigOverride]],
     ) -> None:
-        """Configure MultiPointController for this imaging round.
+        """Apply channel configuration overrides.
+
+        For channels that are ChannelConfigOverride objects, apply the
+        specified overrides to the ChannelConfigurationManager.
 
         Args:
-            imaging_step: ImagingStep with channels, z-planes, etc.
-            base_path: Base path for saving images
-            experiment_id: Experiment identifier for event filtering
+            channels: List of channel names or ChannelConfigOverride objects
         """
-        # Set base path + experiment ID for multipoint outputs
-        self._multipoint.base_path = base_path
-        if experiment_id is not None:
-            self._multipoint.experiment_ID = experiment_id
-            os.makedirs(os.path.join(base_path, experiment_id), exist_ok=True)
+        if self._channel_config_manager is None:
+            return
 
-        # Configure z-stack parameters
-        self._multipoint.update_config(
-            **{
-                "zstack.nz": imaging_step.z_planes,
-                "zstack.delta_z_um": imaging_step.z_step_um,
-            }
-        )
+        # Get the current objective from multipoint controller
+        current_objective = None
+        if hasattr(self._multipoint, "objectiveStore") and self._multipoint.objectiveStore:
+            current_objective = self._multipoint.objectiveStore.current_objective
 
-        # Configure channels via multipoint's selected_configurations
-        # The actual channel configuration is managed by the ChannelConfigurationManager
-        # Here we just set which channels to use
-        if hasattr(self._multipoint, "set_selected_configurations"):
-            self._multipoint.set_selected_configurations(imaging_step.channels)
+        if current_objective is None:
+            _log.warning("Cannot apply channel overrides: no current objective available")
+            return
 
-        # Apply per-round imaging overrides
-        self._multipoint.update_config(
-            **{
-                "focus.do_contrast_af": imaging_step.use_autofocus,
-                "skip_saving": imaging_step.skip_saving,
-            }
-        )
+        # Convert ChannelConfigOverride objects to dicts for the manager
+        overrides = []
+        for ch in channels:
+            if isinstance(ch, ChannelConfigOverride):
+                override_dict = {"name": ch.name}
+                if ch.exposure_time_ms is not None:
+                    override_dict["exposure_time_ms"] = ch.exposure_time_ms
+                if ch.analog_gain is not None:
+                    override_dict["analog_gain"] = ch.analog_gain
+                if ch.illumination_intensity is not None:
+                    override_dict["illumination_intensity"] = ch.illumination_intensity
+                # Note: z_offset_um is stored but not currently applied
+                overrides.append(override_dict)
+
+        if overrides:
+            try:
+                self._channel_config_manager.apply_channel_overrides(current_objective, overrides)
+                _log.debug(f"Applied {len(overrides)} channel override(s) for objective '{current_objective}'")
+            except Exception as e:
+                _log.warning(f"Failed to apply channel overrides: {e}")
 
     @handles(AcquisitionFinished)
     def _on_acquisition_finished(self, event: AcquisitionFinished) -> None:
         """Handle acquisition completion."""
         # Filter by experiment_id if we have one
         if self._current_experiment_id is not None:
-            if hasattr(event, 'experiment_id') and event.experiment_id != self._current_experiment_id:
+            if hasattr(event, "experiment_id") and event.experiment_id != self._current_experiment_id:
                 return
 
         self._acquisition_success = event.success

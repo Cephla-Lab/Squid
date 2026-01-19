@@ -1,7 +1,8 @@
 """
-Protocol validation for experiment orchestration.
+Protocol validation for experiment orchestration (V2).
 
 Validates protocols before execution and provides time/disk estimates.
+Supports V2 step-based protocol format.
 """
 
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
@@ -9,8 +10,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 import squid.core.logging
 from squid.core.protocol import (
     ExperimentProtocol,
-    ImagingStep,
     Round,
+    FluidicsStep,
+    ImagingStep as ImagingStepV2,
+    InterventionStep,
+    ImagingConfig,
 )
 from squid.backend.controllers.orchestrator.validation import (
     DEFAULT_DISK_ESTIMATES,
@@ -26,10 +30,11 @@ _log = squid.core.logging.get_logger(__name__)
 
 
 class ProtocolValidator:
-    """Validates experiment protocols before execution.
+    """Validates V2 experiment protocols before execution.
 
     Performs pre-flight validation including:
-    - Channel availability checks
+    - Channel availability checks (via imaging_configs)
+    - Fluidics protocol availability checks
     - Time estimation per round and total
     - Disk space estimation
     - Configuration consistency checks
@@ -82,7 +87,7 @@ class ProtocolValidator:
         protocol: ExperimentProtocol,
         fov_count: int = 1,
     ) -> ValidationSummary:
-        """Validate a protocol and estimate time/disk usage.
+        """Validate a V2 protocol and estimate time/disk usage.
 
         Args:
             protocol: The experiment protocol to validate.
@@ -100,20 +105,25 @@ class ProtocolValidator:
             errors.append("Protocol has no rounds defined")
             return ValidationSummary.create_error(protocol.name, errors[0])
 
-        # Validate default channels
-        default_channels = protocol.defaults.imaging.channels
-        if self._available_channels and default_channels:
-            missing = set(default_channels) - self._available_channels
-            if missing:
-                errors.append(
-                    f"Default channels not available: {', '.join(sorted(missing))}"
-                )
+        # Validate named resources exist
+        ref_errors = protocol.validate_references()
+        errors.extend(ref_errors)
+
+        # Validate channels in imaging_configs
+        if self._available_channels:
+            for config_name, config in protocol.imaging_configs.items():
+                channel_names = config.get_channel_names()
+                missing = set(channel_names) - self._available_channels
+                if missing:
+                    errors.append(
+                        f"Imaging config '{config_name}' channels not available: "
+                        f"{', '.join(sorted(missing))}"
+                    )
 
         # Validate each round
         for round_idx, round_ in enumerate(protocol.rounds):
-            round_with_defaults = protocol.apply_defaults_to_round(round_)
             round_estimates = self._validate_round(
-                round_with_defaults, round_idx, fov_count
+                protocol, round_, round_idx, fov_count
             )
             operation_estimates.extend(round_estimates)
 
@@ -132,8 +142,8 @@ class ProtocolValidator:
             warnings.append(f"Experiment estimated to take {hours:.1f} hours")
 
         # Add warning if disk usage is very high
-        if total_bytes > 500 * (1024 ** 3):  # More than 500 GB
-            gb = total_bytes / (1024 ** 3)
+        if total_bytes > 500 * (1024**3):  # More than 500 GB
+            gb = total_bytes / (1024**3)
             warnings.append(f"Estimated disk usage is {gb:.1f} GB")
 
         return ValidationSummary(
@@ -149,14 +159,16 @@ class ProtocolValidator:
 
     def _validate_round(
         self,
+        protocol: ExperimentProtocol,
         round_: Round,
         round_idx: int,
         fov_count: int,
     ) -> List[OperationEstimate]:
-        """Validate a single round and return operation estimates.
+        """Validate a single V2 round and return operation estimates.
 
         Args:
-            round_: The round to validate (with defaults applied).
+            protocol: The full protocol (for accessing named resources).
+            round_: The round to validate.
             round_idx: Index of the round (0-based).
             fov_count: Number of FOVs to image.
 
@@ -176,44 +188,45 @@ class ProtocolValidator:
             )
         )
 
-        # Validate and estimate fluidics
-        if round_.fluidics_protocol:
-            fluidics_estimate = self._validate_fluidics_protocol(
-                round_.fluidics_protocol, round_idx, round_.name
-            )
-            estimates.append(fluidics_estimate)
-
-        # Validate and estimate imaging
-        if round_.imaging:
-            imaging_estimate = self._validate_imaging(
-                round_.imaging, round_idx, round_.name, fov_count
-            )
-            estimates.append(imaging_estimate)
-
-        # Intervention estimate
-        if round_.requires_intervention:
-            estimates.append(
-                OperationEstimate(
-                    operation_type="intervention",
-                    round_index=round_idx,
-                    round_name=round_.name,
-                    description=round_.intervention_message or "Operator intervention",
-                    estimated_seconds=self._timing["intervention_wait_seconds"],
+        # Validate each step in the round
+        for step_idx, step in enumerate(round_.steps):
+            if isinstance(step, FluidicsStep):
+                fluidics_estimate = self._validate_fluidics_step(
+                    protocol, step, round_idx, round_.name
                 )
-            )
+                estimates.append(fluidics_estimate)
+
+            elif isinstance(step, ImagingStepV2):
+                imaging_estimate = self._validate_imaging_step(
+                    protocol, step, round_idx, round_.name, fov_count
+                )
+                estimates.append(imaging_estimate)
+
+            elif isinstance(step, InterventionStep):
+                estimates.append(
+                    OperationEstimate(
+                        operation_type="intervention",
+                        round_index=round_idx,
+                        round_name=round_.name,
+                        description=step.message or "Operator intervention",
+                        estimated_seconds=self._timing["intervention_wait_seconds"],
+                    )
+                )
 
         return estimates
 
-    def _validate_fluidics_protocol(
+    def _validate_fluidics_step(
         self,
-        protocol_name: str,
+        protocol: ExperimentProtocol,
+        step: FluidicsStep,
         round_idx: int,
         round_name: str,
     ) -> OperationEstimate:
-        """Validate fluidics protocol reference and estimate time.
+        """Validate a V2 fluidics step and estimate time.
 
         Args:
-            protocol_name: Name of the fluidics protocol to run.
+            protocol: The full protocol (for accessing named resources).
+            step: The FluidicsStep to validate.
             round_idx: Index of the round.
             round_name: Name of the round.
 
@@ -223,18 +236,24 @@ class ProtocolValidator:
         errors: List[str] = []
         warnings: List[str] = []
 
-        # Validate protocol exists if we have a list of available protocols
-        if self._available_fluidics_protocols is not None:
-            if protocol_name not in self._available_fluidics_protocols:
-                errors.append(
-                    f"Round '{round_name}': Fluidics protocol '{protocol_name}' "
-                    f"not found. Available protocols: "
-                    f"{', '.join(sorted(self._available_fluidics_protocols)) or 'none'}"
-                )
+        protocol_name = step.protocol
 
-        # Estimate time - use a default estimate since we don't have step details
-        # The actual time will be determined by the FluidicsController
+        # Validate protocol exists in protocol.fluidics_protocols or loaded protocols
+        available = set(protocol.fluidics_protocols.keys())
+        if self._available_fluidics_protocols is not None:
+            available.update(self._available_fluidics_protocols)
+
+        if protocol_name not in available:
+            errors.append(
+                f"Round '{round_name}': Fluidics protocol '{protocol_name}' not found. "
+                f"Available: {', '.join(sorted(available)) or 'none'}"
+            )
+
+        # Estimate time - use protocol estimate if defined, otherwise default
         estimated_seconds = self._timing.get("fluidics_protocol_default_seconds", 60.0)
+        if protocol_name in protocol.fluidics_protocols:
+            fluidics_protocol = protocol.fluidics_protocols[protocol_name]
+            estimated_seconds = fluidics_protocol.estimated_duration_s()
 
         description = f"Fluidics protocol: {protocol_name}"
 
@@ -250,17 +269,19 @@ class ProtocolValidator:
             validation_warnings=tuple(warnings),
         )
 
-    def _validate_imaging(
+    def _validate_imaging_step(
         self,
-        imaging: ImagingStep,
+        protocol: ExperimentProtocol,
+        step: ImagingStepV2,
         round_idx: int,
         round_name: str,
         fov_count: int,
     ) -> OperationEstimate:
-        """Validate imaging configuration and estimate time/disk.
+        """Validate a V2 imaging step and estimate time/disk.
 
         Args:
-            imaging: The imaging configuration.
+            protocol: The full protocol (for accessing named resources).
+            step: The ImagingStep to validate.
             round_idx: Index of the round.
             round_name: Name of the round.
             fov_count: Number of FOVs to image.
@@ -271,11 +292,41 @@ class ProtocolValidator:
         errors: List[str] = []
         warnings: List[str] = []
 
-        # Validate channels
-        if not imaging.channels:
-            warnings.append(f"Round '{round_name}': no imaging channels specified")
+        config_name = step.config
+
+        # Validate imaging config exists
+        if config_name not in protocol.imaging_configs:
+            errors.append(
+                f"Round '{round_name}': Imaging config '{config_name}' not found"
+            )
+            return OperationEstimate(
+                operation_type="imaging",
+                round_index=round_idx,
+                round_name=round_name,
+                description=f"Unknown imaging config: {config_name}",
+                estimated_seconds=0,
+                estimated_disk_bytes=0,
+                valid=False,
+                validation_errors=tuple(errors),
+                validation_warnings=tuple(warnings),
+            )
+
+        imaging_config = protocol.imaging_configs[config_name]
+
+        # Validate FOV set if specified
+        if step.fovs != "default" and step.fovs not in protocol.fov_sets:
+            errors.append(
+                f"Round '{round_name}': FOV set '{step.fovs}' not found"
+            )
+
+        # Validate channels if we have available channels
+        channel_names = imaging_config.get_channel_names()
+        if not channel_names:
+            warnings.append(
+                f"Round '{round_name}': imaging config '{config_name}' has no channels"
+            )
         elif self._available_channels:
-            missing = set(imaging.channels) - self._available_channels
+            missing = set(channel_names) - self._available_channels
             if missing:
                 errors.append(
                     f"Round '{round_name}': channels not available: "
@@ -283,16 +334,17 @@ class ProtocolValidator:
                 )
 
         # Estimate time
-        time_seconds = self._estimate_imaging_time(imaging, fov_count)
+        time_seconds = self._estimate_imaging_time(imaging_config, fov_count)
 
         # Estimate disk usage
         disk_bytes = 0
-        if not imaging.skip_saving:
-            disk_bytes = self._estimate_imaging_disk(imaging, fov_count)
+        if not imaging_config.skip_saving:
+            disk_bytes = self._estimate_imaging_disk(imaging_config, fov_count)
 
         description = (
-            f"{len(imaging.channels)} channel(s), "
-            f"{imaging.z_planes} z-plane(s), "
+            f"Config: {config_name}, "
+            f"{len(channel_names)} channel(s), "
+            f"{imaging_config.z_stack.planes} z-plane(s), "
             f"{fov_count} FOV(s)"
         )
 
@@ -310,36 +362,37 @@ class ProtocolValidator:
 
     def _estimate_imaging_time(
         self,
-        imaging: ImagingStep,
+        imaging_config: ImagingConfig,
         fov_count: int,
     ) -> float:
-        """Estimate imaging time for a round.
+        """Estimate imaging time for an imaging config.
 
         Args:
-            imaging: The imaging configuration.
+            imaging_config: The imaging configuration.
             fov_count: Number of FOVs.
 
         Returns:
             Estimated time in seconds.
         """
-        num_channels = len(imaging.channels)
-        num_z = imaging.z_planes
+        num_channels = len(imaging_config.get_channel_names())
+        num_z = imaging_config.z_stack.planes
 
         # Time per FOV
         time_per_fov = self._timing["stage_move_seconds"]
 
         # Autofocus time
-        if imaging.use_autofocus:
-            time_per_fov += self._timing["autofocus_seconds"]
-        elif imaging.use_focus_lock:
-            time_per_fov += self._timing["laser_autofocus_seconds"]
+        if imaging_config.focus.enabled:
+            if imaging_config.focus.method == "laser":
+                time_per_fov += self._timing["laser_autofocus_seconds"]
+            elif imaging_config.focus.method == "contrast":
+                time_per_fov += self._timing["autofocus_seconds"]
 
         # Time per channel
         for _ in range(num_channels):
             time_per_fov += self._timing["channel_switch_seconds"]
 
-            # Time per z-plane
-            exposure_time = (imaging.exposure_time_ms or 50.0) / 1000.0
+            # Time per z-plane (use default exposure time estimate)
+            exposure_time = 50.0 / 1000.0  # Default 50ms
             time_per_fov += num_z * (
                 exposure_time + self._timing["exposure_overhead_seconds"]
             )
@@ -348,20 +401,20 @@ class ProtocolValidator:
 
     def _estimate_imaging_disk(
         self,
-        imaging: ImagingStep,
+        imaging_config: ImagingConfig,
         fov_count: int,
     ) -> int:
         """Estimate disk usage for imaging.
 
         Args:
-            imaging: The imaging configuration.
+            imaging_config: The imaging configuration.
             fov_count: Number of FOVs.
 
         Returns:
             Estimated disk usage in bytes.
         """
-        num_channels = len(imaging.channels)
-        num_z = imaging.z_planes
+        num_channels = len(imaging_config.get_channel_names())
+        num_z = imaging_config.z_stack.planes
 
         # Pixels per image
         width, height = self._camera_resolution
@@ -413,9 +466,9 @@ class ProtocolValidator:
         Returns:
             Formatted string like "1.5 GB" or "500 MB".
         """
-        if total_bytes >= 1024 ** 3:
+        if total_bytes >= 1024**3:
             return f"{total_bytes / (1024 ** 3):.1f} GB"
-        elif total_bytes >= 1024 ** 2:
+        elif total_bytes >= 1024**2:
             return f"{total_bytes / (1024 ** 2):.1f} MB"
         elif total_bytes >= 1024:
             return f"{total_bytes / 1024:.1f} KB"

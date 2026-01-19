@@ -268,13 +268,12 @@ class ProtocolLoaderDialog(QDialog):
                 if not self._output_edit.text():
                     self._output_edit.setText(output_dir)
 
-            # Auto-load FOV positions from protocol if specified
-            if self._current_protocol.fov_positions_file:
-                fov_file = self._current_protocol.fov_positions_file
-                # Resolve relative paths relative to protocol file
-                if not Path(fov_file).is_absolute():
-                    protocol_dir = Path(path).parent
-                    fov_file = str(protocol_dir / fov_file)
+            # Auto-load FOV positions from protocol if specified (V2: fov_sets)
+            if self._current_protocol.fov_sets:
+                # Use the first FOV set as default
+                first_fov_name = next(iter(self._current_protocol.fov_sets))
+                fov_file = self._current_protocol.fov_sets[first_fov_name]
+                # fov_sets paths are already resolved by the loader
                 if Path(fov_file).exists():
                     self._load_fov_positions(fov_file)
                 else:
@@ -305,6 +304,8 @@ class ProtocolLoaderDialog(QDialog):
         if self._current_protocol is None:
             return
 
+        from squid.core.protocol import FluidicsStep, ImagingStep, InterventionStep
+
         p = self._current_protocol
         lines = [
             f"Name: {p.name}",
@@ -313,18 +314,23 @@ class ProtocolLoaderDialog(QDialog):
             f"Author: {p.author}" if p.author else "",
             "",
             f"Total Rounds: {len(p.rounds)}",
-            f"Imaging Rounds: {p.total_imaging_rounds()}",
+            f"Imaging Steps: {p.total_imaging_steps()}",
             "",
             "Rounds:",
         ]
 
         for i, r in enumerate(p.rounds):
-            has_imaging = "+" if r.imaging else "-"
-            has_fluidics = "+" if r.fluidics_protocol else "-"
-            intervention = " [!]" if r.requires_intervention else ""
+            # Check step types in V2 format
+            has_imaging = any(isinstance(s, ImagingStep) for s in r.steps)
+            has_fluidics = any(isinstance(s, FluidicsStep) for s in r.steps)
+            has_intervention = any(isinstance(s, InterventionStep) for s in r.steps)
+
+            imaging_flag = "+" if has_imaging else "-"
+            fluidics_flag = "+" if has_fluidics else "-"
+            intervention_marker = " [!]" if has_intervention else ""
             lines.append(
-                f"  {i + 1}. {r.name} [{r.type.value}] "
-                f"F:{has_fluidics} I:{has_imaging}{intervention}"
+                f"  {i + 1}. {r.name} "
+                f"F:{fluidics_flag} I:{imaging_flag}{intervention_marker}"
             )
 
         self._preview_text.setPlainText("\n".join(lines))
@@ -369,8 +375,8 @@ class ProtocolLoaderDialog(QDialog):
         fov_loaded = bool(self._fov_positions)
 
         if self._current_protocol is not None:
-            # Check if any round has imaging
-            fov_required = self._current_protocol.total_imaging_rounds() > 0
+            # Check if any round has imaging (V2: total_imaging_steps)
+            fov_required = self._current_protocol.total_imaging_steps() > 0
 
         if fov_required and not fov_loaded:
             self._validation_label.setText(

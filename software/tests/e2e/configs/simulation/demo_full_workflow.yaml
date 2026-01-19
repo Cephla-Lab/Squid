@@ -1,38 +1,73 @@
-# Demo Full Workflow
+# Demo Full Workflow (V2 Format)
 # Complete fluidics + imaging workflow (realistic but fast)
 # 3 rounds: Setup -> Imaging -> Cleanup
 # Recommended: 1-2 FOVs
 
-name: Demo Full Workflow
-version: "1.0"
-description: Complete demonstration workflow with fluidics and imaging
-fov_positions_file: ../fov_positions/test_2fov_simple.csv
-fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+name: "Demo Full Workflow"
+version: "2.0"
+description: "Complete demonstration workflow with fluidics and imaging"
 
-defaults:
-  imaging:
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  sample_preparation:
+    description: "Prepare sample with initial wash"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+        repeats: 2
+
+  sample_cleanup:
+    description: "Clean up sample after imaging"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+      - operation: aspirate
+
+imaging_configs:
+  main_acquisition:
+    description: "Main acquisition configuration"
     channels:
       - "BF LED matrix full"
-    z_planes: 1
-    use_autofocus: false
+      - "Fluorescence 488 nm Ex"
+    z_stack:
+      planes: 3
+      step_um: 1.0
+    focus:
+      enabled: false
+    skip_saving: true
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   # Setup: Prime and prepare sample
-  - name: Sample Preparation
-    type: wash
-    fluidics_protocol: sample_preparation
+  - name: "Sample Preparation"
+    steps:
+      - step_type: fluidics
+        protocol: sample_preparation
 
   # Main imaging (no fluidics)
-  - name: Main Acquisition
-    type: imaging
-    imaging:
-      channels:
-        - "BF LED matrix full"
-        - "Fluorescence 488 nm Ex"
-      z_planes: 3
-      z_step_um: 1.0
+  - name: "Main Acquisition"
+    steps:
+      - step_type: imaging
+        config: main_acquisition
+        fovs: main
 
   # Cleanup
-  - name: Sample Cleanup
-    type: wash
-    fluidics_protocol: sample_cleanup
+  - name: "Sample Cleanup"
+    steps:
+      - step_type: fluidics
+        protocol: sample_cleanup

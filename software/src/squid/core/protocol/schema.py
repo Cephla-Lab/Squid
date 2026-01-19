@@ -1,199 +1,120 @@
 """
-Protocol schema definitions for experiment orchestration.
+Protocol schema definitions for experiment orchestration (V2).
 
-Defines the YAML structure for multi-round fluidics-imaging experiments.
+Defines the YAML structure for step-based multi-round experiments.
 Uses Pydantic for validation and type safety.
 
-Example protocol:
-    name: "10-round FISH"
-    version: "1.0"
-    description: "10-round fluorescence in situ hybridization"
+Example V2 protocol:
+    name: "Multi-Round FISH"
+    version: "2.0"
 
-    defaults:
-      imaging:
-        channels: ["DAPI", "Cy3", "Cy5"]
-        z_planes: 5
-        z_step_um: 0.5
+    error_handling:
+      focus_failure: skip
+      fluidics_failure: abort
+
+    fluidics_protocols:
+      wash:
+        description: "Standard wash"
+        steps:
+          - operation: flow
+            solution: wash_buffer
+            volume_ul: 500
+
+    imaging_configs:
+      fish_standard:
+        channels: [DAPI, Cy5]
+        z_stack:
+          planes: 5
+        focus:
+          enabled: true
+          method: laser
+
+    fov_sets:
+      main_grid: positions/main.csv
 
     rounds:
       - name: "Round 1"
-        fluidics_protocol: "probe_delivery_1"  # References named protocol
-        imaging:
-          channels: ["DAPI", "Cy3"]
-
-      - name: "Wash"
-        type: "wash"
-        fluidics_protocol: "standard_wash"  # References named protocol
+        steps:
+          - step_type: fluidics
+            protocol: wash
+          - step_type: imaging
+            config: fish_standard
+            fovs: main_grid
 """
 
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-
-class RoundType(str, Enum):
-    """Type of experimental round."""
-
-    IMAGING = "imaging"  # Standard imaging round
-    WASH = "wash"  # Wash/rinse step (may skip imaging)
-    BLEACH = "bleach"  # Photobleaching step
-    CUSTOM = "custom"  # User-defined step
-
-
-class FluidicsCommand(str, Enum):
-    """Fluidics operation commands."""
-
-    FLOW = "flow"  # Flow solution through chamber
-    ASPIRATE = "aspirate"  # Remove solution
-    INCUBATE = "incubate"  # Wait with solution in place
-    PRIME = "prime"  # Prime tubing
-    WASH = "wash"  # Wash step (flow + aspirate)
-
-
-class FluidicsStep(BaseModel):
-    """A single fluidics operation.
-
-    Attributes:
-        command: The fluidics command to execute
-        solution: Name/ID of the solution (for flow/wash)
-        volume_ul: Volume in microliters
-        flow_rate_ul_per_min: Flow rate in microliters per minute
-        duration_s: Duration in seconds (for incubate)
-        repeats: Number of times to repeat this step
-    """
-
-    command: FluidicsCommand
-    solution: Optional[str] = None
-    volume_ul: Optional[float] = None
-    flow_rate_ul_per_min: Optional[float] = None
-    duration_s: Optional[float] = None
-    repeats: int = 1
-
-    @field_validator("repeats")
-    @classmethod
-    def validate_repeats(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("repeats must be >= 1")
-        return v
-
-
-class ImagingStep(BaseModel):
-    """Imaging configuration for a round.
-
-    Attributes:
-        channels: List of channel names to acquire
-        z_planes: Number of z-planes for z-stack
-        z_step_um: Z step size in microns
-        use_autofocus: Whether to run autofocus
-        use_focus_lock: Whether to use hardware focus lock
-        exposure_time_ms: Override exposure time (uses channel default if None)
-        skip_saving: If True, don't save images (useful for preview rounds)
-    """
-
-    channels: List[str] = Field(default_factory=list)
-    z_planes: int = 1
-    z_step_um: float = 0.5
-    use_autofocus: bool = False
-    use_focus_lock: bool = True
-    exposure_time_ms: Optional[float] = None
-    skip_saving: bool = False
-
-    @field_validator("z_planes")
-    @classmethod
-    def validate_z_planes(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("z_planes must be >= 1")
-        return v
-
-    @field_validator("z_step_um")
-    @classmethod
-    def validate_z_step(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("z_step_um must be > 0")
-        return v
+from squid.core.protocol.step import Step, FluidicsStep, ImagingStep, InterventionStep
+from squid.core.protocol.imaging_config import ImagingConfig
+from squid.core.protocol.error_handling import ErrorHandlingConfig, FailureAction
+from squid.core.protocol.fluidics_protocol import FluidicsProtocol, FluidicsCommand
 
 
 class Round(BaseModel):
-    """A single experimental round.
+    """A single experimental round with ordered steps.
 
-    A round typically consists of:
-    1. Optional fluidics protocol (buffer exchange, staining, etc.)
-    2. Optional imaging acquisition
+    V2 rounds use a step-based model where each round contains an ordered
+    list of steps (fluidics, imaging, intervention) that execute in sequence.
 
     Attributes:
-        name: Human-readable name for the round
-        type: Type of round (imaging, wash, bleach, custom)
-        fluidics_protocol: Name of the fluidics protocol to run (from fluidics_protocols.yaml)
-        imaging: Imaging configuration (None to skip imaging)
-        requires_intervention: If True, pause for operator intervention
-        intervention_message: Message to show during intervention pause
+        name: Human-readable name for the round (supports {i} substitution)
+        steps: Ordered list of steps to execute
+        repeat: Optional repeat count (expands to N rounds with {i} substitution)
         metadata: Additional round-specific metadata
     """
 
     name: str
-    type: RoundType = RoundType.IMAGING
-    fluidics_protocol: Optional[str] = None
-    imaging: Optional[ImagingStep] = None
-    requires_intervention: bool = False
-    intervention_message: str = ""
+    steps: List[Step] = Field(default_factory=list)
+    repeat: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-
-class ImagingDefaults(BaseModel):
-    """Default imaging settings applied to all rounds."""
-
-    channels: List[str] = Field(default_factory=list)
-    z_planes: int = 1
-    z_step_um: float = 0.5
-    use_autofocus: bool = False
-    use_focus_lock: bool = True
-
-
-class FluidicsDefaults(BaseModel):
-    """Default fluidics settings applied to all rounds."""
-
-    flow_rate_ul_per_min: float = 50.0
-    wash_volume_ul: float = 500.0
-
-
-class ProtocolDefaults(BaseModel):
-    """Default settings for the protocol."""
-
-    imaging: ImagingDefaults = Field(default_factory=ImagingDefaults)
-    fluidics: FluidicsDefaults = Field(default_factory=FluidicsDefaults)
+    @field_validator("repeat")
+    @classmethod
+    def validate_repeat(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 1:
+            raise ValueError("repeat must be >= 1")
+        return v
 
 
 class ExperimentProtocol(BaseModel):
-    """Complete experiment protocol definition.
+    """Complete V2 experiment protocol definition.
+
+    V2 protocols use named resources (fluidics_protocols, imaging_configs, fov_sets)
+    that are referenced by steps within rounds. This enables reuse and flexible
+    step ordering.
 
     Attributes:
         name: Human-readable protocol name
-        version: Protocol version string
+        version: Protocol version string (should be "2.0" for V2)
         description: Detailed description of the protocol
-        author: Protocol author
-        created: Creation date string
-        defaults: Default settings for imaging and fluidics
-        rounds: List of experimental rounds
-        fov_positions_file: Optional path to CSV file with FOV positions
-            CSV format: region_id,x_mm,y_mm,z_mm (one FOV per row)
-            If specified, FOVs are loaded from this file at protocol load time.
-            If not specified, FOVs must be loaded via GUI before starting.
+        author: Protocol author (optional)
         output_directory: Optional default output directory for experiment data
-        metadata: Additional protocol-level metadata
+
+        error_handling: Protocol-level error handling configuration
+        fluidics_protocols: Named fluidics protocols (inline or file: reference)
+        imaging_configs: Named imaging configurations (inline or file: reference)
+        fov_sets: Named FOV sets mapping to CSV file paths
+        rounds: List of experimental rounds
     """
 
     name: str
-    version: str = "1.0"
+    version: str = "2.0"
     description: str = ""
     author: str = ""
-    created: str = ""
-    defaults: ProtocolDefaults = Field(default_factory=ProtocolDefaults)
-    rounds: List[Round] = Field(default_factory=list)
-    fov_positions_file: Optional[str] = None
-    fluidics_protocols_file: Optional[str] = None
     output_directory: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    # Error handling
+    error_handling: ErrorHandlingConfig = Field(default_factory=ErrorHandlingConfig)
+
+    # Named resources
+    fluidics_protocols: Dict[str, FluidicsProtocol] = Field(default_factory=dict)
+    imaging_configs: Dict[str, ImagingConfig] = Field(default_factory=dict)
+    fov_sets: Dict[str, str] = Field(default_factory=dict)  # name -> CSV path
+
+    # Rounds
+    rounds: List[Round] = Field(default_factory=list)
 
     @field_validator("rounds")
     @classmethod
@@ -209,63 +130,45 @@ class ExperimentProtocol(BaseModel):
                 return round_
         return None
 
-    def get_imaging_rounds(self) -> List[Round]:
-        """Get all rounds that include imaging."""
-        return [r for r in self.rounds if r.imaging is not None]
+    def get_imaging_steps(self) -> List[ImagingStep]:
+        """Get all imaging steps across all rounds."""
+        steps = []
+        for round_ in self.rounds:
+            for step in round_.steps:
+                if isinstance(step, ImagingStep):
+                    steps.append(step)
+        return steps
 
-    def total_imaging_rounds(self) -> int:
-        """Count rounds that include imaging."""
-        return len(self.get_imaging_rounds())
+    def total_imaging_steps(self) -> int:
+        """Count imaging steps across all rounds."""
+        return len(self.get_imaging_steps())
 
-    def apply_defaults_to_round(self, round_: Round) -> Round:
-        """Apply protocol defaults to a round.
+    def validate_references(self) -> List[str]:
+        """Validate that all step references exist in their respective resource dicts.
 
-        Returns a new Round with defaults applied where values were not specified.
-        Note: Fluidics defaults are now applied by the FluidicsController when
-        executing named protocols.
+        Returns:
+            List of error messages (empty if valid)
         """
-        merged_imaging = None
-        if round_.imaging is not None:
-            defaults = self.defaults.imaging
-            imaging = round_.imaging
-            imaging_fields = imaging.model_fields_set
+        errors = []
 
-            merged_imaging = ImagingStep(
-                channels=(
-                    imaging.channels
-                    if "channels" in imaging_fields and imaging.channels
-                    else defaults.channels
-                ),
-                z_planes=(
-                    imaging.z_planes
-                    if "z_planes" in imaging_fields
-                    else defaults.z_planes
-                ),
-                z_step_um=(
-                    imaging.z_step_um
-                    if "z_step_um" in imaging_fields
-                    else defaults.z_step_um
-                ),
-                use_autofocus=(
-                    imaging.use_autofocus
-                    if "use_autofocus" in imaging_fields
-                    else defaults.use_autofocus
-                ),
-                use_focus_lock=(
-                    imaging.use_focus_lock
-                    if "use_focus_lock" in imaging_fields
-                    else defaults.use_focus_lock
-                ),
-                exposure_time_ms=imaging.exposure_time_ms,
-                skip_saving=imaging.skip_saving,
-            )
+        for round_idx, round_ in enumerate(self.rounds):
+            for step_idx, step in enumerate(round_.steps):
+                step_loc = f"Round '{round_.name}' step {step_idx}"
 
-        return Round(
-            name=round_.name,
-            type=round_.type,
-            fluidics_protocol=round_.fluidics_protocol,
-            imaging=merged_imaging,
-            requires_intervention=round_.requires_intervention,
-            intervention_message=round_.intervention_message,
-            metadata=round_.metadata,
-        )
+                if isinstance(step, FluidicsStep):
+                    if step.protocol not in self.fluidics_protocols:
+                        errors.append(
+                            f"{step_loc}: fluidics protocol '{step.protocol}' not found"
+                        )
+
+                elif isinstance(step, ImagingStep):
+                    if step.config not in self.imaging_configs:
+                        errors.append(
+                            f"{step_loc}: imaging config '{step.config}' not found"
+                        )
+                    if step.fovs != "default" and step.fovs not in self.fov_sets:
+                        errors.append(
+                            f"{step_loc}: FOV set '{step.fovs}' not found"
+                        )
+
+        return errors

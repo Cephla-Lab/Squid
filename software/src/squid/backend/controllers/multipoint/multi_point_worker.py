@@ -209,6 +209,7 @@ class MultiPointWorker:
         self._fov_task_list: Optional[FovTaskList] = None
         self._fov_command_queue: "queue.Queue[JumpToFovCommand | SkipFovCommand | RequeueFovCommand | DeferFovCommand | ReorderFovsCommand]" = queue.Queue()
         self._current_round_index: int = 0  # For FOV event context
+        self._start_fov_index: int = 0  # For resume support - start from this FOV
 
         # Checkpoint configuration
         self._checkpoint_enabled: bool = True  # Save checkpoints after each FOV
@@ -651,6 +652,18 @@ class MultiPointWorker:
     def set_current_round_index(self, round_index: int) -> None:
         """Set the current round index for event context."""
         self._current_round_index = round_index
+
+    def set_start_fov_index(self, fov_index: int) -> None:
+        """Set the FOV index to start from (for resume support).
+
+        This causes the worker to skip to the specified FOV index when
+        starting the acquisition. Used by orchestrator for checkpoint resume.
+
+        Args:
+            fov_index: The FOV index to start from (0-based)
+        """
+        self._start_fov_index = fov_index
+        self._log.info(f"Set start FOV index to {fov_index} for resume")
 
     # =========================================================================
     # Checkpoint Methods
@@ -1499,6 +1512,16 @@ class MultiPointWorker:
         # Build task list if not already built (first time point)
         if self._fov_task_list is None:
             self._fov_task_list = self._build_fov_task_list()
+            # Apply start FOV index for resume support
+            if self._start_fov_index > 0:
+                if self._fov_task_list.jump_to_index(self._start_fov_index):
+                    self._log.info(f"Jumped to FOV index {self._start_fov_index} for resume")
+                else:
+                    self._log.warning(
+                        f"Could not jump to FOV index {self._start_fov_index} "
+                        f"(task list has {len(self._fov_task_list)} tasks)"
+                    )
+                self._start_fov_index = 0  # Reset after applying
         elif self._resumed_from_checkpoint:
             self._log.info("Using FOV task list from checkpoint for resume")
         else:

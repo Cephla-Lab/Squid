@@ -679,3 +679,53 @@ class ChannelConfigurationManager(BaseManager):
         if cmd.illumination_intensity is not None:
             self.update_configuration(cmd.objective_name, mode.id, "IlluminationIntensity", cmd.illumination_intensity)
 
+    def apply_channel_overrides(
+        self,
+        objective: str,
+        overrides: List[Dict[str, Any]],
+    ) -> None:
+        """Apply channel configuration overrides for an imaging step.
+
+        Used by orchestrator to apply protocol-defined channel overrides before imaging.
+        Only non-None fields in each override are applied.
+
+        Args:
+            objective: Objective name to apply overrides for
+            overrides: List of dicts with channel override info. Each dict should have:
+                - name: str (required) - Channel name
+                - exposure_time_ms: Optional[float]
+                - analog_gain: Optional[float]
+                - illumination_intensity: Optional[float]
+                - z_offset_um: Optional[float] (stored but not currently applied)
+
+        Example:
+            manager.apply_channel_overrides("10X", [
+                {"name": "DAPI", "exposure_time_ms": 50},
+                {"name": "Cy5", "exposure_time_ms": 200, "illumination_intensity": 80},
+            ])
+        """
+        for override in overrides:
+            channel_name = override.get("name")
+            if not channel_name:
+                self._log.warning("Channel override missing 'name' field, skipping")
+                continue
+
+            # Find the configuration by name
+            mode = self.get_channel_configuration_by_name(objective, channel_name)
+            if not mode:
+                self._log.warning(
+                    f"Channel '{channel_name}' not found for objective '{objective}', "
+                    "skipping override"
+                )
+                continue
+
+            # Apply each non-None override
+            if override.get("exposure_time_ms") is not None:
+                self.update_configuration(objective, mode.id, "ExposureTime", override["exposure_time_ms"])
+            if override.get("analog_gain") is not None:
+                self.update_configuration(objective, mode.id, "AnalogGain", override["analog_gain"])
+            if override.get("illumination_intensity") is not None:
+                self.update_configuration(objective, mode.id, "IlluminationIntensity", override["illumination_intensity"])
+
+            self._log.debug(f"Applied overrides to channel '{channel_name}' for objective '{objective}'")
+

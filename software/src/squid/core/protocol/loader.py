@@ -1,9 +1,11 @@
 """
-Protocol loader for YAML-based experiment protocols.
+Protocol loader for YAML-based experiment protocols (V2).
 
 Provides loading, validation, and saving of ExperimentProtocol objects.
+Handles repeat expansion and resource resolution.
 """
 
+import copy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -11,12 +13,7 @@ import yaml
 from pydantic import ValidationError
 
 import squid.core.logging
-from squid.core.protocol.schema import (
-    ExperimentProtocol,
-    ImagingStep,
-    Round,
-    RoundType,
-)
+from squid.core.protocol.schema import ExperimentProtocol
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -30,7 +27,13 @@ class ProtocolValidationError(Exception):
 
 
 class ProtocolLoader:
-    """Loads and validates experiment protocols from YAML files.
+    """Loads and validates V2 experiment protocols from YAML files.
+
+    V2 protocols support:
+    - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+    - Step-based rounds with discriminated union step types
+    - Repeat expansion with {i} substitution
+    - External file references for resources
 
     Usage:
         loader = ProtocolLoader()
@@ -41,9 +44,6 @@ class ProtocolLoader:
         # Load from string
         protocol = loader.load_from_string(yaml_content)
 
-        # Validate channels against available configurations
-        errors = loader.validate_channels(protocol, available_channels)
-
         # Save protocol
         loader.save(protocol, "path/to/output.yaml")
     """
@@ -53,7 +53,7 @@ class ProtocolLoader:
         pass
 
     def load(self, path: Union[str, Path]) -> ExperimentProtocol:
-        """Load a protocol from a YAML file.
+        """Load a V2 protocol from a YAML file.
 
         Args:
             path: Path to the YAML protocol file
@@ -76,13 +76,18 @@ class ProtocolLoader:
         except yaml.YAMLError as e:
             raise ProtocolValidationError(f"Invalid YAML: {e}")
 
-        return self._parse_protocol(data, source=str(path))
+        return self._parse_protocol(data, protocol_dir=path.parent, source=str(path))
 
-    def load_from_string(self, content: str) -> ExperimentProtocol:
-        """Load a protocol from a YAML string.
+    def load_from_string(
+        self,
+        content: str,
+        protocol_dir: Optional[Path] = None,
+    ) -> ExperimentProtocol:
+        """Load a V2 protocol from a YAML string.
 
         Args:
             content: YAML content as string
+            protocol_dir: Optional directory for resolving relative paths
 
         Returns:
             Validated ExperimentProtocol
@@ -95,17 +100,23 @@ class ProtocolLoader:
         except yaml.YAMLError as e:
             raise ProtocolValidationError(f"Invalid YAML: {e}")
 
-        return self._parse_protocol(data, source="<string>")
+        return self._parse_protocol(
+            data,
+            protocol_dir=protocol_dir or Path.cwd(),
+            source="<string>",
+        )
 
     def _parse_protocol(
         self,
         data: Dict[str, Any],
+        protocol_dir: Path,
         source: str = "<unknown>",
     ) -> ExperimentProtocol:
-        """Parse and validate protocol data.
+        """Parse and validate V2 protocol data.
 
         Args:
             data: Raw protocol data dict
+            protocol_dir: Directory containing the protocol file (for relative paths)
             source: Source identifier for error messages
 
         Returns:
@@ -120,13 +131,23 @@ class ProtocolLoader:
             )
 
         try:
-            # Parse rounds with type coercion
-            if "rounds" in data:
-                data["rounds"] = [
-                    self._parse_round(r) for r in data["rounds"]
-                ]
+            # Resolve external file references
+            data = self._resolve_resources(data, protocol_dir)
 
+            # Expand rounds with repeat: N
+            data = self._expand_repeats(data)
+
+            # Parse with Pydantic
             protocol = ExperimentProtocol.model_validate(data)
+
+            # Validate references
+            ref_errors = protocol.validate_references()
+            if ref_errors:
+                raise ProtocolValidationError(
+                    "Invalid resource references in protocol",
+                    errors=ref_errors,
+                )
+
             _log.info(f"Loaded protocol '{protocol.name}' from {source}")
             return protocol
 
@@ -137,69 +158,128 @@ class ProtocolLoader:
                 errors=errors,
             )
 
-    def _parse_round(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a single round, handling type conversions."""
-        result = dict(data)
+    def _resolve_resources(self, data: Dict[str, Any], protocol_dir: Path) -> Dict[str, Any]:
+        """Resolve file: references and make FOV paths absolute.
 
-        # Convert type string to enum
-        if "type" in result and isinstance(result["type"], str):
-            try:
-                result["type"] = RoundType(result["type"])
-            except ValueError:
-                pass  # Let Pydantic handle the error
+        Handles patterns like:
+            imaging_configs:
+              fish_standard:
+                file: configs/fish.yaml
 
-        # Reject legacy inline fluidics steps (use fluidics_protocol instead).
-        if "fluidics" in result:
-            round_name = result.get("name", "<unknown>")
-            raise ProtocolValidationError(
-                f"Round '{round_name}' uses legacy 'fluidics' steps; "
-                "use 'fluidics_protocol' to reference named protocols."
-            )
-
-        # fluidics_protocol is just a string reference, no parsing needed
-
-        # Parse imaging step
-        if "imaging" in result and result["imaging"] is not None:
-            result["imaging"] = self._parse_imaging_step(result["imaging"])
-
-        return result
-
-    def _parse_imaging_step(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse an imaging step, handling type conversions."""
-        return dict(data)
-
-    def validate_channels(
-        self,
-        protocol: ExperimentProtocol,
-        available_channels: List[str],
-    ) -> List[str]:
-        """Validate that all protocol channels exist in available channels.
+            fov_sets:
+              main_grid: positions/main.csv  # relative path made absolute
 
         Args:
-            protocol: Protocol to validate
-            available_channels: List of available channel names
+            data: Raw protocol data
+            protocol_dir: Directory containing the protocol file
 
         Returns:
-            List of error messages (empty if valid)
+            Data with file references resolved
         """
-        errors: List[str] = []
-        available_set = set(available_channels)
+        data = copy.deepcopy(data)
 
-        # Check default channels
-        for ch in protocol.defaults.imaging.channels:
-            if ch not in available_set:
-                errors.append(f"Default channel '{ch}' not found in available channels")
+        # Resolve imaging_configs with file: references
+        for name, config in data.get("imaging_configs", {}).items():
+            if isinstance(config, dict) and "file" in config:
+                file_path = protocol_dir / config["file"]
+                if not file_path.exists():
+                    raise ProtocolValidationError(
+                        f"Imaging config file not found: {file_path}"
+                    )
+                data["imaging_configs"][name] = yaml.safe_load(open(file_path))
 
-        # Check per-round channels
-        for round_ in protocol.rounds:
-            if round_.imaging is not None:
-                for ch in round_.imaging.channels:
-                    if ch not in available_set:
-                        errors.append(
-                            f"Round '{round_.name}' channel '{ch}' not found"
-                        )
+        # Resolve fluidics_protocols with file: references
+        for name, proto in data.get("fluidics_protocols", {}).items():
+            if isinstance(proto, dict) and "file" in proto:
+                file_path = protocol_dir / proto["file"]
+                if not file_path.exists():
+                    raise ProtocolValidationError(
+                        f"Fluidics protocol file not found: {file_path}"
+                    )
+                data["fluidics_protocols"][name] = yaml.safe_load(open(file_path))
 
-        return errors
+        # Make FOV set paths absolute
+        for name, csv_path in data.get("fov_sets", {}).items():
+            if csv_path and not Path(csv_path).is_absolute():
+                data["fov_sets"][name] = str(protocol_dir / csv_path)
+
+        return data
+
+    def _expand_repeats(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Expand rounds with repeat: N, substituting {i} in names and step references.
+
+        For a round with repeat: 3, generates 3 rounds with {i} replaced by 1, 2, 3.
+
+        Substitution applies to:
+        - Round name field
+        - Step protocol references (FluidicsStep)
+        - Step config and fovs references (ImagingStep)
+
+        Args:
+            data: Protocol data with potential repeat fields
+
+        Returns:
+            Data with repeats expanded
+
+        Raises:
+            ProtocolValidationError: If {i} is found in a non-repeated round
+        """
+        data = copy.deepcopy(data)
+        expanded_rounds: List[Dict[str, Any]] = []
+
+        for round_idx, round_def in enumerate(data.get("rounds", [])):
+            repeat = round_def.pop("repeat", None)
+
+            if repeat is None:
+                # Validate that {i} is not used in non-repeated rounds
+                if self._contains_substitution(round_def):
+                    round_name = round_def.get("name", f"round {round_idx + 1}")
+                    raise ProtocolValidationError(
+                        f"Round '{round_name}' contains '{{i}}' substitution but has no 'repeat' field. "
+                        f"The '{{i}}' placeholder is only valid in rounds with repeat: N."
+                    )
+                expanded_rounds.append(round_def)
+            else:
+                for i in range(1, repeat + 1):
+                    expanded_rounds.append(self._substitute(copy.deepcopy(round_def), i))
+
+        data["rounds"] = expanded_rounds
+        return data
+
+    def _contains_substitution(self, obj: Any) -> bool:
+        """Check if an object contains {i} substitution placeholder.
+
+        Args:
+            obj: Object to check (dict, list, or scalar)
+
+        Returns:
+            True if {i} is found in any string value
+        """
+        if isinstance(obj, str):
+            return "{i}" in obj
+        elif isinstance(obj, dict):
+            return any(self._contains_substitution(v) for v in obj.values())
+        elif isinstance(obj, list):
+            return any(self._contains_substitution(item) for item in obj)
+        return False
+
+    def _substitute(self, obj: Any, i: int) -> Any:
+        """Replace {i} with round index recursively.
+
+        Args:
+            obj: Object to process (dict, list, or scalar)
+            i: Round index to substitute
+
+        Returns:
+            Object with {i} substituted
+        """
+        if isinstance(obj, str):
+            return obj.replace("{i}", str(i))
+        elif isinstance(obj, dict):
+            return {k: self._substitute(v, i) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._substitute(item, i) for item in obj]
+        return obj
 
     def save(
         self,
@@ -216,7 +296,8 @@ class ProtocolLoader:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         # Convert to dict and serialize
-        data = protocol.model_dump(exclude_none=True, exclude_defaults=True)
+        # Note: mode="json" includes all fields needed for re-parsing (including step_type discriminator)
+        data = protocol.model_dump(exclude_none=True, mode="json")
 
         # Convert enums to strings
         data = self._serialize_for_yaml(data)
@@ -238,63 +319,30 @@ class ProtocolLoader:
         else:
             return data
 
-    def create_from_template(
+    def validate_channels(
         self,
-        name: str,
-        num_rounds: int,
-        channels: List[str],
-        *,
-        include_wash: bool = True,
-        z_planes: int = 1,
-        z_step_um: float = 0.5,
-    ) -> ExperimentProtocol:
-        """Create a protocol from a template.
-
-        Generates a basic multi-round protocol with alternating
-        imaging and wash rounds.
+        protocol: ExperimentProtocol,
+        available_channels: List[str],
+    ) -> List[str]:
+        """Validate that all protocol channels exist in available channels.
 
         Args:
-            name: Protocol name
-            num_rounds: Number of imaging rounds
-            channels: List of channel names
-            include_wash: Include wash rounds between imaging
-            z_planes: Number of z-planes
-            z_step_um: Z step size
+            protocol: Protocol to validate
+            available_channels: List of available channel names
 
         Returns:
-            Generated ExperimentProtocol
+            List of error messages (empty if valid)
         """
-        rounds: List[Round] = []
+        errors: List[str] = []
+        available_set = set(available_channels)
 
-        for i in range(1, num_rounds + 1):
-            # Imaging round with fluidics protocol reference
-            rounds.append(
-                Round(
-                    name=f"Round {i}",
-                    type=RoundType.IMAGING,
-                    fluidics_protocol=f"probe_delivery_{i}",
-                    imaging=ImagingStep(
-                        channels=channels,
-                        z_planes=z_planes,
-                        z_step_um=z_step_um,
-                    ),
-                )
-            )
-
-            # Optional wash round
-            if include_wash and i < num_rounds:
-                rounds.append(
-                    Round(
-                        name=f"Wash {i}",
-                        type=RoundType.WASH,
-                        fluidics_protocol="standard_wash",
-                        imaging=None,
+        # Check channels in each imaging config
+        for config_name, config in protocol.imaging_configs.items():
+            for ch in config.channels:
+                ch_name = ch if isinstance(ch, str) else ch.name
+                if ch_name not in available_set:
+                    errors.append(
+                        f"Imaging config '{config_name}' channel '{ch_name}' not found"
                     )
-                )
 
-        return ExperimentProtocol(
-            name=name,
-            version="1.0",
-            description=f"Auto-generated {num_rounds}-round protocol",
-            rounds=rounds,
-        )
+        return errors

@@ -97,10 +97,15 @@ ORCHESTRATOR_TRANSITIONS: Dict[OrchestratorState, Set[OrchestratorState]] = {
 
 @dataclass
 class RoundProgress:
-    """Progress within a single round."""
+    """Progress within a single round.
+
+    V2 adds step tracking for step-based round execution.
+    """
 
     round_index: int
     round_name: str
+    current_step_index: int = 0  # V2: position within round's steps list
+    total_steps: int = 0  # V2: total steps in this round
     fluidics_step_index: int = 0
     total_fluidics_steps: int = 0
     imaging_fov_index: int = 0
@@ -118,6 +123,7 @@ class ExperimentProgress:
     current_round_index: int = 0
     total_rounds: int = 0
     current_round: Optional[RoundProgress] = None
+    current_step_index: int = 0  # V2: step position within current round
     started_at: Optional[datetime] = None
     estimated_completion: Optional[datetime] = None
 
@@ -155,6 +161,7 @@ class Checkpoint:
     """Checkpoint for experiment recovery.
 
     Captures the state needed to resume an experiment after pause/crash.
+    V2 adds step_index for step-based round execution.
     """
 
     protocol_name: str
@@ -164,8 +171,8 @@ class Checkpoint:
 
     # Position in protocol
     round_index: int
-    fluidics_step_index: int
-    imaging_fov_index: int
+    step_index: int = 0  # V2: position within round's steps list
+    imaging_fov_index: int = 0
 
     # Imaging state
     imaging_z_index: int = 0

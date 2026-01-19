@@ -1,37 +1,67 @@
-# Quick 2-Round FISH Simulation
+# Quick 2-Round FISH Simulation (V2 Format)
 # Realistic structure, fast execution
 # 2 FOVs recommended
 
-name: Quick 2-Round FISH
-version: "1.0"
-description: Fast 2-round FISH simulation for manual testing
-fov_positions_file: ../fov_positions/test_2fov_simple.csv
-fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+name: "Quick 2-Round FISH"
+version: "2.0"
+description: "Fast 2-round FISH simulation for manual testing"
 
-defaults:
-  imaging:
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  hybridization_1:
+    description: "Hybridization round 1"
+    steps:
+      - operation: flow
+        solution: hyb_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  hybridization_2:
+    description: "Hybridization round 2"
+    steps:
+      - operation: flow
+        solution: hyb_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+imaging_configs:
+  fish_imaging:
+    description: "FISH imaging configuration"
     channels:
-      - "BF LED matrix full"
       - "Fluorescence 488 nm Ex"
-    z_planes: 3
-    z_step_um: 1.0
-    use_autofocus: false
+    z_stack:
+      planes: 3
+      step_um: 1.0
+    focus:
+      enabled: false
+    skip_saving: true
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   # Round 1: Hybridization 1
-  - name: Hybridization 1
-    type: imaging
-    fluidics_protocol: hybridization_1
-    imaging:
-      channels: ["Fluorescence 488 nm Ex"]
-      z_planes: 3
-      z_step_um: 1.0
+  - name: "Hybridization 1"
+    steps:
+      - step_type: fluidics
+        protocol: hybridization_1
+      - step_type: imaging
+        config: fish_imaging
+        fovs: main
 
   # Round 2: Hybridization 2
-  - name: Hybridization 2
-    type: imaging
-    fluidics_protocol: hybridization_2
-    imaging:
-      channels: ["Fluorescence 488 nm Ex"]
-      z_planes: 3
-      z_step_um: 1.0
+  - name: "Hybridization 2"
+    steps:
+      - step_type: fluidics
+        protocol: hybridization_2
+      - step_type: imaging
+        config: fish_imaging
+        fovs: main

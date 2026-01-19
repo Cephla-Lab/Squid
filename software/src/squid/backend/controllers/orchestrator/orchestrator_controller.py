@@ -5,12 +5,10 @@ Orchestrates multi-round fluidics-imaging experiments by coordinating
 between the fluidics system, imaging system (via MultiPointController),
 and operator interventions.
 
-Architecture:
-    - Uses StateMachine base class for state management
-    - Delegates imaging to MultiPointController
-    - Coordinates fluidics via FluidicsService
-    - Manages checkpoints for recovery
-    - Publishes progress events for UI updates
+V2 Protocol Support:
+    - Step-based rounds (FluidicsStep, ImagingStep, InterventionStep)
+    - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+    - Configurable error handling per failure type
 """
 
 from datetime import datetime
@@ -19,10 +17,18 @@ import threading
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
-from squid.core.events import EventBus, handles, AcquisitionProgress
+from squid.core.events import EventBus, handles, AcquisitionProgress, LoadScanCoordinatesCommand
 from squid.core.state_machine import StateMachine
 from squid.core.utils.cancel_token import CancelToken, CancellationError
-from squid.core.protocol import ExperimentProtocol, ProtocolLoader, Round
+from squid.core.protocol import (
+    ExperimentProtocol,
+    ProtocolLoader,
+    Round,
+    FluidicsStep,
+    ImagingStep,
+    InterventionStep,
+    FailureAction,
+)
 
 from squid.backend.controllers.orchestrator.state import (
     OrchestratorState,
@@ -72,6 +78,11 @@ _log = squid.core.logging.get_logger(__name__)
 
 class OrchestratorController(StateMachine[OrchestratorState]):
     """Orchestrates multi-round fluidics-imaging experiments.
+
+    V2 Protocol Model:
+        - Rounds contain ordered steps (fluidics, imaging, intervention)
+        - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+        - Configurable error handling per failure type
 
     State Machine:
         IDLE -> INITIALIZING -> RUNNING_FLUIDICS <-> RUNNING_IMAGING
@@ -259,7 +270,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     @handles(AddWarningCommand)
     def _on_add_warning(self, cmd: AddWarningCommand) -> None:
-        """Handle warning command from other subsystems."""
+        """Handle warning command from other subsystems.
+
+        For FOCUS category warnings, applies the protocol's focus_failure action
+        if a protocol is loaded.
+        """
         try:
             category = WarningCategory[cmd.category]
             severity = WarningSeverity[cmd.severity]
@@ -283,6 +298,21 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             context=cmd.context,
         )
 
+        # Apply focus_failure handling from protocol if this is a focus warning
+        if category == WarningCategory.FOCUS and self._protocol is not None:
+            focus_action = self._protocol.error_handling.focus_failure
+            if focus_action == FailureAction.PAUSE:
+                if self._is_in_state(OrchestratorState.RUNNING_IMAGING):
+                    _log.warning(f"Focus failure (action=pause): {cmd.message}")
+                    self.pause()
+                    return
+            elif focus_action == FailureAction.ABORT:
+                if self._is_in_state(OrchestratorState.RUNNING_IMAGING):
+                    _log.error(f"Focus failure (action=abort): {cmd.message}")
+                    self.abort()
+                    return
+            # For SKIP and WARN, just continue (warning already logged)
+
         if should_pause and self._is_in_state(
             OrchestratorState.RUNNING_IMAGING,
             OrchestratorState.RUNNING_FLUIDICS,
@@ -304,25 +334,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
-            # Load fluidics protocols if specified in the protocol
-            # (This adds to any already-loaded protocols from the Fluidics widget)
-            if protocol.fluidics_protocols_file and self._fluidics_controller is not None:
-                from pathlib import Path
-                fluidics_file = protocol.fluidics_protocols_file
-                # Resolve relative paths relative to protocol file
-                if not Path(fluidics_file).is_absolute():
-                    protocol_dir = Path(cmd.protocol_path).parent
-                    fluidics_file = str(protocol_dir / fluidics_file)
-                if Path(fluidics_file).exists():
-                    count = self._fluidics_controller.load_protocols(fluidics_file)
-                    _log.info(f"Loaded {count} fluidics protocols from {fluidics_file}")
-                else:
-                    _log.warning(f"Fluidics protocols file not found: {fluidics_file}")
-
             # Create validator with available fluidics protocols
-            available_fluidics = None
+            # (Include both already-loaded protocols AND those defined in the protocol)
+            available_fluidics = set(protocol.fluidics_protocols.keys())
             if self._fluidics_controller is not None:
-                available_fluidics = set(self._fluidics_controller.list_protocols())
+                available_fluidics.update(self._fluidics_controller.list_protocols())
             validator = ProtocolValidator(
                 available_fluidics_protocols=available_fluidics,
             )
@@ -427,25 +443,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._protocol = self._protocol_loader.load(protocol_path)
             _log.info(f"Loaded protocol: {self._protocol.name}")
 
-            # Load fluidics protocols if specified
-            if self._protocol.fluidics_protocols_file and self._fluidics_controller is not None:
-                from pathlib import Path
-                fluidics_file = self._protocol.fluidics_protocols_file
-                # Resolve relative paths relative to protocol file
-                if not Path(fluidics_file).is_absolute():
-                    protocol_dir = Path(protocol_path).parent
-                    fluidics_file = str(protocol_dir / fluidics_file)
-                if Path(fluidics_file).exists():
-                    count = self._fluidics_controller.load_protocols(fluidics_file)
-                    _log.info(f"Loaded {count} fluidics protocols from {fluidics_file}")
-                else:
-                    _log.warning(f"Fluidics protocols file not found: {fluidics_file}")
-
             # Capture user-visible label (unique ID set once context is created)
             self._experiment_label = experiment_id or self._protocol.name
             self._experiment_id = self._experiment_label
             self._warning_manager.experiment_id = self._experiment_id
             self._warning_manager.clear()  # Clear warnings from any previous experiment
+
+            # Load fluidics protocols from protocol into FluidicsController
+            self._initialize_fluidics_protocols()
 
             # Load checkpoint if resuming (base_path should be experiment folder)
             self._resume_checkpoint = None
@@ -637,6 +642,78 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         return True
 
     # ========================================================================
+    # Protocol Initialization
+    # ========================================================================
+
+    def _initialize_fluidics_protocols(self) -> None:
+        """Load protocol's fluidics_protocols into FluidicsController."""
+        if self._fluidics_controller is None or self._protocol is None:
+            return
+
+        for name, protocol in self._protocol.fluidics_protocols.items():
+            self._fluidics_controller.add_protocol(name, protocol)
+            _log.debug(f"Added fluidics protocol: {name}")
+
+    def _load_fov_set(self, csv_path: str) -> None:
+        """Load FOV positions from CSV.
+
+        Expected columns: region, x (mm), y (mm) (optional: z (mm))
+
+        Args:
+            csv_path: Path to CSV file with FOV positions
+        """
+        import pandas as pd
+        from pathlib import Path
+
+        if not Path(csv_path).exists():
+            raise FileNotFoundError(f"FOV CSV file not found: {csv_path}")
+
+        df = pd.read_csv(csv_path)
+
+        # Normalize column names (handle variations)
+        col_map = {}
+        for col in df.columns:
+            col_lower = col.lower().strip()
+            if "region" in col_lower:
+                col_map["region"] = col
+            elif "x" in col_lower and "mm" in col_lower:
+                col_map["x"] = col
+            elif "y" in col_lower and "mm" in col_lower:
+                col_map["y"] = col
+
+        if not all(k in col_map for k in ["region", "x", "y"]):
+            raise ValueError(
+                f"CSV must have region, x (mm), y (mm) columns. Found: {list(df.columns)}"
+            )
+
+        region_fov_coordinates = {}
+        region_centers = {}
+
+        for region_id in df[col_map["region"]].unique():
+            region_points = df[df[col_map["region"]] == region_id]
+            coords = tuple(
+                (float(x), float(y))
+                for x, y in zip(region_points[col_map["x"]], region_points[col_map["y"]])
+            )
+            region_fov_coordinates[str(region_id)] = coords
+            region_centers[str(region_id)] = (
+                float(region_points[col_map["x"]].mean()),
+                float(region_points[col_map["y"]].mean()),
+            )
+
+        self._event_bus.publish(
+            LoadScanCoordinatesCommand(
+                region_fov_coordinates=region_fov_coordinates,
+                region_centers=region_centers,
+            )
+        )
+
+        _log.info(
+            f"Loaded {sum(len(c) for c in region_fov_coordinates.values())} FOVs "
+            f"from {len(region_fov_coordinates)} regions"
+        )
+
+    # ========================================================================
     # Worker Thread
     # ========================================================================
 
@@ -675,11 +752,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Execute rounds
             start_round = 0
-            resume_fluidics_step = 0
+            resume_step_index = 0
             resume_imaging_fov = 0
             if self._resume_checkpoint is not None:
                 start_round = self._resume_checkpoint.round_index
-                resume_fluidics_step = self._resume_checkpoint.fluidics_step_index
+                resume_step_index = self._resume_checkpoint.step_index
                 resume_imaging_fov = self._resume_checkpoint.imaging_fov_index
 
             for round_idx in range(start_round, len(self._protocol.rounds)):
@@ -694,6 +771,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                     round_name=round_.name,
                     started_at=datetime.now(),
                 )
+                self._progress.current_step_index = 0
                 self._latest_eta_seconds = None
 
                 if (
@@ -706,14 +784,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 if self._skip_to_round_index is not None and round_idx == self._skip_to_round_index:
                     self._skip_to_round_index = None
 
-                # Apply defaults
-                round_ = self._protocol.apply_defaults_to_round(round_)
-
                 # Execute round
                 self._execute_round(
                     round_idx,
                     round_,
-                    resume_fluidics_step=resume_fluidics_step if round_idx == start_round else 0,
+                    resume_step_index=resume_step_index if round_idx == start_round else 0,
                     resume_imaging_fov=resume_imaging_fov if round_idx == start_round else 0,
                 )
 
@@ -750,50 +825,59 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         round_idx: int,
         round_: Round,
         *,
-        resume_fluidics_step: int = 0,
+        resume_step_index: int = 0,
         resume_imaging_fov: int = 0,
     ) -> None:
-        """Execute a single round."""
-        _log.info(
-            f"Executing round {round_idx}: name={round_.name}, type={round_.type}, "
-            f"fluidics_protocol={round_.fluidics_protocol}, imaging={round_.imaging is not None}"
-        )
-        self._publish_round_started(round_idx, round_.name, round_.type.value)
+        """Execute a single round using step-based execution."""
+        _log.info(f"Executing round {round_idx}: name={round_.name}, steps={len(round_.steps)}")
+        self._publish_round_started(round_idx, round_.name)
 
-        # Handle intervention requirement
-        if round_.requires_intervention:
-            self._wait_for_intervention(round_idx, round_)
+        for step_idx, step in enumerate(round_.steps):
+            if step_idx < resume_step_index:
+                continue
 
-        # Execute fluidics protocol
-        if round_.fluidics_protocol:
-            self._transition_to(OrchestratorState.RUNNING_FLUIDICS)
-            self._execute_fluidics(round_idx, round_.fluidics_protocol)
+            if self._cancel_token is not None:
+                self._cancel_token.check_point()
 
-        # Execute imaging
-        if round_.imaging is not None:
-            _log.info(f"Round {round_idx}: Starting imaging with channels={round_.imaging.channels}")
-            self._transition_to(OrchestratorState.RUNNING_IMAGING)
-            self._execute_imaging(round_idx, round_, resume_fov_index=resume_imaging_fov)
-        else:
-            _log.warning(f"Round {round_idx} ({round_.name}): No imaging configured")
+            # Update step progress in both ExperimentProgress and RoundProgress
+            self._progress.current_step_index = step_idx
+            if self._progress.current_round is not None:
+                self._progress.current_round.current_step_index = step_idx
+                self._progress.current_round.total_steps = len(round_.steps)
+            self._save_checkpoint()
+
+            try:
+                if isinstance(step, FluidicsStep):
+                    self._transition_to(OrchestratorState.RUNNING_FLUIDICS)
+                    self._execute_fluidics_step(round_idx, step)
+
+                elif isinstance(step, ImagingStep):
+                    self._transition_to(OrchestratorState.RUNNING_IMAGING)
+                    fov_resume = resume_imaging_fov if step_idx == resume_step_index else 0
+                    self._execute_imaging_step(round_idx, step, resume_fov=fov_resume)
+
+                elif isinstance(step, InterventionStep):
+                    self._wait_for_intervention(round_idx, step.message)
+
+            except CancellationError:
+                raise
+            except Exception as e:
+                self._handle_step_failure(step, e)
 
         # Update progress
         self._publish_progress()
 
-    def _execute_fluidics(
-        self,
-        round_idx: int,
-        protocol_name: str,
-    ) -> None:
-        """Execute a fluidics protocol for a round.
+    def _execute_fluidics_step(self, round_idx: int, step: FluidicsStep) -> None:
+        """Execute a fluidics step.
 
         Args:
             round_idx: Index of the current round
-            protocol_name: Name of the fluidics protocol to run
+            step: FluidicsStep to execute
         """
         if self._progress.current_round is None or self._cancel_token is None:
             return
 
+        protocol_name = step.protocol
         _log.info(f"Round {round_idx}: Running fluidics protocol '{protocol_name}'")
 
         if self._fluidics_controller is None:
@@ -853,30 +937,43 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
         _log.info(f"Round {round_idx}: Fluidics protocol '{protocol_name}' completed")
 
-    def _execute_imaging(
+    def _execute_imaging_step(
         self,
         round_idx: int,
-        round_: Round,
+        step: ImagingStep,
         *,
-        resume_fov_index: int = 0,
+        resume_fov: int = 0,
     ) -> None:
-        """Execute imaging for a round."""
-        if round_.imaging is None or self._progress.current_round is None or self._cancel_token is None:
+        """Execute an imaging step.
+
+        Args:
+            round_idx: Index of the current round
+            step: ImagingStep to execute
+            resume_fov: FOV index to resume from (for checkpoint recovery)
+        """
+        if self._progress.current_round is None or self._cancel_token is None:
+            return
+        if self._protocol is None:
             return
 
-        if resume_fov_index > 0:
-            raise RuntimeError(
-                "Resume within an imaging round is not supported yet; "
-                "restart from the beginning of the round."
-            )
+        # Get imaging config
+        config_name = step.config
+        if config_name not in self._protocol.imaging_configs:
+            raise RuntimeError(f"Imaging config '{config_name}' not found in protocol")
+        imaging_config = self._protocol.imaging_configs[config_name]
+
+        # Load FOV set if specified
+        if step.fovs != "default" and step.fovs in self._protocol.fov_sets:
+            csv_path = self._protocol.fov_sets[step.fovs]
+            self._load_fov_set(csv_path)
 
         self._progress.current_round.imaging_started = True
 
         # Create round subfolder for images
-        if hasattr(self._experiment_manager, 'create_round_subfolder'):
+        if hasattr(self._experiment_manager, "create_round_subfolder"):
             round_path = self._experiment_manager.create_round_subfolder(
                 context=self._context,
-                round_name=f"round_{round_idx:03d}_{round_.name}",
+                round_name=f"round_{round_idx:03d}_{step.config}",
             )
         else:
             round_path = self._experiment_path
@@ -893,20 +990,21 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._progress.current_round.total_imaging_fovs = total_fovs
 
         _log.info(
-            f"Round {round_idx}: Imaging with channels={round_.imaging.channels}, "
-            f"z_planes={round_.imaging.z_planes}"
+            f"Round {round_idx}: Imaging with config='{config_name}', "
+            f"channels={imaging_config.get_channel_names()}"
         )
 
         # Execute imaging via executor
         if self._imaging_executor is not None:
             self._current_acquisition_id = round_dir_name
             try:
-                success = self._imaging_executor.execute(
-                    imaging_step=round_.imaging,
+                success = self._imaging_executor.execute_with_config(
+                    imaging_config=imaging_config,
                     output_path=round_base_path,
                     cancel_token=self._cancel_token,
-                    experiment_id=round_dir_name,
                     round_index=round_idx,
+                    resume_fov_index=resume_fov,
+                    experiment_id=round_dir_name,  # Match orchestrator's expected ID
                 )
                 if not success:
                     raise RuntimeError(f"Imaging failed for round {round_idx}")
@@ -914,12 +1012,12 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._current_acquisition_id = None
         else:
             # No imaging executor - log and continue (for testing)
-            _log.debug(f"[SIMULATED] Imaging: channels={round_.imaging.channels}")
+            _log.debug(f"[SIMULATED] Imaging: config={config_name}")
 
         self._progress.current_round.imaging_completed = True
         self._publish_progress()
 
-    def _wait_for_intervention(self, round_idx: int, round_: Round) -> None:
+    def _wait_for_intervention(self, round_idx: int, message: str) -> None:
         """Wait for operator intervention."""
         self._transition_to(OrchestratorState.WAITING_INTERVENTION)
         self._intervention_acknowledged.clear()
@@ -928,8 +1026,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             OrchestratorInterventionRequired(
                 experiment_id=self._experiment_id,
                 round_index=round_idx,
-                round_name=round_.name,
-                message=round_.intervention_message or "Operator intervention required",
+                round_name=self._progress.current_round.round_name if self._progress.current_round else "",
+                message=message,
             )
         )
 
@@ -938,6 +1036,53 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             if self._cancel_token is not None:
                 self._cancel_token.check_point()
             self._intervention_acknowledged.wait(timeout=0.5)
+
+    def _handle_step_failure(self, step, error: Exception) -> None:
+        """Handle step failure according to error_handling config.
+
+        Args:
+            step: The step that failed
+            error: The exception that was raised
+        """
+        if self._protocol is None:
+            raise error
+
+        error_handling = self._protocol.error_handling
+
+        # Determine which failure action to use
+        if isinstance(step, FluidicsStep):
+            action = error_handling.fluidics_failure
+            failure_type = "fluidics"
+        elif isinstance(step, ImagingStep):
+            action = error_handling.imaging_failure
+            failure_type = "imaging"
+        else:
+            # Intervention steps don't have configurable failure handling
+            raise error
+
+        _log.warning(f"{failure_type.capitalize()} step failed: {error}")
+
+        if action == FailureAction.ABORT:
+            raise error
+        elif action == FailureAction.PAUSE:
+            _log.info(f"Pausing after {failure_type} step failure (error_handling={action.value})")
+            self.pause()
+            # Wait for user to resume or cancel
+            # check_point() will block until resumed, or raise CancellationError if cancelled
+            if self._cancel_token is not None:
+                self._cancel_token.check_point()
+            # If we get here, user resumed - continue to next step
+            _log.info(f"Resumed after {failure_type} step failure, continuing to next step")
+        elif action == FailureAction.SKIP:
+            _log.info(f"Skipping failed {failure_type} step (error_handling={action.value})")
+            # Don't raise - continue to next step
+        elif action == FailureAction.WARN:
+            self.add_warning(
+                category=WarningCategory.EXECUTION,
+                severity=WarningSeverity.MEDIUM,
+                message=f"{failure_type.capitalize()} step failed: {error}",
+            )
+            # Don't raise - continue to next step
 
     # ========================================================================
     # Progress and Checkpoint
@@ -957,7 +1102,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             experiment_id=self._experiment_id,
             experiment_path=self._experiment_path,
             round_index=self._progress.current_round_index,
-            fluidics_step_index=self._progress.current_round.fluidics_step_index,
+            step_index=self._progress.current_step_index,
             imaging_fov_index=self._progress.current_round.imaging_fov_index,
         )
 
@@ -981,14 +1126,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             )
         )
 
-    def _publish_round_started(self, round_idx: int, name: str, type_: str) -> None:
+    def _publish_round_started(self, round_idx: int, name: str) -> None:
         """Publish round started event."""
         self._event_bus.publish(
             OrchestratorRoundStarted(
                 experiment_id=self._experiment_id,
                 round_index=round_idx,
                 round_name=name,
-                round_type=type_,
+                round_type="step_based",  # V2 rounds are step-based
             )
         )
 

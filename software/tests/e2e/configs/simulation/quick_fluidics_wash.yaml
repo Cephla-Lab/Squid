@@ -1,20 +1,54 @@
-# Quick Fluidics Wash Sequence
+# Quick Fluidics Wash Sequence (V2 Format)
 # 3 wash cycles, no imaging
 
-name: Quick Wash Sequence
-version: "1.0"
-description: Fast fluidics wash sequence for manual testing
-fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+name: "Quick Wash Sequence"
+version: "2.0"
+description: "Fast fluidics wash sequence for manual testing"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  initial_rinse:
+    description: "Initial rinse"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 100
+
+  main_wash:
+    description: "Main wash cycle"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+
+  final_rinse:
+    description: "Final rinse"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
 
 rounds:
-  - name: Initial Rinse
-    type: wash
-    fluidics_protocol: initial_rinse
+  - name: "Initial Rinse"
+    steps:
+      - step_type: fluidics
+        protocol: initial_rinse
 
-  - name: Main Wash
-    type: wash
-    fluidics_protocol: main_wash
+  - name: "Main Wash"
+    steps:
+      - step_type: fluidics
+        protocol: main_wash
 
-  - name: Final Rinse
-    type: wash
-    fluidics_protocol: final_rinse
+  - name: "Final Rinse"
+    steps:
+      - step_type: fluidics
+        protocol: final_rinse

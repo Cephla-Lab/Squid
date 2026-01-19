@@ -275,7 +275,7 @@ def fluidics_heavy_protocol(tmp_path) -> str:
 def mock_imaging_executor():
     """Create a mock imaging executor that completes immediately."""
     mock = MagicMock(spec=ImagingExecutor)
-    mock.execute.return_value = True
+    mock.execute_with_config.return_value = True
     mock.pause.return_value = True
     mock.resume.return_value = True
     return mock
@@ -777,7 +777,7 @@ class TestControlFlow:
             imaging_event.wait(timeout=5.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = slow_execute
+        mock_imaging_executor.execute_with_config.side_effect = slow_execute
 
         orchestrator.start_experiment(
             protocol_path=multi_round_protocol,
@@ -835,7 +835,7 @@ class TestControlFlow:
             imaging_event.wait(timeout=10.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = blocking_execute
+        mock_imaging_executor.execute_with_config.side_effect = blocking_execute
 
         orchestrator.start_experiment(
             protocol_path=multi_round_protocol,
@@ -1146,7 +1146,7 @@ class TestCheckpointAndRecovery:
             imaging_event.wait(timeout=10.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = blocking_execute
+        mock_imaging_executor.execute_with_config.side_effect = blocking_execute
 
         orchestrator.start_experiment(
             protocol_path=multi_round_protocol,
@@ -1190,7 +1190,7 @@ class TestCheckpointAndRecovery:
         """Test that checkpoint is cleared on successful completion."""
         # Create real mocks with known paths
         mock_imaging_executor = MagicMock(spec=ImagingExecutor)
-        mock_imaging_executor.execute.return_value = True
+        mock_imaging_executor.execute_with_config.return_value = True
         mock_fluidics_controller = MagicMock(spec=FluidicsController)
         mock_fluidics_controller.run_protocol.return_value = True
         mock_acquisition_planner = MagicMock()
@@ -1391,7 +1391,7 @@ class TestWarningSystem:
             imaging_event.wait(timeout=2.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = blocking_execute
+        mock_imaging_executor.execute_with_config.side_effect = blocking_execute
 
         orchestrator.start_experiment(
             protocol_path=single_imaging_protocol,
@@ -1455,7 +1455,7 @@ class TestWarningSystem:
             imaging_event.wait(timeout=10.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = blocking_execute
+        mock_imaging_executor.execute_with_config.side_effect = blocking_execute
 
         orchestrator.start_experiment(
             protocol_path=single_imaging_protocol,
@@ -1503,7 +1503,7 @@ class TestWarningSystem:
             imaging_event.wait(timeout=10.0)
             return True
 
-        mock_imaging_executor.execute.side_effect = blocking_execute
+        mock_imaging_executor.execute_with_config.side_effect = blocking_execute
 
         orchestrator.start_experiment(
             protocol_path=single_imaging_protocol,
@@ -1762,7 +1762,7 @@ class TestEventVerification:
         orchestrator = orchestrator_with_mocks
 
         # Make imaging fail
-        mock_imaging_executor.execute.return_value = False
+        mock_imaging_executor.execute_with_config.return_value = False
 
         orchestrator.start_experiment(
             protocol_path=single_imaging_protocol,
@@ -1859,7 +1859,7 @@ class TestCommandHandlers:
 
         # Block imaging
         imaging_event = threading.Event()
-        mock_imaging_executor.execute.side_effect = (
+        mock_imaging_executor.execute_with_config.side_effect = (
             lambda *args, **kwargs: imaging_event.wait(10.0) or True
         )
 
@@ -1927,7 +1927,7 @@ class TestErrorHandling:
 
         # Block imaging
         imaging_event = threading.Event()
-        mock_imaging_executor.execute.side_effect = (
+        mock_imaging_executor.execute_with_config.side_effect = (
             lambda *args, **kwargs: imaging_event.wait(10.0) or True
         )
 
@@ -1962,7 +1962,7 @@ class TestErrorHandling:
     ):
         """Test handling of imaging executor failure."""
         orchestrator = orchestrator_with_mocks
-        mock_imaging_executor.execute.return_value = False
+        mock_imaging_executor.execute_with_config.return_value = False
 
         orchestrator.start_experiment(
             protocol_path=single_imaging_protocol,

@@ -1,0 +1,36 @@
+# V2 Fluidics + Imaging Protocol
+# Protocol with fluidics -> imaging sequence to test basic step ordering.
+
+name: "V2 Fluidics-Imaging Test"
+version: "2.0"
+description: "Tests fluidics followed by imaging step sequence"
+
+fluidics_protocols:
+  wash:
+    description: "Simple wash step"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+
+imaging_configs:
+  standard:
+    description: "Standard imaging after wash"
+    channels:
+      - DAPI
+      - GFP
+    z_stack:
+      planes: 3
+      step_um: 1.0
+    focus:
+      enabled: true
+      method: laser
+
+rounds:
+  - name: "Round 1"
+    steps:
+      - step_type: fluidics
+        protocol: wash
+      - step_type: imaging
+        config: standard

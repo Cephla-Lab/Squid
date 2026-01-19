@@ -25,7 +25,7 @@ def sample_checkpoint():
         experiment_id="test_experiment_001",
         experiment_path="/tmp/experiments/test_001",
         round_index=2,
-        fluidics_step_index=1,
+        step_index=1,
         imaging_fov_index=5,
         created_at=datetime.now(),
     )
@@ -42,7 +42,7 @@ class TestCheckpointCreation:
             experiment_id="exp_123",
             experiment_path="/data/experiments/exp_123",
             round_index=3,
-            fluidics_step_index=2,
+            step_index=2,
             imaging_fov_index=10,
         )
 
@@ -51,7 +51,7 @@ class TestCheckpointCreation:
         assert checkpoint.experiment_id == "exp_123"
         assert checkpoint.experiment_path == "/data/experiments/exp_123"
         assert checkpoint.round_index == 3
-        assert checkpoint.fluidics_step_index == 2
+        assert checkpoint.step_index == 2
         assert checkpoint.imaging_fov_index == 10
         assert checkpoint.created_at is not None
 
@@ -65,7 +65,7 @@ class TestCheckpointCreation:
             round_index=0,
         )
 
-        assert checkpoint.fluidics_step_index == 0
+        assert checkpoint.step_index == 0
         assert checkpoint.imaging_fov_index == 0
 
 
@@ -92,7 +92,7 @@ class TestCheckpointPersistence:
             assert loaded.protocol_version == sample_checkpoint.protocol_version
             assert loaded.experiment_id == sample_checkpoint.experiment_id
             assert loaded.round_index == sample_checkpoint.round_index
-            assert loaded.fluidics_step_index == sample_checkpoint.fluidics_step_index
+            assert loaded.step_index == sample_checkpoint.step_index
             assert loaded.imaging_fov_index == sample_checkpoint.imaging_fov_index
 
     def test_load_nonexistent_checkpoint(self, checkpoint_manager):
@@ -157,7 +157,7 @@ class TestCheckpointFileFormat:
                 "experiment_id",
                 "experiment_path",
                 "round_index",
-                "fluidics_step_index",
+                "step_index",
                 "imaging_fov_index",
                 "created_at",
             ]

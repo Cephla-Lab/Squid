@@ -37,12 +37,21 @@ Example YAML (fluidics_protocols.yaml):
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from squid.core.protocol.schema import FluidicsCommand
+
+class FluidicsCommand(str, Enum):
+    """Fluidics operation commands."""
+
+    FLOW = "flow"  # Flow solution through chamber
+    ASPIRATE = "aspirate"  # Remove solution
+    INCUBATE = "incubate"  # Wait with solution in place
+    PRIME = "prime"  # Prime tubing
+    WASH = "wash"  # Wash step (flow + aspirate)
 
 
 class FluidicsProtocolStep(BaseModel):

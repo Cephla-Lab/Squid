@@ -21,7 +21,12 @@ from squid.backend.controllers.orchestrator import (
     PauseOrchestratorCommand,
     ResumeOrchestratorCommand,
 )
-from squid.core.protocol import ExperimentProtocol, Round, RoundType, ImagingStep
+from squid.core.protocol import (
+    ExperimentProtocol,
+    Round,
+    ImagingStep,
+    ImagingConfig,
+)
 
 
 @pytest.fixture
@@ -48,9 +53,11 @@ def mock_experiment_manager():
     """Create a mock ExperimentManager."""
     mock = MagicMock()
 
-    # Create a mock context
+    # Create a mock context with proper string values
     context = MagicMock()
+    context.experiment_id = "test_experiment_001"
     context.experiment_path = "/tmp/test_experiment"
+    context.base_path = "/tmp"
     mock.start_experiment.return_value = context
     mock.create_round_subfolder.return_value = "/tmp/test_experiment/round_001"
 
@@ -68,6 +75,7 @@ def mock_imaging_executor():
     """Create a mock ImagingExecutor."""
     mock = MagicMock()
     mock.execute.return_value = True
+    mock.execute_with_config.return_value = True  # V2 method
     return mock
 
 
@@ -82,15 +90,17 @@ def mock_fluidics_controller():
 
 @pytest.fixture
 def simple_protocol():
-    """Create a simple test protocol."""
+    """Create a simple V2 test protocol."""
     return ExperimentProtocol(
         name="test_protocol",
-        version="1.0.0",
+        version="2.0",
+        imaging_configs={
+            "standard": ImagingConfig(channels=["DAPI"]),
+        },
         rounds=[
             Round(
                 name="round_1",
-                type=RoundType.IMAGING,
-                imaging=ImagingStep(channels=["DAPI"], z_planes=1),
+                steps=[ImagingStep(config="standard")],
             ),
         ],
     )
@@ -307,5 +317,8 @@ class TestExperimentExecution:
             import time
             time.sleep(0.5)
 
-            # Imaging executor should have been called
-            assert mock_imaging_executor.execute.called or orchestrator.state == OrchestratorState.COMPLETED
+            # Imaging executor should have been called (V2 uses execute_with_config)
+            assert (
+                mock_imaging_executor.execute_with_config.called
+                or orchestrator.state == OrchestratorState.COMPLETED
+            )

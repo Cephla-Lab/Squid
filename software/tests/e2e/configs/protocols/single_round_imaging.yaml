@@ -1,22 +1,33 @@
-name: Single Round Imaging
-version: "1.0"
-description: Minimal single-round imaging protocol for e2e validation
-fov_positions_file: ../fov_positions/test_4fov_grid.csv
+# Single Round Imaging (V2 Format)
+# Minimal single-round imaging protocol for e2e validation
 
-defaults:
-  imaging:
-    z_planes: 1
-    z_step_um: 0.5
-    use_autofocus: false
-    use_focus_lock: false
+name: "Single Round Imaging"
+version: "2.0"
+description: "Minimal single-round imaging protocol for e2e validation"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+imaging_configs:
+  bf_single:
+    description: "Single plane brightfield imaging"
+    channels:
+      - "BF LED matrix full"
+    z_stack:
+      planes: 1
+      step_um: 0.5
+    focus:
+      enabled: false
     skip_saving: true
 
+fov_sets:
+  main: ../fov_positions/test_4fov_grid.csv
+
 rounds:
-  - name: Imaging
-    type: imaging
-    imaging:
-      channels: ["BF LED matrix full"]
-      z_planes: 1
-      z_step_um: 0.5
-      use_autofocus: false
-      skip_saving: true
+  - name: "Imaging"
+    steps:
+      - step_type: imaging
+        config: bf_single
+        fovs: main

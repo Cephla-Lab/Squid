@@ -56,6 +56,9 @@ class CheckpointManager:
         Returns:
             Path to the saved checkpoint file
         """
+        # Ensure directory exists
+        os.makedirs(experiment_path, exist_ok=True)
+
         checkpoint_path = os.path.join(experiment_path, self.CHECKPOINT_FILENAME)
 
         data = {
@@ -64,7 +67,7 @@ class CheckpointManager:
             "experiment_id": checkpoint.experiment_id,
             "experiment_path": checkpoint.experiment_path,
             "round_index": checkpoint.round_index,
-            "fluidics_step_index": checkpoint.fluidics_step_index,
+            "step_index": checkpoint.step_index,  # V2: step position within round
             "imaging_fov_index": checkpoint.imaging_fov_index,
             "imaging_z_index": checkpoint.imaging_z_index,
             "imaging_channel_index": checkpoint.imaging_channel_index,
@@ -103,8 +106,8 @@ class CheckpointManager:
                 experiment_id=data["experiment_id"],
                 experiment_path=data["experiment_path"],
                 round_index=data["round_index"],
-                fluidics_step_index=data["fluidics_step_index"],
-                imaging_fov_index=data["imaging_fov_index"],
+                step_index=data.get("step_index", 0),  # V2: step position within round
+                imaging_fov_index=data.get("imaging_fov_index", 0),
                 imaging_z_index=data.get("imaging_z_index", 0),
                 imaging_channel_index=data.get("imaging_channel_index", 0),
                 created_at=datetime.fromisoformat(data["created_at"]),
@@ -173,7 +176,7 @@ class CheckpointManager:
         experiment_id: str,
         experiment_path: str,
         round_index: int,
-        fluidics_step_index: int = 0,
+        step_index: int = 0,
         imaging_fov_index: int = 0,
         imaging_z_index: int = 0,
         imaging_channel_index: int = 0,
@@ -189,7 +192,7 @@ class CheckpointManager:
             experiment_id: Experiment identifier
             experiment_path: Path to experiment directory
             round_index: Current round index
-            fluidics_step_index: Current fluidics step index
+            step_index: V2 step position within round's steps list
             imaging_fov_index: Current imaging FOV index
             imaging_z_index: Current z-plane index
             imaging_channel_index: Current channel index
@@ -204,7 +207,7 @@ class CheckpointManager:
             experiment_id=experiment_id,
             experiment_path=experiment_path,
             round_index=round_index,
-            fluidics_step_index=fluidics_step_index,
+            step_index=step_index,
             imaging_fov_index=imaging_fov_index,
             imaging_z_index=imaging_z_index,
             imaging_channel_index=imaging_channel_index,

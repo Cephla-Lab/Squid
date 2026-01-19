@@ -1,0 +1,22 @@
+# V2 Minimal Protocol
+# Simple protocol with one round, one imaging step for basic testing.
+
+name: "V2 Minimal Test"
+version: "2.0"
+description: "Minimal V2 protocol for basic testing"
+
+imaging_configs:
+  standard:
+    description: "Single channel imaging"
+    channels:
+      - DAPI
+    z_stack:
+      planes: 1
+    focus:
+      enabled: false
+
+rounds:
+  - name: "Round 1"
+    steps:
+      - step_type: imaging
+        config: standard

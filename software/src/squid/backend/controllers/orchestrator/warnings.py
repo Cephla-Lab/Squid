@@ -21,6 +21,7 @@ class WarningCategory(Enum):
     TIMING = auto()  # Delays, timeouts, scheduling issues
     STORAGE = auto()  # Disk space, write failures
     SYSTEM = auto()  # Memory, CPU, general system warnings
+    EXECUTION = auto()  # V2: Step execution failures (handled via error_handling)
     OTHER = auto()  # Uncategorized warnings
 
 

@@ -1,26 +1,35 @@
-# Quick Tiled Z-Stack Simulation
+# Quick Tiled Z-Stack Simulation (V2 Format)
 # Single imaging round with 2x2 grid + 3-plane z-stack
 # Total: 4 FOVs x 3 z-planes = 12 images per channel
 
-name: Quick Tiled Z-Stack
-version: "1.0"
-description: Fast tiled imaging with z-stack for manual testing
-fov_positions_file: ../fov_positions/test_4fov_grid.csv
+name: "Quick Tiled Z-Stack"
+version: "2.0"
+description: "Fast tiled imaging with z-stack for manual testing"
 
-defaults:
-  imaging:
-    z_planes: 3
-    z_step_um: 1.5
-    use_autofocus: false
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+imaging_configs:
+  tiled_zstack:
+    description: "Tiled z-stack configuration"
+    channels:
+      - "BF LED matrix full"
+      - "Fluorescence 488 nm Ex"
+    z_stack:
+      planes: 3
+      step_um: 1.5
+    focus:
+      enabled: false
     skip_saving: true
 
+fov_sets:
+  main: ../fov_positions/test_4fov_grid.csv
+
 rounds:
-  - name: Tiled Acquisition
-    type: imaging
-    imaging:
-      channels:
-        - "BF LED matrix full"
-        - "Fluorescence 488 nm Ex"
-      z_planes: 3
-      z_step_um: 1.5
-      skip_saving: true
+  - name: "Tiled Acquisition"
+    steps:
+      - step_type: imaging
+        config: tiled_zstack
+        fovs: main

@@ -1,48 +1,114 @@
-name: 4-Round FISH Protocol
-version: "1.0"
-description: Multi-round FISH experiment with fluidics and imaging for e2e validation
-fov_positions_file: ../fov_positions/test_4fov_grid.csv
-fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+# 4-Round FISH Protocol (V2 Format)
+# Multi-round FISH experiment with fluidics and imaging for e2e validation
 
-defaults:
-  imaging:
+name: "4-Round FISH Protocol"
+version: "2.0"
+description: "Multi-round FISH experiment with fluidics and imaging for e2e validation"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+fluidics_protocols:
+  probe_1_hybridization:
+    description: "Deliver probe set 1 for hybridization"
+    steps:
+      - operation: flow
+        solution: probe_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 2
+
+  probe_2_hybridization:
+    description: "Deliver probe set 2 for hybridization"
+    steps:
+      - operation: flow
+        solution: probe_2
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 2
+
+  strip_fluorophores:
+    description: "Strip fluorophores between rounds"
+    steps:
+      - operation: flow
+        solution: strip_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+      - operation: incubate
+        duration_s: 1
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+        repeats: 2
+
+  final_wash:
+    description: "Final wash and storage"
+    steps:
+      - operation: flow
+        solution: wash_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 100
+        repeats: 3
+      - operation: aspirate
+
+imaging_configs:
+  fish_405:
+    description: "FISH imaging with 405nm channel"
     channels:
       - "Fluorescence 405 nm Ex"
-      - "Fluorescence 488 nm Ex"
-    z_planes: 3
-    z_step_um: 0.5
-    use_autofocus: false
+    z_stack:
+      planes: 3
+      step_um: 0.5
+    focus:
+      enabled: false
     skip_saving: true
+
+  fish_488:
+    description: "FISH imaging with 488nm channel"
+    channels:
+      - "Fluorescence 488 nm Ex"
+    z_stack:
+      planes: 3
+      step_um: 0.5
+    focus:
+      enabled: false
+    skip_saving: true
+
+fov_sets:
+  main: ../fov_positions/test_4fov_grid.csv
 
 rounds:
   # Round 1: Hybridization with probe set 1
-  - name: Round 1 - Hybridization
-    type: imaging
-    fluidics_protocol: probe_1_hybridization
-    imaging:
-      channels:
-        - "Fluorescence 405 nm Ex"
-      z_planes: 3
-      z_step_um: 0.5
-      skip_saving: true
+  - name: "Round 1 - Hybridization"
+    steps:
+      - step_type: fluidics
+        protocol: probe_1_hybridization
+      - step_type: imaging
+        config: fish_405
+        fovs: main
 
   # Round 1: Strip fluorophores
-  - name: Round 1 - Strip
-    type: wash
-    fluidics_protocol: strip_fluorophores
+  - name: "Round 1 - Strip"
+    steps:
+      - step_type: fluidics
+        protocol: strip_fluorophores
 
   # Round 2: Hybridization with probe set 2
-  - name: Round 2 - Hybridization
-    type: imaging
-    fluidics_protocol: probe_2_hybridization
-    imaging:
-      channels:
-        - "Fluorescence 488 nm Ex"
-      z_planes: 3
-      z_step_um: 0.5
-      skip_saving: true
+  - name: "Round 2 - Hybridization"
+    steps:
+      - step_type: fluidics
+        protocol: probe_2_hybridization
+      - step_type: imaging
+        config: fish_488
+        fovs: main
 
   # Final wash and storage
-  - name: Final Wash
-    type: wash
-    fluidics_protocol: final_wash
+  - name: "Final Wash"
+    steps:
+      - step_type: fluidics
+        protocol: final_wash

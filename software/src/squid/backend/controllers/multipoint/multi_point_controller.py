@@ -165,6 +165,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.thread: Optional[Thread] = None
         self._current_round_index: int = 0
+        self._start_fov_index: int = 0  # FOV index to start from (for resume)
 
         # Store services and event bus
         self._camera_service = camera_service
@@ -1042,6 +1043,10 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 alignment_widget=self._alignment_widget,
             )
             self.multiPointWorker.set_current_round_index(self._current_round_index)
+            # Set start FOV index for resume support
+            if self._start_fov_index > 0:
+                self.multiPointWorker.set_start_fov_index(self._start_fov_index)
+                self._start_fov_index = 0  # Reset after passing to worker
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
                 self.multiPointWorker.frame_wait_timeout_override_s = getattr(
@@ -1471,6 +1476,19 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._current_round_index = round_index
         if self.multiPointWorker is not None:
             self.multiPointWorker.set_current_round_index(round_index)
+
+    def set_start_fov_index(self, fov_index: int) -> None:
+        """Set the FOV index to start from (for resume support).
+
+        This must be called before run_acquisition(). The worker will
+        skip to this FOV index when starting the acquisition.
+
+        Args:
+            fov_index: The FOV index to start from (0-based)
+        """
+        self._start_fov_index = fov_index
+        if self.multiPointWorker is not None:
+            self.multiPointWorker.set_start_fov_index(fov_index)
 
     # =========================================================================
     # FOV Task Command Handlers
