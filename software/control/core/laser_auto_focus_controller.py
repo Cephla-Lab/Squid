@@ -798,6 +798,7 @@ class LaserAutofocusController(QObject):
                     "min_area": self.laser_af_properties.cc_min_area,
                     "max_area": self.laser_af_properties.cc_max_area,
                     "row_tolerance": row_tolerance,
+                    "max_aspect_ratio": self.laser_af_properties.cc_max_aspect_ratio,
                 }
 
                 result = utils.find_spot_location(
@@ -823,14 +824,17 @@ class LaserAutofocusController(QObject):
                 else:
                     x, y = spot_x, spot_y
 
+                # Check if displacement from reference exceeds the success window (in pixels)
                 if (
                     self.laser_af_properties.has_reference
                     and self.laser_af_properties.x_reference is not None
-                    and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
-                    > self.laser_af_properties.laser_af_range
+                    and abs(x - self.laser_af_properties.x_reference)
+                    > self.laser_af_properties.displacement_success_window_pixels
                 ):
                     self._log.warning(
-                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm), skipping it."
+                        f"Spot detected at ({x:.1f}, {y:.1f}) is outside displacement window "
+                        f"({abs(x - self.laser_af_properties.x_reference):.1f} > "
+                        f"{self.laser_af_properties.displacement_success_window_pixels:.0f} pixels), skipping it."
                     )
                     continue
 

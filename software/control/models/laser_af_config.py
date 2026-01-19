@@ -52,9 +52,9 @@ class LaserAFConfig(BaseModel):
         default_factory=lambda: SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE),
         description="Spot detection mode",
     )
-    displacement_success_window_um: float = Field(
-        default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
-        description="Acceptable displacement window in um",
+    displacement_success_window_pixels: float = Field(
+        default_factory=lambda: float(_def.DISPLACEMENT_SUCCESS_WINDOW_PIXELS),
+        description="Max displacement from reference x to accept detection (pixels)",
     )
 
     # Spot detection
@@ -75,6 +75,10 @@ class LaserAFConfig(BaseModel):
     cc_row_tolerance: float = Field(
         default_factory=lambda: float(_def.LASER_AF_CC_ROW_TOLERANCE),
         description="Allowed deviation from expected row",
+    )
+    cc_max_aspect_ratio: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_MAX_ASPECT_RATIO),
+        description="Maximum aspect ratio for valid spot",
     )
     filter_sigma: Optional[float] = Field(
         default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None to disable)"
