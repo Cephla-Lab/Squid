@@ -1282,6 +1282,19 @@ class PreferencesDialog(QDialog):
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
+        # NDViewer section
+        ndviewer_group = CollapsibleGroupBox("NDViewer")
+        ndviewer_layout = QFormLayout()
+
+        # Enable NDViewer
+        self.enable_ndviewer_checkbox = QCheckBox()
+        self.enable_ndviewer_checkbox.setChecked(control._def.ENABLE_NDVIEWER)
+        self.enable_ndviewer_checkbox.setToolTip("Enable the NDViewer tab for viewing acquired datasets")
+        ndviewer_layout.addRow("Enable NDViewer *:", self.enable_ndviewer_checkbox)
+
+        ndviewer_group.content.addLayout(ndviewer_layout)
+        layout.addWidget(ndviewer_group)
+
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
@@ -1445,6 +1458,11 @@ class PreferencesDialog(QDialog):
             "true" if self.display_mosaic_view_checkbox.isChecked() else "false",
         )
         self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
+        self.config.set(
+            "VIEWS",
+            "enable_ndviewer",
+            "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
+        )
 
         # Save to file
         try:
@@ -1552,6 +1570,7 @@ class PreferencesDialog(QDialog):
         )
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
+        control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -1843,6 +1862,11 @@ class PreferencesDialog(QDialog):
         new_val = self.mosaic_pixel_size_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Mosaic Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
+
+        old_val = control._def.ENABLE_NDVIEWER
+        new_val = self.enable_ndviewer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
         return changes
 

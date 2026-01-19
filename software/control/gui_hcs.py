@@ -46,6 +46,7 @@ from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
+import control._def
 import control.lighting
 import control.microscope
 import control.widgets as widgets
@@ -879,15 +880,16 @@ class HighContentScreeningGui(QMainWindow):
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
             # can cause OpenGL context conflicts since both libraries share vispy state.
             self.ndviewerTab = None
-            try:
-                self.ndviewerTab = widgets.NDViewerTab()
-                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
-            except ImportError:
-                self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
-            except (RuntimeError, OSError) as e:
-                self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
-            except Exception:
-                self.log.exception("Failed to initialize NDViewer tab - unexpected error")
+            if control._def.ENABLE_NDVIEWER:
+                try:
+                    self.ndviewerTab = widgets.NDViewerTab()
+                    self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+                except ImportError:
+                    self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
+                except (RuntimeError, OSError) as e:
+                    self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
+                except Exception:
+                    self.log.exception("Failed to initialize NDViewer tab - unexpected error")
 
             # Connect plate view double-click to NDViewer navigation and tab switch
             if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
