@@ -453,6 +453,10 @@ Examples:
                 print(f"\nAcquisition error: {status.get('error')}")
                 exit_code = 1
 
+            # Terminate GUI after --wait completes
+            if gui_process:
+                cleanup()
+
         # If not waiting and we launched the GUI, inform user
         if not args.wait and gui_process:
             print("\nAcquisition running in background. GUI will remain open.")
