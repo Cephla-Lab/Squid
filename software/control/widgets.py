@@ -677,7 +677,7 @@ class LaserAutofocusSettingWidget(QWidget):
 
         updates = {
             "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
-            "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
+            "displacement_success_window_pixels": int(self.spinboxes["displacement_success_window_pixels"].value()),
             "spot_crop_size": int(self.spinboxes["spot_crop_size"].value()),
             "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
             "pixel_to_um_calibration_distance": self.spinboxes["pixel_to_um_calibration_distance"].value(),
