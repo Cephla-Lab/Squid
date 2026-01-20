@@ -2,6 +2,7 @@ import time
 from typing import Optional, Tuple
 
 import cv2
+from scipy.ndimage import gaussian_filter
 from datetime import datetime
 import math
 import numpy as np
@@ -215,7 +216,8 @@ class LaserAutofocusController(QObject):
 
         # Move to second position and measure
         self._move_z(self.laser_af_properties.pixel_to_um_calibration_distance)
-        time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        if self.piezo is not None:
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -461,6 +463,8 @@ class LaserAutofocusController(QObject):
 
         um_to_move = target_um - current_displacement_um
         self._move_z(um_to_move)
+        if self.piezo is not None:
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
@@ -555,6 +559,8 @@ class LaserAutofocusController(QObject):
         )
 
         reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
+        if self.laser_af_properties.filter_sigma is not None and self.laser_af_properties.filter_sigma > 0:
+            reference_crop = gaussian_filter(reference_crop, sigma=self.laser_af_properties.filter_sigma)
         self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(reference_crop)
 
         self._log.info(
@@ -655,6 +661,8 @@ class LaserAutofocusController(QObject):
         y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
 
         current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
+        if self.laser_af_properties.filter_sigma is not None and self.laser_af_properties.filter_sigma > 0:
+            current_crop = gaussian_filter(current_crop, sigma=self.laser_af_properties.filter_sigma)
         current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
 
         # Calculate normalized cross correlation
