@@ -23,7 +23,7 @@ import control._def  # Module import for runtime access to MCP-modifiable settin
 
 # Qt imports for thread-safe GUI operations
 try:
-    from qtpy.QtCore import QTimer
+    from qtpy.QtCore import Q_ARG, QMetaObject, Qt, QTimer
 
     QT_AVAILABLE = True
 except ImportError:
@@ -935,7 +935,10 @@ class MicroscopeControlServer:
     def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
         """Update GUI widgets from YAML settings in a thread-safe manner.
 
-        Uses a threading Event to ensure the GUI update completes before returning.
+        Uses QTimer.singleShot + threading.Event pattern. This pattern is acceptable here
+        because _load_acquisition_yaml only updates widget state and doesn't need to complete
+        before run_acquisition() is called (unlike _set_gui_acquisition_state which must
+        complete to avoid race conditions with napari layer initialization).
         """
         if not QT_AVAILABLE:
             return
@@ -966,37 +969,45 @@ class MicroscopeControlServer:
     def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.
 
-        Uses QTimer.singleShot with threading.Event to ensure the GUI update
-        completes before returning, matching the pattern in _update_gui_from_yaml.
+        Uses QMetaObject.invokeMethod with Qt.BlockingQueuedConnection to ensure
+        the GUI update completes on the main thread before this method returns.
+        This is Qt's recommended approach for cross-thread synchronous method calls.
+
+        Note: This uses a different pattern than _update_gui_from_yaml because this method
+        MUST complete before run_acquisition() is called, otherwise napari layers get
+        initialized with wrong scale parameters (race condition). The QTimer.singleShot
+        pattern used elsewhere doesn't guarantee completion before the next line executes.
         """
         if not QT_AVAILABLE:
             return
 
         widget = self._get_widget_for_type(yaml_data.widget_type)
-        if not widget:
+        if widget is None:
+            self._log.warning(f"Cannot update GUI state: No widget found for type '{yaml_data.widget_type}'")
             return
 
         if not hasattr(widget, "set_acquisition_running_state"):
             self._log.warning(f"Widget {type(widget).__name__} lacks set_acquisition_running_state method")
             return
 
-        # Use threading.Event to wait for GUI update to complete
-        gui_update_complete = threading.Event()
-
-        def update_state():
-            try:
-                widget.set_acquisition_running_state(is_running, yaml_data.nz, yaml_data.delta_z_um)
-            except Exception as e:
-                self._log.error(f"Failed to update GUI acquisition state: {e}")
-            finally:
-                gui_update_complete.set()
-
-        # Schedule on Qt main thread
-        QTimer.singleShot(0, update_state)
-
-        # Wait for completion
-        if not gui_update_complete.wait(timeout=5.0):
-            self._log.warning("GUI acquisition state update timed out after 5 seconds")
+        # Use BlockingQueuedConnection to call method on main thread and wait for completion
+        # This ensures GUI is fully updated before run_acquisition() is called
+        try:
+            success = QMetaObject.invokeMethod(
+                widget,
+                "set_acquisition_running_state",
+                Qt.BlockingQueuedConnection,
+                Q_ARG(bool, is_running),
+                Q_ARG(int, yaml_data.nz),
+                Q_ARG(float, yaml_data.delta_z_um),
+            )
+            if not success:
+                self._log.error(
+                    f"QMetaObject.invokeMethod failed to invoke set_acquisition_running_state "
+                    f"on {type(widget).__name__}"
+                )
+        except Exception as e:
+            self._log.error(f"Failed to update GUI acquisition state: {e}")
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
         """Validate that requested channels exist for the current objective.

@@ -7713,17 +7713,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.signal_acquisition_started.emit(True)
         self.signal_acquisition_shape.emit(nz, delta_z_um)
 
-    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0):
-        """Set the widget's acquisition state (thread-safe via signal).
+    @Slot(bool, int, float)
+    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0) -> None:
+        """Set the widget's acquisition state (called from TCP server via QMetaObject.invokeMethod).
 
-        This is called when acquisition is started from an external source (e.g., TCP server)
-        to update the GUI to reflect that an acquisition is in progress.
+        This is invoked on the main thread when acquisition is started from an external source
+        (e.g., TCP server). Uses Qt.BlockingQueuedConnection to ensure GUI is fully updated
+        before acquisition starts.
+
+        Note: Exceptions in slots called via BlockingQueuedConnection are silently swallowed
+        by Qt, so we catch and log them explicitly here.
         """
         self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
-        if is_running:
-            self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
-        else:
-            self.acquisition_is_finished()
+        try:
+            if is_running:
+                self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
+            else:
+                self.acquisition_is_finished()
+        except Exception as e:
+            self._log.error(f"Exception in set_acquisition_running_state: {e}", exc_info=True)
 
     def acquisition_is_finished(self):
         self._log.debug(
