@@ -304,13 +304,8 @@ class QtMultiPointController(MultiPointController, QObject):
 
         # Construct filepath (matches save_image in utils_acquisition.py)
         channel_name_safe = str(info.configuration.name).replace(" ", "_")
-        if frame.frame.dtype == np.uint16:
-            filepath = os.path.join(info.save_directory, f"{info.file_id}_{channel_name_safe}.tiff")
-        else:
-            filepath = os.path.join(
-                info.save_directory,
-                f"{info.file_id}_{channel_name_safe}.{control._def.Acquisition.IMAGE_FORMAT}",
-            )
+        extension = "tiff" if frame.frame.dtype == np.uint16 else control._def.Acquisition.IMAGE_FORMAT
+        filepath = os.path.join(info.save_directory, f"{info.file_id}_{channel_name_safe}.{extension}")
 
         self.ndviewer_register_image.emit(
             info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
