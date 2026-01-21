@@ -650,10 +650,20 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to detect spot centroid for cross-correlation check")
             return failure_return_value
 
-        # Crop current image around the detected peak (not the reference position)
+        # Crop current image around the reference position to detect off-position spots
+        # If the spot moved to the wrong location (e.g., debris), it will appear off-center
+        # in this crop, resulting in low correlation and failing the CC check
         current_peak_x, current_peak_y = centroid_result
-        center_x = int(current_peak_x)
+        center_x = int(self.laser_af_properties.x_reference)
         center_y = int(current_image.shape[0] / 2)
+
+        # Log if detected spot is far from reference (potential debris/contamination)
+        spot_offset = abs(current_peak_x - self.laser_af_properties.x_reference)
+        if spot_offset > 20:  # pixels
+            self._log.warning(
+                f"Detected spot at x={current_peak_x:.1f} is {spot_offset:.1f} pixels from reference "
+                f"x={self.laser_af_properties.x_reference:.1f} - possible debris/contamination"
+            )
 
         x_start = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
         x_end = min(current_image.shape[1], center_x + self.laser_af_properties.spot_crop_size // 2)
@@ -680,9 +690,9 @@ class LaserAutofocusController(QObject):
             axes[0].set_title(f"Reference Crop\n(x={self.laser_af_properties.x_reference:.1f})")
             axes[0].axis("off")
 
-            # Current crop
+            # Current crop (centered on reference position)
             axes[1].imshow(current_norm, cmap="gray")
-            axes[1].set_title(f"Current Crop\n(x={current_peak_x:.1f})")
+            axes[1].set_title(f"Current Crop @ Reference\n(detected x={current_peak_x:.1f}, crop x={self.laser_af_properties.x_reference:.1f})")
             axes[1].axis("off")
 
             # Difference image
