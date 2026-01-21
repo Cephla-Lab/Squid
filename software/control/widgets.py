@@ -263,7 +263,10 @@ class NDViewerTab(QWidget):
                 if self._viewer.go_to_well_fov(well_id, fov_index):
                     self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (push mode)")
                     return True
-                self._log.debug(f"go_to_fov: push mode navigation failed for well={well_id}, fov={fov_index}")
+                self._log.warning(
+                    f"go_to_fov: push mode navigation failed for well={well_id}, fov={fov_index}. "
+                    f"FOV may not be registered yet or well ID format may not match."
+                )
                 return False
 
             # Fall back to legacy mode (viewing existing datasets)
@@ -362,7 +365,7 @@ class NDViewerTab(QWidget):
     def register_image(self, t: int, fov_idx: int, z: int, channel: str, filepath: str) -> None:
         """Register a newly saved image file.
 
-        Thread-safe: can be called from worker thread.
+        Called on main thread via Qt signal from worker thread.
 
         Args:
             t: Timepoint index
@@ -371,8 +374,14 @@ class NDViewerTab(QWidget):
             channel: Channel name
             filepath: Path to the saved image file
         """
-        if self._viewer is not None:
+        if self._viewer is None:
+            return
+        try:
             self._viewer.register_image(t, fov_idx, z, channel, filepath)
+        except Exception:
+            self._log.exception(
+                f"Failed to register image: t={t}, fov={fov_idx}, z={z}, " f"channel={channel}, filepath={filepath}"
+            )
 
     def load_fov(self, fov: int, t: Optional[int] = None, z: Optional[int] = None) -> bool:
         """Load and display a specific FOV.
@@ -401,9 +410,13 @@ class NDViewerTab(QWidget):
         Call this when acquisition completes. The viewer remains usable
         for navigating the acquired data.
         """
-        if self._viewer is not None:
+        if self._viewer is None:
+            return
+        try:
             self._viewer.end_acquisition()
             self._log.debug("NDViewer acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end NDViewer acquisition")
 
     def close(self) -> None:
         """Clean up viewer resources."""

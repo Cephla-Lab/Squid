@@ -292,7 +292,14 @@ class QtMultiPointController(MultiPointController, QObject):
 
         # NDViewer push-based API: register image file
         # Compute flat FOV index from region and fov within region
-        region_offset = self._ndviewer_region_fov_offset.get(info.region_id, 0)
+        region_offset = self._ndviewer_region_fov_offset.get(info.region_id)
+        if region_offset is None:
+            # This should not happen if start_acquisition was called correctly
+            self.log.warning(
+                f"Unknown region_id '{info.region_id}' in NDViewer registration. "
+                f"Available: {list(self._ndviewer_region_fov_offset.keys())}. Skipping."
+            )
+            return
         flat_fov_idx = region_offset + info.fov
 
         # Construct filepath (matches save_image in utils_acquisition.py)
