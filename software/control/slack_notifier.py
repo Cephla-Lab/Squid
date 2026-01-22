@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, Callable, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 
@@ -39,7 +39,7 @@ class TimepointStats:
     fovs_captured: int
     laser_af_successes: int
     laser_af_failures: int
-    laser_af_failure_reasons: list
+    laser_af_failure_reasons: List[str]
 
 
 @dataclass
@@ -58,7 +58,7 @@ class SlackMessage:
     """A message to be sent to Slack, optionally with an image."""
 
     text: str
-    blocks: Optional[list] = None
+    blocks: Optional[List[Dict[str, Any]]] = None
     image_data: Optional[bytes] = None
     image_title: Optional[str] = None
 
@@ -98,7 +98,7 @@ class SlackNotifier:
         # Track acquisition state
         self._acquisition_start_time: Optional[float] = None
         self._current_experiment_id: Optional[str] = None
-        self._timepoint_durations: list = []
+        self._timepoint_durations: List[float] = []
 
         # Pending image for next message (set from main thread via signal)
         self._pending_image: Optional[bytes] = None
@@ -578,7 +578,8 @@ class SlackNotifier:
 
         self._acquisition_start_time = time.time()
         self._current_experiment_id = experiment_id
-        self._timepoint_durations = []
+        with self._lock:
+            self._timepoint_durations = []
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -646,19 +647,22 @@ class SlackNotifier:
         # Reset state
         self._acquisition_start_time = None
         self._current_experiment_id = None
-        self._timepoint_durations = []
+        with self._lock:
+            self._timepoint_durations = []
 
     def record_timepoint_duration(self, duration_seconds: float):
         """Record the duration of a completed timepoint for estimation."""
-        self._timepoint_durations.append(duration_seconds)
+        with self._lock:
+            self._timepoint_durations.append(duration_seconds)
 
     def estimate_remaining_time(self, current_timepoint: int, total_timepoints: int) -> float:
         """Estimate remaining acquisition time based on past timepoint durations."""
-        if not self._timepoint_durations:
-            return 0.0
-        avg_duration = sum(self._timepoint_durations) / len(self._timepoint_durations)
-        remaining_timepoints = total_timepoints - current_timepoint
-        return avg_duration * remaining_timepoints
+        with self._lock:
+            if not self._timepoint_durations:
+                return 0.0
+            avg_duration = sum(self._timepoint_durations) / len(self._timepoint_durations)
+            remaining_timepoints = total_timepoints - current_timepoint
+            return avg_duration * remaining_timepoints
 
     def test_connection(self) -> Tuple[bool, str]:
         """Test the Slack API connection.
