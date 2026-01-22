@@ -48,6 +48,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.utils_acquisition
 import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
@@ -302,10 +303,9 @@ class QtMultiPointController(MultiPointController, QObject):
             return
         flat_fov_idx = region_offset + info.fov
 
-        # Construct filepath (matches save_image in utils_acquisition.py)
-        channel_name_safe = str(info.configuration.name).replace(" ", "_")
-        extension = "tiff" if frame.frame.dtype == np.uint16 else control._def.Acquisition.IMAGE_FORMAT
-        filepath = os.path.join(info.save_directory, f"{info.file_id}_{channel_name_safe}.{extension}")
+        filepath = control.utils_acquisition.get_image_filepath(
+            info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
+        )
 
         self.ndviewer_register_image.emit(
             info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath

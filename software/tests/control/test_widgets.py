@@ -1255,6 +1255,49 @@ class TestNDViewerTabNavigation:
 
         assert result is False
 
+    def test_go_to_fov_push_mode_success(self, ndviewer_tab):
+        """Test go_to_fov succeeds when push mode is active and navigation works."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.return_value = True
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("B2", 3)
+
+        assert result is True
+        mock_viewer.is_push_mode_active.assert_called_once()
+        mock_viewer.go_to_well_fov.assert_called_once_with("B2", 3)
+
+    def test_go_to_fov_push_mode_fails(self, ndviewer_tab):
+        """Test go_to_fov returns False when push mode navigation fails."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.return_value = False  # Navigation fails
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("C3", 1)
+
+        assert result is False
+        mock_viewer.is_push_mode_active.assert_called_once()
+        mock_viewer.go_to_well_fov.assert_called_once_with("C3", 1)
+
+    def test_go_to_fov_push_mode_exception(self, ndviewer_tab):
+        """Test go_to_fov handles exceptions in push mode."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.side_effect = RuntimeError("Push mode error")
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("A1", 0)
+
+        assert result is False
+
 
 class TestNDViewerTabCleanup:
     """Tests for NDViewerTab cleanup and close behavior."""
@@ -1355,3 +1398,81 @@ class TestNDViewerTabImportHandling:
             assert (
                 "failed to load" in widget._placeholder.text().lower() or "error" in widget._placeholder.text().lower()
             )
+
+
+class TestNDViewerTabPushAPI:
+    """Tests for NDViewerTab push-based API (start_acquisition, register_image)."""
+
+    def test_start_acquisition_import_failure(self, ndviewer_tab):
+        """Test start_acquisition handles ndviewer_light import failure."""
+        import builtins
+
+        widget = ndviewer_tab
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "control.ndviewer_light" or (
+                args and len(args) > 2 and args[2] and "ndviewer_light" in str(args[2])
+            ):
+                raise ImportError("No module named 'control.ndviewer_light'")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            result = widget.start_acquisition(
+                channels=["BF LED matrix full"],
+                num_z=1,
+                height=512,
+                width=512,
+                fov_labels=["A1:0"],
+            )
+
+        assert result is False
+        assert "failed to import" in widget._placeholder.text().lower()
+
+    def test_start_acquisition_viewer_raises_exception(self, ndviewer_tab):
+        """Test start_acquisition handles viewer.start_acquisition exception."""
+        widget = ndviewer_tab
+
+        # Create a mock viewer that raises on start_acquisition
+        mock_viewer = Mock()
+        mock_viewer.start_acquisition.side_effect = RuntimeError("Viewer init failed")
+        widget._viewer = mock_viewer
+
+        result = widget.start_acquisition(
+            channels=["BF LED matrix full"],
+            num_z=1,
+            height=512,
+            width=512,
+            fov_labels=["A1:0"],
+        )
+
+        assert result is False
+        # Should show error in placeholder
+        assert "failed to start acquisition" in widget._placeholder.text().lower()
+
+    def test_start_acquisition_success_returns_true(self, ndviewer_tab):
+        """Test start_acquisition returns True on success."""
+        widget = ndviewer_tab
+
+        # Create a mock viewer that succeeds
+        mock_viewer = Mock()
+        mock_viewer.start_acquisition.return_value = None
+        widget._viewer = mock_viewer
+
+        result = widget.start_acquisition(
+            channels=["BF LED matrix full", "Fluorescence 488 nm Ex"],
+            num_z=5,
+            height=1024,
+            width=1024,
+            fov_labels=["A1:0", "A1:1", "B2:0"],
+        )
+
+        assert result is True
+        mock_viewer.start_acquisition.assert_called_once_with(
+            ["BF LED matrix full", "Fluorescence 488 nm Ex"],
+            5,
+            1024,
+            1024,
+            ["A1:0", "A1:1", "B2:0"],
+        )
+        mock_viewer.setVisible.assert_called_once_with(True)
