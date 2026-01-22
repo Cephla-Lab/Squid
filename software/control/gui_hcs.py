@@ -90,6 +90,10 @@ if RUN_FLUIDICS:
 # Import the custom widget
 from control.custom_multipoint_widget import TemplateMultiPointWidget
 
+# Slack notifications
+from control.slack_notifier import SlackNotifier, TimepointStats, AcquisitionStats
+from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_cache
+
 
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
@@ -186,6 +190,9 @@ class QtMultiPointController(MultiPointController, QObject):
     # Plate view signals
     plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
     plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
+    # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
+    signal_slack_timepoint = Signal(object)  # TimepointStats
+    signal_slack_acq_finished = Signal(object)  # AcquisitionStats
 
     def __init__(
         self,
@@ -214,6 +221,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
                 signal_plate_view_update=self._signal_plate_view_update_fn,
+                signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
+                signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -293,6 +302,12 @@ class QtMultiPointController(MultiPointController, QObject):
             plate_view_update.plate_image,
         )
 
+    def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
+        self.signal_slack_timepoint.emit(stats)
+
+    def _signal_slack_acquisition_finished_fn(self, stats: AcquisitionStats):
+        self.signal_slack_acq_finished.emit(stats)
+
 
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
@@ -366,6 +381,12 @@ class HighContentScreeningGui(QMainWindow):
         self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
         self.scanCoordinates: Optional[ScanCoordinates] = None
+        self.slackNotifier: Optional[SlackNotifier] = None
+        self.slackSettingsDialog: Optional[SlackSettingsDialog] = None
+
+        # Load Slack settings from cache
+        load_slack_settings_from_cache()
+
         self.load_objects(is_simulation=is_simulation)
         self.setup_hardware()
 
@@ -424,6 +445,9 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize live scan grid state
         self.wellplateMultiPointWidget.initialize_live_scan_grid_state()
 
+        # Initialize Slack notifier
+        self._setup_slack_notifier()
+
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
             if cached_pos := squid.stage.utils.get_cached_position():
@@ -460,6 +484,12 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
+
+        # Slack notifications
+        slack_action = QAction("Slack Notifications...", self)
+        slack_action.setMenuRole(QAction.NoRole)
+        slack_action.triggered.connect(self.openSlackSettings)
+        settings_menu.addAction(slack_action)
 
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
@@ -1604,6 +1634,56 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
+
+    def _setup_slack_notifier(self):
+        """Initialize the Slack notifier and wire up connections."""
+        # Create the slack notifier
+        self.slackNotifier = SlackNotifier()
+
+        # Set slack notifier on multipoint controller
+        if self.multipointController is not None:
+            self.multipointController.set_slack_notifier(self.slackNotifier)
+            # Connect Slack notification signals to handlers (runs on main thread for proper ordering)
+            self.multipointController.signal_slack_timepoint.connect(self._handle_slack_timepoint_notification)
+            self.multipointController.signal_slack_acq_finished.connect(self._handle_slack_acquisition_finished)
+
+        self.log.info("Slack notifier initialized")
+
+    def _handle_slack_timepoint_notification(self, stats: TimepointStats):
+        """Handle Slack timepoint notification on the main Qt thread.
+
+        Captures screenshot from mosaic widget (if available) and sends notification.
+        """
+        try:
+            # Capture screenshot from mosaic widget (must be done on main Qt thread)
+            mosaic_image = None
+            if self.napariMosaicDisplayWidget is not None:
+                mosaic_image = self.napariMosaicDisplayWidget.get_screenshot()
+
+            # Send notification with screenshot
+            if self.slackNotifier is not None:
+                self.slackNotifier.notify_timepoint_complete(stats, mosaic_image)
+        except Exception as e:
+            self.log.warning(f"Failed to send Slack timepoint notification: {e}")
+
+    def _handle_slack_acquisition_finished(self, stats: AcquisitionStats):
+        """Handle Slack acquisition finished notification on the main Qt thread."""
+        try:
+            if self.slackNotifier is not None:
+                self.slackNotifier.notify_acquisition_finished(stats)
+        except Exception as e:
+            self.log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+
+    def openSlackSettings(self):
+        """Open the Slack notifications settings dialog."""
+        if self.slackSettingsDialog is None:
+            self.slackSettingsDialog = SlackSettingsDialog(
+                slack_notifier=self.slackNotifier,
+                parent=self,
+            )
+        self.slackSettingsDialog.show()
+        self.slackSettingsDialog.raise_()
+        self.slackSettingsDialog.activateWindow()
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""

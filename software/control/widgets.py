@@ -11087,6 +11087,20 @@ class NapariMosaicDisplayWidget(QWidget):
     def activate(self):
         self.viewer.window.activate()
 
+    def get_screenshot(self) -> Optional[np.ndarray]:
+        """Capture the current mosaic view as a numpy array.
+
+        Returns:
+            RGB image array of the current view, or None if no layers exist.
+        """
+        if not self.layers_initialized:
+            return None
+        try:
+            # Use napari's screenshot functionality
+            return self.viewer.screenshot(canvas_only=True)
+        except Exception:
+            return None
+
 
 class NapariPlateViewWidget(QWidget):
     """Widget for displaying downsampled plate view with multi-channel support.

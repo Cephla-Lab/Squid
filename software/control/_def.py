@@ -1082,6 +1082,19 @@ ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu it
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 
+
+# Slack Notifications - send real-time notifications during acquisition
+class SlackNotifications:
+    ENABLED = False
+    BOT_TOKEN = None  # Slack Bot Token (xoxb-...) for API access
+    CHANNEL_ID = None  # Slack Channel ID (C...) to post to
+    NOTIFY_ON_ERROR = True
+    NOTIFY_ON_TIMEPOINT_COMPLETE = True
+    NOTIFY_ON_ACQUISITION_START = False
+    NOTIFY_ON_ACQUISITION_FINISHED = True
+    SEND_MOSAIC_SNAPSHOTS = True
+
+
 try:
     with open("cache/config_file_path.txt", "r") as file:
         for line in file:

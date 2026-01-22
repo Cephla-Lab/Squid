@@ -1,11 +1,14 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Callable, Union
+from typing import List, Tuple, Dict, Optional, Callable, Union, TYPE_CHECKING
 
 from control._def import ZProjectionMode, DownsamplingMethod
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
+
+if TYPE_CHECKING:
+    from control.slack_notifier import TimepointStats, AcquisitionStats
 
 
 @dataclass
@@ -116,3 +119,6 @@ class MultiPointControllerFunctions:
     # Unlike mutable defaults (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
     signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None
+    # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
+    signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None
+    signal_slack_acquisition_finished: Callable[["AcquisitionStats"], None] = lambda *a, **kw: None
