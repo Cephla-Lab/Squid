@@ -1136,11 +1136,12 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_with_mock_viewer(self, ndviewer_tab):
-        """Test go_to_fov with a mocked viewer."""
+        """Test go_to_fov with a mocked viewer (legacy/file-based mode)."""
         widget = ndviewer_tab
 
-        # Create mock viewer
+        # Create mock viewer in file-based mode (not push mode)
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1157,11 +1158,12 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 0)
 
     def test_go_to_fov_finds_correct_flat_index(self, ndviewer_tab):
-        """Test that go_to_fov finds the correct flat index."""
+        """Test that go_to_fov finds the correct flat index (legacy/file-based mode)."""
         widget = ndviewer_tab
 
-        # Create mock viewer with multiple wells
+        # Create mock viewer in file-based mode (not push mode)
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1179,10 +1181,11 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 2)
 
     def test_go_to_fov_not_found_returns_false(self, ndviewer_tab):
-        """Test that go_to_fov returns False when FOV not found."""
+        """Test that go_to_fov returns False when FOV not found (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1196,10 +1199,11 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_not_called()
 
     def test_go_to_fov_no_fov_dimension_returns_false(self, ndviewer_tab):
-        """Test that go_to_fov returns False when no fov dimension."""
+        """Test that go_to_fov returns False when no fov dimension (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = False
         widget._viewer = mock_viewer
 
@@ -1208,10 +1212,11 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_handles_exception(self, ndviewer_tab):
-        """Test that go_to_fov handles exceptions gracefully."""
+        """Test that go_to_fov handles exceptions gracefully (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.side_effect = RuntimeError("Viewer error")
         widget._viewer = mock_viewer
 
@@ -1221,10 +1226,11 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_set_current_index_fails_returns_false(self, ndviewer_tab):
-        """Test go_to_fov returns False when set_current_index fails."""
+        """Test go_to_fov returns False when set_current_index fails (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [{"region": "A1", "fov": 0}]
         mock_viewer.set_current_index.return_value = False  # Navigation fails
@@ -1236,10 +1242,11 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 0)
 
     def test_go_to_fov_get_fov_list_exception_returns_false(self, ndviewer_tab):
-        """Test go_to_fov handles get_fov_list exceptions."""
+        """Test go_to_fov handles get_fov_list exceptions (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.side_effect = RuntimeError("FOV list error")
         widget._viewer = mock_viewer
