@@ -151,11 +151,7 @@ class SlackNotifier:
                 message = self._message_queue.get(timeout=self.QUEUE_TIMEOUT)
                 if message is None:  # Shutdown signal
                     break
-                if isinstance(message, SlackMessage):
-                    self._send_message(message)
-                else:
-                    # Legacy dict format
-                    self._post_message(message.get("text", ""), message.get("blocks"))
+                self._send_message(message)
             except queue.Empty:
                 continue
             except Exception as e:
@@ -445,34 +441,43 @@ class SlackNotifier:
         message = SlackMessage(text=text, blocks=blocks)
         self._queue_message(message)
 
+    def _format_context(self, context: Optional[Dict[str, Any]]) -> str:
+        """Format acquisition context into a readable string."""
+        if not context:
+            return "N/A"
+
+        field_formats = [
+            ("region", "Region {}"),
+            ("fov", "FOV {}"),
+            ("z_level", "Z-level {}"),
+            ("channel", "Channel: {}"),
+        ]
+        parts = [fmt.format(context[key]) for key, fmt in field_formats if key in context]
+        if "job_id" in context:
+            parts.append(f"Job: {context['job_id'][:8]}")
+        return ", ".join(parts) if parts else "N/A"
+
+    def _make_experiment_context_block(self) -> Optional[Dict[str, Any]]:
+        """Create a context block with experiment ID if available."""
+        if not self._current_experiment_id:
+            return None
+        return {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Experiment: {self._current_experiment_id}"}],
+        }
+
     def notify_error(self, error_msg: str, context: Optional[Dict[str, Any]] = None):
         """Send an error notification to Slack."""
         if not control._def.SlackNotifications.NOTIFY_ON_ERROR:
             return
 
-        # Throttle repeated errors of the same type
         error_key = error_msg[:50]
         if self._should_throttle_error(error_key):
             log.debug(f"Throttling Slack error notification: {error_key}")
             return
 
-        # Build context string
-        context_str = ""
-        if context:
-            parts = []
-            if "region" in context:
-                parts.append(f"Region {context['region']}")
-            if "fov" in context:
-                parts.append(f"FOV {context['fov']}")
-            if "z_level" in context:
-                parts.append(f"Z-level {context['z_level']}")
-            if "channel" in context:
-                parts.append(f"Channel: {context['channel']}")
-            if "job_id" in context:
-                parts.append(f"Job: {context['job_id'][:8]}")
-            context_str = ", ".join(parts)
-
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        context_str = self._format_context(context)
 
         blocks = [
             {
@@ -483,18 +488,14 @@ class SlackNotifier:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Error:* {error_msg}\n*Location:* {context_str or 'N/A'}\n*Time:* {timestamp}",
+                    "text": f"*Error:* {error_msg}\n*Location:* {context_str}\n*Time:* {timestamp}",
                 },
             },
         ]
 
-        if self._current_experiment_id:
-            blocks.append(
-                {
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": f"Experiment: {self._current_experiment_id}"}],
-                }
-            )
+        experiment_block = self._make_experiment_context_block()
+        if experiment_block:
+            blocks.append(experiment_block)
 
         message = SlackMessage(text=f"Acquisition Error: {error_msg}", blocks=blocks)
         self._queue_message(message)
@@ -548,13 +549,9 @@ class SlackNotifier:
                 af_text += f" ({stats.laser_af_failures} failed)"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": af_text}})
 
-        if self._current_experiment_id:
-            blocks.append(
-                {
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": f"Experiment: {self._current_experiment_id}"}],
-                }
-            )
+        experiment_block = self._make_experiment_context_block()
+        if experiment_block:
+            blocks.append(experiment_block)
 
         message = SlackMessage(
             text=f"Timepoint {stats.timepoint}/{stats.total_timepoints} complete",

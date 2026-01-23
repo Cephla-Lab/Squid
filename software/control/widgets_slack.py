@@ -31,6 +31,34 @@ log = squid.logging.get_logger(__name__)
 
 CACHE_FILE = "cache/slack_settings.yaml"
 
+# Mapping from cache keys to (control._def attribute, default value getter)
+_SETTINGS_MAP = {
+    "enabled": ("ENABLED", lambda: False),
+    "bot_token": ("BOT_TOKEN", lambda: None),
+    "channel_id": ("CHANNEL_ID", lambda: None),
+    "notify_on_error": ("NOTIFY_ON_ERROR", lambda: True),
+    "notify_on_timepoint_complete": ("NOTIFY_ON_TIMEPOINT_COMPLETE", lambda: True),
+    "send_mosaic_snapshots": ("SEND_MOSAIC_SNAPSHOTS", lambda: True),
+    "notify_on_acquisition_start": ("NOTIFY_ON_ACQUISITION_START", lambda: True),
+    "notify_on_acquisition_finished": ("NOTIFY_ON_ACQUISITION_FINISHED", lambda: True),
+}
+
+
+def _load_cached_settings() -> dict:
+    """Load settings from the cache file if it exists.
+
+    Returns:
+        Dictionary of cached settings, or empty dict if not found.
+    """
+    if not os.path.exists(CACHE_FILE):
+        return {}
+    try:
+        with open(CACHE_FILE, "r") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        log.warning(f"Failed to load Slack settings from cache: {e}")
+        return {}
+
 
 class SlackSettingsDialog(QDialog):
     """Non-modal dialog for configuring Slack notifications.
@@ -178,42 +206,37 @@ class SlackSettingsDialog(QDialog):
 
     def _load_settings(self):
         """Load settings from cache file or use defaults from _def."""
-        # Start with values from _def
-        self.checkbox_enabled.setChecked(control._def.SlackNotifications.ENABLED)
-        bot_token = control._def.SlackNotifications.BOT_TOKEN or ""
-        channel_id = control._def.SlackNotifications.CHANNEL_ID or ""
-        self.lineedit_bot_token.setText(bot_token)
-        self.lineedit_channel_id.setText(channel_id)
-        self.checkbox_notify_error.setChecked(control._def.SlackNotifications.NOTIFY_ON_ERROR)
-        self.checkbox_notify_timepoint.setChecked(control._def.SlackNotifications.NOTIFY_ON_TIMEPOINT_COMPLETE)
-        self.checkbox_send_mosaic.setChecked(control._def.SlackNotifications.SEND_MOSAIC_SNAPSHOTS)
-        self.checkbox_notify_start.setChecked(control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START)
-        self.checkbox_notify_finished.setChecked(control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_FINISHED)
+        cached = _load_cached_settings()
 
-        # Override with cache file if it exists
-        try:
-            if os.path.exists(CACHE_FILE):
-                with open(CACHE_FILE, "r") as f:
-                    cached = yaml.safe_load(f)
-                if "enabled" in cached:
-                    self.checkbox_enabled.setChecked(cached["enabled"])
-                if "bot_token" in cached and cached["bot_token"]:
-                    self.lineedit_bot_token.setText(cached["bot_token"])
-                if "channel_id" in cached and cached["channel_id"]:
-                    self.lineedit_channel_id.setText(cached["channel_id"])
-                if "notify_on_error" in cached:
-                    self.checkbox_notify_error.setChecked(cached["notify_on_error"])
-                if "notify_on_timepoint_complete" in cached:
-                    self.checkbox_notify_timepoint.setChecked(cached["notify_on_timepoint_complete"])
-                if "send_mosaic_snapshots" in cached:
-                    self.checkbox_send_mosaic.setChecked(cached["send_mosaic_snapshots"])
-                if "notify_on_acquisition_start" in cached:
-                    self.checkbox_notify_start.setChecked(cached["notify_on_acquisition_start"])
-                if "notify_on_acquisition_finished" in cached:
-                    self.checkbox_notify_finished.setChecked(cached["notify_on_acquisition_finished"])
-                log.info("Loaded Slack settings from cache")
-        except Exception as e:
-            log.warning(f"Failed to load Slack settings from cache: {e}")
+        # Map widgets to their cache keys for easy population
+        checkbox_map = {
+            "enabled": self.checkbox_enabled,
+            "notify_on_error": self.checkbox_notify_error,
+            "notify_on_timepoint_complete": self.checkbox_notify_timepoint,
+            "send_mosaic_snapshots": self.checkbox_send_mosaic,
+            "notify_on_acquisition_start": self.checkbox_notify_start,
+            "notify_on_acquisition_finished": self.checkbox_notify_finished,
+        }
+        lineedit_map = {
+            "bot_token": self.lineedit_bot_token,
+            "channel_id": self.lineedit_channel_id,
+        }
+
+        # Load checkbox values (prefer cache, fall back to _def)
+        for key, checkbox in checkbox_map.items():
+            attr = _SETTINGS_MAP[key][0]
+            default = getattr(control._def.SlackNotifications, attr)
+            checkbox.setChecked(cached.get(key, default))
+
+        # Load line edit values (prefer cache, fall back to _def)
+        for key, lineedit in lineedit_map.items():
+            attr = _SETTINGS_MAP[key][0]
+            default = getattr(control._def.SlackNotifications, attr) or ""
+            value = cached.get(key) or default
+            lineedit.setText(value)
+
+        if cached:
+            log.info("Loaded Slack settings from cache")
 
         self._update_controls_state(self.checkbox_enabled.isChecked())
 
@@ -275,31 +298,15 @@ class SlackSettingsDialog(QDialog):
             QMessageBox.warning(self, "Test Failed", "Please enter a Channel ID")
             return
 
-        # Temporarily create a notifier or use existing one
-        if self._slack_notifier:
-            # Temporarily set the credentials for testing
-            old_token = self._slack_notifier.bot_token
-            old_channel = self._slack_notifier.channel_id
-            self._slack_notifier.bot_token = bot_token
-            self._slack_notifier.channel_id = channel_id
-            old_enabled = control._def.SlackNotifications.ENABLED
-            control._def.SlackNotifications.ENABLED = True
+        # Create a temporary notifier for testing with the entered credentials
+        temp_notifier = SlackNotifier(bot_token=bot_token, channel_id=channel_id)
+        old_enabled = control._def.SlackNotifications.ENABLED
+        control._def.SlackNotifications.ENABLED = True
 
-            success, message = self._slack_notifier.test_connection()
-
-            # Restore original values
-            self._slack_notifier.bot_token = old_token
-            self._slack_notifier.channel_id = old_channel
-            control._def.SlackNotifications.ENABLED = old_enabled
-        else:
-            # Create temporary notifier
-            temp_notifier = SlackNotifier(bot_token=bot_token, channel_id=channel_id)
-            old_enabled = control._def.SlackNotifications.ENABLED
-            control._def.SlackNotifications.ENABLED = True
-
+        try:
             success, message = temp_notifier.test_connection()
+        finally:
             temp_notifier.close()
-
             control._def.SlackNotifications.ENABLED = old_enabled
 
         if success:
@@ -322,28 +329,12 @@ def load_slack_settings_from_cache():
     This should be called during application startup to restore
     user preferences from the cache file.
     """
-    try:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r") as f:
-                cached = yaml.safe_load(f)
-            if "enabled" in cached:
-                control._def.SlackNotifications.ENABLED = cached["enabled"]
-            if "bot_token" in cached:
-                control._def.SlackNotifications.BOT_TOKEN = cached["bot_token"]
-            if "channel_id" in cached:
-                control._def.SlackNotifications.CHANNEL_ID = cached["channel_id"]
-            if "notify_on_error" in cached:
-                control._def.SlackNotifications.NOTIFY_ON_ERROR = cached["notify_on_error"]
-            if "notify_on_timepoint_complete" in cached:
-                control._def.SlackNotifications.NOTIFY_ON_TIMEPOINT_COMPLETE = cached["notify_on_timepoint_complete"]
-            if "send_mosaic_snapshots" in cached:
-                control._def.SlackNotifications.SEND_MOSAIC_SNAPSHOTS = cached["send_mosaic_snapshots"]
-            if "notify_on_acquisition_start" in cached:
-                control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START = cached["notify_on_acquisition_start"]
-            if "notify_on_acquisition_finished" in cached:
-                control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_FINISHED = cached[
-                    "notify_on_acquisition_finished"
-                ]
-            log.info("Loaded Slack settings from cache into runtime config")
-    except Exception as e:
-        log.warning(f"Failed to load Slack settings from cache: {e}")
+    cached = _load_cached_settings()
+    if not cached:
+        return
+
+    for key, (attr, _) in _SETTINGS_MAP.items():
+        if key in cached:
+            setattr(control._def.SlackNotifications, attr, cached[key])
+
+    log.info("Loaded Slack settings from cache into runtime config")
