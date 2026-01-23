@@ -70,8 +70,8 @@ Each Image Saved
      ▼
 register_image(t, fov_idx, z, channel, filepath)
      │
-     ├── Updates file index (thread-safe from worker thread)
-     ├── Emits Qt signal for GUI update
+     ├── Called on GUI thread via Qt signal from worker
+     ├── Updates viewer's internal file index
      └── Auto-loads if image is for current FOV position
 
 Acquisition End
@@ -84,10 +84,10 @@ end_acquisition()
 
 ### Thread Safety
 
-- `register_image()` is called from the worker thread
-- Uses Qt signals to marshal updates to the GUI thread
-- File index updates are atomic (CPython dict operations)
-- Max value computations happen on GUI thread to avoid race conditions
+- Worker thread emits `ndviewer_register_image` Qt signal
+- Qt marshals the signal to the GUI thread (AutoConnection → QueuedConnection)
+- `NDViewerTab.register_image()` executes on the GUI thread
+- All viewer state updates happen on a single thread (GUI), avoiding race conditions
 
 ### Memory Management
 
