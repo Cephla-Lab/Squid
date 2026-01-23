@@ -15262,12 +15262,11 @@ class WarningErrorWidget(QWidget):
             self._update_display()  # Update to show dropped count
             return  # Rate limited
 
-        self._rate_limit_timestamps.append(now_ms)
-
         # Extract datetime from message or use current time
         dt = self._extract_datetime(message)
 
         # Deduplication - check if identical message already exists
+        # Note: duplicates don't consume rate limit slots since they don't create new entries
         core_msg = self._extract_core_message(message)
         for i, msg in enumerate(self._messages):
             if self._extract_core_message(msg["message"]) == core_msg and msg["level"] == level:
@@ -15279,7 +15278,8 @@ class WarningErrorWidget(QWidget):
                 self._update_display()
                 return
 
-        # New message - assign unique ID
+        # New message - consume rate limit slot and assign unique ID
+        self._rate_limit_timestamps.append(now_ms)
         if len(self._messages) >= self.MAX_MESSAGES:
             self._messages.pop(0)
 

@@ -1781,30 +1781,27 @@ class TestWarningErrorWidgetRateLimiting:
 class TestWarningErrorWidgetMemoryBounds:
     """Tests for WarningErrorWidget memory bounds (MAX_MESSAGES)."""
 
-    def test_max_messages_evicts_oldest(self, warning_widget):
+    def test_max_messages_evicts_oldest(self, warning_widget, monkeypatch):
         """Test that oldest messages are evicted when MAX_MESSAGES is exceeded."""
         widget = warning_widget
         widget._rate_limit_timestamps = []  # Disable rate limiting for this test
 
-        original_max = WarningErrorWidget.MAX_MESSAGES
-        WarningErrorWidget.MAX_MESSAGES = 5  # Reduce for faster test
+        # Use monkeypatch to avoid global side effects if test fails
+        monkeypatch.setattr(WarningErrorWidget, "MAX_MESSAGES", 5)
 
-        try:
-            for i in range(10):
-                widget._rate_limit_timestamps = []  # Reset rate limit each time
-                widget.add_message(
-                    logging.WARNING, "test", f"2026-01-23 12:00:{i:02d}.000 - 123 - test - WARNING - Msg {i}"
-                )
+        for i in range(10):
+            widget._rate_limit_timestamps = []  # Reset rate limit each time
+            widget.add_message(
+                logging.WARNING, "test", f"2026-01-23 12:00:{i:02d}.000 - 123 - test - WARNING - Msg {i}"
+            )
 
-            # Should have exactly MAX_MESSAGES
-            assert len(widget._messages) == 5
+        # Should have exactly MAX_MESSAGES
+        assert len(widget._messages) == 5
 
-            # Should have the newest messages (5-9)
-            for msg in widget._messages:
-                msg_num = int(msg["message"].split("Msg ")[-1])
-                assert msg_num >= 5
-        finally:
-            WarningErrorWidget.MAX_MESSAGES = original_max
+        # Should have the newest messages (5-9)
+        for msg in widget._messages:
+            msg_num = int(msg["message"].split("Msg ")[-1])
+            assert msg_num >= 5
 
 
 class TestWarningErrorWidgetPopupDismiss:
@@ -1931,6 +1928,8 @@ class TestQtLoggingHandler:
         assert received[0][1] == "test.logger"
         assert "Test warning" in received[0][2]
 
+        handler.close()
+
     def test_handler_emits_signal_on_error(self, qtbot):
         """Test that handler emits signal for ERROR level."""
         handler = QtLoggingHandler()
@@ -1953,6 +1952,8 @@ class TestQtLoggingHandler:
 
         assert len(received) == 1
         assert received[0][0] == logging.ERROR
+
+        handler.close()
 
     def test_handler_filters_below_warning(self, qtbot):
         """Test that handler level filters out INFO messages.
@@ -1978,6 +1979,7 @@ class TestQtLoggingHandler:
             assert len(received) == 0
         finally:
             logger.removeHandler(handler)
+            handler.close()
 
     def test_handler_custom_min_level(self, qtbot):
         """Test handler with custom minimum level.
@@ -2007,6 +2009,7 @@ class TestQtLoggingHandler:
             assert len(received) == 1
         finally:
             logger.removeHandler(handler)
+            handler.close()
 
 
 class TestWarningErrorWidgetThreadSafety:
@@ -2069,6 +2072,8 @@ class TestWarningErrorWidgetThreadSafety:
         # Widget should have received some messages via signals
         # (exact count may vary due to Qt signal queuing)
         assert widget.has_messages()
+
+        handler.close()
 
 
 class TestWarningErrorWidgetIntegration:
