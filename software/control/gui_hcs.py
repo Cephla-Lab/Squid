@@ -1076,6 +1076,11 @@ class HighContentScreeningGui(QMainWindow):
         self.backpressureMonitorWidget.setVisible(False)
         self._bp_monitor_should_show = False
 
+        # Warning/Error display widget (auto-hides when empty)
+        self.warningErrorWidget = widgets.WarningErrorWidget()
+        self.warningErrorWidget.setVisible(False)
+        self._warning_handler = None
+
     def setup_layout(self):
         layout = QVBoxLayout()
 
@@ -1146,6 +1151,11 @@ class HighContentScreeningGui(QMainWindow):
         # Only visible during acquisition when throttling is enabled
         if self.backpressureMonitorWidget is not None:
             self.statusBar().addWidget(self.backpressureMonitorWidget)  # Left-aligned
+
+        # Add warning/error display widget to status bar
+        # Auto-hides when no messages pending
+        if self.warningErrorWidget is not None:
+            self.statusBar().addWidget(self.warningErrorWidget)  # Left-aligned
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1907,7 +1917,10 @@ class HighContentScreeningGui(QMainWindow):
 
     def _update_status_bar_visibility(self):
         """Show or hide status bar based on whether any monitor widgets should be visible."""
-        self.statusBar().setVisible(self._ram_monitor_should_show or self._bp_monitor_should_show)
+        warning_has_messages = self.warningErrorWidget is not None and self.warningErrorWidget.has_messages()
+        self.statusBar().setVisible(
+            self._ram_monitor_should_show or self._bp_monitor_should_show or warning_has_messages
+        )
 
     def _connect_ram_monitor_widget(self):
         """Connect RAM monitor widget to memory monitor during acquisition."""
@@ -1979,6 +1992,28 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug("Backpressure monitor: disconnected from acquisition")
         self._update_status_bar_visibility()
 
+    def _connect_warning_handler(self):
+        """Connect logging handler to warning/error widget."""
+        import squid.logging
+
+        if self.warningErrorWidget is None:
+            return
+
+        self._warning_handler = widgets.QtLoggingHandler()
+        self._warning_handler.signal_message_logged.connect(self.warningErrorWidget.add_message)
+        squid.logging.get_logger().addHandler(self._warning_handler)
+        self.log.debug("Warning/error widget: connected logging handler")
+
+    def _disconnect_warning_handler(self):
+        """Disconnect logging handler from warning/error widget."""
+        if self._warning_handler is not None:
+            import squid.logging
+
+            squid.logging.get_logger().removeHandler(self._warning_handler)
+            self._warning_handler.close()
+            self._warning_handler = None
+            self.log.debug("Warning/error widget: disconnected logging handler")
+
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
         if self.alignmentWidget is not None:
@@ -2016,11 +2051,12 @@ class HighContentScreeningGui(QMainWindow):
     def showEvent(self, event):
         """Handle window show event to initialize visibility-dependent widgets."""
         super().showEvent(event)
-        # Initialize RAM monitor visibility now that window is shown
-        if hasattr(self, "_ram_monitor_initialized") and self._ram_monitor_initialized:
+        # Initialize visibility-dependent widgets now that window is shown
+        if hasattr(self, "_show_event_initialized") and self._show_event_initialized:
             return  # Only initialize once
-        self._ram_monitor_initialized = True
+        self._show_event_initialized = True
         self._update_ram_monitor_visibility()
+        self._connect_warning_handler()
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
@@ -2059,6 +2095,9 @@ class HighContentScreeningGui(QMainWindow):
 
         # Save camera settings (binning, pixel format)
         squid.camera.settings_cache.save_camera_settings(self.camera)
+
+        # Disconnect warning/error logging handler
+        self._disconnect_warning_handler()
 
         # Clean up multipoint controller resources (queues, timers, process pools)
         if self.multipointController is not None:

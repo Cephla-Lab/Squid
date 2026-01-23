@@ -1598,3 +1598,510 @@ class TestNDViewerTabPushAPI:
         widget.end_acquisition()
 
         mock_viewer.end_acquisition.assert_called_once()
+
+
+# ============================================================================
+# WarningErrorWidget Tests
+# ============================================================================
+
+from control.widgets import WarningErrorWidget, QtLoggingHandler
+import threading
+import time
+
+
+@pytest.fixture
+def warning_widget(qtbot):
+    """Create a WarningErrorWidget instance for testing."""
+    widget = WarningErrorWidget()
+    qtbot.addWidget(widget)
+    return widget
+
+
+class TestWarningErrorWidgetBasics:
+    """Tests for WarningErrorWidget basic functionality."""
+
+    def test_initial_state(self, warning_widget):
+        """Test that widget initializes with correct state."""
+        widget = warning_widget
+        assert widget._messages == []
+        assert widget._next_message_id == 0
+        assert widget._popup is None
+        assert not widget.isVisible()
+        assert not widget.has_messages()
+
+    def test_add_message_shows_widget(self, warning_widget):
+        """Test that adding a message makes widget visible."""
+        widget = warning_widget
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Test message")
+
+        assert widget.isVisible()
+        assert widget.has_messages()
+        assert len(widget._messages) == 1
+
+    def test_add_warning_message(self, warning_widget):
+        """Test adding a warning message."""
+        widget = warning_widget
+        widget.add_message(logging.WARNING, "test.module", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Warning!")
+
+        msg = widget._messages[0]
+        assert msg["level"] == logging.WARNING
+        assert msg["logger_name"] == "test.module"
+        assert msg["count"] == 1
+        assert msg["id"] == 0
+
+    def test_add_error_message(self, warning_widget):
+        """Test adding an error message."""
+        widget = warning_widget
+        widget.add_message(logging.ERROR, "test.module", "2026-01-23 12:00:00.000 - 123 - test - ERROR - Error!")
+
+        msg = widget._messages[0]
+        assert msg["level"] == logging.ERROR
+
+    def test_dismiss_current(self, warning_widget):
+        """Test dismissing the current message."""
+        widget = warning_widget
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg 1")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Msg 2")
+
+        assert len(widget._messages) == 2
+
+        widget.dismiss_current()
+
+        assert len(widget._messages) == 1
+        # Most recent (Msg 2) should be dismissed, leaving Msg 1
+        assert "Msg 1" in widget._messages[0]["message"]
+
+    def test_clear_all(self, warning_widget):
+        """Test clearing all messages."""
+        widget = warning_widget
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg 1")
+        widget.add_message(logging.ERROR, "test", "2026-01-23 12:00:01.000 - 123 - test - ERROR - Msg 2")
+
+        widget.clear_all()
+
+        assert len(widget._messages) == 0
+        assert not widget.has_messages()
+        assert not widget.isVisible()
+
+    def test_unique_message_ids(self, warning_widget):
+        """Test that each message gets a unique ID."""
+        widget = warning_widget
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg 1")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Msg 2")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:02.000 - 123 - test - WARNING - Msg 3")
+
+        ids = [msg["id"] for msg in widget._messages]
+        assert ids == [0, 1, 2]
+        assert widget._next_message_id == 3
+
+
+class TestWarningErrorWidgetDeduplication:
+    """Tests for WarningErrorWidget message deduplication."""
+
+    def test_duplicate_messages_increment_count(self, warning_widget):
+        """Test that duplicate messages increment count instead of adding new entry."""
+        widget = warning_widget
+
+        # Add same message twice
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Duplicate msg")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Duplicate msg")
+
+        assert len(widget._messages) == 1
+        assert widget._messages[0]["count"] == 2
+
+    def test_duplicate_message_moved_to_end(self, warning_widget):
+        """Test that duplicate message is moved to end of list."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - First msg")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Second msg")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:02.000 - 123 - test - WARNING - First msg")
+
+        # First msg should be at end now with count=2
+        assert len(widget._messages) == 2
+        assert "First msg" in widget._messages[-1]["message"]
+        assert widget._messages[-1]["count"] == 2
+
+    def test_different_level_not_deduplicated(self, warning_widget):
+        """Test that same message at different level is not deduplicated."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Same text")
+        widget.add_message(logging.ERROR, "test", "2026-01-23 12:00:01.000 - 123 - test - ERROR - Same text")
+
+        assert len(widget._messages) == 2
+
+    def test_deduplication_updates_datetime(self, warning_widget):
+        """Test that deduplication updates to newest datetime."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg")
+        old_dt = widget._messages[0]["datetime"]
+
+        # Small delay to ensure different timestamp parsing
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:05:00.000 - 123 - test - WARNING - Msg")
+
+        # Should have newer datetime
+        assert widget._messages[0]["datetime"] >= old_dt
+
+
+class TestWarningErrorWidgetRateLimiting:
+    """Tests for WarningErrorWidget rate limiting."""
+
+    def test_rate_limiting_drops_excess_messages(self, warning_widget):
+        """Test that messages beyond rate limit are dropped."""
+        widget = warning_widget
+
+        # Try to add more than RATE_LIMIT_MAX_MESSAGES (10) in quick succession
+        for i in range(15):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        # Should have at most RATE_LIMIT_MAX_MESSAGES
+        assert len(widget._messages) <= WarningErrorWidget.RATE_LIMIT_MAX_MESSAGES
+
+    def test_rate_limit_window_expires(self, warning_widget, qtbot):
+        """Test that rate limit window expires and allows new messages."""
+        widget = warning_widget
+
+        # Fill up rate limit
+        for i in range(10):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        initial_count = len(widget._messages)
+
+        # Wait for rate limit window to expire (1 second + buffer)
+        qtbot.wait(1200)
+
+        # Should be able to add more messages now
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:02.000 - 123 - test - WARNING - New msg")
+
+        assert len(widget._messages) > initial_count
+
+
+class TestWarningErrorWidgetMemoryBounds:
+    """Tests for WarningErrorWidget memory bounds (MAX_MESSAGES)."""
+
+    def test_max_messages_evicts_oldest(self, warning_widget):
+        """Test that oldest messages are evicted when MAX_MESSAGES is exceeded."""
+        widget = warning_widget
+        widget._rate_limit_timestamps = []  # Disable rate limiting for this test
+
+        original_max = WarningErrorWidget.MAX_MESSAGES
+        WarningErrorWidget.MAX_MESSAGES = 5  # Reduce for faster test
+
+        try:
+            for i in range(10):
+                widget._rate_limit_timestamps = []  # Reset rate limit each time
+                widget.add_message(
+                    logging.WARNING, "test", f"2026-01-23 12:00:{i:02d}.000 - 123 - test - WARNING - Msg {i}"
+                )
+
+            # Should have exactly MAX_MESSAGES
+            assert len(widget._messages) == 5
+
+            # Should have the newest messages (5-9)
+            for msg in widget._messages:
+                msg_num = int(msg["message"].split("Msg ")[-1])
+                assert msg_num >= 5
+        finally:
+            WarningErrorWidget.MAX_MESSAGES = original_max
+
+
+class TestWarningErrorWidgetPopupDismiss:
+    """Tests for WarningErrorWidget popup dismiss by ID."""
+
+    def test_dismiss_by_id_removes_correct_message(self, warning_widget):
+        """Test that _dismiss_by_id removes the correct message."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg 0")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Msg 1")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:02.000 - 123 - test - WARNING - Msg 2")
+
+        # Get the ID of the middle message
+        msg_1_id = widget._messages[1]["id"]
+
+        # Dismiss by ID
+        widget._dismiss_by_id(msg_1_id)
+
+        # Should have 2 messages left
+        assert len(widget._messages) == 2
+
+        # Msg 1 should be gone
+        remaining_msgs = [msg["message"] for msg in widget._messages]
+        assert not any("Msg 1" in m for m in remaining_msgs)
+        assert any("Msg 0" in m for m in remaining_msgs)
+        assert any("Msg 2" in m for m in remaining_msgs)
+
+    def test_dismiss_by_invalid_id_does_nothing(self, warning_widget):
+        """Test that dismissing with invalid ID does nothing."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg")
+
+        widget._dismiss_by_id(9999)  # Non-existent ID
+
+        assert len(widget._messages) == 1
+
+    def test_dismiss_after_other_dismissals(self, warning_widget):
+        """Test that dismiss by ID works correctly after other messages dismissed."""
+        widget = warning_widget
+
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg 0")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:01.000 - 123 - test - WARNING - Msg 1")
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:02.000 - 123 - test - WARNING - Msg 2")
+
+        # Remember ID of Msg 2
+        msg_2_id = widget._messages[2]["id"]
+
+        # Dismiss Msg 0 first
+        widget._dismiss_by_id(widget._messages[0]["id"])
+
+        # Now dismiss Msg 2 by its original ID (should still work)
+        widget._dismiss_by_id(msg_2_id)
+
+        # Only Msg 1 should remain
+        assert len(widget._messages) == 1
+        assert "Msg 1" in widget._messages[0]["message"]
+
+
+class TestWarningErrorWidgetCleanup:
+    """Tests for WarningErrorWidget cleanup behavior."""
+
+    def test_close_event_cleans_up_popup(self, warning_widget, qtbot):
+        """Test that closeEvent cleans up popup."""
+        widget = warning_widget
+
+        # Add message and show popup
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - Msg")
+        widget._show_popup()
+        assert widget._popup is not None
+
+        # Close widget
+        widget.close()
+
+        # Popup should be cleaned up
+        assert widget._popup is None
+
+    def test_cleanup_popup_safe_when_none(self, warning_widget):
+        """Test that _cleanup_popup is safe when popup is None."""
+        widget = warning_widget
+        assert widget._popup is None
+
+        # Should not raise
+        widget._cleanup_popup()
+
+        assert widget._popup is None
+
+
+class TestQtLoggingHandler:
+    """Tests for QtLoggingHandler.
+
+    Note: Use handle() instead of emit() to ensure filters run.
+    emit() is called by handle() after filters pass.
+    """
+
+    def test_handler_emits_signal_on_warning(self, qtbot):
+        """Test that handler emits signal for WARNING level."""
+        handler = QtLoggingHandler()
+        received = []
+
+        def on_message(level, logger_name, message):
+            received.append((level, logger_name, message))
+
+        handler.signal_message_logged.connect(on_message)
+
+        # Create a log record
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.WARNING,
+            pathname="test.py",
+            lineno=1,
+            msg="Test warning",
+            args=(),
+            exc_info=None,
+        )
+
+        # Use handle() to ensure filters run (including thread_id injection)
+        handler.handle(record)
+        qtbot.wait(50)  # Allow signal to be processed
+
+        assert len(received) == 1
+        assert received[0][0] == logging.WARNING
+        assert received[0][1] == "test.logger"
+        assert "Test warning" in received[0][2]
+
+    def test_handler_emits_signal_on_error(self, qtbot):
+        """Test that handler emits signal for ERROR level."""
+        handler = QtLoggingHandler()
+        received = []
+
+        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.ERROR,
+            pathname="test.py",
+            lineno=1,
+            msg="Test error",
+            args=(),
+            exc_info=None,
+        )
+
+        handler.handle(record)
+        qtbot.wait(50)
+
+        assert len(received) == 1
+        assert received[0][0] == logging.ERROR
+
+    def test_handler_filters_below_warning(self, qtbot):
+        """Test that handler level filters out INFO messages.
+
+        When used via a logger (the normal case), the logger's callHandlers()
+        checks handler.level before calling handle(). We test by using a logger.
+        """
+        handler = QtLoggingHandler()
+        received = []
+
+        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+
+        # Use a logger to ensure handler level check is applied
+        logger = logging.getLogger("test.filter.below")
+        logger.setLevel(logging.DEBUG)  # Allow all through logger
+        logger.addHandler(handler)
+
+        try:
+            # INFO level should be filtered out by handler's level (WARNING)
+            logger.info("Test info - should be filtered")
+            qtbot.wait(50)
+
+            assert len(received) == 0
+        finally:
+            logger.removeHandler(handler)
+
+    def test_handler_custom_min_level(self, qtbot):
+        """Test handler with custom minimum level.
+
+        When used via a logger (the normal case), the logger's callHandlers()
+        checks handler.level before calling handle(). We test by using a logger.
+        """
+        handler = QtLoggingHandler(min_level=logging.ERROR)
+        received = []
+
+        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+
+        # Use a logger to ensure handler level check is applied
+        logger = logging.getLogger("test.custom.level")
+        logger.setLevel(logging.DEBUG)  # Allow all through logger
+        logger.addHandler(handler)
+
+        try:
+            # WARNING should be filtered out by handler's level (ERROR)
+            logger.warning("Warning - should be filtered")
+            qtbot.wait(50)
+            assert len(received) == 0
+
+            # ERROR should pass through
+            logger.error("Error - should pass")
+            qtbot.wait(50)
+            assert len(received) == 1
+        finally:
+            logger.removeHandler(handler)
+
+
+class TestWarningErrorWidgetThreadSafety:
+    """Tests for WarningErrorWidget thread safety via Qt signals.
+
+    Note: Qt widgets are NOT thread-safe. Direct method calls from non-main
+    threads will crash. The thread safety comes from using Qt signals, which
+    marshal calls to the main thread automatically.
+    """
+
+    def test_handler_emit_from_multiple_threads(self, warning_widget, qtbot):
+        """Test logging handler emission from multiple threads.
+
+        The QtLoggingHandler emits signals which are thread-safe and will
+        be delivered to the main thread where the widget can process them.
+        """
+        widget = warning_widget
+        handler = QtLoggingHandler()
+        handler.signal_message_logged.connect(widget.add_message)
+
+        errors = []
+        num_threads = 3
+        messages_per_thread = 3
+
+        def log_from_thread(thread_id):
+            try:
+                for i in range(messages_per_thread):
+                    record = logging.LogRecord(
+                        name=f"thread.{thread_id}",
+                        level=logging.WARNING,
+                        pathname="test.py",
+                        lineno=1,
+                        msg=f"Thread {thread_id} Msg {i}",
+                        args=(),
+                        exc_info=None,
+                    )
+                    # Use handle() to ensure filters run (thread_id injection)
+                    handler.handle(record)
+                    time.sleep(0.01)  # Small delay to allow signal processing
+            except Exception as e:
+                errors.append(e)
+
+        # Start threads
+        threads = []
+        for t_id in range(num_threads):
+            t = threading.Thread(target=log_from_thread, args=(t_id,))
+            threads.append(t)
+            t.start()
+
+        # Wait for all threads to complete
+        for t in threads:
+            t.join()
+
+        # Process Qt events
+        qtbot.wait(200)
+
+        # Should not have any errors
+        assert len(errors) == 0
+
+        # Widget should have received some messages via signals
+        # (exact count may vary due to Qt signal queuing)
+        assert widget.has_messages()
+
+
+class TestWarningErrorWidgetIntegration:
+    """Integration tests for WarningErrorWidget with Python logging."""
+
+    def test_integration_with_logging_system(self, warning_widget, qtbot):
+        """Test full integration with Python logging system."""
+        widget = warning_widget
+        handler = QtLoggingHandler()
+        handler.signal_message_logged.connect(widget.add_message)
+
+        # Create a logger and add our handler
+        logger = logging.getLogger("test.integration")
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+
+        try:
+            # Log a warning
+            logger.warning("Integration test warning")
+            qtbot.wait(100)
+
+            # Widget should have the message
+            assert widget.has_messages()
+            assert len(widget._messages) == 1
+            assert "Integration test warning" in widget._messages[0]["message"]
+
+            # Log an error
+            logger.error("Integration test error")
+            qtbot.wait(100)
+
+            assert len(widget._messages) == 2
+            assert widget._messages[-1]["level"] == logging.ERROR
+
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
