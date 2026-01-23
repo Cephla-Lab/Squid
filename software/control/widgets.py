@@ -14972,12 +14972,14 @@ class QtLoggingHandler(logging.Handler):
     Used by WarningErrorWidget to display warnings/errors in the status bar.
     """
 
-    def __init__(self, min_level=logging.WARNING):
+    def __init__(self, min_level: int = logging.WARNING):
         super().__init__()
         self.setLevel(min_level)
         self._signal_holder = _QtLogSignalHolder()
         self.setFormatter(logging.Formatter(fmt=squid.logging.LOG_FORMAT, datefmt=squid.logging.LOG_DATEFORMAT))
-        # Reuse the thread_id filter from squid.logging
+        # Intentionally reuse the private thread_id filter from squid.logging for consistent
+        # formatting across all log handlers. This creates a controlled dependency on
+        # squid.logging's internal API.
         self.addFilter(squid.logging._thread_id_filter)
 
     @property
@@ -15391,8 +15393,12 @@ class WarningErrorWidget(QWidget):
                     datetime_part = datetime_part.rsplit(".", 1)[0]
                 return datetime.strptime(datetime_part, "%Y-%m-%d %H:%M:%S")
         except (ValueError, IndexError):
+            # Timestamp is optional - fall back to current time if parsing fails
             pass
         return datetime.now()
+
+    # Pattern to match file location suffix like " (widgets.py:123)"
+    _FILE_LOCATION_PATTERN = re.compile(r" \([^)]+:\d+\)$")
 
     def _extract_core_message(self, message: str) -> str:
         """Extract core message content (without timestamp/thread/location)."""
@@ -15401,8 +15407,8 @@ class WarningErrorWidget(QWidget):
                 parts = message.split(marker, 1)
                 if len(parts) > 1:
                     msg = parts[1]
-                    if " (" in msg and msg.endswith(")"):
-                        msg = msg.rsplit(" (", 1)[0]
+                    # Strip file location suffix like " (widgets.py:123)" but not arbitrary parentheses
+                    msg = self._FILE_LOCATION_PATTERN.sub("", msg)
                     return msg
         return message
 

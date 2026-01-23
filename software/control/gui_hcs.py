@@ -1994,8 +1994,6 @@ class HighContentScreeningGui(QMainWindow):
 
     def _connect_warning_handler(self):
         """Connect logging handler to warning/error widget."""
-        import squid.logging
-
         if self.warningErrorWidget is None:
             return
 
@@ -2011,8 +2009,6 @@ class HighContentScreeningGui(QMainWindow):
         individual operations fail (e.g., handler already removed).
         """
         if self._warning_handler is not None:
-            import squid.logging
-
             try:
                 squid.logging.get_logger().removeHandler(self._warning_handler)
             except Exception as e:
