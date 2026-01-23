@@ -46,7 +46,9 @@ from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
+import control._def
 import control.lighting
+import control.utils_acquisition
 import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
@@ -185,6 +187,9 @@ class QtMultiPointController(MultiPointController, QObject):
     # Plate view signals
     plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
     plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
+    # NDViewer push-based API signals
+    ndviewer_start_acquisition = Signal(list, int, int, int, list)  # channels, num_z, height, width, fov_labels
+    ndviewer_register_image = Signal(int, int, int, str, str)  # t, fov_idx, z, channel, filepath
 
     def __init__(
         self,
@@ -221,6 +226,9 @@ class QtMultiPointController(MultiPointController, QObject):
         QObject.__init__(self)
 
         self._napari_inited_for_this_acquisition = False
+        # NDViewer push-based API state
+        self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
+        self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -230,6 +238,27 @@ class QtMultiPointController(MultiPointController, QObject):
         else:
             self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
+
+        # NDViewer push-based API: emit start_acquisition signal
+        scan_info = parameters.scan_position_information
+        channels = [cfg.name for cfg in parameters.selected_configurations]
+        num_z = parameters.NZ
+
+        # Build FOV labels and region offset mapping
+        self._ndviewer_fov_labels = []
+        self._ndviewer_region_fov_offset = {}
+        fov_idx = 0
+        for region_name in scan_info.scan_region_names:
+            self._ndviewer_region_fov_offset[region_name] = fov_idx
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
+            for i in range(num_fovs):
+                self._ndviewer_fov_labels.append(f"{region_name}:{i}")
+                fov_idx += 1
+
+        # Get image dimensions from camera (after binning)
+        width, height = self.microscope.camera.get_resolution()
+
+        self.ndviewer_start_acquisition.emit(channels, num_z, height, width, self._ndviewer_fov_labels)
 
     def _signal_acquisition_finished_fn(self):
         self.acquisition_finished.emit()
@@ -260,6 +289,26 @@ class QtMultiPointController(MultiPointController, QObject):
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+        )
+
+        # NDViewer push-based API: register image file
+        # Compute flat FOV index from region and fov within region
+        region_offset = self._ndviewer_region_fov_offset.get(info.region_id)
+        if region_offset is None:
+            # This should not happen if start_acquisition was called correctly
+            self.log.warning(
+                f"Unknown region_id '{info.region_id}' in NDViewer registration. "
+                f"Available: {list(self._ndviewer_region_fov_offset.keys())}. Skipping."
+            )
+            return
+        flat_fov_idx = region_offset + info.fov
+
+        filepath = control.utils_acquisition.get_image_filepath(
+            info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
+        )
+
+        self.ndviewer_register_image.emit(
+            info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
         )
 
     def _signal_current_configuration_fn(self, config: AcquisitionChannel):
@@ -891,15 +940,16 @@ class HighContentScreeningGui(QMainWindow):
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
             # can cause OpenGL context conflicts since both libraries share vispy state.
             self.ndviewerTab = None
-            try:
-                self.ndviewerTab = widgets.NDViewerTab()
-                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
-            except ImportError:
-                self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
-            except (RuntimeError, OSError) as e:
-                self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
-            except Exception:
-                self.log.exception("Failed to initialize NDViewer tab - unexpected error")
+            if control._def.ENABLE_NDVIEWER:
+                try:
+                    self.ndviewerTab = widgets.NDViewerTab()
+                    self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+                except ImportError:
+                    self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
+                except (RuntimeError, OSError) as e:
+                    self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
+                except Exception:
+                    self.log.exception("Failed to initialize NDViewer tab - unexpected error")
 
             # Connect plate view double-click to NDViewer navigation and tab switch
             if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
@@ -1206,6 +1256,12 @@ class HighContentScreeningGui(QMainWindow):
         # Backpressure monitor widget connections - fires AFTER worker is created
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
+
+        # NDViewer push-based API connections
+        if self.ndviewerTab is not None:
+            self.multipointController.ndviewer_start_acquisition.connect(self.ndviewerTab.start_acquisition)
+            self.multipointController.ndviewer_register_image.connect(self.ndviewerTab.register_image)
+            self.multipointController.acquisition_finished.connect(self.ndviewerTab.end_acquisition)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1816,7 +1872,7 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
-            self._update_ndviewer_for_acquisition()
+            # NDViewer is now configured via push-based API signals (ndviewer_start_acquisition)
             if self.is_live_scan_grid_on:
                 self.toggle_live_scan_grid(on=False)
                 self.live_scan_grid_was_on = True
@@ -1993,25 +2049,6 @@ class HighContentScreeningGui(QMainWindow):
             return  # Only initialize once
         self._ram_monitor_initialized = True
         self._update_ram_monitor_visibility()
-
-    def _update_ndviewer_for_acquisition(self) -> None:
-        """Update NDViewer tab to point at the current acquisition folder."""
-        if self.ndviewerTab is None:
-            self.log.debug("_update_ndviewer_for_acquisition: ndviewerTab is None")
-            return
-
-        try:
-            base_path = getattr(self.multipointController, "base_path", None)
-            experiment_id = getattr(self.multipointController, "experiment_ID", None)
-            self.log.debug(f"_update_ndviewer_for_acquisition: base_path={base_path}, experiment_id={experiment_id}")
-            if base_path and experiment_id:
-                dataset_path = os.path.join(base_path, experiment_id)
-                self.log.debug(f"Setting NDViewer dataset path to: {dataset_path}")
-                self.ndviewerTab.set_dataset_path(dataset_path)
-            else:
-                self.log.debug("_update_ndviewer_for_acquisition: base_path or experiment_id not set")
-        except Exception:
-            self.log.exception("Failed to update NDViewer tab for new acquisition")
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""

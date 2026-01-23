@@ -827,6 +827,9 @@ USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 USE_NAPARI_WELL_SELECTION = False
 USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
+
+# NDViewer integration
+ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
 # Downsampled view settings (for Select Well Mode)
@@ -1242,6 +1245,8 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     )
                 except ValueError:
                     pass
+            if _views_config.has_option("VIEWS", "enable_ndviewer"):
+                ENABLE_NDVIEWER = _views_config.get("VIEWS", "enable_ndviewer").lower() in ("true", "1", "yes")
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
 

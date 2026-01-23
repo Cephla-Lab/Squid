@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 import psutil
 
@@ -260,6 +260,18 @@ class NDViewerTab(QWidget):
             return False
 
         try:
+            # Try push-based mode first (active during/after acquisition)
+            if self._viewer.is_push_mode_active():
+                if self._viewer.go_to_well_fov(well_id, fov_index):
+                    self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (push mode)")
+                    return True
+                self._log.warning(
+                    f"go_to_fov: push mode navigation failed for well={well_id}, fov={fov_index}. "
+                    f"FOV may not be registered yet or well ID format may not match."
+                )
+                return False
+
+            # Fall back to legacy mode (viewing existing datasets)
             if not self._viewer.has_fov_dimension():
                 self._log.debug("go_to_fov: no fov dimension available")
                 return False
@@ -299,6 +311,114 @@ class NDViewerTab(QWidget):
             (i for i, fov in enumerate(fovs) if fov["region"] == well_id and fov["fov"] == fov_index),
             None,
         )
+
+    # -------------------------------------------------------------------------
+    # Push-based API for live acquisition (no polling)
+    # -------------------------------------------------------------------------
+
+    def start_acquisition(
+        self,
+        channels: List[str],
+        num_z: int,
+        height: int,
+        width: int,
+        fov_labels: List[str],
+    ) -> bool:
+        """Configure viewer for a new acquisition.
+
+        Args:
+            channels: List of channel names (e.g., ["BF LED matrix full", "Fluorescence 488 nm Ex"])
+            num_z: Number of z-levels
+            height: Image height in pixels
+            width: Image width in pixels
+            fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1", "A2:0"])
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            # Lazy import
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for acquisition")
+                self._viewer = ndviewer_light.LightweightViewer()
+                self._layout.addWidget(self._viewer, 1)
+
+            self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+            self._log.info(
+                f"NDViewer configured for acquisition: {len(channels)} channels, "
+                f"{num_z} z-levels, {len(fov_labels)} FOVs"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start acquisition:\n{error_msg}")
+            return False
+
+    def register_image(self, t: int, fov_idx: int, z: int, channel: str, filepath: str) -> None:
+        """Register a newly saved image file.
+
+        Called on main thread via Qt signal from worker thread.
+
+        Args:
+            t: Timepoint index
+            fov_idx: FOV index
+            z: Z-level index
+            channel: Channel name
+            filepath: Path to the saved image file
+        """
+        if self._viewer is None:
+            return
+        try:
+            self._viewer.register_image(t, fov_idx, z, channel, filepath)
+        except Exception:
+            self._log.exception(
+                f"Failed to register image: t={t}, fov={fov_idx}, z={z}, " f"channel={channel}, filepath={filepath}"
+            )
+
+    def load_fov(self, fov: int, t: Optional[int] = None, z: Optional[int] = None) -> bool:
+        """Load and display a specific FOV.
+
+        Args:
+            fov: FOV index to display
+            t: Timepoint index (None = use current)
+            z: Z-level index (None = use current)
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if self._viewer is None:
+            self._log.debug("load_fov: no viewer loaded")
+            return False
+        try:
+            self._viewer.load_fov(fov, t, z)
+            return True
+        except Exception:
+            self._log.exception(f"load_fov: failed for fov={fov}, t={t}, z={z}")
+            return False
+
+    def end_acquisition(self) -> None:
+        """Mark acquisition as ended.
+
+        Call this when acquisition completes. The viewer remains usable
+        for navigating the acquired data.
+        """
+        if self._viewer is None:
+            return
+        try:
+            self._viewer.end_acquisition()
+            self._log.debug("NDViewer acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end NDViewer acquisition")
 
     def close(self) -> None:
         """Clean up viewer resources."""
@@ -1285,6 +1405,19 @@ class PreferencesDialog(QDialog):
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
+        # NDViewer section
+        ndviewer_group = CollapsibleGroupBox("NDViewer")
+        ndviewer_layout = QFormLayout()
+
+        # Enable NDViewer
+        self.enable_ndviewer_checkbox = QCheckBox()
+        self.enable_ndviewer_checkbox.setChecked(control._def.ENABLE_NDVIEWER)
+        self.enable_ndviewer_checkbox.setToolTip("Enable the NDViewer tab for viewing acquired datasets")
+        ndviewer_layout.addRow("Enable NDViewer *:", self.enable_ndviewer_checkbox)
+
+        ndviewer_group.content.addLayout(ndviewer_layout)
+        layout.addWidget(ndviewer_group)
+
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
@@ -1449,6 +1582,11 @@ class PreferencesDialog(QDialog):
             "true" if self.display_mosaic_view_checkbox.isChecked() else "false",
         )
         self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
+        self.config.set(
+            "VIEWS",
+            "enable_ndviewer",
+            "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
+        )
 
         # Save to file
         try:
@@ -1557,6 +1695,7 @@ class PreferencesDialog(QDialog):
         )
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
+        control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -1848,6 +1987,11 @@ class PreferencesDialog(QDialog):
         new_val = self.mosaic_pixel_size_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Mosaic Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
+
+        old_val = control._def.ENABLE_NDVIEWER
+        new_val = self.enable_ndviewer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
         return changes
 
@@ -2980,7 +3124,7 @@ class CameraSettingsWidget(QFrame):
 
         self.entry_ROI_offset_x = QSpinBox()
         roi_info = self.camera.get_region_of_interest()
-        (max_x, max_y) = self.camera.get_resolution()
+        max_x, max_y = self.camera.get_resolution()
         self.entry_ROI_offset_x.setValue(roi_info[0])
         self.entry_ROI_offset_x.setSingleStep(8)
         self.entry_ROI_offset_x.setFixedWidth(60)
@@ -3203,8 +3347,8 @@ class CameraSettingsWidget(QFrame):
         def round_to_8(val):
             return int(8 * val // 8)
 
-        (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        x_offset, y_offset, width, height = self.camera.get_region_of_interest()
+        x_max, y_max = self.camera.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
@@ -7714,17 +7858,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.signal_acquisition_started.emit(True)
         self.signal_acquisition_shape.emit(nz, delta_z_um)
 
-    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0):
-        """Set the widget's acquisition state (thread-safe via signal).
+    @Slot(bool, int, float)
+    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0) -> None:
+        """Set the widget's acquisition state (called from TCP server via QMetaObject.invokeMethod).
 
-        This is called when acquisition is started from an external source (e.g., TCP server)
-        to update the GUI to reflect that an acquisition is in progress.
+        This is invoked on the main thread when acquisition is started from an external source
+        (e.g., TCP server). Uses Qt.BlockingQueuedConnection to ensure GUI is fully updated
+        before acquisition starts.
+
+        Note: Exceptions in slots called via BlockingQueuedConnection are silently swallowed
+        by Qt, so we catch and log them explicitly here.
         """
         self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
-        if is_running:
-            self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
-        else:
-            self.acquisition_is_finished()
+        try:
+            if is_running:
+                self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
+            else:
+                self.acquisition_is_finished()
+        except Exception as e:
+            self._log.error(f"Exception in set_acquisition_running_state: {e}", exc_info=True)
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -9990,6 +10142,7 @@ class NapariLiveWidget(QWidget):
         self.fps_trigger = 10
         self.fps_display = 10
         self.contrastManager = contrastManager
+        self.is_switching_mode = False  # Guard to prevent duplicate MCU commands during mode switch
 
         self.initNapariViewer()
         self.addNapariGrayclipColormap()
@@ -10310,14 +10463,20 @@ class NapariLiveWidget(QWidget):
         self.update_ui_for_mode(maybe_new_config)
 
     def update_ui_for_mode(self, config):
-        self.live_configuration = config
-        self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
-        if self.live_configuration:
-            self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-            self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-            self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+        try:
+            self.is_switching_mode = True
+            self.live_configuration = config
+            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if self.live_configuration:
+                self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
+                self.entry_analogGain.setValue(self.live_configuration.analog_gain)
+                self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+        finally:
+            self.is_switching_mode = False
 
     def update_config_exposure_time(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.exposure_time = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "ExposureTime", new_value
@@ -10325,6 +10484,8 @@ class NapariLiveWidget(QWidget):
         self.signal_newExposureTime.emit(new_value)
 
     def update_config_analog_gain(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.analog_gain = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "AnalogGain", new_value
@@ -10332,6 +10493,8 @@ class NapariLiveWidget(QWidget):
         self.signal_newAnalogGain.emit(new_value)
 
     def update_config_illumination_intensity(self, new_value):
+        if self.is_switching_mode:
+            return
         self.live_configuration.illumination_intensity = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective, self.live_configuration.name, "IlluminationIntensity", new_value
