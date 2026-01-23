@@ -1476,3 +1476,125 @@ class TestNDViewerTabPushAPI:
             ["A1:0", "A1:1", "B2:0"],
         )
         mock_viewer.setVisible.assert_called_once_with(True)
+
+    # -------------------------------------------------------------------------
+    # register_image tests
+    # -------------------------------------------------------------------------
+
+    def test_register_image_no_viewer(self, ndviewer_tab):
+        """Test register_image does nothing when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        # Should not raise
+        widget.register_image(t=0, fov_idx=0, z=0, channel="BF", filepath="/tmp/img.tiff")
+
+    def test_register_image_success(self, ndviewer_tab):
+        """Test register_image calls viewer method on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        widget.register_image(t=1, fov_idx=2, z=3, channel="Fluorescence 488 nm Ex", filepath="/data/img.tiff")
+
+        mock_viewer.register_image.assert_called_once_with(1, 2, 3, "Fluorescence 488 nm Ex", "/data/img.tiff")
+
+    def test_register_image_exception_handled(self, ndviewer_tab):
+        """Test register_image handles viewer exceptions gracefully."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.register_image.side_effect = RuntimeError("Registration failed")
+        widget._viewer = mock_viewer
+
+        # Should not raise
+        widget.register_image(t=0, fov_idx=0, z=0, channel="BF", filepath="/tmp/img.tiff")
+
+        mock_viewer.register_image.assert_called_once()
+
+    # -------------------------------------------------------------------------
+    # load_fov tests
+    # -------------------------------------------------------------------------
+
+    def test_load_fov_no_viewer_returns_false(self, ndviewer_tab):
+        """Test load_fov returns False when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        result = widget.load_fov(fov=0)
+
+        assert result is False
+
+    def test_load_fov_success_returns_true(self, ndviewer_tab):
+        """Test load_fov returns True on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=5, t=2, z=3)
+
+        assert result is True
+        mock_viewer.load_fov.assert_called_once_with(5, 2, 3)
+
+    def test_load_fov_with_defaults(self, ndviewer_tab):
+        """Test load_fov passes None for optional parameters."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=0)
+
+        assert result is True
+        mock_viewer.load_fov.assert_called_once_with(0, None, None)
+
+    def test_load_fov_exception_returns_false(self, ndviewer_tab):
+        """Test load_fov returns False when viewer raises exception."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.load_fov.side_effect = RuntimeError("Load failed")
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=0)
+
+        assert result is False
+        mock_viewer.load_fov.assert_called_once()
+
+    # -------------------------------------------------------------------------
+    # end_acquisition tests
+    # -------------------------------------------------------------------------
+
+    def test_end_acquisition_no_viewer(self, ndviewer_tab):
+        """Test end_acquisition does nothing when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        # Should not raise
+        widget.end_acquisition()
+
+    def test_end_acquisition_success(self, ndviewer_tab):
+        """Test end_acquisition calls viewer method on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        widget.end_acquisition()
+
+        mock_viewer.end_acquisition.assert_called_once()
+
+    def test_end_acquisition_exception_handled(self, ndviewer_tab):
+        """Test end_acquisition handles viewer exceptions gracefully."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.end_acquisition.side_effect = RuntimeError("End failed")
+        widget._viewer = mock_viewer
+
+        # Should not raise
+        widget.end_acquisition()
+
+        mock_viewer.end_acquisition.assert_called_once()
