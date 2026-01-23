@@ -194,6 +194,11 @@ class LiveController:
             wavelength = self._get_illumination_wavelength()
             if wavelength:
                 self.microscope.illumination_controller.turn_off_illumination(wavelength)
+            else:
+                self._log.warning(
+                    f"turn_off_illumination() skipped - no wavelength configured for "
+                    f"'{self.currentConfiguration.name if self.currentConfiguration else 'None'}'"
+                )
         elif self.microscope.addons.sci_microscopy_led_array and self._is_led_matrix():
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
         # LED matrix without SciMicroscopy array
@@ -449,8 +454,9 @@ class LiveController:
             self._stop_existing_timer()
             if self.control_illumination:
                 # Turn off illumination BEFORE switching self.currentConfiguration.
-                # This ensures the MCU's illumination_source still points to the old channel
-                # when TURN_OFF_ILLUMINATION is processed, so the correct laser is turned off.
+                # turn_off_illumination() reads self.currentConfiguration to determine which
+                # laser wavelength to turn off. If we switch first, we'd turn off the NEW
+                # channel's laser instead of the OLD channel's laser (which is still on).
                 self.turn_off_illumination()
 
         self.currentConfiguration = configuration
