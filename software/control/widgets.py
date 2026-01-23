@@ -15013,6 +15013,7 @@ class WarningErrorWidget(QWidget):
         self._messages = []
         self._next_message_id = 0
         self._rate_limit_timestamps = []  # For rate limiting
+        self._dropped_count = 0  # Track rate-limited messages
         self._popup = None
         self._setup_ui()
 
@@ -15248,12 +15249,14 @@ class WarningErrorWidget(QWidget):
 
     def add_message(self, level: int, logger_name: str, message: str):
         """Add a new warning/error message to the queue."""
-        # Rate limiting
+        # Rate limiting - but never rate-limit ERROR or higher (they're too important to drop)
         now_ms = time.time() * 1000
         cutoff = now_ms - self.RATE_LIMIT_WINDOW_MS
         self._rate_limit_timestamps = [t for t in self._rate_limit_timestamps if t > cutoff]
 
-        if len(self._rate_limit_timestamps) >= self.RATE_LIMIT_MAX_MESSAGES:
+        if level < logging.ERROR and len(self._rate_limit_timestamps) >= self.RATE_LIMIT_MAX_MESSAGES:
+            self._dropped_count += 1
+            self._update_display()  # Update to show dropped count
             return  # Rate limited
 
         self._rate_limit_timestamps.append(now_ms)
@@ -15296,9 +15299,14 @@ class WarningErrorWidget(QWidget):
             self._update_display()
 
     def clear_all(self):
-        """Clear all messages."""
+        """Clear all messages and reset dropped count."""
         self._messages.clear()
+        self._dropped_count = 0
         self._update_display()
+
+    def get_dropped_count(self) -> int:
+        """Return the number of messages dropped due to rate limiting."""
+        return self._dropped_count
 
     def has_messages(self) -> bool:
         """Return True if there are pending messages."""
@@ -15348,14 +15356,25 @@ class WarningErrorWidget(QWidget):
         self.label_text.setText(display_msg)
         self.label_text.setStyleSheet(f"color: {text_color}; font-weight: bold;")
 
-        # Tooltip shows full message with date
+        # Tooltip shows full message with date and dropped count if any
         full_time = dt.strftime("%Y-%m-%d %H:%M:%S")
-        self.setToolTip(f"{full_time}\n{self._extract_core_message(message)}")
+        tooltip = f"{full_time}\n{self._extract_core_message(message)}"
+        if self._dropped_count > 0:
+            tooltip += f"\n\n⚠ {self._dropped_count} message(s) dropped due to rate limiting"
+        self.setToolTip(tooltip)
 
-        # Show expand button if multiple messages
+        # Show expand button if multiple messages or dropped messages
         msg_count = len(self._messages)
-        if msg_count > 1:
-            self.btn_expand.setText(f"+{msg_count - 1}")
+        if msg_count > 1 or self._dropped_count > 0:
+            if self._dropped_count > 0:
+                # Show both additional messages and dropped count
+                extra = msg_count - 1
+                if extra > 0:
+                    self.btn_expand.setText(f"+{extra} ({self._dropped_count}⚠)")
+                else:
+                    self.btn_expand.setText(f"({self._dropped_count}⚠)")
+            else:
+                self.btn_expand.setText(f"+{msg_count - 1}")
             self.btn_expand.setVisible(True)
         else:
             self.btn_expand.setVisible(False)

@@ -2005,12 +2005,24 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug("Warning/error widget: connected logging handler")
 
     def _disconnect_warning_handler(self):
-        """Disconnect logging handler from warning/error widget."""
+        """Disconnect logging handler from warning/error widget.
+
+        Uses robust error handling to ensure cleanup completes even if
+        individual operations fail (e.g., handler already removed).
+        """
         if self._warning_handler is not None:
             import squid.logging
 
-            squid.logging.get_logger().removeHandler(self._warning_handler)
-            self._warning_handler.close()
+            try:
+                squid.logging.get_logger().removeHandler(self._warning_handler)
+            except Exception as e:
+                self.log.debug(f"Error removing warning handler (may already be removed): {e}")
+
+            try:
+                self._warning_handler.close()
+            except Exception as e:
+                self.log.debug(f"Error closing warning handler: {e}")
+
             self._warning_handler = None
             self.log.debug("Warning/error widget: disconnected logging handler")
 

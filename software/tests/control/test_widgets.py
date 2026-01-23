@@ -2105,3 +2105,163 @@ class TestWarningErrorWidgetIntegration:
         finally:
             logger.removeHandler(handler)
             handler.close()
+
+
+class TestWarningErrorWidgetRateLimitingErrorExemption:
+    """Tests for rate limiting exemption of ERROR+ messages."""
+
+    def test_error_messages_bypass_rate_limiting(self, warning_widget, qtbot):
+        """Test that ERROR level messages are never rate limited."""
+        widget = warning_widget
+
+        # Fill up the rate limit window with warnings
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES + 5):
+            widget.add_message(
+                logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Warning {i}"
+            )
+
+        # Count warnings that got through (should be RATE_LIMIT_MAX_MESSAGES)
+        warning_count = len([m for m in widget._messages if m["level"] == logging.WARNING])
+        assert warning_count == widget.RATE_LIMIT_MAX_MESSAGES
+
+        # Should have dropped some
+        assert widget._dropped_count > 0
+
+        # Now send an ERROR - it should always get through despite rate limiting
+        widget.add_message(logging.ERROR, "test", "2026-01-23 12:00:01.000 - 123 - test - ERROR - Critical error!")
+
+        # ERROR should be in messages
+        error_msgs = [m for m in widget._messages if m["level"] == logging.ERROR]
+        assert len(error_msgs) == 1
+        assert "Critical error!" in error_msgs[0]["message"]
+
+    def test_critical_messages_bypass_rate_limiting(self, warning_widget):
+        """Test that CRITICAL level messages are never rate limited."""
+        widget = warning_widget
+
+        # Fill up the rate limit window
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES + 5):
+            widget.add_message(
+                logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Warning {i}"
+            )
+
+        # Now send a CRITICAL - it should always get through
+        widget.add_message(
+            logging.CRITICAL, "test", "2026-01-23 12:00:01.000 - 123 - test - CRITICAL - System failure!"
+        )
+
+        # CRITICAL should be in messages
+        critical_msgs = [m for m in widget._messages if m["level"] == logging.CRITICAL]
+        assert len(critical_msgs) == 1
+
+
+class TestWarningErrorWidgetDroppedCount:
+    """Tests for dropped message tracking."""
+
+    def test_dropped_count_increments_on_rate_limit(self, warning_widget):
+        """Test that dropped count increments when messages are rate limited."""
+        widget = warning_widget
+        assert widget.get_dropped_count() == 0
+
+        # Fill up the rate limit window
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        assert widget.get_dropped_count() == 0  # Not dropped yet
+
+        # Next warning should be dropped
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.999 - 123 - test - WARNING - Dropped 1")
+        assert widget.get_dropped_count() == 1
+
+        # Another dropped
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.998 - 123 - test - WARNING - Dropped 2")
+        assert widget.get_dropped_count() == 2
+
+    def test_clear_all_resets_dropped_count(self, warning_widget):
+        """Test that clear_all resets the dropped count."""
+        widget = warning_widget
+
+        # Fill up and overflow the rate limit
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES + 3):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        assert widget.get_dropped_count() == 3
+
+        # Clear all
+        widget.clear_all()
+
+        assert widget.get_dropped_count() == 0
+        assert len(widget._messages) == 0
+
+    def test_dropped_count_shown_in_tooltip(self, warning_widget):
+        """Test that dropped count is shown in tooltip when messages are dropped."""
+        widget = warning_widget
+
+        # Add one message first
+        widget.add_message(logging.WARNING, "test", "2026-01-23 12:00:00.000 - 123 - test - WARNING - First")
+
+        # No dropped messages - tooltip should not mention dropped
+        tooltip = widget.toolTip()
+        assert "dropped" not in tooltip.lower()
+
+        # Fill up and overflow rate limit
+        for i in range(1, widget.RATE_LIMIT_MAX_MESSAGES + 3):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        # Now tooltip should mention dropped messages
+        tooltip = widget.toolTip()
+        assert "dropped" in tooltip.lower()
+        assert "rate limiting" in tooltip.lower()
+
+    def test_dropped_count_shown_in_expand_button(self, warning_widget):
+        """Test that dropped count is shown in expand button."""
+        widget = warning_widget
+
+        # Fill up and overflow rate limit
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES + 2):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        # Expand button should be visible and show dropped count indicator
+        assert widget.btn_expand.isVisible()
+        btn_text = widget.btn_expand.text()
+        # Should contain the warning indicator for dropped messages
+        assert "⚠" in btn_text or "2" in btn_text  # Either the emoji or the count
+
+    def test_expand_button_shows_only_dropped_when_single_message(self, warning_widget):
+        """Test expand button shows dropped count even with single visible message."""
+        widget = warning_widget
+
+        # Add messages that will be rate limited, keeping only one
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES + 2):
+            widget.add_message(
+                logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Same msg"
+            )
+
+        # Due to deduplication, we may have fewer messages but still dropped some
+        dropped = widget.get_dropped_count()
+        if dropped > 0:
+            # Expand button should be visible to show dropped count
+            assert widget.btn_expand.isVisible()
+
+
+class TestWarningErrorWidgetErrorExemptionWithDroppedCount:
+    """Tests for error exemption interacting with dropped count."""
+
+    def test_error_messages_dont_increment_dropped_count(self, warning_widget):
+        """Test that ERROR messages don't increment dropped count even during rate limiting."""
+        widget = warning_widget
+
+        # Fill up the rate limit window
+        for i in range(widget.RATE_LIMIT_MAX_MESSAGES):
+            widget.add_message(logging.WARNING, "test", f"2026-01-23 12:00:00.{i:03d} - 123 - test - WARNING - Msg {i}")
+
+        dropped_before = widget.get_dropped_count()
+
+        # Send ERROR - should not increment dropped count
+        widget.add_message(logging.ERROR, "test", "2026-01-23 12:00:01.000 - 123 - test - ERROR - Error!")
+
+        # Dropped count should not have increased
+        assert widget.get_dropped_count() == dropped_before
+
+        # But the error should be in the messages
+        assert any(m["level"] == logging.ERROR for m in widget._messages)
