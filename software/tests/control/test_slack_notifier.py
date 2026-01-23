@@ -158,22 +158,22 @@ class TestSlackNotifierErrorNotifications:
 
     def test_notify_error_sends_message(self, notifier):
         """Test that notify_error sends a formatted error message."""
-        with mock.patch.object(notifier, "send_message") as mock_send:
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
             notifier.notify_error("Test error", {"region": "A1", "fov": 3})
-            mock_send.assert_called_once()
-            args = mock_send.call_args
-            assert "Test error" in args[0][0]
+            mock_queue.assert_called_once()
+            args = mock_queue.call_args[0][0]
+            assert "Test error" in args.text
 
     def test_notify_error_throttling(self, notifier):
         """Test that repeated errors are throttled."""
-        with mock.patch.object(notifier, "send_message") as mock_send:
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
             # First call should go through
             notifier.notify_error("Same error")
-            assert mock_send.call_count == 1
+            assert mock_queue.call_count == 1
 
             # Immediate second call should be throttled
             notifier.notify_error("Same error")
-            assert mock_send.call_count == 1
+            assert mock_queue.call_count == 1
 
     def test_notify_error_respects_flag(self):
         """Test that notify_error respects NOTIFY_ON_ERROR flag."""
@@ -183,9 +183,9 @@ class TestSlackNotifierErrorNotifications:
         control._def.SlackNotifications.NOTIFY_ON_ERROR = False
 
         notifier = SlackNotifier()
-        with mock.patch.object(notifier, "send_message") as mock_send:
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
             notifier.notify_error("Test error")
-            mock_send.assert_not_called()
+            mock_queue.assert_not_called()
         notifier.close()
 
 
