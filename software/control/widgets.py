@@ -15046,13 +15046,14 @@ class WarningErrorWidget(QWidget):
         # Message text
         self.label_text = QLabel()
 
-        # Expand button (shows when multiple messages)
+        # Expand button (shows when multiple messages or dropped messages)
         self.btn_expand = QPushButton()
-        self.btn_expand.setFixedSize(32, 18)
+        self.btn_expand.setFixedHeight(18)
+        self.btn_expand.setMinimumWidth(32)  # Allow width to grow for longer text
         self.btn_expand.setCursor(Qt.PointingHandCursor)
         self.btn_expand.setStyleSheet(
             "QPushButton { background-color: #666; color: white; border-radius: 9px; "
-            "font-size: 11px; font-weight: bold; padding: 0px; }"
+            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
             "QPushButton:hover { background-color: #444; }"
             "QPushButton:pressed { background-color: #222; }"
         )
