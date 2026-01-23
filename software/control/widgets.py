@@ -15167,9 +15167,9 @@ class WarningErrorWidget(QWidget):
             if popup_y < screen_geo.top():
                 # Show below the widget instead
                 popup_y = global_pos.y() + self.height() + 5
-            # Ensure popup doesn't go off right edge
+            # Ensure popup doesn't go off right edge (and not past left edge on narrow screens)
             if popup_x + 550 > screen_geo.right():
-                popup_x = screen_geo.right() - 550
+                popup_x = max(screen_geo.left(), screen_geo.right() - 550)
 
         self._popup.move(popup_x, popup_y)
         self._popup.show()
