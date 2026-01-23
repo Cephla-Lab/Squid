@@ -2022,25 +2022,6 @@ class HighContentScreeningGui(QMainWindow):
         self._ram_monitor_initialized = True
         self._update_ram_monitor_visibility()
 
-    def _update_ndviewer_for_acquisition(self) -> None:
-        """Update NDViewer tab to point at the current acquisition folder."""
-        if self.ndviewerTab is None:
-            self.log.debug("_update_ndviewer_for_acquisition: ndviewerTab is None")
-            return
-
-        try:
-            base_path = getattr(self.multipointController, "base_path", None)
-            experiment_id = getattr(self.multipointController, "experiment_ID", None)
-            self.log.debug(f"_update_ndviewer_for_acquisition: base_path={base_path}, experiment_id={experiment_id}")
-            if base_path and experiment_id:
-                dataset_path = os.path.join(base_path, experiment_id)
-                self.log.debug(f"Setting NDViewer dataset path to: {dataset_path}")
-                self.ndviewerTab.set_dataset_path(dataset_path)
-            else:
-                self.log.debug("_update_ndviewer_for_acquisition: base_path or experiment_id not set")
-        except Exception:
-            self.log.exception("Failed to update NDViewer tab for new acquisition")
-
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
         if self.ndviewerTab is None:
