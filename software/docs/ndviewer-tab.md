@@ -7,14 +7,14 @@ This document describes the embedded NDViewer tab for viewing acquisitions withi
 The NDViewer tab provides an integrated viewer for browsing acquisition data without leaving the main application. It uses [ndviewer_light](https://github.com/Cephla-Lab/ndviewer_light), a lightweight viewer optimized for large multi-dimensional datasets.
 
 Key features:
-- **Auto-load**: Automatically points to the current acquisition when it starts
-- **Live updates**: Refreshes periodically to show new data during acquisition
+- **Push-based updates**: Images appear immediately as they're saved (no polling)
 - **Plate view integration**: Double-click navigation from plate view to specific FOVs
-- **Dimension sliders**: Navigate through channels, z-slices, timepoints, and FOVs
+- **Animated playback**: Play buttons for cycling through timepoints and FOVs
+- **Memory-efficient**: LRU cache with 256MB memory limit for z-stack viewing
 
 ## Enabling the Feature
 
-The NDViewer tab is enabled by default when ndviewer_light is available. No configuration is required.
+The NDViewer tab can be enabled/disabled in Settings > Preferences > Views.
 
 If the tab doesn't appear, check the logs for import errors related to `ndviewer_light`.
 
@@ -23,12 +23,19 @@ If the tab doesn't appear, check the logs for import errors related to `ndviewer
 ### Viewing Acquisitions
 
 1. Start an acquisition (wellplate or flexible region mode)
-2. The NDViewer tab automatically loads the acquisition folder
-3. Use the dimension sliders to navigate:
-   - **c**: Channel
-   - **z**: Z-slice
-   - **t**: Timepoint
-   - **fov**: Field of view
+2. The NDViewer tab automatically configures for the acquisition
+3. Images appear as they're saved during acquisition
+4. Use the sliders to navigate:
+   - **T**: Timepoint (hidden if only 1 timepoint)
+   - **FOV**: Field of view
+   - Internal NDV sliders for channel and z-slice
+
+### Play Button Animation
+
+Both T and FOV sliders have play buttons (▶) for animated playback:
+- Click ▶ to start cycling through values at 500ms intervals
+- Click ⏸ to pause
+- Animation loops back to the beginning
 
 ### Plate View Navigation
 
@@ -44,51 +51,117 @@ See [Downsampled Plate View](downsampled-plate-view.md) for more information abo
 
 ## Architecture
 
-The NDViewer tab uses a lightweight embedding approach:
+### Push-Based API
 
-- **Lazy loading**: ndviewer_light is imported only when the first acquisition starts, minimizing startup time
-- **Submodule**: ndviewer_light is included as a git submodule at `software/control/ndviewer_light`
-- **Public APIs**: All interactions use public ndviewer_light methods for stability
+The NDViewer uses a push-based API for live acquisition viewing, eliminating filesystem polling:
+
+```
+Acquisition Start
+     │
+     ▼
+start_acquisition(channels, num_z, height, width, fov_labels)
+     │
+     ├── Configures LUTs based on channel wavelengths
+     ├── Sets up FOV slider with labels like "A1:0", "A1:1"
+     └── Initializes NDV viewer with placeholder array
+
+Each Image Saved
+     │
+     ▼
+register_image(t, fov_idx, z, channel, filepath)
+     │
+     ├── Called on GUI thread via Qt signal from worker
+     ├── Updates viewer's internal file index
+     └── Auto-loads if image is for current FOV position
+
+Acquisition End
+     │
+     ▼
+end_acquisition()
+     │
+     └── Navigation continues to work for browsing
+```
+
+### Thread Safety
+
+- Worker thread emits `ndviewer_register_image` Qt signal
+- Qt marshals the signal to the GUI thread (AutoConnection → QueuedConnection)
+- `NDViewerTab.register_image()` executes on the GUI thread
+- All viewer state updates happen on a single thread (GUI), avoiding race conditions
+
+### Memory Management
+
+The viewer uses a memory-bounded LRU cache for image planes:
+
+- **Cache limit**: 256MB (configurable via `PLANE_CACHE_MAX_MEMORY_BYTES`)
+- **LRU eviction**: Least-recently-used planes are evicted first
+- **Per-FOV loading**: Each `load_fov()` call loads all z-levels × channels
+- **Typical usage**: ~7-8 planes cached for 4K images
+
+### FOV Mapping
+
+The plate view uses well IDs (e.g., "A1", "B2") and per-well FOV indices. NDViewer uses a flat FOV index with labels:
+
+```
+Plate view: Well "B2", FOV 3
+     ↓
+Label: "B2:3"
+     ↓
+NDViewer: Flat FOV index (e.g., 27)
+```
+
+The `_ndviewer_region_fov_offset` dict maps region names to their starting flat index.
 
 ## Troubleshooting
 
 ### NDViewer tab doesn't appear
 
 Check the application logs for errors. Common causes:
+- NDViewer disabled in Settings > Preferences > Views
 - Missing ndviewer_light submodule (run `git submodule update --init`)
 - Import errors due to missing dependencies
 
-### Viewer shows "waiting for acquisition"
+### Images appear black
 
-The viewer needs an active acquisition to display. Start an acquisition and the viewer will automatically load the dataset.
-
-### Viewer shows error loading dataset
-
-This can happen if:
-- The acquisition folder doesn't exist yet (wait for acquisition to start)
-- The dataset format is not supported by ndviewer_light
-- File permissions prevent reading the data
+Check the logs for warnings like "Failed to load image plane". Possible causes:
+- File not yet saved when load attempted (race condition)
+- File permissions prevent reading
+- Corrupted TIFF file
 
 ### Double-click navigation doesn't work
 
-Ensure both features are enabled:
-- Plate view must be visible (see `DISPLAY_PLATE_VIEW` in `_def.py`)
-- NDViewer tab must be initialized successfully
+Check logs for warnings. Possible causes:
+- FOV not registered yet (during early acquisition)
+- Well ID format mismatch (e.g., "A1" vs "A01")
+- NDViewer not in push mode (no acquisition started)
 
-Check logs for debug messages like "Could not navigate to FOV" which indicate the specific failure reason.
+### Play button doesn't animate
 
-## Technical Details
+The slider must have a range > 0:
+- T slider only appears when Nt > 1
+- FOV slider needs at least 2 FOVs
 
-### FOV Mapping
+## Technical Reference
 
-The plate view uses well IDs (e.g., "A1", "B2") and per-well FOV indices. NDViewer uses a flat FOV index across all wells. The navigation code maps between these:
+### Signal Connections
 
+```python
+# In gui_hcs.py make_connections():
+multipointController.ndviewer_start_acquisition.connect(ndviewerTab.start_acquisition)
+multipointController.ndviewer_register_image.connect(ndviewerTab.register_image)
+multipointController.acquisition_finished.connect(ndviewerTab.end_acquisition)
 ```
-Plate view: Well "B2", FOV 3
-     ↓
-NDViewer: Flat FOV index (e.g., 27)
+
+### Key Classes
+
+- `NDViewerTab` (widgets.py): Wrapper widget with placeholder and error handling
+- `LightweightViewer` (ndviewer_light/core.py): Core viewer with push-based API
+- `MemoryBoundedLRUCache` (ndviewer_light/core.py): Memory-efficient plane cache
+
+### Configuration Constants
+
+```python
+# ndviewer_light/core.py
+SLIDER_PLAY_INTERVAL_MS = 500  # Animation speed
+PLANE_CACHE_MAX_MEMORY_BYTES = 256 * 1024 * 1024  # 256MB cache limit
 ```
-
-### Resource Cleanup
-
-The NDViewer tab properly cleans up resources (file handles, refresh timers) when the application closes. This is handled automatically in the GUI's close event.

@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 import psutil
 
@@ -258,6 +258,18 @@ class NDViewerTab(QWidget):
             return False
 
         try:
+            # Try push-based mode first (active during/after acquisition)
+            if self._viewer.is_push_mode_active():
+                if self._viewer.go_to_well_fov(well_id, fov_index):
+                    self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (push mode)")
+                    return True
+                self._log.warning(
+                    f"go_to_fov: push mode navigation failed for well={well_id}, fov={fov_index}. "
+                    f"FOV may not be registered yet or well ID format may not match."
+                )
+                return False
+
+            # Fall back to legacy mode (viewing existing datasets)
             if not self._viewer.has_fov_dimension():
                 self._log.debug("go_to_fov: no fov dimension available")
                 return False
@@ -297,6 +309,114 @@ class NDViewerTab(QWidget):
             (i for i, fov in enumerate(fovs) if fov["region"] == well_id and fov["fov"] == fov_index),
             None,
         )
+
+    # -------------------------------------------------------------------------
+    # Push-based API for live acquisition (no polling)
+    # -------------------------------------------------------------------------
+
+    def start_acquisition(
+        self,
+        channels: List[str],
+        num_z: int,
+        height: int,
+        width: int,
+        fov_labels: List[str],
+    ) -> bool:
+        """Configure viewer for a new acquisition.
+
+        Args:
+            channels: List of channel names (e.g., ["BF LED matrix full", "Fluorescence 488 nm Ex"])
+            num_z: Number of z-levels
+            height: Image height in pixels
+            width: Image width in pixels
+            fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1", "A2:0"])
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            # Lazy import
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for acquisition")
+                self._viewer = ndviewer_light.LightweightViewer()
+                self._layout.addWidget(self._viewer, 1)
+
+            self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+            self._log.info(
+                f"NDViewer configured for acquisition: {len(channels)} channels, "
+                f"{num_z} z-levels, {len(fov_labels)} FOVs"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start acquisition:\n{error_msg}")
+            return False
+
+    def register_image(self, t: int, fov_idx: int, z: int, channel: str, filepath: str) -> None:
+        """Register a newly saved image file.
+
+        Called on main thread via Qt signal from worker thread.
+
+        Args:
+            t: Timepoint index
+            fov_idx: FOV index
+            z: Z-level index
+            channel: Channel name
+            filepath: Path to the saved image file
+        """
+        if self._viewer is None:
+            return
+        try:
+            self._viewer.register_image(t, fov_idx, z, channel, filepath)
+        except Exception:
+            self._log.exception(
+                f"Failed to register image: t={t}, fov={fov_idx}, z={z}, " f"channel={channel}, filepath={filepath}"
+            )
+
+    def load_fov(self, fov: int, t: Optional[int] = None, z: Optional[int] = None) -> bool:
+        """Load and display a specific FOV.
+
+        Args:
+            fov: FOV index to display
+            t: Timepoint index (None = use current)
+            z: Z-level index (None = use current)
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if self._viewer is None:
+            self._log.debug("load_fov: no viewer loaded")
+            return False
+        try:
+            self._viewer.load_fov(fov, t, z)
+            return True
+        except Exception:
+            self._log.exception(f"load_fov: failed for fov={fov}, t={t}, z={z}")
+            return False
+
+    def end_acquisition(self) -> None:
+        """Mark acquisition as ended.
+
+        Call this when acquisition completes. The viewer remains usable
+        for navigating the acquired data.
+        """
+        if self._viewer is None:
+            return
+        try:
+            self._viewer.end_acquisition()
+            self._log.debug("NDViewer acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end NDViewer acquisition")
 
     def close(self) -> None:
         """Clean up viewer resources."""

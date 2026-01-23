@@ -1136,11 +1136,12 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_with_mock_viewer(self, ndviewer_tab):
-        """Test go_to_fov with a mocked viewer."""
+        """Test go_to_fov with a mocked viewer (legacy/file-based mode)."""
         widget = ndviewer_tab
 
-        # Create mock viewer
+        # Create mock viewer in file-based mode (not push mode)
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1157,11 +1158,12 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 0)
 
     def test_go_to_fov_finds_correct_flat_index(self, ndviewer_tab):
-        """Test that go_to_fov finds the correct flat index."""
+        """Test that go_to_fov finds the correct flat index (legacy/file-based mode)."""
         widget = ndviewer_tab
 
-        # Create mock viewer with multiple wells
+        # Create mock viewer in file-based mode (not push mode)
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1179,10 +1181,11 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 2)
 
     def test_go_to_fov_not_found_returns_false(self, ndviewer_tab):
-        """Test that go_to_fov returns False when FOV not found."""
+        """Test that go_to_fov returns False when FOV not found (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -1196,10 +1199,11 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_not_called()
 
     def test_go_to_fov_no_fov_dimension_returns_false(self, ndviewer_tab):
-        """Test that go_to_fov returns False when no fov dimension."""
+        """Test that go_to_fov returns False when no fov dimension (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = False
         widget._viewer = mock_viewer
 
@@ -1208,10 +1212,11 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_handles_exception(self, ndviewer_tab):
-        """Test that go_to_fov handles exceptions gracefully."""
+        """Test that go_to_fov handles exceptions gracefully (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.side_effect = RuntimeError("Viewer error")
         widget._viewer = mock_viewer
 
@@ -1221,10 +1226,11 @@ class TestNDViewerTabNavigation:
         assert result is False
 
     def test_go_to_fov_set_current_index_fails_returns_false(self, ndviewer_tab):
-        """Test go_to_fov returns False when set_current_index fails."""
+        """Test go_to_fov returns False when set_current_index fails (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [{"region": "A1", "fov": 0}]
         mock_viewer.set_current_index.return_value = False  # Navigation fails
@@ -1236,12 +1242,56 @@ class TestNDViewerTabNavigation:
         mock_viewer.set_current_index.assert_called_once_with("fov", 0)
 
     def test_go_to_fov_get_fov_list_exception_returns_false(self, ndviewer_tab):
-        """Test go_to_fov handles get_fov_list exceptions."""
+        """Test go_to_fov handles get_fov_list exceptions (legacy/file-based mode)."""
         widget = ndviewer_tab
 
         mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.side_effect = RuntimeError("FOV list error")
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("A1", 0)
+
+        assert result is False
+
+    def test_go_to_fov_push_mode_success(self, ndviewer_tab):
+        """Test go_to_fov succeeds when push mode is active and navigation works."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.return_value = True
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("B2", 3)
+
+        assert result is True
+        mock_viewer.is_push_mode_active.assert_called_once()
+        mock_viewer.go_to_well_fov.assert_called_once_with("B2", 3)
+
+    def test_go_to_fov_push_mode_fails(self, ndviewer_tab):
+        """Test go_to_fov returns False when push mode navigation fails."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.return_value = False  # Navigation fails
+        widget._viewer = mock_viewer
+
+        result = widget.go_to_fov("C3", 1)
+
+        assert result is False
+        mock_viewer.is_push_mode_active.assert_called_once()
+        mock_viewer.go_to_well_fov.assert_called_once_with("C3", 1)
+
+    def test_go_to_fov_push_mode_exception(self, ndviewer_tab):
+        """Test go_to_fov handles exceptions in push mode."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.is_push_mode_active.return_value = True
+        mock_viewer.go_to_well_fov.side_effect = RuntimeError("Push mode error")
         widget._viewer = mock_viewer
 
         result = widget.go_to_fov("A1", 0)
@@ -1348,3 +1398,203 @@ class TestNDViewerTabImportHandling:
             assert (
                 "failed to load" in widget._placeholder.text().lower() or "error" in widget._placeholder.text().lower()
             )
+
+
+class TestNDViewerTabPushAPI:
+    """Tests for NDViewerTab push-based API (start_acquisition, register_image)."""
+
+    def test_start_acquisition_import_failure(self, ndviewer_tab):
+        """Test start_acquisition handles ndviewer_light import failure."""
+        import builtins
+
+        widget = ndviewer_tab
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "control.ndviewer_light" or (
+                args and len(args) > 2 and args[2] and "ndviewer_light" in str(args[2])
+            ):
+                raise ImportError("No module named 'control.ndviewer_light'")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            result = widget.start_acquisition(
+                channels=["BF LED matrix full"],
+                num_z=1,
+                height=512,
+                width=512,
+                fov_labels=["A1:0"],
+            )
+
+        assert result is False
+        assert "failed to import" in widget._placeholder.text().lower()
+
+    def test_start_acquisition_viewer_raises_exception(self, ndviewer_tab):
+        """Test start_acquisition handles viewer.start_acquisition exception."""
+        widget = ndviewer_tab
+
+        # Create a mock viewer that raises on start_acquisition
+        mock_viewer = Mock()
+        mock_viewer.start_acquisition.side_effect = RuntimeError("Viewer init failed")
+        widget._viewer = mock_viewer
+
+        result = widget.start_acquisition(
+            channels=["BF LED matrix full"],
+            num_z=1,
+            height=512,
+            width=512,
+            fov_labels=["A1:0"],
+        )
+
+        assert result is False
+        # Should show error in placeholder
+        assert "failed to start acquisition" in widget._placeholder.text().lower()
+
+    def test_start_acquisition_success_returns_true(self, ndviewer_tab):
+        """Test start_acquisition returns True on success."""
+        widget = ndviewer_tab
+
+        # Create a mock viewer that succeeds
+        mock_viewer = Mock()
+        mock_viewer.start_acquisition.return_value = None
+        widget._viewer = mock_viewer
+
+        result = widget.start_acquisition(
+            channels=["BF LED matrix full", "Fluorescence 488 nm Ex"],
+            num_z=5,
+            height=1024,
+            width=1024,
+            fov_labels=["A1:0", "A1:1", "B2:0"],
+        )
+
+        assert result is True
+        mock_viewer.start_acquisition.assert_called_once_with(
+            ["BF LED matrix full", "Fluorescence 488 nm Ex"],
+            5,
+            1024,
+            1024,
+            ["A1:0", "A1:1", "B2:0"],
+        )
+        mock_viewer.setVisible.assert_called_once_with(True)
+
+    # -------------------------------------------------------------------------
+    # register_image tests
+    # -------------------------------------------------------------------------
+
+    def test_register_image_no_viewer(self, ndviewer_tab):
+        """Test register_image does nothing when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        # Should not raise
+        widget.register_image(t=0, fov_idx=0, z=0, channel="BF", filepath="/tmp/img.tiff")
+
+    def test_register_image_success(self, ndviewer_tab):
+        """Test register_image calls viewer method on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        widget.register_image(t=1, fov_idx=2, z=3, channel="Fluorescence 488 nm Ex", filepath="/data/img.tiff")
+
+        mock_viewer.register_image.assert_called_once_with(1, 2, 3, "Fluorescence 488 nm Ex", "/data/img.tiff")
+
+    def test_register_image_exception_handled(self, ndviewer_tab):
+        """Test register_image handles viewer exceptions gracefully."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.register_image.side_effect = RuntimeError("Registration failed")
+        widget._viewer = mock_viewer
+
+        # Should not raise
+        widget.register_image(t=0, fov_idx=0, z=0, channel="BF", filepath="/tmp/img.tiff")
+
+        mock_viewer.register_image.assert_called_once()
+
+    # -------------------------------------------------------------------------
+    # load_fov tests
+    # -------------------------------------------------------------------------
+
+    def test_load_fov_no_viewer_returns_false(self, ndviewer_tab):
+        """Test load_fov returns False when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        result = widget.load_fov(fov=0)
+
+        assert result is False
+
+    def test_load_fov_success_returns_true(self, ndviewer_tab):
+        """Test load_fov returns True on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=5, t=2, z=3)
+
+        assert result is True
+        mock_viewer.load_fov.assert_called_once_with(5, 2, 3)
+
+    def test_load_fov_with_defaults(self, ndviewer_tab):
+        """Test load_fov passes None for optional parameters."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=0)
+
+        assert result is True
+        mock_viewer.load_fov.assert_called_once_with(0, None, None)
+
+    def test_load_fov_exception_returns_false(self, ndviewer_tab):
+        """Test load_fov returns False when viewer raises exception."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.load_fov.side_effect = RuntimeError("Load failed")
+        widget._viewer = mock_viewer
+
+        result = widget.load_fov(fov=0)
+
+        assert result is False
+        mock_viewer.load_fov.assert_called_once()
+
+    # -------------------------------------------------------------------------
+    # end_acquisition tests
+    # -------------------------------------------------------------------------
+
+    def test_end_acquisition_no_viewer(self, ndviewer_tab):
+        """Test end_acquisition does nothing when no viewer exists."""
+        widget = ndviewer_tab
+        assert widget._viewer is None
+
+        # Should not raise
+        widget.end_acquisition()
+
+    def test_end_acquisition_success(self, ndviewer_tab):
+        """Test end_acquisition calls viewer method on success."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        widget._viewer = mock_viewer
+
+        widget.end_acquisition()
+
+        mock_viewer.end_acquisition.assert_called_once()
+
+    def test_end_acquisition_exception_handled(self, ndviewer_tab):
+        """Test end_acquisition handles viewer exceptions gracefully."""
+        widget = ndviewer_tab
+
+        mock_viewer = Mock()
+        mock_viewer.end_acquisition.side_effect = RuntimeError("End failed")
+        widget._viewer = mock_viewer
+
+        # Should not raise
+        widget.end_acquisition()
+
+        mock_viewer.end_acquisition.assert_called_once()

@@ -9,7 +9,6 @@ from control.microcontroller import Microcontroller
 from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
-from control import utils_channel
 from control.core.config.utils import apply_confocal_override
 from control.models import merge_channel_configs
 
@@ -195,6 +194,11 @@ class LiveController:
             wavelength = self._get_illumination_wavelength()
             if wavelength:
                 self.microscope.illumination_controller.turn_off_illumination(wavelength)
+            else:
+                self._log.warning(
+                    f"turn_off_illumination() skipped - no wavelength configured for "
+                    f"'{self.currentConfiguration.name if self.currentConfiguration else 'None'}'"
+                )
         elif self.microscope.addons.sci_microscopy_led_array and self._is_led_matrix():
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
         # LED matrix without SciMicroscopy array
@@ -443,14 +447,19 @@ class LiveController:
         if configuration is None:
             self._log.error("set_microscope_mode() called with None configuration - this is a bug in the caller")
             return
-        self.currentConfiguration = configuration
-        self._log.info("setting microscope mode to " + self.currentConfiguration.name)
+        self._log.info("setting microscope mode to " + configuration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
             self._stop_existing_timer()
             if self.control_illumination:
+                # Turn off illumination BEFORE switching self.currentConfiguration.
+                # turn_off_illumination() reads self.currentConfiguration to determine which
+                # laser wavelength to turn off. If we switch first, we'd turn off the NEW
+                # channel's laser instead of the OLD channel's laser (which is still on).
                 self.turn_off_illumination()
+
+        self.currentConfiguration = configuration
 
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
