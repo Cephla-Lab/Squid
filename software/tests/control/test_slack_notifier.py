@@ -9,7 +9,6 @@ These tests verify the SlackNotifier class functionality including:
 """
 
 import json
-import queue
 import time
 import urllib.error
 import urllib.request

@@ -570,13 +570,16 @@ class SlackNotifier:
         num_z_levels: int,
     ):
         """Send an acquisition start notification to Slack."""
-        if not control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START:
-            return
-
+        # Always initialize acquisition tracking state, even if the start
+        # notification itself is disabled. This ensures subsequent error and
+        # timepoint notifications have the correct experiment context.
         self._acquisition_start_time = time.time()
         self._current_experiment_id = experiment_id
         with self._lock:
             self._timepoint_durations = []
+
+        if not control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START:
+            return
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -699,7 +702,8 @@ class SlackNotifier:
         try:
             self._message_queue.put_nowait(None)
         except queue.Full:
-            pass
+            # Worker will still stop due to _stop_event being set
+            log.debug("SlackNotifier.close: queue full while enqueuing shutdown sentinel")
 
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
