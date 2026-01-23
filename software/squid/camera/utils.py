@@ -242,6 +242,8 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def set_binning(self, x_binning: int, y_binning: int):
         self._binning = (x_binning, y_binning)
+        # Invalidate cached frame so next frame regenerates with new dimensions
+        self._current_raw_frame = None
 
     @debug_log
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
@@ -368,6 +370,12 @@ class SimulatedCamera(AbstractCamera):
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
             self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
             return
+        # Record trigger timestamp
+        self._last_trigger_timestamp = time.time()
+        # Wait for exposure time to simulate real camera behavior
+        # Use total frame time (exposure + strobe) to match real camera timing
+        total_frame_time_s = self.get_total_frame_time() / 1000.0  # Convert ms to seconds
+        time.sleep(total_frame_time_s)
         self._next_frame()
 
     @debug_log
@@ -375,7 +383,7 @@ class SimulatedCamera(AbstractCamera):
         (binning_x, binning_y) = self.get_binning()
         width, height = self.get_resolution()
 
-        if self.get_frame_id() == 0:
+        if self._current_raw_frame is None:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
                 self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
@@ -409,7 +417,8 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_ready_for_trigger(self) -> bool:
-        return time.time() - self._last_trigger_timestamp > self.get_exposure_time()
+        # Use total frame time (exposure + strobe) to match real camera behavior
+        return time.time() - self._last_trigger_timestamp > self.get_total_frame_time() / 1000.0
 
     @debug_log
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):

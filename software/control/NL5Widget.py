@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import (
+from qtpy.QtWidgets import (
     QApplication,
     QWidget,
     QGridLayout,
@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
 )
-from PyQt5.QtCore import Qt
+from qtpy.QtCore import Qt
 
 
 class NL5SettingsDialog(QDialog):

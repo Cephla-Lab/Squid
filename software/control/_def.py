@@ -16,33 +16,65 @@ def conf_attribute_reader(string_value):
     """
     :brief: standardized way for reading config entries
     that are strings, in priority order
-    None -> bool -> dict/list (via json) -> int -> float -> string
-    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN
-    DOUBLE QUOTES
+    JSON (with comments stripped if needed) -> None -> bool -> int -> float -> string
+    Inline comments (# ...) are stripped, but # inside valid JSON is preserved.
+    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
+
+    # Try JSON first - handles valid JSON with # inside (like {"color": "#FF0000"})
     try:
-        if str(actualvalue) == "None":
-            return None
-    except:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # JSON failed - strip inline comments if present
+    # Only treat # as comment if preceded by whitespace (e.g., "value  # comment")
+    if "#" in actualvalue:
+        # For JSON-like values, try stripping from rightmost # positions
+        # This handles cases like {"color": "#FF0000"}  # comment
+        if actualvalue.startswith("[") or actualvalue.startswith("{"):
+            hash_positions = [i for i, c in enumerate(actualvalue) if c == "#"]
+            for pos in reversed(hash_positions):
+                candidate = actualvalue[:pos].strip()
+                try:
+                    return json.loads(candidate)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        # For non-JSON or if all JSON attempts failed, strip comments with whitespace before #
+        # This preserves values like "my#tag" while stripping "value  # comment"
+        # Find the earliest comment separator to handle "value\t# c1  # c2" correctly
+        comment_positions = [actualvalue.find(sep) for sep in (" #", "\t#") if sep in actualvalue]
+        if comment_positions:
+            cut_pos = min(comment_positions)
+            actualvalue = actualvalue[:cut_pos].rstrip()
+
+    # Parse the (possibly stripped) value
+    if actualvalue == "None":
+        return None
+    if actualvalue in ("True", "true"):
+        return True
+    if actualvalue in ("False", "false"):
+        return False
+
+    # Try JSON again (for cases like [1,2,3] # comment -> [1,2,3])
     try:
-        if str(actualvalue) == "True" or str(actualvalue) == "true":
-            return True
-        if str(actualvalue) == "False" or str(actualvalue) == "false":
-            return False
-    except:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # Try int
     try:
-        actualvalue = json.loads(actualvalue)
-    except:
-        try:
-            actualvalue = int(str(actualvalue))
-        except:
-            try:
-                actualvalue = float(actualvalue)
-            except:
-                actualvalue = str(actualvalue)
+        return int(actualvalue)
+    except ValueError:
+        pass
+
+    # Try float
+    try:
+        return float(actualvalue)
+    except ValueError:
+        pass
+
     return actualvalue
 
 
@@ -159,6 +191,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
+    SET_TRIGGER_MODE = 33
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -217,6 +250,8 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_LOW_NA = 4
     ILLUMINATION_SOURCE_LED_ARRAY_LEFT_DOT = 5
     ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT = 6
+    ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7
+    ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
     ILLUMINATION_SOURCE_405NM = 11
     ILLUMINATION_SOURCE_488NM = 12
@@ -300,6 +335,88 @@ class FocusMeasureOperator(Enum):
             return FocusMeasureOperator[option.upper()]
         except KeyError:
             raise ValueError(f"Invalid focus measure operator: {option}")
+
+
+class ZProjectionMode(Enum):
+    """Z-projection mode for downsampled view generation.
+
+    MIP: Max intensity projection - uses running maximum across all z-levels
+    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    """
+
+    MIP = "mip"
+    MIDDLE = "middle"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
+        """Convert string or enum to ZProjectionMode enum."""
+        if isinstance(option, ZProjectionMode):
+            return option
+        try:
+            return ZProjectionMode(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+
+
+class DownsamplingMethod(Enum):
+    """Interpolation method for downsampled view generation.
+
+    INTER_LINEAR: Fast bilinear interpolation (~0.05ms). Each resolution is computed
+        directly from the original image (parallel). Best for real-time previews.
+    INTER_AREA_FAST: Gaussian pyramid downsampling (~1ms). Uses cv2.pyrDown chain
+        (optimized 2x reductions) then INTER_AREA for final size. Good balance of
+        speed and quality. Resolutions computed in parallel.
+    INTER_AREA: High-quality area averaging (~18ms). Resolutions are computed in
+        cascade (original→5um→10um→20um) for speed. Best for final output quality.
+    """
+
+    INTER_LINEAR = "inter_linear"
+    INTER_AREA_FAST = "inter_area_fast"
+    INTER_AREA = "inter_area"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "DownsamplingMethod"]) -> "DownsamplingMethod":
+        """Convert string or enum to DownsamplingMethod enum."""
+        if isinstance(option, DownsamplingMethod):
+            return option
+        try:
+            return DownsamplingMethod(option.lower())
+        except ValueError:
+            raise ValueError(
+                f"Invalid downsampling method: '{option}'. "
+                "Expected 'inter_linear', 'inter_area_fast', or 'inter_area'."
+            )
+
+
+class ZMotorConfig(Enum):
+    """Z motor configuration options.
+
+    STEPPER: Stepper motor only
+    STEPPER_PIEZO: Stepper motor with piezo for fine Z control
+    PIEZO: Piezo only
+    """
+
+    STEPPER = "STEPPER"
+    STEPPER_PIEZO = "STEPPER + PIEZO"
+    PIEZO = "PIEZO"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZMotorConfig"]) -> "ZMotorConfig":
+        """Convert string or enum to ZMotorConfig enum."""
+        if isinstance(option, ZMotorConfig):
+            return option
+        for member in ZMotorConfig:
+            if member.value == option:
+                return member
+        raise ValueError(f"Invalid Z motor config: '{option}'. Expected one of: {[m.value for m in ZMotorConfig]}")
+
+    def has_piezo(self) -> bool:
+        """Check if this configuration includes a piezo."""
+        return "PIEZO" in self.value
+
+    def is_piezo_only(self) -> bool:
+        """Check if this configuration is piezo-only (no stepper)."""
+        return self == ZMotorConfig.PIEZO
 
 
 PRINT_CAMERA_FPS = True
@@ -440,6 +557,7 @@ LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
+ACQUISITION_CONFIGURATIONS_PATH = Path("user_profiles")
 FILE_ID_PADDING = 0
 
 
@@ -567,6 +685,23 @@ RESUME_LIVE_AFTER_ACQUISITION = True
 #   <base_path>/<experiment_ID>/acquisition.log
 ENABLE_PER_ACQUISITION_LOG = False
 
+# Memory profiling - when enabled, shows real-time RAM usage in status bar during acquisition
+# and logs periodic memory snapshots to help diagnose memory issues
+ENABLE_MEMORY_PROFILING = True
+
+# Simulated disk I/O for development (RAM/speed optimization)
+# When enabled, images are encoded to memory buffers but NOT saved to disk
+SIMULATED_DISK_IO_ENABLED = False
+SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
+SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
+
+# Acquisition Backpressure Settings
+# Prevents RAM exhaustion when acquisition speed exceeds disk write speed
+ACQUISITION_THROTTLING_ENABLED = True
+ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs in flight before throttling
+ACQUISITION_MAX_PENDING_MB = 2000.0  # Max pending MB before throttling
+ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Max wait time when throttled
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
@@ -692,7 +827,45 @@ USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 USE_NAPARI_WELL_SELECTION = False
 USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
+
+# NDViewer integration
+ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
+
+# Downsampled view settings (for Select Well Mode)
+# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
+# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
+# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
+SAVE_DOWNSAMPLED_WELL_IMAGES = False
+DISPLAY_PLATE_VIEW = False
+DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
+DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
+DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
+DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_AREA_FAST  # Balanced speed/quality default
+
+# Downsampled view job timeouts
+# DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
+# jobs to complete at end of each timepoint. This timeout ensures acquisition doesn't hang
+# indefinitely if a job gets stuck. For typical 96-well plates with 1-4 channels, 30 seconds
+# is sufficient. For larger plates (384-well, 1536-well) with many channels, increase this
+# value proportionally. As a rough guide: ~0.5s per well for processing, so 1536 wells
+# could need up to ~800 seconds in worst case, though parallel processing makes it faster.
+DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
+
+# DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S: Time (seconds) to wait after the last job result before
+# assuming all jobs are complete. When the job input queue is empty but the last job may
+# still be processing, we poll for results. If no new results arrive within this timeout,
+# we assume all jobs have finished. 2 seconds is conservative - most jobs complete in
+# <100ms, so this handles occasional slow jobs without adding unnecessary delay.
+DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+
+# Plate view zoom limits
+# MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
+# in the smallest dimension. 500 pixels allows inspecting cellular-level details.
+PLATE_VIEW_MIN_VISIBLE_PIXELS = 500.0
+# MAX_ZOOM_FACTOR: Cap zoom to prevent performance issues with large texture rendering.
+# 10x is sufficient for most inspection tasks while maintaining smooth interaction.
+PLATE_VIEW_MAX_ZOOM_FACTOR = 10.0
 
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None
@@ -753,6 +926,14 @@ PRIOR_STAGE_SN = ""
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
+
+
+class HardwareTriggerMode:
+    EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
+    LEVEL = 1  # Variable pulse width (illumination_on_time)
+
+
+HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 
 
 def read_objectives_csv(file_path):
@@ -878,7 +1059,7 @@ FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 CACHED_CONFIG_FILE_PATH = None
 
 # Piezo configuration items
-Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
+Z_MOTOR_CONFIG = ZMotorConfig.STEPPER
 
 # the value of OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE is 2.5 or 5
 OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE = 5
@@ -891,6 +1072,15 @@ MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
 USE_TERMINAL_CONSOLE = False
 USE_JUPYTER_CONSOLE = False
+
+# MCP Control Server - allows external tools (like Claude Code) to control the microscope
+# When enabled, MCP-related menu items appear in Settings (Launch Claude Code, etc.)
+# The server itself starts on-demand when user clicks "Launch Claude Code" or enables it manually.
+# Security note: Server listens only on localhost (127.0.0.1).
+# The python_exec command is disabled by default and must be explicitly enabled in the GUI.
+ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
+CONTROL_SERVER_HOST = "127.0.0.1"
+CONTROL_SERVER_PORT = 5050
 
 try:
     with open("cache/config_file_path.txt", "r") as file:
@@ -981,7 +1171,9 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 ##########################################################
 
 # objective piezo
-HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
+Z_MOTOR_CONFIG = ZMotorConfig.convert_to_enum(Z_MOTOR_CONFIG)
+HAS_OBJECTIVE_PIEZO = Z_MOTOR_CONFIG.has_piezo()
+IS_PIEZO_ONLY = Z_MOTOR_CONFIG.is_piezo_only()
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum
@@ -992,3 +1184,83 @@ DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
     DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
+
+# Load Views settings from config file at startup
+# These values override the defaults above and are accessed via control._def.XXX
+if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
+    try:
+        _views_config = ConfigParser()
+        _views_config.read(CACHED_CONFIG_FILE_PATH)
+        if _views_config.has_section("VIEWS"):
+            log.info("Loading Views settings from config file")
+            if _views_config.has_option("VIEWS", "display_plate_view"):
+                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "display_mosaic_view"):
+                USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            # Support both old and new config key names for backward compatibility
+            if _views_config.has_option("VIEWS", "save_downsampled_well_images"):
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get("VIEWS", "save_downsampled_well_images").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            elif _views_config.has_option("VIEWS", "generate_downsampled_well_images"):
+                # Legacy config key
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
+                    "VIEWS", "generate_downsampled_well_images"
+                ).lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):
+                try:
+                    _res_str = _views_config.get("VIEWS", "downsampled_well_resolutions_um")
+                    DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in _res_str.split(",") if x.strip()]
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_plate_resolution_um"):
+                try:
+                    DOWNSAMPLED_PLATE_RESOLUTION_UM = _views_config.getfloat("VIEWS", "downsampled_plate_resolution_um")
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_z_projection"):
+                try:
+                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_z_projection")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_interpolation_method"):
+                try:
+                    DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_interpolation_method")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
+                try:
+                    MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
+                        "VIEWS", "mosaic_view_target_pixel_size_um"
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "enable_ndviewer"):
+                ENABLE_NDVIEWER = _views_config.get("VIEWS", "enable_ndviewer").lower() in ("true", "1", "yes")
+    except Exception as e:
+        log.warning(f"Failed to load Views settings from config: {e}")
+
+    # Load GENERAL settings from config file
+    try:
+        _general_config = ConfigParser()
+        _general_config.read(CACHED_CONFIG_FILE_PATH)
+        if _general_config.has_section("GENERAL"):
+            if _general_config.has_option("GENERAL", "enable_memory_profiling"):
+                ENABLE_MEMORY_PROFILING = _general_config.get("GENERAL", "enable_memory_profiling").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+                log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+    except Exception as e:
+        log.warning(f"Failed to load GENERAL settings from config: {e}")

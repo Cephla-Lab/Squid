@@ -1,0 +1,119 @@
+version: 1
+
+# Mapping from controller port to source code
+# D1-D5: Laser channels, USB1-USB8: LED matrix patterns
+controller_port_mapping:
+  D1: 11   # 405nm laser
+  D2: 12   # 488nm laser
+  D3: 13   # 638nm laser
+  D4: 14   # 561nm laser
+  D5: 15   # 730nm laser
+  USB1: 0  # LED full
+  USB2: 1  # LED left_half
+  USB3: 2  # LED right_half
+  USB4: 3  # LED dark_field
+  USB5: 4  # LED low_na
+  USB6: 5  # (unused)
+  USB7: 7  # LED top_half
+  USB8: 8  # LED bottom_half
+
+channels:
+  # BF LED matrix full
+  - name: BF LED matrix full
+    type: transillumination
+    controller_port: USB1
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  # DF LED matrix
+  - name: DF LED matrix
+    type: transillumination
+    controller_port: USB4
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  # Fluorescence channels
+  - name: Fluorescence 405 nm Ex
+    type: epi_illumination
+    controller_port: D1
+    wavelength_nm: 405
+    intensity_calibration_file: 405.csv
+
+  - name: Fluorescence 488 nm Ex
+    type: epi_illumination
+    controller_port: D2
+    wavelength_nm: 488
+    intensity_calibration_file: 488.csv
+
+  - name: Fluorescence 561 nm Ex
+    type: epi_illumination
+    controller_port: D4
+    wavelength_nm: 561
+    intensity_calibration_file: 561.csv
+
+  - name: Fluorescence 638 nm Ex
+    type: epi_illumination
+    controller_port: D3
+    wavelength_nm: 638
+    intensity_calibration_file: 638.csv
+
+  - name: Fluorescence 730 nm Ex
+    type: epi_illumination
+    controller_port: D5
+    wavelength_nm: 730
+    intensity_calibration_file: 730.csv
+
+  # Other LED matrix
+  - name: BF LED matrix low NA
+    type: transillumination
+    controller_port: USB5
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix left half
+    type: transillumination
+    controller_port: USB2
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix right half
+    type: transillumination
+    controller_port: USB3
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix top half
+    type: transillumination
+    controller_port: USB7
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix bottom half
+    type: transillumination
+    controller_port: USB8
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix full_R
+    type: transillumination
+    controller_port: USB1
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix full_G
+    type: transillumination
+    controller_port: USB1
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix full_B
+    type: transillumination
+    controller_port: USB1
+    wavelength_nm: null
+    intensity_calibration_file: null
+
+  - name: BF LED matrix full_RGB
+    type: transillumination
+    controller_port: USB1
+    wavelength_nm: null
+    intensity_calibration_file: null

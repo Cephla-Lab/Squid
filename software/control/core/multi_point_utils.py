@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Callable
+from typing import List, Tuple, Dict, Optional, Callable, Union
 
+from control._def import ZProjectionMode, DownsamplingMethod
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 
 
@@ -26,7 +27,7 @@ class ScanPositionInformation:
 class AcquisitionParameters:
     experiment_ID: Optional[str]
     base_path: Optional[str]
-    selected_configurations: List[ChannelMode]
+    selected_configurations: List[AcquisitionChannel]
     acquisition_start_time: float
     scan_position_information: ScanPositionInformation
 
@@ -51,6 +52,20 @@ class AcquisitionParameters:
     z_range: Tuple[float, float]
 
     use_fluidics: bool
+    skip_saving: bool = False
+
+    # Downsampled view generation parameters
+    generate_downsampled_views: bool = False
+    save_downsampled_well_images: bool = False  # Save individual well TIFFs (wells/A1_5um.tiff)
+    downsampled_well_resolutions_um: Optional[List[float]] = None
+    downsampled_plate_resolution_um: float = 10.0
+    downsampled_z_projection: Union[ZProjectionMode, str] = ZProjectionMode.MIP
+    downsampled_interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_AREA_FAST
+    plate_num_rows: int = 8  # For 96-well plate
+    plate_num_cols: int = 12  # For 96-well plate
+
+    # XY mode for determining scan type
+    xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
 
 
 @dataclass
@@ -69,11 +84,35 @@ class RegionProgressUpdate:
 
 
 @dataclass
+class PlateViewUpdate:
+    """Data for plate view channel update."""
+
+    channel_idx: int
+    channel_name: str
+    plate_image: "np.ndarray"  # Forward reference
+
+
+@dataclass
+class PlateViewInit:
+    """Data for plate view initialization."""
+
+    num_rows: int
+    num_cols: int
+    well_slot_shape: Tuple[int, int]
+    fov_grid_shape: Tuple[int, int]
+    channel_names: List[str]
+
+
+@dataclass
 class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]
     signal_acquisition_finished: Callable[[], None]
     signal_new_image: Callable[[CameraFrame, CaptureInfo], None]
-    signal_current_configuration: Callable[[ChannelMode], None]
+    signal_current_configuration: Callable[[AcquisitionChannel], None]
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]
+    # Optional plate view callbacks. Default no-op lambdas avoid None checks at every call site.
+    # Unlike mutable defaults (lists/dicts), lambdas are safe as defaults since they're not modified.
+    signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None

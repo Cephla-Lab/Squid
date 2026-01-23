@@ -13,10 +13,7 @@ from qtpy.QtGui import *
 
 from control._def import *
 from control.core import job_processing
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
@@ -31,7 +28,6 @@ import control.tracking as tracking
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
-import control.utils_config as utils_config
 import squid.logging
 
 
@@ -41,7 +37,7 @@ from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
-from control.utils_config import ChannelConfig, ChannelMode, LaserAFConfig
+from control.models import AcquisitionChannel
 import time
 import itertools
 import json
@@ -296,7 +292,7 @@ class TrackingController(QObject):
     signal_tracking_stopped = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
 
     def __init__(
         self,
@@ -304,7 +300,6 @@ class TrackingController(QObject):
         microcontroller: Microcontroller,
         stage: AbstractStage,
         objectiveStore,
-        channelConfigurationManager,
         liveController: LiveController,
         autofocusController,
         imageDisplayWindow,
@@ -315,7 +310,6 @@ class TrackingController(QObject):
         self.microcontroller = microcontroller
         self.stage = stage
         self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
         self.liveController = liveController
         self.autofocusController = autofocusController
         self.imageDisplayWindow = imageDisplayWindow
@@ -417,11 +411,15 @@ class TrackingController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-            self.channelConfigurationManager.save_current_configuration_to_path(
-                self.objectiveStore.current_objective,
-                os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
-            )  # save the configuration for the experiment
+            experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+            utils.ensure_directory_exists(experiment_dir)
+            # Save acquisition configuration via ConfigRepository
+            self.liveController.microscope.config_repo.save_acquisition_output(
+                output_dir=experiment_dir,
+                objective=self.objectiveStore.current_objective,
+                channels=self.selected_configurations,
+                confocal_mode=self.liveController.is_confocal_mode(),
+            )
         except:
             self._log.info("error in making a new folder")
             pass
@@ -429,9 +427,7 @@ class TrackingController(QObject):
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
-            config = self.channelConfigurationManager.get_channel_configuration_by_name(
-                self.objectiveStore.current_objective, configuration_name
-            )
+            config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, configuration_name)
             if config:
                 self.selected_configurations.append(config)
 
@@ -482,7 +478,7 @@ class TrackingWorker(QObject):
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
 
     def __init__(self, trackingController: TrackingController):
         QObject.__init__(self)
@@ -494,7 +490,6 @@ class TrackingWorker(QObject):
         self.microcontroller = self.trackingController.microcontroller
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
-        self.channelConfigurationManager = self.trackingController.channelConfigurationManager
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
         self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
@@ -509,7 +504,7 @@ class TrackingWorker(QObject):
             base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
         )
 
-    def _select_config(self, config: ChannelMode):
+    def _select_config(self, config: AcquisitionChannel):
         self.signal_current_configuration.emit(config)
         # TODO(imo): replace with illumination controller.
         self.liveController.set_microscope_mode(config)
@@ -841,8 +836,9 @@ class ImageDisplayWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # set window size
-        desktopWidget = QDesktopWidget()
-        width = min(desktopWidget.height() * 0.9, 1000)
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        width = min(screen_geometry.height() * 0.9, 1000)
         height = width
         self.setFixedSize(int(width), int(height))
 
@@ -1351,6 +1347,7 @@ class NavigationViewer(QFrame):
         self.box_line_thickness = 2
         self.x_mm = None
         self.y_mm = None
+        self.alignment_widget = None  # Optional AlignmentWidget
         self.image_paths = {
             "glass slide": "images/slide carrier_828x662.png",
             "4 glass slide": "images/4 slide carrier_1509x1010.png",
@@ -1394,18 +1391,33 @@ class NavigationViewer(QFrame):
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
 
     def _position_button(self):
-        """Position the clear button at the bottom-right corner of the graphics widget"""
+        """Position buttons at the bottom-right corner of the graphics widget"""
         margin = 10  # Margin from edges
-        button_width = self.btn_clear_coordinates.sizeHint().width()
         button_height = self.btn_clear_coordinates.sizeHint().height()
 
-        x = self.graphics_widget.width() - button_width - margin
-        y = self.graphics_widget.height() - button_height - margin
-        self.btn_clear_coordinates.move(x, y)
+        # Position clear button (rightmost)
+        clear_width = self.btn_clear_coordinates.sizeHint().width()
+        clear_x = self.graphics_widget.width() - clear_width - margin
+        clear_y = self.graphics_widget.height() - button_height - margin
+        self.btn_clear_coordinates.move(clear_x, clear_y)
         self.btn_clear_coordinates.raise_()
 
+        # Position alignment button (to the left of clear) if present
+        if self.alignment_widget is not None:
+            align_width = self.alignment_widget.sizeHint().width()
+            align_x = clear_x - align_width - margin
+            self.alignment_widget.move(align_x, clear_y)
+            self.alignment_widget.raise_()
+
+    def set_alignment_widget(self, alignment_widget):
+        """Set the alignment widget to be displayed in the navigation viewer."""
+        self.alignment_widget = alignment_widget
+        self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.adjustSize()
+        self._position_button()
+
     def resizeEvent(self, event):
-        """Reposition button when widget is resized"""
+        """Reposition buttons when widget is resized"""
         super().resizeEvent(event)
         if hasattr(self, "btn_clear_coordinates"):
             self._position_button()

@@ -14,8 +14,7 @@ def test_multi_point_controller_image_count_calculation():
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
-        config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
     ]
     nz = 2
     nt = 3
@@ -67,8 +66,7 @@ def test_multi_point_controller_disk_space_estimate():
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
-        config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
     ]
     nz = 2
     nt = 3
@@ -111,6 +109,95 @@ def test_multi_point_controller_disk_space_estimate():
     control._def.MERGE_CHANNELS = True
     after_size = mpc.get_estimated_acquisition_disk_storage()
     assert after_size > before_size
+
+
+def test_multi_point_controller_mosaic_ram_estimate():
+    """Test RAM estimation for mosaic view."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+
+    # Store original value and enable mosaic display for testing
+    original_use_napari = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
+    control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = True
+
+    try:
+        all_configuration_names = [
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
+        ]
+        assert len(all_configuration_names) > 0
+
+        mpc.scanCoordinates.clear_regions()
+
+        # No regions -> 0 bytes needed
+        assert mpc.get_estimated_mosaic_ram_bytes() == 0
+
+        # Add a region with multiple FOVs to get a non-zero scan area
+        # Single FOV results in zero width/height, so we need at least a grid
+        x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
+        y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
+        z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+        # Add a 3x3 grid region to get actual scan bounds
+        mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 3, 3, 0)
+
+        # No channels selected -> 0 bytes (with warning)
+        mpc.set_selected_configurations([])
+        assert mpc.get_estimated_mosaic_ram_bytes() == 0
+
+        # Select one channel -> should have non-zero RAM estimate
+        mpc.set_selected_configurations(all_configuration_names[0:1])
+        ram_one_channel = mpc.get_estimated_mosaic_ram_bytes()
+        assert ram_one_channel > 0, f"Expected RAM > 0, got {ram_one_channel}"
+
+        # Select all channels -> RAM should scale with channel count
+        mpc.set_selected_configurations(all_configuration_names)
+        ram_all_channels = mpc.get_estimated_mosaic_ram_bytes()
+        assert ram_all_channels > ram_one_channel
+        # RAM should scale roughly linearly with number of channels
+        expected_ratio = len(all_configuration_names)
+        actual_ratio = ram_all_channels / ram_one_channel
+        assert abs(actual_ratio - expected_ratio) < 0.1  # Allow small rounding differences
+
+        # Add more regions to increase scan area -> RAM should increase
+        for i in range(1, 5):
+            x_st = x_min + i * 1.0  # Larger spacing for bigger scan area
+            y_st = y_min + i * 1.0
+            mpc.scanCoordinates.add_flexible_region(i + 2, x_st, y_st, z_mid, 2, 2, 0)
+
+        ram_larger_area = mpc.get_estimated_mosaic_ram_bytes()
+        assert ram_larger_area > ram_all_channels
+
+    finally:
+        # Restore original value
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
+
+
+def test_multi_point_controller_mosaic_ram_disabled():
+    """Test that RAM estimation returns 0 when mosaic display is disabled."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+
+    # Store original value and disable mosaic display
+    original_use_napari = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
+    control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = False
+
+    try:
+        all_configuration_names = [
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
+        ]
+
+        # Add regions and select channels
+        x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
+        y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
+        z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+        mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 5, 5, 0)
+        mpc.set_selected_configurations(all_configuration_names)
+
+        # Should return 0 when napari mosaic display is disabled
+        assert mpc.get_estimated_mosaic_ram_bytes() == 0
+
+    finally:
+        # Restore original value
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
 class TestAcquisitionTracker:
@@ -171,7 +258,7 @@ def add_some_coordinates(mpc: MultiPointController):
 
 
 def select_some_configs(mpc: MultiPointController, objective: str):
-    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(objective)]
+    all_config_names = [m.name for m in mpc.liveController.get_channels(objective)]
     first_two_config_names = all_config_names[:2]
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
 

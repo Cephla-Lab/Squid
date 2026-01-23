@@ -78,3 +78,27 @@ def test_scan_coordinates_basic_operation():
 
     assert len(scan_coordinates.region_centers.keys()) == 0
     assert len(scan_coordinates.region_centers.values()) == 0
+
+
+def test_sort_coordinates_manual_regions_preserve_drawing_order():
+    """Manual regions stay in drawing order, come before wells, and ignore S-Pattern."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+    sc.acquisition_pattern = "S-Pattern"
+
+    # Set up regions directly (bypass coordinate validation)
+    sc.region_centers = {
+        "A1": [10.0, 10.0],
+        "manual1": [99.0, 99.0],  # Drawn second, far position
+        "B1": [10.0, 20.0],
+        "manual0": [10.0, 10.0],  # Drawn first, same position as A1
+        "B2": [20.0, 20.0],
+        "A2": [20.0, 10.0],
+    }
+    sc.region_fov_coordinates = {k: [(v[0], v[1], 0.0)] for k, v in sc.region_centers.items()}
+
+    sc.sort_coordinates()
+
+    keys = list(sc.region_centers.keys())
+    # Manual regions first (drawing order), then wells (S-Pattern: row B reversed)
+    assert keys == ["manual0", "manual1", "A1", "A2", "B2", "B1"]

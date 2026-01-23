@@ -112,7 +112,7 @@ def main():
     POWER_PERCENTAGES = np.arange(0, 101, 5)  # Test every 5% from 0 to 100%
     NUM_MEASUREMENTS = 5  # Number of measurements to average at each power level
     DELAY = 0.1  # Delay between measurements
-    OUTPUT_DIR = "calibration_tests"  # Output directory for test results
+    OUTPUT_DIR = "machine_configs/calibration_tests"  # Output directory for test results
 
     # Create output directory
     output_dir = Path(OUTPUT_DIR)

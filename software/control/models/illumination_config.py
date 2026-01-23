@@ -1,0 +1,151 @@
+"""
+Illumination channel configuration models.
+
+These models define hardware-level illumination channel settings that are
+machine-specific (not user-specific). They map illumination sources to
+controller ports and serial command codes.
+"""
+
+from enum import Enum
+from typing import ClassVar, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class IlluminationType(str, Enum):
+    """Type of illumination source."""
+
+    EPI_ILLUMINATION = "epi_illumination"  # Fluorescence lasers
+    TRANSILLUMINATION = "transillumination"  # LED matrix, brightfield
+
+
+class IlluminationChannel(BaseModel):
+    """Hardware-level definition of an illumination channel.
+
+    This defines the physical illumination hardware, NOT user-facing acquisition settings.
+    Fields like display_color and enabled belong in acquisition channel configs (user_profiles/).
+
+    Controller ports:
+    - D1-D5: Laser channels (epi-illumination)
+    - USB1-USB8: LED matrix patterns (transillumination)
+    """
+
+    name: str = Field(..., description="Unique name for this illumination channel")
+    type: IlluminationType = Field(..., description="Type of illumination")
+    controller_port: str = Field(..., description="Controller port (D1-D5 for lasers, USB1-USB8 for LED patterns)")
+    wavelength_nm: Optional[int] = Field(None, description="Wavelength in nm (for epi-illumination channels)")
+    intensity_calibration_file: Optional[str] = Field(
+        None, description="Reference to calibration CSV file in intensity_calibrations/"
+    )
+
+    model_config = {"extra": "allow"}  # Allow extra fields during transition
+
+
+class IlluminationChannelConfig(BaseModel):
+    """Root configuration for all illumination channels on a machine."""
+
+    # All available controller ports in canonical order
+    ALL_PORTS: ClassVar[List[str]] = [
+        "USB1",
+        "USB2",
+        "USB3",
+        "USB4",
+        "USB5",
+        "USB6",
+        "USB7",
+        "USB8",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8",
+    ]
+
+    version: int = Field(1, description="Configuration format version")
+    controller_port_mapping: Dict[str, int] = Field(
+        default_factory=lambda: {
+            # Laser ports
+            "D1": 11,  # 405nm laser
+            "D2": 12,  # 488nm laser
+            "D3": 13,  # 638nm laser
+            "D4": 14,  # 561nm laser
+            "D5": 15,  # 730nm laser
+            # LED matrix patterns (USB port number encodes the pattern)
+            "USB1": 0,  # full
+            "USB2": 1,  # left_half
+            "USB3": 2,  # right_half
+            "USB4": 3,  # dark_field
+            "USB5": 4,  # low_na
+            "USB7": 7,  # top_half
+            "USB8": 8,  # bottom_half
+        },
+        description="Mapping from controller port to source code",
+    )
+    channels: List[IlluminationChannel] = Field(
+        default_factory=list, description="List of available illumination channels"
+    )
+
+    model_config = {"extra": "allow"}  # Allow extra fields during transition
+
+    def get_source_code(self, channel: IlluminationChannel) -> int:
+        """Get the source code for a channel based on controller port mapping.
+
+        All channels (both laser and LED) use controller_port_mapping.
+        D1-D5 for lasers, USB1-USB8 for LED matrix patterns.
+        """
+        source_code = self.controller_port_mapping.get(channel.controller_port)
+        if source_code is not None:
+            return source_code
+        # Fallback for old format with direct source_code or led_matrix_pattern
+        if hasattr(channel, "source_code"):
+            return channel.source_code
+        if hasattr(channel, "led_matrix_pattern") and channel.led_matrix_pattern:
+            # Legacy: try to map pattern name to source code
+            legacy_patterns = {
+                "full": 0,
+                "left_half": 1,
+                "right_half": 2,
+                "dark_field": 3,
+                "low_na": 4,
+                "top_half": 7,
+                "bottom_half": 8,
+            }
+            return legacy_patterns.get(channel.led_matrix_pattern, 0)
+        return 0  # Default for unknown
+
+    def get_channel_by_name(self, name: str) -> Optional[IlluminationChannel]:
+        """Get an illumination channel by name."""
+        for ch in self.channels:
+            if ch.name == name:
+                return ch
+        return None
+
+    def get_channel_by_source_code(self, source_code: int) -> Optional[IlluminationChannel]:
+        """Get an illumination channel by its source code."""
+        for ch in self.channels:
+            if self.get_source_code(ch) == source_code:
+                return ch
+        return None
+
+    def get_available_ports(self) -> List[str]:
+        """Get list of controller ports that have mappings (not N/A).
+
+        Returns ports in canonical order (USB ports first, then D ports),
+        filtered to only those present in controller_port_mapping.
+        """
+        return [p for p in self.ALL_PORTS if p in self.controller_port_mapping]
+
+
+# Default display colors based on wavelength (used when generating default acquisition configs)
+DEFAULT_WAVELENGTH_COLORS: Dict[int, str] = {
+    405: "#20ADF8",  # Blue-violet
+    488: "#1FFF00",  # Green
+    561: "#FFCF00",  # Yellow-orange
+    638: "#FF0000",  # Red
+    730: "#770000",  # Deep red/NIR
+}
+
+DEFAULT_LED_COLOR = "#FFFFFF"  # White for LED matrix

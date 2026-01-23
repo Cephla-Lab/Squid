@@ -14,9 +14,9 @@ from squid.abc import AbstractStage, AbstractCamera
 def get_test_live_controller(microscope: Microscope, starting_objective) -> LiveController:
     controller = LiveController(microscope=microscope, camera=microscope.camera)
 
-    controller.set_microscope_mode(
-        microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0]
-    )
+    channels = controller.get_channels(objective=starting_objective)
+    if channels:
+        controller.set_microscope_mode(channels[0])
     return controller
 
 
@@ -57,7 +57,6 @@ def get_test_laser_autofocus_controller(microscope: Microscope):
         stage=microscope.stage,
         piezo=microscope.addons.piezo_stage,
         objectiveStore=microscope.objective_store,
-        laserAFSettingManager=microscope.laser_af_settings_manager,
     )
 
 
@@ -78,7 +77,6 @@ def get_test_multi_point_controller(
             live_controller,
             microscope.low_level_drivers.microcontroller,
         ),
-        channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
             objective_store=microscope.objective_store, stage=microscope.stage, camera=microscope.camera
         ),

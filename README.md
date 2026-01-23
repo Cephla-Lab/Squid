@@ -46,11 +46,32 @@ Fluidics acquisition SOP: [link](https://cephla.notion.site/User-manual-for-flui
 New version coming soon!
 
 ### Firmware
-Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, you may follow the instructions in this [post](https://forum.squid-imaging.org/t/setting-up-arduino-teensyduino-ide-for-uploading-firmware/36).
+Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, see the [firmware README](firmware/README.md) for instructions.
 
-- Latest firmware for main controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/main_controller_teensy41
+### Git Submodules
+This repository uses git submodules for external dependencies. After cloning, initialize submodules:
 
-- Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/control_panel_teensyLC
+```bash
+# Clone with submodules (recommended)
+git clone --recursive https://github.com/Cephla-Lab/Squid.git
+
+# Or initialize after clone
+git submodule update --init --recursive
+```
+
+**Submodules:**
+| Path | Repository | Description |
+|------|------------|-------------|
+| `software/control/ndviewer_light` | [ndviewer_light](https://github.com/Cephla-Lab/ndviewer_light) | Lightweight NDV-based image viewer |
+| `software/fluidics_v2` | [fluidics_v2](https://github.com/Alpaca233/fluidics_v2) | Fluidics control |
+
+**Updating submodules:**
+```bash
+# Update a specific submodule to latest
+git submodule update --remote software/control/ndviewer_light
+git add software/control/ndviewer_light
+git commit -m "chore: update ndviewer_light submodule"
+```
 
 ## Open-source Assets for the original Squid
 ![alt text](https://i.imgur.com/Gjwh02y.png)

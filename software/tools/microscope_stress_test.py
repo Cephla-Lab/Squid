@@ -14,7 +14,7 @@ from control.core.multi_point_utils import (
 )
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.stream_handler import StreamHandlerFunctions
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 import control.microscope
 import squid.logging
@@ -78,7 +78,7 @@ class MpcTestTracker:
         with self._update_lock:
             self._finish_count += 1
 
-    def config_fn(self, mode: ChannelMode):
+    def config_fn(self, mode: AcquisitionChannel):
         self._update()
         with self._update_lock:
             self._config_count += 1
@@ -216,7 +216,6 @@ def main(args):
         live_controller=scope.live_controller,
         autofocus_controller=af_controller,
         objective_store=scope.objective_store,
-        channel_configuration_manager=scope.channel_configuration_manager,
         callbacks=mpc_tracker.get_callbacks(),
         scan_coordinates=simple_scan_coordinates,
         laser_autofocus_controller=None,

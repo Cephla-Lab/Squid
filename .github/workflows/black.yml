@@ -12,7 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - uses: psf/black@stable
+      # Pin to specific SHA to avoid breaking changes from @stable updates
+      - uses: psf/black@782e5605c86aab56be6f905da10dcd3e463fd9c2
         with:
           options: "--config software/pyproject.toml --check --verbose"
           src: "./software/"

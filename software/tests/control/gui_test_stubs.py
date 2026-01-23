@@ -1,32 +1,12 @@
-import pathlib
-
 import control.microscope
 import control.core.objective_store
 import control.microcontroller
 import control.lighting
 
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.core import NavigationViewer
-from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.gui_hcs import QtMultiPointController
 from control.microscope import Microscope
-from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
-
-
-def get_test_configuration_manager_path() -> pathlib.Path:
-    return get_repo_root() / "acquisition_configurations"
-
-
-def get_test_configuration_manager() -> ConfigurationManager:
-    channel_manager = ChannelConfigurationManager()
-    laser_af_manager = LaserAFSettingManager()
-    return ConfigurationManager(
-        channel_manager=channel_manager,
-        laser_af_manager=laser_af_manager,
-        base_config_path=get_test_configuration_manager_path(),
-    )
 
 
 def get_test_illumination_controller(
@@ -54,7 +34,6 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
         autofocus_controller=ts.get_test_autofocus_controller(
             microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller
         ),
-        channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=ts.get_test_scan_coordinates(microscope.objective_store, microscope.stage, microscope.camera),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),
