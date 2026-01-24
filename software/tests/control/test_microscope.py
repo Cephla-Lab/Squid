@@ -54,8 +54,14 @@ def test_skip_init_skips_addon_homing():
         sim_scope.close()
 
 
-def test_prepare_for_use_skips_homing_when_flag_set():
+@patch("squid.config.get_filter_wheel_config")
+def test_prepare_for_use_skips_homing_when_flag_set(mock_get_fw_config):
     """Test that MicroscopeAddons.prepare_for_use skips home() calls when skip_init=True."""
+    # Mock filter wheel config
+    mock_fw_config = MagicMock()
+    mock_fw_config.indices = [1]
+    mock_get_fw_config.return_value = mock_fw_config
+
     mock_filter_wheel = MagicMock()
     mock_piezo_stage = MagicMock()
 
