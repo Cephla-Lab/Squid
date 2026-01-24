@@ -375,7 +375,7 @@ class SaveOMETiffJob(Job):
 
 @dataclass
 class ZarrWriterInfo:
-    """Info for zarr v3 streaming writes, injected by JobRunner.
+    """Info for Zarr v3 saving, injected by JobRunner.
 
     Output path depends on acquisition mode:
     - HCS mode: {base_path}/plate.zarr/{row}/{col}/{fov}/0  (5D per FOV)

@@ -1,6 +1,6 @@
-"""Zarr v3 streaming writer using TensorStore.
+"""Zarr v3 saving using TensorStore.
 
-This module provides real-time Zarr v3 streaming writes during acquisition
+This module provides Zarr v3 saving during acquisition
 with sharding support, enabling direct zarr output without post-acquisition
 conversion.
 
@@ -38,15 +38,13 @@ def _get_tensorstore():
 
             _tensorstore = ts
         except ImportError:
-            raise ImportError(
-                "TensorStore is required for Zarr v3 streaming writes. " "Install it with: pip install tensorstore"
-            )
+            raise ImportError("TensorStore is required for Zarr v3 saving. " "Install it with: pip install tensorstore")
     return _tensorstore
 
 
 @dataclass
 class ZarrAcquisitionConfig:
-    """Configuration for Zarr v3 streaming writes during acquisition.
+    """Configuration for Zarr v3 saving during acquisition.
 
     Attributes:
         output_path: Base path for zarr output (e.g., /path/to/experiment.zarr)
@@ -240,7 +238,7 @@ def _dtype_to_zarr(dtype: np.dtype) -> str:
 
 
 class ZarrWriterManager:
-    """Manages TensorStore-based Zarr v3 streaming writes.
+    """Manages TensorStore-based Zarr v3 saving.
 
     This class handles the lifecycle of a Zarr v3 dataset during acquisition:
     - Initialization: Creates the zarr structure with sharding configuration

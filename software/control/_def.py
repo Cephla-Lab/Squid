@@ -296,7 +296,7 @@ class FileSavingOption(Enum):
     INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
     MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
     OME_TIFF: Save data to OME-TIFF stacks with full metadata.
-    ZARR_V3: Save data to Zarr v3 format with sharding for efficient streaming writes.
+    ZARR_V3: Save data to Zarr v3 format with sharding.
     """
 
     INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
@@ -1112,7 +1112,7 @@ USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
-# Zarr v3 streaming write configuration
+# Zarr v3 saving configuration
 ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
 ZARR_COMPRESSION = ZarrCompression.FAST  # Safe for 10-20 fps, ~1000 MB/s encode
 

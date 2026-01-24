@@ -1,7 +1,7 @@
-"""Tests for Zarr v3 streaming writer using TensorStore.
+"""Tests for Zarr v3 saving using TensorStore.
 
 These tests verify the ZarrWriterManager and related functionality
-for real-time Zarr v3 streaming writes during acquisition.
+for Zarr v3 saving during acquisition.
 """
 
 import json
