@@ -44,7 +44,9 @@ if __name__ == "__main__":
         "--start-server", help="Auto-start the MCP control server for programmatic control", action="store_true"
     )
     parser.add_argument(
-        "--skip-homing", help="Skip hardware homing (used for restart after settings change)", action="store_true"
+        "--skip-init",
+        help="Skip hardware initialization and homing (for restart after settings change)",
+        action="store_true",
     )
     args = parser.parse_args()
 
@@ -69,12 +71,12 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_homing=args.skip_homing)
+    microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
     win = gui.HighContentScreeningGui(
         microscope=microscope,
         is_simulation=args.simulation,
         live_only_mode=args.live_only,
-        skip_homing=args.skip_homing,
+        skip_init=args.skip_init,
     )
 
     microscope_utils_menu = QMenu("Utils", win)

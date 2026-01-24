@@ -369,14 +369,14 @@ class HighContentScreeningGui(QMainWindow):
         microscope: control.microscope.Microscope,
         is_simulation=False,
         live_only_mode=False,
-        skip_homing=False,
+        skip_init=False,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self._skip_homing = skip_homing
+        self._skip_init = skip_init
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -445,7 +445,7 @@ class HighContentScreeningGui(QMainWindow):
         load_slack_settings_from_cache()
 
         self.load_objects(is_simulation=is_simulation)
-        self.setup_hardware(skip_homing=self._skip_homing)
+        self.setup_hardware(skip_init=self._skip_init)
 
         self.setup_movement_updater()
 
@@ -505,8 +505,11 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize Slack notifier
         self._setup_slack_notifier()
 
-        # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
-        if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+        # Skip cached position restoration on restart (hardware position hasn't changed)
+        if self._skip_init:
+            self.log.info("Skipping cached position restoration (--skip-init flag set)")
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+            # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             if cached_pos := squid.stage.utils.get_cached_position():
                 self.log.info(
                     f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
@@ -615,7 +618,7 @@ class HighContentScreeningGui(QMainWindow):
             fluidics=self.fluidics,
         )
 
-    def setup_hardware(self, skip_homing: bool = False):
+    def setup_hardware(self, skip_init: bool = False):
         # Setup hardware components
         if not self.microcontroller:
             raise ValueError("Microcontroller must be none-None for hardware setup.")
@@ -624,25 +627,26 @@ class HighContentScreeningGui(QMainWindow):
             x_config = self.stage.get_config().X_AXIS
             y_config = self.stage.get_config().Y_AXIS
             z_config = self.stage.get_config().Z_AXIS
-            self.log.info(
-                f"Setting stage limits to:"
-                f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
-                f" y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}],"
-                f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
-            )
 
-            self.stage.set_limits(
-                x_pos_mm=x_config.MAX_POSITION,
-                x_neg_mm=x_config.MIN_POSITION,
-                y_pos_mm=y_config.MAX_POSITION,
-                y_neg_mm=y_config.MIN_POSITION,
-                z_pos_mm=z_config.MAX_POSITION,
-                z_neg_mm=z_config.MIN_POSITION,
-            )
-
-            if skip_homing:
-                self.log.info("Skipping hardware homing (--skip-homing flag set)")
+            if skip_init:
+                self.log.info("Skipping hardware initialization (--skip-init flag set)")
             else:
+                self.log.info(
+                    f"Setting stage limits to:"
+                    f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
+                    f" y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}],"
+                    f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
+                )
+
+                self.stage.set_limits(
+                    x_pos_mm=x_config.MAX_POSITION,
+                    x_neg_mm=x_config.MIN_POSITION,
+                    y_pos_mm=y_config.MAX_POSITION,
+                    y_neg_mm=y_config.MIN_POSITION,
+                    z_pos_mm=z_config.MAX_POSITION,
+                    z_neg_mm=z_config.MIN_POSITION,
+                )
+
                 self.microscope.home_xyz()
 
         except TimeoutError as e:
@@ -2181,18 +2185,18 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("NDViewer tab exists but not found in tab widget")
 
     def restart_application(self):
-        """Restart the application with --skip-homing flag.
+        """Restart the application with --skip-init flag.
 
-        Performs hardware cleanup, spawns a new process with --skip-homing flag,
-        then quits the current application. Hardware homing is skipped in the new
+        Performs hardware cleanup, spawns a new process with --skip-init flag,
+        then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
         """
-        self.log.info("Restarting application with --skip-homing...")
+        self.log.info("Restarting application with --skip-init...")
 
-        # Build new args list, preserving original arguments but adding --skip-homing
+        # Build new args list, preserving original arguments but adding --skip-init
         args = [sys.executable] + sys.argv
-        if "--skip-homing" not in args:
-            args.append("--skip-homing")
+        if "--skip-init" not in args:
+            args.append("--skip-init")
 
         # Clean up hardware BEFORE spawning new process to release resources
         self._cleanup_for_restart()
@@ -2308,7 +2312,8 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z and reset objective changer only on full shutdown
+        # Retract Z, reset objective changer, and turn off PIDs only on full shutdown
+        # (for restart, preserve hardware state since new process will use --skip-init)
         if not for_restart:
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
@@ -2317,13 +2322,10 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
 
-        try:
-            self.microcontroller.turn_off_all_pid()
-        except Exception:
-            if for_restart:
+            try:
+                self.microcontroller.turn_off_all_pid()
+            except Exception:
                 self.log.exception(f"Error turning off PID during {context}")
-            else:
-                raise
 
         # Turn off CellX lasers
         if ENABLE_CELLX:

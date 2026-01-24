@@ -130,6 +130,7 @@ def get_filter_wheel_controller(
     config: FilterWheelConfig,
     microcontroller=None,  # Type hint would create circular dependency
     simulated: bool = False,
+    skip_init: bool = False,
 ) -> AbstractFilterWheelController:
     """
     Factory function to create the appropriate filter wheel controller based on configuration.
@@ -138,6 +139,7 @@ def get_filter_wheel_controller(
         config: FilterWheelConfig containing controller type and settings
         microcontroller: Microcontroller instance (required for SQUID filter wheel)
         simulated: If True, return a simulated controller regardless of config
+        skip_init: If True, skip hardware initialization (for restart after settings change)
 
     Returns:
         AbstractFilterWheelController instance
@@ -156,7 +158,7 @@ def get_filter_wheel_controller(
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:
             raise ValueError("SquidFilterWheel requires a microcontroller instance")
-        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config)
+        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config, skip_init=skip_init)
 
     elif config.controller_type == FilterWheelControllerVariant.ZABER:
         return ZaberFilterController(config=config.controller_config)

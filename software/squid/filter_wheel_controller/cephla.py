@@ -9,7 +9,7 @@ from squid.config import SquidFilterWheelConfig
 
 class SquidFilterWheel(AbstractFilterWheelController):
 
-    def __init__(self, microcontroller: Microcontroller, config: SquidFilterWheelConfig):
+    def __init__(self, microcontroller: Microcontroller, config: SquidFilterWheelConfig, skip_init: bool = False):
         # TODO: need to support two filter wheels in both hardware and software.
 
         if microcontroller is None:
@@ -18,10 +18,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._config = config
         self.microcontroller = microcontroller
 
-        self.microcontroller.init_filter_wheel()
-        time.sleep(0.5)
-        self.microcontroller.configure_squidfilter()
-        time.sleep(0.5)
+        if not skip_init:
+            self.microcontroller.init_filter_wheel()
+            time.sleep(0.5)
+            self.microcontroller.configure_squidfilter()
+            time.sleep(0.5)
 
         # emission filter position
         self.w_pos_index = self._config.min_index

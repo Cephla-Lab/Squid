@@ -72,7 +72,7 @@ def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
 class MicroscopeAddons:
     @staticmethod
     def build_from_global_config(
-        stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False
+        stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False, skip_init: bool = False
     ) -> "MicroscopeAddons":
         # Per-component simulation settings
         spinning_disk_simulated = _should_simulate(simulated, control._def.SIMULATE_SPINNING_DISK)
@@ -114,7 +114,7 @@ class MicroscopeAddons:
         fw_config = squid.config.get_filter_wheel_config()
         if fw_config:
             emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
-                fw_config, microcontroller=micro, simulated=filter_wheel_simulated
+                fw_config, microcontroller=micro, simulated=filter_wheel_simulated, skip_init=skip_init
             )
 
         objective_changer = None
@@ -196,25 +196,25 @@ class MicroscopeAddons:
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
 
-    def prepare_for_use(self, skip_homing: bool = False):
+    def prepare_for_use(self, skip_init: bool = False):
         """
         Prepare all the addon hardware for immediate use.
 
         Args:
-            skip_homing: If True, skip homing operations (e.g., during restart).
+            skip_init: If True, skip homing operations (e.g., during restart).
         """
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
-            if not skip_homing:
+            if not skip_init:
                 self.emission_filter_wheel.home()
-        if self.piezo_stage and not skip_homing:
+        if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
 
 
 class LowLevelDrivers:
     @staticmethod
-    def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
+    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "LowLevelDrivers":
         # Per-component simulation for microcontroller
         mcu_simulated = _should_simulate(simulated, control._def.SIMULATE_MICROCONTROLLER)
 
@@ -225,15 +225,19 @@ class LowLevelDrivers:
             if not mcu_simulated
             else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
-        micro = control.microcontroller.Microcontroller(serial_device=micro_serial_device)
+        # Skip MCU reset/initialize when restarting (hardware already configured)
+        micro = control.microcontroller.Microcontroller(
+            serial_device=micro_serial_device,
+            reset_and_initialize=not skip_init,
+        )
 
         return LowLevelDrivers(microcontroller=micro)
 
     def __init__(self, microcontroller: Optional[Microcontroller] = None):
         self.microcontroller: Optional[Microcontroller] = microcontroller
 
-    def prepare_for_use(self, skip_homing: bool = False):
-        # Note: Currently no homing operations here, but accepting skip_homing for API consistency
+    def prepare_for_use(self, skip_init: bool = False):
+        # Note: Currently no homing operations here, but accepting skip_init for API consistency
         if self.microcontroller and control._def.HAS_OBJECTIVE_PIEZO:
             # Configure DAC gains for objective piezo
             control._def.OUTPUT_GAINS.CHANNEL7_GAIN = control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
@@ -244,8 +248,8 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_homing: bool = False) -> "Microscope":
-        low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
+    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "Microscope":
+        low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init)
 
         # Per-component simulation for camera
         camera_simulated = _should_simulate(simulated, control._def.SIMULATE_CAMERA)
@@ -259,7 +263,7 @@ class Microscope:
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
-            stage, low_level_devices.microcontroller, simulated=simulated
+            stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
         )
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
@@ -330,7 +334,7 @@ class Microscope:
             addons=addons,
             low_level_drivers=low_level_devices,
             simulated=simulated,
-            skip_homing=skip_homing,
+            skip_init=skip_init,
         )
 
     def __init__(
@@ -343,7 +347,7 @@ class Microscope:
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
-        skip_homing: bool = False,
+        skip_init: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -396,11 +400,11 @@ class Microscope:
             self._sync_confocal_mode_from_hardware()
 
         if not skip_prepare_for_use:
-            self._prepare_for_use(skip_homing=skip_homing)
+            self._prepare_for_use(skip_init=skip_init)
 
-    def _prepare_for_use(self, skip_homing: bool = False):
-        self.low_level_drivers.prepare_for_use(skip_homing=skip_homing)
-        self.addons.prepare_for_use(skip_homing=skip_homing)
+    def _prepare_for_use(self, skip_init: bool = False):
+        self.low_level_drivers.prepare_for_use(skip_init=skip_init)
+        self.addons.prepare_for_use(skip_init=skip_init)
 
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
