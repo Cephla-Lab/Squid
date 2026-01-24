@@ -2304,11 +2304,20 @@ class HighContentScreeningGui(QMainWindow):
 
         # Retract Z and reset objective changer only on full shutdown
         if not for_restart:
-            self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-            if USE_XERYON:
-                self.objective_changer.moveToZero()
+            try:
+                self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+                if USE_XERYON:
+                    self.objective_changer.moveToZero()
+            except Exception:
+                self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
 
-        self.microcontroller.turn_off_all_pid()
+        try:
+            self.microcontroller.turn_off_all_pid()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error turning off PID during {context}")
+            else:
+                raise
 
         # Turn off CellX lasers
         if ENABLE_CELLX:
