@@ -991,8 +991,8 @@ class PreferencesDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(
-            "QScrollArea { background-color: #f8f8f8; border: none; }"
-            "QScrollArea > QWidget > QWidget { background-color: #f8f8f8; }"
+            "QScrollArea { background-color: palette(light); border: none; }"
+            "QScrollArea > QWidget > QWidget { background-color: palette(light); }"
         )
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
