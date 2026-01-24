@@ -1,5 +1,7 @@
 # set QT_API environment variable
 import os
+import subprocess
+import sys
 from configparser import ConfigParser
 
 from control.core.auto_focus_controller import AutoFocusController
@@ -363,11 +365,18 @@ class HighContentScreeningGui(QMainWindow):
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
-        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+        self,
+        microscope: control.microscope.Microscope,
+        is_simulation=False,
+        live_only_mode=False,
+        skip_homing=False,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
+        self._skip_homing = skip_homing
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -436,7 +445,7 @@ class HighContentScreeningGui(QMainWindow):
         load_slack_settings_from_cache()
 
         self.load_objects(is_simulation=is_simulation)
-        self.setup_hardware()
+        self.setup_hardware(skip_homing=self._skip_homing)
 
         self.setup_movement_updater()
 
@@ -605,7 +614,7 @@ class HighContentScreeningGui(QMainWindow):
             fluidics=self.fluidics,
         )
 
-    def setup_hardware(self):
+    def setup_hardware(self, skip_homing: bool = False):
         # Setup hardware components
         if not self.microcontroller:
             raise ValueError("Microcontroller must be none-None for hardware setup.")
@@ -630,7 +639,10 @@ class HighContentScreeningGui(QMainWindow):
                 z_neg_mm=z_config.MIN_POSITION,
             )
 
-            self.microscope.home_xyz()
+            if skip_homing:
+                self.log.info("Skipping hardware homing (--skip-homing flag set)")
+            else:
+                self.microscope.home_xyz()
 
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
@@ -2161,6 +2173,39 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
         else:
             self.log.warning("NDViewer tab exists but not found in tab widget")
+
+    def restart_application(self):
+        """Restart the application with --skip-homing flag.
+
+        Spawns a new process with the current command-line arguments plus --skip-homing,
+        then closes the current application. Hardware homing is skipped since the hardware
+        is already in a known state.
+        """
+        self.log.info("Restarting application with --skip-homing...")
+
+        # Build new args list, preserving original arguments but adding --skip-homing
+        args = [sys.executable] + sys.argv
+        if "--skip-homing" not in args:
+            args.append("--skip-homing")
+
+        # Spawn new process
+        subprocess.Popen(args)
+
+        # Close current application (bypass confirmation dialog)
+        self._close_for_restart()
+
+    def _close_for_restart(self):
+        """Close the application without showing confirmation dialog (for restart)."""
+        # Cache position and settings
+        try:
+            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
+        except ValueError as e:
+            self.log.error(f"Couldn't cache position while closing for restart. Error: {e}")
+
+        squid.camera.settings_cache.save_camera_settings(self.camera)
+
+        # Quit the application
+        QApplication.instance().quit()
 
     def closeEvent(self, event):
         # Show confirmation dialog

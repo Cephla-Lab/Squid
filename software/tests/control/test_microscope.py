@@ -10,6 +10,12 @@ def test_create_simulated_microscope():
     sim_scope.close()
 
 
+def test_create_simulated_microscope_with_skip_homing():
+    """Test that skip_homing flag is accepted and doesn't cause errors."""
+    sim_scope = control.microscope.Microscope.build_from_global_config(True, skip_homing=True)
+    sim_scope.close()
+
+
 def test_simulated_scope_basic_ops():
     scope = control.microscope.Microscope.build_from_global_config(True)
 

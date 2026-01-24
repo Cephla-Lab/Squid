@@ -1990,6 +1990,31 @@ class PreferencesDialog(QDialog):
 
         return changes
 
+    def _offer_restart_dialog(self):
+        """Show a dialog offering to restart the application now."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Restart Required")
+        msg.setText("Settings have been saved. This change requires a restart to take effect.")
+        msg.setInformativeText("Would you like to restart now?")
+        msg.setIcon(QMessageBox.Information)
+        restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+        msg.addButton("Later", QMessageBox.RejectRole)
+        msg.exec_()
+        if msg.clickedButton() == restart_btn:
+            self._trigger_restart()
+
+    def _trigger_restart(self):
+        """Trigger application restart via the main GUI."""
+        # Find the main GUI window
+        main_window = self.parent()
+        while main_window is not None:
+            # Check if this is the HighContentScreeningGui
+            if hasattr(main_window, "restart_application"):
+                main_window.restart_application()
+                return
+            main_window = main_window.parent() if hasattr(main_window, "parent") else None
+        self._log.warning("Could not find main window to trigger restart")
+
     def _save_and_close(self):
         changes = self._get_changes()
 
@@ -2004,9 +2029,7 @@ class PreferencesDialog(QDialog):
         if len(changes) == 1:
             self._apply_settings()
             if requires_restart:
-                QMessageBox.information(
-                    self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
-                )
+                self._offer_restart_dialog()
             self.accept()
             return
 
@@ -2044,6 +2067,21 @@ class PreferencesDialog(QDialog):
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
+
+        # Track which button was clicked
+        dialog.restart_requested = False
+
+        if requires_restart:
+            save_restart_btn = QPushButton("Save && Restart")
+            save_restart_btn.setToolTip("Save settings and restart the application now")
+
+            def on_save_restart():
+                dialog.restart_requested = True
+                dialog.accept()
+
+            save_restart_btn.clicked.connect(on_save_restart)
+            button_layout.addWidget(save_restart_btn)
+
         save_btn = QPushButton("Save")
         cancel_btn = QPushButton("Cancel")
         save_btn.clicked.connect(dialog.accept)
@@ -2054,6 +2092,8 @@ class PreferencesDialog(QDialog):
 
         if dialog.exec_() == QDialog.Accepted:
             self._apply_settings()
+            if dialog.restart_requested:
+                self._trigger_restart()
             self.accept()
 
 

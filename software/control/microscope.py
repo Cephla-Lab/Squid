@@ -169,15 +169,19 @@ class MicroscopeAddons:
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
 
-    def prepare_for_use(self):
+    def prepare_for_use(self, skip_homing: bool = False):
         """
         Prepare all the addon hardware for immediate use.
+
+        Args:
+            skip_homing: If True, skip homing operations (e.g., during restart).
         """
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
-            self.emission_filter_wheel.home()
-        if self.piezo_stage:
+            if not skip_homing:
+                self.emission_filter_wheel.home()
+        if self.piezo_stage and not skip_homing:
             self.piezo_stage.home()
 
 
@@ -209,7 +213,7 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False) -> "Microscope":
+    def build_from_global_config(simulated: bool = False, skip_homing: bool = False) -> "Microscope":
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
 
         stage_config = squid.config.get_stage_config()
@@ -292,6 +296,7 @@ class Microscope:
             addons=addons,
             low_level_drivers=low_level_devices,
             simulated=simulated,
+            skip_homing=skip_homing,
         )
 
     def __init__(
@@ -304,6 +309,7 @@ class Microscope:
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
+        skip_homing: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -356,11 +362,11 @@ class Microscope:
             self._sync_confocal_mode_from_hardware()
 
         if not skip_prepare_for_use:
-            self._prepare_for_use()
+            self._prepare_for_use(skip_homing=skip_homing)
 
-    def _prepare_for_use(self):
+    def _prepare_for_use(self, skip_homing: bool = False):
         self.low_level_drivers.prepare_for_use()
-        self.addons.prepare_for_use()
+        self.addons.prepare_for_use(skip_homing=skip_homing)
 
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)

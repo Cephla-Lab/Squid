@@ -397,16 +397,16 @@ class TestSaveAndCloseWorkflow:
         assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
 
     def test_save_and_close_single_change_requires_restart(self, qtbot, preferences_dialog, temp_config_file):
-        """Single change requiring restart should show restart message."""
+        """Single change requiring restart should show restart offer dialog."""
         preferences_dialog.binning_spinbox.setValue(4)
 
-        with patch.object(QMessageBox, "information") as mock_info:
+        # Mock the restart offer dialog method
+        with patch.object(preferences_dialog, "_offer_restart_dialog") as mock_restart_dialog:
             preferences_dialog.accept = MagicMock()
             preferences_dialog._save_and_close()
 
-            # Should show restart message
-            mock_info.assert_called_once()
-            assert "restart" in str(mock_info.call_args)
+            # Should offer restart dialog
+            mock_restart_dialog.assert_called_once()
             preferences_dialog.accept.assert_called_once()
 
     def test_save_and_close_multiple_changes_accepted(self, qtbot, preferences_dialog, temp_config_file):
