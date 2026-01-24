@@ -2005,10 +2005,13 @@ class PreferencesDialog(QDialog):
 
     def _trigger_restart(self):
         """Trigger application restart via the main GUI."""
+        # Local import to avoid circular dependency at module load time
+        from control.gui_hcs import HighContentScreeningGui
+
         # Find the main GUI window by traversing parent hierarchy
         widget = self.parent()
         while widget is not None:
-            if hasattr(widget, "restart_application"):
+            if isinstance(widget, HighContentScreeningGui):
                 widget.restart_application()
                 return
             widget = widget.parent()
