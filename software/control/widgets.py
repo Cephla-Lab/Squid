@@ -477,7 +477,7 @@ class CollapsibleGroupBox(QWidget):
                 border-top: none;
                 border-bottom-left-radius: 4px;
                 border-bottom-right-radius: 4px;
-                background-color: palette(base);
+                background-color: palette(window);
             }
             QFrame#collapsibleContent QLabel {
                 border: none;
@@ -901,6 +901,13 @@ class PreferencesDialog(QDialog):
         path_layout.addWidget(browse_button)
         layout.addRow("Default Saving Path:", path_widget)
 
+        # Show Dev Tab checkbox
+        self.show_dev_tab_checkbox = QCheckBox()
+        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
+        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
+        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
+        layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
+
         self.tab_widget.addTab(tab, "General")
 
     def _create_acquisition_tab(self):
@@ -994,7 +1001,7 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(scroll_content)
 
         # Stage & Motion section (requires restart)
-        stage_group = CollapsibleGroupBox("Stage && Motion *")
+        stage_group = CollapsibleGroupBox("Stage && Motion *", collapsed=True)
         stage_layout = QFormLayout()
 
         self.max_vel_x = QDoubleSpinBox()
@@ -1055,7 +1062,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(stage_group)
 
         # Contrast Autofocus section
-        af_group = CollapsibleGroupBox("Contrast Autofocus")
+        af_group = CollapsibleGroupBox("Contrast Autofocus", collapsed=True)
         af_layout = QFormLayout()
 
         self.af_stop_threshold = QDoubleSpinBox()
@@ -1080,7 +1087,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(af_group)
 
         # Hardware Configuration section
-        hw_group = CollapsibleGroupBox("Hardware Configuration")
+        hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
         self.z_motor_combo = QComboBox()
@@ -1120,7 +1127,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(hw_group)
 
         # Software Position Limits section
-        limits_group = CollapsibleGroupBox("Software Position Limits")
+        limits_group = CollapsibleGroupBox("Software Position Limits", collapsed=True)
         limits_layout = QFormLayout()
 
         self.limit_x_pos = QDoubleSpinBox()
@@ -1164,7 +1171,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(limits_group)
 
         # Tracking section (hidden - widgets exist for config persistence)
-        tracking_group = CollapsibleGroupBox("Tracking")
+        tracking_group = CollapsibleGroupBox("Tracking", collapsed=True)
         tracking_layout = QFormLayout()
 
         self.enable_tracking_checkbox = QCheckBox()
@@ -1186,7 +1193,7 @@ class PreferencesDialog(QDialog):
         tracking_group.hide()  # Hidden but widgets exist for config save/load
 
         # Acquisition Throttling section
-        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling", collapsed=True)
         throttle_layout = QFormLayout()
 
         self.throttling_enabled_checkbox = QCheckBox()
@@ -1244,7 +1251,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(throttle_group)
 
         # Diagnostics section
-        diagnostics_group = CollapsibleGroupBox("Diagnostics")
+        diagnostics_group = CollapsibleGroupBox("Diagnostics", collapsed=True)
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
@@ -1432,7 +1439,15 @@ class PreferencesDialog(QDialog):
         layout.addWidget(legend_label)
 
         layout.addStretch()
-        self.tab_widget.addTab(self.dev_tab, "Dev")
+        self._dev_tab_index = self.tab_widget.addTab(self.dev_tab, "Dev")
+
+        # Initially hide if not enabled
+        if not self._get_config_bool("GENERAL", "show_dev_tab", False):
+            self.tab_widget.setTabVisible(self._dev_tab_index, False)
+
+    def _toggle_dev_tab_visibility(self, state):
+        """Show or hide the Dev tab based on checkbox state."""
+        self.tab_widget.setTabVisible(self._dev_tab_index, state == Qt.Checked)
 
     def _get_config_value(self, section, option, default=""):
         try:
@@ -1484,6 +1499,7 @@ class PreferencesDialog(QDialog):
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1723,6 +1739,11 @@ class PreferencesDialog(QDialog):
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "show_dev_tab", False)
+        new_val = self.show_dev_tab_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
