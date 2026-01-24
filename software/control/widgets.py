@@ -1457,7 +1457,11 @@ class PreferencesDialog(QDialog):
 
     def _toggle_dev_tab_visibility(self, state):
         """Show or hide the Dev tab based on checkbox state."""
-        self.tab_widget.setTabVisible(self._dev_tab_index, state == Qt.Checked)
+        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
+        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
+        state_value = getattr(state, "value", state)
+        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
+        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
 
     def _get_config_value(self, section, option, default=""):
         try:
