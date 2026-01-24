@@ -522,8 +522,8 @@ class HighContentScreeningGui(QMainWindow):
         menubar = self.menuBar()
         settings_menu = menubar.addMenu("Settings")
 
-        # Configuration action
-        config_action = QAction("Configuration...", self)
+        # Preferences action
+        config_action = QAction("Preferences...", self)
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
