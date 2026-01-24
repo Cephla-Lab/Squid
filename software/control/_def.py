@@ -294,15 +294,15 @@ class FileSavingOption(Enum):
     """File saving options.
 
     INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
-    TODO: Move all file saving related settings to this enum.
     MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
     OME_TIFF: Save data to OME-TIFF stacks with full metadata.
-    TODO: Add zarr saving options.
+    ZARR_V3: Save data to Zarr v3 format with sharding for efficient streaming writes.
     """
 
     INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
     MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
     OME_TIFF = "OME_TIFF"
+    ZARR_V3 = "ZARR_V3"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
@@ -316,6 +316,54 @@ class FileSavingOption(Enum):
             return FileSavingOption[option.upper()]
         except KeyError:
             raise ValueError(f"Invalid file saving option: {option}")
+
+
+class ZarrChunkMode(Enum):
+    """Zarr chunk size configuration.
+
+    FULL_FRAME: Each chunk is a full image plane (simplest, default).
+    TILED_512: 512x512 pixel chunks for tiled visualization.
+    TILED_256: 256x256 pixel chunks for fine-grained streaming.
+    """
+
+    FULL_FRAME = "full_frame"
+    TILED_512 = "tiled_512"
+    TILED_256 = "tiled_256"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrChunkMode"]) -> "ZarrChunkMode":
+        """Convert string or enum to ZarrChunkMode enum."""
+        if isinstance(option, ZarrChunkMode):
+            return option
+        try:
+            return ZarrChunkMode(option.lower())
+        except ValueError:
+            raise ValueError(
+                f"Invalid zarr chunk mode: '{option}'. Expected 'full_frame', 'tiled_512', or 'tiled_256'."
+            )
+
+
+class ZarrCompression(Enum):
+    """Zarr compression presets optimized for different use cases.
+
+    FAST: blosc-lz4, ~1000 MB/s encode, ~2x compression ratio. Safe for 10-20 fps.
+    BALANCED: blosc-zstd level 3, ~500 MB/s encode, ~3-4x ratio.
+    BEST: blosc-zstd level 9, slowest but best compression ratio.
+    """
+
+    FAST = "fast"
+    BALANCED = "balanced"
+    BEST = "best"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrCompression"]) -> "ZarrCompression":
+        """Convert string or enum to ZarrCompression enum."""
+        if isinstance(option, ZarrCompression):
+            return option
+        try:
+            return ZarrCompression(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid zarr compression: '{option}'. Expected 'fast', 'balanced', or 'best'.")
 
 
 class FocusMeasureOperator(Enum):
@@ -1064,6 +1112,15 @@ USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
+# Zarr v3 streaming write configuration
+ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
+ZARR_COMPRESSION = ZarrCompression.FAST  # Safe for 10-20 fps, ~1000 MB/s encode
+
+# Use 6D array with FOV dimension for non-HCS acquisitions (non-standard, not OME-NGFF compliant)
+# When False (default): creates per-FOV 5D zarr files (OME-NGFF compliant)
+# When True: creates single 6D zarr with shape (FOV, T, C, Z, Y, X)
+ZARR_USE_6D_FOV_DIMENSION = False
+
 ##########################################################
 #### start of loading machine specific configurations ####
 ##########################################################
@@ -1202,6 +1259,8 @@ MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum
 FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
+ZARR_CHUNK_MODE = ZarrChunkMode.convert_to_enum(ZARR_CHUNK_MODE)
+ZARR_COMPRESSION = ZarrCompression.convert_to_enum(ZARR_COMPRESSION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 

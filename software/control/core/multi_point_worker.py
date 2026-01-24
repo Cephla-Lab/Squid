@@ -37,6 +37,8 @@ from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
     SaveOMETiffJob,
+    SaveZarrJob,
+    ZarrWriterInfo,
     AcquisitionInfo,
     Job,
     JobImage,
@@ -190,9 +192,12 @@ class MultiPointWorker:
         self.skip_saving = acquisition_parameters.skip_saving
         job_classes = []
         use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
+        use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
         if not self.skip_saving:
             if use_ome_tiff:
                 job_classes.append(SaveOMETiffJob)
+            elif use_zarr_v3:
+                job_classes.append(SaveZarrJob)
             else:
                 job_classes.append(SaveImageJob)
 
@@ -254,6 +259,42 @@ class MultiPointWorker:
         # Get the current log file path to share with subprocess workers
         log_file_path = squid.logging.get_current_log_file_path()
 
+        # Build ZarrWriterInfo if using ZARR_V3 format
+        # Output structure depends on acquisition type and settings:
+        # - HCS (wells): {experiment_path}/plate.zarr/{row}/{col}/{fov}/0  (5D per FOV)
+        # - Non-HCS default: {experiment_path}/zarr/{region}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
+        # - Non-HCS 6D: {experiment_path}/zarr/{region}/acquisition.zarr  (6D, non-standard)
+        zarr_writer_info = None
+        if use_zarr_v3:
+            # Detect HCS mode from well-based acquisition detection
+            is_hcs = is_select_wells or (is_loaded_wells and self._is_well_based_acquisition())
+
+            # Pre-compute FOV counts per region (needed for 6D shape calculation in non-HCS mode)
+            region_fov_counts = {}
+            for region_id, coords in self.scan_region_fov_coords_mm.items():
+                region_fov_counts[str(region_id)] = len(coords)
+
+            zarr_writer_info = ZarrWriterInfo(
+                base_path=self.experiment_path,
+                t_size=self.Nt,
+                c_size=len(self.selected_configurations),
+                z_size=self.NZ,
+                is_hcs=is_hcs,
+                use_6d_fov=control._def.ZARR_USE_6D_FOV_DIMENSION,
+                region_fov_counts=region_fov_counts,
+                pixel_size_um=self._pixel_size_um,
+                z_step_um=self._physical_size_z_um,
+                time_increment_s=self._time_increment_s,
+                channel_names=[cfg.name for cfg in self.selected_configurations],
+            )
+            if is_hcs:
+                mode_str = "HCS plate hierarchy"
+            elif control._def.ZARR_USE_6D_FOV_DIMENSION:
+                mode_str = "per-region 6D (non-standard)"
+            else:
+                mode_str = "per-FOV 5D (OME-NGFF compliant)"
+            self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
+
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
@@ -265,6 +306,8 @@ class MultiPointWorker:
                     bp_pending_jobs=self._backpressure.pending_jobs_value,
                     bp_pending_bytes=self._backpressure.pending_bytes_value,
                     bp_capacity_event=self._backpressure.capacity_event,
+                    # Pass zarr writer info for ZARR_V3 format
+                    zarr_writer_info=zarr_writer_info,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None

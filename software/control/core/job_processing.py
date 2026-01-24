@@ -373,6 +373,275 @@ class SaveOMETiffJob(Job):
             pass  # Lock held by another process, already removed, or platform-specific issue
 
 
+@dataclass
+class ZarrWriterInfo:
+    """Info for zarr v3 streaming writes, injected by JobRunner.
+
+    Output path depends on acquisition mode:
+    - HCS mode: {base_path}/plate.zarr/{row}/{col}/{fov}/0  (5D per FOV)
+    - Non-HCS default: {base_path}/zarr/{region_id}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
+    - Non-HCS 6D: {base_path}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension, non-standard)
+
+    Attributes:
+        base_path: Base path for zarr outputs (e.g., experiment_path)
+        t_size: Total time points
+        c_size: Total channels
+        z_size: Total z levels
+        is_hcs: True for wellplate (HCS) acquisitions
+        use_6d_fov: Use 6D (FOV, T, C, Z, Y, X) instead of per-FOV files (non-standard)
+        region_fov_counts: Map of region_id -> num_fovs (for 6D shape calculation)
+        pixel_size_um: Physical pixel size in micrometers
+        z_step_um: Z step size in micrometers (optional)
+        time_increment_s: Time between timepoints in seconds (optional)
+        channel_names: List of channel names for metadata
+    """
+
+    base_path: str
+    t_size: int
+    c_size: int
+    z_size: int
+    is_hcs: bool = False
+    use_6d_fov: bool = False
+    region_fov_counts: Dict[str, int] = field(default_factory=dict)
+    pixel_size_um: Optional[float] = None
+    z_step_um: Optional[float] = None
+    time_increment_s: Optional[float] = None
+    channel_names: List[str] = field(default_factory=list)
+
+    def get_output_path(self, region_id: str, fov: int) -> str:
+        """Get output path based on acquisition mode.
+
+        HCS mode: {base}/plate.zarr/{row_letter}/{col_num}/{fov}/0  (5D per FOV)
+        Non-HCS default: {base}/zarr/{region_id}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
+        Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension)
+        """
+        if self.is_hcs:
+            # HCS: plate hierarchy (5D per FOV)
+            row_letter, col_num = self._parse_well_id_parts(region_id)
+            return os.path.join(self.base_path, "plate.zarr", row_letter, col_num, str(fov), "0")
+        elif self.use_6d_fov:
+            # Non-HCS with 6D: single zarr per region, FOV is a dimension
+            return os.path.join(self.base_path, "zarr", str(region_id), "acquisition.zarr")
+        else:
+            # Non-HCS default: per-FOV zarr files (OME-NGFF compliant)
+            return os.path.join(self.base_path, "zarr", str(region_id), f"fov_{fov}.zarr")
+
+    @staticmethod
+    def _parse_well_id_parts(well_id: str) -> Tuple[str, str]:
+        """Parse well ID to (row_letter, col_number) strings.
+
+        E.g., "A1" -> ("A", "1"), "B12" -> ("B", "12"), "AA3" -> ("AA", "3")
+        """
+        well_id = str(well_id).upper()
+        letter_part = ""
+        number_part = ""
+        for char in well_id:
+            if char.isalpha():
+                letter_part += char
+            else:
+                number_part += char
+        return (letter_part, number_part)
+
+    def get_fov_count(self, region_id: str) -> int:
+        """Get total FOV count for a region (for 6D shape calculation)."""
+        return self.region_fov_counts.get(str(region_id), 1)
+
+
+@dataclass
+class SaveZarrJob(Job):
+    """Job for saving images to Zarr v3 format using TensorStore.
+
+    Uses a process-local SyncZarrWriter that is initialized lazily on first write.
+    The zarr_writer_info field is injected by JobRunner.dispatch() before the job runs.
+    """
+
+    _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
+    zarr_writer_info: Optional[ZarrWriterInfo] = field(default=None)
+
+    # Class-level writer storage keyed by output_path
+    # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
+    # process has its own copy of this class variable.
+    _zarr_writers: ClassVar[Dict[str, "SyncZarrWriter"]] = {}
+
+    @classmethod
+    def clear_writers(cls) -> None:
+        """Clear all zarr writers.
+
+        Call at start of new acquisition to ensure clean state.
+        """
+        for writer in cls._zarr_writers.values():
+            if writer.is_initialized and not writer.is_finalized:
+                try:
+                    writer.abort()
+                except Exception as e:
+                    cls._log.warning(f"Error aborting writer during clear: {e}")
+        cls._zarr_writers.clear()
+
+    @classmethod
+    def finalize_all_writers(cls) -> None:
+        """Finalize all active zarr writers.
+
+        Call at end of acquisition to ensure all data is written.
+        """
+        for path, writer in list(cls._zarr_writers.items()):
+            if writer.is_initialized and not writer.is_finalized:
+                try:
+                    writer.finalize()
+                    cls._log.info(f"Finalized zarr writer: {path}")
+                except Exception as e:
+                    cls._log.error(f"Error finalizing writer {path}: {e}")
+        cls._zarr_writers.clear()
+
+    def run(self) -> bool:
+        if self.zarr_writer_info is None:
+            raise ValueError(
+                "SaveZarrJob.run() requires zarr_writer_info but it is None. "
+                "This job must be dispatched via JobRunner.dispatch(), which injects zarr_writer_info. "
+                "If running directly, set job.zarr_writer_info before calling run()."
+            )
+
+        from control.core.io_simulation import is_simulation_enabled, simulated_zarr_write
+
+        image = self.image_array()
+        info = self.capture_info
+
+        # Get per-region/FOV output path to avoid overwriting between FOVs
+        region_id = str(info.region_id) if info.region_id is not None else "0"
+        fov = info.fov if info.fov is not None else 0
+        output_path = self.zarr_writer_info.get_output_path(region_id, fov)
+
+        # Determine shape based on acquisition mode
+        is_hcs = self.zarr_writer_info.is_hcs
+        use_6d_fov = self.zarr_writer_info.use_6d_fov
+        if is_hcs or not use_6d_fov:
+            # 5D shape: (T, C, Z, Y, X) - one writer per FOV
+            shape = (
+                self.zarr_writer_info.t_size,
+                self.zarr_writer_info.c_size,
+                self.zarr_writer_info.z_size,
+                image.shape[0],
+                image.shape[1],
+            )
+        else:
+            # 6D shape: (FOV, T, C, Z, Y, X) - FOV first for contiguous per-FOV data
+            fov_count = self.zarr_writer_info.get_fov_count(region_id)
+            shape = (
+                fov_count,
+                self.zarr_writer_info.t_size,
+                self.zarr_writer_info.c_size,
+                self.zarr_writer_info.z_size,
+                image.shape[0],
+                image.shape[1],
+            )
+
+        # Simulated disk I/O mode
+        if is_simulation_enabled():
+            bytes_written = simulated_zarr_write(
+                image=image,
+                stack_key=output_path,
+                shape=shape,
+                time_point=info.time_point or 0,
+                z_index=info.z_index,
+                channel_index=info.configuration_idx,
+            )
+            self._log.debug(
+                f"SaveZarrJob {self.job_id}: simulated write of {bytes_written} bytes "
+                f"to {output_path} (image shape={image.shape})"
+            )
+            return True
+
+        self._save_zarr(image, info, output_path)
+        return True
+
+    def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
+        """Write image to zarr dataset using TensorStore.
+
+        Args:
+            image: Image array to write
+            info: Capture info with t/c/z indices
+            output_path: Path to the zarr dataset for this region/FOV
+        """
+        from control.core.zarr_writer import SyncZarrWriter, ZarrAcquisitionConfig
+        from control import _def
+
+        is_hcs = self.zarr_writer_info.is_hcs
+        use_6d_fov = self.zarr_writer_info.use_6d_fov
+        region_id = str(info.region_id) if info.region_id is not None else "0"
+        fov = info.fov if info.fov is not None else 0
+
+        # Key logic:
+        # - HCS: unique per (region, fov) via output_path
+        # - Non-HCS 6D: shared per region (all FOVs in one 6D array)
+        # - Non-HCS default: unique per (region, fov) via output_path
+        if not is_hcs and use_6d_fov:
+            writer_key = f"{self.zarr_writer_info.base_path}:{region_id}"
+        else:
+            writer_key = output_path  # Unique per FOV
+
+        if writer_key not in self._zarr_writers:
+            if is_hcs or not use_6d_fov:
+                # 5D shape: (T, C, Z, Y, X) - one writer per FOV
+                shape = (
+                    self.zarr_writer_info.t_size,
+                    self.zarr_writer_info.c_size,
+                    self.zarr_writer_info.z_size,
+                    image.shape[0],
+                    image.shape[1],
+                )
+                is_6d = False
+            else:
+                # 6D shape: (FOV, T, C, Z, Y, X) - FOV first for contiguous per-FOV data
+                fov_count = self.zarr_writer_info.get_fov_count(region_id)
+                shape = (
+                    fov_count,
+                    self.zarr_writer_info.t_size,
+                    self.zarr_writer_info.c_size,
+                    self.zarr_writer_info.z_size,
+                    image.shape[0],
+                    image.shape[1],
+                )
+                is_6d = True
+
+            config = ZarrAcquisitionConfig(
+                output_path=output_path,
+                shape=shape,
+                dtype=image.dtype,
+                pixel_size_um=self.zarr_writer_info.pixel_size_um or 1.0,
+                z_step_um=self.zarr_writer_info.z_step_um,
+                time_increment_s=self.zarr_writer_info.time_increment_s,
+                channel_names=self.zarr_writer_info.channel_names,
+                chunk_mode=_def.ZARR_CHUNK_MODE,
+                compression=_def.ZARR_COMPRESSION,
+                is_hcs=is_hcs or not use_6d_fov,  # 5D for HCS and non-HCS default
+            )
+            writer = SyncZarrWriter(config)
+            writer.initialize()
+            self._zarr_writers[writer_key] = writer
+            if is_hcs:
+                mode_str = "HCS 5D"
+            elif is_6d:
+                mode_str = f"non-HCS 6D (fov_count={fov_count})"
+            else:
+                mode_str = "non-HCS 5D per-FOV"
+            self._log.info(f"Initialized zarr writer ({mode_str}): {output_path}")
+
+        writer = self._zarr_writers[writer_key]
+
+        # Write frame
+        t = info.time_point or 0
+        c = info.configuration_idx
+        z = info.z_index
+
+        if is_hcs or not use_6d_fov:
+            # 5D write
+            writer.write_frame(image, t=t, c=c, z=z)
+            self._log.debug(f"Wrote frame t={t}, c={c}, z={z} to {output_path}")
+        else:
+            # 6D write with FOV index
+            writer.write_frame(image, t=t, c=c, z=z, fov=fov)
+            self._log.debug(f"Wrote frame t={t}, c={c}, z={z}, fov={fov} to {output_path}")
+
+
 # These are debugging jobs - they should not be used in normal usage!
 class HangForeverJob(Job):
     def run(self) -> bool:
@@ -666,6 +935,8 @@ class JobRunner(multiprocessing.Process):
         bp_pending_jobs: Optional[multiprocessing.Value] = None,
         bp_pending_bytes: Optional[multiprocessing.Value] = None,
         bp_capacity_event: Optional[multiprocessing.Event] = None,
+        # Zarr writer info (for ZARR_V3 saving)
+        zarr_writer_info: Optional[ZarrWriterInfo] = None,
     ):
         super().__init__()
         # Daemon processes are terminated when the main process exits, ensuring
@@ -675,6 +946,7 @@ class JobRunner(multiprocessing.Process):
         self.daemon = True
         self._log = squid.logging.get_logger(__class__.__name__)
         self._acquisition_info = acquisition_info
+        self._zarr_writer_info = zarr_writer_info
         self._log_file_path = log_file_path  # Will be used in subprocess to set up file logging
 
         self._input_queue: multiprocessing.Queue = multiprocessing.Queue()
@@ -706,6 +978,15 @@ class JobRunner(multiprocessing.Process):
                     "When using OME-TIFF saving, initialize JobRunner with an AcquisitionInfo instance."
                 )
             job.acquisition_info = self._acquisition_info
+
+        # Inject zarr_writer_info into SaveZarrJob instances before serialization.
+        if isinstance(job, SaveZarrJob):
+            if self._zarr_writer_info is None:
+                raise ValueError(
+                    "Cannot dispatch SaveZarrJob: JobRunner was initialized without zarr_writer_info. "
+                    "When using ZARR_V3 saving, initialize JobRunner with a ZarrWriterInfo instance."
+                )
+            job.zarr_writer_info = self._zarr_writer_info
 
         # Calculate image bytes for backpressure tracking
         image_bytes = 0
@@ -866,6 +1147,12 @@ class JobRunner(multiprocessing.Process):
                         # Signal capacity available for all job completions
                         if self._bp_capacity_event is not None:
                             self._bp_capacity_event.set()
+
+        # Finalize any zarr writers that are still open
+        try:
+            SaveZarrJob.finalize_all_writers()
+        except Exception as e:
+            self._log.error(f"Error finalizing zarr writers during shutdown: {e}")
 
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)
