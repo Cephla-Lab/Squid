@@ -1408,8 +1408,8 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(self.dev_tab)
         layout.setSpacing(10)
 
-        # Hardware Simulation section
-        hw_sim_group = CollapsibleGroupBox("Hardware Simulation *")
+        # Use Simulated Hardware section
+        hw_sim_group = CollapsibleGroupBox("Use Simulated Hardware *")
         hw_sim_layout = QFormLayout()
 
         # Helper to create simulation checkboxes
