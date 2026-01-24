@@ -47,11 +47,38 @@ else:
     NL5 = None
 
 
+def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
+    """Determine if a component should be simulated.
+
+    Args:
+        global_simulated: The global --simulation flag value.
+        component_override: Per-component override from control._def.SIMULATE_*.
+            True = simulate this component
+            False = use real hardware (default)
+
+    Returns:
+        True if the component should be simulated, False otherwise.
+
+    Behavior:
+        - With --simulation flag: ALL components are simulated (per-component settings ignored)
+        - Without --simulation flag: per-component settings apply
+    """
+    if global_simulated:
+        return True  # --simulation flag: all components simulated
+    # No --simulation flag: per-component settings apply
+    return bool(component_override)
+
+
 class MicroscopeAddons:
     @staticmethod
     def build_from_global_config(
         stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False
     ) -> "MicroscopeAddons":
+        # Per-component simulation settings
+        spinning_disk_simulated = _should_simulate(simulated, control._def.SIMULATE_SPINNING_DISK)
+        filter_wheel_simulated = _should_simulate(simulated, control._def.SIMULATE_FILTER_WHEEL)
+        objective_changer_simulated = _should_simulate(simulated, control._def.SIMULATE_OBJECTIVE_CHANGER)
+        laser_af_camera_simulated = _should_simulate(simulated, control._def.SIMULATE_LASER_AF_CAMERA)
 
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
@@ -59,7 +86,7 @@ class MicroscopeAddons:
             # This needs to be changed when we figure out better machine configuration structure.
             xlight = (
                 serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
-                if not simulated
+                if not spinning_disk_simulated
                 else serial_peripherals.XLight_Simulation()
             )
 
@@ -67,7 +94,7 @@ class MicroscopeAddons:
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and control._def.USE_DRAGONFLY:
             dragonfly = (
                 serial_peripherals.Dragonfly(SN=control._def.DRAGONFLY_SERIAL_NUMBER)
-                if not simulated
+                if not spinning_disk_simulated
                 else serial_peripherals.Dragonfly_Simulation()
             )
 
@@ -87,21 +114,21 @@ class MicroscopeAddons:
         fw_config = squid.config.get_filter_wheel_config()
         if fw_config:
             emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
-                fw_config, microcontroller=micro, simulated=simulated
+                fw_config, microcontroller=micro, simulated=filter_wheel_simulated
             )
 
         objective_changer = None
         if control._def.USE_XERYON:
             objective_changer = (
                 ObjectiveChanger2PosController(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
-                if not simulated
+                if not objective_changer_simulated
                 else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
             )
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=simulated
+                squid.config.get_autofocus_camera_config(), simulated=laser_af_camera_simulated
             )
 
         fluidics = None
@@ -188,11 +215,14 @@ class MicroscopeAddons:
 class LowLevelDrivers:
     @staticmethod
     def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
+        # Per-component simulation for microcontroller
+        mcu_simulated = _should_simulate(simulated, control._def.SIMULATE_MICROCONTROLLER)
+
         micro_serial_device = (
             control.microcontroller.get_microcontroller_serial_device(
                 version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
             )
-            if not simulated
+            if not mcu_simulated
             else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
         micro = control.microcontroller.Microcontroller(serial_device=micro_serial_device)
@@ -216,6 +246,9 @@ class Microscope:
     @staticmethod
     def build_from_global_config(simulated: bool = False, skip_homing: bool = False) -> "Microscope":
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
+
+        # Per-component simulation for camera
+        camera_simulated = _should_simulate(simulated, control._def.SIMULATE_CAMERA)
 
         stage_config = squid.config.get_stage_config()
         if control._def.USE_PRIOR_STAGE:
@@ -256,7 +289,7 @@ class Microscope:
 
         camera = squid.camera.utils.get_camera(
             config=squid.config.get_camera_config(),
-            simulated=simulated,
+            simulated=camera_simulated,
             hw_trigger_fn=acquisition_camera_hw_trigger_fn,
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )

@@ -695,6 +695,17 @@ SIMULATED_DISK_IO_ENABLED = False
 SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
 SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
 
+# Per-component hardware simulation controls
+# These settings only apply when running WITHOUT the --simulation flag.
+# When --simulation is used, ALL components are simulated regardless of these settings.
+# Values: False = use real hardware (default), True = simulate this component
+SIMULATE_CAMERA = False
+SIMULATE_MICROCONTROLLER = False  # Also controls stage (stage uses MCU)
+SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
+SIMULATE_FILTER_WHEEL = False
+SIMULATE_OBJECTIVE_CHANGER = False
+SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
 ACQUISITION_THROTTLING_ENABLED = True
@@ -1277,3 +1288,39 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
+
+    # Load per-component simulation settings from config file
+    def _parse_sim_setting(value_str):
+        """Parse simulation setting: True (simulate) or False (real hardware)."""
+        val = value_str.strip().lower()
+        if val in ("true", "1", "yes", "simulate"):
+            return True
+        # Everything else (false, none, auto, unrecognized) = real hardware
+        return False
+
+    try:
+        _sim_config = ConfigParser()
+        _sim_config.read(CACHED_CONFIG_FILE_PATH)
+        if _sim_config.has_section("SIMULATION"):
+            if _sim_config.has_option("SIMULATION", "simulate_camera"):
+                SIMULATE_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_camera"))
+                log.info(f"Loaded SIMULATE_CAMERA={SIMULATE_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_microcontroller"):
+                SIMULATE_MICROCONTROLLER = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_microcontroller"))
+                log.info(f"Loaded SIMULATE_MICROCONTROLLER={SIMULATE_MICROCONTROLLER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_spinning_disk"):
+                SIMULATE_SPINNING_DISK = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_spinning_disk"))
+                log.info(f"Loaded SIMULATE_SPINNING_DISK={SIMULATE_SPINNING_DISK} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_filter_wheel"):
+                SIMULATE_FILTER_WHEEL = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_filter_wheel"))
+                log.info(f"Loaded SIMULATE_FILTER_WHEEL={SIMULATE_FILTER_WHEEL} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_objective_changer"):
+                SIMULATE_OBJECTIVE_CHANGER = _parse_sim_setting(
+                    _sim_config.get("SIMULATION", "simulate_objective_changer")
+                )
+                log.info(f"Loaded SIMULATE_OBJECTIVE_CHANGER={SIMULATE_OBJECTIVE_CHANGER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
+                SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
+                log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+    except Exception as e:
+        log.warning(f"Failed to load SIMULATION settings from config: {e}")

@@ -1409,6 +1409,46 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(self.dev_tab)
         layout.setSpacing(10)
 
+        # Use Simulated Hardware section
+        hw_sim_group = CollapsibleGroupBox("Use Simulated Hardware *")
+        hw_sim_layout = QFormLayout()
+
+        # Helper to create simulation checkboxes
+        def create_sim_checkbox(config_key):
+            checkbox = QCheckBox()
+            current = self._get_config_value("SIMULATION", config_key, "false").lower()
+            checkbox.setChecked(current in ("true", "1", "yes", "simulate"))
+            return checkbox
+
+        sim_tooltip = "Simulate this component (even without --simulation flag).\nWith --simulation flag, ALL components are always simulated."
+
+        self.sim_camera_checkbox = create_sim_checkbox("simulate_camera")
+        self.sim_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Camera:", self.sim_camera_checkbox)
+
+        self.sim_mcu_checkbox = create_sim_checkbox("simulate_microcontroller")
+        self.sim_mcu_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate MCU/Stage:", self.sim_mcu_checkbox)
+
+        self.sim_spinning_disk_checkbox = create_sim_checkbox("simulate_spinning_disk")
+        self.sim_spinning_disk_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Spinning Disk:", self.sim_spinning_disk_checkbox)
+
+        self.sim_filter_wheel_checkbox = create_sim_checkbox("simulate_filter_wheel")
+        self.sim_filter_wheel_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Filter Wheel:", self.sim_filter_wheel_checkbox)
+
+        self.sim_objective_changer_checkbox = create_sim_checkbox("simulate_objective_changer")
+        self.sim_objective_changer_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Objective Changer:", self.sim_objective_changer_checkbox)
+
+        self.sim_laser_af_camera_checkbox = create_sim_checkbox("simulate_laser_af_camera")
+        self.sim_laser_af_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Laser AF Camera:", self.sim_laser_af_camera_checkbox)
+
+        hw_sim_group.content.addLayout(hw_sim_layout)
+        layout.addWidget(hw_sim_group)
+
         # Simulated Disk I/O section
         dev_group = CollapsibleGroupBox("Simulated Disk I/O *")
         dev_layout = QFormLayout()
@@ -1629,6 +1669,21 @@ class PreferencesDialog(QDialog):
             "VIEWS",
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
+        )
+
+        # Hardware Simulation settings (in [SIMULATION] section)
+        self._ensure_section("SIMULATION")
+        self.config.set("SIMULATION", "simulate_camera", str(self.sim_camera_checkbox.isChecked()).lower())
+        self.config.set("SIMULATION", "simulate_microcontroller", str(self.sim_mcu_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_spinning_disk", str(self.sim_spinning_disk_checkbox.isChecked()).lower()
+        )
+        self.config.set("SIMULATION", "simulate_filter_wheel", str(self.sim_filter_wheel_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_objective_changer", str(self.sim_objective_changer_checkbox.isChecked()).lower()
+        )
+        self.config.set(
+            "SIMULATION", "simulate_laser_af_camera", str(self.sim_laser_af_camera_checkbox.isChecked()).lower()
         )
 
         # Save to file
@@ -2039,6 +2094,37 @@ class PreferencesDialog(QDialog):
         new_val = self.enable_ndviewer_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
+
+        # Hardware Simulation settings (require restart)
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
+        new_val = self.sim_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Camera *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "false").lower() == "true"
+        new_val = self.sim_mcu_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate MCU/Stage *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "false").lower() == "true"
+        new_val = self.sim_spinning_disk_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Spinning Disk *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "false").lower() == "true"
+        new_val = self.sim_filter_wheel_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Filter Wheel *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "false").lower() == "true"
+        new_val = self.sim_objective_changer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Objective Changer *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false").lower() == "true"
+        new_val = self.sim_laser_af_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Laser AF Camera *", str(old_val), str(new_val), True))
 
         return changes
 
