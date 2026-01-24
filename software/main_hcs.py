@@ -89,11 +89,11 @@ if __name__ == "__main__":
             "Images are encoded to memory (exercises RAM/CPU) but NOT saved to disk.\n"
             f"Simulated write speed: {control._def.SIMULATED_DISK_IO_SPEED_MB_S} MB/s\n\n"
             "This mode is for development/testing only.\n\n"
-            "To disable: Settings > Preferences > Advanced",
+            "To disable: Settings > Settings... > Dev tab",
             QMessageBox.Ok,
         )
 
-    win.show()
+    win.showMaximized()
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": win.microscope}

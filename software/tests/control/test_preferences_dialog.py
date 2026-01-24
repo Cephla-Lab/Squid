@@ -688,3 +688,94 @@ class TestViewsTabDefIntegration:
 
         finally:
             control._def.DOWNSAMPLED_Z_PROJECTION = original_z_proj
+
+
+class TestDevTabVisibility:
+    """Test Dev tab visibility controlled by Advanced > Developer Options > Show Dev Tab."""
+
+    def test_dev_tab_hidden_by_default(self, qtbot, sample_config, temp_config_file):
+        """Dev tab should be hidden when show_dev_tab config is not set or false."""
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # Find Dev tab index
+        dev_tab_index = None
+        for i in range(dialog.tab_widget.count()):
+            if dialog.tab_widget.tabText(i) == "Dev":
+                dev_tab_index = i
+                break
+
+        assert dev_tab_index is not None, "Dev tab should exist"
+        assert not dialog.tab_widget.isTabVisible(dev_tab_index), "Dev tab should be hidden by default"
+
+    def test_dev_tab_visible_when_config_true(self, qtbot, temp_config_file):
+        """Dev tab should be visible when show_dev_tab config is true."""
+        config = ConfigParser()
+        config.add_section("GENERAL")
+        config.set("GENERAL", "file_saving_option", "OME_TIFF")
+        config.set("GENERAL", "show_dev_tab", "true")
+
+        with open(temp_config_file, "w") as f:
+            config.write(f)
+
+        dialog = control.widgets.PreferencesDialog(config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # Find Dev tab index
+        dev_tab_index = None
+        for i in range(dialog.tab_widget.count()):
+            if dialog.tab_widget.tabText(i) == "Dev":
+                dev_tab_index = i
+                break
+
+        assert dev_tab_index is not None, "Dev tab should exist"
+        assert dialog.tab_widget.isTabVisible(dev_tab_index), "Dev tab should be visible when config is true"
+
+    def test_show_dev_tab_checkbox_updates_tab_visibility(self, qtbot, sample_config, temp_config_file):
+        """Toggling Show Dev Tab checkbox should update Dev tab visibility."""
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # Use the stored _dev_tab_index directly
+        assert hasattr(dialog, "_dev_tab_index"), "Dialog should store Dev tab index"
+
+        # Initially hidden
+        assert not dialog.tab_widget.isTabVisible(dialog._dev_tab_index)
+
+        # Toggle checkbox to show Dev tab - call the method directly to avoid Qt signal issues
+        dialog._toggle_dev_tab_visibility(2)  # 2 = Qt.Checked
+        assert dialog.tab_widget.isTabVisible(dialog._dev_tab_index), "Dev tab should be visible after checking"
+
+        # Toggle back to hide
+        dialog._toggle_dev_tab_visibility(0)  # 0 = Qt.Unchecked
+        assert not dialog.tab_widget.isTabVisible(dialog._dev_tab_index), "Dev tab should be hidden after unchecking"
+
+    def test_show_dev_tab_config_saved(self, qtbot, sample_config, temp_config_file):
+        """Show Dev Tab setting should persist to config file."""
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # Enable Show Dev Tab
+        dialog.show_dev_tab_checkbox.setChecked(True)
+        dialog._apply_settings()
+
+        # Read back the config - show_dev_tab is stored in GENERAL section
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+
+        assert saved_config.has_section("GENERAL")
+        assert saved_config.get("GENERAL", "show_dev_tab") == "true"
+
+    def test_show_dev_tab_change_detected(self, qtbot, sample_config, temp_config_file):
+        """Show Dev Tab change should be detected in _get_changes."""
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # Enable Show Dev Tab
+        dialog.show_dev_tab_checkbox.setChecked(True)
+
+        changes = dialog._get_changes()
+        dev_tab_changes = [c for c in changes if c[0] == "Show Dev Tab"]
+        assert len(dev_tab_changes) == 1, "Should detect Show Dev Tab change"
+        assert dev_tab_changes[0][1] == "False"  # old value
+        assert dev_tab_changes[0][2] == "True"  # new value

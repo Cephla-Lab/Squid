@@ -843,7 +843,7 @@ class PreferencesDialog(QDialog):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
-        self.setWindowTitle("Configuration")
+        self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
         self._init_ui()
@@ -990,11 +990,15 @@ class PreferencesDialog(QDialog):
         tab = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { background-color: palette(light); border: none; }"
+            "QScrollArea > QWidget > QWidget { background-color: palette(light); }"
+        )
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
 
         # Stage & Motion section (requires restart)
-        stage_group = CollapsibleGroupBox("Stage && Motion *")
+        stage_group = CollapsibleGroupBox("Stage && Motion *", collapsed=True)
         stage_layout = QFormLayout()
 
         self.max_vel_x = QDoubleSpinBox()
@@ -1055,7 +1059,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(stage_group)
 
         # Contrast Autofocus section
-        af_group = CollapsibleGroupBox("Contrast Autofocus")
+        af_group = CollapsibleGroupBox("Contrast Autofocus", collapsed=True)
         af_layout = QFormLayout()
 
         self.af_stop_threshold = QDoubleSpinBox()
@@ -1080,7 +1084,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(af_group)
 
         # Hardware Configuration section
-        hw_group = CollapsibleGroupBox("Hardware Configuration")
+        hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
         self.z_motor_combo = QComboBox()
@@ -1119,43 +1123,74 @@ class PreferencesDialog(QDialog):
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
-        # Development Settings section
-        dev_group = CollapsibleGroupBox("Development Settings")
-        dev_layout = QFormLayout()
+        # Software Position Limits section
+        limits_group = CollapsibleGroupBox("Software Position Limits", collapsed=True)
+        limits_layout = QFormLayout()
 
-        self.simulated_io_checkbox = QCheckBox()
-        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
-        self.simulated_io_checkbox.setToolTip(
-            "When enabled, images are encoded to memory but NOT saved to disk.\n"
-            "Use this for development/testing to avoid SSD wear."
-        )
-        dev_layout.addRow("Simulated Disk I/O *:", self.simulated_io_checkbox)
+        self.limit_x_pos = QDoubleSpinBox()
+        self.limit_x_pos.setRange(0, 500)
+        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
+        self.limit_x_pos.setSuffix(" mm")
+        limits_layout.addRow("X Positive:", self.limit_x_pos)
 
-        self.simulated_io_speed_spinbox = QDoubleSpinBox()
-        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
-        self.simulated_io_speed_spinbox.setValue(
-            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
-        )
-        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
-        self.simulated_io_speed_spinbox.setToolTip(
-            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
-        )
-        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+        self.limit_x_neg = QDoubleSpinBox()
+        self.limit_x_neg.setRange(0, 500)
+        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
+        self.limit_x_neg.setSuffix(" mm")
+        limits_layout.addRow("X Negative:", self.limit_x_neg)
 
-        self.simulated_io_compression_checkbox = QCheckBox()
-        self.simulated_io_compression_checkbox.setChecked(
-            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
-        )
-        self.simulated_io_compression_checkbox.setToolTip(
-            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
-        )
-        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+        self.limit_y_pos = QDoubleSpinBox()
+        self.limit_y_pos.setRange(0, 500)
+        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
+        self.limit_y_pos.setSuffix(" mm")
+        limits_layout.addRow("Y Positive:", self.limit_y_pos)
 
-        dev_group.content.addLayout(dev_layout)
-        layout.addWidget(dev_group)
+        self.limit_y_neg = QDoubleSpinBox()
+        self.limit_y_neg.setRange(0, 500)
+        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
+        self.limit_y_neg.setSuffix(" mm")
+        limits_layout.addRow("Y Negative:", self.limit_y_neg)
+
+        self.limit_z_pos = QDoubleSpinBox()
+        self.limit_z_pos.setRange(0, 50)
+        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
+        self.limit_z_pos.setSuffix(" mm")
+        limits_layout.addRow("Z Positive:", self.limit_z_pos)
+
+        self.limit_z_neg = QDoubleSpinBox()
+        self.limit_z_neg.setRange(0, 50)
+        self.limit_z_neg.setDecimals(3)
+        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
+        self.limit_z_neg.setSuffix(" mm")
+        limits_layout.addRow("Z Negative:", self.limit_z_neg)
+
+        limits_group.content.addLayout(limits_layout)
+        layout.addWidget(limits_group)
+
+        # Tracking section (hidden - widgets exist for config persistence)
+        tracking_group = CollapsibleGroupBox("Tracking", collapsed=True)
+        tracking_layout = QFormLayout()
+
+        self.enable_tracking_checkbox = QCheckBox()
+        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
+        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
+
+        self.default_tracker_combo = QComboBox()
+        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
+        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
+        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
+
+        self.search_area_ratio = QSpinBox()
+        self.search_area_ratio.setRange(1, 50)
+        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
+        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
+
+        tracking_group.content.addLayout(tracking_layout)
+        layout.addWidget(tracking_group)
+        tracking_group.hide()  # Hidden but widgets exist for config save/load
 
         # Acquisition Throttling section
-        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling", collapsed=True)
         throttle_layout = QFormLayout()
 
         self.throttling_enabled_checkbox = QCheckBox()
@@ -1212,73 +1247,8 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
-        # Software Position Limits section
-        limits_group = CollapsibleGroupBox("Software Position Limits")
-        limits_layout = QFormLayout()
-
-        self.limit_x_pos = QDoubleSpinBox()
-        self.limit_x_pos.setRange(0, 500)
-        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
-        self.limit_x_pos.setSuffix(" mm")
-        limits_layout.addRow("X Positive:", self.limit_x_pos)
-
-        self.limit_x_neg = QDoubleSpinBox()
-        self.limit_x_neg.setRange(0, 500)
-        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
-        self.limit_x_neg.setSuffix(" mm")
-        limits_layout.addRow("X Negative:", self.limit_x_neg)
-
-        self.limit_y_pos = QDoubleSpinBox()
-        self.limit_y_pos.setRange(0, 500)
-        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
-        self.limit_y_pos.setSuffix(" mm")
-        limits_layout.addRow("Y Positive:", self.limit_y_pos)
-
-        self.limit_y_neg = QDoubleSpinBox()
-        self.limit_y_neg.setRange(0, 500)
-        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
-        self.limit_y_neg.setSuffix(" mm")
-        limits_layout.addRow("Y Negative:", self.limit_y_neg)
-
-        self.limit_z_pos = QDoubleSpinBox()
-        self.limit_z_pos.setRange(0, 50)
-        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
-        self.limit_z_pos.setSuffix(" mm")
-        limits_layout.addRow("Z Positive:", self.limit_z_pos)
-
-        self.limit_z_neg = QDoubleSpinBox()
-        self.limit_z_neg.setRange(0, 50)
-        self.limit_z_neg.setDecimals(3)
-        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
-        self.limit_z_neg.setSuffix(" mm")
-        limits_layout.addRow("Z Negative:", self.limit_z_neg)
-
-        limits_group.content.addLayout(limits_layout)
-        layout.addWidget(limits_group)
-
-        # Tracking section
-        tracking_group = CollapsibleGroupBox("Tracking")
-        tracking_layout = QFormLayout()
-
-        self.enable_tracking_checkbox = QCheckBox()
-        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
-        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
-
-        self.default_tracker_combo = QComboBox()
-        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
-        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
-        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
-
-        self.search_area_ratio = QSpinBox()
-        self.search_area_ratio.setRange(1, 50)
-        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
-        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
-
-        tracking_group.content.addLayout(tracking_layout)
-        layout.addWidget(tracking_group)
-
         # Diagnostics section
-        diagnostics_group = CollapsibleGroupBox("Diagnostics")
+        diagnostics_group = CollapsibleGroupBox("Diagnostics", collapsed=True)
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
@@ -1293,6 +1263,19 @@ class PreferencesDialog(QDialog):
 
         diagnostics_group.content.addLayout(diagnostics_layout)
         layout.addWidget(diagnostics_group)
+
+        # Developer Options section
+        dev_options_group = CollapsibleGroupBox("Developer Options", collapsed=True)
+        dev_options_layout = QFormLayout()
+
+        self.show_dev_tab_checkbox = QCheckBox()
+        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
+        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
+        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
+        dev_options_layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
+
+        dev_options_group.content.addLayout(dev_options_layout)
+        layout.addWidget(dev_options_group)
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
@@ -1420,7 +1403,7 @@ class PreferencesDialog(QDialog):
         self.tab_widget.addTab(tab, "Views")
 
     def _create_development_tab(self):
-        """Create the Development tab for hardware simulation settings."""
+        """Create the Development tab for development/testing settings."""
         self.dev_tab = QWidget()
         layout = QVBoxLayout(self.dev_tab)
         layout.setSpacing(10)
@@ -1481,13 +1464,60 @@ class PreferencesDialog(QDialog):
         hw_sim_group.content.addLayout(hw_sim_layout)
         layout.addWidget(hw_sim_group)
 
+        # Simulated Disk I/O section
+        dev_group = CollapsibleGroupBox("Simulated Disk I/O *")
+        dev_layout = QFormLayout()
+
+        self.simulated_io_checkbox = QCheckBox()
+        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
+        self.simulated_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this for development/testing to avoid SSD wear."
+        )
+        dev_layout.addRow("Enable Simulated Disk I/O:", self.simulated_io_checkbox)
+
+        self.simulated_io_speed_spinbox = QDoubleSpinBox()
+        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_io_speed_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_io_speed_spinbox.setToolTip(
+            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+
+        self.simulated_io_compression_checkbox = QCheckBox()
+        self.simulated_io_compression_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        )
+        self.simulated_io_compression_checkbox.setToolTip(
+            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
+        )
+        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
         # Legend
         legend_label = QLabel("* Requires software restart to take effect")
         legend_label.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(legend_label)
 
         layout.addStretch()
-        self.tab_widget.addTab(self.dev_tab, "Dev")
+        self._dev_tab_index = self.tab_widget.addTab(self.dev_tab, "Dev")
+
+        # Initially hide if not enabled
+        if not self._get_config_bool("GENERAL", "show_dev_tab", False):
+            self.tab_widget.setTabVisible(self._dev_tab_index, False)
+
+    def _toggle_dev_tab_visibility(self, state):
+        """Show or hide the Dev tab based on checkbox state."""
+        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
+        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
+        state_value = getattr(state, "value", state)
+        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
+        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
 
     def _get_config_value(self, section, option, default=""):
         try:
@@ -1539,6 +1569,7 @@ class PreferencesDialog(QDialog):
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1616,7 +1647,7 @@ class PreferencesDialog(QDialog):
         self.config.set("SOFTWARE_POS_LIMIT", "z_positive", str(self.limit_z_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
 
-        # Advanced - Tracking
+        # Advanced - Tracking (hidden but still saved)
         self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
@@ -1742,7 +1773,7 @@ class PreferencesDialog(QDialog):
         control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
         control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
 
-        # Tracking settings
+        # Tracking settings (hidden but still updated)
         control._def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
         control._def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
         control._def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
@@ -1787,6 +1818,11 @@ class PreferencesDialog(QDialog):
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "show_dev_tab", False)
+        new_val = self.show_dev_tab_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
@@ -1997,7 +2033,7 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
-        # Advanced - Tracking (live update)
+        # Advanced - Tracking (hidden but still tracked)
         old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
         new_val = self.enable_tracking_checkbox.isChecked()
         if old_val != new_val:
