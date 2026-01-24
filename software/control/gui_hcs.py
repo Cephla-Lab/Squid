@@ -2227,8 +2227,14 @@ class HighContentScreeningGui(QMainWindow):
         # Cache position and settings
         try:
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
-        except Exception as e:
+        except ValueError as e:
+            # ValueError is expected when position is out of bounds
             self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Unexpected error caching position during {context}")
+            else:
+                raise
 
         try:
             squid.camera.settings_cache.save_camera_settings(self.camera)
