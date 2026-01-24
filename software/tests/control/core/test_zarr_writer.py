@@ -98,6 +98,24 @@ class TestZarrAcquisitionConfig:
 
         assert config.channel_names == ["DAPI", "GFP"]
 
+    def test_config_with_channel_metadata(self):
+        """Test config with full channel metadata (colors and wavelengths)."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig
+
+        config = ZarrAcquisitionConfig(
+            output_path="/tmp/test.zarr",
+            shape=(1, 3, 1, 50, 50),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+            channel_names=["DAPI", "GFP", "Brightfield"],
+            channel_colors=["#20ADF8", "#1FFF00", "#FFFFFF"],
+            channel_wavelengths=[405, 488, None],  # None for brightfield
+        )
+
+        assert config.channel_names == ["DAPI", "GFP", "Brightfield"]
+        assert config.channel_colors == ["#20ADF8", "#1FFF00", "#FFFFFF"]
+        assert config.channel_wavelengths == [405, 488, None]
+
     def test_config_compression_presets(self):
         from control.core.zarr_writer import ZarrAcquisitionConfig
 
@@ -374,6 +392,50 @@ class TestSyncZarrWriter:
         writer.finalize()
         assert writer.is_finalized
 
+    def test_sync_writer_omero_channel_metadata(self, temp_dir):
+        """Test that channel metadata (colors, wavelengths) is written to zattrs."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 3, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            channel_names=["DAPI", "GFP", "Brightfield"],
+            channel_colors=["#20ADF8", "#1FFF00", "#FFFFFF"],
+            channel_wavelengths=[405, 488, None],  # None for brightfield
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+        writer.finalize()
+
+        # Check .zattrs contains omero metadata with colors and wavelengths
+        zattrs_path = os.path.join(output_path, ".zattrs")
+        with open(zattrs_path) as f:
+            zattrs = json.load(f)
+
+        assert "omero" in zattrs
+        channels = zattrs["omero"]["channels"]
+        assert len(channels) == 3
+
+        # Check DAPI channel
+        assert channels[0]["label"] == "DAPI"
+        assert channels[0]["active"] is True
+        assert "color" in channels[0]
+        assert channels[0]["emission_wavelength"]["value"] == 405
+        assert channels[0]["emission_wavelength"]["unit"] == "nanometer"
+        assert "window" in channels[0]
+
+        # Check GFP channel
+        assert channels[1]["label"] == "GFP"
+        assert channels[1]["emission_wavelength"]["value"] == 488
+
+        # Check Brightfield channel (no wavelength)
+        assert channels[2]["label"] == "Brightfield"
+        assert "emission_wavelength" not in channels[2]  # No wavelength for BF
+
 
 class TestHCSMetadata:
     """Tests for HCS plate metadata functions."""
@@ -549,12 +611,16 @@ class TestZarrWriterInfo:
             z_step_um=1.0,
             time_increment_s=60.0,
             channel_names=["DAPI", "GFP", "RFP", "CY5"],
+            channel_colors=["#20ADF8", "#1FFF00", "#FF0000", "#770000"],
+            channel_wavelengths=[405, 488, 561, 638],
         )
 
         assert info.pixel_size_um == 0.5
         assert info.z_step_um == 1.0
         assert info.time_increment_s == 60.0
         assert info.channel_names == ["DAPI", "GFP", "RFP", "CY5"]
+        assert info.channel_colors == ["#20ADF8", "#1FFF00", "#FF0000", "#770000"]
+        assert info.channel_wavelengths == [405, 488, 561, 638]
         assert info.is_hcs is True
 
 

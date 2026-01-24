@@ -274,6 +274,17 @@ class MultiPointWorker:
             for region_id, coords in self.scan_region_fov_coords_mm.items():
                 region_fov_counts[str(region_id)] = len(coords)
 
+            # Extract channel metadata for zarr output
+            channel_names = [cfg.name for cfg in self.selected_configurations]
+            channel_colors = [cfg.display_color for cfg in self.selected_configurations]
+
+            # Get wavelengths from illumination config
+            channel_wavelengths = []
+            illumination_config = self.microscope.config_repo.get_illumination_config()
+            for cfg in self.selected_configurations:
+                wavelength = cfg.get_illumination_wavelength(illumination_config) if illumination_config else None
+                channel_wavelengths.append(wavelength)
+
             zarr_writer_info = ZarrWriterInfo(
                 base_path=self.experiment_path,
                 t_size=self.Nt,
@@ -285,7 +296,9 @@ class MultiPointWorker:
                 pixel_size_um=self._pixel_size_um,
                 z_step_um=self._physical_size_z_um,
                 time_increment_s=self._time_increment_s,
-                channel_names=[cfg.name for cfg in self.selected_configurations],
+                channel_names=channel_names,
+                channel_colors=channel_colors,
+                channel_wavelengths=channel_wavelengths,
             )
             if is_hcs:
                 mode_str = "HCS plate hierarchy"

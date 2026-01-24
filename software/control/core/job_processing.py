@@ -394,6 +394,8 @@ class ZarrWriterInfo:
         z_step_um: Z step size in micrometers (optional)
         time_increment_s: Time between timepoints in seconds (optional)
         channel_names: List of channel names for metadata
+        channel_colors: List of hex colors for channels (e.g., "#FF0000")
+        channel_wavelengths: List of wavelengths in nm (None for brightfield)
     """
 
     base_path: str
@@ -407,6 +409,8 @@ class ZarrWriterInfo:
     z_step_um: Optional[float] = None
     time_increment_s: Optional[float] = None
     channel_names: List[str] = field(default_factory=list)
+    channel_colors: List[str] = field(default_factory=list)
+    channel_wavelengths: List[Optional[int]] = field(default_factory=list)
 
     def get_output_path(self, region_id: str, fov: int) -> str:
         """Get output path based on acquisition mode.
@@ -610,6 +614,8 @@ class SaveZarrJob(Job):
                 z_step_um=self.zarr_writer_info.z_step_um,
                 time_increment_s=self.zarr_writer_info.time_increment_s,
                 channel_names=self.zarr_writer_info.channel_names,
+                channel_colors=self.zarr_writer_info.channel_colors,
+                channel_wavelengths=self.zarr_writer_info.channel_wavelengths,
                 chunk_mode=_def.ZARR_CHUNK_MODE,
                 compression=_def.ZARR_COMPRESSION,
                 is_hcs=is_hcs or not use_6d_fov,  # 5D for HCS and non-HCS default

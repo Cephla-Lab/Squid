@@ -67,6 +67,8 @@ class ZarrAcquisitionConfig:
     z_step_um: Optional[float] = None
     time_increment_s: Optional[float] = None
     channel_names: List[str] = field(default_factory=list)
+    channel_colors: List[str] = field(default_factory=list)  # Hex colors (e.g., "#FF0000")
+    channel_wavelengths: List[Optional[int]] = field(default_factory=list)  # Wavelength in nm (None for BF)
     chunk_mode: ZarrChunkMode = ZarrChunkMode.FULL_FRAME
     compression: ZarrCompression = ZarrCompression.FAST
     is_hcs: bool = True  # Default to HCS (5D); non-HCS uses 6D with FOV dimension
@@ -428,7 +430,57 @@ class ZarrWriterManager:
 
         # Add omero metadata for channel visualization
         if self.config.channel_names:
-            zattrs["omero"] = {"channels": [{"label": name, "active": True} for name in self.config.channel_names]}
+            channels_meta = []
+            for i, name in enumerate(self.config.channel_names):
+                channel_info = {
+                    "label": name,
+                    "active": True,
+                }
+
+                # Add color if available
+                if i < len(self.config.channel_colors) and self.config.channel_colors[i]:
+                    hex_color = self.config.channel_colors[i].lstrip("#")
+                    # Convert hex to int (RRGGBB -> 0xRRGGBB00 for OME-NGFF)
+                    try:
+                        rgb_int = int(hex_color, 16)
+                        # OME-NGFF uses RGBA as single integer: (R << 24) | (G << 16) | (B << 8) | A
+                        channel_info["color"] = (rgb_int << 8) | 0xFF  # Add alpha = 255
+                    except ValueError:
+                        pass
+
+                # Add wavelength if available (emission wavelength)
+                if i < len(self.config.channel_wavelengths) and self.config.channel_wavelengths[i]:
+                    channel_info["emission_wavelength"] = {
+                        "value": self.config.channel_wavelengths[i],
+                        "unit": "nanometer",
+                    }
+                    # Use same for excitation wavelength (approximation)
+                    channel_info["excitation_wavelength"] = {
+                        "value": self.config.channel_wavelengths[i],
+                        "unit": "nanometer",
+                    }
+
+                # Add display window based on dtype
+                dtype = np.dtype(self.config.dtype)
+                if np.issubdtype(dtype, np.integer):
+                    info = np.iinfo(dtype)
+                    channel_info["window"] = {
+                        "start": 0,
+                        "end": info.max,
+                        "min": 0,
+                        "max": info.max,
+                    }
+                elif np.issubdtype(dtype, np.floating):
+                    channel_info["window"] = {
+                        "start": 0.0,
+                        "end": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                    }
+
+                channels_meta.append(channel_info)
+
+            zattrs["omero"] = {"channels": channels_meta}
 
         # Write .zattrs file
         zattrs_path = os.path.join(self.config.output_path, ".zattrs")
