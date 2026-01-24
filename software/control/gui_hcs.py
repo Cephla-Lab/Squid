@@ -2283,6 +2283,8 @@ class HighContentScreeningGui(QMainWindow):
                     widget.viewer.close()
                 except Exception:
                     self.log.exception(f"Error closing {widget_name} viewer during {context}")
+                    if not for_restart:
+                        raise
 
         try:
             self.movement_update_timer.stop()

@@ -24,16 +24,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.configure_squidfilter()
             time.sleep(0.5)
 
+            if HAS_ENCODER_W:
+                self.microcontroller.set_pid_arguments(self._config.motor_slot_index, PID_P_W, PID_I_W, PID_D_W)
+                self.microcontroller.configure_stage_pid(
+                    self._config.motor_slot_index, self._config.transitions_per_revolution, ENCODER_FLIP_DIR_W
+                )
+                self.microcontroller.turn_on_stage_pid(self._config.motor_slot_index, ENABLE_PID_W)
+
         # emission filter position
         self.w_pos_index = self._config.min_index
         self._available_filter_wheels = []
-
-        if HAS_ENCODER_W:
-            self.microcontroller.set_pid_arguments(self._config.motor_slot_index, PID_P_W, PID_I_W, PID_D_W)
-            self.microcontroller.configure_stage_pid(
-                self._config.motor_slot_index, self._config.transitions_per_revolution, ENCODER_FLIP_DIR_W
-            )
-            self.microcontroller.turn_on_stage_pid(self._config.motor_slot_index, ENABLE_PID_W)
 
     def move_w(self, delta):
         self.microcontroller.move_w_usteps(
