@@ -1,5 +1,3 @@
-import pytest
-
 import control.microscope
 import squid.stage.cephla
 import squid.config
