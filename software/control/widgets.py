@@ -1413,26 +1413,22 @@ class PreferencesDialog(QDialog):
         hw_sim_layout = QFormLayout()
 
         # Helper to create simulation combo boxes
-        def create_sim_combo(config_key, default="none"):
+        def create_sim_combo(config_key):
             combo = QComboBox()
-            combo.addItem("Auto (follow --simulation)", "none")
-            combo.addItem("Simulate", "true")
             combo.addItem("Real Hardware", "false")
-            # Load current value from config
-            current = self._get_config_value("SIMULATION", config_key, default).lower()
+            combo.addItem("Simulate", "true")
+            # Load current value from config (default to Real Hardware)
+            current = self._get_config_value("SIMULATION", config_key, "false").lower()
             if current in ("true", "1", "yes", "simulate"):
-                combo.setCurrentIndex(1)
-            elif current in ("false", "0", "no", "real"):
-                combo.setCurrentIndex(2)
+                combo.setCurrentIndex(1)  # Simulate
             else:
-                combo.setCurrentIndex(0)  # Auto/None
+                combo.setCurrentIndex(0)  # Real Hardware (default)
             return combo
 
         sim_tooltip_template = (
             "Control whether {component} is simulated.\n"
-            "  Auto: follow --simulation flag\n"
-            "  Simulate: always simulate (even without --simulation)\n"
-            "  Real Hardware: use real hardware (only applies without --simulation)\n"
+            "  Real Hardware: use real hardware (default)\n"
+            "  Simulate: force simulation even without --simulation flag\n"
             "Note: With --simulation flag, ALL components are always simulated."
         )
 
@@ -1446,7 +1442,7 @@ class PreferencesDialog(QDialog):
 
         self.sim_spinning_disk_combo = create_sim_combo("simulate_spinning_disk")
         self.sim_spinning_disk_combo.setToolTip(
-            sim_tooltip_template.format(component="the spinning disk (XLight/Dragonfly)")
+            sim_tooltip_template.format(component="spinning disk (XLight/Dragonfly)")
         )
         hw_sim_layout.addRow("Spinning Disk:", self.sim_spinning_disk_combo)
 
@@ -1459,7 +1455,7 @@ class PreferencesDialog(QDialog):
         hw_sim_layout.addRow("Objective Changer:", self.sim_objective_changer_combo)
 
         self.sim_laser_af_camera_combo = create_sim_combo("simulate_laser_af_camera")
-        self.sim_laser_af_camera_combo.setToolTip(sim_tooltip_template.format(component="the laser autofocus camera"))
+        self.sim_laser_af_camera_combo.setToolTip(sim_tooltip_template.format(component="the laser AF camera"))
         hw_sim_layout.addRow("Laser AF Camera:", self.sim_laser_af_camera_combo)
 
         hw_sim_group.content.addLayout(hw_sim_layout)

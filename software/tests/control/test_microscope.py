@@ -11,27 +11,19 @@ from tests.control.test_microcontroller import get_test_micro
 class TestShouldSimulate:
     """Tests for _should_simulate() per-component simulation logic."""
 
-    def test_auto_follows_global_flag_true(self):
-        """Auto (None) with --simulation flag should simulate."""
-        assert _should_simulate(global_simulated=True, component_override=None) is True
-
-    def test_auto_follows_global_flag_false(self):
-        """Auto (None) without --simulation flag should use real hardware."""
-        assert _should_simulate(global_simulated=False, component_override=None) is False
-
-    def test_simulate_override_without_global(self):
-        """Simulate (True) should simulate even without --simulation flag."""
+    def test_simulate_without_global_flag(self):
+        """Simulate (True) without --simulation flag should simulate."""
         assert _should_simulate(global_simulated=False, component_override=True) is True
 
-    def test_simulate_override_with_global(self):
+    def test_simulate_with_global_flag(self):
         """Simulate (True) with --simulation flag should simulate."""
         assert _should_simulate(global_simulated=True, component_override=True) is True
 
-    def test_real_hardware_override_without_global(self):
+    def test_real_hardware_without_global_flag(self):
         """Real Hardware (False) without --simulation should use real hardware."""
         assert _should_simulate(global_simulated=False, component_override=False) is False
 
-    def test_real_hardware_override_with_global(self):
+    def test_real_hardware_with_global_flag(self):
         """Real Hardware (False) with --simulation flag should still simulate (--simulation overrides all)."""
         assert _should_simulate(global_simulated=True, component_override=False) is True
 
@@ -75,19 +67,6 @@ class TestPerComponentSimulationIntegration:
             ), f"Expected SimulatedCamera but got {type(scope.camera).__name__}"
         finally:
             scope.close()
-
-    def test_auto_camera_without_global_flag(self, monkeypatch):
-        """SIMULATE_CAMERA=None without --simulation should use real hardware (fails gracefully in test)."""
-        # Set per-component to Auto (None) - MCU must be simulated for test to run
-        monkeypatch.setattr(control._def, "SIMULATE_CAMERA", None)
-        monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", True)
-
-        # With Auto setting and no --simulation flag, camera should NOT be simulated
-        # This will fail to connect to real hardware, which is expected
-        # We verify the _should_simulate logic returns False for this case
-        from control.microscope import _should_simulate
-
-        assert _should_simulate(global_simulated=False, component_override=None) is False
 
     def test_global_simulation_overrides_per_component(self, monkeypatch):
         """--simulation flag should simulate ALL components regardless of per-component settings."""

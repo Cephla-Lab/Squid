@@ -174,61 +174,56 @@ class TestConfAttributeReader:
         assert conf_attribute_reader("value # comment1\t# comment2") == "value"
 
 
-class TestParseTristate:
-    """Tests for _parse_tristate() simulation setting parser.
+class TestParseSimSetting:
+    """Tests for _parse_sim_setting() simulation setting parser.
 
-    Note: _parse_tristate is defined inside a try block in _def.py at module load time,
-    so we test it indirectly via control._def module attributes or recreate the logic.
+    Note: _parse_sim_setting is defined inside a try block in _def.py at module load time,
+    so we test it by recreating the logic.
     """
 
     @staticmethod
-    def _parse_tristate(value_str):
-        """Recreate _parse_tristate logic for testing (original is local to try block)."""
+    def _parse_sim_setting(value_str):
+        """Recreate _parse_sim_setting logic for testing (original is local to try block)."""
         val = value_str.strip().lower()
-        if val in ("none", "auto", ""):
-            return None
-        elif val in ("true", "1", "yes", "simulate"):
+        if val in ("true", "1", "yes", "simulate"):
             return True
-        elif val in ("false", "0", "no", "real"):
-            return False
-        return None  # Unrecognized values default to None
-
-    def test_parses_none_values(self):
-        """Test that None/auto values return None."""
-        assert self._parse_tristate("none") is None
-        assert self._parse_tristate("None") is None
-        assert self._parse_tristate("auto") is None
-        assert self._parse_tristate("AUTO") is None
-        assert self._parse_tristate("") is None
+        # Everything else = False (real hardware)
+        return False
 
     def test_parses_true_values(self):
         """Test that true/simulate values return True."""
-        assert self._parse_tristate("true") is True
-        assert self._parse_tristate("True") is True
-        assert self._parse_tristate("TRUE") is True
-        assert self._parse_tristate("1") is True
-        assert self._parse_tristate("yes") is True
-        assert self._parse_tristate("simulate") is True
+        assert self._parse_sim_setting("true") is True
+        assert self._parse_sim_setting("True") is True
+        assert self._parse_sim_setting("TRUE") is True
+        assert self._parse_sim_setting("1") is True
+        assert self._parse_sim_setting("yes") is True
+        assert self._parse_sim_setting("simulate") is True
 
     def test_parses_false_values(self):
         """Test that false/real values return False."""
-        assert self._parse_tristate("false") is False
-        assert self._parse_tristate("False") is False
-        assert self._parse_tristate("FALSE") is False
-        assert self._parse_tristate("0") is False
-        assert self._parse_tristate("no") is False
-        assert self._parse_tristate("real") is False
+        assert self._parse_sim_setting("false") is False
+        assert self._parse_sim_setting("False") is False
+        assert self._parse_sim_setting("FALSE") is False
+        assert self._parse_sim_setting("0") is False
+        assert self._parse_sim_setting("no") is False
+        assert self._parse_sim_setting("real") is False
+
+    def test_legacy_auto_values_default_to_false(self):
+        """Test that legacy auto/none values default to False (real hardware)."""
+        # For backwards compatibility with old configs
+        assert self._parse_sim_setting("none") is False
+        assert self._parse_sim_setting("auto") is False
+        assert self._parse_sim_setting("") is False
 
     def test_strips_whitespace(self):
         """Test that leading/trailing whitespace is stripped."""
-        assert self._parse_tristate("  true  ") is True
-        assert self._parse_tristate("  false  ") is False
-        assert self._parse_tristate("  none  ") is None
+        assert self._parse_sim_setting("  true  ") is True
+        assert self._parse_sim_setting("  false  ") is False
 
-    def test_unrecognized_values_default_to_none(self):
-        """Test that unrecognized values default to None (with warning logged)."""
-        # Typos and invalid values should default to None
-        assert self._parse_tristate("treu") is None
-        assert self._parse_tristate("fasle") is None
-        assert self._parse_tristate("simualte") is None
-        assert self._parse_tristate("invalid") is None
+    def test_unrecognized_values_default_to_false(self):
+        """Test that unrecognized values default to False (real hardware)."""
+        # Typos and invalid values default to real hardware for safety
+        assert self._parse_sim_setting("treu") is False
+        assert self._parse_sim_setting("fasle") is False
+        assert self._parse_sim_setting("simualte") is False
+        assert self._parse_sim_setting("invalid") is False
