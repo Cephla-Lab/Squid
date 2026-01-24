@@ -1705,7 +1705,12 @@ class HighContentScreeningGui(QMainWindow):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
-            dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog = widgets.PreferencesDialog(
+                config,
+                CACHED_CONFIG_FILE_PATH,
+                parent=self,
+                on_restart=self.restart_application,
+            )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.exec_()
         else:

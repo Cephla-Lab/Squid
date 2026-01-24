@@ -838,11 +838,12 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
+        self._on_restart = on_restart  # Optional callback for application restart
         self.setWindowTitle("Configuration")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -2004,24 +2005,16 @@ class PreferencesDialog(QDialog):
             self._trigger_restart()
 
     def _trigger_restart(self):
-        """Trigger application restart via the main GUI."""
-        # Local import to avoid circular dependency at module load time
-        from control.gui_hcs import HighContentScreeningGui
-
-        # Find the main GUI window by traversing parent hierarchy
-        widget = self.parent()
-        while widget is not None:
-            if isinstance(widget, HighContentScreeningGui):
-                widget.restart_application()
-                return
-            widget = widget.parent()
-
-        self._log.error("Could not find main window to trigger restart")
-        QMessageBox.warning(
-            self,
-            "Restart Failed",
-            "Could not trigger automatic restart.\nPlease restart the application manually.",
-        )
+        """Trigger application restart via callback."""
+        if self._on_restart:
+            self._on_restart()
+        else:
+            self._log.error("No restart callback configured")
+            QMessageBox.warning(
+                self,
+                "Restart Failed",
+                "Could not trigger automatic restart.\nPlease restart the application manually.",
+            )
 
     def _save_and_close(self):
         changes = self._get_changes()
