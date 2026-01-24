@@ -2270,6 +2270,20 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
 
+        # Close napari viewers (they run background threads that prevent clean exit)
+        for widget_name in [
+            "napariLiveWidget",
+            "napariMultiChannelWidget",
+            "napariMosaicDisplayWidget",
+            "napariPlateViewWidget",
+        ]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None and hasattr(widget, "viewer"):
+                try:
+                    widget.viewer.close()
+                except Exception:
+                    self.log.exception(f"Error closing {widget_name} viewer during {context}")
+
         try:
             self.movement_update_timer.stop()
         except Exception:
