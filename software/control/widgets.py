@@ -2007,7 +2007,16 @@ class PreferencesDialog(QDialog):
     def _trigger_restart(self):
         """Trigger application restart via callback."""
         if self._on_restart:
-            self._on_restart()
+            try:
+                self._on_restart()
+            except Exception as e:
+                self._log.exception("Failed to restart application")
+                QMessageBox.warning(
+                    self,
+                    "Restart Failed",
+                    f"An error occurred while trying to restart the application.\n\n"
+                    f"Error: {e}\n\nPlease restart the application manually.",
+                )
         else:
             self._log.error("No restart callback configured")
             QMessageBox.warning(
@@ -2073,7 +2082,7 @@ class PreferencesDialog(QDialog):
         dialog.restart_requested = False
 
         if requires_restart:
-            save_restart_btn = QPushButton("Save && Restart")
+            save_restart_btn = QPushButton("Save and Restart")
             save_restart_btn.setToolTip("Save settings and restart the application now")
 
             def on_save_restart():
