@@ -1432,7 +1432,8 @@ class PreferencesDialog(QDialog):
             "Control whether {component} is simulated.\n"
             "  Auto: follow --simulation flag\n"
             "  Simulate: always simulate (even without --simulation)\n"
-            "  Real Hardware: never simulate (even with --simulation)"
+            "  Real Hardware: use real hardware (only applies without --simulation)\n"
+            "Note: With --simulation flag, ALL components are always simulated."
         )
 
         self.sim_camera_combo = create_sim_combo("simulate_camera")

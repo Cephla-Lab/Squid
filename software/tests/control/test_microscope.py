@@ -1,8 +1,10 @@
 import control.microscope
+import control._def
 import squid.stage.cephla
 import squid.config
 from control.microcontroller import Microcontroller, SimSerial
 from control.microscope import _should_simulate
+from squid.camera.utils import SimulatedCamera
 from tests.control.test_microcontroller import get_test_micro
 
 
@@ -53,3 +55,52 @@ def test_simulated_scope_basic_ops():
     scope.camera.read_frame()
     scope.illumination_controller.turn_off_illumination()
     scope.camera.stop_streaming()
+
+
+class TestPerComponentSimulationIntegration:
+    """Integration tests verifying per-component settings affect microscope build."""
+
+    def test_simulate_camera_without_global_flag(self, monkeypatch):
+        """SIMULATE_CAMERA=True without --simulation should create simulated camera."""
+        # Set per-component camera simulation (MCU must also be simulated for build to work)
+        monkeypatch.setattr(control._def, "SIMULATE_CAMERA", True)
+        monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", True)
+
+        # Build microscope WITHOUT --simulation flag (simulated=False)
+        scope = control.microscope.Microscope.build_from_global_config(simulated=False)
+        try:
+            # Camera should be simulated due to per-component setting
+            assert isinstance(
+                scope.camera, SimulatedCamera
+            ), f"Expected SimulatedCamera but got {type(scope.camera).__name__}"
+        finally:
+            scope.close()
+
+    def test_auto_camera_without_global_flag(self, monkeypatch):
+        """SIMULATE_CAMERA=None without --simulation should use real hardware (fails gracefully in test)."""
+        # Set per-component to Auto (None) - MCU must be simulated for test to run
+        monkeypatch.setattr(control._def, "SIMULATE_CAMERA", None)
+        monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", True)
+
+        # With Auto setting and no --simulation flag, camera should NOT be simulated
+        # This will fail to connect to real hardware, which is expected
+        # We verify the _should_simulate logic returns False for this case
+        from control.microscope import _should_simulate
+
+        assert _should_simulate(global_simulated=False, component_override=None) is False
+
+    def test_global_simulation_overrides_per_component(self, monkeypatch):
+        """--simulation flag should simulate ALL components regardless of per-component settings."""
+        # Set per-component to "Real Hardware" (False)
+        monkeypatch.setattr(control._def, "SIMULATE_CAMERA", False)
+        monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", False)
+
+        # Build microscope WITH --simulation flag (simulated=True)
+        scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+        try:
+            # Camera should be simulated because --simulation overrides per-component
+            assert isinstance(
+                scope.camera, SimulatedCamera
+            ), f"Expected SimulatedCamera (--simulation overrides per-component) but got {type(scope.camera).__name__}"
+        finally:
+            scope.close()
