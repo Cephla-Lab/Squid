@@ -2197,54 +2197,63 @@ class HighContentScreeningGui(QMainWindow):
         # Quit the application
         QApplication.instance().quit()
 
-    def _cleanup_for_restart(self):
-        """Clean up hardware and resources for restart.
+    def _cleanup_common(self, for_restart: bool = False):
+        """Common cleanup logic shared between closeEvent and restart.
 
-        Similar to closeEvent cleanup but:
-        - Does NOT retract Z or reset objective changer (preserving position for restart)
-        - Does NOT show confirmation dialog
+        Args:
+            for_restart: If True, skip Z retraction and objective reset (preserving position),
+                        and wrap operations in try-except to ensure cleanup completes.
         """
+        context = "restart" if for_restart else "shutdown"
+
         # Cache position and settings
         try:
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except Exception as e:
-            self.log.error(f"Couldn't cache position while closing for restart. Error: {e}")
+            self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")
 
         squid.camera.settings_cache.save_camera_settings(self.camera)
 
-        # Disconnect warning/error logging handler
         self._disconnect_warning_handler()
 
-        # Clean up multipoint controller resources
+        # Clean up multipoint controller
         if self.multipointController is not None:
             try:
                 self.multipointController.close()
             except Exception:
-                self.log.exception("Error closing multipoint controller during restart")
+                self.log.exception(f"Error closing multipoint controller during {context}")
 
-        # Clean up NDViewer resources
+        # Clean up NDViewer
         if self.ndviewerTab is not None:
             try:
                 self.ndviewerTab.close()
             except Exception:
-                self.log.exception("Error closing NDViewer tab during restart")
+                self.log.exception(f"Error closing NDViewer tab during {context}")
 
         self.movement_update_timer.stop()
 
-        # Close filter wheel (but don't reset position)
+        # Close filter wheel
         if self.emission_filter_wheel:
             try:
+                if not for_restart:
+                    self.emission_filter_wheel.set_filter_wheel_position({1: 1})
                 self.emission_filter_wheel.close()
             except Exception:
-                self.log.exception("Error closing filter wheel during restart")
+                if for_restart:
+                    self.log.exception(f"Error closing filter wheel during {context}")
+                else:
+                    raise
 
-        # Stop laser autofocus if enabled
+        # Stop laser autofocus
         if SUPPORT_LASER_AUTOFOCUS:
             try:
                 self.liveController_focus_camera.stop_live()
                 self.imageDisplayWindow_focus.close()
             except Exception:
-                self.log.exception("Error closing laser AF during restart")
+                if for_restart:
+                    self.log.exception(f"Error closing laser AF during {context}")
+                else:
+                    raise
 
         # Stop live view and close camera
         try:
@@ -2252,28 +2261,40 @@ class HighContentScreeningGui(QMainWindow):
             self.camera.stop_streaming()
             self.camera.close()
         except Exception:
-            self.log.exception("Error closing camera during restart")
+            if for_restart:
+                self.log.exception(f"Error closing camera during {context}")
+            else:
+                raise
 
-        # NOTE: We intentionally do NOT retract Z or reset objective changer
-        # since we're restarting with --skip-homing to preserve position
+        # Retract Z and reset objective changer only on full shutdown
+        if not for_restart:
+            self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+            if USE_XERYON:
+                self.objective_changer.moveToZero()
 
         self.microcontroller.turn_off_all_pid()
 
-        # Turn off CellX lasers if enabled
+        # Turn off CellX lasers
         if ENABLE_CELLX:
             try:
                 for channel in [1, 2, 3, 4]:
                     self.cellx.turn_off(channel)
                 self.cellx.close()
             except Exception:
-                self.log.exception("Error closing CellX during restart")
+                if for_restart:
+                    self.log.exception(f"Error closing CellX during {context}")
+                else:
+                    raise
 
-        # Close fluidics if enabled
+        # Close fluidics
         if RUN_FLUIDICS:
             try:
                 self.fluidics.close()
             except Exception:
-                self.log.exception("Error closing fluidics during restart")
+                if for_restart:
+                    self.log.exception(f"Error closing fluidics during {context}")
+                else:
+                    raise
 
         # Close image display resources
         try:
@@ -2284,13 +2305,23 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow.close()
                 self.tabbedImageDisplayWindow.close()
         except Exception:
-            self.log.exception("Error closing display windows during restart")
+            if for_restart:
+                self.log.exception(f"Error closing display windows during {context}")
+            else:
+                raise
 
         # Close microcontroller last (releases serial port)
         try:
             self.microcontroller.close()
         except Exception:
-            self.log.exception("Error closing microcontroller during restart")
+            if for_restart:
+                self.log.exception(f"Error closing microcontroller during {context}")
+            else:
+                raise
+
+    def _cleanup_for_restart(self):
+        """Clean up hardware and resources for restart (preserves Z position)."""
+        self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
         # Show confirmation dialog
@@ -2306,69 +2337,8 @@ class HighContentScreeningGui(QMainWindow):
             event.ignore()
             return
 
-        try:
-            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
-        except ValueError as e:
-            self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+        self._cleanup_common(for_restart=False)
 
-        # Save camera settings (binning, pixel format)
-        squid.camera.settings_cache.save_camera_settings(self.camera)
-
-        # Disconnect warning/error logging handler
-        self._disconnect_warning_handler()
-
-        # Clean up multipoint controller resources (queues, timers, process pools)
-        if self.multipointController is not None:
-            try:
-                self.multipointController.close()
-            except Exception:
-                self.log.exception("Error closing multipoint controller during shutdown")
-
-        # Clean up NDViewer resources (file handles, timers)
-        if self.ndviewerTab is not None:
-            try:
-                self.ndviewerTab.close()
-            except Exception:
-                self.log.exception("Error closing NDViewer tab during shutdown")
-
-        self.movement_update_timer.stop()
-
-        if self.emission_filter_wheel:
-            self.emission_filter_wheel.set_filter_wheel_position({1: 1})
-            self.emission_filter_wheel.close()
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.liveController_focus_camera.stop_live()
-            self.imageDisplayWindow_focus.close()
-
-        self.liveController.stop_live()
-        self.camera.stop_streaming()
-        self.camera.close()
-
-        # retract z
-        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-
-        # reset objective changer
-        if USE_XERYON:
-            self.objective_changer.moveToZero()
-
-        self.microcontroller.turn_off_all_pid()
-
-        if ENABLE_CELLX:
-            for channel in [1, 2, 3, 4]:
-                self.cellx.turn_off(channel)
-            self.cellx.close()
-
-        if RUN_FLUIDICS:
-            self.fluidics.close()
-
-        self.imageSaver.close()
-        self.imageDisplay.close()
-        if not SINGLE_WINDOW:
-            self.imageDisplayWindow.close()
-            self.imageArrayDisplayWindow.close()
-            self.tabbedImageDisplayWindow.close()
-
-        self.microcontroller.close()
         try:
             self.cswWindow.closeForReal(event)
         except AttributeError:

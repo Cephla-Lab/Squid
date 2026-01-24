@@ -2006,15 +2006,13 @@ class PreferencesDialog(QDialog):
     def _trigger_restart(self):
         """Trigger application restart via the main GUI."""
         # Find the main GUI window by traversing parent hierarchy
-        main_window = self.parent()
-        while main_window is not None:
-            # Check if this is the HighContentScreeningGui
-            if hasattr(main_window, "restart_application"):
-                main_window.restart_application()
+        widget = self.parent()
+        while widget is not None:
+            if hasattr(widget, "restart_application"):
+                widget.restart_application()
                 return
-            main_window = main_window.parent() if hasattr(main_window, "parent") else None
+            widget = widget.parent()
 
-        # User clicked "Restart Now" but we couldn't find the main window
         self._log.error("Could not find main window to trigger restart")
         QMessageBox.warning(
             self,
