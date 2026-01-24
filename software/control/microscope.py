@@ -202,7 +202,8 @@ class LowLevelDrivers:
     def __init__(self, microcontroller: Optional[Microcontroller] = None):
         self.microcontroller: Optional[Microcontroller] = microcontroller
 
-    def prepare_for_use(self):
+    def prepare_for_use(self, skip_homing: bool = False):
+        # Note: Currently no homing operations here, but accepting skip_homing for API consistency
         if self.microcontroller and control._def.HAS_OBJECTIVE_PIEZO:
             # Configure DAC gains for objective piezo
             control._def.OUTPUT_GAINS.CHANNEL7_GAIN = control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
@@ -365,7 +366,7 @@ class Microscope:
             self._prepare_for_use(skip_homing=skip_homing)
 
     def _prepare_for_use(self, skip_homing: bool = False):
-        self.low_level_drivers.prepare_for_use()
+        self.low_level_drivers.prepare_for_use(skip_homing=skip_homing)
         self.addons.prepare_for_use(skip_homing=skip_homing)
 
         self.camera.set_pixel_format(
