@@ -54,9 +54,14 @@ class TestPerComponentSimulationIntegration:
 
     def test_simulate_camera_without_global_flag(self, monkeypatch):
         """SIMULATE_CAMERA=True without --simulation should create simulated camera."""
-        # Set per-component camera simulation (MCU must also be simulated for build to work)
+        # Set per-component camera simulation (all components must be simulated for build to work
+        # since we're testing without --simulation flag and real hardware isn't available in CI)
         monkeypatch.setattr(control._def, "SIMULATE_CAMERA", True)
         monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", True)
+        monkeypatch.setattr(control._def, "SIMULATE_SPINNING_DISK", True)
+        monkeypatch.setattr(control._def, "SIMULATE_FILTER_WHEEL", True)
+        monkeypatch.setattr(control._def, "SIMULATE_OBJECTIVE_CHANGER", True)
+        monkeypatch.setattr(control._def, "SIMULATE_LASER_AF_CAMERA", True)
 
         # Build microscope WITHOUT --simulation flag (simulated=False)
         scope = control.microscope.Microscope.build_from_global_config(simulated=False)
@@ -70,9 +75,13 @@ class TestPerComponentSimulationIntegration:
 
     def test_global_simulation_overrides_per_component(self, monkeypatch):
         """--simulation flag should simulate ALL components regardless of per-component settings."""
-        # Set per-component to "Real Hardware" (False)
+        # Set per-component to "Real Hardware" (False) for all components
         monkeypatch.setattr(control._def, "SIMULATE_CAMERA", False)
         monkeypatch.setattr(control._def, "SIMULATE_MICROCONTROLLER", False)
+        monkeypatch.setattr(control._def, "SIMULATE_SPINNING_DISK", False)
+        monkeypatch.setattr(control._def, "SIMULATE_FILTER_WHEEL", False)
+        monkeypatch.setattr(control._def, "SIMULATE_OBJECTIVE_CHANGER", False)
+        monkeypatch.setattr(control._def, "SIMULATE_LASER_AF_CAMERA", False)
 
         # Build microscope WITH --simulation flag (simulated=True)
         scope = control.microscope.Microscope.build_from_global_config(simulated=True)
