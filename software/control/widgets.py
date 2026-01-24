@@ -861,6 +861,7 @@ class PreferencesDialog(QDialog):
         self._create_camera_tab()
         self._create_views_tab()
         self._create_advanced_tab()
+        self._create_development_tab()
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -1418,6 +1419,103 @@ class PreferencesDialog(QDialog):
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
+    def _create_development_tab(self):
+        """Create the Development tab for hardware simulation settings."""
+        self.dev_tab = QWidget()
+        layout = QVBoxLayout(self.dev_tab)
+        layout.setSpacing(10)
+
+        # Hardware Simulation section
+        hw_sim_group = CollapsibleGroupBox("Hardware Simulation *")
+        hw_sim_layout = QFormLayout()
+
+        # Helper to create simulation combo boxes
+        def create_sim_combo(config_key, default="none"):
+            combo = QComboBox()
+            combo.addItem("Auto (follow --simulation)", "none")
+            combo.addItem("Simulate", "true")
+            combo.addItem("Real Hardware", "false")
+            # Load current value from config
+            current = self._get_config_value("SIMULATION", config_key, default).lower()
+            if current in ("true", "1", "yes", "simulate"):
+                combo.setCurrentIndex(1)
+            elif current in ("false", "0", "no", "real"):
+                combo.setCurrentIndex(2)
+            else:
+                combo.setCurrentIndex(0)  # Auto/None
+            return combo
+
+        self.sim_camera_combo = create_sim_combo("simulate_camera")
+        self.sim_camera_combo.setToolTip(
+            "Control whether the camera is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real camera\n"
+            "  Simulate: use simulated camera"
+        )
+        hw_sim_layout.addRow("Camera:", self.sim_camera_combo)
+
+        self.sim_mcu_combo = create_sim_combo("simulate_microcontroller")
+        self.sim_mcu_combo.setToolTip(
+            "Control whether the microcontroller/stage is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real MCU/stage\n"
+            "  Simulate: use simulated MCU/stage"
+        )
+        hw_sim_layout.addRow("Microcontroller/Stage:", self.sim_mcu_combo)
+
+        self.sim_spinning_disk_combo = create_sim_combo("simulate_spinning_disk")
+        self.sim_spinning_disk_combo.setToolTip(
+            "Control whether the spinning disk (XLight/Dragonfly) is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real spinning disk\n"
+            "  Simulate: use simulated spinning disk"
+        )
+        hw_sim_layout.addRow("Spinning Disk:", self.sim_spinning_disk_combo)
+
+        self.sim_filter_wheel_combo = create_sim_combo("simulate_filter_wheel")
+        self.sim_filter_wheel_combo.setToolTip(
+            "Control whether the filter wheel is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real filter wheel\n"
+            "  Simulate: use simulated filter wheel"
+        )
+        hw_sim_layout.addRow("Filter Wheel:", self.sim_filter_wheel_combo)
+
+        self.sim_objective_changer_combo = create_sim_combo("simulate_objective_changer")
+        self.sim_objective_changer_combo.setToolTip(
+            "Control whether the objective changer is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real objective changer\n"
+            "  Simulate: use simulated objective changer"
+        )
+        hw_sim_layout.addRow("Objective Changer:", self.sim_objective_changer_combo)
+
+        self.sim_laser_af_camera_combo = create_sim_combo("simulate_laser_af_camera")
+        self.sim_laser_af_camera_combo.setToolTip(
+            "Control whether the laser autofocus camera is simulated.\n"
+            "Note: --simulation flag always simulates ALL hardware.\n"
+            "These settings only apply when running WITHOUT --simulation:\n"
+            "  Auto/Real: use real laser AF camera\n"
+            "  Simulate: use simulated laser AF camera"
+        )
+        hw_sim_layout.addRow("Laser AF Camera:", self.sim_laser_af_camera_combo)
+
+        hw_sim_group.content.addLayout(hw_sim_layout)
+        layout.addWidget(hw_sim_group)
+
+        # Legend
+        legend_label = QLabel("* Requires software restart to take effect")
+        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(legend_label)
+
+        layout.addStretch()
+        self.tab_widget.addTab(self.dev_tab, "Dev")
+
     def _get_config_value(self, section, option, default=""):
         try:
             return self.config.get(section, option)
@@ -1583,6 +1681,15 @@ class PreferencesDialog(QDialog):
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
         )
+
+        # Hardware Simulation settings (in [SIMULATION] section)
+        self._ensure_section("SIMULATION")
+        self.config.set("SIMULATION", "simulate_camera", self.sim_camera_combo.currentData())
+        self.config.set("SIMULATION", "simulate_microcontroller", self.sim_mcu_combo.currentData())
+        self.config.set("SIMULATION", "simulate_spinning_disk", self.sim_spinning_disk_combo.currentData())
+        self.config.set("SIMULATION", "simulate_filter_wheel", self.sim_filter_wheel_combo.currentData())
+        self.config.set("SIMULATION", "simulate_objective_changer", self.sim_objective_changer_combo.currentData())
+        self.config.set("SIMULATION", "simulate_laser_af_camera", self.sim_laser_af_camera_combo.currentData())
 
         # Save to file
         try:
@@ -1987,6 +2094,85 @@ class PreferencesDialog(QDialog):
         new_val = self.enable_ndviewer_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
+
+        # Hardware Simulation settings (require restart)
+        sim_display_names = {
+            "none": "Auto",
+            "true": "Simulate",
+            "false": "Real Hardware",
+        }
+
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "none").lower()
+        new_val = self.sim_camera_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate Camera *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
+
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "none").lower()
+        new_val = self.sim_mcu_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate MCU/Stage *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
+
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "none").lower()
+        new_val = self.sim_spinning_disk_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate Spinning Disk *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
+
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "none").lower()
+        new_val = self.sim_filter_wheel_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate Filter Wheel *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
+
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "none").lower()
+        new_val = self.sim_objective_changer_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate Objective Changer *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
+
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "none").lower()
+        new_val = self.sim_laser_af_camera_combo.currentData()
+        if old_val != new_val:
+            changes.append(
+                (
+                    "Simulate Laser AF Camera *",
+                    sim_display_names.get(old_val, old_val),
+                    sim_display_names.get(new_val, new_val),
+                    True,
+                )
+            )
 
         return changes
 
