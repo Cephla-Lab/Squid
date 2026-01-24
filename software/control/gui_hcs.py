@@ -531,8 +531,8 @@ class HighContentScreeningGui(QMainWindow):
         menubar = self.menuBar()
         settings_menu = menubar.addMenu("Settings")
 
-        # Configuration action
-        config_action = QAction("Configuration...", self)
+        # Settings action (opens Preferences dialog)
+        config_action = QAction("Settings...", self)
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
@@ -542,14 +542,15 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
 
-        # Slack notifications
+        # Advanced submenu
+        advanced_menu = settings_menu.addMenu("Advanced")
+
+        # Notifications section
+        settings_menu.addSeparator()
         slack_action = QAction("Slack Notifications...", self)
         slack_action.setMenuRole(QAction.NoRole)
         slack_action.triggered.connect(self.openSlackSettings)
         settings_menu.addAction(slack_action)
-
-        # Advanced submenu
-        advanced_menu = settings_menu.addMenu("Advanced")
 
         # Illumination Channel Configuration (in Advanced menu)
         channel_config_action = QAction("Illumination Channel Configuration", self)

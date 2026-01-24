@@ -21,12 +21,12 @@ Simulated I/O:   Image → Encode/Compress → BytesIO buffer → Throttle delay
 
 ## Enabling Simulated Disk I/O
 
-1. Go to **Settings > Preferences**
-2. Click the **Advanced** tab
-3. Scroll down to **Development Settings**
-4. Check **Simulated Disk I/O**
+1. Go to **Settings > Settings...**
+2. Click the **Dev** tab (if hidden, enable it via **Advanced > Developer Options > Show Dev Tab**)
+3. Find the **Simulated Disk I/O \*** section
+4. Check **Enable Simulated Disk I/O**
 5. Configure speed and compression options
-6. Click **OK** and **restart the application**
+6. Click **Save** and **restart the application**
 
 ## Settings
 
