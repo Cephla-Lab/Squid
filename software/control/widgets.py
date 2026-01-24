@@ -2103,12 +2103,11 @@ class PreferencesDialog(QDialog):
 
         # Hardware Simulation settings (require restart)
         sim_display_names = {
-            "none": "Auto",
             "true": "Simulate",
             "false": "Real Hardware",
         }
 
-        old_val = self._get_config_value("SIMULATION", "simulate_camera", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower()
         new_val = self.sim_camera_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2120,7 +2119,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "false").lower()
         new_val = self.sim_mcu_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2132,7 +2131,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "false").lower()
         new_val = self.sim_spinning_disk_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2144,7 +2143,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "false").lower()
         new_val = self.sim_filter_wheel_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2156,7 +2155,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "false").lower()
         new_val = self.sim_objective_changer_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2168,7 +2167,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "none").lower()
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false").lower()
         new_val = self.sim_laser_af_camera_combo.currentData()
         if old_val != new_val:
             changes.append(
