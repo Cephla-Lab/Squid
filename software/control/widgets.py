@@ -2502,6 +2502,7 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
         self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        self.filter_slider.setValue(self.xlight.get_filter_slider())
 
         self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -2516,7 +2517,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
-        self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
+        self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
             illumination_iris = self.xlight.illumination_iris
@@ -2573,13 +2574,13 @@ class SpinningDiskConfocalWidget(QWidget):
 
         filterSliderLayout = QHBoxLayout()
         filterSliderLayout.addWidget(QLabel("Filter Slider"))
-        # self.dropdown_filter_slider = QComboBox(self)
-        # self.dropdown_filter_slider.addItems(["0", "1", "2", "3"])
-        self.dropdown_filter_slider = QSlider(Qt.Horizontal)
-        self.dropdown_filter_slider.setRange(0, 3)
-        self.dropdown_filter_slider.setTickPosition(QSlider.TicksBelow)
-        self.dropdown_filter_slider.setTickInterval(1)
-        filterSliderLayout.addWidget(self.dropdown_filter_slider)
+        # self.filter_slider = QComboBox(self)
+        # self.filter_slider.addItems(["0", "1", "2", "3"])
+        self.filter_slider = QSlider(Qt.Horizontal)
+        self.filter_slider.setRange(0, 3)
+        self.filter_slider.setTickPosition(QSlider.TicksBelow)
+        self.filter_slider.setTickInterval(1)
+        filterSliderLayout.addWidget(self.filter_slider)
 
         self.btn_toggle_widefield = QPushButton("Switch to Confocal")
 
@@ -2621,7 +2622,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_illumination_iris.setEnabled(enable)
         self.slider_emission_iris.setEnabled(enable)
         self.spinbox_emission_iris.setEnabled(enable)
-        self.dropdown_filter_slider.setEnabled(enable)
+        self.filter_slider.setEnabled(enable)
 
     def block_iris_control_signals(self, block: bool):
         self.slider_illumination_iris.blockSignals(block)
@@ -2686,7 +2687,7 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def set_filter_slider(self, index):
         self.enable_all_buttons(False)
-        position = str(self.dropdown_filter_slider.value())
+        position = str(self.filter_slider.value())
         self.xlight.set_filter_slider(position)
         self.enable_all_buttons(True)
 
