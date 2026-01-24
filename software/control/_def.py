@@ -698,7 +698,7 @@ SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realist
 # Per-component hardware simulation controls
 # These settings only apply when running WITHOUT the --simulation flag.
 # When --simulation is used, ALL components are simulated regardless of these settings.
-# Values: None = Auto (follow --simulation flag), True = always simulate this component, False = never simulate (always use real hardware)
+# Values: None/False = use real hardware, True = simulate this component
 SIMULATE_CAMERA = None
 SIMULATE_MICROCONTROLLER = None  # Also controls stage (stage uses MCU)
 SIMULATE_SPINNING_DISK = None  # XLight/Dragonfly

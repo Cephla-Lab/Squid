@@ -30,8 +30,8 @@ class TestShouldSimulate:
         assert _should_simulate(global_simulated=False, component_override=False) is False
 
     def test_real_hardware_override_with_global(self):
-        """Real Hardware (False) should use real hardware even with --simulation flag."""
-        assert _should_simulate(global_simulated=True, component_override=False) is False
+        """Real Hardware (False) with --simulation flag should still simulate (--simulation overrides all)."""
+        assert _should_simulate(global_simulated=True, component_override=False) is True
 
 
 def test_create_simulated_microscope():
