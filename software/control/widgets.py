@@ -477,7 +477,7 @@ class CollapsibleGroupBox(QWidget):
                 border-top: none;
                 border-bottom-left-radius: 4px;
                 border-bottom-right-radius: 4px;
-                background-color: palette(window);
+                background-color: palette(base);
             }
             QFrame#collapsibleContent QLabel {
                 border: none;
@@ -843,7 +843,7 @@ class PreferencesDialog(QDialog):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
-        self.setWindowTitle("Configuration")
+        self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
         self._init_ui()
@@ -900,13 +900,6 @@ class PreferencesDialog(QDialog):
         path_layout.addWidget(self.saving_path_edit)
         path_layout.addWidget(browse_button)
         layout.addRow("Default Saving Path:", path_widget)
-
-        # Show Dev Tab checkbox
-        self.show_dev_tab_checkbox = QCheckBox()
-        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
-        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
-        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
-        layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
 
         self.tab_widget.addTab(tab, "General")
 
@@ -997,6 +990,10 @@ class PreferencesDialog(QDialog):
         tab = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { background-color: #f8f8f8; border: none; }"
+            "QScrollArea > QWidget > QWidget { background-color: #f8f8f8; }"
+        )
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
 
@@ -1266,6 +1263,19 @@ class PreferencesDialog(QDialog):
 
         diagnostics_group.content.addLayout(diagnostics_layout)
         layout.addWidget(diagnostics_group)
+
+        # Developer Options section
+        dev_options_group = CollapsibleGroupBox("Developer Options", collapsed=True)
+        dev_options_layout = QFormLayout()
+
+        self.show_dev_tab_checkbox = QCheckBox()
+        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
+        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
+        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
+        dev_options_layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
+
+        dev_options_group.content.addLayout(dev_options_layout)
+        layout.addWidget(dev_options_group)
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
