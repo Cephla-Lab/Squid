@@ -93,7 +93,7 @@ if __name__ == "__main__":
             QMessageBox.Ok,
         )
 
-    win.show()
+    win.showMaximized()
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": win.microscope}
