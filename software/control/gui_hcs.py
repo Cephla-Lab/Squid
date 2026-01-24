@@ -2197,7 +2197,19 @@ class HighContentScreeningGui(QMainWindow):
         self._cleanup_for_restart()
 
         # Spawn new process AFTER cleanup so it can acquire hardware
-        subprocess.Popen(args)
+        try:
+            subprocess.Popen(args)
+        except OSError as e:
+            self.log.exception("Failed to spawn new process for restart")
+            QMessageBox.critical(
+                self,
+                "Restart Failed",
+                f"Failed to restart the application.\n\nError: {e}\n\n"
+                "The application will now close. Please restart manually.",
+            )
+            # Still quit since hardware is already cleaned up
+            QApplication.instance().quit()
+            return
 
         # Quit the application
         QApplication.instance().quit()

@@ -1,3 +1,5 @@
+from unittest.mock import patch, MagicMock
+
 import control.microscope
 import squid.stage.cephla
 import squid.config
@@ -14,6 +16,19 @@ def test_create_simulated_microscope_with_skip_homing():
     """Test that skip_homing flag is accepted and doesn't cause errors."""
     sim_scope = control.microscope.Microscope.build_from_global_config(True, skip_homing=True)
     sim_scope.close()
+
+
+def test_skip_homing_skips_addon_homing():
+    """Test that skip_homing=True actually skips homing operations in addons."""
+    with patch.object(control.microscope.MicroscopeAddons, "prepare_for_use") as mock_prepare:
+        sim_scope = control.microscope.Microscope.build_from_global_config(True, skip_homing=True)
+
+        # Verify prepare_for_use was called with skip_homing=True
+        mock_prepare.assert_called_once()
+        call_kwargs = mock_prepare.call_args.kwargs
+        assert call_kwargs.get("skip_homing") is True, "prepare_for_use should be called with skip_homing=True"
+
+        sim_scope.close()
 
 
 def test_simulated_scope_basic_ops():
