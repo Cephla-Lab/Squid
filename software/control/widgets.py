@@ -2102,19 +2102,12 @@ class PreferencesDialog(QDialog):
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
         # Hardware Simulation settings (require restart)
-        def normalize_sim_value(value: str) -> str:
-            """Normalize truthy/falsy config values to canonical 'true' or 'false'."""
-            v = value.strip().lower()
-            if v in ("true", "1", "yes", "simulate"):
-                return "true"
-            return "false"
-
         sim_display_names = {
             "true": "Simulate",
             "false": "Real Hardware",
         }
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_camera", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower()
         new_val = self.sim_camera_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2126,7 +2119,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_microcontroller", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "false").lower()
         new_val = self.sim_mcu_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2138,7 +2131,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_spinning_disk", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "false").lower()
         new_val = self.sim_spinning_disk_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2150,7 +2143,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_filter_wheel", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "false").lower()
         new_val = self.sim_filter_wheel_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2162,7 +2155,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_objective_changer", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "false").lower()
         new_val = self.sim_objective_changer_combo.currentData()
         if old_val != new_val:
             changes.append(
@@ -2174,7 +2167,7 @@ class PreferencesDialog(QDialog):
                 )
             )
 
-        old_val = normalize_sim_value(self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false"))
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false").lower()
         new_val = self.sim_laser_af_camera_combo.currentData()
         if old_val != new_val:
             changes.append(
