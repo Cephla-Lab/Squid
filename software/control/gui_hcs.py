@@ -2230,9 +2230,21 @@ class HighContentScreeningGui(QMainWindow):
         except Exception as e:
             self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")
 
-        squid.camera.settings_cache.save_camera_settings(self.camera)
+        try:
+            squid.camera.settings_cache.save_camera_settings(self.camera)
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error saving camera settings during {context}")
+            else:
+                raise
 
-        self._disconnect_warning_handler()
+        try:
+            self._disconnect_warning_handler()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error disconnecting warning handler during {context}")
+            else:
+                raise
 
         # Clean up multipoint controller
         if self.multipointController is not None:
@@ -2248,7 +2260,13 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
 
-        self.movement_update_timer.stop()
+        try:
+            self.movement_update_timer.stop()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error stopping movement update timer during {context}")
+            else:
+                raise
 
         # Close filter wheel
         if self.emission_filter_wheel:
