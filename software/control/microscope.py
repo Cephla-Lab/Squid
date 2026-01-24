@@ -53,23 +53,24 @@ def _should_simulate(global_simulated: bool, component_override) -> bool:
     Args:
         global_simulated: The global --simulation flag value.
         component_override: Per-component override from control._def.SIMULATE_*.
-            None = use real hardware (when not using --simulation)
-            True = simulate this component (even without --simulation)
+            None = follow global --simulation flag (Auto)
+            True = always simulate this component
+            False = never simulate this component (use real hardware)
 
     Returns:
         True if the component should be simulated, False otherwise.
 
     Behavior:
-        - With --simulation: ALL components are simulated (overrides ignored)
-        - Without --simulation: per-component overrides apply
-          - None = use real hardware
-          - True = simulate this component
+        - None (Auto): follows --simulation flag
+        - True (Simulate): always simulate, regardless of --simulation flag
+        - False (Real Hardware): never simulate, even with --simulation flag
     """
-    if global_simulated:
-        return True  # --simulation flag forces all components to simulate
     if component_override is True:
-        return True  # Explicitly simulate this component
-    return False  # Use real hardware
+        return True  # Always simulate this component
+    if component_override is False:
+        return False  # Never simulate, use real hardware
+    # None (Auto): follow the global --simulation flag
+    return global_simulated
 
 
 class MicroscopeAddons:

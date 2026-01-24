@@ -1445,64 +1445,37 @@ class PreferencesDialog(QDialog):
                 combo.setCurrentIndex(0)  # Auto/None
             return combo
 
-        self.sim_camera_combo = create_sim_combo("simulate_camera")
-        self.sim_camera_combo.setToolTip(
-            "Control whether the camera is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real camera\n"
-            "  Simulate: use simulated camera"
+        sim_tooltip_template = (
+            "Control whether {component} is simulated.\n"
+            "  Auto: follow --simulation flag\n"
+            "  Simulate: always simulate (even without --simulation)\n"
+            "  Real Hardware: never simulate (even with --simulation)"
         )
+
+        self.sim_camera_combo = create_sim_combo("simulate_camera")
+        self.sim_camera_combo.setToolTip(sim_tooltip_template.format(component="the camera"))
         hw_sim_layout.addRow("Camera:", self.sim_camera_combo)
 
         self.sim_mcu_combo = create_sim_combo("simulate_microcontroller")
-        self.sim_mcu_combo.setToolTip(
-            "Control whether the microcontroller/stage is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real MCU/stage\n"
-            "  Simulate: use simulated MCU/stage"
-        )
+        self.sim_mcu_combo.setToolTip(sim_tooltip_template.format(component="the microcontroller/stage"))
         hw_sim_layout.addRow("Microcontroller/Stage:", self.sim_mcu_combo)
 
         self.sim_spinning_disk_combo = create_sim_combo("simulate_spinning_disk")
         self.sim_spinning_disk_combo.setToolTip(
-            "Control whether the spinning disk (XLight/Dragonfly) is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real spinning disk\n"
-            "  Simulate: use simulated spinning disk"
+            sim_tooltip_template.format(component="the spinning disk (XLight/Dragonfly)")
         )
         hw_sim_layout.addRow("Spinning Disk:", self.sim_spinning_disk_combo)
 
         self.sim_filter_wheel_combo = create_sim_combo("simulate_filter_wheel")
-        self.sim_filter_wheel_combo.setToolTip(
-            "Control whether the filter wheel is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real filter wheel\n"
-            "  Simulate: use simulated filter wheel"
-        )
+        self.sim_filter_wheel_combo.setToolTip(sim_tooltip_template.format(component="the filter wheel"))
         hw_sim_layout.addRow("Filter Wheel:", self.sim_filter_wheel_combo)
 
         self.sim_objective_changer_combo = create_sim_combo("simulate_objective_changer")
-        self.sim_objective_changer_combo.setToolTip(
-            "Control whether the objective changer is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real objective changer\n"
-            "  Simulate: use simulated objective changer"
-        )
+        self.sim_objective_changer_combo.setToolTip(sim_tooltip_template.format(component="the objective changer"))
         hw_sim_layout.addRow("Objective Changer:", self.sim_objective_changer_combo)
 
         self.sim_laser_af_camera_combo = create_sim_combo("simulate_laser_af_camera")
-        self.sim_laser_af_camera_combo.setToolTip(
-            "Control whether the laser autofocus camera is simulated.\n"
-            "Note: --simulation flag always simulates ALL hardware.\n"
-            "These settings only apply when running WITHOUT --simulation:\n"
-            "  Auto/Real: use real laser AF camera\n"
-            "  Simulate: use simulated laser AF camera"
-        )
+        self.sim_laser_af_camera_combo.setToolTip(sim_tooltip_template.format(component="the laser autofocus camera"))
         hw_sim_layout.addRow("Laser AF Camera:", self.sim_laser_af_camera_combo)
 
         hw_sim_group.content.addLayout(hw_sim_layout)

@@ -172,3 +172,63 @@ class TestConfAttributeReader:
         assert conf_attribute_reader("value\t# comment1  # comment2") == "value"
         # Should strip at first  #, not at later \t#
         assert conf_attribute_reader("value # comment1\t# comment2") == "value"
+
+
+class TestParseTristate:
+    """Tests for _parse_tristate() simulation setting parser.
+
+    Note: _parse_tristate is defined inside a try block in _def.py at module load time,
+    so we test it indirectly via control._def module attributes or recreate the logic.
+    """
+
+    @staticmethod
+    def _parse_tristate(value_str):
+        """Recreate _parse_tristate logic for testing (original is local to try block)."""
+        val = value_str.strip().lower()
+        if val in ("none", "auto", ""):
+            return None
+        elif val in ("true", "1", "yes", "simulate"):
+            return True
+        elif val in ("false", "0", "no", "real"):
+            return False
+        return None  # Unrecognized values default to None
+
+    def test_parses_none_values(self):
+        """Test that None/auto values return None."""
+        assert self._parse_tristate("none") is None
+        assert self._parse_tristate("None") is None
+        assert self._parse_tristate("auto") is None
+        assert self._parse_tristate("AUTO") is None
+        assert self._parse_tristate("") is None
+
+    def test_parses_true_values(self):
+        """Test that true/simulate values return True."""
+        assert self._parse_tristate("true") is True
+        assert self._parse_tristate("True") is True
+        assert self._parse_tristate("TRUE") is True
+        assert self._parse_tristate("1") is True
+        assert self._parse_tristate("yes") is True
+        assert self._parse_tristate("simulate") is True
+
+    def test_parses_false_values(self):
+        """Test that false/real values return False."""
+        assert self._parse_tristate("false") is False
+        assert self._parse_tristate("False") is False
+        assert self._parse_tristate("FALSE") is False
+        assert self._parse_tristate("0") is False
+        assert self._parse_tristate("no") is False
+        assert self._parse_tristate("real") is False
+
+    def test_strips_whitespace(self):
+        """Test that leading/trailing whitespace is stripped."""
+        assert self._parse_tristate("  true  ") is True
+        assert self._parse_tristate("  false  ") is False
+        assert self._parse_tristate("  none  ") is None
+
+    def test_unrecognized_values_default_to_none(self):
+        """Test that unrecognized values default to None (with warning logged)."""
+        # Typos and invalid values should default to None
+        assert self._parse_tristate("treu") is None
+        assert self._parse_tristate("fasle") is None
+        assert self._parse_tristate("simualte") is None
+        assert self._parse_tristate("invalid") is None

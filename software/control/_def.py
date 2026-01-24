@@ -1299,6 +1299,12 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             return True
         elif val in ("false", "0", "no", "real"):
             return False
+        # Unrecognized value - warn user and default to None (auto)
+        log.warning(
+            f"Unrecognized simulation setting value '{value_str}', "
+            f"expected one of: none/auto, true/1/yes/simulate, false/0/no/real. "
+            f"Defaulting to 'none' (auto)."
+        )
         return None
 
     try:
