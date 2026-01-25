@@ -166,7 +166,8 @@ These build on the NDViewer tab already ported:
 | `5b10bca4` | superseded | arch_v2 has own PreferencesDialog structure |
 | `cf4f1784` | superseded | arch_v2 uses JSON/Pydantic config, not YAML/ConfigRepository |
 | `fe927b0f` | not-applicable | Documents upstream's config system |
-| `82dafa6f` | needs-evaluation | May be superseded by arch_v2 LaserAF changes |
+| `82dafa6f` | superseded | arch_v2 uses Pydantic type-safe config with validators |
+| `bf30b5c9` | ported | XLight fixes ported 2026-01-24 |
 | `44264e3c` | not-applicable | arch_v2 uses EventBus for thread-safe GUI updates, not QMetaObject.invokeMethod |
 | `a1dfc4ad` | not-applicable | arch_v2's run_acquisition.py is a TCP client only, no GUI launching |
 | `0346d508` | user-request | Slack notifications skipped per user request |

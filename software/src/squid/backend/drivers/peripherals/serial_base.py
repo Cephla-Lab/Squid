@@ -127,8 +127,8 @@ class SerialDevice:
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
-            else:
-                time.sleep(attempt_delay)  # Wait before retrying
+
+            time.sleep(attempt_delay)  # Wait before retrying
 
         raise SerialDeviceError(
             "Max attempts reached without receiving expected response."

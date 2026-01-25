@@ -25,6 +25,7 @@ class XLight_Simulation:
         self.spinning_disk_pos = 0
         self.illumination_iris = 0
         self.emission_iris = 0
+        self.slider_position = 0
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -78,6 +79,9 @@ class XLight_Simulation:
         if str(position) not in ["0", "1", "2", "3"]:
             raise ValueError("Invalid slider position!")
         self.slider_position = position
+        return self.slider_position
+
+    def get_filter_slider(self):
         return self.slider_position
 
 
@@ -274,8 +278,15 @@ class XLight:
         position_to_write = str(position)
         position_to_read = str(position)
         self.serial_connection.write_and_check(
-            "P" + position_to_write + "\r", "V" + position_to_read, read_delay=5
+            "P" + position_to_write + "\r", "P" + position_to_read, read_delay=5
         )
+        return self.slider_position
+
+    def get_filter_slider(self):
+        current_pos = self.serial_connection.write_and_check(
+            "rP\r", "rP", read_delay=0.01
+        )
+        self.slider_position = int(current_pos[2])
         return self.slider_position
 
     def get_disk_position(self):

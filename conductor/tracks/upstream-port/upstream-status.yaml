@@ -608,8 +608,10 @@ commits:
     notes: Improved contrast sync and alignment error feedback
   82dafa6f:
     title: 'fix: Laser AF spot detection mode and None safety checks (#453)'
-    status: pending
-    notes: Needs evaluation - may be superseded by arch_v2 LaserAF implementation
+    status: skipped
+    skip_reason: superseded
+    skip_justification: arch_v2 uses Pydantic with field validators for type-safe SpotDetectionMode enum, compute_displacement() pure function handles edge cases, and EventBus pattern prevents None configuration issues
+    skip_date: '2026-01-24'
   fe927b0f:
     title: 'docs: Add comprehensive documentation for configuration system (#447)'
     status: skipped
@@ -618,4 +620,7 @@ commits:
     skip_date: '2026-01-24'
   bf30b5c9:
     title: 'fix: XLight filter slider serial communication and add getter method (#472)'
-    status: pending
+    status: ported
+    ported_in: 907376ca
+    ported_date: '2026-01-24'
+    notes: Fixed write_and_check retry logic, set_filter_slider expected response (V->P), added get_filter_slider method
