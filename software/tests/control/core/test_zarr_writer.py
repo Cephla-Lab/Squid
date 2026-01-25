@@ -20,6 +20,7 @@ from control._def import ZarrChunkMode, ZarrCompression
 from control.core.job_processing import (
     CaptureInfo,
     JobImage,
+    JobRunner,
     ZarrWriterInfo,
     SaveZarrJob,
 )
@@ -1245,3 +1246,52 @@ class TestSixDimensionalSupport:
 
         with pytest.raises(ValueError, match="FOV index.*out of range"):
             writer.write_frame(test_image, t=0, c=0, z=0, fov=10)  # Invalid FOV
+
+
+class TestJobRunnerZarrDispatch:
+    """Tests for JobRunner dispatch integration with SaveZarrJob.
+
+    Note: These tests only test the dispatch() method's injection logic,
+    not the full subprocess execution. The runner is not started.
+    """
+
+    def test_dispatch_injects_zarr_writer_info(self):
+        """Test that JobRunner.dispatch() injects zarr_writer_info into SaveZarrJob."""
+        zarr_info = ZarrWriterInfo(
+            base_path="/tmp/test_acquisition",
+            t_size=1,
+            c_size=1,
+            z_size=1,
+        )
+
+        # Create JobRunner with zarr_writer_info (not started - just testing dispatch logic)
+        runner = JobRunner(zarr_writer_info=zarr_info)
+
+        # Create a SaveZarrJob without zarr_writer_info
+        info = make_test_capture_info(region_id="A1", fov=0)
+        image = np.zeros((32, 32), dtype=np.uint16)
+        job = SaveZarrJob(capture_info=info, capture_image=JobImage(image_array=image))
+
+        # Verify job doesn't have zarr_writer_info yet
+        assert job.zarr_writer_info is None
+
+        # Dispatch the job (this should inject zarr_writer_info)
+        runner.dispatch(job)
+
+        # Verify zarr_writer_info was injected
+        assert job.zarr_writer_info is not None
+        assert job.zarr_writer_info.base_path == "/tmp/test_acquisition"
+
+    def test_dispatch_without_zarr_info_raises(self):
+        """Test that dispatching SaveZarrJob without zarr_writer_info raises an error."""
+        # Create JobRunner WITHOUT zarr_writer_info (not started)
+        runner = JobRunner()
+
+        # Create a SaveZarrJob
+        info = make_test_capture_info(region_id="A1", fov=0)
+        image = np.zeros((32, 32), dtype=np.uint16)
+        job = SaveZarrJob(capture_info=info, capture_image=JobImage(image_array=image))
+
+        # Dispatching should raise because JobRunner has no zarr_writer_info
+        with pytest.raises(ValueError, match="Cannot dispatch SaveZarrJob.*zarr_writer_info"):
+            runner.dispatch(job)
