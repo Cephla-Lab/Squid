@@ -45,14 +45,14 @@ This gives ~72 images per acquisition (2 wells × ~4 FOVs × 3z × 1t × 3ch).
 
 ### Using the zarr-v3-support worktree:
 ```bash
-cd "/Users/hongquan/Cephla Dropbox/Hongquan Li/Github/AI/Squid-Claude2/worktrees/zarr-v3-support/software"
+cd "$SQUID_ROOT/worktrees/zarr-v3-support/software"
 source /opt/miniconda3/etc/profile.d/conda.sh && conda activate squid
 python3 main_hcs.py --simulation
 ```
 
 ### Using the main branch (for TIFF baseline):
 ```bash
-cd "/Users/hongquan/Cephla Dropbox/Hongquan Li/Github/AI/Squid-Claude2/software"
+cd "$SQUID_ROOT/software"
 source /opt/miniconda3/etc/profile.d/conda.sh && conda activate squid
 python3 main_hcs.py --simulation
 ```
@@ -62,7 +62,7 @@ python3 main_hcs.py --simulation
 After running all tests, compare results:
 
 ```bash
-cd "/Users/hongquan/Cephla Dropbox/Hongquan Li/Github/AI/Squid-Claude2/software"
+cd "$SQUID_ROOT/software"
 source /opt/miniconda3/etc/profile.d/conda.sh && conda activate squid
 
 # Compare all test results

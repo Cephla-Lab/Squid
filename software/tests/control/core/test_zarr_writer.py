@@ -8,9 +8,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -504,13 +502,13 @@ class TestZarrWriterInfo:
             region_fov_counts={"region_1": 4, "region_2": 2},
         )
 
-        # Each FOV gets its own zarr file (OME-NGFF compliant)
-        assert info.get_output_path("region_1", 0) == "/tmp/experiment/zarr/region_1/fov_0.ome.zarr"
-        assert info.get_output_path("region_1", 1) == "/tmp/experiment/zarr/region_1/fov_1.ome.zarr"
-        assert info.get_output_path("region_1", 2) == "/tmp/experiment/zarr/region_1/fov_2.ome.zarr"
+        # Each FOV gets its own zarr file - get_output_path returns ARRAY path (group + /0)
+        assert info.get_output_path("region_1", 0) == "/tmp/experiment/zarr/region_1/fov_0.ome.zarr/0"
+        assert info.get_output_path("region_1", 1) == "/tmp/experiment/zarr/region_1/fov_1.ome.zarr/0"
+        assert info.get_output_path("region_1", 2) == "/tmp/experiment/zarr/region_1/fov_2.ome.zarr/0"
 
         # Different region
-        assert info.get_output_path("region_2", 0) == "/tmp/experiment/zarr/region_2/fov_0.ome.zarr"
+        assert info.get_output_path("region_2", 0) == "/tmp/experiment/zarr/region_2/fov_0.ome.zarr/0"
 
     def test_zarr_writer_info_non_hcs_6d_output_path(self):
         """Test non-HCS with 6D mode: single zarr per region (non-standard)."""
@@ -1660,8 +1658,6 @@ class TestHCSWorkflowIntegration:
 
     def test_hcs_metadata_written_once(self, temp_dir):
         """Test that plate/well metadata is written only once even with multiple FOVs."""
-        import logging
-
         # Clear any state from previous tests
         SaveZarrJob.clear_writers()
 

@@ -27,7 +27,7 @@ When acquiring from wellplate positions (region names match pattern `[A-Z]+\d+`)
 
 ```
 {experiment}/
-└── plate.zarr/
+└── plate.ome.zarr/
     ├── zarr.json          # Plate metadata (ome.plate)
     ├── A/
     │   └── 1/
