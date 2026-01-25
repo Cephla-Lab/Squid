@@ -2920,6 +2920,7 @@ class SpinningDiskConfocalWidget(QWidget):
         layout.setColumnStretch(3, 1)
         self.setLayout(layout)
 
+    @Slot(bool)
     def enable_all_buttons(self, enable: bool):
         self.dropdown_emission_filter.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
@@ -2939,22 +2940,33 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def toggle_disk_position(self):
         self.enable_all_buttons(False)
-        if self.disk_position_state == 1:
-            self.disk_position_state = self.xlight.set_disk_position(0)
-            self.btn_toggle_widefield.setText("Switch to Confocal")
-        else:
-            self.disk_position_state = self.xlight.set_disk_position(1)
+        target_position = 0 if self.disk_position_state == 1 else 1
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(
+                self, "_on_disk_position_toggled", Qt.QueuedConnection, Q_ARG(int, target_position)
+            )
+
+        utils.threaded_operation_helper(self.xlight.set_disk_position, on_finished, position=target_position)
+
+    @Slot(int)
+    def _on_disk_position_toggled(self, position):
+        self.disk_position_state = position
+        if position == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
+        else:
+            self.btn_toggle_widefield.setText("Switch to Confocal")
         self.enable_all_buttons(True)
         self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
 
     def toggle_motor(self):
         self.enable_all_buttons(False)
-        if self.btn_toggle_motor.isChecked():
-            self.xlight.set_disk_motor_state(True)
-        else:
-            self.xlight.set_disk_motor_state(False)
-        self.enable_all_buttons(True)
+        state = self.btn_toggle_motor.isChecked()
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_disk_motor_state, on_finished, state=state)
 
     def set_emission_filter(self, index):
         self.enable_all_buttons(False)
@@ -2995,8 +3007,11 @@ class SpinningDiskConfocalWidget(QWidget):
     def set_filter_slider(self, index):
         self.enable_all_buttons(False)
         position = str(self.filter_slider.value())
-        self.xlight.set_filter_slider(position)
-        self.enable_all_buttons(True)
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_filter_slider, on_finished, position=position)
 
     def get_confocal_mode(self) -> bool:
         """Get current confocal mode state.
