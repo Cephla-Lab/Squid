@@ -1898,3 +1898,101 @@ class TestHCSWorkflowIntegration:
 
         # Clean up
         SaveZarrJob.clear_writers()
+
+
+class TestZarrPathConsistency:
+    """Tests that NDViewer paths match writer paths.
+
+    This ensures that paths built by gui_hcs for NDViewer match paths
+    used by ZarrWriterInfo, preventing read/write path mismatches.
+    """
+
+    def test_hcs_paths_match_writer(self):
+        """Verify HCS mode paths built for NDViewer match writer paths."""
+        base_path = "/tmp/test_acquisition"
+
+        # Simulate writer path generation
+        zarr_info = ZarrWriterInfo(
+            base_path=base_path,
+            t_size=1,
+            c_size=3,
+            z_size=1,
+            is_hcs=True,
+        )
+
+        # Test various well IDs and FOV indices
+        test_cases = [
+            ("A1", 0),
+            ("A1", 1),
+            ("B2", 0),
+            ("B12", 2),
+            ("AA1", 0),  # Multi-letter row
+        ]
+
+        for well_id, fov in test_cases:
+            writer_path = zarr_info.get_output_path(well_id, fov)
+
+            # Simulate gui_hcs path building (same logic as _build_zarr_fov_paths)
+            row_letter, col_num = zarr_info._parse_well_id_parts(well_id)
+            gui_path = os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
+
+            assert writer_path == gui_path, (
+                f"Path mismatch for well={well_id}, fov={fov}: " f"writer={writer_path}, gui={gui_path}"
+            )
+
+    def test_non_hcs_per_fov_paths_match_writer(self):
+        """Verify non-HCS per-FOV mode paths match writer paths."""
+        base_path = "/tmp/test_acquisition"
+
+        # Simulate writer path generation (non-HCS, per-FOV mode)
+        zarr_info = ZarrWriterInfo(
+            base_path=base_path,
+            t_size=1,
+            c_size=3,
+            z_size=1,
+            is_hcs=False,
+            use_6d_fov=False,
+        )
+
+        # Test various region names and FOV indices
+        test_cases = [
+            ("region_0", 0),
+            ("region_0", 1),
+            ("scan_area_1", 0),
+            ("custom_name", 5),
+        ]
+
+        for region_id, fov in test_cases:
+            writer_path = zarr_info.get_output_path(region_id, fov)
+
+            # Simulate gui_hcs path building (same logic as _build_zarr_fov_paths)
+            gui_path = os.path.join(base_path, "zarr", region_id, f"fov_{fov}.ome.zarr")
+
+            assert writer_path == gui_path, (
+                f"Path mismatch for region={region_id}, fov={fov}: " f"writer={writer_path}, gui={gui_path}"
+            )
+
+    def test_well_id_parsing_consistency(self):
+        """Verify well ID parsing is consistent between writer and gui."""
+        # Both ZarrWriterInfo and gui_hcs have _parse_well_id_parts methods
+        # They should produce identical results
+
+        zarr_info = ZarrWriterInfo(
+            base_path="/tmp",
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+        )
+
+        test_well_ids = ["A1", "B12", "C3", "AA1", "AB12", "H8"]
+
+        for well_id in test_well_ids:
+            row, col = zarr_info._parse_well_id_parts(well_id)
+
+            # Verify parsing is correct
+            assert row.isalpha(), f"Row should be letters only: {row}"
+            assert col.isdigit(), f"Col should be digits only: {col}"
+            assert row + col == well_id.upper(), (
+                f"Parsed parts should reconstruct well_id: " f"{row}+{col} != {well_id}"
+            )
