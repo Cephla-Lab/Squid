@@ -66,6 +66,8 @@ class WellSelectionWidget(QTableWidget):
         self.well_size_mm: float = float(well_size_mm)
         self._apply_format()
         self._subscriptions = auto_subscribe(self, self._bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
     @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
@@ -84,6 +86,7 @@ class WellSelectionWidget(QTableWidget):
         self.setColumnCount(self.columns)
         self.initUI()
         self.setData()
+        self._update_row_headers()
 
     def initUI(self) -> None:
         # Disable editing, scrollbars, and other interactions
@@ -219,11 +222,20 @@ class WellSelectionWidget(QTableWidget):
                         )
 
     def closeEvent(self, event: Any) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._bus)
             self._subscriptions.clear()
-        super().closeEvent(event)
 
+    def _update_row_headers(self) -> None:
         # Update row headers
         row_headers = []
         for i in range(self.rows):

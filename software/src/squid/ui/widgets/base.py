@@ -50,6 +50,14 @@ class EventBusSubscriptionMixin:
         # Auto-subscribe all @handles decorated methods
         # UIEventBus has the same interface as EventBus
         self._subscriptions = auto_subscribe(self, self._bus)  # type: ignore[arg-type]
+        # Connect to destroyed signal to handle deleteLater() cleanup
+        # The mixin assumes self is a QObject (which all widgets are)
+        if hasattr(self, "destroyed"):
+            self.destroyed.connect(self._on_destroyed)  # type: ignore[union-attr]
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
 
     def _subscribe(self, event_type: type, handler: Callable) -> None:
         """Subscribe to an event and track for cleanup."""

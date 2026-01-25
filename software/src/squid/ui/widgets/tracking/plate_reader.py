@@ -69,6 +69,8 @@ class PlateReaderAcquisitionWidget(QFrame):
 
         # Subscribe to acquisition state events
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
@@ -199,10 +201,18 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.setEnabled_all(True)
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)
 
     def setEnabled_all(
         self, enabled: bool, exclude_btn_startAcquisition: bool = False
@@ -243,6 +253,8 @@ class PlateReaderNavigationWidget(QFrame):
 
         # Subscribe to events
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self) -> None:
         self.dropdown_column = QComboBox()
@@ -320,10 +332,18 @@ class PlateReaderNavigationWidget(QFrame):
         self.dropdown_column.setCurrentText(column)
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)
 
     # Keep legacy slot for backwards compatibility during transition
     def slot_homing_complete(self) -> None:

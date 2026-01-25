@@ -74,6 +74,8 @@ class NavigationViewer(QFrame):
         # Subscribe to stage movement events via UIEventBus (thread-safe)
         if self._event_bus is not None:
             self._subscriptions = auto_subscribe(self, self._event_bus)
+            # Clean up subscriptions when widget is destroyed (handles deleteLater())
+            self.destroyed.connect(self._on_destroyed)
 
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample: str = sample
@@ -562,7 +564,15 @@ class NavigationViewer(QFrame):
             return
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions and self._event_bus is not None:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)

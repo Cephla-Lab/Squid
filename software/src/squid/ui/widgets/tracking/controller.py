@@ -87,6 +87,8 @@ class TrackingControllerWidget(QFrame):
 
         # Subscribe to tracking state events
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
         self.peripheral_service.add_joystick_button_listener(
             lambda button_pressed: self.handle_button_pressed(button_pressed)
@@ -330,7 +332,15 @@ class TrackingControllerWidget(QFrame):
             self._pixel_size_um = event.pixel_size_um
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)

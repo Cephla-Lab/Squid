@@ -46,6 +46,8 @@ class DisplacementMeasurementWidget(QFrame):
 
         # Subscribe to displacement readings events
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self) -> None:
         self.entry_x_offset = QDoubleSpinBox()
@@ -160,10 +162,18 @@ class DisplacementMeasurementWidget(QFrame):
         self.reading_y.setText("{:.2f}".format(event.readings[1]))
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)
 
     # Keep legacy method for backwards compatibility during transition
     def display_readings(self, readings: List[float]) -> None:

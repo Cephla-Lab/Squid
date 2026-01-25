@@ -55,6 +55,8 @@ class Well1536SelectionWidget(QWidget):
         self.a1_y_pixel = 108  # coordinate on the png - to update
 
         self._subscriptions = auto_subscribe(self, self._bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
         self.initUI()
 
     @handles(ClickToMoveEnabledChanged)
@@ -524,7 +526,15 @@ class Well1536SelectionWidget(QWidget):
         return list_of_selected_cells
 
     def closeEvent(self, event: Any) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._bus)
             self._subscriptions.clear()
-        super().closeEvent(event)

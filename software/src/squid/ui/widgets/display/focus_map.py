@@ -110,6 +110,8 @@ class FocusMapWidget(QFrame):
 
         # Subscribe to stage position events
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
         self._request_scan_snapshot()
 
     @handles(ScanCoordinatesUpdated)
@@ -669,7 +671,15 @@ class FocusMapWidget(QFrame):
         self.update_z_btn.setFixedWidth(self.edit_point_btn.width())
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)

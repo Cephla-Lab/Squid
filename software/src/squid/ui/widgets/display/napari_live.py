@@ -105,6 +105,7 @@ class NapariLiveWidget(QWidget):
         self.fps_trigger = 10
         self.fps_display = 10
         self.contrastManager = contrastManager
+        self.is_switching_mode = False  # Guard to prevent duplicate commands during mode switch
 
         self.initNapariViewer()
         self.addNapariGrayclipColormap()
@@ -115,6 +116,8 @@ class NapariLiveWidget(QWidget):
 
         # Subscribe to state changes from the bus
         self._subscriptions = auto_subscribe(self, self._event_bus)
+        # Clean up subscriptions when widget is destroyed (handles deleteLater())
+        self.destroyed.connect(self._on_destroyed)
 
     @handles(AutoLevelCommand)
     def _on_autolevel_command(self, event: AutoLevelCommand) -> None:
@@ -574,16 +577,30 @@ class NapariLiveWidget(QWidget):
         # UI will be updated via _on_microscope_mode_changed event handler
 
     def update_ui_for_mode(self, config: ChannelConfiguration) -> None:
-        self.live_configuration = config
-        self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
-        if self.live_configuration:
-            self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-            self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-            self.slider_illuminationIntensity.setValue(
-                int(self.live_configuration.illumination_intensity)
-            )
+        try:
+            self.is_switching_mode = True
+            self.live_configuration = config
+            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if self.live_configuration:
+                self.entry_exposureTime.blockSignals(True)
+                self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
+                self.entry_exposureTime.blockSignals(False)
+
+                self.entry_analogGain.blockSignals(True)
+                self.entry_analogGain.setValue(self.live_configuration.analog_gain)
+                self.entry_analogGain.blockSignals(False)
+
+                self.slider_illuminationIntensity.blockSignals(True)
+                self.slider_illuminationIntensity.setValue(
+                    int(self.live_configuration.illumination_intensity)
+                )
+                self.slider_illuminationIntensity.blockSignals(False)
+        finally:
+            self.is_switching_mode = False
 
     def update_config_exposure_time(self, new_value: float) -> None:
+        if self.is_switching_mode:
+            return
         self.live_configuration.exposure_time = new_value
         self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
@@ -598,6 +615,8 @@ class NapariLiveWidget(QWidget):
         )
 
     def update_config_analog_gain(self, new_value: float) -> None:
+        if self.is_switching_mode:
+            return
         self.live_configuration.analog_gain = new_value
         self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
@@ -612,6 +631,8 @@ class NapariLiveWidget(QWidget):
         )
 
     def update_config_illumination_intensity(self, new_value: float) -> None:
+        if self.is_switching_mode:
+            return
         self.live_configuration.illumination_intensity = new_value
         self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
@@ -810,7 +831,15 @@ class NapariLiveWidget(QWidget):
         self.viewer.window.activate()
 
     def closeEvent(self, event) -> None:
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _on_destroyed(self) -> None:
+        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
+        self._cleanup_subscriptions()
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
         if self._subscriptions:
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions.clear()
-        super().closeEvent(event)
