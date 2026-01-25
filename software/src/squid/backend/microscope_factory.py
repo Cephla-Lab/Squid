@@ -23,11 +23,39 @@ from squid.backend.microscope import Microscope, MicroscopeAddons, LowLevelDrive
 from squid.core.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 
 
+def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
+    """Determine if a component should be simulated.
+
+    Args:
+        global_simulated: The global --simulation flag value.
+        component_override: Per-component override from _def.SIMULATE_*.
+            True = simulate this component
+            False = use real hardware (default)
+
+    Returns:
+        True if the component should be simulated, False otherwise.
+
+    Behavior:
+        - With --simulation flag: ALL components are simulated (per-component settings ignored)
+        - Without --simulation flag: per-component settings apply
+    """
+    if global_simulated:
+        return True  # --simulation flag: all components simulated
+    # No --simulation flag: per-component settings apply
+    return bool(component_override)
+
+
 def build_microscope_addons(
     stage: AbstractStage,
     micro: Optional[Microcontroller],
     simulated: bool = False,
 ) -> MicroscopeAddons:
+    # Per-component simulation settings
+    spinning_disk_simulated = _should_simulate(simulated, _def.SIMULATE_SPINNING_DISK)
+    filter_wheel_simulated = _should_simulate(simulated, _def.SIMULATE_FILTER_WHEEL)
+    objective_changer_simulated = _should_simulate(simulated, _def.SIMULATE_OBJECTIVE_CHANGER)
+    laser_af_camera_simulated = _should_simulate(simulated, _def.SIMULATE_LASER_AF_CAMERA)
+
     xlight = None
     if _def.ENABLE_SPINNING_DISK_CONFOCAL and not _def.USE_DRAGONFLY:
         # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
@@ -37,7 +65,7 @@ def build_microscope_addons(
                 _def.XLIGHT_SERIAL_NUMBER,
                 _def.XLIGHT_SLEEP_TIME_FOR_WHEEL,
             )
-            if not simulated
+            if not spinning_disk_simulated
             else serial_peripherals.XLight_Simulation()
         )
 
@@ -45,7 +73,7 @@ def build_microscope_addons(
     if _def.ENABLE_SPINNING_DISK_CONFOCAL and _def.USE_DRAGONFLY:
         dragonfly = (
             serial_peripherals.Dragonfly(SN=_def.DRAGONFLY_SERIAL_NUMBER)
-            if not simulated
+            if not spinning_disk_simulated
             else serial_peripherals.Dragonfly_Simulation()
         )
 
@@ -72,7 +100,7 @@ def build_microscope_addons(
     if fw_config:
         emission_filter_wheel = (
             squid.backend.drivers.filter_wheels.utils.get_filter_wheel_controller(
-                fw_config, microcontroller=micro, simulated=simulated
+                fw_config, microcontroller=micro, simulated=filter_wheel_simulated
             )
         )
 
@@ -87,7 +115,7 @@ def build_microscope_addons(
             ObjectiveChanger2PosController(
                 sn=_def.XERYON_SERIAL_NUMBER, stage=stage
             )
-            if not simulated
+            if not objective_changer_simulated
             else ObjectiveChanger2PosController_Simulation(
                 sn=_def.XERYON_SERIAL_NUMBER, stage=stage
             )
@@ -96,7 +124,7 @@ def build_microscope_addons(
     camera_focus = None
     if _def.SUPPORT_LASER_AUTOFOCUS:
         camera_focus = squid.backend.drivers.cameras.camera_utils.get_camera(
-            squid.core.config.get_autofocus_camera_config(), simulated=simulated
+            squid.core.config.get_autofocus_camera_config(), simulated=laser_af_camera_simulated
         )
 
     # Legacy fluidics removed - now handled by FluidicsService in ApplicationContext
@@ -156,11 +184,14 @@ def build_microscope_addons(
 
 
 def build_low_level_drivers(simulated: bool = False) -> LowLevelDrivers:
+    # Per-component simulation for microcontroller
+    mcu_simulated = _should_simulate(simulated, _def.SIMULATE_MICROCONTROLLER)
+
     micro_serial_device = (
         squid.backend.microcontroller.get_microcontroller_serial_device(
             version=_def.CONTROLLER_VERSION, sn=_def.CONTROLLER_SN
         )
-        if not simulated
+        if not mcu_simulated
         else squid.backend.microcontroller.get_microcontroller_serial_device(
             simulated=True
         )
@@ -220,9 +251,12 @@ def build_microscope(
 
         return True
 
+    # Per-component simulation for camera
+    camera_simulated = _should_simulate(simulated, _def.SIMULATE_CAMERA)
+
     camera = squid.backend.drivers.cameras.camera_utils.get_camera(
         config=squid.core.config.get_camera_config(),
-        simulated=simulated,
+        simulated=camera_simulated,
         hw_trigger_fn=acquisition_camera_hw_trigger_fn,
         hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
     )

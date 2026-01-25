@@ -333,6 +333,55 @@ class AcquisitionFinished(Event):
     error: Optional[Exception] = None
 
 
+# -----------------------------------------------------------------------------
+# NDViewer Push-Based API Events
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class NDViewerStartAcquisition(Event):
+    """Configure NDViewer for push mode acquisition.
+
+    Emitted at acquisition start with all information needed to pre-allocate
+    the viewer's data structure for real-time image display.
+    """
+
+    channels: List[str]  # Channel names
+    num_z: int  # Number of z-levels
+    height: int  # Image height in pixels
+    width: int  # Image width in pixels
+    fov_labels: List[str]  # FOV labels (e.g., ["A1:0", "A1:1", "A2:0"])
+    experiment_id: str  # For correlation with AcquisitionStarted
+
+
+@dataclass
+class NDViewerImageRegistered(Event):
+    """Register a newly saved image file with NDViewer.
+
+    Emitted after each image is saved to disk during acquisition.
+    NDViewer uses this to immediately load and display the image.
+    """
+
+    t: int  # Timepoint index
+    fov_idx: int  # Flat FOV index (0-based, across all wells)
+    z: int  # Z-level index
+    channel: str  # Channel name
+    filepath: str  # Full path to the saved image file
+    experiment_id: str  # For filtering stale events
+
+
+@dataclass
+class NDViewerAcquisitionEnded(Event):
+    """Mark NDViewer acquisition as ended.
+
+    Emitted when acquisition completes (success or abort).
+    The viewer remains usable for navigating the acquired data.
+    """
+
+    experiment_id: str
+    dataset_path: Optional[str] = None  # Path to dataset folder for file-based loading
+
+
 @dataclass
 class ImageCaptured(Event):
     """Emitted when an image is captured."""

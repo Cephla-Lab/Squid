@@ -34,7 +34,7 @@ class StreamHandler:
         handler_functions: StreamHandlerFunctions,
         display_resolution_scaling: float = 1,
     ) -> None:
-        self.fps_display: float = 1
+        self.fps_display: float = 10
         self.fps_save: float = 1
         self.fps_track: float = 1
         self.timestamp_last_display: float = 0

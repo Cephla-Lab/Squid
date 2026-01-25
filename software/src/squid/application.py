@@ -98,16 +98,19 @@ class ApplicationContext:
     """
 
     def __init__(
-        self, simulation: bool = False
+        self, simulation: bool = False, skip_init: bool = False
     ):
         """
         Initialize the application context.
 
         Args:
             simulation: If True, use simulated hardware
+            skip_init: If True, skip hardware initialization (MCU reset, homing, limits).
+                      Used when restarting after settings change.
         """
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._simulation = simulation
+        self._skip_init = skip_init
         self._microscope: Optional["Microscope"] = None
         self._controllers: Optional[Controllers] = None
         self._services: Optional["ServiceRegistry"] = None
@@ -124,7 +127,7 @@ class ApplicationContext:
         self._subscriptions: list[tuple[type, object]] = []
 
         self._log.info(
-            f"Creating ApplicationContext (simulation={simulation})"
+            f"Creating ApplicationContext (simulation={simulation}, skip_init={skip_init})"
         )
 
         # Ensure the core EventBus dispatch thread is running early
@@ -155,6 +158,14 @@ class ApplicationContext:
             import _def as _config
         except Exception:
             _config = None
+
+        # Skip full initialization if --skip-init flag is set
+        # (Used when restarting after settings change - hardware already configured)
+        if self._skip_init:
+            self._log.info("Skipping hardware initialization (--skip-init flag)")
+            # Still need to wire up camera callbacks for live streaming
+            self._setup_camera_callbacks_only(_config)
+            return
 
         # Stage limits + home
         stage_service = self._services.get("stage")
@@ -262,6 +273,53 @@ class ApplicationContext:
             except Exception:
                 self._log.debug("Objective changer home not supported", exc_info=True)
 
+    def _setup_camera_callbacks_only(self, _config) -> None:
+        """Minimal camera setup when skipping full initialization.
+
+        Wires up camera callbacks so live streaming works, without doing
+        stage homing, limits configuration, or position restoration.
+        """
+        assert self._controllers is not None
+        assert self._services is not None
+
+        # Camera callback wiring (live display path)
+        camera_service = self._services.get("camera")
+        if camera_service is not None and self._camera_frame_callback_id is None:
+            try:
+                if _config is not None and getattr(_config, "DEFAULT_TRIGGER_MODE", None) is not None:
+                    from squid.core.abc import CameraAcquisitionMode
+                    from _def import TriggerMode
+
+                    if getattr(_config, "DEFAULT_TRIGGER_MODE") == TriggerMode.HARDWARE:
+                        camera_service.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                    else:
+                        camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self._camera_frame_callback_id = camera_service.add_frame_callback(
+                    self._controllers.stream_handler.on_new_frame
+                )
+                camera_service.enable_callbacks(enabled=True)
+            except Exception:
+                self._log.exception("Failed to initialize camera callbacks (skip-init mode)")
+
+        # Focus camera callback wiring (laser autofocus)
+        focus_camera_service = self._services.get("camera_focus")
+        if (
+            focus_camera_service is not None
+            and self._controllers.stream_handler_focus is not None
+            and self._camera_focus_frame_callback_id is None
+        ):
+            try:
+                from squid.core.abc import CameraAcquisitionMode
+
+                focus_camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self._camera_focus_frame_callback_id = focus_camera_service.add_frame_callback(
+                    self._controllers.stream_handler_focus.on_new_frame
+                )
+                focus_camera_service.enable_callbacks(enabled=True)
+                focus_camera_service.start_streaming()
+            except Exception:
+                self._log.exception("Failed to initialize focus camera callbacks (skip-init mode)")
+
     def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
         from squid.backend import microscope_factory
@@ -344,6 +402,7 @@ class ApplicationContext:
                 camera_service=focus_camera_service,
                 event_bus=event_bus,
                 control_illumination=False,
+                peripheral_service=self._services.get("peripheral"),
                 for_displacement_measurement=True,
                 mode_gate=self.mode_gate,
                 camera="focus",

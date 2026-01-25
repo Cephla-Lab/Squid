@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-01-12T17:11:36'
+  last_verified: '2026-01-24T19:19:06'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -480,3 +480,72 @@ commits:
     status: ported
     ported_in: 962a7956
     ported_date: '2026-01-12'
+  3d5b7922:
+    title: 'feat: Skip hardware initialization on restart after settings change (#471)'
+    status: pending
+  364d2cf1:
+    title: 'feat: Add per-component hardware simulation controls (#468)'
+    status: pending
+  5b10bca4:
+    title: 'refactor: Reorganize Preferences dialog (#470)'
+    status: pending
+  5a22a08b:
+    title: 'fix: UI improvements - maximize window and rename menu item (#469)'
+    status: pending
+  0346d508:
+    title: 'feat: Add Slack notifications for acquisition events (#466)'
+    status: pending
+  17ed8c7b:
+    title: 'feat: Add status bar widget for displaying warnings and errors (#467)'
+    status: pending
+  03f4d11c:
+    title: FLIR camera driver update (#365)
+    status: pending
+  0dcbcef2:
+    title: 'fix: live illumination switching w/ hardware trigger (#419)'
+    status: pending
+  c58983c0:
+    title: 'feat: Integrate NDViewer push-based API for live acquisition (#465)'
+    status: pending
+  a1dfc4ad:
+    title: 'fix: Terminate GUI after --wait acquisition completes in run_acquisition.py (#464)'
+    status: pending
+  44264e3c:
+    title: 'fix: Use QMetaObject.invokeMethod for TCP acquisition GUI state update (#463)'
+    status: pending
+  ddd5a549:
+    title: 'feat: Add settings option to enable/disable NDViewer tab (#462)'
+    status: pending
+  5f4b158c:
+    title: 'fix: Race condition in the NapariLiveWidget for the new alignment feature (#461)'
+    status: pending
+  0f4cbb8d:
+    title: 'feat: Add detailed MCU command logging for debugging (#460)'
+    status: pending
+  606e4175:
+    title: 'fix: Initialize Optospin filter wheel positions on startup (#459)'
+    status: pending
+  fbd9eda5:
+    title: 'fix: mcu cmd timeout and toupcam strobe delay fixes (#458)'
+    status: pending
+  9a015e0f:
+    title: Tucsen Libra25 support (#437)
+    status: pending
+  f270061a:
+    title: 'fix: Preserve manual region drawing order during acquisition (#457)'
+    status: pending
+  b352f0a7:
+    title: 'fix: Suppress stale read warnings in simulation mode (#456)'
+    status: pending
+  cf4f1784:
+    title: 'fix: User profile migration and spot detection mode fixes (#455)'
+    status: pending
+  e5cd025c:
+    title: 'fix: Sync contrast limits and add user feedback for alignment errors (#454)'
+    status: pending
+  82dafa6f:
+    title: 'fix: Laser AF spot detection mode and None safety checks (#453)'
+    status: pending
+  fe927b0f:
+    title: 'docs: Add comprehensive documentation for configuration system (#447)'
+    status: pending

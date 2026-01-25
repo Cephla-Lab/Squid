@@ -530,6 +530,19 @@ class PreferencesDialog(QDialog):
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
+        # NDViewer section
+        ndviewer_group = CollapsibleGroupBox("NDViewer")
+        ndviewer_layout = QFormLayout()
+
+        # Enable NDViewer
+        self.enable_ndviewer_checkbox = QCheckBox()
+        self.enable_ndviewer_checkbox.setChecked(self._get_config_bool("VIEWS", "enable_ndviewer", False))
+        self.enable_ndviewer_checkbox.setToolTip("Enable the NDViewer tab for viewing acquired datasets")
+        ndviewer_layout.addRow("Enable NDViewer *:", self.enable_ndviewer_checkbox)
+
+        ndviewer_group.content.addLayout(ndviewer_layout)
+        layout.addWidget(ndviewer_group)
+
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
@@ -785,6 +798,60 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
+        # Use Simulated Hardware section
+        hw_sim_group = CollapsibleGroupBox("Use Simulated Hardware *")
+        hw_sim_layout = QFormLayout()
+
+        sim_tooltip = (
+            "Simulate this component (even without --simulation flag).\n"
+            "With --simulation flag, ALL components are always simulated."
+        )
+
+        self.sim_camera_checkbox = QCheckBox()
+        self.sim_camera_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_camera", False)
+        )
+        self.sim_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Camera:", self.sim_camera_checkbox)
+
+        self.sim_mcu_checkbox = QCheckBox()
+        self.sim_mcu_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_microcontroller", False)
+        )
+        self.sim_mcu_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate MCU/Stage:", self.sim_mcu_checkbox)
+
+        self.sim_spinning_disk_checkbox = QCheckBox()
+        self.sim_spinning_disk_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_spinning_disk", False)
+        )
+        self.sim_spinning_disk_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Spinning Disk:", self.sim_spinning_disk_checkbox)
+
+        self.sim_filter_wheel_checkbox = QCheckBox()
+        self.sim_filter_wheel_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_filter_wheel", False)
+        )
+        self.sim_filter_wheel_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Filter Wheel:", self.sim_filter_wheel_checkbox)
+
+        self.sim_objective_changer_checkbox = QCheckBox()
+        self.sim_objective_changer_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_objective_changer", False)
+        )
+        self.sim_objective_changer_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Objective Changer:", self.sim_objective_changer_checkbox)
+
+        self.sim_laser_af_camera_checkbox = QCheckBox()
+        self.sim_laser_af_camera_checkbox.setChecked(
+            self._get_config_bool("SIMULATION", "simulate_laser_af_camera", False)
+        )
+        self.sim_laser_af_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Laser AF Camera:", self.sim_laser_af_camera_checkbox)
+
+        hw_sim_group.content.addLayout(hw_sim_layout)
+        layout.addWidget(hw_sim_group)
+
         # Development Settings section
         dev_group = CollapsibleGroupBox("Development Settings")
         dev_layout = QFormLayout()
@@ -827,6 +894,16 @@ class PreferencesDialog(QDialog):
             "Disable for faster simulation with less CPU load."
         )
         dev_layout.addRow("Simulate Compression:", self.simulated_compression_checkbox)
+
+        self.force_save_images_checkbox = QCheckBox()
+        self.force_save_images_checkbox.setChecked(
+            self._get_config_bool("DEVELOPMENT", "simulation_force_save_images", False)
+        )
+        self.force_save_images_checkbox.setToolTip(
+            "When enabled, save images to disk even with Simulated Disk I/O enabled.\n"
+            "Useful for testing file-based viewers (NDViewer) in simulation mode."
+        )
+        dev_layout.addRow("Force Save Images:", self.force_save_images_checkbox)
 
         dev_group.content.addLayout(dev_layout)
         layout.addWidget(dev_group)
@@ -983,6 +1060,11 @@ class PreferencesDialog(QDialog):
             "true" if self.display_mosaic_view_checkbox.isChecked() else "false",
         )
         self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
+        self.config.set(
+            "VIEWS",
+            "enable_ndviewer",
+            "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
+        )
 
         # Development settings
         self.config.set(
@@ -995,6 +1077,26 @@ class PreferencesDialog(QDialog):
             "DEVELOPMENT",
             "simulated_disk_io_compression",
             "true" if self.simulated_compression_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "DEVELOPMENT",
+            "simulation_force_save_images",
+            "true" if self.force_save_images_checkbox.isChecked() else "false",
+        )
+
+        # Hardware Simulation settings (in [SIMULATION] section)
+        self._ensure_section("SIMULATION")
+        self.config.set("SIMULATION", "simulate_camera", str(self.sim_camera_checkbox.isChecked()).lower())
+        self.config.set("SIMULATION", "simulate_microcontroller", str(self.sim_mcu_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_spinning_disk", str(self.sim_spinning_disk_checkbox.isChecked()).lower()
+        )
+        self.config.set("SIMULATION", "simulate_filter_wheel", str(self.sim_filter_wheel_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_objective_changer", str(self.sim_objective_changer_checkbox.isChecked()).lower()
+        )
+        self.config.set(
+            "SIMULATION", "simulate_laser_af_camera", str(self.sim_laser_af_camera_checkbox.isChecked()).lower()
         )
 
         # Save to file
@@ -1128,6 +1230,8 @@ class PreferencesDialog(QDialog):
             _def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_speed_spinbox.value()
         if hasattr(_def, "SIMULATED_DISK_IO_COMPRESSION"):
             _def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_compression_checkbox.isChecked()
+        if hasattr(_def, "SIMULATION_FORCE_SAVE_IMAGES"):
+            _def.SIMULATION_FORCE_SAVE_IMAGES = self.force_save_images_checkbox.isChecked()
 
     def _get_changes(self) -> List[Tuple[str, str, str, bool]]:
         """Get list of settings that have changed from current config.
@@ -1365,6 +1469,11 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_float, new_float):
             changes.append(("Mosaic Target Pixel Size", f"{old_float} μm", f"{new_float} μm", False))
 
+        old_val_bool = self._get_config_bool("VIEWS", "enable_ndviewer", False)
+        new_val_bool = self.enable_ndviewer_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Enable NDViewer *", str(old_val_bool), str(new_val_bool), True))
+
         # Development settings (live update)
         old_val_bool = self._get_config_bool("DEVELOPMENT", "simulated_disk_io_enabled", False)
         new_val_bool = self.simulated_disk_io_checkbox.isChecked()
@@ -1380,6 +1489,42 @@ class PreferencesDialog(QDialog):
         new_val_bool = self.simulated_compression_checkbox.isChecked()
         if old_val_bool != new_val_bool:
             changes.append(("Simulate Compression", str(old_val_bool), str(new_val_bool), False))
+
+        old_val_bool = self._get_config_bool("DEVELOPMENT", "simulation_force_save_images", False)
+        new_val_bool = self.force_save_images_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Force Save Images", str(old_val_bool), str(new_val_bool), False))
+
+        # Hardware Simulation settings (require restart)
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_camera", False)
+        new_val_bool = self.sim_camera_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Camera *", str(old_val_bool), str(new_val_bool), True))
+
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_microcontroller", False)
+        new_val_bool = self.sim_microcontroller_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Microcontroller *", str(old_val_bool), str(new_val_bool), True))
+
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_spinning_disk", False)
+        new_val_bool = self.sim_spinning_disk_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Spinning Disk *", str(old_val_bool), str(new_val_bool), True))
+
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_filter_wheel", False)
+        new_val_bool = self.sim_filter_wheel_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Filter Wheel *", str(old_val_bool), str(new_val_bool), True))
+
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_objective_changer", False)
+        new_val_bool = self.sim_objective_changer_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Objective Changer *", str(old_val_bool), str(new_val_bool), True))
+
+        old_val_bool = self._get_config_bool("SIMULATION", "simulate_laser_af_camera", False)
+        new_val_bool = self.sim_laser_af_camera_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Laser AF Camera *", str(old_val_bool), str(new_val_bool), True))
 
         return changes
 
@@ -1397,9 +1542,7 @@ class PreferencesDialog(QDialog):
         if len(changes) == 1:
             self._apply_settings()
             if requires_restart:
-                QMessageBox.information(
-                    self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
-                )
+                self._prompt_restart()
             self.accept()
             return
 
@@ -1447,4 +1590,43 @@ class PreferencesDialog(QDialog):
 
         if dialog.exec_() == QDialog.Accepted:
             self._apply_settings()
+            if requires_restart:
+                self._prompt_restart()
             self.accept()
+
+    def _prompt_restart(self) -> None:
+        """Show restart dialog when settings require restart."""
+        reply = QMessageBox.question(
+            self,
+            "Restart Required",
+            "Some settings changed require a restart to take effect.\n\n"
+            "Would you like to restart now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._restart_application()
+
+    def _restart_application(self) -> None:
+        """Restart the application with --skip-init flag."""
+        import sys
+        import os
+
+        # Build restart command with --skip-init
+        args = sys.argv.copy()
+        if "--skip-init" not in args:
+            args.append("--skip-init")
+
+        # Close the preferences dialog first
+        self.accept()
+
+        # Schedule application restart after event loop processes
+        from qtpy.QtCore import QTimer
+        from qtpy.QtWidgets import QApplication
+
+        def do_restart():
+            # Quit application and spawn new process
+            QApplication.instance().quit()
+            os.execv(sys.executable, [sys.executable] + args)
+
+        QTimer.singleShot(100, do_restart)

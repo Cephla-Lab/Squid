@@ -27,6 +27,7 @@ import squid.ui.main_window as gui
 from _def import USE_TERMINAL_CONSOLE
 from _def import SQUID_ICON_PATH
 from _def import SIMULATED_DISK_IO_ENABLED
+from _def import SIMULATION_FORCE_SAVE_IMAGES
 import squid.core.utils.hardware_utils
 from squid.application import ApplicationContext
 
@@ -62,6 +63,12 @@ if __name__ == "__main__":
         default=5050,
         help="TCP server port (default: 5050)",
     )
+    parser.add_argument(
+        "--skip-init",
+        action="store_true",
+        help="Skip hardware initialization (MCU reset, homing, limits). "
+        "Used when restarting after settings change.",
+    )
     args = parser.parse_args()
 
     log = squid.core.logging.get_logger("main_hcs")
@@ -87,7 +94,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # Create application context (centralizes microscope and controller creation)
-    context = ApplicationContext(simulation=args.simulation)
+    context = ApplicationContext(simulation=args.simulation, skip_init=args.skip_init)
 
     # Enable event bus debug mode if requested
     if args.debug_bus:
@@ -277,8 +284,8 @@ if __name__ == "__main__":
         except Exception as e:
             log.error(f"Failed to start TCP control server: {e}")
 
-    # Show startup warning if simulated disk I/O is enabled
-    if SIMULATED_DISK_IO_ENABLED:
+    # Show startup warning if simulated disk I/O is enabled (but not if force save is on)
+    if SIMULATED_DISK_IO_ENABLED and not SIMULATION_FORCE_SAVE_IMAGES:
         QMessageBox.warning(
             win,
             "Simulated Disk I/O Mode",
@@ -289,7 +296,7 @@ if __name__ == "__main__":
             "To disable: Configuration > Advanced > Development Settings",
         )
 
-    win.show()
+    win.showMaximized()
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": context.microscope, "context": context}

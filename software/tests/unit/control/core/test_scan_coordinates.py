@@ -131,3 +131,56 @@ def test_scan_coordinates_shutdown_unsubscribes() -> None:
     bus.drain()
 
     assert len(scan_coordinates.region_centers.keys()) == 1
+
+
+def test_sort_coordinates_manual_regions_preserve_drawing_order():
+    """Manual regions stay in drawing order, come before wells, and ignore S-Pattern."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+    sc.acquisition_pattern = "S-Pattern"
+
+    # Set up regions directly (bypass coordinate validation)
+    sc.region_centers = {
+        "A1": [10.0, 10.0],
+        "manual1": [99.0, 99.0],  # Drawn second, far position
+        "B1": [10.0, 20.0],
+        "manual0": [10.0, 10.0],  # Drawn first, same position as A1
+        "B2": [20.0, 20.0],
+        "A2": [20.0, 10.0],
+    }
+    sc.region_fov_coordinates = {k: [(v[0], v[1], 0.0)] for k, v in sc.region_centers.items()}
+
+    sc.sort_coordinates()
+
+    keys = list(sc.region_centers.keys())
+    # Manual regions first (drawing order), then wells (S-Pattern: row B reversed)
+    assert keys == ["manual0", "manual1", "A1", "A2", "B2", "B1"]
+
+
+def test_is_manual_region():
+    """Test the _is_manual_region helper method."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+
+    # Should match manual regions
+    assert sc._is_manual_region("manual") is True
+    assert sc._is_manual_region("manual0") is True
+    assert sc._is_manual_region("manual1") is True
+    assert sc._is_manual_region("manual99") is True
+
+    # Should not match well names or other regions
+    assert sc._is_manual_region("A1") is False
+    assert sc._is_manual_region("B12") is False
+    assert sc._is_manual_region("current") is False
+    assert sc._is_manual_region("xymanual") is False  # Doesn't start with "manual"
+
+
+def test_get_manual_region_index():
+    """Test the _get_manual_region_index helper method."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+
+    assert sc._get_manual_region_index("manual") == 0
+    assert sc._get_manual_region_index("manual0") == 0
+    assert sc._get_manual_region_index("manual1") == 1
+    assert sc._get_manual_region_index("manual42") == 42

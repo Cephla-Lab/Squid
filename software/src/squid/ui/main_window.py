@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtGui import QCloseEvent
 
 from _def import (
+    ENABLE_NDVIEWER,
     ENABLE_NL5,
     ENABLE_WELLPLATE_MULTIPOINT,
     HOMING_ENABLED_X,
@@ -36,6 +37,7 @@ from _def import (
     RUN_FLUIDICS,
     SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS,
     SIMULATED_DISK_IO_ENABLED,
+    SIMULATION_FORCE_SAVE_IMAGES,
     SUPPORT_SCIMICROSCOPY_LED_ARRAY,
     USE_JUPYTER_CONSOLE,
     USE_NAPARI_WELL_SELECTION,
@@ -340,9 +342,9 @@ class HighContentScreeningGui(QMainWindow):
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
 
-        # Warning banner for simulated disk I/O mode
+        # Warning banner for simulated disk I/O mode (only if force save is not enabled)
         self.simulated_io_warning_banner: Optional[QLabel] = None
-        if SIMULATED_DISK_IO_ENABLED:
+        if SIMULATED_DISK_IO_ENABLED and not SIMULATION_FORCE_SAVE_IMAGES:
             self.simulated_io_warning_banner = QLabel(
                 "SIMULATED DISK I/O: Images are NOT being saved to disk!"
             )
@@ -351,6 +353,12 @@ class HighContentScreeningGui(QMainWindow):
                 "padding: 8px; font-size: 14px;"
             )
             self.simulated_io_warning_banner.setAlignment(Qt.AlignCenter)
+
+        # Warning/Error display widget (auto-hides when empty)
+        from squid.ui.widgets.warning_error_widget import WarningErrorWidget
+        self.warningErrorWidget = WarningErrorWidget()
+        self.warningErrorWidget.setVisible(False)
+        self._warning_handler = None
 
         self.load_widgets()
         self.setup_layout()
@@ -373,8 +381,8 @@ class HighContentScreeningGui(QMainWindow):
         menubar.setNativeMenuBar(False)
         settings_menu = menubar.addMenu("Settings")
 
-        # Configuration action
-        config_action = QAction("Configuration...", self)
+        # Preferences action
+        config_action = QAction("Preferences...", self)
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
@@ -395,6 +403,10 @@ class HighContentScreeningGui(QMainWindow):
             self.jupyter_widget = JupyterWidget(namespace=self.namespace)
             self.jupyter_dock.setWidget(self.jupyter_widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
+
+        # Add warning/error widget to status bar
+        if self.warningErrorWidget is not None:
+            self.statusBar().addWidget(self.warningErrorWidget)
 
         # Main window should act as a UI container: widgets talk via UIEventBus.
         # Drop direct access to the controllers/services registries after initialization.
@@ -570,15 +582,16 @@ class HighContentScreeningGui(QMainWindow):
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
             # can cause OpenGL context conflicts since both libraries share vispy state.
             self.ndviewerTab: Optional[widgets.NDViewerTab] = None
-            try:
-                self.ndviewerTab = widgets.NDViewerTab()
-                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
-            except ImportError:
-                self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
-            except (RuntimeError, OSError) as e:
-                self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
-            except Exception:
-                self.log.exception("Failed to initialize NDViewer tab - unexpected error")
+            if ENABLE_NDVIEWER:
+                try:
+                    self.ndviewerTab = widgets.NDViewerTab(event_bus=self._event_bus)
+                    self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+                except ImportError:
+                    self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
+                except (RuntimeError, OSError) as e:
+                    self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
+                except Exception:
+                    self.log.exception("Failed to initialize NDViewer tab - unexpected error")
 
             # Connect plate view double-click to NDViewer navigation
             if (
@@ -1516,6 +1529,41 @@ class HighContentScreeningGui(QMainWindow):
         except Exception:
             self._log.exception("Error providing alignment position")
 
+    def showEvent(self, event) -> None:
+        """Connect warning/error handler when window is shown."""
+        super().showEvent(event)
+        self._connect_warning_handler()
+
+    def _connect_warning_handler(self) -> None:
+        """Connect logging handler to warning/error widget."""
+        if self.warningErrorWidget is None:
+            return
+
+        from squid.ui.widgets.warning_error_widget import QtLoggingHandler
+        self._warning_handler = QtLoggingHandler()
+        self._warning_handler.signal_message_logged.connect(self.warningErrorWidget.add_message)
+        squid.core.logging.get_logger().addHandler(self._warning_handler)
+        self.log.debug("Warning/error widget: connected logging handler")
+
+    def _disconnect_warning_handler(self) -> None:
+        """Disconnect logging handler from warning/error widget.
+
+        Uses robust error handling to ensure cleanup completes even if
+        individual operations fail (e.g., handler already removed).
+        """
+        if self._warning_handler is not None:
+            try:
+                squid.core.logging.get_logger().removeHandler(self._warning_handler)
+            except Exception:
+                pass
+            try:
+                if self.warningErrorWidget is not None:
+                    self._warning_handler.signal_message_logged.disconnect(self.warningErrorWidget.add_message)
+            except Exception:
+                pass
+            self._warning_handler = None
+            self.log.debug("Warning/error widget: disconnected logging handler")
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not getattr(self, "_skip_close_confirmation", False):
             reply = QMessageBox.question(
@@ -1532,6 +1580,9 @@ class HighContentScreeningGui(QMainWindow):
         if self._subscriptions and self._ui_event_bus is not None:
             auto_unsubscribe(self._subscriptions, self._ui_event_bus)
             self._subscriptions.clear()
+
+        # Disconnect warning/error widget logging handler
+        self._disconnect_warning_handler()
 
         # UI publishes commands only; hardware cleanup is handled by ApplicationContext.shutdown().
         self._ui_event_bus.publish(StopLiveCommand())

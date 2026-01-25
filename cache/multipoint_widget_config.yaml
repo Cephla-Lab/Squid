@@ -1,6 +1,6 @@
 xy_enabled: true
 xy_mode: Select Wells
-z_enabled: true
+z_enabled: false
 z_mode: From Bottom
 time_enabled: false
 fov_overlap: 10.0
@@ -10,8 +10,5 @@ dz: 1.5
 nz: 1
 selected_channels:
 - Fluorescence 405 nm Ex
-- Fluorescence 488 nm Ex
-- Fluorescence 561 nm Ex
-- Fluorescence 638 nm Ex
 contrast_af: false
 laser_af: false

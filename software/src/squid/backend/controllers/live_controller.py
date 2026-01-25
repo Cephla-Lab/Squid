@@ -116,7 +116,7 @@ class LiveController(StateMachine[LiveControllerState]):
         )
         self.for_displacement_measurement: bool = for_displacement_measurement
 
-        self.fps_trigger: float = 1
+        self.fps_trigger: float = 10
         self.timer_trigger_interval: float = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count: int = 0
         self.timer_trigger: Optional[threading.Timer] = None
@@ -239,6 +239,10 @@ class LiveController(StateMachine[LiveControllerState]):
             return
         channel = self._get_illumination_channel()
         if channel is None:
+            self._log.warning(
+                "turn_off_illumination() skipped - no illumination channel configured for '%s'",
+                getattr(self.currentConfiguration, "name", "None"),
+            )
             return
         try:
             self._illumination_service.turn_off_channel(channel)
@@ -551,14 +555,19 @@ class LiveController(StateMachine[LiveControllerState]):
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
     def set_microscope_mode(self, configuration: "ChannelMode") -> None:
         with self._lock:
-            self.currentConfiguration = configuration
-            self._log.info("setting microscope mode to " + self.currentConfiguration.name)
+            self._log.info("setting microscope mode to " + configuration.name)
 
             # temporarily stop live while changing mode
             if self.is_live is True:
                 self._stop_existing_timer()
                 if self.control_illumination:
+                    # Turn off illumination BEFORE switching self.currentConfiguration.
+                    # turn_off_illumination() reads self.currentConfiguration to determine which
+                    # illumination channel to turn off. If we switch first, we'd turn off the NEW
+                    # channel's illumination instead of the OLD channel's (which is still on).
                     self.turn_off_illumination()
+
+            self.currentConfiguration = configuration
 
             # set camera exposure time and analog gain
             exposure = self.currentConfiguration.exposure_time

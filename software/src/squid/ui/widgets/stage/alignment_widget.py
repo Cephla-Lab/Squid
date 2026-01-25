@@ -64,6 +64,7 @@ class AlignmentWidget(QWidget):
         self._original_live_colormap = "gray"
         self._modified_live_view = False
         self._pending_position_request = False
+        self._contrast_connected = False
 
         self._setup_ui()
 
@@ -216,6 +217,7 @@ class AlignmentWidget(QWidget):
         """Complete the confirmation step with current position."""
         if self._reference_fov_position is None:
             self._log.error("Cannot confirm: no reference position set")
+            QMessageBox.warning(self, "Alignment Error", "No reference position set. Please load an acquisition first.")
             return
 
         ref_x, ref_y = self._reference_fov_position
@@ -342,6 +344,7 @@ class AlignmentWidget(QWidget):
     def _add_reference_layer(self, image: np.ndarray) -> None:
         """Add reference image as a napari layer with magenta/green overlay."""
         self._modified_live_view = False
+        self._contrast_connected = False
         if "Live View" in self.viewer.layers:
             live_layer = self.viewer.layers["Live View"]
             self._original_live_opacity = live_layer.opacity
@@ -350,6 +353,8 @@ class AlignmentWidget(QWidget):
             live_layer.opacity = 1.0
             live_layer.blending = "additive"
             live_layer.colormap = "green"
+            live_layer.events.contrast_limits.connect(self._sync_contrast_limits)
+            self._contrast_connected = True
             self._modified_live_view = True
         else:
             self._log.warning("Live View layer not found - reference image will be shown alone")
@@ -365,10 +370,19 @@ class AlignmentWidget(QWidget):
                 colormap="magenta",
                 blending="additive",
             )
+        # Sync initial contrast limits from Live View
+        if self._contrast_connected and self.REFERENCE_LAYER_NAME in self.viewer.layers and "Live View" in self.viewer.layers:
+            ref_layer = self.viewer.layers[self.REFERENCE_LAYER_NAME]
+            ref_layer.contrast_limits = self.viewer.layers["Live View"].contrast_limits
         self._log.debug("Reference layer added to napari viewer")
 
+    def _sync_contrast_limits(self, event) -> None:
+        """Sync contrast limits from Live View to reference layer."""
+        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
+            self.viewer.layers[self.REFERENCE_LAYER_NAME].contrast_limits = event.value
+
     def _remove_reference_layer(self) -> None:
-        """Remove reference layer and restore live view opacity."""
+        """Remove reference layer and restore live view settings."""
         if self.viewer is None:
             return
 
@@ -378,6 +392,9 @@ class AlignmentWidget(QWidget):
 
         if self._modified_live_view and "Live View" in self.viewer.layers:
             live_layer = self.viewer.layers["Live View"]
+            if self._contrast_connected:
+                live_layer.events.contrast_limits.disconnect(self._sync_contrast_limits)
+                self._contrast_connected = False
             live_layer.opacity = self._original_live_opacity
             live_layer.blending = self._original_live_blending
             live_layer.colormap = self._original_live_colormap

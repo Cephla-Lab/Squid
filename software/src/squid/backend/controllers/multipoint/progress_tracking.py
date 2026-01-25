@@ -232,6 +232,43 @@ class ProgressTracker:
             )
         )
 
+    def register_ndviewer_image(
+        self,
+        t: int,
+        fov_idx: int,
+        z: int,
+        channel: str,
+        filepath: str,
+    ) -> None:
+        """
+        Publish NDViewerImageRegistered event for push-mode display.
+
+        Called after each image is saved to register it with NDViewer
+        for real-time display during acquisition.
+
+        Args:
+            t: Time index
+            fov_idx: Flat FOV index across all wells
+            z: Z-level index
+            channel: Channel name
+            filepath: Path to the saved image file
+        """
+        if self._event_bus is None:
+            return
+
+        from squid.core.events import NDViewerImageRegistered
+
+        self._event_bus.publish(
+            NDViewerImageRegistered(
+                t=t,
+                fov_idx=fov_idx,
+                z=z,
+                channel=channel,
+                filepath=filepath,
+                experiment_id=self._experiment_id,
+            )
+        )
+
     def _calculate_progress(
         self,
         current_fov: int,

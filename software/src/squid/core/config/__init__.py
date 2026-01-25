@@ -344,6 +344,8 @@ class TucsenCameraModel(enum.Enum):
     DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"
     ARIES_6506 = "ARIES-6506"
     ARIES_6510 = "ARIES-6510"
+    LIBRA_25 = "LIBRA-25"
+    LIBRA_22 = "LIBRA-22"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
@@ -395,6 +397,20 @@ class AndorCameraModel(enum.Enum):
         """
         try:
             return AndorCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class FLIRCameraModel(enum.Enum):
+    BFS_U3_63S4M_C = "BFS-U3-63S4M-C"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["FLIRCameraModel"]:
+        """
+        Attempts to convert the given string to a FLIR camera model.  This ignores all letter cases.
+        """
+        try:
+            return FLIRCameraModel[cam_string.upper()]
         except KeyError:
             return None
 
@@ -477,6 +493,7 @@ class CameraConfig(pydantic.BaseModel):
             HamamatsuCameraModel,
             PhotometricsCameraModel,
             AndorCameraModel,
+            FLIRCameraModel,
         ]
     ] = None
 

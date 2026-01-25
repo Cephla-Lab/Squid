@@ -503,6 +503,12 @@ class CameraError(RuntimeError):
     pass
 
 
+class FilterControllerError(Exception):
+    """Custom exception for FilterController errors."""
+
+    pass
+
+
 class AbstractCamera(metaclass=abc.ABCMeta):
     @staticmethod
     def calculate_new_roi_for_binning(

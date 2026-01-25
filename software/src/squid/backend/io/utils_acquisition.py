@@ -13,6 +13,29 @@ import _def
 from squid.core.utils.config_utils import ChannelMode
 
 
+def get_image_filepath(save_directory: str, file_id: str, config_name: str, dtype) -> str:
+    """Construct the filepath for a saved image.
+
+    This is used by both save_image() and NDViewer registration to ensure
+    consistent filepath construction.
+
+    Args:
+        save_directory: Directory where images are saved
+        file_id: Base file ID (e.g., "0_0_0" for region_fov_z)
+        config_name: Channel configuration name (e.g., "BF LED matrix full")
+        dtype: numpy dtype of the image (e.g., np.uint16)
+
+    Returns:
+        Full filepath string
+    """
+    channel_name_safe = str(config_name).replace(" ", "_")
+    if dtype == np.uint16:
+        extension = "tiff"
+    else:
+        extension = _def.Acquisition.IMAGE_FORMAT
+    return os.path.join(save_directory, f"{file_id}_{channel_name_safe}.{extension}")
+
+
 def save_image(
     image: np.ndarray,
     file_id: str,
@@ -20,19 +43,7 @@ def save_image(
     config: ChannelMode,
     is_color: bool,
 ) -> np.ndarray:
-    if image.dtype == np.uint16:
-        saving_path = os.path.join(
-            save_directory, file_id + "_" + str(config.name).replace(" ", "_") + ".tiff"
-        )
-    else:
-        saving_path = os.path.join(
-            save_directory,
-            file_id
-            + "_"
-            + str(config.name).replace(" ", "_")
-            + "."
-            + _def.Acquisition.IMAGE_FORMAT,
-        )
+    saving_path = get_image_filepath(save_directory, file_id, config.name, image.dtype)
 
     if is_color:
         if "BF LED matrix" in config.name:

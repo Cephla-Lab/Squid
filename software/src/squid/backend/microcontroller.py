@@ -58,6 +58,7 @@ from _def import (
 )
 from squid.backend.drivers.stages.serial import (
     AbstractCephlaMicroSerial,
+    SimSerial,
     get_microcontroller_serial_device,
 )
 
@@ -70,6 +71,47 @@ from squid.backend.drivers.stages.serial import (
 
 # We have a few top level functions here, so we have this module level log instance.  Classes should make their own!
 _log = squid.core.logging.get_logger("microcontroller")
+
+# Mapping of command type bytes to human-readable names for logging
+_CMD_NAMES = {
+    CMD_SET.MOVE_X: "MOVE_X",
+    CMD_SET.MOVE_Y: "MOVE_Y",
+    CMD_SET.MOVE_Z: "MOVE_Z",
+    CMD_SET.MOVE_THETA: "MOVE_THETA",
+    CMD_SET.MOVE_W: "MOVE_W",
+    CMD_SET.HOME_OR_ZERO: "HOME_OR_ZERO",
+    CMD_SET.MOVETO_X: "MOVETO_X",
+    CMD_SET.MOVETO_Y: "MOVETO_Y",
+    CMD_SET.MOVETO_Z: "MOVETO_Z",
+    CMD_SET.SET_LIM: "SET_LIM",
+    CMD_SET.TURN_ON_ILLUMINATION: "TURN_ON_ILLUMINATION",
+    CMD_SET.TURN_OFF_ILLUMINATION: "TURN_OFF_ILLUMINATION",
+    CMD_SET.SET_ILLUMINATION: "SET_ILLUMINATION",
+    CMD_SET.SET_ILLUMINATION_LED_MATRIX: "SET_ILLUMINATION_LED_MATRIX",
+    CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED: "ACK_JOYSTICK_BUTTON_PRESSED",
+    CMD_SET.ANALOG_WRITE_ONBOARD_DAC: "ANALOG_WRITE_ONBOARD_DAC",
+    CMD_SET.SET_DAC80508_REFDIV_GAIN: "SET_DAC80508_REFDIV_GAIN",
+    CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR: "SET_ILLUMINATION_INTENSITY_FACTOR",
+    CMD_SET.MOVETO_W: "MOVETO_W",
+    CMD_SET.SET_LIM_SWITCH_POLARITY: "SET_LIM_SWITCH_POLARITY",
+    CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
+    CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
+    CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
+    CMD_SET.SET_OFFSET_VELOCITY: "SET_OFFSET_VELOCITY",
+    CMD_SET.CONFIGURE_STAGE_PID: "CONFIGURE_STAGE_PID",
+    CMD_SET.ENABLE_STAGE_PID: "ENABLE_STAGE_PID",
+    CMD_SET.DISABLE_STAGE_PID: "DISABLE_STAGE_PID",
+    CMD_SET.SET_HOME_SAFETY_MERGIN: "SET_HOME_SAFETY_MERGIN",
+    CMD_SET.SET_PID_ARGUMENTS: "SET_PID_ARGUMENTS",
+    CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
+    CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
+    CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
+    CMD_SET.SET_PIN_LEVEL: "SET_PIN_LEVEL",
+    CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
+    CMD_SET.INITIALIZE: "INITIALIZE",
+    CMD_SET.RESET: "RESET",
+    CMD_SET.SET_TRIGGER_MODE: "SET_TRIGGER_MODE",
+}
 
 
 # "move backward" if SIGN is 1, "move forward" if SIGN is -1
@@ -129,6 +171,7 @@ class Microcontroller:
             )
 
         self._serial = serial_device
+        self._is_simulated = isinstance(serial_device, SimSerial)
 
         self.tx_buffer_length = MicrocontrollerDef.CMD_LENGTH
         self.rx_buffer_length = MicrocontrollerDef.MSG_LENGTH
@@ -142,6 +185,7 @@ class Microcontroller:
         # The micro should be sending packets once very ~10 ms, so if we go much longer than that without something
         # is likely wrong.  See def _warn_if_reads_stale() and the read loop.
         self._last_successful_read_time = time.time()
+        self._stale_warning_issued = False
 
         self.x_pos = 0  # unit: microstep or encoder resolution
         self.y_pos = 0  # unit: microstep or encoder resolution
@@ -191,14 +235,19 @@ class Microcontroller:
             time.sleep(0.5)
 
     def _warn_if_reads_stale(self) -> None:
+        # Skip this warning in simulation - the simulated serial doesn't behave the same
+        if self._is_simulated:
+            return
         now = time.time()
         last_read = float(
             self._last_successful_read_time
         )  # Just in case it gets update, capture it for printing below.
         if now - last_read > Microcontroller.STALE_READ_TIMEOUT:
-            self.log.warning(
-                f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}"
-            )
+            if not self._stale_warning_issued:
+                self._stale_warning_issued = True
+                self.log.warning(
+                    f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}"
+                )
 
     def close(self) -> None:
         self.terminate_reading_received_packet_thread = True
@@ -253,16 +302,19 @@ class Microcontroller:
         print("initialize filter wheel")  # debug
 
     def turn_on_illumination(self) -> None:
+        self.log.debug("[MCU] turn_on_illumination")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_ON_ILLUMINATION
         self.send_command(cmd)
 
     def turn_off_illumination(self) -> None:
+        self.log.debug("[MCU] turn_off_illumination")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ILLUMINATION
         self.send_command(cmd)
 
     def set_illumination(self, illumination_source: int, intensity: float) -> None:
+        self.log.debug(f"[MCU] set_illumination: source={illumination_source}, intensity={intensity}")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ILLUMINATION
         cmd[2] = illumination_source
@@ -743,6 +795,9 @@ class Microcontroller:
         self._cmd_id = (self._cmd_id + 1) % 256
         command[0] = self._cmd_id
         command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
+        cmd_type = command[1]
+        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+        self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
         self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
         self.mcu_cmd_execution_in_progress = True
         self.last_command = command
@@ -759,7 +814,9 @@ class Microcontroller:
         self._warn_if_reads_stale()
 
     def abort_current_command(self, reason: str) -> None:
-        self.log.error(f"Command id={self._cmd_id} aborted for reason='{reason}'")
+        cmd_type = self.last_command[1] if self.last_command is not None else -1
+        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+        self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
         self.last_command_aborted_error = CommandAborted(
             reason=reason, command_id=self._cmd_id
         )
@@ -866,6 +923,7 @@ class Microcontroller:
                 - CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
+                self._stale_warning_issued = False
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
                 if (self._cmd_id_mcu == self._cmd_id) and (
@@ -874,7 +932,12 @@ class Microcontroller:
                 ):
                     if self.mcu_cmd_execution_in_progress:
                         self.mcu_cmd_execution_in_progress = False
-                        self.log.debug("mcu command " + str(self._cmd_id) + " complete")
+                        elapsed_ms = (time.time() - self.last_command_send_timestamp) * 1000
+                        cmd_type = self.last_command[1] if self.last_command is not None else -1
+                        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+                        self.log.debug(
+                            f"[MCU] <<< command {self._cmd_id} ({cmd_name}) complete (took {elapsed_ms:.1f}ms)"
+                        )
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id
@@ -888,7 +951,7 @@ class Microcontroller:
                         )
                     else:
                         self.log.debug(
-                            f"command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], resending command"
+                            f"[MCU] !!! command timed out without ack after {self.LAST_COMMAND_ACK_TIMEOUT}s, resending command"
                         )
                         self.resend_last_command()
                 elif (
@@ -901,8 +964,17 @@ class Microcontroller:
                             reason=f"Checksum error and 10 retries for {self._cmd_id}"
                         )
                     else:
-                        self.log.error("cmd checksum error, resending command")
+                        self.log.error("[MCU] !!! checksum error, resending command")
                         self.resend_last_command()
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu != self._cmd_id
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+                ):
+                    # Log when we receive an ACK for a different command than we're waiting for
+                    self.log.debug(
+                        f"[MCU] !!! received ack for command {self._cmd_id_mcu}, but waiting for command {self._cmd_id}"
+                    )
 
                 self.x_pos = self._payload_to_int(
                     msg[2:6], MicrocontrollerDef.N_BYTES_POS

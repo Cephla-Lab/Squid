@@ -395,3 +395,216 @@ class TestAlignmentWidgetSignals:
 
         assert len(signal_called) == 1
         assert widget._pending_position_request is True
+
+
+class TestAlignmentWidgetContrastSync:
+    """Tests for contrast limits synchronization feature (e5cd025c)."""
+
+    def test_contrast_connected_flag_initial_state(self, qapp, mock_napari_viewer):
+        """Test _contrast_connected is False initially."""
+        widget = AlignmentWidget(mock_napari_viewer)
+        assert widget._contrast_connected is False
+
+    def test_add_reference_layer_connects_contrast_event(self, qapp, mock_napari_viewer):
+        """Test _add_reference_layer connects to Live View contrast_limits event."""
+        widget = AlignmentWidget(mock_napari_viewer)
+
+        # Setup mock viewer with Live View layer
+        mock_live_layer = MagicMock()
+        mock_live_layer.opacity = 1.0
+        mock_live_layer.blending = "additive"
+        mock_live_layer.colormap = "gray"
+        mock_live_layer.contrast_limits = (0, 255)
+        mock_live_layer.events = MagicMock()
+        mock_live_layer.events.contrast_limits = MagicMock()
+        mock_live_layer.events.contrast_limits.connect = MagicMock()
+
+        mock_napari_viewer.layers.__contains__ = MagicMock(side_effect=lambda x: x == "Live View")
+        mock_napari_viewer.layers.__getitem__ = MagicMock(return_value=mock_live_layer)
+
+        test_image = np.zeros((100, 100), dtype=np.uint16)
+        widget._add_reference_layer(test_image)
+
+        # Verify contrast event was connected
+        mock_live_layer.events.contrast_limits.connect.assert_called_once_with(
+            widget._sync_contrast_limits
+        )
+        assert widget._contrast_connected is True
+
+    def test_add_reference_layer_syncs_initial_contrast(self, qapp):
+        """Test _add_reference_layer syncs initial contrast limits from Live View."""
+        # Create a more detailed mock viewer
+        mock_viewer = MagicMock()
+
+        # Mock reference layer
+        mock_ref_layer = MagicMock()
+
+        # Mock Live View layer
+        mock_live_layer = MagicMock()
+        mock_live_layer.opacity = 1.0
+        mock_live_layer.blending = "additive"
+        mock_live_layer.colormap = "gray"
+        mock_live_layer.contrast_limits = (100, 500)  # Specific contrast limits
+        mock_live_layer.events = MagicMock()
+        mock_live_layer.events.contrast_limits = MagicMock()
+        mock_live_layer.events.contrast_limits.connect = MagicMock()
+
+        def getitem_side_effect(name):
+            if name == "Live View":
+                return mock_live_layer
+            elif name == AlignmentWidget.REFERENCE_LAYER_NAME:
+                return mock_ref_layer
+            raise KeyError(name)
+
+        def contains_side_effect(name):
+            # After add_image, reference layer exists
+            return name in ["Live View", AlignmentWidget.REFERENCE_LAYER_NAME]
+
+        mock_viewer.layers.__getitem__ = MagicMock(side_effect=getitem_side_effect)
+        mock_viewer.layers.__contains__ = MagicMock(side_effect=contains_side_effect)
+        mock_viewer.add_image = MagicMock()
+
+        widget = AlignmentWidget(mock_viewer)
+        test_image = np.zeros((100, 100), dtype=np.uint16)
+        widget._add_reference_layer(test_image)
+
+        # Verify initial contrast limits were synced
+        assert mock_ref_layer.contrast_limits == (100, 500)
+
+    def test_sync_contrast_limits_updates_reference_layer(self, qapp):
+        """Test _sync_contrast_limits updates reference layer contrast."""
+        mock_viewer = MagicMock()
+        mock_ref_layer = MagicMock()
+
+        def contains_side_effect(name):
+            return name == AlignmentWidget.REFERENCE_LAYER_NAME
+
+        def getitem_side_effect(name):
+            if name == AlignmentWidget.REFERENCE_LAYER_NAME:
+                return mock_ref_layer
+            raise KeyError(name)
+
+        mock_viewer.layers.__contains__ = MagicMock(side_effect=contains_side_effect)
+        mock_viewer.layers.__getitem__ = MagicMock(side_effect=getitem_side_effect)
+
+        widget = AlignmentWidget(mock_viewer)
+
+        # Create mock event with new contrast limits
+        mock_event = MagicMock()
+        mock_event.value = (50, 200)
+
+        widget._sync_contrast_limits(mock_event)
+
+        # Verify reference layer contrast was updated
+        assert mock_ref_layer.contrast_limits == (50, 200)
+
+    def test_sync_contrast_limits_no_reference_layer(self, qapp, mock_napari_viewer):
+        """Test _sync_contrast_limits handles missing reference layer gracefully."""
+        widget = AlignmentWidget(mock_napari_viewer)
+
+        # Reference layer does not exist
+        mock_napari_viewer.layers.__contains__ = MagicMock(return_value=False)
+
+        # Create mock event
+        mock_event = MagicMock()
+        mock_event.value = (50, 200)
+
+        # Should not raise
+        widget._sync_contrast_limits(mock_event)
+
+    def test_remove_reference_layer_disconnects_contrast_event(self, qapp):
+        """Test _remove_reference_layer disconnects contrast event."""
+        mock_viewer = MagicMock()
+        mock_live_layer = MagicMock()
+        mock_live_layer.events = MagicMock()
+        mock_live_layer.events.contrast_limits = MagicMock()
+        mock_live_layer.events.contrast_limits.disconnect = MagicMock()
+
+        def contains_side_effect(name):
+            return name in ["Live View", AlignmentWidget.REFERENCE_LAYER_NAME]
+
+        def getitem_side_effect(name):
+            if name == "Live View":
+                return mock_live_layer
+            raise KeyError(name)
+
+        mock_viewer.layers.__contains__ = MagicMock(side_effect=contains_side_effect)
+        mock_viewer.layers.__getitem__ = MagicMock(side_effect=getitem_side_effect)
+        mock_viewer.layers.remove = MagicMock()
+
+        widget = AlignmentWidget(mock_viewer)
+        widget._modified_live_view = True
+        widget._contrast_connected = True
+        widget._original_live_opacity = 1.0
+        widget._original_live_blending = "additive"
+        widget._original_live_colormap = "gray"
+
+        widget._remove_reference_layer()
+
+        # Verify contrast event was disconnected
+        mock_live_layer.events.contrast_limits.disconnect.assert_called_once_with(
+            widget._sync_contrast_limits
+        )
+        assert widget._contrast_connected is False
+
+    def test_remove_reference_layer_skips_disconnect_if_not_connected(self, qapp):
+        """Test _remove_reference_layer doesn't disconnect if not connected."""
+        mock_viewer = MagicMock()
+        mock_live_layer = MagicMock()
+        mock_live_layer.events = MagicMock()
+        mock_live_layer.events.contrast_limits = MagicMock()
+        mock_live_layer.events.contrast_limits.disconnect = MagicMock()
+
+        def contains_side_effect(name):
+            return name in ["Live View", AlignmentWidget.REFERENCE_LAYER_NAME]
+
+        def getitem_side_effect(name):
+            if name == "Live View":
+                return mock_live_layer
+            raise KeyError(name)
+
+        mock_viewer.layers.__contains__ = MagicMock(side_effect=contains_side_effect)
+        mock_viewer.layers.__getitem__ = MagicMock(side_effect=getitem_side_effect)
+        mock_viewer.layers.remove = MagicMock()
+
+        widget = AlignmentWidget(mock_viewer)
+        widget._modified_live_view = True
+        widget._contrast_connected = False  # Not connected
+        widget._original_live_opacity = 1.0
+        widget._original_live_blending = "additive"
+        widget._original_live_colormap = "gray"
+
+        widget._remove_reference_layer()
+
+        # Verify disconnect was NOT called
+        mock_live_layer.events.contrast_limits.disconnect.assert_not_called()
+
+    def test_add_reference_layer_no_live_view_skips_contrast_sync(self, qapp, mock_napari_viewer):
+        """Test _add_reference_layer skips contrast sync when no Live View."""
+        widget = AlignmentWidget(mock_napari_viewer)
+
+        # No Live View layer
+        mock_napari_viewer.layers.__contains__ = MagicMock(return_value=False)
+
+        test_image = np.zeros((100, 100), dtype=np.uint16)
+        widget._add_reference_layer(test_image)
+
+        # Verify contrast was not connected
+        assert widget._contrast_connected is False
+        assert widget._modified_live_view is False
+
+    def test_complete_confirmation_no_reference_position_shows_warning(self, qapp, mock_napari_viewer):
+        """Test _complete_confirmation shows warning when no reference position."""
+        widget = AlignmentWidget(mock_napari_viewer)
+        widget._reference_fov_position = None
+
+        with patch("squid.ui.widgets.stage.alignment_widget.QMessageBox") as mock_msgbox:
+            widget._complete_confirmation(10.0, 20.0)
+
+            # Verify warning was shown
+            mock_msgbox.warning.assert_called_once()
+            call_args = mock_msgbox.warning.call_args
+            assert "No reference position set" in call_args[0][2]
+
+        # Verify state wasn't changed
+        assert widget._has_offset is False

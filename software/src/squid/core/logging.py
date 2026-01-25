@@ -12,6 +12,10 @@ _squid_root_logger_name = "squid"
 _baseline_log_format = "%(asctime)s.%(msecs)03d - %(thread_id)d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
 _baseline_log_dateformat = "%Y-%m-%d %H:%M:%S"
 
+# Public aliases for use by other modules (e.g., QtLoggingHandler)
+LOG_FORMAT = _baseline_log_format
+LOG_DATEFORMAT = _baseline_log_dateformat
+
 
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
 class _CustomFormatter(py_logging.Formatter):

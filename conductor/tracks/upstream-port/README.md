@@ -6,12 +6,25 @@ Port commits from `upstream/master` (Cephla-Lab/Squid) to the current architectu
 
 | Metric | Count |
 |--------|-------|
-| **Total tracked** | 63 |
+| **Total tracked** | 86 |
 | **Ported** | 52 |
 | **Skipped** | 11 |
-| **Pending** | 0 |
+| **Pending** | 23 |
 
-*Last updated: 2026-01-12*
+*Last updated: 2026-01-24*
+
+### Pending Commits (2026-01-24)
+
+23 new upstream commits discovered. See `plans/2026-01-24-upstream-analysis.md` for detailed plan.
+
+**Priority Breakdown:**
+- Critical bug fixes: 4 commits
+- NDViewer enhancements: 4 commits
+- Preferences/simulation: 3 commits
+- New features: 3 commits
+- Hardware drivers: 2 commits
+- Misc fixes: 4 commits
+- Skip candidates: 3 commits
 
 ## CRITICAL: Semantic Ports Only
 

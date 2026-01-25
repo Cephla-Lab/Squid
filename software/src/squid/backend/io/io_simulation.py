@@ -29,7 +29,13 @@ _simulated_ome_stacks: Dict[str, Dict] = {}
 
 
 def is_simulation_enabled() -> bool:
-    """Check if simulated disk I/O is enabled."""
+    """Check if simulated disk I/O is enabled.
+
+    Returns False if SIMULATION_FORCE_SAVE_IMAGES is True, allowing
+    real file saves even when SIMULATED_DISK_IO_ENABLED is True.
+    """
+    if getattr(_def, "SIMULATION_FORCE_SAVE_IMAGES", False):
+        return False
     return getattr(_def, "SIMULATED_DISK_IO_ENABLED", False)
 
 

@@ -39,6 +39,7 @@ from squid.core.utils.config_utils import ChannelMode
 from squid.core.abc import CameraFrame
 import squid.core.logging
 import squid.backend.controllers.multipoint.job_processing
+from squid.backend.io import utils_acquisition
 from squid.backend.controllers.multipoint.job_processing import (
     AcquisitionInfo,
     CaptureInfo,
@@ -470,6 +471,28 @@ class MultiPointWorker:
             return False
         module_name = getattr(camera.__class__, "__module__", "")
         return "cameras.simulated" in module_name
+
+    def _compute_flat_fov_idx(self, region_id: str, fov: int) -> int:
+        """Compute flat FOV index across all regions.
+
+        The flat index follows the same order as FOV labels built by the controller:
+        iterate through regions in order, then FOVs within each region.
+
+        Args:
+            region_id: Region identifier (could be well ID like "A1")
+            fov: FOV index within the region
+
+        Returns:
+            Flat FOV index across all wells/regions
+        """
+        flat_idx = 0
+        for r_id in self.scan_region_names:
+            if r_id == region_id:
+                return flat_idx + fov
+            fov_coords = self.scan_region_fov_coords_mm.get(r_id, [])
+            flat_idx += len(fov_coords)
+        # Region not found - return the FOV as fallback
+        return fov
 
     def update_use_piezo(self, value: bool) -> None:
         """Update piezo usage flag."""
@@ -1983,6 +2006,27 @@ class MultiPointWorker:
                         if result is not None and isinstance(result, DownsampledViewResult):
                             self._log.info(f"Synchronous job returned DownsampledViewResult for well {result.well_id}")
                             self._process_downsampled_view_result(result)
+
+            # Register image with NDViewer for push-mode display
+            # Only register when using individual image saving - OME-TIFF uses different paths
+            if (
+                self._progress_tracker is not None
+                and FILE_SAVING_OPTION == FileSavingOption.INDIVIDUAL_IMAGES
+            ):
+                filepath = utils_acquisition.get_image_filepath(
+                    save_directory=info.save_directory,
+                    file_id=info.file_id,
+                    config_name=info.configuration.name,
+                    dtype=image.dtype,
+                )
+                flat_fov_idx = self._compute_flat_fov_idx(str(info.region_id), info.fov)
+                self._progress_tracker.register_ndviewer_image(
+                    t=info.time_point or 0,
+                    fov_idx=flat_fov_idx,
+                    z=info.z_index,
+                    channel=info.configuration.name,
+                    filepath=filepath,
+                )
 
             height: int
             width: int

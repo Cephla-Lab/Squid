@@ -56,6 +56,8 @@ from squid.core.events import (
     AcquisitionWorkerProgress,
     AcquisitionPaused,
     AcquisitionResumed,
+    NDViewerStartAcquisition,
+    NDViewerAcquisitionEnded,
 )
 from squid.backend.controllers.multipoint.events import (
     JumpToFovCommand,
@@ -1061,6 +1063,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.thread.start()
             # Transition to RUNNING now that worker is started
             self._transition_to(AcquisitionControllerState.RUNNING)
+            # Publish NDViewer start event for push-mode display
+            self._publish_ndviewer_start(acquisition_params)
             self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
         except Exception:
             self._log.exception("Failed to start acquisition")
@@ -1413,6 +1417,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             f"fov_count={event.final_fov_count}, error={event.error}"
         )
 
+        # Publish NDViewer end event before cleanup
+        self._publish_ndviewer_end()
+
         # Call cleanup logic with success flag from worker
         self._on_acquisition_completed(success=event.success, error=event.error)
 
@@ -1482,6 +1489,81 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 error=exc,
             )
         )
+
+    def _publish_ndviewer_start(self, acquisition_params: "AcquisitionParameters") -> None:
+        """Publish NDViewerStartAcquisition event for push-mode display.
+
+        Builds FOV labels from scan position information and publishes
+        the event to configure NDViewer for real-time image display.
+        """
+        self._log.info("_publish_ndviewer_start called")
+        if not self._event_bus:
+            self._log.warning("_publish_ndviewer_start: no event_bus, skipping")
+            return
+        try:
+            experiment_id = self._require_experiment_id()
+        except RuntimeError as e:
+            self._log.warning(f"_publish_ndviewer_start: no experiment_id ({e}), skipping")
+            return
+
+        # Build channel names from selected configurations
+        channels = [config.name for config in self.selected_configurations]
+        self._log.debug(f"_publish_ndviewer_start: {len(channels)} channels: {channels}")
+
+        # Get image dimensions from camera
+        width, height = self._camera_service.get_crop_size()
+        self._log.debug(f"_publish_ndviewer_start: crop_size=({width}, {height})")
+        if width is None or height is None:
+            width, height = self._camera_service.get_resolution()
+            self._log.debug(f"_publish_ndviewer_start: resolution=({width}, {height})")
+        if width is None or height is None:
+            self._log.warning("_publish_ndviewer_start: Cannot get camera dimensions, skipping")
+            return
+
+        # Build FOV labels: "region:fov_index" format
+        fov_labels = []
+        scan_info = acquisition_params.scan_position_information
+        for region_id in scan_info.scan_region_names:
+            fov_coords = scan_info.scan_region_fov_coords_mm.get(region_id, [])
+            for fov_idx in range(len(fov_coords)):
+                fov_labels.append(f"{region_id}:{fov_idx}")
+
+        self._event_bus.publish(
+            NDViewerStartAcquisition(
+                channels=channels,
+                num_z=acquisition_params.NZ,
+                height=height,
+                width=width,
+                fov_labels=fov_labels,
+                experiment_id=experiment_id,
+            )
+        )
+        self._log.info(
+            f"Published NDViewerStartAcquisition: {len(channels)} channels, "
+            f"{acquisition_params.NZ} z, {len(fov_labels)} FOVs"
+        )
+
+    def _publish_ndviewer_end(self) -> None:
+        """Publish NDViewerAcquisitionEnded event."""
+        if not self._event_bus:
+            return
+        try:
+            experiment_id = self._require_experiment_id()
+        except RuntimeError:
+            return
+
+        # Build dataset path for file-based loading (used when push-mode isn't available)
+        dataset_path = None
+        if self.base_path and self.experiment_ID:
+            dataset_path = os.path.join(self.base_path, self.experiment_ID)
+
+        self._event_bus.publish(
+            NDViewerAcquisitionEnded(
+                experiment_id=experiment_id,
+                dataset_path=dataset_path,
+            )
+        )
+        self._log.info(f"Published NDViewerAcquisitionEnded: experiment={experiment_id}, path={dataset_path}")
 
     def set_current_round_index(self, round_index: int) -> None:
         """Set the current round index for downstream FOV events."""
