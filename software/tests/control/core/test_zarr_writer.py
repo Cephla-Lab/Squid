@@ -1802,3 +1802,75 @@ class TestHCSWorkflowIntegration:
         assert os.path.exists(os.path.join(plate_path, "A", "1"))
         assert os.path.exists(os.path.join(plate_path, "AA", "1"))
         assert os.path.exists(os.path.join(plate_path, "AB", "2"))
+
+    def test_hcs_plate_metadata_write_failure_propagates(self, temp_dir):
+        """Test that plate metadata write failure propagates as RuntimeError."""
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+            region_fov_counts={"A1": 1},
+            channel_names=["DAPI"],
+            pixel_size_um=0.5,
+        )
+
+        image = np.ones((32, 32), dtype=np.uint16)
+        capture_info = make_test_capture_info(region_id="A1", fov=0)
+
+        job = SaveZarrJob(
+            capture_info=capture_info,
+            capture_image=JobImage(image_array=image),
+        )
+        job.zarr_writer_info = zarr_info
+
+        # Mock write_plate_metadata to raise RuntimeError
+        with patch(
+            "control.core.zarr_writer.write_plate_metadata",
+            side_effect=RuntimeError("Simulated plate metadata write failure"),
+        ):
+            with pytest.raises(RuntimeError, match="Simulated plate metadata write failure"):
+                job.run()
+
+        # Clean up
+        SaveZarrJob.clear_writers()
+
+    def test_hcs_well_metadata_write_failure_propagates(self, temp_dir):
+        """Test that well metadata write failure propagates as RuntimeError."""
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+            region_fov_counts={"A1": 1},
+            channel_names=["DAPI"],
+            pixel_size_um=0.5,
+        )
+
+        image = np.ones((32, 32), dtype=np.uint16)
+        capture_info = make_test_capture_info(region_id="A1", fov=0)
+
+        job = SaveZarrJob(
+            capture_info=capture_info,
+            capture_image=JobImage(image_array=image),
+        )
+        job.zarr_writer_info = zarr_info
+
+        # Mock write_well_metadata to raise RuntimeError (plate metadata succeeds)
+        with patch(
+            "control.core.zarr_writer.write_well_metadata",
+            side_effect=RuntimeError("Simulated well metadata write failure"),
+        ):
+            with pytest.raises(RuntimeError, match="Simulated well metadata write failure"):
+                job.run()
+
+        # Clean up
+        SaveZarrJob.clear_writers()

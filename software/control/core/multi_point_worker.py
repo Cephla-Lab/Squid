@@ -267,7 +267,8 @@ class MultiPointWorker:
         zarr_writer_info = None
         if use_zarr_v3:
             # Detect HCS mode from well-based acquisition detection
-            is_hcs = is_select_wells or (is_loaded_wells and self._is_well_based_acquisition())
+            # Note: is_loaded_wells already includes _is_well_based_acquisition() check (line 210)
+            is_hcs = is_select_wells or is_loaded_wells
 
             # Pre-compute FOV counts per region (needed for 6D shape calculation in non-HCS mode)
             region_fov_counts = {}
