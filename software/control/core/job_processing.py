@@ -471,11 +471,13 @@ class SaveZarrJob(Job):
 
     @classmethod
     def clear_writers(cls) -> None:
-        """Clear all zarr writers.
+        """Clear all zarr writers, aborting any that are still active.
 
         Call at start of new acquisition to ensure clean state.
+        Uses list() to snapshot values so dict.clear() always runs even
+        if one abort() fails.
         """
-        for writer in cls._zarr_writers.values():
+        for writer in list(cls._zarr_writers.values()):
             if writer.is_initialized and not writer.is_finalized:
                 try:
                     writer.abort()
@@ -484,10 +486,13 @@ class SaveZarrJob(Job):
         cls._zarr_writers.clear()
 
     @classmethod
-    def finalize_all_writers(cls) -> None:
+    def finalize_all_writers(cls) -> bool:
         """Finalize all active zarr writers.
 
         Call at end of acquisition to ensure all data is written.
+
+        Returns:
+            True if all writers finalized successfully, False if any failed.
         """
         failed_paths = []
         for path, writer in list(cls._zarr_writers.items()):
@@ -500,7 +505,9 @@ class SaveZarrJob(Job):
                     failed_paths.append(path)
         cls._zarr_writers.clear()
         if failed_paths:
-            cls._log.warning(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
+            cls._log.error(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
+            return False
+        return True
 
     def run(self) -> bool:
         if self.zarr_writer_info is None:
@@ -1166,7 +1173,9 @@ class JobRunner(multiprocessing.Process):
 
         # Finalize any zarr writers that are still open
         try:
-            SaveZarrJob.finalize_all_writers()
+            success = SaveZarrJob.finalize_all_writers()
+            if not success:
+                self._log.error("ZARR FINALIZATION INCOMPLETE - Some data may not be saved correctly")
         except Exception as e:
             self._log.error(f"Error finalizing zarr writers during shutdown: {e}")
 

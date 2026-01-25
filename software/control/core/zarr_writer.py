@@ -397,82 +397,87 @@ class ZarrWriter:
             log.warning("Writer already initialized")
             return
 
-        ts = _get_tensorstore()
-        config = self._config
+        try:
+            ts = _get_tensorstore()
+            config = self._config
 
-        # Build TensorStore spec
-        os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
+            # Build TensorStore spec
+            os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
 
-        chunk_shape = _get_chunk_shape(config)
-        shard_shape = _get_shard_shape(config)
-        compression_codec = _get_compression_codec(config.compression)
+            chunk_shape = _get_chunk_shape(config)
+            shard_shape = _get_shard_shape(config)
+            compression_codec = _get_compression_codec(config.compression)
 
-        # Dimension names and transpose order depend on 5D vs 6D
-        if config.ndim == 5:
-            transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
-        else:
-            transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+            # Dimension names and transpose order depend on 5D vs 6D
+            if config.ndim == 5:
+                transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+            else:
+                transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
 
-        # Determine if we need sharding (when chunk != shard)
-        use_sharding = chunk_shape != shard_shape
+            # Determine if we need sharding (when chunk != shard)
+            use_sharding = chunk_shape != shard_shape
 
-        # Build inner codec chain (with or without compression)
-        inner_codecs = [
-            {"name": "transpose", "configuration": {"order": transpose_order}},
-            {"name": "bytes", "configuration": {"endian": "little"}},
-        ]
-        if compression_codec is not None:
-            inner_codecs.append(compression_codec)
-
-        if use_sharding:
-            codecs = [
-                {
-                    "name": "sharding_indexed",
-                    "configuration": {
-                        "chunk_shape": list(chunk_shape),
-                        "codecs": inner_codecs,
-                        "index_codecs": [
-                            {"name": "bytes", "configuration": {"endian": "little"}},
-                            {"name": "crc32c"},
-                        ],
-                    },
-                }
+            # Build inner codec chain (with or without compression)
+            inner_codecs = [
+                {"name": "transpose", "configuration": {"order": transpose_order}},
+                {"name": "bytes", "configuration": {"endian": "little"}},
             ]
-            chunk_config = list(shard_shape)
-        else:
-            codecs = inner_codecs
-            chunk_config = list(chunk_shape)
+            if compression_codec is not None:
+                inner_codecs.append(compression_codec)
 
-        spec = {
-            "driver": "zarr3",
-            "kvstore": {"driver": "file", "path": config.output_path},
-            "metadata": {
-                "shape": list(config.shape),
-                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
-                "chunk_key_encoding": {"name": "default"},
-                "data_type": _dtype_to_zarr(config.dtype),
-                "codecs": codecs,
-                "fill_value": 0,
-            },
-        }
+            if use_sharding:
+                codecs = [
+                    {
+                        "name": "sharding_indexed",
+                        "configuration": {
+                            "chunk_shape": list(chunk_shape),
+                            "codecs": inner_codecs,
+                            "index_codecs": [
+                                {"name": "bytes", "configuration": {"endian": "little"}},
+                                {"name": "crc32c"},
+                            ],
+                        },
+                    }
+                ]
+                chunk_config = list(shard_shape)
+            else:
+                codecs = inner_codecs
+                chunk_config = list(chunk_shape)
 
-        log.info(
-            f"Initializing Zarr v3 dataset: {config.output_path}, "
-            f"shape={config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
-            f"compression={config.compression.value}"
-        )
+            spec = {
+                "driver": "zarr3",
+                "kvstore": {"driver": "file", "path": config.output_path},
+                "metadata": {
+                    "shape": list(config.shape),
+                    "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
+                    "chunk_key_encoding": {"name": "default"},
+                    "data_type": _dtype_to_zarr(config.dtype),
+                    "codecs": codecs,
+                    "fill_value": 0,
+                },
+            }
 
-        # Use asyncio only for the TensorStore open operation
-        async def _open():
-            return await ts.open(spec, create=True, delete_existing=True)
+            log.info(
+                f"Initializing Zarr v3 dataset: {config.output_path}, "
+                f"shape={config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
+                f"compression={config.compression.value}"
+            )
 
-        loop = self._get_loop()
-        self._dataset = loop.run_until_complete(_open())
-        self._initialized = True
-        log.info("Zarr v3 dataset initialized successfully")
+            # Use asyncio only for the TensorStore open operation
+            async def _open():
+                return await ts.open(spec, create=True, delete_existing=True)
 
-        # Write metadata synchronously (just file I/O)
-        self._write_zarr_metadata()
+            loop = self._get_loop()
+            self._dataset = loop.run_until_complete(_open())
+            self._initialized = True
+            log.info("Zarr v3 dataset initialized successfully")
+
+            # Write metadata synchronously (just file I/O)
+            self._write_zarr_metadata()
+        except Exception:
+            # Clean up event loop if we created it during failed initialization
+            self._cleanup_event_loop()
+            raise
 
     def _write_zarr_metadata(self) -> None:
         """Write OME-NGFF compliant metadata to .zattrs (synchronous file I/O)."""
@@ -714,29 +719,35 @@ class ZarrWriter:
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
     def abort(self) -> None:
-        """Abort and clean up (blocking)."""
+        """Abort and clean up (blocking).
+
+        Uses try-finally to ensure cleanup always happens, even if an
+        unexpected exception occurs during abort.
+        """
         log.warning("Aborting Zarr writer...")
 
-        # Clear pending futures (don't wait for them)
-        self._pending_futures.clear()
-
-        # Mark as incomplete in metadata
-        zattrs_path = os.path.join(self._config.output_path, ".zattrs")
         try:
-            if os.path.exists(zattrs_path):
-                with open(zattrs_path, "r") as f:
-                    zattrs = json.load(f)
-                if "_squid" in zattrs:
-                    zattrs["_squid"]["acquisition_complete"] = False
-                    zattrs["_squid"]["aborted"] = True
-                with open(zattrs_path, "w") as f:
-                    json.dump(zattrs, f, indent=2)
-        except (OSError, json.JSONDecodeError) as e:
-            log.error(f"Failed to update abort metadata at {zattrs_path}: {e}")
+            # Clear pending futures (don't wait for them)
+            self._pending_futures.clear()
 
-        self._finalized = True
-        self._cleanup_event_loop()
-        log.warning(f"Zarr writer aborted: {self._config.output_path}")
+            # Mark as incomplete in metadata
+            zattrs_path = os.path.join(self._config.output_path, ".zattrs")
+            try:
+                if os.path.exists(zattrs_path):
+                    with open(zattrs_path, "r") as f:
+                        zattrs = json.load(f)
+                    if "_squid" in zattrs:
+                        zattrs["_squid"]["acquisition_complete"] = False
+                        zattrs["_squid"]["aborted"] = True
+                    with open(zattrs_path, "w") as f:
+                        json.dump(zattrs, f, indent=2)
+            except (OSError, json.JSONDecodeError) as e:
+                log.error(f"Failed to update abort metadata at {zattrs_path}: {e}")
+        finally:
+            # Always mark as finalized and cleanup resources
+            self._finalized = True
+            self._cleanup_event_loop()
+            log.warning(f"Zarr writer aborted: {self._config.output_path}")
 
     def _cleanup_event_loop(self) -> None:
         """Clean up the event loop to prevent resource leaks.

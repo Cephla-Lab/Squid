@@ -733,8 +733,8 @@ class TestSaveZarrJobClassMethods:
 
     def test_finalize_all_writers_empty(self):
         """Test finalizing writers when none exist."""
-        SaveZarrJob.finalize_all_writers()
-        # Should not raise
+        result = SaveZarrJob.finalize_all_writers()
+        assert result is True  # No writers = success
 
 
 class TestZarrWriterErrorHandling:
