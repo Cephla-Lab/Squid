@@ -333,13 +333,29 @@ class TestZarrWriter:
         writer.initialize()
         writer.finalize()
 
-        # Check .zattrs contains omero metadata with colors and wavelengths
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
+        # Check zarr.json attributes contain OME-NGFF 0.5 structure with omero metadata
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        with open(zarr_json_path) as f:
+            zarr_json = json.load(f)
 
-        assert "omero" in zattrs
-        channels = zattrs["omero"]["channels"]
+        # Verify Zarr v3 structure
+        assert zarr_json["zarr_format"] == 3
+        assert "attributes" in zarr_json
+        attrs = zarr_json["attributes"]
+
+        # Verify OME-NGFF 0.5 namespace structure
+        assert "ome" in attrs
+        assert attrs["ome"]["version"] == "0.5"
+        assert "multiscales" in attrs["ome"]
+        assert attrs["ome"]["multiscales"][0]["version"] == "0.5"
+        assert "omero" in attrs["ome"]
+        assert attrs["ome"]["omero"]["version"] == "0.5"
+
+        # Verify _squid structure field
+        assert "_squid" in attrs
+        assert attrs["_squid"]["structure"] == "5D-TCZYX"
+
+        channels = attrs["ome"]["omero"]["channels"]
         assert len(channels) == 3
 
         # Check DAPI channel
@@ -380,25 +396,27 @@ class TestHCSMetadata:
             plate_name="test_plate",
         )
 
-        # Check .zattrs
-        zattrs_path = os.path.join(plate_path, ".zattrs")
-        assert os.path.exists(zattrs_path)
-
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
-
-        assert "plate" in zattrs
-        assert zattrs["plate"]["name"] == "test_plate"
-        assert len(zattrs["plate"]["wells"]) == 2
-
-        # Check zarr.json
+        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
         zarr_json_path = os.path.join(plate_path, "zarr.json")
         assert os.path.exists(zarr_json_path)
 
         with open(zarr_json_path) as f:
             zarr_json = json.load(f)
 
+        # Verify Zarr v3 structure
         assert zarr_json["zarr_format"] == 3
+        assert zarr_json["node_type"] == "group"
+        assert "attributes" in zarr_json
+
+        attrs = zarr_json["attributes"]
+
+        # Verify OME-NGFF 0.5 namespace structure
+        assert "ome" in attrs
+        assert attrs["ome"]["version"] == "0.5"
+        assert "plate" in attrs["ome"]
+        assert attrs["ome"]["plate"]["version"] == "0.5"
+        assert attrs["ome"]["plate"]["name"] == "test_plate"
+        assert len(attrs["ome"]["plate"]["wells"]) == 2
 
     def test_write_well_metadata(self, temp_dir):
         from control.core.zarr_writer import write_well_metadata
@@ -409,15 +427,26 @@ class TestHCSMetadata:
             fields=[0, 1, 2],
         )
 
-        # Check .zattrs
-        zattrs_path = os.path.join(well_path, ".zattrs")
-        assert os.path.exists(zattrs_path)
+        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
+        zarr_json_path = os.path.join(well_path, "zarr.json")
+        assert os.path.exists(zarr_json_path)
 
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
+        with open(zarr_json_path) as f:
+            zarr_json = json.load(f)
 
-        assert "well" in zattrs
-        assert len(zattrs["well"]["images"]) == 3
+        # Verify Zarr v3 structure
+        assert zarr_json["zarr_format"] == 3
+        assert zarr_json["node_type"] == "group"
+        assert "attributes" in zarr_json
+
+        attrs = zarr_json["attributes"]
+
+        # Verify OME-NGFF 0.5 namespace structure
+        assert "ome" in attrs
+        assert attrs["ome"]["version"] == "0.5"
+        assert "well" in attrs["ome"]
+        assert attrs["ome"]["well"]["version"] == "0.5"
+        assert len(attrs["ome"]["well"]["images"]) == 3
 
 
 class TestZarrWriterInfo:
@@ -450,18 +479,18 @@ class TestZarrWriterInfo:
 
         # Test single-letter row
         path = info.get_output_path("A1", 0)
-        assert path == "/tmp/experiment/plate.zarr/A/1/0/0"
+        assert path == "/tmp/experiment/plate.ome.zarr/A/1/0/0"
 
         path = info.get_output_path("A1", 2)
-        assert path == "/tmp/experiment/plate.zarr/A/1/2/0"
+        assert path == "/tmp/experiment/plate.ome.zarr/A/1/2/0"
 
         # Test multi-digit column
         path = info.get_output_path("B12", 2)
-        assert path == "/tmp/experiment/plate.zarr/B/12/2/0"
+        assert path == "/tmp/experiment/plate.ome.zarr/B/12/2/0"
 
         # Test double-letter row (e.g., AA, AB)
         path = info.get_output_path("AA3", 0)
-        assert path == "/tmp/experiment/plate.zarr/AA/3/0/0"
+        assert path == "/tmp/experiment/plate.ome.zarr/AA/3/0/0"
 
     def test_zarr_writer_info_non_hcs_per_fov_output_path(self):
         """Test non-HCS default: per-FOV zarr files (OME-NGFF compliant)."""
@@ -475,13 +504,13 @@ class TestZarrWriterInfo:
             region_fov_counts={"region_1": 4, "region_2": 2},
         )
 
-        # Each FOV gets its own zarr file
-        assert info.get_output_path("region_1", 0) == "/tmp/experiment/zarr/region_1/fov_0.zarr"
-        assert info.get_output_path("region_1", 1) == "/tmp/experiment/zarr/region_1/fov_1.zarr"
-        assert info.get_output_path("region_1", 2) == "/tmp/experiment/zarr/region_1/fov_2.zarr"
+        # Each FOV gets its own zarr file (OME-NGFF compliant)
+        assert info.get_output_path("region_1", 0) == "/tmp/experiment/zarr/region_1/fov_0.ome.zarr"
+        assert info.get_output_path("region_1", 1) == "/tmp/experiment/zarr/region_1/fov_1.ome.zarr"
+        assert info.get_output_path("region_1", 2) == "/tmp/experiment/zarr/region_1/fov_2.ome.zarr"
 
         # Different region
-        assert info.get_output_path("region_2", 0) == "/tmp/experiment/zarr/region_2/fov_0.zarr"
+        assert info.get_output_path("region_2", 0) == "/tmp/experiment/zarr/region_2/fov_0.ome.zarr"
 
     def test_zarr_writer_info_non_hcs_6d_output_path(self):
         """Test non-HCS with 6D mode: single zarr per region (non-standard)."""
@@ -1070,15 +1099,27 @@ class TestSixDimensionalSupport:
         assert writer.is_initialized
         assert os.path.exists(output_path)
 
-        # Check metadata has 6 axes with FOV first
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
+        # Check zarr.json attributes contain OME-NGFF 0.5 metadata with 6 axes
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        with open(zarr_json_path) as f:
+            zarr_json = json.load(f)
 
-        axes = zattrs["multiscales"][0]["axes"]
+        # Verify Zarr v3 structure
+        assert zarr_json["zarr_format"] == 3
+        assert "attributes" in zarr_json
+        attrs = zarr_json["attributes"]
+
+        # Verify OME-NGFF 0.5 namespace structure
+        assert "ome" in attrs
+        assert attrs["ome"]["version"] == "0.5"
+
+        axes = attrs["ome"]["multiscales"][0]["axes"]
         assert len(axes) == 6
         axis_names = [a["name"] for a in axes]
         assert axis_names == ["fov", "t", "c", "z", "y", "x"]
+
+        # Verify _squid structure field for 6D
+        assert attrs["_squid"]["structure"] == "6D-FTCZYX"
 
         writer.finalize()
 
@@ -1247,8 +1288,8 @@ class TestZarrWriterIOErrorHandling:
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
 
-    def test_finalize_handles_corrupted_zattrs(self, temp_dir):
-        """finalize() should handle corrupted .zattrs gracefully."""
+    def test_finalize_handles_corrupted_zarr_json(self, temp_dir):
+        """finalize() should handle corrupted zarr.json gracefully."""
         from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
@@ -1262,17 +1303,17 @@ class TestZarrWriterIOErrorHandling:
         writer = ZarrWriter(config)
         writer.initialize()
 
-        # Corrupt the .zattrs file with invalid JSON
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path, "w") as f:
+        # Corrupt the zarr.json file with invalid JSON
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        with open(zarr_json_path, "w") as f:
             f.write("not valid json {{{")
 
         # finalize() should handle the error gracefully (log error, don't crash)
         writer.finalize()  # Should not raise
         assert writer.is_finalized
 
-    def test_abort_handles_corrupted_zattrs(self, temp_dir):
-        """abort() should handle corrupted .zattrs gracefully."""
+    def test_abort_handles_corrupted_zarr_json(self, temp_dir):
+        """abort() should handle corrupted zarr.json gracefully."""
         from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
@@ -1286,17 +1327,17 @@ class TestZarrWriterIOErrorHandling:
         writer = ZarrWriter(config)
         writer.initialize()
 
-        # Corrupt the .zattrs file with invalid JSON
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path, "w") as f:
+        # Corrupt the zarr.json file with invalid JSON
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        with open(zarr_json_path, "w") as f:
             f.write("not valid json {{{")
 
         # abort() should handle the error gracefully (log error, don't crash)
         writer.abort()  # Should not raise
         assert writer.is_finalized
 
-    def test_abort_handles_missing_zattrs(self, temp_dir):
-        """abort() should handle missing .zattrs gracefully."""
+    def test_abort_handles_missing_zarr_json(self, temp_dir):
+        """abort() should handle missing zarr.json gracefully."""
         from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
@@ -1310,9 +1351,9 @@ class TestZarrWriterIOErrorHandling:
         writer = ZarrWriter(config)
         writer.initialize()
 
-        # Delete the .zattrs file
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        os.remove(zattrs_path)
+        # Delete the zarr.json file
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        os.remove(zarr_json_path)
 
         # abort() should handle the missing file gracefully
         writer.abort()  # Should not raise
@@ -1348,15 +1389,17 @@ class TestZarrWriterEmptyDataset:
 
         assert writer.is_finalized
 
-        # Verify metadata exists and is valid
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        assert os.path.exists(zattrs_path)
+        # Verify metadata exists and is valid in zarr.json attributes
+        zarr_json_path = os.path.join(output_path, "zarr.json")
+        assert os.path.exists(zarr_json_path)
 
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
+        with open(zarr_json_path) as f:
+            zarr_json = json.load(f)
 
-        assert "_squid" in zattrs
-        assert zattrs["_squid"]["acquisition_complete"] is True
+        assert "attributes" in zarr_json
+        attrs = zarr_json["attributes"]
+        assert "_squid" in attrs
+        assert attrs["_squid"]["acquisition_complete"] is True
 
 
 class TestZarrWriterDtypeAutoConversion:

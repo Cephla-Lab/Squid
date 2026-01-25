@@ -47,7 +47,7 @@ class ZarrAcquisitionConfig:
     """Configuration for Zarr v3 saving during acquisition.
 
     Attributes:
-        output_path: Base path for zarr output (e.g., /path/to/experiment.zarr)
+        output_path: Base path for zarr output (e.g., /path/to/experiment.ome.zarr)
         shape: Full dataset shape as (T, C, Z, Y, X) for 5D or (FOV, T, C, Z, Y, X) for 6D
         dtype: NumPy dtype for the data
         pixel_size_um: Physical pixel size in micrometers
@@ -261,10 +261,10 @@ def write_plate_metadata(
 ) -> None:
     """Write OME-NGFF HCS plate metadata.
 
-    Creates the plate-level .zattrs with well references.
+    Creates the plate-level zarr.json with well references in attributes.
 
     Args:
-        plate_path: Path to plate.zarr directory
+        plate_path: Path to plate.ome.zarr directory
         rows: List of row names (e.g., ["A", "B", "C"])
         cols: List of column numbers (e.g., [1, 2, 3])
         wells: List of (row, col) tuples for wells with data
@@ -285,28 +285,28 @@ def write_plate_metadata(
         )
 
     plate_metadata = {
-        "plate": {
+        "ome": {
             "version": "0.5",
-            "name": plate_name,
-            "rows": [{"name": r} for r in rows],
-            "columns": [{"name": str(c)} for c in cols],
-            "wells": well_entries,
+            "plate": {
+                "version": "0.5",
+                "name": plate_name,
+                "rows": [{"name": r} for r in rows],
+                "columns": [{"name": str(c)} for c in cols],
+                "wells": well_entries,
+            },
         }
     }
 
     try:
         os.makedirs(plate_path, exist_ok=True)
-        zattrs_path = os.path.join(plate_path, ".zattrs")
-        with open(zattrs_path, "w") as f:
-            json.dump(plate_metadata, f, indent=2)
 
-        # Write zarr.json for v3
-        zarr_json = {"zarr_format": 3, "node_type": "group"}
+        # Write zarr.json for v3 with OME metadata in attributes (strict Zarr v3 compliance)
+        zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": plate_metadata}
         zarr_json_path = os.path.join(plate_path, "zarr.json")
         with open(zarr_json_path, "w") as f:
             json.dump(zarr_json, f, indent=2)
 
-        log.debug(f"Wrote plate metadata to {zattrs_path}")
+        log.debug(f"Wrote plate metadata to {zarr_json_path}")
     except OSError as e:
         log.error(f"Failed to write plate metadata to {plate_path}: {e}")
         raise RuntimeError(f"Failed to write plate metadata: {e}") from e
@@ -318,35 +318,35 @@ def write_well_metadata(
 ) -> None:
     """Write OME-NGFF HCS well metadata.
 
-    Creates the well-level .zattrs with field references.
+    Creates the well-level zarr.json with field references in attributes.
 
     Args:
-        well_path: Path to well directory (e.g., plate.zarr/A/1)
+        well_path: Path to well directory (e.g., plate.ome.zarr/A/1)
         fields: List of field indices (FOVs) in this well
 
     Raises:
         RuntimeError: If metadata files cannot be written
     """
     well_metadata = {
-        "well": {
+        "ome": {
             "version": "0.5",
-            "images": [{"path": str(f)} for f in fields],
+            "well": {
+                "version": "0.5",
+                "images": [{"path": str(f)} for f in fields],
+            },
         }
     }
 
     try:
         os.makedirs(well_path, exist_ok=True)
-        zattrs_path = os.path.join(well_path, ".zattrs")
-        with open(zattrs_path, "w") as f:
-            json.dump(well_metadata, f, indent=2)
 
-        # Write zarr.json for v3
-        zarr_json = {"zarr_format": 3, "node_type": "group"}
+        # Write zarr.json for v3 with OME metadata in attributes (strict Zarr v3 compliance)
+        zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": well_metadata}
         zarr_json_path = os.path.join(well_path, "zarr.json")
         with open(zarr_json_path, "w") as f:
             json.dump(zarr_json, f, indent=2)
 
-        log.debug(f"Wrote well metadata to {zattrs_path}")
+        log.debug(f"Wrote well metadata to {zarr_json_path}")
     except OSError as e:
         log.error(f"Failed to write well metadata to {well_path}: {e}")
         raise RuntimeError(f"Failed to write well metadata: {e}") from e
@@ -480,7 +480,7 @@ class ZarrWriter:
             raise
 
     def _write_zarr_metadata(self) -> None:
-        """Write OME-NGFF compliant metadata to .zattrs (synchronous file I/O)."""
+        """Write OME-NGFF 0.5 compliant metadata to zarr.json attributes."""
         config = self._config
 
         # Build axes based on dimensionality
@@ -565,27 +565,34 @@ class ZarrWriter:
                 }
             channels_meta.append(channel_info)
 
+        # Determine structure string for _squid metadata
+        structure = "5D-TCZYX" if config.ndim == 5 else "6D-FTCZYX"
+
         zattrs = {
-            "multiscales": [
-                {
-                    "version": "0.4",
+            "ome": {
+                "version": "0.5",
+                "multiscales": [
+                    {
+                        "version": "0.5",
+                        "name": os.path.basename(config.output_path),
+                        "axes": axes,
+                        "datasets": [
+                            {
+                                "path": "0",
+                                "coordinateTransformations": coordinate_transforms,
+                            }
+                        ],
+                        "coordinateTransformations": [{"type": "identity"}],
+                    }
+                ],
+                "omero": {
                     "name": os.path.basename(config.output_path),
-                    "axes": axes,
-                    "datasets": [
-                        {
-                            "path": "0",
-                            "coordinateTransformations": coordinate_transforms,
-                        }
-                    ],
-                    "coordinateTransformations": [{"type": "identity"}],
-                }
-            ],
-            "omero": {
-                "name": os.path.basename(config.output_path),
-                "version": "0.4",
-                "channels": channels_meta,
+                    "version": "0.5",
+                    "channels": channels_meta,
+                },
             },
             "_squid": {
+                "structure": structure,
                 "pixel_size_um": config.pixel_size_um,
                 "z_step_um": config.z_step_um,
                 "time_increment_s": config.time_increment_s,
@@ -598,14 +605,23 @@ class ZarrWriter:
             },
         }
 
-        zattrs_path = os.path.join(config.output_path, ".zattrs")
+        # Write metadata to zarr.json attributes (strict Zarr v3 compliance)
+        # TensorStore creates zarr.json for the array; we add attributes to it
+        zarr_json_path = os.path.join(config.output_path, "zarr.json")
         try:
-            os.makedirs(os.path.dirname(zattrs_path), exist_ok=True)
-            with open(zattrs_path, "w") as f:
-                json.dump(zattrs, f, indent=2)
-            log.debug(f"Wrote OME-NGFF metadata to {zattrs_path}")
+            # Read existing zarr.json created by TensorStore
+            with open(zarr_json_path, "r") as f:
+                zarr_json = json.load(f)
+
+            # Add OME metadata as attributes
+            zarr_json["attributes"] = zattrs
+
+            # Write back
+            with open(zarr_json_path, "w") as f:
+                json.dump(zarr_json, f, indent=2)
+            log.debug(f"Wrote OME-NGFF metadata to {zarr_json_path}")
         except OSError as e:
-            log.error(f"Failed to write zarr metadata to {zattrs_path}: {e}")
+            log.error(f"Failed to write zarr metadata to {zarr_json_path}: {e}")
             raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
@@ -700,18 +716,20 @@ class ZarrWriter:
         # Wait for all pending writes
         self.wait_for_pending()
 
-        # Update metadata with completion status
-        zattrs_path = os.path.join(self._config.output_path, ".zattrs")
+        # Update metadata with completion status (in zarr.json attributes)
+        zarr_json_path = os.path.join(self._config.output_path, "zarr.json")
         try:
-            if os.path.exists(zattrs_path):
-                with open(zattrs_path, "r") as f:
-                    zattrs = json.load(f)
-                if "_squid" in zattrs:
-                    zattrs["_squid"]["acquisition_complete"] = True
-                with open(zattrs_path, "w") as f:
-                    json.dump(zattrs, f, indent=2)
+            if os.path.exists(zarr_json_path):
+                with open(zarr_json_path, "r") as f:
+                    zarr_json = json.load(f)
+                attrs = zarr_json.get("attributes", {})
+                if "_squid" in attrs:
+                    attrs["_squid"]["acquisition_complete"] = True
+                    zarr_json["attributes"] = attrs
+                with open(zarr_json_path, "w") as f:
+                    json.dump(zarr_json, f, indent=2)
         except (OSError, json.JSONDecodeError) as e:
-            log.error(f"Failed to finalize zarr metadata at {zattrs_path}: {e}")
+            log.error(f"Failed to finalize zarr metadata at {zarr_json_path}: {e}")
             # Don't raise - data is already written, just log the metadata issue
 
         self._finalized = True
@@ -730,19 +748,21 @@ class ZarrWriter:
             # Clear pending futures (don't wait for them)
             self._pending_futures.clear()
 
-            # Mark as incomplete in metadata
-            zattrs_path = os.path.join(self._config.output_path, ".zattrs")
+            # Mark as incomplete in metadata (in zarr.json attributes)
+            zarr_json_path = os.path.join(self._config.output_path, "zarr.json")
             try:
-                if os.path.exists(zattrs_path):
-                    with open(zattrs_path, "r") as f:
-                        zattrs = json.load(f)
-                    if "_squid" in zattrs:
-                        zattrs["_squid"]["acquisition_complete"] = False
-                        zattrs["_squid"]["aborted"] = True
-                    with open(zattrs_path, "w") as f:
-                        json.dump(zattrs, f, indent=2)
+                if os.path.exists(zarr_json_path):
+                    with open(zarr_json_path, "r") as f:
+                        zarr_json = json.load(f)
+                    attrs = zarr_json.get("attributes", {})
+                    if "_squid" in attrs:
+                        attrs["_squid"]["acquisition_complete"] = False
+                        attrs["_squid"]["aborted"] = True
+                        zarr_json["attributes"] = attrs
+                    with open(zarr_json_path, "w") as f:
+                        json.dump(zarr_json, f, indent=2)
             except (OSError, json.JSONDecodeError) as e:
-                log.error(f"Failed to update abort metadata at {zattrs_path}: {e}")
+                log.error(f"Failed to update abort metadata at {zarr_json_path}: {e}")
         finally:
             # Always mark as finalized and cleanup resources
             self._finalized = True

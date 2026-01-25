@@ -378,8 +378,8 @@ class ZarrWriterInfo:
     """Info for Zarr v3 saving, injected by JobRunner.
 
     Output path depends on acquisition mode:
-    - HCS mode: {base_path}/plate.zarr/{row}/{col}/{fov}/0  (5D per FOV)
-    - Non-HCS default: {base_path}/zarr/{region_id}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
+    - HCS mode: {base_path}/plate.ome.zarr/{row}/{col}/{fov}/0  (5D per FOV, OME-NGFF compliant)
+    - Non-HCS default: {base_path}/zarr/{region_id}/fov_{n}.ome.zarr  (5D per FOV, OME-NGFF compliant)
     - Non-HCS 6D: {base_path}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension, non-standard)
 
     Attributes:
@@ -415,20 +415,20 @@ class ZarrWriterInfo:
     def get_output_path(self, region_id: str, fov: int) -> str:
         """Get output path based on acquisition mode.
 
-        HCS mode: {base}/plate.zarr/{row_letter}/{col_num}/{fov}/0  (5D per FOV)
-        Non-HCS default: {base}/zarr/{region_id}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
-        Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension)
+        HCS mode: {base}/plate.ome.zarr/{row_letter}/{col_num}/{fov}/0  (5D per FOV, OME-NGFF compliant)
+        Non-HCS default: {base}/zarr/{region_id}/fov_{n}.ome.zarr  (5D per FOV, OME-NGFF compliant)
+        Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension, non-standard)
         """
         if self.is_hcs:
-            # HCS: plate hierarchy (5D per FOV)
+            # HCS: plate hierarchy (5D per FOV, OME-NGFF compliant)
             row_letter, col_num = self._parse_well_id_parts(region_id)
-            return os.path.join(self.base_path, "plate.zarr", row_letter, col_num, str(fov), "0")
+            return os.path.join(self.base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
         elif self.use_6d_fov:
-            # Non-HCS with 6D: single zarr per region, FOV is a dimension
+            # Non-HCS with 6D: single zarr per region, FOV is a dimension (non-standard, no .ome.zarr)
             return os.path.join(self.base_path, "zarr", str(region_id), "acquisition.zarr")
         else:
             # Non-HCS default: per-FOV zarr files (OME-NGFF compliant)
-            return os.path.join(self.base_path, "zarr", str(region_id), f"fov_{fov}.zarr")
+            return os.path.join(self.base_path, "zarr", str(region_id), f"fov_{fov}.ome.zarr")
 
     @staticmethod
     def _parse_well_id_parts(well_id: str) -> Tuple[str, str]:

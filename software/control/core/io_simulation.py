@@ -254,7 +254,7 @@ def simulated_zarr_write(
         if is_complete:
             del _simulated_zarr_stacks[stack_key]
 
-    # Simulate finalization overhead outside lock (~4KB for .zattrs update)
+    # Simulate finalization overhead outside lock (~4KB for zarr.json attributes update)
     if is_complete:
         throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
         log.debug(f"Completed simulated zarr dataset: {stack_key}")

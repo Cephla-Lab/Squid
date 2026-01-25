@@ -261,8 +261,8 @@ class MultiPointWorker:
 
         # Build ZarrWriterInfo if using ZARR_V3 format
         # Output structure depends on acquisition type and settings:
-        # - HCS (wells): {experiment_path}/plate.zarr/{row}/{col}/{fov}/0  (5D per FOV)
-        # - Non-HCS default: {experiment_path}/zarr/{region}/fov_{n}.zarr  (5D per FOV, OME-NGFF compliant)
+        # - HCS (wells): {experiment_path}/plate.ome.zarr/{row}/{col}/{fov}/0  (5D per FOV, OME-NGFF compliant)
+        # - Non-HCS default: {experiment_path}/zarr/{region}/fov_{n}.ome.zarr  (5D per FOV, OME-NGFF compliant)
         # - Non-HCS 6D: {experiment_path}/zarr/{region}/acquisition.zarr  (6D, non-standard)
         zarr_writer_info = None
         if use_zarr_v3:

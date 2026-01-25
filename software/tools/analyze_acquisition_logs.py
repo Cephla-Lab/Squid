@@ -165,7 +165,14 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
             pass
 
     # Get compression from zarr metadata if available
-    zarr_attrs = list(folder.glob("**/plate.zarr/**/.zattrs")) + list(folder.glob("**/.zattrs"))
+    # Check both legacy .zattrs (Zarr v2 style) and zarr.json attributes (Zarr v3 style)
+    # Also check both .zarr and .ome.zarr extensions
+    zarr_attrs = (
+        list(folder.glob("**/plate.zarr/**/.zattrs"))
+        + list(folder.glob("**/plate.ome.zarr/**/.zattrs"))
+        + list(folder.glob("**/*.ome.zarr/.zattrs"))
+        + list(folder.glob("**/.zattrs"))
+    )
     for zattr_path in zarr_attrs:
         try:
             with open(zattr_path, "r") as f:
@@ -176,6 +183,26 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
                 break
         except (json.JSONDecodeError, IOError):
             pass
+
+    # Check zarr.json files for Zarr v3 with OME-NGFF 0.5 (attributes inside zarr.json)
+    if timing.file_format != "zarr_v3":
+        zarr_jsons = (
+            list(folder.glob("**/plate.zarr/**/zarr.json"))
+            + list(folder.glob("**/plate.ome.zarr/**/zarr.json"))
+            + list(folder.glob("**/*.ome.zarr/zarr.json"))
+            + list(folder.glob("**/zarr.json"))
+        )
+        for zarr_json_path in zarr_jsons:
+            try:
+                with open(zarr_json_path, "r") as f:
+                    zarr_json = json.load(f)
+                attrs = zarr_json.get("attributes", {})
+                if "_squid" in attrs:
+                    timing.compression = attrs["_squid"].get("compression", "unknown")
+                    timing.file_format = "zarr_v3"
+                    break
+            except (json.JSONDecodeError, IOError):
+                pass
 
     return timing, metadata
 
