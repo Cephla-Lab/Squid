@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-01-24T19:19:06'
+  last_verified: '2026-01-24T22:39:10'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -482,70 +482,140 @@ commits:
     ported_date: '2026-01-12'
   3d5b7922:
     title: 'feat: Skip hardware initialization on restart after settings change (#471)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Ported skip-init-on-restart feature with arch_v2 adaptations
   364d2cf1:
     title: 'feat: Add per-component hardware simulation controls (#468)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Ported per-component simulation controls to arch_v2
   5b10bca4:
     title: 'refactor: Reorganize Preferences dialog (#470)'
-    status: pending
+    status: skipped
+    skip_reason: superseded
+    skip_justification: arch_v2 has its own PreferencesDialog structure with different organization
+    skip_date: '2026-01-24'
   5a22a08b:
     title: 'fix: UI improvements - maximize window and rename menu item (#469)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Window maximize and menu improvements ported
   0346d508:
     title: 'feat: Add Slack notifications for acquisition events (#466)'
-    status: pending
+    status: skipped
+    skip_reason: deferred
+    skip_justification: Skipped per user request - can be added later if needed
+    skip_date: '2026-01-24'
   17ed8c7b:
     title: 'feat: Add status bar widget for displaying warnings and errors (#467)'
-    status: pending
+    status: ported
+    ported_in: e307a6f0
+    ported_date: '2026-01-24'
+    notes: Ported as warning_error_widget.py with arch_v2 EventBus integration
   03f4d11c:
     title: FLIR camera driver update (#365)
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Added FLIRCameraModel enum, full driver refactor deferred
   0dcbcef2:
     title: 'fix: live illumination switching w/ hardware trigger (#419)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Fixed illumination switching during hardware-triggered acquisition
   c58983c0:
     title: 'feat: Integrate NDViewer push-based API for live acquisition (#465)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Ported NDViewer push API with EventBus events (NDViewerStartAcquisition, etc.)
   a1dfc4ad:
     title: 'fix: Terminate GUI after --wait acquisition completes in run_acquisition.py (#464)'
-    status: pending
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: arch_v2 run_acquisition.py is TCP client only, no GUI launching
+    skip_date: '2026-01-24'
   44264e3c:
     title: 'fix: Use QMetaObject.invokeMethod for TCP acquisition GUI state update (#463)'
-    status: pending
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: arch_v2 uses EventBus for thread-safe GUI updates, not QMetaObject.invokeMethod
+    skip_date: '2026-01-24'
   ddd5a549:
     title: 'feat: Add settings option to enable/disable NDViewer tab (#462)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Added ENABLE_NDVIEWER_TAB setting in _def.py and PreferencesDialog
   5f4b158c:
     title: 'fix: Race condition in the NapariLiveWidget for the new alignment feature (#461)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Fixed MCU timeout race condition in alignment feature
   0f4cbb8d:
     title: 'feat: Add detailed MCU command logging for debugging (#460)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Added verbose MCU command logging to microcontroller.py
   606e4175:
     title: 'fix: Initialize Optospin filter wheel positions on startup (#459)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: One-line fix to initialize filter wheel positions
   fbd9eda5:
     title: 'fix: mcu cmd timeout and toupcam strobe delay fixes (#458)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Hardware timing fixes for MCU and ToupCam
   9a015e0f:
     title: Tucsen Libra25 support (#437)
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Added ModeLibra enum, model properties, and configuration for Libra25
   f270061a:
     title: 'fix: Preserve manual region drawing order during acquisition (#457)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Fixed region ordering in scan_coordinates.py
   b352f0a7:
     title: 'fix: Suppress stale read warnings in simulation mode (#456)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Reduced log noise in simulation mode
   cf4f1784:
     title: 'fix: User profile migration and spot detection mode fixes (#455)'
-    status: pending
+    status: skipped
+    skip_reason: superseded
+    skip_justification: arch_v2 uses JSON/Pydantic config, not YAML/ConfigRepository user profiles
+    skip_date: '2026-01-24'
   e5cd025c:
     title: 'fix: Sync contrast limits and add user feedback for alignment errors (#454)'
-    status: pending
+    status: ported
+    ported_in: 3fc76ade
+    ported_date: '2026-01-24'
+    notes: Improved contrast sync and alignment error feedback
   82dafa6f:
     title: 'fix: Laser AF spot detection mode and None safety checks (#453)'
     status: pending
+    notes: Needs evaluation - may be superseded by arch_v2 LaserAF implementation
   fe927b0f:
     title: 'docs: Add comprehensive documentation for configuration system (#447)'
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: Documents upstream YAML config system, not arch_v2 JSON/Pydantic config
+    skip_date: '2026-01-24'
+  bf30b5c9:
+    title: 'fix: XLight filter slider serial communication and add getter method (#472)'
     status: pending
