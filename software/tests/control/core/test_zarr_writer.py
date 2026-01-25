@@ -1903,96 +1903,130 @@ class TestHCSWorkflowIntegration:
 class TestZarrPathConsistency:
     """Tests that NDViewer paths match writer paths.
 
-    This ensures that paths built by gui_hcs for NDViewer match paths
-    used by ZarrWriterInfo, preventing read/write path mismatches.
+    Both gui_hcs and ZarrWriterInfo now use shared utility functions from
+    control.utils, ensuring path consistency. These tests verify the
+    utility functions produce correct paths.
     """
 
-    def test_hcs_paths_match_writer(self):
-        """Verify HCS mode paths built for NDViewer match writer paths."""
-        base_path = "/tmp/test_acquisition"
+    def test_hcs_paths_use_shared_utility(self):
+        """Verify HCS mode paths use shared utility and match expected format."""
+        from control.utils import build_hcs_zarr_fov_path
 
-        # Simulate writer path generation
-        zarr_info = ZarrWriterInfo(
-            base_path=base_path,
-            t_size=1,
-            c_size=3,
-            z_size=1,
-            is_hcs=True,
-        )
+        base_path = "/tmp/test_acquisition"
 
         # Test various well IDs and FOV indices
         test_cases = [
-            ("A1", 0),
-            ("A1", 1),
-            ("B2", 0),
-            ("B12", 2),
-            ("AA1", 0),  # Multi-letter row
+            ("A1", 0, "/tmp/test_acquisition/plate.ome.zarr/A/1/0/0"),
+            ("A1", 1, "/tmp/test_acquisition/plate.ome.zarr/A/1/1/0"),
+            ("B2", 0, "/tmp/test_acquisition/plate.ome.zarr/B/2/0/0"),
+            ("B12", 2, "/tmp/test_acquisition/plate.ome.zarr/B/12/2/0"),
+            ("AA1", 0, "/tmp/test_acquisition/plate.ome.zarr/AA/1/0/0"),
         ]
 
-        for well_id, fov in test_cases:
-            writer_path = zarr_info.get_output_path(well_id, fov)
-
-            # Simulate gui_hcs path building (same logic as _build_zarr_fov_paths)
-            row_letter, col_num = zarr_info._parse_well_id_parts(well_id)
-            gui_path = os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
-
-            assert writer_path == gui_path, (
-                f"Path mismatch for well={well_id}, fov={fov}: " f"writer={writer_path}, gui={gui_path}"
+        for well_id, fov, expected_path in test_cases:
+            # Test utility function directly
+            util_path = build_hcs_zarr_fov_path(base_path, well_id, fov)
+            assert util_path == expected_path, (
+                f"Utility path mismatch for well={well_id}, fov={fov}: " f"got={util_path}, expected={expected_path}"
             )
 
-    def test_non_hcs_per_fov_paths_match_writer(self):
-        """Verify non-HCS per-FOV mode paths match writer paths."""
-        base_path = "/tmp/test_acquisition"
+            # Verify ZarrWriterInfo uses the same path
+            zarr_info = ZarrWriterInfo(
+                base_path=base_path,
+                t_size=1,
+                c_size=3,
+                z_size=1,
+                is_hcs=True,
+            )
+            writer_path = zarr_info.get_output_path(well_id, fov)
+            assert writer_path == util_path, (
+                f"Writer path doesn't match utility for well={well_id}, fov={fov}: "
+                f"writer={writer_path}, util={util_path}"
+            )
 
-        # Simulate writer path generation (non-HCS, per-FOV mode)
-        zarr_info = ZarrWriterInfo(
-            base_path=base_path,
-            t_size=1,
-            c_size=3,
-            z_size=1,
-            is_hcs=False,
-            use_6d_fov=False,
-        )
+    def test_non_hcs_per_fov_paths_use_shared_utility(self):
+        """Verify non-HCS per-FOV mode paths use shared utility."""
+        from control.utils import build_per_fov_zarr_path
+
+        base_path = "/tmp/test_acquisition"
 
         # Test various region names and FOV indices
         test_cases = [
-            ("region_0", 0),
-            ("region_0", 1),
-            ("scan_area_1", 0),
-            ("custom_name", 5),
+            ("region_0", 0, "/tmp/test_acquisition/zarr/region_0/fov_0.ome.zarr"),
+            ("region_0", 1, "/tmp/test_acquisition/zarr/region_0/fov_1.ome.zarr"),
+            ("scan_area_1", 0, "/tmp/test_acquisition/zarr/scan_area_1/fov_0.ome.zarr"),
+            ("custom_name", 5, "/tmp/test_acquisition/zarr/custom_name/fov_5.ome.zarr"),
         ]
 
-        for region_id, fov in test_cases:
+        for region_id, fov, expected_path in test_cases:
+            # Test utility function directly
+            util_path = build_per_fov_zarr_path(base_path, region_id, fov)
+            assert util_path == expected_path, (
+                f"Utility path mismatch for region={region_id}, fov={fov}: "
+                f"got={util_path}, expected={expected_path}"
+            )
+
+            # Verify ZarrWriterInfo uses the same path
+            zarr_info = ZarrWriterInfo(
+                base_path=base_path,
+                t_size=1,
+                c_size=3,
+                z_size=1,
+                is_hcs=False,
+                use_6d_fov=False,
+            )
             writer_path = zarr_info.get_output_path(region_id, fov)
-
-            # Simulate gui_hcs path building (same logic as _build_zarr_fov_paths)
-            gui_path = os.path.join(base_path, "zarr", region_id, f"fov_{fov}.ome.zarr")
-
-            assert writer_path == gui_path, (
-                f"Path mismatch for region={region_id}, fov={fov}: " f"writer={writer_path}, gui={gui_path}"
+            assert writer_path == util_path, (
+                f"Writer path doesn't match utility for region={region_id}, fov={fov}: "
+                f"writer={writer_path}, util={util_path}"
             )
 
-    def test_well_id_parsing_consistency(self):
-        """Verify well ID parsing is consistent between writer and gui."""
-        # Both ZarrWriterInfo and gui_hcs have _parse_well_id_parts methods
-        # They should produce identical results
+    def test_6d_paths_use_shared_utility(self):
+        """Verify 6D mode paths use shared utility."""
+        from control.utils import build_6d_zarr_path
 
-        zarr_info = ZarrWriterInfo(
-            base_path="/tmp",
-            t_size=1,
-            c_size=1,
-            z_size=1,
-            is_hcs=True,
-        )
+        base_path = "/tmp/test_acquisition"
 
-        test_well_ids = ["A1", "B12", "C3", "AA1", "AB12", "H8"]
+        test_cases = [
+            ("region_0", "/tmp/test_acquisition/zarr/region_0/acquisition.zarr"),
+            ("scan_area_1", "/tmp/test_acquisition/zarr/scan_area_1/acquisition.zarr"),
+        ]
 
-        for well_id in test_well_ids:
-            row, col = zarr_info._parse_well_id_parts(well_id)
-
-            # Verify parsing is correct
-            assert row.isalpha(), f"Row should be letters only: {row}"
-            assert col.isdigit(), f"Col should be digits only: {col}"
-            assert row + col == well_id.upper(), (
-                f"Parsed parts should reconstruct well_id: " f"{row}+{col} != {well_id}"
+        for region_id, expected_path in test_cases:
+            # Test utility function directly
+            util_path = build_6d_zarr_path(base_path, region_id)
+            assert util_path == expected_path, (
+                f"Utility path mismatch for region={region_id}: " f"got={util_path}, expected={expected_path}"
             )
+
+            # Verify ZarrWriterInfo uses the same path
+            zarr_info = ZarrWriterInfo(
+                base_path=base_path,
+                t_size=1,
+                c_size=3,
+                z_size=1,
+                is_hcs=False,
+                use_6d_fov=True,
+            )
+            writer_path = zarr_info.get_output_path(region_id, 0)
+            assert writer_path == util_path, (
+                f"Writer path doesn't match utility for region={region_id}: " f"writer={writer_path}, util={util_path}"
+            )
+
+    def test_well_id_parsing(self):
+        """Verify well ID parsing utility works correctly."""
+        from control.utils import parse_well_id
+
+        test_cases = [
+            ("A1", ("A", "1")),
+            ("B12", ("B", "12")),
+            ("C3", ("C", "3")),
+            ("AA1", ("AA", "1")),
+            ("AB12", ("AB", "12")),
+            ("H8", ("H", "8")),
+            ("a1", ("A", "1")),  # lowercase
+        ]
+
+        for well_id, expected in test_cases:
+            result = parse_well_id(well_id)
+            assert result == expected, f"Failed for {well_id}: got {result}, expected {expected}"

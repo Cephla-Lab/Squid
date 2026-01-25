@@ -420,15 +420,11 @@ class ZarrWriterInfo:
         Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension, non-standard)
         """
         if self.is_hcs:
-            # HCS: plate hierarchy (5D per FOV, OME-NGFF compliant)
-            row_letter, col_num = self._parse_well_id_parts(region_id)
-            return os.path.join(self.base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
+            return utils.build_hcs_zarr_fov_path(self.base_path, region_id, fov)
         elif self.use_6d_fov:
-            # Non-HCS with 6D: single zarr per region, FOV is a dimension (non-standard, no .ome.zarr)
-            return os.path.join(self.base_path, "zarr", str(region_id), "acquisition.zarr")
+            return utils.build_6d_zarr_path(self.base_path, region_id)
         else:
-            # Non-HCS default: per-FOV zarr files (OME-NGFF compliant)
-            return os.path.join(self.base_path, "zarr", str(region_id), f"fov_{fov}.ome.zarr")
+            return utils.build_per_fov_zarr_path(self.base_path, region_id, fov)
 
     @staticmethod
     def _parse_well_id_parts(well_id: str) -> Tuple[str, str]:

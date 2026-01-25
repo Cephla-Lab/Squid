@@ -443,8 +443,7 @@ class QtMultiPointController(MultiPointController, QObject):
         region_labels: List[str] = []
 
         for region_name in scan_info.scan_region_names:
-            # Path: zarr/{region}/acquisition.zarr
-            path = os.path.join(base_path, "zarr", region_name, "acquisition.zarr")
+            path = control.utils.build_6d_zarr_path(base_path, region_name)
             region_paths.append(path)
 
             num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
@@ -481,12 +480,9 @@ class QtMultiPointController(MultiPointController, QObject):
             num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
             for fov in range(num_fovs):
                 if is_hcs:
-                    # HCS: plate.ome.zarr/{row}/{col}/{fov}/0
-                    row_letter, col_num = control.utils.parse_well_id(region_name)
-                    path = os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
+                    path = control.utils.build_hcs_zarr_fov_path(base_path, region_name, fov)
                 else:
-                    # Per-FOV: zarr/{region}/fov_{n}.ome.zarr
-                    path = os.path.join(base_path, "zarr", region_name, f"fov_{fov}.ome.zarr")
+                    path = control.utils.build_per_fov_zarr_path(base_path, region_name, fov)
                 fov_paths.append(path)
 
         return fov_paths
