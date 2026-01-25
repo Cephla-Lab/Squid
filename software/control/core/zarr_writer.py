@@ -462,15 +462,17 @@ class ZarrWriter:
             self._cleanup_event_loop()
             raise
 
-    def _is_hcs_array_path(self) -> bool:
-        """Check if output_path is an HCS array path (needs group-level metadata).
+    def _is_ome_ngff_array_path(self) -> bool:
+        """Check if output_path is an OME-NGFF array path (needs group-level metadata).
 
-        HCS array paths end with /{fov}/0 where {fov} is a digit (field index).
-        E.g., plate.ome.zarr/A/1/0/0 -> True (array at field 0)
-              zarr/region/fov_0.ome.zarr -> False (non-HCS per-FOV)
+        OME-NGFF array paths end with /0 (resolution level 0) inside a group.
+        E.g., plate.ome.zarr/A/1/0/0 -> True (HCS field array)
+              zarr/region/fov_0.ome.zarr/0 -> True (per-FOV array)
+              zarr/region/acquisition.zarr -> False (6D mode, no nested array)
         """
         path_parts = self._config.output_path.rstrip(os.sep).split(os.sep)
-        return len(path_parts) >= 2 and path_parts[-1] == "0" and path_parts[-2].isdigit()
+        # Array path ends with /0 (resolution level)
+        return len(path_parts) >= 2 and path_parts[-1] == "0"
 
     def _get_metadata_zarr_json_path(self) -> str:
         """Get the path to zarr.json containing OME metadata.
@@ -478,7 +480,7 @@ class ZarrWriter:
         For HCS (path ends with /0 and parent is field index), metadata is at parent group.
         For non-HCS, metadata is at the zarr store directly.
         """
-        if self._is_hcs_array_path():
+        if self._is_ome_ngff_array_path():
             return os.path.join(os.path.dirname(self._config.output_path), "zarr.json")
         return os.path.join(self._config.output_path, "zarr.json")
 
@@ -614,7 +616,7 @@ class ZarrWriter:
         # For non-HCS, output_path is the zarr store directly (fov_{n}.ome.zarr).
         zarr_json_path = self._get_metadata_zarr_json_path()
 
-        if self._is_hcs_array_path():
+        if self._is_ome_ngff_array_path():
             # HCS: write group metadata to parent directory ({fov}/zarr.json)
             group_zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": zattrs}
             try:

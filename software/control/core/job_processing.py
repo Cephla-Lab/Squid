@@ -413,18 +413,22 @@ class ZarrWriterInfo:
     channel_wavelengths: List[Optional[int]] = field(default_factory=list)
 
     def get_output_path(self, region_id: str, fov: int) -> str:
-        """Get output path based on acquisition mode.
+        """Get output path for writing (array path).
 
-        HCS mode: {base}/plate.ome.zarr/{row_letter}/{col_num}/{fov}/0  (5D per FOV, OME-NGFF compliant)
-        Non-HCS default: {base}/zarr/{region_id}/fov_{n}.ome.zarr  (5D per FOV, OME-NGFF compliant)
-        Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension, non-standard)
+        HCS mode: {base}/plate.ome.zarr/{row}/{col}/{fov}/0  (array at resolution level 0)
+        Non-HCS per-FOV: {base}/zarr/{region_id}/fov_{n}.ome.zarr/0  (array at resolution level 0)
+        Non-HCS 6D: {base}/zarr/{region_id}/acquisition.zarr  (6D with FOV dimension)
         """
         if self.is_hcs:
-            return utils.build_hcs_zarr_fov_path(self.base_path, region_id, fov)
+            # build_hcs_zarr_fov_path returns group path; append /0 for array
+            group_path = utils.build_hcs_zarr_fov_path(self.base_path, region_id, fov)
+            return os.path.join(group_path, "0")
         elif self.use_6d_fov:
             return utils.build_6d_zarr_path(self.base_path, region_id)
         else:
-            return utils.build_per_fov_zarr_path(self.base_path, region_id, fov)
+            # build_per_fov_zarr_path returns group path; append /0 for array
+            group_path = utils.build_per_fov_zarr_path(self.base_path, region_id, fov)
+            return os.path.join(group_path, "0")
 
     def get_fov_count(self, region_id: str) -> int:
         """Get total FOV count for a region (for 6D shape calculation)."""

@@ -1909,28 +1909,34 @@ class TestZarrPathConsistency:
     """
 
     def test_hcs_paths_use_shared_utility(self):
-        """Verify HCS mode paths use shared utility and match expected format."""
+        """Verify HCS mode paths follow OME-NGFF structure.
+
+        build_hcs_zarr_fov_path returns the GROUP path (field level).
+        ZarrWriterInfo.get_output_path returns the ARRAY path (appends /0).
+        """
         from control.utils import build_hcs_zarr_fov_path
 
         base_path = "/tmp/test_acquisition"
 
         # Test various well IDs and FOV indices
+        # Format: (well_id, fov, expected_group_path, expected_array_path)
         test_cases = [
-            ("A1", 0, "/tmp/test_acquisition/plate.ome.zarr/A/1/0/0"),
-            ("A1", 1, "/tmp/test_acquisition/plate.ome.zarr/A/1/1/0"),
-            ("B2", 0, "/tmp/test_acquisition/plate.ome.zarr/B/2/0/0"),
-            ("B12", 2, "/tmp/test_acquisition/plate.ome.zarr/B/12/2/0"),
-            ("AA1", 0, "/tmp/test_acquisition/plate.ome.zarr/AA/1/0/0"),
+            ("A1", 0, "/tmp/test_acquisition/plate.ome.zarr/A/1/0", "/tmp/test_acquisition/plate.ome.zarr/A/1/0/0"),
+            ("A1", 1, "/tmp/test_acquisition/plate.ome.zarr/A/1/1", "/tmp/test_acquisition/plate.ome.zarr/A/1/1/0"),
+            ("B2", 0, "/tmp/test_acquisition/plate.ome.zarr/B/2/0", "/tmp/test_acquisition/plate.ome.zarr/B/2/0/0"),
+            ("B12", 2, "/tmp/test_acquisition/plate.ome.zarr/B/12/2", "/tmp/test_acquisition/plate.ome.zarr/B/12/2/0"),
+            ("AA1", 0, "/tmp/test_acquisition/plate.ome.zarr/AA/1/0", "/tmp/test_acquisition/plate.ome.zarr/AA/1/0/0"),
         ]
 
-        for well_id, fov, expected_path in test_cases:
-            # Test utility function directly
-            util_path = build_hcs_zarr_fov_path(base_path, well_id, fov)
-            assert util_path == expected_path, (
-                f"Utility path mismatch for well={well_id}, fov={fov}: " f"got={util_path}, expected={expected_path}"
+        for well_id, fov, expected_group_path, expected_array_path in test_cases:
+            # Utility returns GROUP path (for NDViewer/readers)
+            group_path = build_hcs_zarr_fov_path(base_path, well_id, fov)
+            assert group_path == expected_group_path, (
+                f"Group path mismatch for well={well_id}, fov={fov}: "
+                f"got={group_path}, expected={expected_group_path}"
             )
 
-            # Verify ZarrWriterInfo uses the same path
+            # Writer returns ARRAY path (group + /0)
             zarr_info = ZarrWriterInfo(
                 base_path=base_path,
                 t_size=1,
@@ -1939,34 +1945,58 @@ class TestZarrPathConsistency:
                 is_hcs=True,
             )
             writer_path = zarr_info.get_output_path(well_id, fov)
-            assert writer_path == util_path, (
-                f"Writer path doesn't match utility for well={well_id}, fov={fov}: "
-                f"writer={writer_path}, util={util_path}"
+            assert writer_path == expected_array_path, (
+                f"Writer path mismatch for well={well_id}, fov={fov}: "
+                f"writer={writer_path}, expected={expected_array_path}"
             )
 
     def test_non_hcs_per_fov_paths_use_shared_utility(self):
-        """Verify non-HCS per-FOV mode paths use shared utility."""
+        """Verify non-HCS per-FOV mode paths follow OME-NGFF structure.
+
+        build_per_fov_zarr_path returns the GROUP path.
+        ZarrWriterInfo.get_output_path returns the ARRAY path (appends /0).
+        """
         from control.utils import build_per_fov_zarr_path
 
         base_path = "/tmp/test_acquisition"
 
-        # Test various region names and FOV indices
+        # Format: (region_id, fov, expected_group_path, expected_array_path)
         test_cases = [
-            ("region_0", 0, "/tmp/test_acquisition/zarr/region_0/fov_0.ome.zarr"),
-            ("region_0", 1, "/tmp/test_acquisition/zarr/region_0/fov_1.ome.zarr"),
-            ("scan_area_1", 0, "/tmp/test_acquisition/zarr/scan_area_1/fov_0.ome.zarr"),
-            ("custom_name", 5, "/tmp/test_acquisition/zarr/custom_name/fov_5.ome.zarr"),
+            (
+                "region_0",
+                0,
+                "/tmp/test_acquisition/zarr/region_0/fov_0.ome.zarr",
+                "/tmp/test_acquisition/zarr/region_0/fov_0.ome.zarr/0",
+            ),
+            (
+                "region_0",
+                1,
+                "/tmp/test_acquisition/zarr/region_0/fov_1.ome.zarr",
+                "/tmp/test_acquisition/zarr/region_0/fov_1.ome.zarr/0",
+            ),
+            (
+                "scan_area_1",
+                0,
+                "/tmp/test_acquisition/zarr/scan_area_1/fov_0.ome.zarr",
+                "/tmp/test_acquisition/zarr/scan_area_1/fov_0.ome.zarr/0",
+            ),
+            (
+                "custom_name",
+                5,
+                "/tmp/test_acquisition/zarr/custom_name/fov_5.ome.zarr",
+                "/tmp/test_acquisition/zarr/custom_name/fov_5.ome.zarr/0",
+            ),
         ]
 
-        for region_id, fov, expected_path in test_cases:
-            # Test utility function directly
-            util_path = build_per_fov_zarr_path(base_path, region_id, fov)
-            assert util_path == expected_path, (
-                f"Utility path mismatch for region={region_id}, fov={fov}: "
-                f"got={util_path}, expected={expected_path}"
+        for region_id, fov, expected_group_path, expected_array_path in test_cases:
+            # Utility returns GROUP path (for NDViewer/readers)
+            group_path = build_per_fov_zarr_path(base_path, region_id, fov)
+            assert group_path == expected_group_path, (
+                f"Group path mismatch for region={region_id}, fov={fov}: "
+                f"got={group_path}, expected={expected_group_path}"
             )
 
-            # Verify ZarrWriterInfo uses the same path
+            # Writer returns ARRAY path (group + /0)
             zarr_info = ZarrWriterInfo(
                 base_path=base_path,
                 t_size=1,
@@ -1976,9 +2006,9 @@ class TestZarrPathConsistency:
                 use_6d_fov=False,
             )
             writer_path = zarr_info.get_output_path(region_id, fov)
-            assert writer_path == util_path, (
-                f"Writer path doesn't match utility for region={region_id}, fov={fov}: "
-                f"writer={writer_path}, util={util_path}"
+            assert writer_path == expected_array_path, (
+                f"Writer path mismatch for region={region_id}, fov={fov}: "
+                f"writer={writer_path}, expected={expected_array_path}"
             )
 
     def test_6d_paths_use_shared_utility(self):

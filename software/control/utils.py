@@ -622,7 +622,10 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
 
 
 def build_hcs_zarr_fov_path(base_path: str, well_id: str, fov: int) -> str:
-    """Build path for HCS (wellplate) zarr FOV store.
+    """Build path for HCS (wellplate) zarr FOV group (OME-NGFF compliant).
+
+    Returns the field GROUP path per OME-NGFF spec. The image array is at
+    {group_path}/0 (resolution level 0).
 
     Args:
         base_path: Base experiment path (e.g., /data/experiment_001)
@@ -630,10 +633,10 @@ def build_hcs_zarr_fov_path(base_path: str, well_id: str, fov: int) -> str:
         fov: FOV index within the well
 
     Returns:
-        Path to zarr store: {base_path}/plate.ome.zarr/{row}/{col}/{fov}/0
+        Path to zarr group: {base_path}/plate.ome.zarr/{row}/{col}/{fov}
     """
     row_letter, col_num = parse_well_id(well_id)
-    return os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
+    return os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov))
 
 
 def build_per_fov_zarr_path(base_path: str, region_id: str, fov: int) -> str:
