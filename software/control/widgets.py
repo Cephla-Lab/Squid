@@ -901,9 +901,35 @@ class PreferencesDialog(QDialog):
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
-        # Show/hide zarr compression based on file saving format selection
-        self._update_zarr_compression_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_compression_visibility)
+        # Zarr Chunk Mode (only visible when ZARR_V3 is selected)
+        self.zarr_chunk_mode_combo = QComboBox()
+        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.setToolTip(
+            "full_frame: Each chunk is a full image plane (simplest, default)\n"
+            "tiled_512: 512x512 pixel chunks for tiled visualization\n"
+            "tiled_256: 256x256 pixel chunks for fine-grained streaming"
+        )
+        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
+        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_label = QLabel("Zarr Chunk Mode:")
+        layout.addRow(self.zarr_chunk_mode_label, self.zarr_chunk_mode_combo)
+
+        # Zarr 6D FOV Dimension (only visible when ZARR_V3 is selected)
+        self.zarr_6d_fov_checkbox = QCheckBox()
+        self.zarr_6d_fov_checkbox.setToolTip(
+            "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
+            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
+            "all FOVs together. When disabled (default), creates separate 5D\n"
+            "OME-NGFF compliant zarr files per FOV."
+        )
+        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
+        self.zarr_6d_fov_label = QLabel("Use 6D FOV Dimension:")
+        layout.addRow(self.zarr_6d_fov_label, self.zarr_6d_fov_checkbox)
+
+        # Show/hide zarr options based on file saving format selection
+        self._update_zarr_options_visibility()
+        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1558,11 +1584,15 @@ class PreferencesDialog(QDialog):
             else:
                 QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
-    def _update_zarr_compression_visibility(self):
-        """Show/hide zarr compression options based on file saving format."""
+    def _update_zarr_options_visibility(self):
+        """Show/hide zarr options based on file saving format."""
         is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
+        self.zarr_chunk_mode_label.setVisible(is_zarr)
+        self.zarr_chunk_mode_combo.setVisible(is_zarr)
+        self.zarr_6d_fov_label.setVisible(is_zarr)
+        self.zarr_6d_fov_checkbox.setVisible(is_zarr)
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -1577,6 +1607,10 @@ class PreferencesDialog(QDialog):
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
+        self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
+        self.config.set(
+            "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
+        )
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
@@ -1751,6 +1785,14 @@ class PreferencesDialog(QDialog):
         control._def.ZARR_COMPRESSION = control._def.ZarrCompression.convert_to_enum(
             self.zarr_compression_combo.currentText()
         )
+
+        # Zarr chunk mode
+        control._def.ZARR_CHUNK_MODE = control._def.ZarrChunkMode.convert_to_enum(
+            self.zarr_chunk_mode_combo.currentText()
+        )
+
+        # Zarr 6D FOV dimension
+        control._def.ZARR_USE_6D_FOV_DIMENSION = self.zarr_6d_fov_checkbox.isChecked()
 
         # Default saving path
         control._def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
