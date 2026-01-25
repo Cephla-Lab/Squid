@@ -195,7 +195,7 @@ def simulated_zarr_write(
     Args:
         image: Image array for this frame
         stack_key: Unique identifier for this dataset (e.g., output_path)
-        shape: Full 5D dataset shape (T, C, Z, Y, X)
+        shape: Dataset shape - 5D (T, C, Z, Y, X) or 6D (FOV, T, C, Z, Y, X)
         time_point: Time point index
         z_index: Z slice index
         channel_index: Channel index
@@ -207,7 +207,13 @@ def simulated_zarr_write(
     is_first_frame = False
     with _simulated_zarr_lock:
         if stack_key not in _simulated_zarr_stacks:
-            expected_count = shape[0] * shape[1] * shape[2]  # T * C * Z
+            # Calculate expected frame count based on T * C * Z
+            if len(shape) == 5:
+                expected_count = shape[0] * shape[1] * shape[2]  # T * C * Z
+            elif len(shape) == 6:
+                expected_count = shape[1] * shape[2] * shape[3]  # T * C * Z (skip FOV dim)
+            else:
+                raise ValueError(f"Unexpected shape dimensionality: {len(shape)}")
             _simulated_zarr_stacks[stack_key] = {
                 "shape": shape,
                 "written_frames": set(),
