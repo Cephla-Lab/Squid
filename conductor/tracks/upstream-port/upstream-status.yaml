@@ -621,6 +621,6 @@ commits:
   bf30b5c9:
     title: 'fix: XLight filter slider serial communication and add getter method (#472)'
     status: ported
-    ported_in: 907376ca
+    ported_in: 6eda4bdc
     ported_date: '2026-01-24'
     notes: Fixed write_and_check retry logic, set_filter_slider expected response (V->P), added get_filter_slider method
