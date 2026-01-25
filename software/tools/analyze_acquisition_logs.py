@@ -29,7 +29,8 @@ class AcquisitionTiming:
     num_fovs: int = 0
     num_regions: int = 0
     num_timepoints: int = 0
-    image_size: Optional[Tuple[int, int]] = None
+    image_size: Optional[Tuple[int, int]] = None  # (height, width)
+    bytes_per_pixel: int = 2  # Default to uint16
     file_format: str = "unknown"
     compression: str = "unknown"
 
@@ -42,6 +43,27 @@ class AcquisitionTiming:
     end_memory_mb: Optional[float] = None
 
     @property
+    def image_size_bytes(self) -> Optional[int]:
+        """Size of a single image in bytes."""
+        if self.image_size:
+            return self.image_size[0] * self.image_size[1] * self.bytes_per_pixel
+        return None
+
+    @property
+    def total_data_mb(self) -> Optional[float]:
+        """Total raw data size in MB."""
+        if self.image_size_bytes and self.num_images > 0:
+            return (self.image_size_bytes * self.num_images) / (1024 * 1024)
+        return None
+
+    @property
+    def throughput_mb_s(self) -> Optional[float]:
+        """Throughput in MB/s (raw data, not compressed)."""
+        if self.total_data_mb and self.total_acquisition_time_s and self.total_acquisition_time_s > 0:
+            return self.total_data_mb / self.total_acquisition_time_s
+        return None
+
+    @property
     def images_per_second(self) -> Optional[float]:
         if self.total_acquisition_time_s and self.total_acquisition_time_s > 0:
             return self.num_images / self.total_acquisition_time_s
@@ -52,6 +74,27 @@ class AcquisitionTiming:
         if self.num_images > 0 and self.total_acquisition_time_s:
             return (self.total_acquisition_time_s / self.num_images) * 1000
         return None
+
+
+def _dtype_to_bytes(dtype_str: str) -> int:
+    """Convert dtype string to bytes per pixel."""
+    dtype_bytes = {
+        "uint8": 1,
+        "int8": 1,
+        "uint16": 2,
+        "int16": 2,
+        "uint32": 4,
+        "int32": 4,
+        "float32": 4,
+        "uint64": 8,
+        "int64": 8,
+        "float64": 8,
+    }
+    # Handle numpy dtype strings like "dtype('uint16')"
+    for key, value in dtype_bytes.items():
+        if key in dtype_str.lower():
+            return value
+    return 2  # Default to uint16
 
 
 def parse_acquisition_log(log_path: str) -> AcquisitionTiming:
@@ -104,6 +147,18 @@ def parse_acquisition_log(log_path: str) -> AcquisitionTiming:
         timing.file_format = "individual_tiff"
     else:
         timing.file_format = "unknown"
+
+    # Try to extract image dimensions from log
+    # Pattern: "image shape: (2048, 2048)" or "WIDTH=2048, HEIGHT=2048" or similar
+    match = re.search(r"image shape:\s*\((\d+),\s*(\d+)\)", content)
+    if match:
+        timing.image_size = (int(match.group(1)), int(match.group(2)))
+    else:
+        # Try WIDTH/HEIGHT pattern
+        width_match = re.search(r"WIDTH[=:\s]+(\d+)", content, re.IGNORECASE)
+        height_match = re.search(r"HEIGHT[=:\s]+(\d+)", content, re.IGNORECASE)
+        if width_match and height_match:
+            timing.image_size = (int(height_match.group(1)), int(width_match.group(1)))
 
     # Parse timer statistics from the summary block
     # Pattern: "            _image_callback: (N=144, total=1.1383 [s]): mean=0.0079 [s], ..."
@@ -180,6 +235,13 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
             if "_squid" in zattrs:
                 timing.compression = zattrs["_squid"].get("compression", "unknown")
                 timing.file_format = "zarr_v3"
+                # Extract image size from shape (last two dims are Y, X)
+                shape = zattrs["_squid"].get("shape", [])
+                if len(shape) >= 2:
+                    timing.image_size = (shape[-2], shape[-1])
+                # Extract dtype for bytes_per_pixel
+                dtype_str = zattrs["_squid"].get("dtype", "uint16")
+                timing.bytes_per_pixel = _dtype_to_bytes(dtype_str)
                 break
         except (json.JSONDecodeError, IOError):
             pass
@@ -200,6 +262,13 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
                 if "_squid" in attrs:
                     timing.compression = attrs["_squid"].get("compression", "unknown")
                     timing.file_format = "zarr_v3"
+                    # Extract image size from shape (last two dims are Y, X)
+                    shape = attrs["_squid"].get("shape", [])
+                    if len(shape) >= 2:
+                        timing.image_size = (shape[-2], shape[-1])
+                    # Extract dtype for bytes_per_pixel
+                    dtype_str = attrs["_squid"].get("dtype", "uint16")
+                    timing.bytes_per_pixel = _dtype_to_bytes(dtype_str)
                     break
             except (json.JSONDecodeError, IOError):
                 pass
@@ -219,6 +288,10 @@ def print_timing_report(timing: AcquisitionTiming, verbose: bool = False) -> Non
 
     print(f"\n--- Summary ---")
     print(f"  Images captured: {timing.num_images}")
+    if timing.image_size:
+        print(f"  Image size: {timing.image_size[1]} x {timing.image_size[0]} ({timing.bytes_per_pixel * 8}-bit)")
+    if timing.total_data_mb:
+        print(f"  Total raw data: {timing.total_data_mb:.1f} MB")
     print(f"  FOVs: {timing.num_fovs}")
     print(f"  Regions: {timing.num_regions}")
 
@@ -234,6 +307,8 @@ def print_timing_report(timing: AcquisitionTiming, verbose: bool = False) -> Non
             print(f"\n--- Throughput ---")
             print(f"  Images/second: {timing.images_per_second:.2f}")
             print(f"  Avg time/image: {timing.avg_time_per_image_ms:.2f} ms")
+            if timing.throughput_mb_s:
+                print(f"  Data rate: {timing.throughput_mb_s:.1f} MB/s (raw)")
 
     if timing.peak_memory_mb:
         print(f"\n--- Memory ---")
@@ -256,23 +331,26 @@ def print_timing_report(timing: AcquisitionTiming, verbose: bool = False) -> Non
 
 def compare_timings(timings: List[AcquisitionTiming]) -> None:
     """Compare multiple acquisition timings."""
-    print(f"\n{'=' * 80}")
+    print(f"\n{'=' * 90}")
     print(f"ACQUISITION COMPARISON")
-    print(f"{'=' * 80}")
+    print(f"{'=' * 90}")
 
     # Header
-    print(f"\n{'Format':<20} {'Compression':<12} {'Images':<8} {'Time (s)':<12} {'Img/s':<10} {'ms/img':<10}")
-    print("-" * 80)
+    print(f"\n{'Format':<15} {'Compression':<10} {'Images':<7} {'Time (s)':<10} {'Img/s':<8} {'MB/s':<8} {'ms/img':<8}")
+    print("-" * 90)
 
     for t in timings:
-        format_str = t.file_format[:18]
-        comp_str = t.compression[:10] if t.compression != "unknown" else "-"
+        format_str = t.file_format[:13]
+        comp_str = t.compression[:8] if t.compression != "unknown" else "-"
         time_str = f"{t.total_acquisition_time_s:.2f}" if t.total_acquisition_time_s else "-"
         ips_str = f"{t.images_per_second:.2f}" if t.images_per_second else "-"
+        mbs_str = f"{t.throughput_mb_s:.1f}" if t.throughput_mb_s else "-"
         tpi_str = f"{t.avg_time_per_image_ms:.2f}" if t.avg_time_per_image_ms else "-"
-        print(f"{format_str:<20} {comp_str:<12} {t.num_images:<8} {time_str:<12} {ips_str:<10} {tpi_str:<10}")
+        print(
+            f"{format_str:<15} {comp_str:<10} {t.num_images:<7} {time_str:<10} {ips_str:<8} {mbs_str:<8} {tpi_str:<8}"
+        )
 
-    print("-" * 80)
+    print("-" * 90)
 
     # Calculate speedup if we have a baseline
     if len(timings) >= 2 and all(t.total_acquisition_time_s for t in timings):
@@ -282,7 +360,7 @@ def compare_timings(timings: List[AcquisitionTiming]) -> None:
             speedup = baseline.total_acquisition_time_s / t.total_acquisition_time_s
             print(f"  {t.file_format} ({t.compression}): {speedup:.2f}x")
 
-    print(f"{'=' * 80}\n")
+    print(f"{'=' * 90}\n")
 
 
 def main():
