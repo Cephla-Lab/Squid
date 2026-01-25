@@ -157,9 +157,9 @@ def _get_shard_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
     Returns:
         Shard shape as (T, C, Z, Y, X) for 5D or (FOV, T, C, Z, Y, X) for 6D
     """
-    # FAST mode: skip sharding for maximum write speed
+    # NONE/FAST mode: skip sharding for maximum write speed
     # Each chunk is its own file, eliminating shard coordination overhead
-    if config.compression == ZarrCompression.FAST:
+    if config.compression in (ZarrCompression.NONE, ZarrCompression.FAST):
         return _get_chunk_shape(config)
 
     # BALANCED/BEST: use per-z-level sharding for better file organization
@@ -169,16 +169,18 @@ def _get_shard_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
         return (1, 1, config.c_size, 1, config.y_size, config.x_size)
 
 
-def _get_compression_codec(compression: ZarrCompression) -> Dict[str, Any]:
+def _get_compression_codec(compression: ZarrCompression) -> Optional[Dict[str, Any]]:
     """Get blosc codec configuration for compression preset.
 
     Args:
         compression: Compression preset enum
 
     Returns:
-        Codec configuration dict for TensorStore
+        Codec configuration dict for TensorStore, or None for no compression
     """
-    if compression == ZarrCompression.FAST:
+    if compression == ZarrCompression.NONE:
+        return None
+    elif compression == ZarrCompression.FAST:
         # LZ4 with minimal compression level and byte shuffle (faster than bitshuffle)
         # for maximum write throughput at ~800-1200 MB/s
         return {
@@ -320,17 +322,21 @@ class ZarrWriterManager:
         # Determine if we need sharding (when chunk != shard)
         use_sharding = chunk_shape != shard_shape
 
+        # Build inner codec chain (with or without compression)
+        inner_codecs = [
+            {"name": "transpose", "configuration": {"order": transpose_order}},
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ]
+        if compression_codec is not None:
+            inner_codecs.append(compression_codec)
+
         if use_sharding:
             codecs = [
                 {
                     "name": "sharding_indexed",
                     "configuration": {
                         "chunk_shape": list(chunk_shape),
-                        "codecs": [
-                            {"name": "transpose", "configuration": {"order": transpose_order}},
-                            {"name": "bytes", "configuration": {"endian": "little"}},
-                            compression_codec,
-                        ],
+                        "codecs": inner_codecs,
                         "index_codecs": [
                             {"name": "bytes", "configuration": {"endian": "little"}},
                             {"name": "crc32c"},
@@ -340,11 +346,7 @@ class ZarrWriterManager:
             ]
             chunk_config = list(shard_shape)
         else:
-            codecs = [
-                {"name": "transpose", "configuration": {"order": transpose_order}},
-                {"name": "bytes", "configuration": {"endian": "little"}},
-                compression_codec,
-            ]
+            codecs = inner_codecs
             chunk_config = list(chunk_shape)
 
         spec = {
@@ -791,17 +793,21 @@ class SyncZarrWriter:
         # Determine if we need sharding (when chunk != shard)
         use_sharding = chunk_shape != shard_shape
 
+        # Build inner codec chain (with or without compression)
+        inner_codecs = [
+            {"name": "transpose", "configuration": {"order": transpose_order}},
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ]
+        if compression_codec is not None:
+            inner_codecs.append(compression_codec)
+
         if use_sharding:
             codecs = [
                 {
                     "name": "sharding_indexed",
                     "configuration": {
                         "chunk_shape": list(chunk_shape),
-                        "codecs": [
-                            {"name": "transpose", "configuration": {"order": transpose_order}},
-                            {"name": "bytes", "configuration": {"endian": "little"}},
-                            compression_codec,
-                        ],
+                        "codecs": inner_codecs,
                         "index_codecs": [
                             {"name": "bytes", "configuration": {"endian": "little"}},
                             {"name": "crc32c"},
@@ -811,11 +817,7 @@ class SyncZarrWriter:
             ]
             chunk_config = list(shard_shape)
         else:
-            codecs = [
-                {"name": "transpose", "configuration": {"order": transpose_order}},
-                {"name": "bytes", "configuration": {"endian": "little"}},
-                compression_codec,
-            ]
+            codecs = inner_codecs
             chunk_config = list(chunk_shape)
 
         spec = {

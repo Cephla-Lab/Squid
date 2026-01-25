@@ -346,11 +346,13 @@ class ZarrChunkMode(Enum):
 class ZarrCompression(Enum):
     """Zarr compression presets optimized for different use cases.
 
+    NONE: No compression, maximum write speed (~2x faster than TIFF).
     FAST: blosc-lz4, ~1000 MB/s encode, ~2x compression ratio. Safe for 10-20 fps.
     BALANCED: blosc-zstd level 3, ~500 MB/s encode, ~3-4x ratio.
     BEST: blosc-zstd level 9, slowest but best compression ratio.
     """
 
+    NONE = "none"
     FAST = "fast"
     BALANCED = "balanced"
     BEST = "best"
@@ -363,7 +365,7 @@ class ZarrCompression(Enum):
         try:
             return ZarrCompression(option.lower())
         except ValueError:
-            raise ValueError(f"Invalid zarr compression: '{option}'. Expected 'fast', 'balanced', or 'best'.")
+            raise ValueError(f"Invalid zarr compression: '{option}'. Expected 'none', 'fast', 'balanced', or 'best'.")
 
 
 class FocusMeasureOperator(Enum):

@@ -890,8 +890,9 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
         self.zarr_compression_combo.setToolTip(
+            "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"

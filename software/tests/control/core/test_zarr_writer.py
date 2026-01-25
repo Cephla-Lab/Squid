@@ -214,6 +214,30 @@ class TestChunkShapeCalculation:
 class TestCompressionCodecs:
     """Tests for compression codec configuration."""
 
+    def test_none_compression(self):
+        """Test that NONE compression returns None (no codec)."""
+        from control.core.zarr_writer import _get_compression_codec
+
+        codec = _get_compression_codec(ZarrCompression.NONE)
+        assert codec is None
+
+    def test_none_compression_no_sharding(self):
+        """Test that NONE compression skips sharding for maximum speed."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, _get_shard_shape, _get_chunk_shape
+
+        config = ZarrAcquisitionConfig(
+            output_path="/tmp/test.zarr",
+            shape=(2, 4, 10, 2048, 2048),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            compression=ZarrCompression.NONE,
+        )
+
+        chunk_shape = _get_chunk_shape(config)
+        shard_shape = _get_shard_shape(config)
+        # NONE mode: shard_shape == chunk_shape (no internal sharding)
+        assert shard_shape == chunk_shape
+
     def test_fast_compression(self):
         from control.core.zarr_writer import _get_compression_codec
 
