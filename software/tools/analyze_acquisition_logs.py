@@ -187,6 +187,33 @@ def parse_acquisition_log(log_path: str) -> AcquisitionTiming:
     return timing
 
 
+def _extract_squid_metadata(squid_attrs: dict, timing: AcquisitionTiming) -> bool:
+    """Extract _squid metadata into timing object.
+
+    Args:
+        squid_attrs: Dict that may contain "_squid" key
+        timing: AcquisitionTiming object to populate
+
+    Returns:
+        True if _squid metadata was found and extracted
+    """
+    if "_squid" not in squid_attrs:
+        return False
+
+    squid = squid_attrs["_squid"]
+    timing.compression = squid.get("compression", "unknown")
+    timing.file_format = "zarr_v3"
+
+    # Extract image size from shape (last two dims are Y, X)
+    shape = squid.get("shape", [])
+    if len(shape) >= 2:
+        timing.image_size = (shape[-2], shape[-1])
+
+    # Extract dtype for bytes_per_pixel
+    timing.bytes_per_pixel = _dtype_to_bytes(squid.get("dtype", "uint16"))
+    return True
+
+
 def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]:
     """Parse acquisition folder to get timing and metadata.
 
@@ -232,16 +259,7 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
         try:
             with open(zattr_path, "r") as f:
                 zattrs = json.load(f)
-            if "_squid" in zattrs:
-                timing.compression = zattrs["_squid"].get("compression", "unknown")
-                timing.file_format = "zarr_v3"
-                # Extract image size from shape (last two dims are Y, X)
-                shape = zattrs["_squid"].get("shape", [])
-                if len(shape) >= 2:
-                    timing.image_size = (shape[-2], shape[-1])
-                # Extract dtype for bytes_per_pixel
-                dtype_str = zattrs["_squid"].get("dtype", "uint16")
-                timing.bytes_per_pixel = _dtype_to_bytes(dtype_str)
+            if _extract_squid_metadata(zattrs, timing):
                 break
         except (json.JSONDecodeError, IOError):
             pass
@@ -258,17 +276,7 @@ def parse_acquisition_folder(folder_path: str) -> Tuple[AcquisitionTiming, dict]
             try:
                 with open(zarr_json_path, "r") as f:
                     zarr_json = json.load(f)
-                attrs = zarr_json.get("attributes", {})
-                if "_squid" in attrs:
-                    timing.compression = attrs["_squid"].get("compression", "unknown")
-                    timing.file_format = "zarr_v3"
-                    # Extract image size from shape (last two dims are Y, X)
-                    shape = attrs["_squid"].get("shape", [])
-                    if len(shape) >= 2:
-                        timing.image_size = (shape[-2], shape[-1])
-                    # Extract dtype for bytes_per_pixel
-                    dtype_str = attrs["_squid"].get("dtype", "uint16")
-                    timing.bytes_per_pixel = _dtype_to_bytes(dtype_str)
+                if _extract_squid_metadata(zarr_json.get("attributes", {}), timing):
                     break
             except (json.JSONDecodeError, IOError):
                 pass

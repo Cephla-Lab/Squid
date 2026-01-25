@@ -121,28 +121,19 @@ def _get_chunk_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
     Returns:
         Chunk shape as (T, C, Z, Y, X) for 5D or (FOV, T, C, Z, Y, X) for 6D
     """
-    if config.chunk_mode == ZarrChunkMode.FULL_FRAME:
-        # Each chunk is a full image plane
-        if config.ndim == 5:
-            return (1, 1, 1, config.y_size, config.x_size)
-        else:  # 6D: (FOV, T, C, Z, Y, X)
-            return (1, 1, 1, 1, config.y_size, config.x_size)
-    elif config.chunk_mode == ZarrChunkMode.TILED_512:
-        if config.ndim == 5:
-            return (1, 1, 1, 512, 512)
-        else:
-            return (1, 1, 1, 1, 512, 512)
+    # Determine Y, X dimensions based on chunk mode
+    if config.chunk_mode == ZarrChunkMode.TILED_512:
+        y, x = 512, 512
     elif config.chunk_mode == ZarrChunkMode.TILED_256:
-        if config.ndim == 5:
-            return (1, 1, 1, 256, 256)
-        else:
-            return (1, 1, 1, 1, 256, 256)
+        y, x = 256, 256
     else:
-        # Default to full frame
-        if config.ndim == 5:
-            return (1, 1, 1, config.y_size, config.x_size)
-        else:
-            return (1, 1, 1, 1, config.y_size, config.x_size)
+        # FULL_FRAME or default: use full image dimensions
+        y, x = config.y_size, config.x_size
+
+    # Return shape based on dimensionality
+    if config.ndim == 5:
+        return (1, 1, 1, y, x)
+    return (1, 1, 1, 1, y, x)  # 6D: (FOV, T, C, Z, Y, X)
 
 
 def _get_shard_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
@@ -252,6 +243,29 @@ def _dtype_to_zarr(dtype: np.dtype) -> str:
 # HCS Plate Metadata Functions
 
 
+def _write_group_metadata(path: str, ome_metadata: dict, description: str) -> None:
+    """Write OME-NGFF group metadata to zarr.json.
+
+    Args:
+        path: Directory path for the group
+        ome_metadata: Metadata to store under "ome" key in attributes
+        description: Description for logging (e.g., "plate", "well")
+
+    Raises:
+        RuntimeError: If metadata files cannot be written
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": ome_metadata}
+        zarr_json_path = os.path.join(path, "zarr.json")
+        with open(zarr_json_path, "w") as f:
+            json.dump(zarr_json, f, indent=2)
+        log.debug(f"Wrote {description} metadata to {zarr_json_path}")
+    except OSError as e:
+        log.error(f"Failed to write {description} metadata to {path}: {e}")
+        raise RuntimeError(f"Failed to write {description} metadata: {e}") from e
+
+
 def write_plate_metadata(
     plate_path: str,
     rows: List[str],
@@ -273,16 +287,9 @@ def write_plate_metadata(
     Raises:
         RuntimeError: If metadata files cannot be written
     """
-    # Build well paths
-    well_entries = []
-    for row, col in wells:
-        well_entries.append(
-            {
-                "path": f"{row}/{col}",
-                "rowIndex": rows.index(row),
-                "columnIndex": cols.index(col),
-            }
-        )
+    well_entries = [
+        {"path": f"{row}/{col}", "rowIndex": rows.index(row), "columnIndex": cols.index(col)} for row, col in wells
+    ]
 
     plate_metadata = {
         "ome": {
@@ -297,19 +304,7 @@ def write_plate_metadata(
         }
     }
 
-    try:
-        os.makedirs(plate_path, exist_ok=True)
-
-        # Write zarr.json for v3 with OME metadata in attributes (strict Zarr v3 compliance)
-        zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": plate_metadata}
-        zarr_json_path = os.path.join(plate_path, "zarr.json")
-        with open(zarr_json_path, "w") as f:
-            json.dump(zarr_json, f, indent=2)
-
-        log.debug(f"Wrote plate metadata to {zarr_json_path}")
-    except OSError as e:
-        log.error(f"Failed to write plate metadata to {plate_path}: {e}")
-        raise RuntimeError(f"Failed to write plate metadata: {e}") from e
+    _write_group_metadata(plate_path, plate_metadata, "plate")
 
 
 def write_well_metadata(
@@ -337,19 +332,7 @@ def write_well_metadata(
         }
     }
 
-    try:
-        os.makedirs(well_path, exist_ok=True)
-
-        # Write zarr.json for v3 with OME metadata in attributes (strict Zarr v3 compliance)
-        zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": well_metadata}
-        zarr_json_path = os.path.join(well_path, "zarr.json")
-        with open(zarr_json_path, "w") as f:
-            json.dump(zarr_json, f, indent=2)
-
-        log.debug(f"Wrote well metadata to {zarr_json_path}")
-    except OSError as e:
-        log.error(f"Failed to write well metadata to {well_path}: {e}")
-        raise RuntimeError(f"Failed to write well metadata: {e}") from e
+    _write_group_metadata(well_path, well_metadata, "well")
 
 
 # Synchronous wrapper for use in job processing
@@ -645,13 +628,13 @@ class ZarrWriter:
 
         config = self._config
 
-        # Validate indices
-        if t < 0 or t >= config.shape[0 if config.ndim == 5 else 1]:
-            raise ValueError(f"Time index {t} out of range")
-        if c < 0 or c >= config.shape[1 if config.ndim == 5 else 2]:
-            raise ValueError(f"Channel index {c} out of range")
-        if z < 0 or z >= config.shape[2 if config.ndim == 5 else 3]:
-            raise ValueError(f"Z index {z} out of range")
+        # Validate indices using config properties
+        if not (0 <= t < config.t_size):
+            raise ValueError(f"Time index {t} out of range [0, {config.t_size})")
+        if not (0 <= c < config.c_size):
+            raise ValueError(f"Channel index {c} out of range [0, {config.c_size})")
+        if not (0 <= z < config.z_size):
+            raise ValueError(f"Z index {z} out of range [0, {config.z_size})")
 
         if config.ndim == 6:
             if fov is None:
