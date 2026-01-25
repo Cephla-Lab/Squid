@@ -156,3 +156,80 @@ def simulated_ome_tiff_write(
         log.debug(f"Completed simulated OME stack: {stack_key}")
 
     return bytes_written
+
+
+# Track simulated zarr datasets (keyed by output path)
+_simulated_zarr_stacks: Dict[str, Dict] = {}
+
+
+def simulated_zarr_write(
+    image: np.ndarray,
+    stack_key: str,
+    shape: tuple,
+    time_point: int,
+    z_index: int,
+    channel_index: int,
+) -> int:
+    """Simulate Zarr v3 write with compression simulation.
+
+    Tracks dataset state to simulate:
+    - Initialization overhead on first frame
+    - Per-frame blosc compression
+    - Finalization overhead when complete
+
+    Args:
+        image: Image array for this frame
+        stack_key: Unique identifier for this dataset (e.g., output_path)
+        shape: Full 5D dataset shape (T, C, Z, Y, X)
+        time_point: Time point index
+        z_index: Z slice index
+        channel_index: Channel index
+
+    Returns:
+        Bytes "written" for this operation
+    """
+    # First frame for this dataset - simulate initialization
+    if stack_key not in _simulated_zarr_stacks:
+        expected_count = shape[0] * shape[1] * shape[2]  # T * C * Z
+        _simulated_zarr_stacks[stack_key] = {
+            "shape": shape,
+            "written_frames": set(),
+            "expected_count": expected_count,
+        }
+        # Simulate metadata/zarr.json write overhead (~2KB)
+        throttle_for_speed(2048, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+        log.debug(f"Initialized simulated zarr dataset: {stack_key}, expected frames: {expected_count}")
+
+    # Simulate frame write with blosc compression
+    # Blosc typically achieves 2-4x compression on microscopy data
+    raw_bytes = image.nbytes
+    if control._def.SIMULATED_DISK_IO_COMPRESSION:
+        # Simulate blosc compression overhead
+        # LZ4: ~1000 MB/s, ZSTD: ~500 MB/s
+        # For simulation, we just use the raw bytes with a compression factor
+        compression_ratio = 3.0  # Typical for blosc-lz4 on uint16 microscopy
+        compressed_bytes = int(raw_bytes / compression_ratio)
+        bytes_written = compressed_bytes
+    else:
+        bytes_written = raw_bytes
+
+    throttle_for_speed(bytes_written, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+
+    # Track this frame
+    frame_key = f"{time_point}-{channel_index}-{z_index}"
+    stack_info = _simulated_zarr_stacks[stack_key]
+    stack_info["written_frames"].add(frame_key)
+
+    log.debug(
+        f"Simulated zarr frame write: {bytes_written} bytes (raw: {raw_bytes}), "
+        f"frame={frame_key}, progress={len(stack_info['written_frames'])}/{stack_info['expected_count']}"
+    )
+
+    # Check completion and cleanup
+    if len(stack_info["written_frames"]) >= stack_info["expected_count"]:
+        # Dataset complete - simulate finalization overhead (~4KB for .zattrs update)
+        throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+        del _simulated_zarr_stacks[stack_key]
+        log.debug(f"Completed simulated zarr dataset: {stack_key}")
+
+    return bytes_written
