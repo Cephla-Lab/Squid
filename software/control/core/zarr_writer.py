@@ -603,7 +603,7 @@ class ZarrWriter:
             with open(zarr_json_path, "w") as f:
                 json.dump(zarr_json, f, indent=2)
             log.debug(f"Wrote OME-NGFF metadata to {zarr_json_path}")
-        except OSError as e:
+        except (OSError, json.JSONDecodeError) as e:
             log.error(f"Failed to write zarr metadata to {zarr_json_path}: {e}")
             raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 

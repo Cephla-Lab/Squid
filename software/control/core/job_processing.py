@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Tuple, TypeVar, Union
+from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -450,6 +450,38 @@ class ZarrWriterInfo:
         """Get total FOV count for a region (for 6D shape calculation)."""
         return self.region_fov_counts.get(str(region_id), 1)
 
+    def get_plate_path(self) -> str:
+        """Get path to plate.ome.zarr directory (HCS mode only)."""
+        return os.path.join(self.base_path, "plate.ome.zarr")
+
+    def get_well_path(self, well_id: str) -> str:
+        """Get path to well directory (HCS mode only)."""
+        row_letter, col_num = self._parse_well_id_parts(well_id)
+        return os.path.join(self.base_path, "plate.ome.zarr", row_letter, col_num)
+
+    def get_hcs_structure(self) -> Tuple[List[str], List[int], List[Tuple[str, int]]]:
+        """Extract HCS structure from region_fov_counts.
+
+        Returns:
+            Tuple of (rows, cols, wells) where:
+            - rows: sorted unique row letters (e.g., ["A", "B", "C"])
+            - cols: sorted unique column numbers (e.g., [1, 2, 3])
+            - wells: list of (row, col) tuples for all wells
+        """
+        rows_set = set()
+        cols_set = set()
+        wells = []
+
+        for well_id in self.region_fov_counts.keys():
+            row_letter, col_num = self._parse_well_id_parts(well_id)
+            rows_set.add(row_letter)
+            cols_set.add(int(col_num))
+            wells.append((row_letter, int(col_num)))
+
+        rows = sorted(rows_set)
+        cols = sorted(cols_set)
+        return rows, cols, wells
+
 
 @dataclass
 class SaveZarrJob(Job):
@@ -469,6 +501,10 @@ class SaveZarrJob(Job):
     # (e.g., ThreadPoolExecutor) - it will cause race conditions and data corruption.
     _zarr_writers: ClassVar[Dict[str, "ZarrWriter"]] = {}
 
+    # Track HCS metadata that has been written (plate path -> True, well path -> True)
+    _hcs_plate_written: ClassVar[Set[str]] = set()
+    _hcs_wells_written: ClassVar[Set[str]] = set()
+
     @classmethod
     def clear_writers(cls) -> None:
         """Clear all zarr writers, aborting any that are still active.
@@ -484,6 +520,8 @@ class SaveZarrJob(Job):
                 except Exception as e:
                     cls._log.warning(f"Error aborting writer during clear: {e}")
         cls._zarr_writers.clear()
+        cls._hcs_plate_written.clear()
+        cls._hcs_wells_written.clear()
 
     @classmethod
     def finalize_all_writers(cls) -> bool:
@@ -508,6 +546,38 @@ class SaveZarrJob(Job):
             cls._log.error(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
             return False
         return True
+
+    def _write_hcs_metadata_if_needed(self, region_id: str, fov: int) -> None:
+        """Write HCS plate and well metadata if not already written.
+
+        Called when a new writer is initialized for an HCS acquisition.
+        Uses class-level sets to track which plate/well metadata has been written.
+
+        Args:
+            region_id: Well ID (e.g., "A1", "B12")
+            fov: Field of view index
+        """
+        from control.core.zarr_writer import write_plate_metadata, write_well_metadata
+
+        info = self.zarr_writer_info
+
+        # Write plate metadata (once per acquisition)
+        plate_path = info.get_plate_path()
+        if plate_path not in self._hcs_plate_written:
+            rows, cols, wells = info.get_hcs_structure()
+            write_plate_metadata(plate_path, rows, cols, wells, plate_name="plate")
+            self._hcs_plate_written.add(plate_path)
+            self._log.info(f"Wrote HCS plate metadata: {len(wells)} wells")
+
+        # Write well metadata (once per well)
+        well_path = info.get_well_path(region_id)
+        if well_path not in self._hcs_wells_written:
+            # Get FOV count for this well
+            fov_count = info.get_fov_count(region_id)
+            fields = list(range(fov_count))
+            write_well_metadata(well_path, fields)
+            self._hcs_wells_written.add(well_path)
+            self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
     def run(self) -> bool:
         if self.zarr_writer_info is None:
@@ -642,6 +712,8 @@ class SaveZarrJob(Job):
             self._zarr_writers[writer_key] = writer
             if is_hcs:
                 mode_str = "HCS 5D"
+                # Write HCS plate and well metadata
+                self._write_hcs_metadata_if_needed(region_id, fov)
             elif is_6d:
                 mode_str = f"non-HCS 6D (fov_count={fov_count})"
             else:

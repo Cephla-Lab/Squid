@@ -1483,3 +1483,322 @@ class TestZarrWriterMetadataErrorHandling:
         with patch("builtins.open", side_effect=PermissionError("Permission denied")):
             with pytest.raises(RuntimeError, match="Failed to write zarr metadata"):
                 writer._write_zarr_metadata()
+
+
+class TestHCSWorkflowIntegration:
+    """Integration tests for full HCS (High Content Screening) workflow.
+
+    These tests verify the complete plate/well/FOV hierarchy is correctly
+    created when using SaveZarrJob with HCS mode enabled.
+    """
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for test outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_hcs_full_workflow(self, temp_dir):
+        """Test complete HCS workflow: multiple wells, FOVs, channels, z-levels.
+
+        Verifies:
+        1. Plate metadata is written with correct well references
+        2. Well metadata is written with correct field references
+        3. Data arrays exist and have correct shapes
+        4. Data can be read back correctly
+        """
+        import tensorstore as ts
+
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        # Configure a 2x2 well plate with 2 FOVs per well
+        wells = ["A1", "A2", "B1", "B2"]
+        fovs_per_well = 2
+        t_size, c_size, z_size = 2, 2, 3
+        image_shape = (32, 32)
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=t_size,
+            c_size=c_size,
+            z_size=z_size,
+            is_hcs=True,
+            region_fov_counts={well: fovs_per_well for well in wells},
+            channel_names=["DAPI", "GFP"],
+            channel_colors=["#0000FF", "#00FF00"],
+            pixel_size_um=0.5,
+        )
+
+        # Simulate acquisition: write frames for all wells/FOVs/t/c/z
+        for well_id in wells:
+            for fov in range(fovs_per_well):
+                for t in range(t_size):
+                    for c in range(c_size):
+                        for z in range(z_size):
+                            # Create unique image pattern for verification
+                            well_idx = wells.index(well_id)
+                            pattern_value = well_idx * 10000 + fov * 1000 + t * 100 + c * 10 + z
+                            image = np.ones(image_shape, dtype=np.uint16) * pattern_value
+
+                            capture_info = make_test_capture_info(
+                                region_id=well_id,
+                                fov=fov,
+                                z_index=z,
+                                config_idx=c,
+                                time_point=t,
+                            )
+
+                            job = SaveZarrJob(
+                                capture_info=capture_info,
+                                capture_image=JobImage(image_array=image),
+                            )
+                            job.zarr_writer_info = zarr_info
+                            job.run()
+
+        # Finalize all writers
+        success = SaveZarrJob.finalize_all_writers()
+        assert success, "Failed to finalize all zarr writers"
+
+        # Verify plate structure
+        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
+        assert os.path.exists(plate_path), "plate.ome.zarr should exist"
+
+        # Verify plate metadata
+        plate_zarr_json = os.path.join(plate_path, "zarr.json")
+        assert os.path.exists(plate_zarr_json), "plate zarr.json should exist"
+
+        with open(plate_zarr_json) as f:
+            plate_meta = json.load(f)
+
+        assert "attributes" in plate_meta
+        attrs = plate_meta["attributes"]
+        assert "ome" in attrs, "Plate metadata should have 'ome' namespace"
+        assert attrs["ome"]["version"] == "0.5"
+        assert "plate" in attrs["ome"]
+
+        plate_info = attrs["ome"]["plate"]
+        assert plate_info["version"] == "0.5"
+        assert len(plate_info["rows"]) == 2  # A, B
+        assert len(plate_info["columns"]) == 2  # 1, 2
+        assert len(plate_info["wells"]) == 4  # A1, A2, B1, B2
+
+        # Verify each well
+        for well_id in wells:
+            row = well_id[0]  # A or B
+            col = well_id[1:]  # 1 or 2
+
+            well_path = os.path.join(plate_path, row, col)
+            assert os.path.exists(well_path), f"Well {well_id} directory should exist"
+
+            # Verify well metadata
+            well_zarr_json = os.path.join(well_path, "zarr.json")
+            assert os.path.exists(well_zarr_json), f"Well {well_id} zarr.json should exist"
+
+            with open(well_zarr_json) as f:
+                well_meta = json.load(f)
+
+            assert "attributes" in well_meta
+            well_attrs = well_meta["attributes"]
+            assert "ome" in well_attrs, f"Well {well_id} should have 'ome' namespace"
+            assert well_attrs["ome"]["version"] == "0.5"
+            assert "well" in well_attrs["ome"]
+
+            well_info = well_attrs["ome"]["well"]
+            assert well_info["version"] == "0.5"
+            assert len(well_info["images"]) == fovs_per_well
+
+            # Verify each FOV data array
+            for fov in range(fovs_per_well):
+                fov_path = os.path.join(well_path, str(fov), "0")
+                assert os.path.exists(fov_path), f"FOV {fov} data path should exist"
+
+                # Read data back using tensorstore
+                spec = {
+                    "driver": "zarr3",
+                    "kvstore": {"driver": "file", "path": fov_path},
+                }
+                dataset = ts.open(spec).result()
+
+                # Verify shape: (T, C, Z, Y, X)
+                expected_shape = (t_size, c_size, z_size, *image_shape)
+                assert (
+                    dataset.shape == expected_shape
+                ), f"Well {well_id} FOV {fov} should have shape {expected_shape}, got {dataset.shape}"
+
+                # Verify data content for one frame
+                well_idx = wells.index(well_id)
+                expected_value = well_idx * 10000 + fov * 1000 + 0 * 100 + 0 * 10 + 0
+                read_data = dataset[0, 0, 0, :, :].read().result()
+                assert (
+                    read_data[0, 0] == expected_value
+                ), f"Well {well_id} FOV {fov} data mismatch: expected {expected_value}, got {read_data[0, 0]}"
+
+    def test_hcs_metadata_written_once(self, temp_dir):
+        """Test that plate/well metadata is written only once even with multiple FOVs."""
+        import logging
+
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+            region_fov_counts={"A1": 3},  # 3 FOVs in one well
+            channel_names=["DAPI"],
+            pixel_size_um=0.5,
+        )
+
+        # Track log messages to verify metadata is only written once
+        plate_writes = []
+        well_writes = []
+
+        original_info = SaveZarrJob._log.info
+
+        def tracking_info(msg, *args, **kwargs):
+            if "Wrote HCS plate metadata" in msg:
+                plate_writes.append(msg)
+            if "Wrote HCS well metadata" in msg:
+                well_writes.append(msg)
+            return original_info(msg, *args, **kwargs)
+
+        with patch.object(SaveZarrJob._log, "info", tracking_info):
+            # Write 3 FOVs for the same well
+            for fov in range(3):
+                image = np.ones((32, 32), dtype=np.uint16) * fov
+                capture_info = make_test_capture_info(region_id="A1", fov=fov)
+
+                job = SaveZarrJob(
+                    capture_info=capture_info,
+                    capture_image=JobImage(image_array=image),
+                )
+                job.zarr_writer_info = zarr_info
+                job.run()
+
+        SaveZarrJob.finalize_all_writers()
+
+        # Plate metadata should be written exactly once
+        assert len(plate_writes) == 1, f"Plate metadata should be written once, got {len(plate_writes)}"
+
+        # Well metadata should be written exactly once (even with 3 FOVs)
+        # The tracking set should have exactly one entry for this well
+        assert (
+            len(SaveZarrJob._hcs_wells_written) == 1
+        ), f"Well metadata should be tracked once, got {len(SaveZarrJob._hcs_wells_written)}"
+
+        # Verify the actual file exists
+        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
+        well_path = os.path.join(plate_path, "A", "1")
+        assert os.path.exists(os.path.join(well_path, "zarr.json"))
+
+        # Clean up tracking sets for next test
+        SaveZarrJob.clear_writers()
+
+    def test_hcs_single_well_single_fov(self, temp_dir):
+        """Test minimal HCS case: single well, single FOV."""
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+            region_fov_counts={"C3": 1},
+            channel_names=["BF"],
+            pixel_size_um=1.0,
+        )
+
+        image = np.ones((64, 64), dtype=np.uint16) * 42
+        capture_info = make_test_capture_info(region_id="C3", fov=0)
+
+        job = SaveZarrJob(
+            capture_info=capture_info,
+            capture_image=JobImage(image_array=image),
+        )
+        job.zarr_writer_info = zarr_info
+        job.run()
+
+        SaveZarrJob.finalize_all_writers()
+
+        # Verify structure
+        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
+        assert os.path.exists(plate_path)
+
+        # Verify plate has only C row and column 3
+        with open(os.path.join(plate_path, "zarr.json")) as f:
+            plate_meta = json.load(f)
+
+        plate_info = plate_meta["attributes"]["ome"]["plate"]
+        assert len(plate_info["rows"]) == 1
+        assert plate_info["rows"][0]["name"] == "C"
+        assert len(plate_info["columns"]) == 1
+        assert plate_info["columns"][0]["name"] == "3"
+        assert len(plate_info["wells"]) == 1
+
+        # Verify well exists
+        well_path = os.path.join(plate_path, "C", "3")
+        assert os.path.exists(well_path)
+
+        # Verify data
+        import tensorstore as ts
+
+        fov_path = os.path.join(well_path, "0", "0")
+        spec = {"driver": "zarr3", "kvstore": {"driver": "file", "path": fov_path}}
+        dataset = ts.open(spec).result()
+        assert dataset.shape == (1, 1, 1, 64, 64)
+
+    def test_hcs_multirow_well_ids(self, temp_dir):
+        """Test HCS with multi-character row IDs (e.g., AA1, AB2)."""
+        # Clear any state from previous tests
+        SaveZarrJob.clear_writers()
+
+        # 384-well plates can have rows like AA, AB, etc.
+        wells = ["A1", "AA1", "AB2"]
+
+        zarr_info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=1,
+            z_size=1,
+            is_hcs=True,
+            region_fov_counts={w: 1 for w in wells},
+            channel_names=["DAPI"],
+            pixel_size_um=0.5,
+        )
+
+        for well_id in wells:
+            image = np.ones((32, 32), dtype=np.uint16)
+            capture_info = make_test_capture_info(region_id=well_id, fov=0)
+
+            job = SaveZarrJob(
+                capture_info=capture_info,
+                capture_image=JobImage(image_array=image),
+            )
+            job.zarr_writer_info = zarr_info
+            job.run()
+
+        SaveZarrJob.finalize_all_writers()
+
+        # Verify plate structure
+        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
+
+        with open(os.path.join(plate_path, "zarr.json")) as f:
+            plate_meta = json.load(f)
+
+        plate_info = plate_meta["attributes"]["ome"]["plate"]
+
+        # Should have rows A, AA, AB
+        row_names = [r["name"] for r in plate_info["rows"]]
+        assert "A" in row_names
+        assert "AA" in row_names
+        assert "AB" in row_names
+
+        # Verify well directories exist
+        assert os.path.exists(os.path.join(plate_path, "A", "1"))
+        assert os.path.exists(os.path.join(plate_path, "AA", "1"))
+        assert os.path.exists(os.path.join(plate_path, "AB", "2"))
