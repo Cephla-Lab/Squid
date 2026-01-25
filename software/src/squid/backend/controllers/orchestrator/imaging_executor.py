@@ -15,6 +15,7 @@ import threading
 from typing import Optional, TYPE_CHECKING, List, Union
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.events import EventBus, handles, auto_subscribe, auto_unsubscribe
 from squid.core.events import AcquisitionFinished
 from squid.core.utils.cancel_token import CancelToken, CancellationError
@@ -73,7 +74,12 @@ class ImagingExecutor:
         self._event_bus = event_bus
         self._multipoint = multipoint_controller
         self._scan_coordinates = scan_coordinates
-        self._channel_config_manager = channel_config_manager
+        if channel_config_manager is not None:
+            self._channel_config_manager = channel_config_manager
+        else:
+            self._channel_config_manager = getattr(
+                multipoint_controller, "channelConfigurationManager", None
+            )
 
         # Synchronization for acquisition completion
         self._acquisition_complete = threading.Event()
@@ -145,6 +151,10 @@ class ImagingExecutor:
             # Set round index if supported
             if hasattr(self._multipoint, "set_current_round_index"):
                 self._multipoint.set_current_round_index(round_index)
+            if hasattr(self._multipoint, "set_start_fov_index"):
+                self._multipoint.set_start_fov_index(resume_fov_index)
+                if resume_fov_index > 0:
+                    _log.info(f"Set start FOV index to {resume_fov_index} for resume")
 
             # Configure z-stack
             direction_map = {
@@ -187,11 +197,6 @@ class ImagingExecutor:
             # Apply channel overrides
             self._apply_channel_overrides(imaging_config.channels)
 
-            # Set start FOV index for resume support
-            if resume_fov_index > 0 and hasattr(self._multipoint, "set_start_fov_index"):
-                self._multipoint.set_start_fov_index(resume_fov_index)
-                _log.info(f"Set start FOV index to {resume_fov_index} for resume")
-
             # Create output directory
             os.makedirs(os.path.join(output_path, experiment_id), exist_ok=True)
 
@@ -204,9 +209,10 @@ class ImagingExecutor:
             self._multipoint.run_acquisition(acquire_current_fov=False)
 
             # Wait for acquisition to complete, checking cancel token
+            wait_timeout_s = scale_duration(0.5, min_seconds=0.01)
             while not self._acquisition_complete.is_set():
                 cancel_token.check_point()  # Raises CancellationError if cancelled
-                self._acquisition_complete.wait(timeout=0.5)
+                self._acquisition_complete.wait(timeout=wait_timeout_s)
 
             if not self._acquisition_success:
                 _log.error(f"Imaging failed: {self._acquisition_error}")
@@ -262,7 +268,8 @@ class ImagingExecutor:
                     override_dict["analog_gain"] = ch.analog_gain
                 if ch.illumination_intensity is not None:
                     override_dict["illumination_intensity"] = ch.illumination_intensity
-                # Note: z_offset_um is stored but not currently applied
+                if "z_offset_um" in ch.model_fields_set:
+                    override_dict["z_offset_um"] = ch.z_offset_um
                 overrides.append(override_dict)
 
         if overrides:

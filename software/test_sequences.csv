@@ -1,0 +1,19 @@
+protocol,operation,solution,volume_ul,flow_rate_ul_per_min,incubation_time_s
+Wash,flow,wash_buffer,500,200,0
+Wash,flow,wash_buffer,500,200,0
+Wash,incubate,wash_buffer,0,0,30
+Hybridization Round 1,flow,probe_1,200,100,0
+Hybridization Round 1,incubate,probe_1,0,0,300
+Hybridization Round 1,flow,wash_buffer,500,200,0
+Hybridization Round 1,flow,wash_buffer,500,200,0
+Hybridization Round 2,flow,probe_2,200,100,0
+Hybridization Round 2,incubate,probe_2,0,0,300
+Hybridization Round 2,flow,wash_buffer,500,200,0
+Hybridization Round 2,flow,wash_buffer,500,200,0
+Imaging Prep,flow,imaging_buffer,300,150,0
+Imaging Prep,incubate,imaging_buffer,0,0,60
+Strip,flow,cleavage_buffer,400,200,0
+Strip,incubate,cleavage_buffer,0,0,180
+Strip,flow,rinse_buffer,500,200,0
+Strip,flow,rinse_buffer,500,200,0
+Strip,flow,rinse_buffer,500,200,0

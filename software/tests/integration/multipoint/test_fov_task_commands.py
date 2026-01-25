@@ -462,14 +462,13 @@ class TestFovEventIntegration:
         sim.set_channels(channels[:1])
 
         # Track events
-        started_events: List[FovTaskStarted] = []
-        sim.monitor.subscribe(FovTaskStarted, lambda e: started_events.append(e))
+        sim.monitor.subscribe(FovTaskStarted)
 
         # Run acquisition
         result = sim.run_and_wait(timeout_s=60.0)
         assert result.success
 
-        # Verify started events
+        started_events = sim.monitor.get_events(FovTaskStarted)
         assert len(started_events) >= 4, "Should have at least 4 FovTaskStarted events"
 
         # Verify event fields
@@ -487,14 +486,13 @@ class TestFovEventIntegration:
         sim.set_channels(channels[:1])
 
         # Track events
-        completed_events: List[FovTaskCompleted] = []
-        sim.monitor.subscribe(FovTaskCompleted, lambda e: completed_events.append(e))
+        sim.monitor.subscribe(FovTaskCompleted)
 
         # Run acquisition
         result = sim.run_and_wait(timeout_s=60.0)
         assert result.success
 
-        # Verify completed events
+        completed_events = sim.monitor.get_events(FovTaskCompleted)
         assert len(completed_events) >= 4, "Should have at least 4 FovTaskCompleted events"
 
         # Verify event fields
@@ -511,13 +509,13 @@ class TestFovEventIntegration:
         sim.set_channels(channels[:1])
 
         # Track events
-        started_events: List[FovTaskStarted] = []
-        sim.monitor.subscribe(FovTaskStarted, lambda e: started_events.append(e))
+        sim.monitor.subscribe(FovTaskStarted)
 
         # Run acquisition
         result = sim.run_and_wait(timeout_s=60.0)
         assert result.success
 
+        started_events = sim.monitor.get_events(FovTaskStarted)
         # Verify counts progress correctly
         for i, event in enumerate(started_events):
             # Completed count should increase

@@ -1,0 +1,14 @@
+{
+  "protocol_name": "4-Round FISH Protocol",
+  "protocol_version": "1.0",
+  "experiment_id": "4-Round_FISH_Protocol_2026-01-16_14-12-27.865951",
+  "experiment_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/4-Round_FISH_Protocol_2026-01-16_14-12-27.865951",
+  "round_index": 0,
+  "fluidics_step_index": 0,
+  "imaging_fov_index": 0,
+  "imaging_z_index": 0,
+  "imaging_channel_index": 0,
+  "created_at": "2026-01-16T14:12:29.135363",
+  "paused_at": null,
+  "metadata": {}
+}

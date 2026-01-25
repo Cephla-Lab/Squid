@@ -427,7 +427,10 @@ def gui_dialog_patches(monkeypatch, tmp_path):
 @pytest.fixture
 def gui_factory(monkeypatch, qapp, qtbot, gui_dialog_patches):
     """Build simulated GUI contexts with optional feature flag overrides."""
-    from tests.gui_helpers import apply_gui_flags
+    import gc
+
+    from tests.gui_helpers import apply_gui_flags, process_events
+    from squid.core.events import event_bus
     from squid.application import ApplicationContext
 
     contexts = []
@@ -445,6 +448,12 @@ def gui_factory(monkeypatch, qapp, qtbot, gui_dialog_patches):
     yield _factory
     for context in contexts:
         context.shutdown()
+        for _ in range(2):
+            process_events()
+    event_bus.clear()
+    for _ in range(3):
+        process_events()
+    gc.collect()
 
 # ============================================================================
 # Piezo Stage Fixture

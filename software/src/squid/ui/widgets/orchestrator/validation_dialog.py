@@ -9,7 +9,7 @@ Shows validation results before starting an experiment including:
 
 from typing import Optional, TYPE_CHECKING
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -46,11 +46,8 @@ class ValidationResultDialog(QDialog):
     - Per-round breakdown table
     - Errors section (prevents starting)
     - Warnings section (allows starting)
-    - Start/Cancel buttons
+    - OK button to close (user starts from main panel)
     """
-
-    # Signal emitted when user clicks Start
-    start_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -255,33 +252,22 @@ class ValidationResultDialog(QDialog):
         """Create the button box."""
         button_box = QDialogButtonBox()
 
-        # Cancel button
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        button_box.addButton(cancel_btn, QDialogButtonBox.RejectRole)
-
-        # Start button (disabled if invalid)
-        start_btn = QPushButton("Start Experiment")
-        start_btn.setEnabled(self._summary.valid)
+        # Close button - just closes the dialog, user can start from main panel
+        close_btn = QPushButton("OK")
         if self._summary.valid:
-            start_btn.setStyleSheet(
+            close_btn.setStyleSheet(
                 "background-color: #4CAF50; color: white; "
                 "font-weight: bold; padding: 8px 16px;"
             )
         else:
-            start_btn.setStyleSheet(
-                "background-color: #BDBDBD; color: #757575; "
-                "padding: 8px 16px;"
+            close_btn.setStyleSheet(
+                "background-color: #f44336; color: white; "
+                "font-weight: bold; padding: 8px 16px;"
             )
-        start_btn.clicked.connect(self._on_start_clicked)
-        button_box.addButton(start_btn, QDialogButtonBox.AcceptRole)
+        close_btn.clicked.connect(self.accept)
+        button_box.addButton(close_btn, QDialogButtonBox.AcceptRole)
 
         return button_box
-
-    def _on_start_clicked(self) -> None:
-        """Handle start button click."""
-        self.start_requested.emit()
-        self.accept()
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as human-readable time."""

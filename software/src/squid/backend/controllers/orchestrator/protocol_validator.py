@@ -238,14 +238,13 @@ class ProtocolValidator:
 
         protocol_name = step.protocol
 
-        # Validate protocol exists in protocol.fluidics_protocols or loaded protocols
-        available = set(protocol.fluidics_protocols.keys())
-        if self._available_fluidics_protocols is not None:
-            available.update(self._available_fluidics_protocols)
+        # Validate protocol exists in loaded protocols (inline definitions not allowed)
+        available = self._available_fluidics_protocols or set()
 
         if protocol_name not in available:
             errors.append(
-                f"Round '{round_name}': Fluidics protocol '{protocol_name}' not found. "
+                f"Round '{round_name}': Fluidics protocol '{protocol_name}' not loaded. "
+                f"Load protocols via FluidicsController before validation. "
                 f"Available: {', '.join(sorted(available)) or 'none'}"
             )
 

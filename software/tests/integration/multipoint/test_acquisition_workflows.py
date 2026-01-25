@@ -12,6 +12,7 @@ from typing import List, Tuple
 
 import pytest
 
+from squid.core.config.test_timing import scale_duration
 from tests.harness import BackendContext, AcquisitionSimulator
 from tests.harness.core.assertions import (
     assert_acquisition_completed,
@@ -168,7 +169,8 @@ class TestTimeLapseAcquisition:
         assert result.success
         assert result.total_images == 3
         # Should take at least 1 second (2 intervals)
-        assert elapsed >= 0.8
+        expected_dt = scale_duration(0.5)
+        assert elapsed >= (3 - 1) * expected_dt * 0.8
 
     def test_timelapse_with_zstack(self, sim: AcquisitionSimulator, center, channels):
         """Time-lapse with z-stack at each timepoint."""

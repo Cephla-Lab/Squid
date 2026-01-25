@@ -74,7 +74,7 @@ class ParameterInspectionPanel(QWidget):
 
         Args:
             round_index: Index of the round (0-based)
-            round_data: Round configuration dictionary
+            round_data: Round configuration dictionary (V2 or legacy format)
         """
         round_name = round_data.get("name", f"Round {round_index + 1}")
         # Avoid redundant "Round X: Round X" display
@@ -86,6 +86,73 @@ class ParameterInspectionPanel(QWidget):
 
         self._table.setRowCount(0)
 
+        # Check for V2 format (steps list) first
+        steps = round_data.get("steps", [])
+        if steps:
+            self._show_v2_round_params(round_data, steps)
+        else:
+            self._show_legacy_round_params(round_data)
+
+    def _show_v2_round_params(self, round_data: Dict[str, Any], steps: list) -> None:
+        """Show V2 format round parameters.
+
+        Args:
+            round_data: Round configuration dictionary
+            steps: List of step dictionaries
+        """
+        # Count step types
+        fluidics_steps = [s for s in steps if s.get("step_type") == "fluidics"]
+        imaging_steps = [s for s in steps if s.get("step_type") == "imaging"]
+        intervention_steps = [s for s in steps if s.get("step_type") == "intervention"]
+
+        # Determine round type from steps
+        if intervention_steps:
+            round_type = "intervention"
+        elif imaging_steps and fluidics_steps:
+            round_type = "fluidics + imaging"
+        elif imaging_steps:
+            round_type = "imaging"
+        elif fluidics_steps:
+            round_type = "fluidics"
+        else:
+            round_type = "unknown"
+
+        self._add_row("Type", round_type)
+
+        # Check for intervention requirement
+        has_intervention = len(intervention_steps) > 0
+        self._add_row("Requires Intervention", str(has_intervention))
+
+        if intervention_steps:
+            msg = intervention_steps[0].get("message", "")
+            if msg:
+                self._add_row("Intervention Message", msg)
+
+        # Fluidics summary
+        if fluidics_steps:
+            self._add_row("Fluidics Steps", str(len(fluidics_steps)))
+            # Show protocol references
+            protocols = [s.get("protocol", "unknown") for s in fluidics_steps]
+            self._add_row("Fluidics Protocols", ", ".join(protocols))
+
+        # Imaging summary
+        if imaging_steps:
+            self._add_row("Imaging Steps", str(len(imaging_steps)))
+            # Show config references
+            configs = [s.get("config", "unknown") for s in imaging_steps]
+            self._add_row("Imaging Configs", ", ".join(set(configs)))
+            # Show FOV set references
+            fov_sets = [s.get("fovs", "default") for s in imaging_steps]
+            unique_fov_sets = set(fov_sets)
+            if unique_fov_sets != {"default"}:
+                self._add_row("FOV Sets", ", ".join(unique_fov_sets))
+
+    def _show_legacy_round_params(self, round_data: Dict[str, Any]) -> None:
+        """Show legacy format round parameters.
+
+        Args:
+            round_data: Round configuration dictionary
+        """
         # Add round parameters
         self._add_row("Type", round_data.get("type", "imaging"))
         self._add_row("Requires Intervention", str(round_data.get("requires_intervention", False)))
@@ -149,18 +216,38 @@ class ParameterInspectionPanel(QWidget):
             self._show_intervention_params(operation_data)
 
     def _show_imaging_params(self, data: Dict[str, Any]) -> None:
-        """Show imaging operation parameters."""
-        channels = data.get("channels", [])
-        self._add_row("Channels", ", ".join(channels) if channels else "default")
+        """Show imaging operation parameters.
 
-        # Z-stack parameters section
-        z_planes = data.get("z_planes", 1)
-        z_step_um = data.get("z_step_um", 0.5)
-        self._add_row("Z Planes", str(z_planes))
-        self._add_row("Z Step (µm)", f"{z_step_um:.2f}")
+        Handles both V2 format (config reference) and legacy format (inline params).
+        """
+        # V2 format: check for config reference
+        config_ref = data.get("config")
+        if config_ref:
+            self._add_row("Config", config_ref)
+
+        # V2 format: check for FOV set reference
+        fovs_ref = data.get("fovs")
+        if fovs_ref and fovs_ref != "default":
+            self._add_row("FOV Set", fovs_ref)
+
+        # Channels (may be inline or from config)
+        channels = data.get("channels", [])
+        if channels:
+            self._add_row("Channels", ", ".join(channels))
+        elif config_ref:
+            self._add_row("Channels", "(from config)")
+
+        # Z-stack parameters section (may be inline or from config)
+        z_planes = data.get("z_planes")
+        z_step_um = data.get("z_step_um")
+
+        if z_planes is not None:
+            self._add_row("Z Planes", str(z_planes))
+        if z_step_um is not None:
+            self._add_row("Z Step (µm)", f"{z_step_um:.2f}")
 
         # Calculate and show total z-range
-        if z_planes > 1:
+        if z_planes is not None and z_step_um is not None and z_planes > 1:
             total_z_range = (z_planes - 1) * z_step_um
             self._add_row("Total Z Range (µm)", f"{total_z_range:.2f}")
 
@@ -169,9 +256,11 @@ class ParameterInspectionPanel(QWidget):
         if z_mode:
             self._add_row("Z-Stack Mode", str(z_mode))
 
-        # Focus settings
-        self._add_row("Use Autofocus", str(data.get("use_autofocus", False)))
-        self._add_row("Use Focus Lock", str(data.get("use_focus_lock", True)))
+        # Focus settings (show if explicitly set)
+        if "use_autofocus" in data:
+            self._add_row("Use Autofocus", str(data.get("use_autofocus", False)))
+        if "use_focus_lock" in data:
+            self._add_row("Use Focus Lock", str(data.get("use_focus_lock", True)))
 
         # Exposure settings
         if data.get("exposure_time_ms"):
@@ -183,11 +272,23 @@ class ParameterInspectionPanel(QWidget):
             for ch_name, exp_ms in channel_exposures.items():
                 self._add_row(f"  {ch_name} Exposure (ms)", str(exp_ms))
 
-        self._add_row("Skip Saving", str(data.get("skip_saving", False)))
+        if "skip_saving" in data:
+            self._add_row("Skip Saving", str(data.get("skip_saving", False)))
 
     def _show_fluidics_params(self, data: Dict[str, Any]) -> None:
-        """Show fluidics operation parameters."""
-        self._add_row("Command", str(data.get("command", "")))
+        """Show fluidics operation parameters.
+
+        Handles both V2 format (protocol reference) and legacy format (inline params).
+        """
+        # V2 format: check for protocol reference
+        protocol_ref = data.get("protocol")
+        if protocol_ref:
+            self._add_row("Protocol", protocol_ref)
+
+        # Legacy/inline format parameters
+        command = data.get("command", "")
+        if command:
+            self._add_row("Command", str(command))
         if data.get("solution"):
             self._add_row("Solution", str(data.get("solution")))
         if data.get("volume_ul"):
@@ -196,7 +297,8 @@ class ParameterInspectionPanel(QWidget):
             self._add_row("Flow Rate (µL/min)", str(data.get("flow_rate_ul_per_min")))
         if data.get("duration_s"):
             self._add_row("Duration (s)", str(data.get("duration_s")))
-        self._add_row("Repeats", str(data.get("repeats", 1)))
+        if "repeats" in data:
+            self._add_row("Repeats", str(data.get("repeats", 1)))
 
     def _show_wait_params(self, data: Dict[str, Any]) -> None:
         """Show wait operation parameters."""

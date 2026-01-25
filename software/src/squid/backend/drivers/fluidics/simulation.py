@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.abc import (
     AbstractFluidicsController,
     FluidicsOperationStatus,
@@ -246,7 +247,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
 
         # Calculate realistic timing: time = volume / rate
         duration_min = volume_ul / effective_rate
-        duration_s = duration_min * 60.0
+        duration_s = scale_duration(duration_min * 60.0)
 
         _log.debug(
             f"[SIMULATED] Flow timing: {volume_ul:.1f} µL at {effective_rate:.1f} µL/min "
@@ -270,7 +271,8 @@ class SimulatedFluidicsController(AbstractFluidicsController):
 
         # Sleep in increments, emitting progress every ~1 second
         elapsed = 0.0
-        next_progress_time = 1.0  # Next update in 1 second (initial already sent)
+        progress_interval_s = scale_duration(1.0, min_seconds=0.01)
+        next_progress_time = progress_interval_s  # Next update in 1 second (initial already sent)
         while elapsed < duration_s:
             if self._is_aborted:
                 return
@@ -296,10 +298,11 @@ class SimulatedFluidicsController(AbstractFluidicsController):
                     )
                 except Exception as e:
                     _log.warning(f"Progress callback error: {e}")
-                next_progress_time = elapsed + 1.0  # Next update in 1 second
+                next_progress_time = elapsed + progress_interval_s
 
             # Sleep in small increments to allow abort checking
-            sleep_time = min(0.1, duration_s - elapsed)
+            sleep_interval = scale_duration(0.1, min_seconds=1e-6)
+            sleep_time = min(sleep_interval, duration_s - elapsed)
             time.sleep(sleep_time)
             elapsed += sleep_time
 
@@ -364,7 +367,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             # Phase 1: Switch valve to source port
             self._notify_phase("valve_switching", port, volume_ul, flow_rate_ul_per_min)
             if self._simulate_timing:
-                time.sleep(0.1)  # Valve switch time
+                time.sleep(scale_duration(0.1, min_seconds=1e-6))  # Valve switch time
 
             if self._check_aborted():
                 return False
@@ -388,7 +391,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             output_port = fill_tubing_with_port if fill_tubing_with_port else port
             self._notify_phase("valve_switching", output_port, volume_ul, flow_rate_ul_per_min)
             if self._simulate_timing:
-                time.sleep(0.1)  # Valve switch time
+                time.sleep(scale_duration(0.1, min_seconds=1e-6))  # Valve switch time
             self._current_port = output_port
 
             if self._check_aborted():
@@ -475,7 +478,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
                 # Phase: Switch to this port
                 self._notify_phase("valve_switching", port, volume_ul, flow_rate_ul_per_min)
                 if self._simulate_timing:
-                    time.sleep(0.1)
+                    time.sleep(scale_duration(0.1, min_seconds=1e-6))
 
                 if self._check_aborted():
                     return False
@@ -560,7 +563,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             # Switch valve to wash port
             self._notify_phase("valve_switching", wash_port, volume_ul, flow_rate_ul_per_min)
             if self._simulate_timing:
-                time.sleep(0.1)
+                time.sleep(scale_duration(0.1, min_seconds=1e-6))
 
             for i in range(repeats):
                 if self._check_aborted():

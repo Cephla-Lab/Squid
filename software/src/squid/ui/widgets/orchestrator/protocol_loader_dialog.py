@@ -190,8 +190,8 @@ class ProtocolLoaderDialog(QDialog):
     def _load_fov_positions(self, path: str) -> None:
         """Load FOV positions from a CSV file.
 
-        CSV format: region_id,x_mm,y_mm,z_mm
-        First row is header (skipped).
+        CSV format: region_id/x_mm/y_mm(/z_mm) or region/x (mm)/y (mm).
+        First row is header (required).
 
         Args:
             path: Path to the CSV file
@@ -201,23 +201,42 @@ class ProtocolLoaderDialog(QDialog):
         try:
             positions: Dict[str, List[Tuple[float, float, float]]] = {}
 
-            with open(path, 'r', newline='') as f:
+            with open(path, "r", newline="") as f:
                 reader = csv.reader(f)
                 # Skip header row
                 header = next(reader, None)
                 if header is None:
                     raise ValueError("Empty CSV file")
 
+                column_map = {}
+                for idx, col in enumerate(header):
+                    col_lower = col.strip().lower()
+                    if "region" in col_lower:
+                        column_map["region"] = idx
+                    elif col_lower in ("x", "x_mm", "x (mm)") or ("x" in col_lower and "mm" in col_lower):
+                        column_map["x"] = idx
+                    elif col_lower in ("y", "y_mm", "y (mm)") or ("y" in col_lower and "mm" in col_lower):
+                        column_map["y"] = idx
+                    elif col_lower in ("z", "z_mm", "z (mm)") or ("z" in col_lower and "mm" in col_lower):
+                        column_map["z"] = idx
+
+                if not all(k in column_map for k in ("region", "x", "y")):
+                    raise ValueError(
+                        f"CSV must have region, x, y columns. Found: {header}"
+                    )
+
                 for row_num, row in enumerate(reader, start=2):
-                    if len(row) < 4:
-                        _log.warning(f"Row {row_num}: Expected 4 columns (region_id,x,y,z), got {len(row)}")
+                    if len(row) <= max(column_map.values()):
+                        _log.warning(
+                            f"Row {row_num}: Expected columns {header}, got {len(row)} value(s)"
+                        )
                         continue
 
-                    region_id = row[0].strip()
+                    region_id = row[column_map["region"]].strip()
                     try:
-                        x = float(row[1])
-                        y = float(row[2])
-                        z = float(row[3])
+                        x = float(row[column_map["x"]])
+                        y = float(row[column_map["y"]])
+                        z = float(row[column_map["z"]]) if "z" in column_map else 0.0
                     except ValueError as e:
                         _log.warning(f"Row {row_num}: Invalid numeric value: {e}")
                         continue
@@ -307,11 +326,12 @@ class ProtocolLoaderDialog(QDialog):
         from squid.core.protocol import FluidicsStep, ImagingStep, InterventionStep
 
         p = self._current_protocol
+        author = getattr(p, "author", "")
         lines = [
             f"Name: {p.name}",
             f"Version: {p.version}",
             f"Description: {p.description}" if p.description else "",
-            f"Author: {p.author}" if p.author else "",
+            f"Author: {author}" if author else "",
             "",
             f"Total Rounds: {len(p.rounds)}",
             f"Imaging Steps: {p.total_imaging_steps()}",
@@ -375,8 +395,13 @@ class ProtocolLoaderDialog(QDialog):
         fov_loaded = bool(self._fov_positions)
 
         if self._current_protocol is not None:
-            # Check if any round has imaging (V2: total_imaging_steps)
-            fov_required = self._current_protocol.total_imaging_steps() > 0
+            from squid.core.protocol import ImagingStep
+
+            fov_required = any(
+                isinstance(step, ImagingStep) and step.fovs == "default"
+                for round_ in self._current_protocol.rounds
+                for step in round_.steps
+            )
 
         if fov_required and not fov_loaded:
             self._validation_label.setText(
@@ -387,6 +412,10 @@ class ProtocolLoaderDialog(QDialog):
             total_fovs = sum(len(coords) for coords in self._fov_positions.values())
             self._validation_label.setText(
                 f'<span style="color: green;">Ready: {total_fovs} FOVs loaded</span>'
+            )
+        elif valid and not fov_required:
+            self._validation_label.setText(
+                '<span style="color: green;">Ready: FOVs not required</span>'
             )
 
         self._start_btn.setEnabled(valid)

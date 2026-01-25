@@ -9,10 +9,10 @@ Provides common functionality for all simulator types:
 
 from __future__ import annotations
 
-import time
 from typing import Optional, Type, TypeVar, TYPE_CHECKING
 
 from squid.core.events import Event, EventBus
+from squid.core.config.test_timing import sleep as test_sleep
 
 if TYPE_CHECKING:
     from tests.harness.core.backend_context import BackendContext
@@ -100,7 +100,7 @@ class BaseSimulator:
         Args:
             seconds: Duration to sleep
         """
-        time.sleep(seconds)
+        test_sleep(seconds)
 
     def drain(self, timeout_s: float = 0.5) -> int:
         """

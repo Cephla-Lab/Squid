@@ -14,6 +14,7 @@ from typing import Optional, Tuple, Sequence, Callable
 import numpy as np
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.config import CameraConfig, CameraPixelFormat
 from squid.core.abc import (
     AbstractCamera,
@@ -245,7 +246,7 @@ class SimulatedCameraBase(AbstractCamera):
                 ):
                     self._next_frame()
                     last_frame_time = time.time()
-                time.sleep(0.001)
+                time.sleep(scale_duration(0.001, min_seconds=1e-6))
             self._log.info("Stopping streaming...")
 
         self._streaming_thread = threading.Thread(target=stream_fn, daemon=True)
@@ -264,7 +265,7 @@ class SimulatedCameraBase(AbstractCamera):
                 )
                 timeout_time = time.time() + 1
                 while self._streaming_thread.is_alive() and timeout_time < time.time():
-                    time.sleep(0.001)
+                    time.sleep(scale_duration(0.001, min_seconds=1e-6))
                 if self._streaming_thread.is_alive():
                     raise CameraError(
                         "Cannot start streaming, camera is inconsistent state"
@@ -337,7 +338,7 @@ class SimulatedCameraBase(AbstractCamera):
         # Wait for exposure time to simulate real camera behavior
         # Use total frame time (exposure + strobe) to match real camera timing
         total_frame_time_s = self.get_total_frame_time() / 1000.0  # Convert ms to seconds
-        time.sleep(total_frame_time_s)
+        time.sleep(scale_duration(total_frame_time_s, min_seconds=1e-6))
         self._next_frame()
 
     def _get_pixel_format_params(self) -> Tuple[int, type]:

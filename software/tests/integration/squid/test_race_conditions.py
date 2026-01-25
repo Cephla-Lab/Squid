@@ -204,9 +204,23 @@ def test_move_stage_command_blocked_during_acquisition(simulated_application_con
     allow_finish = threading.Event()
     original_acquire_at_position = mpw.MultiPointWorker.acquire_at_position
 
-    def _gated_acquire_at_position(self, region_id, current_path, fov):  # type: ignore[no-untyped-def]
+    def _gated_acquire_at_position(  # type: ignore[no-untyped-def]
+        self,
+        region_id,
+        current_path,
+        fov,
+        fov_id=None,
+        attempt=1,
+    ):
         allow_finish.wait(timeout=2.0)
-        return original_acquire_at_position(self, region_id, current_path, fov)
+        return original_acquire_at_position(
+            self,
+            region_id,
+            current_path,
+            fov,
+            fov_id=fov_id,
+            attempt=attempt,
+        )
 
     monkeypatch.setattr(mpw.MultiPointWorker, "acquire_at_position", _gated_acquire_at_position)
 

@@ -203,41 +203,55 @@ def test_camera_settings_widget_updates_service(gui_factory):
     wait_for_event(collector, ROIChanged, start_index=roi_changed_index)
 
     if widget.dropdown_binning.isEnabled() and widget.dropdown_binning.count() > 0:
-        option = widget.dropdown_binning.itemText(0)
-        binning_command_index = len(collector.events(SetBinningCommand))
-        binning_changed_index = len(collector.events(BinningChanged))
-        set_combobox_text(widget.dropdown_binning, option)
-        bin_x, bin_y = (int(part) for part in option.split("x"))
-        wait_for_event(
-            collector,
-            SetBinningCommand,
-            predicate=lambda event: (event.binning_x, event.binning_y) == (bin_x, bin_y),
-            start_index=binning_command_index,
-        )
-        wait_for_event(
-            collector,
-            BinningChanged,
-            predicate=lambda event: (event.binning_x, event.binning_y) == (bin_x, bin_y),
-            start_index=binning_changed_index,
-        )
+        current_binning = widget.dropdown_binning.currentText()
+        option = None
+        for index in range(widget.dropdown_binning.count()):
+            candidate = widget.dropdown_binning.itemText(index)
+            if candidate != current_binning:
+                option = candidate
+                break
+        if option is not None:
+            binning_command_index = len(collector.events(SetBinningCommand))
+            binning_changed_index = len(collector.events(BinningChanged))
+            set_combobox_text(widget.dropdown_binning, option)
+            bin_x, bin_y = (int(part) for part in option.split("x"))
+            wait_for_event(
+                collector,
+                SetBinningCommand,
+                predicate=lambda event: (event.binning_x, event.binning_y) == (bin_x, bin_y),
+                start_index=binning_command_index,
+            )
+            wait_for_event(
+                collector,
+                BinningChanged,
+                predicate=lambda event: (event.binning_x, event.binning_y) == (bin_x, bin_y),
+                start_index=binning_changed_index,
+            )
 
     if widget.dropdown_pixelFormat.count() > 1:
-        new_format = widget.dropdown_pixelFormat.itemText(1)
-        pixel_format_command_index = len(collector.events(SetPixelFormatCommand))
-        pixel_format_changed_index = len(collector.events(PixelFormatChanged))
-        set_combobox_text(widget.dropdown_pixelFormat, new_format)
-        wait_for_event(
-            collector,
-            SetPixelFormatCommand,
-            predicate=lambda event: event.pixel_format == new_format,
-            start_index=pixel_format_command_index,
-        )
-        wait_for_event(
-            collector,
-            PixelFormatChanged,
-            predicate=lambda event: event.pixel_format.name == new_format,
-            start_index=pixel_format_changed_index,
-        )
+        current_format = widget.dropdown_pixelFormat.currentText()
+        new_format = None
+        for index in range(widget.dropdown_pixelFormat.count()):
+            candidate = widget.dropdown_pixelFormat.itemText(index)
+            if candidate != current_format:
+                new_format = candidate
+                break
+        if new_format is not None:
+            pixel_format_command_index = len(collector.events(SetPixelFormatCommand))
+            pixel_format_changed_index = len(collector.events(PixelFormatChanged))
+            set_combobox_text(widget.dropdown_pixelFormat, new_format)
+            wait_for_event(
+                collector,
+                SetPixelFormatCommand,
+                predicate=lambda event: event.pixel_format == new_format,
+                start_index=pixel_format_command_index,
+            )
+            wait_for_event(
+                collector,
+                PixelFormatChanged,
+                predicate=lambda event: event.pixel_format.name == new_format,
+                start_index=pixel_format_changed_index,
+            )
 
     if hasattr(widget, "btn_auto_wb"):
         collector = EventCollector(event_bus).subscribe(AutoWhiteBalanceChanged)

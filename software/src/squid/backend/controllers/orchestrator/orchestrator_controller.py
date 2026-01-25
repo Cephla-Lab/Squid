@@ -17,6 +17,7 @@ import threading
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.events import EventBus, handles, AcquisitionProgress, LoadScanCoordinatesCommand
 from squid.core.state_machine import StateMachine
 from squid.core.utils.cancel_token import CancelToken, CancellationError
@@ -323,8 +324,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     @handles(ValidateProtocolCommand)
     def _on_validate_protocol(self, cmd: ValidateProtocolCommand) -> None:
         """Handle validate protocol command."""
-        if self.state != OrchestratorState.IDLE:
-            _log.warning("Cannot validate protocol: orchestrator not idle")
+        # Allow validation from IDLE or terminal states (COMPLETED/FAILED/ABORTED)
+        if not self._is_in_state(
+            OrchestratorState.IDLE,
+            OrchestratorState.COMPLETED,
+            OrchestratorState.FAILED,
+            OrchestratorState.ABORTED,
+        ):
+            _log.warning(f"Cannot validate protocol: orchestrator in state {self.state}")
             return
 
         self._transition_to(OrchestratorState.VALIDATING)
@@ -334,22 +341,29 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
-            # Create validator with available fluidics protocols
-            # (Include both already-loaded protocols AND those defined in the protocol)
-            available_fluidics = set(protocol.fluidics_protocols.keys())
+            # Create validator with available fluidics protocols and channels
+            # Only check protocols loaded in FluidicsController - inline definitions not allowed
+            available_fluidics: set[str] = set()
             if self._fluidics_controller is not None:
-                available_fluidics.update(self._fluidics_controller.list_protocols())
+                available_fluidics = set(self._fluidics_controller.list_protocols())
+
+            # Get available channels from planner
+            available_channels = self._planner.get_available_channel_names()
+
             validator = ProtocolValidator(
                 available_fluidics_protocols=available_fluidics,
+                available_channels=available_channels,
             )
 
-            # Get FOV count from scan coordinates if available
-            fov_count = 1
-            if self._scan_coordinates is not None:
+            # Get FOV count: prefer command parameter, then scan_coordinates, then default
+            fov_count = cmd.fov_count
+            if fov_count <= 0 and self._scan_coordinates is not None:
                 fov_count = sum(
                     len(coords)
                     for coords in self._scan_coordinates.region_fov_coordinates.values()
                 )
+            if fov_count <= 0:
+                fov_count = 1  # Default to 1 if no FOVs specified
 
             # Validate
             summary = validator.validate(protocol, fov_count=fov_count)
@@ -676,9 +690,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             col_lower = col.lower().strip()
             if "region" in col_lower:
                 col_map["region"] = col
-            elif "x" in col_lower and "mm" in col_lower:
+            elif col_lower in ("x", "x_mm", "x (mm)") or ("x" in col_lower and "mm" in col_lower):
                 col_map["x"] = col
-            elif "y" in col_lower and "mm" in col_lower:
+            elif col_lower in ("y", "y_mm", "y (mm)") or ("y" in col_lower and "mm" in col_lower):
                 col_map["y"] = col
 
         if not all(k in col_map for k in ["region", "x", "y"]):
@@ -897,6 +911,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         import time
         from squid.backend.controllers.fluidics_controller import FluidicsControllerState
 
+        poll_interval_s = scale_duration(0.1, min_seconds=0.01)
         while True:
             # Check for orchestrator abort
             if self._cancel_token.is_cancelled:
@@ -919,7 +934,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._progress.current_round.total_fluidics_steps = self._fluidics_controller.total_steps
                 self._publish_progress()
 
-            time.sleep(0.1)
+            time.sleep(poll_interval_s)
 
         terminal_state = self._fluidics_controller.last_terminal_state
         last_result = self._fluidics_controller.last_result
@@ -1035,7 +1050,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         while not self._intervention_acknowledged.is_set():
             if self._cancel_token is not None:
                 self._cancel_token.check_point()
-            self._intervention_acknowledged.wait(timeout=0.5)
+            self._intervention_acknowledged.wait(timeout=scale_duration(0.5, min_seconds=0.05))
 
     def _handle_step_failure(self, step, error: Exception) -> None:
         """Handle step failure according to error_handling config.

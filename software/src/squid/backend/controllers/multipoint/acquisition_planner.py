@@ -11,7 +11,7 @@ import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, Set, TYPE_CHECKING
 
 import squid.core.abc
 import squid.core.logging
@@ -323,6 +323,19 @@ class AcquisitionPlanner:
             errors=errors,
             warnings=warnings,
         )
+
+    def get_available_channel_names(self, objective: Optional[str] = None) -> Set[str]:
+        """Get names of all available channels for the given objective.
+
+        Args:
+            objective: Objective to get channels for (uses current if None)
+
+        Returns:
+            Set of available channel names
+        """
+        obj = objective or self._objective_store.current_objective
+        available = self._channel_config_manager.get_configurations(obj)
+        return {c.name for c in available}
 
     def _estimate_disk_space(
         self,

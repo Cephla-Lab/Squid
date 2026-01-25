@@ -57,6 +57,7 @@ from squid.backend.controllers.multipoint.downsampled_views import (
     parse_well_id,
 )
 from squid.core.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
+from squid.core.config.test_timing import scale_duration
 from squid.backend.controllers.multipoint.progress_tracking import (
     ProgressTracker,
     CoordinateTracker,
@@ -210,6 +211,7 @@ class MultiPointWorker:
         self._fov_command_queue: "queue.Queue[JumpToFovCommand | SkipFovCommand | RequeueFovCommand | DeferFovCommand | ReorderFovsCommand]" = queue.Queue()
         self._current_round_index: int = 0  # For FOV event context
         self._start_fov_index: int = 0  # For resume support - start from this FOV
+        self._fatal_error: Optional[Exception] = None
 
         # Checkpoint configuration
         self._checkpoint_enabled: bool = True  # Save checkpoints after each FOV
@@ -222,7 +224,7 @@ class MultiPointWorker:
         self.deltaZ = acquisition_parameters.deltaZ
 
         self.Nt = acquisition_parameters.Nt
-        self.dt = acquisition_parameters.deltat
+        self.dt = scale_duration(acquisition_parameters.deltat)
 
         self.do_autofocus = acquisition_parameters.do_autofocus
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
@@ -495,7 +497,7 @@ class MultiPointWorker:
 
         self._log.info("Pausing acquisition at FOV boundary")
         while self._pause_requested.is_set() and not self._abort_requested.is_set():
-            time.sleep(0.1)
+            self._sleep(0.1)
 
     # =========================================================================
     # FOV Task System Methods
@@ -889,6 +891,8 @@ class MultiPointWorker:
                 self._camera_service.remove_frame_callback(this_image_callback_id)
 
             self._finish_jobs()
+            if acquisition_error is None and self._fatal_error is not None:
+                acquisition_error = self._fatal_error
             # Publish acquisition finished event via ProgressTracker
             self._progress_tracker.finish(
                 success=(acquisition_error is None and not self._aborted),
@@ -933,7 +937,7 @@ class MultiPointWorker:
                     if pending_count == 1 or pending_count % 50 == 0:
                         self._log.info(f"{job_class.__name__}: has_pending() returned True (iteration {pending_count})")
                     if not timed_out():
-                        time.sleep(0.1)
+                        self._sleep(0.1)
                     else:
                         self._log.error(
                             f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!"
@@ -1192,7 +1196,7 @@ class MultiPointWorker:
                     )
                     timed_out = True
                     break
-                time.sleep(0.1)
+                self._sleep(0.1)
 
             if timed_out:
                 break
@@ -1207,7 +1211,7 @@ class MultiPointWorker:
                 # If no results for DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S, assume all jobs are done
                 if time.time() - last_result_time > DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S:
                     break
-                time.sleep(0.1)
+                self._sleep(0.1)
 
             # Final drain of results
             self._summarize_runner_outputs(drain_all=True)
@@ -1595,18 +1599,26 @@ class MultiPointWorker:
                 try:
                     with self._timing.get_timer("move_to_coordinate"):
                         self.move_to_coordinate(coordinate_mm, task.region_id, task.fov_index)
-                    with self._timing.get_timer("acquire_at_position"):
-                        self.acquire_at_position(
-                            task.region_id,
-                            current_path,
-                            task.fov_index,
-                            fov_id=task.fov_id,
-                            attempt=task.attempt,
-                        )
                 except Exception as e:
                     success = False
                     error_msg = str(e)
+                    self._fatal_error = e
                     self._log.error(f"Error executing FOV {task.fov_id}: {e}")
+                    self.request_abort()
+                else:
+                    try:
+                        with self._timing.get_timer("acquire_at_position"):
+                            self.acquire_at_position(
+                                task.region_id,
+                                current_path,
+                                task.fov_index,
+                                fov_id=task.fov_id,
+                                attempt=task.attempt,
+                            )
+                    except Exception as e:
+                        success = False
+                        error_msg = str(e)
+                        self._log.error(f"Error executing FOV {task.fov_id}: {e}")
 
                 # Mark task complete - this advances cursor
                 self._fov_task_list.mark_complete_task(task, success, error_msg)
@@ -2194,7 +2206,8 @@ class MultiPointWorker:
     def _sleep(self, sec: float) -> None:
         time_to_sleep: float = max(sec, 1e-6)
         # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
-        time.sleep(time_to_sleep)
+        scaled_sleep = scale_duration(time_to_sleep, min_seconds=1e-6)
+        time.sleep(scaled_sleep)
 
     def acquire_rgb_image(
         self,

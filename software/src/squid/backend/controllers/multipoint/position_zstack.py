@@ -15,6 +15,7 @@ from typing import Optional, Tuple, TYPE_CHECKING
 
 import squid.core.abc
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from _def import (
     TriggerMode,
     SCAN_STABILIZATION_TIME_MS_X,
@@ -102,13 +103,13 @@ class PositionController:
             _log.debug(f"Moving X to {x_mm} mm")
             self._stage.move_x_to(x_mm)
             self._stage.wait_for_idle()
-            time.sleep(self._stab_x_s)
+            time.sleep(scale_duration(self._stab_x_s, min_seconds=1e-6))
 
         if y_mm is not None:
             _log.debug(f"Moving Y to {y_mm} mm")
             self._stage.move_y_to(y_mm)
             self._stage.wait_for_idle()
-            time.sleep(self._stab_y_s)
+            time.sleep(scale_duration(self._stab_y_s, min_seconds=1e-6))
 
         if z_mm is not None:
             self.move_to_z(z_mm)
@@ -125,7 +126,7 @@ class PositionController:
         _log.debug(f"Moving Z to {z_mm} mm")
         self._stage.move_z_to(z_mm)
         self._stage.wait_for_idle()
-        time.sleep(self._stab_z_s)
+        time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
 
     def move_z_relative(self, delta_mm: float) -> None:
         """
@@ -139,7 +140,7 @@ class PositionController:
         _log.debug(f"Moving Z by {delta_mm} mm")
         self._stage.move_z(delta_mm)
         self._stage.wait_for_idle()
-        time.sleep(self._stab_z_s)
+        time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
 
     def get_position(self) -> squid.core.abc.Pos:
         """
@@ -271,7 +272,7 @@ class ZStackExecutor:
         _log.debug(f"Initializing z-stack, moving to z={start_z_mm} mm")
         self._stage.move_z_to(start_z_mm)
         self._stage.wait_for_idle()
-        time.sleep(self._stab_z_s)
+        time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
 
         # Record start position
         self._z_start_mm = self._stage.get_position().z_mm
@@ -292,11 +293,11 @@ class ZStackExecutor:
             self._piezo.move_to(self._z_piezo_um)
             # Only add delay for software trigger mode
             if self._trigger_mode == TriggerMode.SOFTWARE:
-                time.sleep(self._piezo_delay_s)
+                time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
         else:
             self._stage.move_z(self._delta_z_mm)
             self._stage.wait_for_idle()
-            time.sleep(self._stab_z_s)
+            time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
 
         self._current_z_level += 1
 
@@ -316,7 +317,7 @@ class ZStackExecutor:
             self._z_piezo_um = self._z_piezo_um - self._delta_z_mm * 1000 * (nz - 1)
             self._piezo.move_to(self._z_piezo_um)
             if self._trigger_mode == TriggerMode.SOFTWARE:
-                time.sleep(self._piezo_delay_s)
+                time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
         else:
             # Calculate relative movement back to start
             if direction == "FROM CENTER":

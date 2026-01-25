@@ -1,0 +1,117 @@
+# Fast End-to-End Test Protocol
+# Tests fluidics + imaging integration with short timing
+# Use with: fluidics_simulation.json and test_positions.csv
+
+name: "Fast E2E Test Protocol"
+version: "1.0"
+description: "Quick test protocol for fluidics + orchestrator integration. 2 rounds with short incubations."
+author: "Test"
+created: "2025-01-15"
+
+defaults:
+  imaging:
+    channels: ["BF LED matrix full"]
+    z_planes: 3
+    z_step_um: 1.0
+    use_autofocus: false
+    use_focus_lock: false
+  fluidics:
+    flow_rate_ul_per_min: 300.0
+    wash_volume_ul: 200.0
+
+rounds:
+  # Initial wash
+  - name: "Initial Wash"
+    type: "wash"
+    fluidics:
+      - command: "flow"
+        solution: "wash_buffer"
+        volume_ul: 200
+        flow_rate_ul_per_min: 500
+      - command: "incubate"
+        duration_s: 3
+    imaging: null
+
+  # Round 1: Hybridization + Imaging
+  - name: "Round 1"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_1"
+        volume_ul: 100
+        flow_rate_ul_per_min: 200
+      - command: "incubate"
+        solution: "probe_1"
+        duration_s: 8
+      - command: "flow"
+        solution: "wash_buffer"
+        volume_ul: 200
+        flow_rate_ul_per_min: 500
+    imaging:
+      channels: ["BF LED matrix full"]
+      z_planes: 3
+      z_step_um: 1.0
+
+  # Strip between rounds
+  - name: "Strip 1"
+    type: "wash"
+    fluidics:
+      - command: "flow"
+        solution: "cleavage_buffer"
+        volume_ul: 150
+        flow_rate_ul_per_min: 300
+      - command: "incubate"
+        solution: "cleavage_buffer"
+        duration_s: 5
+      - command: "flow"
+        solution: "rinse_buffer"
+        volume_ul: 200
+        flow_rate_ul_per_min: 500
+    imaging: null
+
+  # Round 2: Hybridization + Imaging
+  - name: "Round 2"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "probe_2"
+        volume_ul: 100
+        flow_rate_ul_per_min: 200
+      - command: "incubate"
+        solution: "probe_2"
+        duration_s: 8
+      - command: "flow"
+        solution: "wash_buffer"
+        volume_ul: 200
+        flow_rate_ul_per_min: 500
+    imaging:
+      channels: ["BF LED matrix full"]
+      z_planes: 3
+      z_step_um: 1.0
+
+  # Final imaging prep
+  - name: "Final Imaging Prep"
+    type: "imaging"
+    fluidics:
+      - command: "flow"
+        solution: "imaging_buffer"
+        volume_ul: 150
+        flow_rate_ul_per_min: 300
+      - command: "incubate"
+        solution: "imaging_buffer"
+        duration_s: 3
+    imaging:
+      channels: ["BF LED matrix full"]
+      z_planes: 3
+      z_step_um: 1.0
+
+metadata:
+  test_type: "end_to_end"
+  expected_duration_minutes: 2
+  solutions_required:
+    - "probe_1"
+    - "probe_2"
+    - "wash_buffer"
+    - "cleavage_buffer"
+    - "rinse_buffer"
+    - "imaging_buffer"

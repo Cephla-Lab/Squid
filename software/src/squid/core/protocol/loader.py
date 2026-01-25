@@ -186,7 +186,8 @@ class ProtocolLoader:
                     raise ProtocolValidationError(
                         f"Imaging config file not found: {file_path}"
                     )
-                data["imaging_configs"][name] = yaml.safe_load(open(file_path))
+                with open(file_path, "r") as f:
+                    data["imaging_configs"][name] = yaml.safe_load(f)
 
         # Resolve fluidics_protocols with file: references
         for name, proto in data.get("fluidics_protocols", {}).items():
@@ -196,7 +197,8 @@ class ProtocolLoader:
                     raise ProtocolValidationError(
                         f"Fluidics protocol file not found: {file_path}"
                     )
-                data["fluidics_protocols"][name] = yaml.safe_load(open(file_path))
+                with open(file_path, "r") as f:
+                    data["fluidics_protocols"][name] = yaml.safe_load(f)
 
         # Make FOV set paths absolute
         for name, csv_path in data.get("fov_sets", {}).items():
@@ -240,6 +242,12 @@ class ProtocolLoader:
                     )
                 expanded_rounds.append(round_def)
             else:
+                if not isinstance(repeat, int):
+                    raise ProtocolValidationError(
+                        f"repeat must be an integer, got {type(repeat).__name__}"
+                    )
+                if repeat < 1:
+                    raise ProtocolValidationError("repeat must be >= 1")
                 for i in range(1, repeat + 1):
                     expanded_rounds.append(self._substitute(copy.deepcopy(round_def), i))
 

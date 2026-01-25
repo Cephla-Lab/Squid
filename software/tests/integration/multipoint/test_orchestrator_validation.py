@@ -44,19 +44,24 @@ def backend_ctx():
 def sample_protocol_path(tmp_path):
     """Create a sample protocol file for testing."""
     protocol_content = """
-version: "1.0"
-metadata:
-  name: "Test Protocol"
-  description: "A simple test protocol"
+version: "2.0"
+name: "Test Protocol"
+description: "A simple test protocol"
+
+imaging_configs:
+  standard:
+    channels: ["BF"]
+    z_stack:
+      planes: 3
+      step_um: 0.5
+    focus:
+      enabled: false
 
 rounds:
   - name: "Round 1"
-    type: imaging
-    imaging:
-      channels: ["BF"]
-      z_planes: 3
-      z_step_um: 0.5
-      use_autofocus: false
+    steps:
+      - step_type: imaging
+        config: standard
 """
     protocol_path = tmp_path / "test_protocol.yaml"
     protocol_path.write_text(protocol_content)
@@ -67,17 +72,21 @@ rounds:
 def invalid_channel_protocol_path(tmp_path):
     """Create a protocol with invalid channel names."""
     protocol_content = """
-version: "1.0"
-metadata:
-  name: "Invalid Channel Protocol"
-  description: "Protocol with invalid channels"
+version: "2.0"
+name: "Invalid Channel Protocol"
+description: "Protocol with invalid channels"
+
+imaging_configs:
+  standard:
+    channels: ["NONEXISTENT_CHANNEL_XYZ"]
+    z_stack:
+      planes: 1
 
 rounds:
   - name: "Round 1"
-    type: imaging
-    imaging:
-      channels: ["NONEXISTENT_CHANNEL_XYZ"]
-      z_planes: 1
+    steps:
+      - step_type: imaging
+        config: standard
 """
     protocol_path = tmp_path / "invalid_channel_protocol.yaml"
     protocol_path.write_text(protocol_content)
@@ -118,16 +127,20 @@ class TestProtocolValidatorIntegration:
 
             # Build minimal protocol dict
             protocol_dict = {
-                "version": "1.0",
-                "metadata": {"name": "Test", "description": ""},
+                "name": "Test",
+                "version": "2.0",
+                "description": "",
+                "imaging_configs": {
+                    "standard": {
+                        "channels": [valid_channel],
+                        "z_stack": {"planes": 1},
+                        "focus": {"enabled": False},
+                    }
+                },
                 "rounds": [
                     {
                         "name": "Round 1",
-                        "type": "imaging",
-                        "imaging": {
-                            "channels": [valid_channel],
-                            "z_planes": 1,
-                        },
+                        "steps": [{"step_type": "imaging", "config": "standard"}],
                     }
                 ],
             }
@@ -148,16 +161,20 @@ class TestProtocolValidatorIntegration:
 
         # Create a protocol with invalid channel
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["THIS_CHANNEL_DOES_NOT_EXIST"],
+                    "z_stack": {"planes": 1},
+                    "focus": {"enabled": False},
+                }
+            },
             "rounds": [
                 {
                     "name": "Round 1",
-                    "type": "imaging",
-                    "imaging": {
-                        "channels": ["THIS_CHANNEL_DOES_NOT_EXIST"],
-                        "z_planes": 1,
-                    },
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
                 }
             ],
         }
@@ -187,16 +204,20 @@ class TestValidationEstimates:
         validator = ProtocolValidator()
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 5},
+                    "focus": {"enabled": False},
+                }
+            },
             "rounds": [
                 {
                     "name": "Round 1",
-                    "type": "imaging",
-                    "imaging": {
-                        "channels": ["BF"],
-                        "z_planes": 5,
-                    },
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
                 }
             ],
         }
@@ -217,16 +238,20 @@ class TestValidationEstimates:
         validator = ProtocolValidator(camera_resolution=(2048, 2048))
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 1},
+                    "focus": {"enabled": False},
+                }
+            },
             "rounds": [
                 {
                     "name": "Round 1",
-                    "type": "imaging",
-                    "imaging": {
-                        "channels": ["BF"],
-                        "z_planes": 1,
-                    },
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
                 }
             ],
         }
@@ -247,23 +272,38 @@ class TestValidationEstimates:
         validator = ProtocolValidator()
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "imaging_configs": {
+                "bf": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 3},
+                    "focus": {"enabled": False},
+                },
+                "dapi": {
+                    "channels": ["DAPI"],
+                    "z_stack": {"planes": 3},
+                    "focus": {"enabled": False},
+                },
+                "gfp": {
+                    "channels": ["GFP"],
+                    "z_stack": {"planes": 3},
+                    "focus": {"enabled": False},
+                },
+            },
             "rounds": [
                 {
                     "name": "Round 1",
-                    "type": "imaging",
-                    "imaging": {"channels": ["BF"], "z_planes": 3},
+                    "steps": [{"step_type": "imaging", "config": "bf"}],
                 },
                 {
                     "name": "Round 2",
-                    "type": "imaging",
-                    "imaging": {"channels": ["DAPI"], "z_planes": 3},
+                    "steps": [{"step_type": "imaging", "config": "dapi"}],
                 },
                 {
                     "name": "Round 3",
-                    "type": "imaging",
-                    "imaging": {"channels": ["GFP"], "z_planes": 3},
+                    "steps": [{"step_type": "imaging", "config": "gfp"}],
                 },
             ],
         }
@@ -353,16 +393,20 @@ class TestOperationEstimates:
         validator = ProtocolValidator()
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF", "DAPI"],
+                    "z_stack": {"planes": 5},
+                    "focus": {"enabled": False},
+                }
+            },
             "rounds": [
                 {
                     "name": "Imaging Round",
-                    "type": "imaging",
-                    "imaging": {
-                        "channels": ["BF", "DAPI"],
-                        "z_planes": 5,
-                    },
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
                 }
             ],
         }
@@ -387,18 +431,23 @@ class TestOperationEstimates:
         validator = ProtocolValidator()
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
+            "fluidics_protocols": {
+                "incubate_300": {
+                    "steps": [
+                        {
+                            "operation": "incubate",
+                            "duration_s": 300,
+                        }
+                    ]
+                }
+            },
             "rounds": [
                 {
                     "name": "Wait Round",
-                    "type": "wash",
-                    "fluidics": [
-                        {
-                            "command": "incubate",
-                            "duration_s": 300,
-                        }
-                    ],
+                    "steps": [{"step_type": "fluidics", "protocol": "incubate_300"}],
                 }
             ],
         }
@@ -421,14 +470,18 @@ class TestOperationEstimates:
         validator = ProtocolValidator()
 
         protocol_dict = {
-            "version": "1.0",
-            "metadata": {"name": "Test", "description": ""},
+            "name": "Test",
+            "version": "2.0",
+            "description": "",
             "rounds": [
                 {
                     "name": "Intervention Round",
-                    "type": "custom",
-                    "requires_intervention": True,
-                    "intervention_message": "Please replace the sample",
+                    "steps": [
+                        {
+                            "step_type": "intervention",
+                            "message": "Please replace the sample",
+                        }
+                    ],
                 }
             ],
         }

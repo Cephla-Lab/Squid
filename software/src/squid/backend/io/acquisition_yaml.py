@@ -74,6 +74,14 @@ class AcquisitionYAMLData:
     contrast_af: bool = False
     laser_af: bool = False
 
+    # Focus lock (continuous focus tracking during acquisition)
+    focus_lock_enabled: bool = False
+    focus_lock_buffer_length: int = 5
+    focus_lock_recovery_attempts: int = 3
+    focus_lock_min_spot_snr: float = 10.0
+    focus_lock_acquire_threshold_um: float = 0.25
+    focus_lock_maintain_threshold_um: float = 0.5
+
     # Wellplate-specific
     scan_size_mm: Optional[float] = None
     overlap_percent: float = 10.0
@@ -136,6 +144,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     time_series = data.get("time_series", {})
     channels = data.get("channels", [])
     autofocus = data.get("autofocus", {})
+    focus_lock = data.get("focus_lock", {})
     wellplate_scan = data.get("wellplate_scan", {})
     flexible_scan = data.get("flexible_scan", {})
 
@@ -189,6 +198,13 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         # Autofocus
         contrast_af=autofocus.get("contrast_af", autofocus.get("do_contrast_af", False)),
         laser_af=autofocus.get("laser_af", autofocus.get("do_reflection_af", False)),
+        # Focus lock (continuous focus tracking during acquisition)
+        focus_lock_enabled=focus_lock.get("enabled", False),
+        focus_lock_buffer_length=focus_lock.get("buffer_length", 5),
+        focus_lock_recovery_attempts=focus_lock.get("recovery_attempts", 3),
+        focus_lock_min_spot_snr=focus_lock.get("min_spot_snr", 10.0),
+        focus_lock_acquire_threshold_um=focus_lock.get("acquire_threshold_um", 0.25),
+        focus_lock_maintain_threshold_um=focus_lock.get("maintain_threshold_um", 0.5),
         # Wellplate-specific
         scan_size_mm=wellplate_scan.get("scan_size_mm"),
         overlap_percent=overlap,
@@ -316,6 +332,7 @@ def save_acquisition_yaml(
     wellplate_format: Optional[str] = None,
     scan_size_mm: float = 0.0,
     overlap_percent: float = 10.0,
+    focus_lock_settings: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save acquisition parameters to YAML file.
 
@@ -332,6 +349,13 @@ def save_acquisition_yaml(
         wellplate_format: String like "384 well plate" or None
         scan_size_mm: Scan size in mm (for wellplate mode)
         overlap_percent: FOV overlap percentage
+        focus_lock_settings: Optional dict with focus lock parameters:
+            - enabled: bool
+            - buffer_length: int
+            - recovery_attempts: int
+            - min_spot_snr: float
+            - acquire_threshold_um: float
+            - maintain_threshold_um: float
     """
     # Build acquisition section
     yaml_dict: Dict[str, Any] = {
@@ -363,6 +387,17 @@ def save_acquisition_yaml(
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
+
+    # Add focus lock section if provided
+    if focus_lock_settings:
+        yaml_dict["focus_lock"] = {
+            "enabled": focus_lock_settings.get("enabled", False),
+            "buffer_length": focus_lock_settings.get("buffer_length", 5),
+            "recovery_attempts": focus_lock_settings.get("recovery_attempts", 3),
+            "min_spot_snr": focus_lock_settings.get("min_spot_snr", 10.0),
+            "acquire_threshold_um": focus_lock_settings.get("acquire_threshold_um", 0.25),
+            "maintain_threshold_um": focus_lock_settings.get("maintain_threshold_um", 0.5),
+        }
 
     # Add widget-specific scan section
     scan_info = params.scan_position_information
@@ -427,3 +462,141 @@ def save_acquisition_yaml(
         _log.info(f"Saved acquisition parameters to: {yaml_path}")
     except (OSError, yaml.YAMLError) as exc:
         _log.error(f"Failed to write acquisition YAML file '{yaml_path}': {exc}")
+
+
+# =============================================================================
+# Acquisition Preset Save/Load (before acquisition starts)
+# =============================================================================
+
+
+def save_acquisition_preset(
+    experiment_path: str,
+    experiment_id: str,
+    widget_type: str,
+    objective_info: Optional[Dict[str, Any]] = None,
+    z_stack_settings: Optional[Dict[str, Any]] = None,
+    time_series_settings: Optional[Dict[str, Any]] = None,
+    channel_names: Optional[List[str]] = None,
+    autofocus_settings: Optional[Dict[str, Any]] = None,
+    focus_lock_settings: Optional[Dict[str, Any]] = None,
+    flexible_scan_settings: Optional[Dict[str, Any]] = None,
+    wellplate_scan_settings: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Save acquisition preset settings to YAML file before acquisition starts.
+
+    This allows users to save their acquisition configuration for later reuse.
+    The preset can be loaded and used as a starting point for new acquisitions.
+
+    Args:
+        experiment_path: Path to experiment folder
+        experiment_id: Experiment identifier
+        widget_type: "wellplate" or "flexible"
+        objective_info: Dict with objective name, magnification, pixel_size_um, binning
+        z_stack_settings: Dict with nz, delta_z_um, config, use_piezo
+        time_series_settings: Dict with nt, delta_t_s
+        channel_names: List of channel names (in imaging order)
+        autofocus_settings: Dict with contrast_af, laser_af
+        focus_lock_settings: Dict with enabled, buffer_length, recovery_attempts, etc.
+        flexible_scan_settings: Dict with nx, ny, delta_x_mm, delta_y_mm, overlap_percent, positions
+        wellplate_scan_settings: Dict with scan_size_mm, overlap_percent, shape, regions
+
+    Returns:
+        Path to the saved YAML file.
+
+    Raises:
+        OSError: If directory doesn't exist or file cannot be written.
+    """
+    yaml_dict: Dict[str, Any] = {
+        "acquisition": {
+            "experiment_id": experiment_id,
+            "widget_type": widget_type,
+        },
+        "objective": objective_info or {},
+    }
+
+    # Z-stack settings
+    if z_stack_settings:
+        yaml_dict["z_stack"] = {
+            "nz": z_stack_settings.get("nz", 1),
+            "delta_z_um": z_stack_settings.get("delta_z_um", 1.0),
+            "config": z_stack_settings.get("config", "FROM BOTTOM"),
+            "use_piezo": z_stack_settings.get("use_piezo", False),
+        }
+
+    # Time series settings
+    if time_series_settings:
+        yaml_dict["time_series"] = {
+            "nt": time_series_settings.get("nt", 1),
+            "delta_t_s": time_series_settings.get("delta_t_s", 0.0),
+        }
+
+    # Channels (order is preserved - list order is imaging order)
+    if channel_names:
+        yaml_dict["channels"] = [{"name": name} for name in channel_names]
+
+    # Autofocus settings
+    if autofocus_settings:
+        yaml_dict["autofocus"] = {
+            "contrast_af": autofocus_settings.get("contrast_af", False),
+            "laser_af": autofocus_settings.get("laser_af", False),
+        }
+
+    # Focus lock settings
+    if focus_lock_settings:
+        yaml_dict["focus_lock"] = {
+            "enabled": focus_lock_settings.get("enabled", False),
+            "buffer_length": focus_lock_settings.get("buffer_length", 5),
+            "recovery_attempts": focus_lock_settings.get("recovery_attempts", 3),
+            "min_spot_snr": focus_lock_settings.get("min_spot_snr", 10.0),
+            "acquire_threshold_um": focus_lock_settings.get("acquire_threshold_um", 0.25),
+            "maintain_threshold_um": focus_lock_settings.get("maintain_threshold_um", 0.5),
+        }
+
+    # Widget-specific scan settings
+    if widget_type == "flexible" and flexible_scan_settings:
+        yaml_dict["flexible_scan"] = {
+            "nx": flexible_scan_settings.get("nx", 1),
+            "ny": flexible_scan_settings.get("ny", 1),
+            "delta_x_mm": flexible_scan_settings.get("delta_x_mm", 0.9),
+            "delta_y_mm": flexible_scan_settings.get("delta_y_mm", 0.9),
+            "overlap_percent": flexible_scan_settings.get("overlap_percent", 10.0),
+            "positions": flexible_scan_settings.get("positions", []),
+        }
+    elif widget_type == "wellplate" and wellplate_scan_settings:
+        yaml_dict["wellplate_scan"] = {
+            "scan_size_mm": wellplate_scan_settings.get("scan_size_mm", 0.0),
+            "overlap_percent": wellplate_scan_settings.get("overlap_percent", 10.0),
+            "regions": wellplate_scan_settings.get("regions", []),
+        }
+
+    # Create directory if it doesn't exist
+    os.makedirs(experiment_path, exist_ok=True)
+
+    yaml_path = os.path.join(experiment_path, "acquisition.yaml")
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write(f"# Acquisition Preset - {experiment_id}\n")
+        f.write("# Saved before acquisition for reuse\n\n")
+        yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    _log.info(f"Saved acquisition preset to: {yaml_path}")
+    return yaml_path
+
+
+def load_acquisition_preset(file_path: str) -> AcquisitionYAMLData:
+    """Load acquisition preset from YAML file.
+
+    This is a convenience wrapper around parse_acquisition_yaml() that
+    provides a clearer name for the preset loading use case.
+
+    Args:
+        file_path: Path to the acquisition.yaml file
+
+    Returns:
+        AcquisitionYAMLData with parsed values
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        yaml.YAMLError: If file is not valid YAML
+        ValueError: If file is empty or has invalid widget_type
+    """
+    return parse_acquisition_yaml(file_path)

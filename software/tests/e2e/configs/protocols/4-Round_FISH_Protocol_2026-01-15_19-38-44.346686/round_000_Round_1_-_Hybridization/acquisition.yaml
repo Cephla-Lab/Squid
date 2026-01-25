@@ -1,0 +1,72 @@
+# Acquisition Parameters - round_000_Round_1_-_Hybridization
+# Saved automatically when acquisition started
+
+acquisition:
+  experiment_id: round_000_Round_1_-_Hybridization
+  start_time: 1768534728.577368
+  widget_type: wellplate
+  xy_mode: Current Position
+  skip_saving: true
+objective:
+  name: 2x
+  magnification: 2.0
+  NA: 0.1
+  pixel_size_um: 13.536
+  camera_binning:
+  - 2
+  - 2
+  sensor_pixel_size_um: 7.52
+sample:
+  wellplate_format: 96 well plate
+z_stack:
+  nz: 3
+  delta_z_um: 0.5
+  config: FROM BOTTOM
+  z_range:
+  - 1.2
+  - 1.2009999999999998
+  use_piezo: false
+time_series:
+  nt: 1
+  delta_t_s: 0.0
+autofocus:
+  contrast_af: false
+  laser_af: false
+channels:
+- id: e9e8593afdcdb075
+  name: Fluorescence 405 nm Ex
+  exposure_time: 25.0
+  analog_gain: 10.0
+  illumination_source: 11
+  illumination_intensity: 20.0
+  camera_sn: ''
+  z_offset: 0.0
+  emission_filter_position: 1
+  selected: false
+  is_rgb: false
+  color: 2141688
+wellplate_scan:
+  scan_size_mm: 0.0
+  overlap_percent: 10.0
+  regions:
+  - name: Region1
+    center_mm:
+    - 0.25
+    - 0.25
+    - 0.0
+    shape: Loaded
+downsampled_views:
+  enabled: true
+  save_well_images: false
+  well_resolutions_um:
+  - 5.0
+  - 10.0
+  - 20.0
+  plate_resolution_um: 10.0
+  z_projection: mip
+  interpolation_method: inter_area_fast
+plate:
+  num_rows: 8
+  num_cols: 12
+fluidics:
+  enabled: false

@@ -92,7 +92,11 @@ from _def import (
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
 from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
-from squid.backend.io.acquisition_yaml import AcquisitionYAMLData
+from squid.backend.io.acquisition_yaml import (
+    AcquisitionYAMLData,
+    save_acquisition_preset,
+    parse_acquisition_yaml,
+)
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -369,6 +373,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
         self.btn_setSavingDir.setFixedWidth(btn_width)
 
+        # Save/Load preset buttons
+        self.btn_save_preset = QPushButton("Save")
+        self.btn_save_preset.setToolTip("Save current acquisition settings to experiment folder")
+
+        self.btn_load_preset = QPushButton("Load")
+        self.btn_load_preset.setToolTip("Load acquisition settings from an experiment folder")
+
         self.lineEdit_savingDir = QLineEdit()
         # Load last used saving path from cache, or fall back to default
         last_path = get_last_used_saving_path(DEFAULT_SAVING_PATH)
@@ -527,6 +538,72 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
+        # Focus Lock checkbox and parameters
+        self.checkbox_focus_lock = QCheckBox("Focus Lock")
+        self.checkbox_focus_lock.setChecked(False)
+        self.checkbox_focus_lock.setToolTip(
+            "Enable continuous focus lock during acquisition.\n"
+            "Uses laser autofocus to maintain focus between FOVs."
+        )
+
+        # Focus Lock parameter controls (initially hidden) - 2-row grid layout
+        self.focus_lock_controls_frame = QFrame()
+        self.focus_lock_controls_frame.setVisible(False)
+
+        spinbox_width = 55
+
+        self.spinbox_buffer_length = QSpinBox()
+        self.spinbox_buffer_length.setRange(1, 20)
+        self.spinbox_buffer_length.setValue(5)
+        self.spinbox_buffer_length.setFixedWidth(spinbox_width)
+        self.spinbox_buffer_length.setToolTip("Sequential good readings to acquire lock")
+
+        self.spinbox_recovery_attempts = QSpinBox()
+        self.spinbox_recovery_attempts.setRange(1, 10)
+        self.spinbox_recovery_attempts.setValue(3)
+        self.spinbox_recovery_attempts.setFixedWidth(spinbox_width)
+        self.spinbox_recovery_attempts.setToolTip("Retry cycles before declaring lock lost")
+
+        self.spinbox_min_snr = QDoubleSpinBox()
+        self.spinbox_min_snr.setRange(1.0, 100.0)
+        self.spinbox_min_snr.setValue(10.0)
+        self.spinbox_min_snr.setDecimals(1)
+        self.spinbox_min_snr.setFixedWidth(spinbox_width)
+        self.spinbox_min_snr.setToolTip("Minimum spot signal-to-noise ratio")
+
+        self.spinbox_acquire_threshold = QDoubleSpinBox()
+        self.spinbox_acquire_threshold.setRange(0.01, 5.0)
+        self.spinbox_acquire_threshold.setValue(0.25)
+        self.spinbox_acquire_threshold.setDecimals(2)
+        self.spinbox_acquire_threshold.setSuffix(" μm")
+        self.spinbox_acquire_threshold.setFixedWidth(spinbox_width + 20)  # Wider for suffix
+        self.spinbox_acquire_threshold.setToolTip("Max displacement to count as 'good' reading")
+
+        self.spinbox_maintain_threshold = QDoubleSpinBox()
+        self.spinbox_maintain_threshold.setRange(0.01, 5.0)
+        self.spinbox_maintain_threshold.setValue(0.5)
+        self.spinbox_maintain_threshold.setDecimals(2)
+        self.spinbox_maintain_threshold.setSuffix(" μm")
+        self.spinbox_maintain_threshold.setFixedWidth(spinbox_width + 20)  # Wider for suffix
+        self.spinbox_maintain_threshold.setToolTip("Looser threshold once lock is acquired")
+
+        # Two-row grid layout for focus lock controls - compact
+        focus_lock_layout = QGridLayout(self.focus_lock_controls_frame)
+        focus_lock_layout.setContentsMargins(4, 2, 4, 2)
+        focus_lock_layout.setSpacing(2)
+        # Row 0: Buffer, Retries, Min SNR
+        focus_lock_layout.addWidget(QLabel("Buf:"), 0, 0)
+        focus_lock_layout.addWidget(self.spinbox_buffer_length, 0, 1)
+        focus_lock_layout.addWidget(QLabel("Retry:"), 0, 2)
+        focus_lock_layout.addWidget(self.spinbox_recovery_attempts, 0, 3)
+        focus_lock_layout.addWidget(QLabel("SNR:"), 0, 4)
+        focus_lock_layout.addWidget(self.spinbox_min_snr, 0, 5)
+        # Row 1: Acquire threshold, Maintain threshold
+        focus_lock_layout.addWidget(QLabel("Acq:"), 1, 0)
+        focus_lock_layout.addWidget(self.spinbox_acquire_threshold, 1, 1)
+        focus_lock_layout.addWidget(QLabel("Maint:"), 1, 2)
+        focus_lock_layout.addWidget(self.spinbox_maintain_threshold, 1, 3)
+
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
@@ -599,6 +676,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         time_layout.addStretch()  # Fill horizontal space
         self.time_frame.setLayout(time_layout)
 
+        # Focus Lock Tab
+        self.focus_lock_tab_frame = QFrame()
+
+        focus_lock_tab_layout = QHBoxLayout()
+        focus_lock_tab_layout.setContentsMargins(8, 4, 8, 4)
+        focus_lock_tab_layout.addWidget(self.checkbox_focus_lock)
+        focus_lock_tab_layout.addStretch()
+        self.focus_lock_tab_frame.setLayout(focus_lock_tab_layout)
+
         # Main layout
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
@@ -608,6 +694,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         saving_path_layout.addWidget(QLabel("Saving Path"))
         saving_path_layout.addWidget(self.lineEdit_savingDir)
         saving_path_layout.addWidget(self.btn_setSavingDir)
+        saving_path_layout.addWidget(self.btn_save_preset)
+        saving_path_layout.addWidget(self.btn_load_preset)
         main_layout.addLayout(saving_path_layout)
 
         # Experiment ID
@@ -622,6 +710,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         tabs_layout.addWidget(self.xy_frame, 2)  # Give XY frame more space (weight 2)
         tabs_layout.addWidget(self.z_frame, 1)  # Z frame gets weight 1
         tabs_layout.addWidget(self.time_frame, 1)  # Time frame gets weight 1
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
+            tabs_layout.addWidget(self.focus_lock_tab_frame, 1)  # Focus Lock tab
         main_layout.addLayout(tabs_layout)
 
         # Scan Shape, FOV overlap, and Save / Load Scan Coordinates
@@ -786,6 +876,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         grid.setColumnStretch(2, 1)  # Middle spacer
 
         main_layout.addLayout(grid)
+
+        # Focus Lock controls frame (shown when Focus Lock is checked)
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
+            focus_lock_wrapper = QHBoxLayout()
+            focus_lock_wrapper.addWidget(self.focus_lock_controls_frame)
+            focus_lock_wrapper.addStretch(1)
+            main_layout.addLayout(focus_lock_wrapper)
+
         # Row 5: Progress Bar
         row_progress_layout = QHBoxLayout()
         row_progress_layout.addWidget(self.progress_label)
@@ -814,6 +912,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
+        self.btn_save_preset.clicked.connect(self.save_acquisition_preset)
+        self.btn_load_preset.clicked.connect(self.load_acquisition_preset)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self._on_nz_changed)
@@ -851,6 +951,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_z.toggled.connect(self.on_z_toggled)
         self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
         self.checkbox_time.toggled.connect(self.on_time_toggled)
+        self.checkbox_focus_lock.toggled.connect(self.on_focus_lock_toggled)
 
         # Load cached acquisition settings
         self.load_multipoint_widget_config_from_cache()
@@ -881,6 +982,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.save_multipoint_widget_config_to_cache
         )
         self.checkbox_withReflectionAutofocus.toggled.connect(
+            self.save_multipoint_widget_config_to_cache
+        )
+        self.checkbox_focus_lock.toggled.connect(
             self.save_multipoint_widget_config_to_cache
         )
 
@@ -1167,6 +1271,34 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 time_controls_style if self.checkbox_time.isChecked() else ""
             )
 
+        # Purple/magenta style for Focus Lock tab (border only, like other tabs)
+        focus_lock_active_style = """
+            QFrame {
+                border: 1px solid #A020F0;
+                border-radius: 2px;
+            }
+        """
+        focus_lock_controls_style = """
+            QFrame {
+                background-color: rgba(160, 32, 240, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+                color: black;
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+        if hasattr(self, "focus_lock_tab_frame"):
+            self.focus_lock_tab_frame.setStyleSheet(
+                focus_lock_active_style if self.checkbox_focus_lock.isChecked() else inactive_style
+            )
+        if hasattr(self, "focus_lock_controls_frame"):
+            self.focus_lock_controls_frame.setStyleSheet(
+                focus_lock_controls_style if self.checkbox_focus_lock.isChecked() else ""
+            )
+
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""
         self.combobox_xy_mode.setEnabled(checked)
@@ -1398,6 +1530,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.update_control_visibility()
 
         self._log.debug(f"Time acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_focus_lock_toggled(self, checked):
+        """Handle Focus Lock checkbox toggle"""
+        self.update_tab_styles()
+        self.focus_lock_controls_frame.setVisible(checked)
+        self._log.debug(f"Focus lock {'enabled' if checked else 'disabled'}")
 
     def store_xy_mode_parameters(self, mode):
         """Store current scan size and shape parameters for the given XY mode.
@@ -2207,6 +2345,134 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.base_path_is_set = True
             save_last_used_saving_path(save_dir_base)
 
+    # =========================================================================
+    # Focus Lock Settings
+    # =========================================================================
+
+    def get_focus_lock_settings(self) -> dict:
+        """Get current focus lock settings for saving."""
+        return {
+            "enabled": self.checkbox_focus_lock.isChecked(),
+            "buffer_length": self.spinbox_buffer_length.value(),
+            "recovery_attempts": self.spinbox_recovery_attempts.value(),
+            "min_spot_snr": self.spinbox_min_snr.value(),
+            "acquire_threshold_um": self.spinbox_acquire_threshold.value(),
+            "maintain_threshold_um": self.spinbox_maintain_threshold.value(),
+        }
+
+    def set_focus_lock_settings(self, settings: dict) -> None:
+        """Restore focus lock settings from saved data."""
+        self.checkbox_focus_lock.setChecked(settings.get("enabled", False))
+        self.spinbox_buffer_length.setValue(settings.get("buffer_length", 5))
+        self.spinbox_recovery_attempts.setValue(settings.get("recovery_attempts", 3))
+        self.spinbox_min_snr.setValue(settings.get("min_spot_snr", 10.0))
+        self.spinbox_acquire_threshold.setValue(settings.get("acquire_threshold_um", 0.25))
+        self.spinbox_maintain_threshold.setValue(settings.get("maintain_threshold_um", 0.5))
+
+    # =========================================================================
+    # Preset Save/Load
+    # =========================================================================
+
+    def save_acquisition_preset(self) -> None:
+        """Save current acquisition settings to the experiment folder."""
+        base_path = self.lineEdit_savingDir.text()
+        experiment_id = self.lineEdit_experimentID.text() or "Preset"
+
+        if not base_path:
+            QMessageBox.warning(
+                self,
+                "No Saving Path",
+                "Please set a saving path before saving the preset.",
+            )
+            return
+
+        experiment_path = os.path.join(base_path, experiment_id)
+
+        # Collect selected channels
+        selected_channels = [
+            item.text() for item in self.list_configurations.selectedItems()
+        ]
+
+        try:
+            save_acquisition_preset(
+                experiment_path=experiment_path,
+                experiment_id=experiment_id,
+                widget_type="wellplate",
+                z_stack_settings={
+                    "nz": self.entry_NZ.value() if self.checkbox_z.isChecked() else 1,
+                    "delta_z_um": self.entry_deltaZ.value(),
+                    "config": self.combobox_z_mode.currentText(),
+                },
+                time_series_settings={
+                    "nt": self.entry_Nt.value() if self.checkbox_time.isChecked() else 1,
+                    "delta_t_s": self.entry_dt.value(),
+                },
+                channel_names=selected_channels,
+                autofocus_settings={
+                    "contrast_af": self.checkbox_withAutofocus.isChecked(),
+                    "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                },
+                focus_lock_settings=self.get_focus_lock_settings(),
+            )
+
+            self._log.info(f"Saved acquisition preset to: {experiment_path}")
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Acquisition settings saved to:\n{experiment_path}/acquisition.yaml",
+            )
+
+        except Exception as e:
+            self._log.error(f"Failed to save acquisition preset: {e}")
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"Failed to save acquisition preset:\n{str(e)}",
+            )
+
+    def load_acquisition_preset(self) -> None:
+        """Load acquisition settings from an experiment folder."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Acquisition Preset",
+            self.lineEdit_savingDir.text() or DEFAULT_SAVING_PATH,
+            "YAML files (acquisition.yaml);;All files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Parse the YAML file
+            yaml_data = parse_acquisition_yaml(file_path)
+
+            # Check widget type compatibility
+            if yaml_data.widget_type != "wellplate":
+                QMessageBox.warning(
+                    self,
+                    "Widget Type Mismatch",
+                    f"This preset was created for '{yaml_data.widget_type}' mode.\n"
+                    "Some settings may not be applicable.",
+                )
+
+            # Apply the settings via the existing YAML handling method
+            self._apply_yaml_settings(yaml_data)
+
+            self._log.info(f"Loaded acquisition preset from: {file_path}")
+            QMessageBox.information(
+                self,
+                "Preset Loaded",
+                f"Acquisition settings loaded from:\n{file_path}",
+            )
+
+        except Exception as e:
+            self._log.error(f"Failed to load acquisition preset: {e}")
+            QMessageBox.critical(
+                self,
+                "Load Failed",
+                f"Failed to load acquisition preset:\n{str(e)}",
+            )
+
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():
             QMessageBox.warning(
@@ -2595,6 +2861,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_withReflectionAutofocus,
             self.list_configurations,
             self.combobox_xy_mode,
+            self.checkbox_focus_lock,
+            self.spinbox_buffer_length,
+            self.spinbox_recovery_attempts,
+            self.spinbox_min_snr,
+            self.spinbox_acquire_threshold,
+            self.spinbox_maintain_threshold,
         ]
 
         for widget in widgets_to_block:
@@ -2622,6 +2894,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
 
+            # Focus lock
+            self.checkbox_focus_lock.setChecked(yaml_data.focus_lock_enabled)
+            self.spinbox_buffer_length.setValue(yaml_data.focus_lock_buffer_length)
+            self.spinbox_recovery_attempts.setValue(yaml_data.focus_lock_recovery_attempts)
+            self.spinbox_min_snr.setValue(yaml_data.focus_lock_min_spot_snr)
+            self.spinbox_acquire_threshold.setValue(yaml_data.focus_lock_acquire_threshold_um)
+            self.spinbox_maintain_threshold.setValue(yaml_data.focus_lock_maintain_threshold_um)
+
             # XY mode
             xy_mode = yaml_data.xy_mode
             index = self.combobox_xy_mode.findText(xy_mode)
@@ -2645,8 +2925,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 widget.blockSignals(False)
 
         # Trigger UI updates
-        self._update_z_controls_visibility()
-        self._update_time_controls_visibility()
+        self.show_z_controls(yaml_data.nz > 1)
+        self.show_time_controls(yaml_data.nt > 1)
+        self.focus_lock_controls_frame.setVisible(yaml_data.focus_lock_enabled)
+        self.update_tab_styles()
 
         self._log.info(
             f"Applied YAML settings: NZ={yaml_data.nz}, Nt={yaml_data.nt}, "

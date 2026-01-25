@@ -144,6 +144,9 @@ class BackendContext:
         if self._event_monitor:
             self._event_monitor.unsubscribe_all()
 
+        # Ensure stale subscribers are cleared between tests
+        event_bus.clear()
+
         # Close microscope
         if self._microscope:
             try:

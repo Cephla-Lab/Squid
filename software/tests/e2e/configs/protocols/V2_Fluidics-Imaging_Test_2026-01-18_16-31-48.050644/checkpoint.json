@@ -1,0 +1,14 @@
+{
+  "protocol_name": "V2 Fluidics-Imaging Test",
+  "protocol_version": "2.0",
+  "experiment_id": "V2_Fluidics-Imaging_Test_2026-01-18_16-31-48.050644",
+  "experiment_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/V2_Fluidics-Imaging_Test_2026-01-18_16-31-48.050644",
+  "round_index": 0,
+  "step_index": 0,
+  "imaging_fov_index": 0,
+  "imaging_z_index": 0,
+  "imaging_channel_index": 0,
+  "created_at": "2026-01-18T16:31:48.061731",
+  "paused_at": null,
+  "metadata": {}
+}

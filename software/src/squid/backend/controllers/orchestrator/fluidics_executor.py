@@ -12,6 +12,7 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.events import EventBus
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import FluidicsStep, FluidicsCommand
@@ -339,11 +340,13 @@ class FluidicsExecutor:
             cancel_token: CancelToken for pause/abort
             max_duration_s: Optional cap on wait duration (for simulation)
         """
+        duration_s = scale_duration(duration_s)
         if max_duration_s is not None:
+            max_duration_s = scale_duration(max_duration_s)
             duration_s = min(duration_s, max_duration_s)
 
         elapsed = 0.0
-        interval = 0.5  # Check every 500ms
+        interval = scale_duration(0.5, min_seconds=0.01)  # Check every 500ms
 
         while elapsed < duration_s:
             cancel_token.check_point()

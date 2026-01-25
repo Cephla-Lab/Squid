@@ -401,6 +401,7 @@ class ValidateProtocolCommand(Event):
 
     protocol_path: str
     base_path: str
+    fov_count: int = 0  # Number of FOV positions loaded (0 = use default of 1)
 
 
 @dataclass

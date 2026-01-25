@@ -725,7 +725,13 @@ class ChannelConfigurationManager(BaseManager):
             if override.get("analog_gain") is not None:
                 self.update_configuration(objective, mode.id, "AnalogGain", override["analog_gain"])
             if override.get("illumination_intensity") is not None:
-                self.update_configuration(objective, mode.id, "IlluminationIntensity", override["illumination_intensity"])
+                self.update_configuration(
+                    objective,
+                    mode.id,
+                    "IlluminationIntensity",
+                    override["illumination_intensity"],
+                )
+            if override.get("z_offset_um") is not None:
+                self.update_configuration(objective, mode.id, "ZOffset", override["z_offset_um"])
 
             self._log.debug(f"Applied overrides to channel '{channel_name}' for objective '{objective}'")
-

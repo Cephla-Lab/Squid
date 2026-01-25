@@ -31,6 +31,7 @@ from squid.backend.controllers.multipoint.multi_point_utils import (
     AcquisitionParameters,
     ScanPositionInformation,
 )
+from squid.core.config.test_timing import scale_duration
 from squid.core.events import (
     event_bus,
     AcquisitionStarted,
@@ -326,7 +327,8 @@ class TestTimeLapseScenarios:
         elapsed = time.time() - start_time
 
         # Should take at least (nt-1) * dt seconds for intervals
-        assert elapsed >= (nt - 1) * dt * 0.8  # 80% tolerance for timing
+        expected_dt = scale_duration(dt)
+        assert elapsed >= (nt - 1) * expected_dt * 0.8  # 80% tolerance for timing
         assert collector.total_images_captured == expected_images
 
     def test_timelapse_with_zstack(self):

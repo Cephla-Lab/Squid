@@ -358,7 +358,6 @@ class OrchestratorControlPanel(QWidget):
     def _on_validation_complete_ui(self, summary: ValidationSummary) -> None:
         """Show validation results dialog."""
         dialog = ValidationResultDialog(summary, parent=self)
-        dialog.start_requested.connect(self._on_start_clicked)
         dialog.exec_()
 
     # ========================================================================
@@ -391,17 +390,27 @@ class OrchestratorControlPanel(QWidget):
             self._protocol_data = protocol_data
             protocol_name = protocol_data.get("name", Path(protocol_path).stem)
 
-            # Check if protocol has imaging rounds
+            # Check imaging steps and whether they use default FOVs
             rounds = protocol_data.get("rounds", [])
-            has_imaging = any(r.get("imaging") is not None for r in rounds)
+            has_imaging = False
+            default_fovs_required = False
+            for round_def in rounds:
+                for step in round_def.get("steps", []):
+                    if step.get("step_type") != "imaging":
+                        continue
+                    has_imaging = True
+                    if step.get("fovs", "default") == "default":
+                        default_fovs_required = True
 
             # Update status label
             fov_count = sum(len(coords) for coords in self._fov_positions.values())
-            if has_imaging:
+            if has_imaging and default_fovs_required:
                 if fov_count > 0:
                     fov_status = f"({fov_count} FOVs loaded)"
                 else:
                     fov_status = "(FOVs required)"
+            elif has_imaging:
+                fov_status = "(no FOVs required)"
             else:
                 fov_status = "(no imaging)"
 
@@ -414,8 +423,8 @@ class OrchestratorControlPanel(QWidget):
             self.fov_positions_changed.emit(self._fov_positions)
             self.protocol_loaded.emit(protocol_data)
 
-            # Enable Start only if FOVs loaded for imaging protocols
-            can_start = not has_imaging or fov_count > 0
+            # Enable Start only if default FOVs are required and loaded
+            can_start = not default_fovs_required or fov_count > 0
             self._start_btn.setEnabled(can_start)
             self._validate_btn.setEnabled(True)
             _log.info(f"Protocol loaded: {protocol_path}, can_start={can_start}")
@@ -462,10 +471,13 @@ class OrchestratorControlPanel(QWidget):
         if self._protocol_path is None or self._base_path is None:
             _log.warning("No protocol loaded")
             return
+        # Calculate FOV count from loaded positions
+        fov_count = sum(len(coords) for coords in self._fov_positions.values())
         self._event_bus.publish(
             ValidateProtocolCommand(
                 protocol_path=self._protocol_path,
                 base_path=self._base_path,
+                fov_count=fov_count,
             )
         )
 
@@ -507,7 +519,8 @@ class OrchestratorControlPanel(QWidget):
         self._load_btn.setEnabled(bool((is_idle or is_terminal) and not is_validating))
         can_start = (is_idle or is_terminal) and self._protocol_data is not None
         self._start_btn.setEnabled(bool(can_start))
-        self._validate_btn.setEnabled(bool(is_idle and self._protocol_data is not None))
+        # Allow validation from idle or terminal states (after abort/complete/fail)
+        self._validate_btn.setEnabled(bool((is_idle or is_terminal) and self._protocol_data is not None))
         self._pause_btn.setEnabled(bool(is_running))
         self._resume_btn.setEnabled(bool(is_paused))
         self._abort_btn.setEnabled(bool(is_running or is_paused))
@@ -711,10 +724,10 @@ class OrchestratorWorkflowTree(QWidget):
         self._tree.expandToDepth(0)
 
     def _build_operations_from_schema(self, round_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Build operations list from schema format (fluidics/imaging keys).
+        """Build operations list from schema format.
 
-        The protocol schema uses separate 'fluidics' and 'imaging' keys on rounds,
-        but the UI displays them as a unified operations list.
+        Handles both V2 format (steps with step_type) and legacy format
+        (separate fluidics/imaging keys).
 
         Args:
             round_data: Round data dictionary from protocol
@@ -724,10 +737,25 @@ class OrchestratorWorkflowTree(QWidget):
         """
         operations: List[Dict[str, Any]] = []
 
-        # Add fluidics operations
+        # V2 format: steps list with step_type field
+        steps = round_data.get("steps", [])
+        if steps:
+            for i, step in enumerate(steps):
+                step_type = step.get("step_type", "unknown")
+                op: Dict[str, Any] = {
+                    "type": step_type,
+                    "name": step.get("name", f"{step_type.title()} {i + 1}"),
+                }
+                # Copy over step-specific fields
+                if isinstance(step, dict):
+                    op.update(step)
+                operations.append(op)
+            return operations
+
+        # Legacy format: separate fluidics/imaging keys
         fluidics = round_data.get("fluidics", [])
         for i, step in enumerate(fluidics):
-            op: Dict[str, Any] = {
+            op = {
                 "type": "fluidics",
                 "name": f"Fluidics {i + 1}",
             }
@@ -912,12 +940,26 @@ class OrchestratorWorkflowTree(QWidget):
                 )
 
     def _get_operation_details(self, operation: Dict[str, Any]) -> str:
+        """Get details string for an operation.
+
+        Handles both V2 format (config/protocol references) and legacy format.
+        """
         op_type = operation.get("type", "")
         if op_type == "imaging":
+            # V2 format: config reference
+            config = operation.get("config")
+            if config:
+                fovs = operation.get("fovs", "default")
+                return f"Config: {config}" + (f", FOVs: {fovs}" if fovs != "default" else "")
+            # Legacy format: inline channels
             channels = operation.get("channels", [])
             return f"Channels: {', '.join(channels)}" if channels else ""
         elif op_type == "fluidics":
-            # Handle both formats: action/reagent (old) and command/solution (schema)
+            # V2 format: protocol reference
+            protocol = operation.get("protocol")
+            if protocol:
+                return f"Protocol: {protocol}"
+            # Legacy formats: action/reagent (old) and command/solution (schema)
             action = operation.get("action", "") or operation.get("command", "")
             reagent = operation.get("reagent", "") or operation.get("solution", "")
             return f"{action}: {reagent}" if reagent else str(action)
@@ -926,7 +968,8 @@ class OrchestratorWorkflowTree(QWidget):
             duration = operation.get("duration_seconds", 0) or operation.get("duration_s", 0)
             return f"Duration: {duration}s"
         elif op_type == "intervention":
-            return operation.get("message", "")[:50]
+            msg = operation.get("message", "")
+            return msg[:50] if msg else ""
         return ""
 
     def update_item_status(

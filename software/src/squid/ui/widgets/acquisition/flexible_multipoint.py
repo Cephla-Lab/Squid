@@ -31,6 +31,8 @@ from squid.core.events import (
     RemoveScanCoordinateRegionCommand,
     RenameScanCoordinateRegionCommand,
     UpdateScanCoordinateRegionZCommand,
+    ChannelConfigurationsChanged,
+    FocusLockModeChanged,
     handles,
     auto_subscribe,
 )
@@ -75,7 +77,12 @@ from _def import (
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
 from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
-from squid.backend.io.acquisition_yaml import AcquisitionYAMLData
+from squid.ui.widgets.acquisition.channel_order_widget import ChannelOrderWidget
+from squid.backend.io.acquisition_yaml import (
+    AcquisitionYAMLData,
+    save_acquisition_preset,
+    parse_acquisition_yaml,
+)
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -161,10 +168,38 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         except Exception:
             self._log.exception("Failed to update flexible multipoint FOV positions on objective change")
 
+    @handles(ChannelConfigurationsChanged)
+    def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
+        """Update channel list when configurations change for current objective."""
+        self.list_configurations.clear()
+        self.list_configurations.addItems(event.configuration_names)
+
+    @handles(FocusLockModeChanged)
+    def _on_focus_lock_mode_changed(self, event: FocusLockModeChanged) -> None:
+        """Disable AF checkboxes when focus lock is active."""
+        focus_lock_active = event.mode == "on"
+
+        # Disable the focus lock checkbox when the external focus lock controller is active
+        self.checkbox_focus_lock.setEnabled(not focus_lock_active)
+        if focus_lock_active:
+            self.checkbox_focus_lock.setChecked(False)
+            self.checkbox_withAutofocus.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(False)
+        else:
+            self.checkbox_withAutofocus.setEnabled(True)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
+
+        # Save/Load preset buttons
+        self.btn_save_preset = QPushButton("Save")
+        self.btn_save_preset.setToolTip("Save current acquisition settings to experiment folder")
+
+        self.btn_load_preset = QPushButton("Load")
+        self.btn_load_preset.setToolTip("Load acquisition settings from an experiment folder")
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
@@ -348,6 +383,72 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
+        # Focus Lock checkbox and parameters
+        self.checkbox_focus_lock = QCheckBox("Focus Lock")
+        self.checkbox_focus_lock.setChecked(False)
+        self.checkbox_focus_lock.setToolTip(
+            "Enable continuous focus lock during acquisition.\n"
+            "Uses laser autofocus to maintain focus between FOVs."
+        )
+
+        # Focus Lock parameter controls (initially hidden) - horizontal layout for full-width display
+        self.focus_lock_frame = QFrame()
+        self.focus_lock_frame.setVisible(False)
+        self.focus_lock_frame.setStyleSheet(
+            "QFrame { background-color: rgba(160, 32, 240, 0.12); border-radius: 4px; }"
+        )
+        focus_lock_layout = QHBoxLayout(self.focus_lock_frame)
+        focus_lock_layout.setContentsMargins(8, 4, 8, 4)
+        focus_lock_layout.setSpacing(8)
+
+        self.spinbox_buffer_length = QSpinBox()
+        self.spinbox_buffer_length.setRange(1, 20)
+        self.spinbox_buffer_length.setValue(5)
+        self.spinbox_buffer_length.setToolTip("Sequential good readings to acquire lock")
+        self.spinbox_buffer_length.setFixedWidth(60)
+
+        self.spinbox_recovery_attempts = QSpinBox()
+        self.spinbox_recovery_attempts.setRange(1, 10)
+        self.spinbox_recovery_attempts.setValue(3)
+        self.spinbox_recovery_attempts.setToolTip("Retry cycles before declaring lock lost")
+        self.spinbox_recovery_attempts.setFixedWidth(60)
+
+        self.spinbox_min_snr = QDoubleSpinBox()
+        self.spinbox_min_snr.setRange(1.0, 100.0)
+        self.spinbox_min_snr.setValue(10.0)
+        self.spinbox_min_snr.setDecimals(1)
+        self.spinbox_min_snr.setToolTip("Minimum spot signal-to-noise ratio")
+        self.spinbox_min_snr.setFixedWidth(70)
+
+        self.spinbox_acquire_threshold = QDoubleSpinBox()
+        self.spinbox_acquire_threshold.setRange(0.01, 5.0)
+        self.spinbox_acquire_threshold.setValue(0.25)
+        self.spinbox_acquire_threshold.setDecimals(2)
+        self.spinbox_acquire_threshold.setSuffix(" μm")
+        self.spinbox_acquire_threshold.setToolTip("Max displacement to count as 'good' reading")
+        self.spinbox_acquire_threshold.setFixedWidth(80)
+
+        self.spinbox_maintain_threshold = QDoubleSpinBox()
+        self.spinbox_maintain_threshold.setRange(0.01, 5.0)
+        self.spinbox_maintain_threshold.setValue(0.5)
+        self.spinbox_maintain_threshold.setDecimals(2)
+        self.spinbox_maintain_threshold.setSuffix(" μm")
+        self.spinbox_maintain_threshold.setToolTip("Looser threshold once lock is acquired")
+        self.spinbox_maintain_threshold.setFixedWidth(80)
+
+        # Add all focus lock controls in horizontal layout
+        focus_lock_layout.addWidget(QLabel("Buffer:"))
+        focus_lock_layout.addWidget(self.spinbox_buffer_length)
+        focus_lock_layout.addWidget(QLabel("Retries:"))
+        focus_lock_layout.addWidget(self.spinbox_recovery_attempts)
+        focus_lock_layout.addWidget(QLabel("SNR:"))
+        focus_lock_layout.addWidget(self.spinbox_min_snr)
+        focus_lock_layout.addWidget(QLabel("Acquire:"))
+        focus_lock_layout.addWidget(self.spinbox_acquire_threshold)
+        focus_lock_layout.addWidget(QLabel("Maintain:"))
+        focus_lock_layout.addWidget(self.spinbox_maintain_threshold)
+        focus_lock_layout.addStretch()
+
         self.checkbox_set_z_range = QCheckBox("Set Z-range")
         self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
 
@@ -416,6 +517,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.grid_line0.addWidget(QLabel("Saving Path"))
         self.grid_line0.addWidget(self.lineEdit_savingDir)
         self.grid_line0.addWidget(self.btn_setSavingDir)
+        self.grid_line0.addWidget(self.btn_save_preset)
+        self.grid_line0.addWidget(self.btn_load_preset)
         self.grid_line0.addWidget(QLabel("ID"))
         self.grid_line0.addWidget(self.lineEdit_experimentID)
 
@@ -533,6 +636,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         grid_af.addWidget(self.checkbox_withAutofocus)
         if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
+            grid_af.addWidget(self.checkbox_focus_lock)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -555,6 +659,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.grid_acquisition.addLayout(grid_config, 6, 0, 3, 4)
         self.grid_acquisition.addLayout(grid_acquisition, 6, 4, 3, 4)
+
+        # Focus Lock parameters frame - full width row below config/AF
+        self.grid_acquisition.addWidget(self.focus_lock_frame, 9, 0, 1, 8)
 
         # Columns 0-3: Combined stretch factor = 4
         # Columns 4-7: Combined stretch factor = 4
@@ -612,7 +719,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_withReflectionAutofocus.toggled.connect(self._on_reflection_af_toggled)
         self.checkbox_usePiezo.toggled.connect(self._on_use_piezo_toggled)
         self.checkbox_skipSaving.toggled.connect(self._on_skip_saving_toggled)
+        self.checkbox_focus_lock.toggled.connect(self._on_focus_lock_toggled)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
+        self.btn_save_preset.clicked.connect(self.save_acquisition_preset)
+        self.btn_load_preset.clicked.connect(self.load_acquisition_preset)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
         # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
@@ -1605,6 +1715,154 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """Handle skip saving checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))
 
+    def _on_focus_lock_toggled(self, checked: bool) -> None:
+        """Handle focus lock checkbox toggle - show/hide parameters frame."""
+        self.focus_lock_frame.setVisible(checked)
+        # When focus lock is enabled, disable the single-shot AF checkboxes
+        if checked:
+            self.checkbox_withAutofocus.setChecked(False)
+            self.checkbox_withAutofocus.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setChecked(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(False)
+        else:
+            self.checkbox_withAutofocus.setEnabled(True)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+
+    def get_focus_lock_settings(self) -> dict:
+        """Get current focus lock settings for saving."""
+        return {
+            "enabled": self.checkbox_focus_lock.isChecked(),
+            "buffer_length": self.spinbox_buffer_length.value(),
+            "recovery_attempts": self.spinbox_recovery_attempts.value(),
+            "min_spot_snr": self.spinbox_min_snr.value(),
+            "acquire_threshold_um": self.spinbox_acquire_threshold.value(),
+            "maintain_threshold_um": self.spinbox_maintain_threshold.value(),
+        }
+
+    def set_focus_lock_settings(self, settings: dict) -> None:
+        """Restore focus lock settings from saved data."""
+        self.checkbox_focus_lock.setChecked(settings.get("enabled", False))
+        self.spinbox_buffer_length.setValue(settings.get("buffer_length", 5))
+        self.spinbox_recovery_attempts.setValue(settings.get("recovery_attempts", 3))
+        self.spinbox_min_snr.setValue(settings.get("min_spot_snr", 10.0))
+        self.spinbox_acquire_threshold.setValue(settings.get("acquire_threshold_um", 0.25))
+        self.spinbox_maintain_threshold.setValue(settings.get("maintain_threshold_um", 0.5))
+
+    # =========================================================================
+    # Preset Save/Load
+    # =========================================================================
+
+    def save_acquisition_preset(self) -> None:
+        """Save current acquisition settings to the experiment folder."""
+        base_path = self.lineEdit_savingDir.text()
+        experiment_id = self.lineEdit_experimentID.text() or "Preset"
+
+        if not base_path:
+            QMessageBox.warning(
+                self,
+                "No Saving Path",
+                "Please set a saving path before saving the preset.",
+            )
+            return
+
+        experiment_path = os.path.join(base_path, experiment_id)
+
+        # Collect selected channels
+        selected_channels = [
+            self.list_configurations.item(i).text()
+            for i in range(self.list_configurations.count())
+            if self.list_configurations.item(i).isSelected()
+        ]
+
+        try:
+            save_acquisition_preset(
+                experiment_path=experiment_path,
+                experiment_id=experiment_id,
+                widget_type="flexible",
+                z_stack_settings={
+                    "nz": self.entry_NZ.value(),
+                    "delta_z_um": self.entry_deltaZ.value(),
+                    "config": self.combobox_z_stack.currentText(),
+                    "use_piezo": self.checkbox_usePiezo.isChecked(),
+                },
+                time_series_settings={
+                    "nt": self.entry_Nt.value(),
+                    "delta_t_s": self.entry_dt.value(),
+                },
+                channel_names=selected_channels,
+                autofocus_settings={
+                    "contrast_af": self.checkbox_withAutofocus.isChecked(),
+                    "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                },
+                focus_lock_settings=self.get_focus_lock_settings(),
+                flexible_scan_settings={
+                    "nx": self.entry_NX.value(),
+                    "ny": self.entry_NY.value(),
+                    "delta_x_mm": self.entry_deltaX.value() if hasattr(self, "entry_deltaX") else 0.0,
+                    "delta_y_mm": self.entry_deltaY.value() if hasattr(self, "entry_deltaY") else 0.0,
+                    "overlap_percent": self.entry_overlap.value() if self.use_overlap else 10.0,
+                    "positions": [
+                        {"name": name, "center_mm": list(coord)}
+                        for name, coord in zip(self.location_ids, self.location_list)
+                    ] if len(self.location_list) > 0 else [],
+                },
+            )
+            self._log.info(f"Saved acquisition preset to: {experiment_path}")
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Acquisition preset saved to:\n{experiment_path}/acquisition.yaml",
+            )
+        except Exception as e:
+            self._log.exception("Failed to save acquisition preset")
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"Failed to save acquisition preset:\n{str(e)}",
+            )
+
+    def load_acquisition_preset(self) -> None:
+        """Load acquisition settings from an experiment folder."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Acquisition Preset",
+            self.lineEdit_savingDir.text() or DEFAULT_SAVING_PATH,
+            "YAML files (acquisition.yaml);;All files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Parse the YAML file
+            yaml_data = parse_acquisition_yaml(file_path)
+
+            # Check widget type compatibility
+            if yaml_data.widget_type != "flexible":
+                QMessageBox.warning(
+                    self,
+                    "Widget Type Mismatch",
+                    f"This preset was created for '{yaml_data.widget_type}' mode.\n"
+                    "Some settings may not be applicable.",
+                )
+
+            # Apply the settings via the existing YAML handling method
+            self._do_apply_yaml_data(yaml_data)
+
+            self._log.info(f"Loaded acquisition preset from: {file_path}")
+            QMessageBox.information(
+                self,
+                "Preset Loaded",
+                f"Acquisition preset loaded from:\n{file_path}",
+            )
+        except Exception as e:
+            self._log.exception("Failed to load acquisition preset")
+            QMessageBox.critical(
+                self,
+                "Load Failed",
+                f"Failed to load acquisition preset:\n{str(e)}",
+            )
+
     # =========================================================================
     # YAML Drag-and-Drop Support (AcquisitionYAMLDropMixin implementation)
     # =========================================================================
@@ -1661,6 +1919,17 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+
+            # Focus lock settings
+            if yaml_data.focus_lock_enabled:
+                self.set_focus_lock_settings({
+                    "enabled": yaml_data.focus_lock_enabled,
+                    "buffer_length": yaml_data.focus_lock_buffer_length,
+                    "recovery_attempts": yaml_data.focus_lock_recovery_attempts,
+                    "min_spot_snr": yaml_data.focus_lock_min_spot_snr,
+                    "acquire_threshold_um": yaml_data.focus_lock_acquire_threshold_um,
+                    "maintain_threshold_um": yaml_data.focus_lock_maintain_threshold_um,
+                })
 
             # Channels - select matching channels in list
             self.list_configurations.clearSelection()

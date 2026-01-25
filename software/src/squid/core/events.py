@@ -2649,3 +2649,69 @@ class FocusLockSearchProgress(Event):
     current_position_um: float
     search_min_um: float
     search_max_um: float
+
+
+# ============================================================================
+# Acquisition Preset Save/Load Commands
+# ============================================================================
+
+
+@dataclass
+class SaveAcquisitionPresetCommand(Event):
+    """Command to save current acquisition settings as a preset.
+
+    The handler (typically the multipoint widget) will gather all current
+    settings and save them to the experiment folder.
+    """
+
+    experiment_path: str
+
+
+@dataclass
+class LoadAcquisitionPresetCommand(Event):
+    """Command to load acquisition settings from a preset file.
+
+    The handler (typically the multipoint widget) will parse the YAML file
+    and apply the settings to the UI.
+    """
+
+    file_path: str
+
+
+@dataclass
+class AcquisitionPresetSaved(Event):
+    """Notification that acquisition preset was saved."""
+
+    file_path: str
+    success: bool
+    error_message: Optional[str] = None
+
+
+@dataclass
+class AcquisitionPresetLoaded(Event):
+    """Notification that acquisition preset was loaded."""
+
+    file_path: str
+    success: bool
+    error_message: Optional[str] = None
+
+
+# ============================================================================
+# Focus Lock Parameter Commands (for multipoint acquisition settings)
+# ============================================================================
+
+
+@dataclass
+class SetFocusLockParamsCommand(Event):
+    """Command to set focus lock parameters for acquisition.
+
+    These parameters configure how focus lock behaves during multi-point
+    acquisition. Different from SetFocusLockModeCommand which enables/disables
+    the focus lock.
+    """
+
+    buffer_length: Optional[int] = None  # Sequential good readings to acquire lock
+    recovery_attempts: Optional[int] = None  # Retry cycles before declaring lost
+    min_spot_snr: Optional[float] = None  # Minimum spot signal-to-noise ratio
+    acquire_threshold_um: Optional[float] = None  # Max displacement to count as "good"
+    maintain_threshold_um: Optional[float] = None  # Looser threshold once locked

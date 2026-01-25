@@ -27,11 +27,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.harness import BackendContext, EventMonitor
-from squid.core.events import EventBus, event_bus, AcquisitionFinished
-from squid.core.utils.cancel_token import CancelToken
-from squid.core.protocol import (
-    ImagingStep,
+from squid.core.events import (
+    EventBus,
+    event_bus,
+    AcquisitionFinished,
+    LoadScanCoordinatesCommand,
 )
+from squid.core.utils.cancel_token import CancelToken
+from squid.core.protocol import ImagingConfig
 from squid.backend.controllers.orchestrator import (
     OrchestratorController,
     OrchestratorState,
@@ -134,23 +137,59 @@ def single_imaging_protocol(tmp_path, backend_ctx: BackendContext) -> str:
 
     protocol_dict = {
         "name": "Single Imaging",
-        "version": "1.0",
+        "version": "2.0",
         "description": "Single imaging round",
+        "imaging_configs": {
+            "standard": {
+                "channels": [channel],
+                "z_stack": {"planes": 1, "step_um": 1.0},
+                "focus": {"enabled": False},
+            }
+        },
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "type": "imaging",
-                "imaging": {
-                    "channels": [channel],
-                    "z_planes": 1,
-                    "z_step_um": 1.0,
-                    "use_autofocus": False,
-                },
+                "steps": [{"step_type": "imaging", "config": "standard"}],
             }
         ],
     }
 
     protocol_path = tmp_path / "single_imaging.yaml"
+    import yaml
+
+    with open(protocol_path, "w") as f:
+        yaml.dump(protocol_dict, f)
+
+    return str(protocol_path)
+
+
+@pytest.fixture
+def single_imaging_protocol_abort(tmp_path, backend_ctx: BackendContext) -> str:
+    """Create a single-round protocol with imaging_failure: abort."""
+    channels = backend_ctx.get_available_channels()
+    channel = channels[0] if channels else "BF"
+
+    protocol_dict = {
+        "name": "Single Imaging Abort",
+        "version": "2.0",
+        "description": "Single imaging round (abort on imaging failure)",
+        "error_handling": {"imaging_failure": "abort"},
+        "imaging_configs": {
+            "standard": {
+                "channels": [channel],
+                "z_stack": {"planes": 1, "step_um": 1.0},
+                "focus": {"enabled": False},
+            }
+        },
+        "rounds": [
+            {
+                "name": "Imaging Round 1",
+                "steps": [{"step_type": "imaging", "config": "standard"}],
+            }
+        ],
+    }
+
+    protocol_path = tmp_path / "single_imaging_abort.yaml"
     import yaml
 
     with open(protocol_path, "w") as f:
@@ -167,23 +206,34 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
 
     protocol_dict = {
         "name": "Multi Round",
-        "version": "1.0",
+        "version": "2.0",
         "description": "Multi-round experiment",
+        "fluidics_protocols": {
+            "test_incubate": {
+                "steps": [
+                    {"operation": "incubate", "duration_s": 1.0},
+                ],
+            },
+        },
+        "imaging_configs": {
+            "standard": {
+                "channels": [channel],
+                "z_stack": {"planes": 1, "step_um": 1.0},
+                "focus": {"enabled": False},
+            }
+        },
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "type": "imaging",
-                "imaging": {"channels": [channel], "z_planes": 1},
+                "steps": [{"step_type": "imaging", "config": "standard"}],
             },
             {
                 "name": "Fluidics Round",
-                "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics_protocol": "test_incubate",  # Named protocol reference
+                "steps": [{"step_type": "fluidics", "protocol": "test_incubate"}],
             },
             {
                 "name": "Imaging Round 2",
-                "type": "imaging",
-                "imaging": {"channels": [channel], "z_planes": 1},
+                "steps": [{"step_type": "imaging", "config": "standard"}],
             },
         ],
     }
@@ -205,24 +255,32 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
 
     protocol_dict = {
         "name": "Intervention Protocol",
-        "version": "1.0",
+        "version": "2.0",
         "description": "Protocol with intervention",
+        "imaging_configs": {
+            "standard": {
+                "channels": [channel],
+                "z_stack": {"planes": 1, "step_um": 1.0},
+                "focus": {"enabled": False},
+            }
+        },
         "rounds": [
             {
                 "name": "Pre-intervention Imaging",
-                "type": "imaging",
-                "imaging": {"channels": [channel], "z_planes": 1},
+                "steps": [{"step_type": "imaging", "config": "standard"}],
             },
             {
                 "name": "Intervention Round",
-                "type": "custom",  # Use 'custom' for intervention rounds
-                "requires_intervention": True,
-                "intervention_message": "Please replace the sample",
+                "steps": [
+                    {
+                        "step_type": "intervention",
+                        "message": "Please replace the sample",
+                    }
+                ],
             },
             {
                 "name": "Post-intervention Imaging",
-                "type": "imaging",
-                "imaging": {"channels": [channel], "z_planes": 1},
+                "steps": [{"step_type": "imaging", "config": "standard"}],
             },
         ],
     }
@@ -241,18 +299,28 @@ def fluidics_heavy_protocol(tmp_path) -> str:
     """Create a protocol with multiple fluidics rounds."""
     protocol_dict = {
         "name": "Fluidics Heavy",
-        "version": "1.0",
+        "version": "2.0",
         "description": "Multiple fluidics",
+        "fluidics_protocols": {
+            "test_prime": {
+                "steps": [
+                    {"operation": "prime", "solution": "buffer", "volume_ul": 50},
+                ],
+            },
+            "test_stain": {
+                "steps": [
+                    {"operation": "flow", "solution": "stain", "volume_ul": 50},
+                ],
+            },
+        },
         "rounds": [
             {
                 "name": "Prime",
-                "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics_protocol": "test_prime",  # Named protocol reference
+                "steps": [{"step_type": "fluidics", "protocol": "test_prime"}],
             },
             {
                 "name": "Stain",
-                "type": "wash",  # Use "wash" type for fluidics-only rounds
-                "fluidics_protocol": "test_stain",  # Named protocol reference
+                "steps": [{"step_type": "fluidics", "protocol": "test_stain"}],
             },
         ],
     }
@@ -286,8 +354,13 @@ def mock_fluidics_controller():
     """Create a mock fluidics controller that completes immediately."""
     mock = MagicMock(spec=FluidicsController)
     mock.run_protocol.return_value = True
-    mock.state = MagicMock()
-    mock.state.value = "IDLE"
+    from squid.backend.controllers.fluidics_controller import FluidicsControllerState
+
+    mock.state = FluidicsControllerState.COMPLETED
+    mock.last_terminal_state = FluidicsControllerState.COMPLETED
+    mock.last_result = None
+    mock.current_step_index = 0
+    mock.total_steps = 0
     mock.is_available = True
     return mock
 
@@ -325,9 +398,13 @@ def mock_experiment_manager(tmp_path):
 
 
 @pytest.fixture
-def mock_acquisition_planner():
+def mock_acquisition_planner(backend_ctx: BackendContext):
     """Create a mock acquisition planner."""
-    return MagicMock()
+    mock = MagicMock()
+    mock.get_available_channel_names.return_value = set(
+        backend_ctx.get_available_channels()
+    )
+    return mock
 
 
 @pytest.fixture
@@ -364,19 +441,20 @@ def imaging_protocol_skip_saving(tmp_path, backend_ctx: BackendContext) -> str:
 
     protocol_dict = {
         "name": "Fast Imaging",
-        "version": "1.0",
+        "version": "2.0",
         "description": "Single imaging round (skip saving)",
+        "imaging_configs": {
+            "fast": {
+                "channels": [channel],
+                "z_stack": {"planes": 1, "step_um": 1.0},
+                "focus": {"enabled": False},
+                "skip_saving": True,
+            }
+        },
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "type": "imaging",
-                "imaging": {
-                    "channels": [channel],
-                    "z_planes": 1,
-                    "z_step_um": 1.0,
-                    "use_autofocus": False,
-                    "skip_saving": True,
-                },
+                "steps": [{"step_type": "imaging", "config": "fast"}],
             }
         ],
     }
@@ -1096,6 +1174,237 @@ class TestInterventionHandling:
 
 
 # =============================================================================
+# V2 Protocol Integration Tests
+# =============================================================================
+
+
+class TestV2ProtocolIntegration:
+    """Integration tests for V2 protocol features."""
+
+    def test_repeat_expansion_executes_rounds(
+        self,
+        orchestrator_with_mocks: OrchestratorController,
+        tmp_path,
+        event_collector: list,
+    ):
+        """Verify repeat expansion generates multiple rounds."""
+        protocol_dict = {
+            "name": "Repeat Protocol",
+            "version": "2.0",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 1},
+                    "focus": {"enabled": False},
+                }
+            },
+            "rounds": [
+                {
+                    "name": "Round {i}",
+                    "repeat": 2,
+                    "steps": [
+                        {"step_type": "imaging", "config": "standard"},
+                    ],
+                }
+            ],
+        }
+
+        protocol_path = tmp_path / "repeat_protocol.yaml"
+        import yaml
+
+        with open(protocol_path, "w") as f:
+            yaml.dump(protocol_dict, f)
+
+        result = orchestrator_with_mocks.start_experiment(
+            protocol_path=str(protocol_path),
+            base_path=str(tmp_path),
+        )
+        assert result is True
+
+        timeout = 5.0
+        start = time.time()
+        while orchestrator_with_mocks.is_running and time.time() - start < timeout:
+            time.sleep(0.1)
+
+        assert orchestrator_with_mocks.state == OrchestratorState.COMPLETED
+
+        round_started = [
+            e for e in event_collector if isinstance(e, OrchestratorRoundStarted)
+        ]
+        assert len(round_started) == 2
+        assert round_started[0].round_name == "Round 1"
+        assert round_started[1].round_name == "Round 2"
+
+    def test_file_references_load(
+        self,
+        orchestrator_with_mocks: OrchestratorController,
+        tmp_path,
+    ):
+        """Verify imaging and fluidics file references resolve in loader."""
+        imaging_config_path = tmp_path / "imaging_config.yaml"
+        fluidics_path = tmp_path / "fluidics_protocol.yaml"
+
+        imaging_config_path.write_text(
+            "channels:\n  - BF\nz_stack:\n  planes: 1\nfocus:\n  enabled: false\n"
+        )
+        fluidics_path.write_text(
+            "steps:\n  - operation: incubate\n    duration_s: 1\n"
+        )
+
+        protocol_dict = {
+            "name": "File Reference Protocol",
+            "version": "2.0",
+            "imaging_configs": {
+                "standard": {"file": imaging_config_path.name},
+            },
+            "fluidics_protocols": {
+                "incubate": {"file": fluidics_path.name},
+            },
+            "rounds": [
+                {
+                    "name": "Fluidics",
+                    "steps": [{"step_type": "fluidics", "protocol": "incubate"}],
+                },
+                {
+                    "name": "Imaging",
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                },
+            ],
+        }
+
+        protocol_path = tmp_path / "file_ref_protocol.yaml"
+        import yaml
+
+        with open(protocol_path, "w") as f:
+            yaml.dump(protocol_dict, f)
+
+        result = orchestrator_with_mocks.start_experiment(
+            protocol_path=str(protocol_path),
+            base_path=str(tmp_path),
+        )
+        assert result is True
+        assert orchestrator_with_mocks.protocol is not None
+        assert "standard" in orchestrator_with_mocks.protocol.imaging_configs
+        assert "incubate" in orchestrator_with_mocks.protocol.fluidics_protocols
+
+        timeout = 5.0
+        start = time.time()
+        while orchestrator_with_mocks.is_running and time.time() - start < timeout:
+            time.sleep(0.1)
+
+        assert orchestrator_with_mocks.state == OrchestratorState.COMPLETED
+
+    def test_non_default_fov_set_loads_csv(
+        self,
+        orchestrator_with_mocks: OrchestratorController,
+        backend_ctx: BackendContext,
+        tmp_path,
+    ):
+        """Verify imaging steps with fov_sets load coordinates."""
+        csv_path = tmp_path / "fovs.csv"
+        csv_path.write_text("region,x (mm),y (mm)\nregion_1,0,0\n")
+
+        protocol_dict = {
+            "name": "FOV Set Protocol",
+            "version": "2.0",
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 1},
+                    "focus": {"enabled": False},
+                }
+            },
+            "fov_sets": {"grid": str(csv_path)},
+            "rounds": [
+                {
+                    "name": "Imaging",
+                    "steps": [
+                        {
+                            "step_type": "imaging",
+                            "config": "standard",
+                            "fovs": "grid",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        protocol_path = tmp_path / "fov_set_protocol.yaml"
+        import yaml
+
+        with open(protocol_path, "w") as f:
+            yaml.dump(protocol_dict, f)
+
+        monitor = backend_ctx.event_monitor
+        monitor.subscribe(LoadScanCoordinatesCommand)
+
+        result = orchestrator_with_mocks.start_experiment(
+            protocol_path=str(protocol_path),
+            base_path=str(tmp_path),
+        )
+        assert result is True
+
+        loaded = monitor.wait_for(LoadScanCoordinatesCommand, timeout_s=5.0)
+        assert loaded is not None
+
+        timeout = 5.0
+        start = time.time()
+        while orchestrator_with_mocks.is_running and time.time() - start < timeout:
+            time.sleep(0.1)
+
+        assert orchestrator_with_mocks.state == OrchestratorState.COMPLETED
+
+    def test_imaging_failure_warn_continues(
+        self,
+        orchestrator_with_mocks: OrchestratorController,
+        tmp_path,
+        event_collector: list,
+        mock_imaging_executor,
+    ):
+        """Verify imaging_failure: warn logs warning and continues."""
+        protocol_dict = {
+            "name": "Warn Imaging Failure",
+            "version": "2.0",
+            "error_handling": {"imaging_failure": "warn"},
+            "imaging_configs": {
+                "standard": {
+                    "channels": ["BF"],
+                    "z_stack": {"planes": 1},
+                    "focus": {"enabled": False},
+                }
+            },
+            "rounds": [
+                {
+                    "name": "Imaging",
+                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                }
+            ],
+        }
+
+        protocol_path = tmp_path / "warn_imaging_failure.yaml"
+        import yaml
+
+        with open(protocol_path, "w") as f:
+            yaml.dump(protocol_dict, f)
+
+        mock_imaging_executor.execute_with_config.return_value = False
+
+        result = orchestrator_with_mocks.start_experiment(
+            protocol_path=str(protocol_path),
+            base_path=str(tmp_path),
+        )
+        assert result is True
+
+        timeout = 5.0
+        start = time.time()
+        while orchestrator_with_mocks.is_running and time.time() - start < timeout:
+            time.sleep(0.1)
+
+        assert orchestrator_with_mocks.state == OrchestratorState.COMPLETED
+        warnings = [e for e in event_collector if isinstance(e, WarningRaised)]
+        assert any(w.category == "EXECUTION" for w in warnings)
+
+# =============================================================================
 # Checkpoint and Recovery Tests
 # =============================================================================
 
@@ -1256,11 +1565,11 @@ class TestCheckpointAndRecovery:
 
         checkpoint_data = {
             "protocol_name": "Multi Round",
-            "protocol_version": "1.0",
+            "protocol_version": "2.0",
             "experiment_id": "resume_test",
             "experiment_path": exp_path,
             "round_index": 1,  # Start from round 2
-            "fluidics_step_index": 0,
+            "step_index": 0,
             "imaging_fov_index": 0,
             "imaging_z_index": 0,
             "imaging_channel_index": 0,
@@ -1315,11 +1624,11 @@ class TestCheckpointManager:
 
         checkpoint = manager.create_checkpoint(
             protocol_name="Test Protocol",
-            protocol_version="1.0",
+            protocol_version="2.0",
             experiment_id="test_001",
             experiment_path=exp_path,
             round_index=2,
-            fluidics_step_index=1,
+            step_index=1,
             imaging_fov_index=5,
         )
 
@@ -1334,7 +1643,7 @@ class TestCheckpointManager:
         assert loaded is not None
         assert loaded.protocol_name == "Test Protocol"
         assert loaded.round_index == 2
-        assert loaded.fluidics_step_index == 1
+        assert loaded.step_index == 1
         assert loaded.imaging_fov_index == 5
 
     def test_clear_checkpoint(self, tmp_path):
@@ -1753,7 +2062,7 @@ class TestEventVerification:
     def test_error_event_on_failure(
         self,
         orchestrator_with_mocks: OrchestratorController,
-        single_imaging_protocol: str,
+        single_imaging_protocol_abort: str,
         tmp_experiment_dir: str,
         event_collector: list,
         mock_imaging_executor,
@@ -1765,7 +2074,7 @@ class TestEventVerification:
         mock_imaging_executor.execute_with_config.return_value = False
 
         orchestrator.start_experiment(
-            protocol_path=single_imaging_protocol,
+            protocol_path=single_imaging_protocol_abort,
             base_path=tmp_experiment_dir,
         )
 
@@ -1955,7 +2264,7 @@ class TestErrorHandling:
     def test_imaging_executor_failure(
         self,
         orchestrator_with_mocks: OrchestratorController,
-        single_imaging_protocol: str,
+        single_imaging_protocol_abort: str,
         tmp_experiment_dir: str,
         mock_imaging_executor,
         event_collector: list,
@@ -1965,7 +2274,7 @@ class TestErrorHandling:
         mock_imaging_executor.execute_with_config.return_value = False
 
         orchestrator.start_experiment(
-            protocol_path=single_imaging_protocol,
+            protocol_path=single_imaging_protocol_abort,
             base_path=tmp_experiment_dir,
         )
 
@@ -2165,18 +2474,20 @@ class TestImagingExecutor:
         def complete_acquisition(*args, **kwargs):
             time.sleep(0.1)
             backend_ctx.event_bus.publish(
-                AcquisitionFinished(success=True, error=None, experiment_id=None)
+                AcquisitionFinished(success=True, error=None, experiment_id="round_000")
             )
 
         multipoint.run_acquisition.side_effect = complete_acquisition
 
-        imaging_step = ImagingStep(channels=["BF"], z_planes=1)
+        imaging_config = ImagingConfig(channels=["BF"])
         cancel_token = CancelToken()
 
-        result = executor.execute(
-            imaging_step=imaging_step,
+        result = executor.execute_with_config(
+            imaging_config=imaging_config,
             output_path="/tmp/test",
             cancel_token=cancel_token,
+            round_index=0,
+            experiment_id="round_000",
         )
 
         assert result is True
