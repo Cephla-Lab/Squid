@@ -583,3 +583,34 @@ class TimingManager:
 
     def get_intervals(self, name) -> List[float]:
         return self.get_timer(name).get_intervals()
+
+
+def parse_well_id(well_id: str) -> Tuple[str, str]:
+    """Parse well ID to (row_letter, col_number) strings.
+
+    Extracts alphabetic row identifier and numeric column identifier from
+    a well ID string. Handles single and multi-letter rows.
+
+    Args:
+        well_id: Well identifier, e.g., "A1", "B12", "AA3"
+
+    Returns:
+        Tuple of (row_letters, col_digits), e.g., ("A", "1"), ("AA", "3")
+
+    Examples:
+        >>> parse_well_id("A1")
+        ("A", "1")
+        >>> parse_well_id("B12")
+        ("B", "12")
+        >>> parse_well_id("AA3")
+        ("AA", "3")
+    """
+    well_id = str(well_id).upper()
+    letter_part = ""
+    number_part = ""
+    for char in well_id:
+        if char.isalpha():
+            letter_part += char
+        else:
+            number_part += char
+    return (letter_part, number_part)

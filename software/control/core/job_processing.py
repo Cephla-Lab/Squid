@@ -16,7 +16,7 @@ import imageio as iio
 import numpy as np
 import tifffile
 
-from control import _def, utils_acquisition
+from control import _def, utils, utils_acquisition
 from control._def import ZProjectionMode, DownsamplingMethod
 import squid.abc
 import squid.logging
@@ -435,16 +435,10 @@ class ZarrWriterInfo:
         """Parse well ID to (row_letter, col_number) strings.
 
         E.g., "A1" -> ("A", "1"), "B12" -> ("B", "12"), "AA3" -> ("AA", "3")
+
+        Delegates to control.utils.parse_well_id for consistency.
         """
-        well_id = str(well_id).upper()
-        letter_part = ""
-        number_part = ""
-        for char in well_id:
-            if char.isalpha():
-                letter_part += char
-            else:
-                number_part += char
-        return (letter_part, number_part)
+        return utils.parse_well_id(well_id)
 
     def get_fov_count(self, region_id: str) -> int:
         """Get total FOV count for a region (for 6D shape calculation)."""

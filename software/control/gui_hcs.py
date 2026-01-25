@@ -18,7 +18,8 @@ from control.core.scan_coordinates import (
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
-from typing import Any, Optional, Tuple
+import re
+from typing import Any, List, Optional, Tuple
 import numpy as np
 
 # qt libraries
@@ -50,6 +51,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.utils
 import control.utils_acquisition
 import control.microscope
 import control.widgets as widgets
@@ -318,6 +320,7 @@ class QtMultiPointController(MultiPointController, QObject):
             self.ndviewer_end_zarr_acquisition.emit()
             self._using_zarr_viewer = False
             self._using_6d_regions_mode = False
+            self._ndviewer_region_index_map = {}
 
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
@@ -423,8 +426,11 @@ class QtMultiPointController(MultiPointController, QObject):
     # Helper methods for Zarr FOV path building
     # -------------------------------------------------------------------------
 
-    def _build_6d_region_info(self, parameters: AcquisitionParameters):
+    def _build_6d_region_info(self, parameters: AcquisitionParameters) -> Tuple[List[str], List[int], List[str]]:
         """Build region info for 6D mode (single or multi-region).
+
+        Args:
+            parameters: Acquisition parameters containing scan info.
 
         Returns:
             Tuple of (region_paths, fovs_per_region, region_labels)
@@ -432,9 +438,9 @@ class QtMultiPointController(MultiPointController, QObject):
         base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
         scan_info = parameters.scan_position_information
 
-        region_paths = []
-        fovs_per_region = []
-        region_labels = []
+        region_paths: List[str] = []
+        fovs_per_region: List[int] = []
+        region_labels: List[str] = []
 
         for region_name in scan_info.scan_region_names:
             # Path: zarr/{region}/acquisition.zarr
@@ -448,15 +454,16 @@ class QtMultiPointController(MultiPointController, QObject):
 
         return region_paths, fovs_per_region, region_labels
 
-    def _build_zarr_fov_paths(self, parameters: AcquisitionParameters):
+    def _build_zarr_fov_paths(self, parameters: AcquisitionParameters) -> Optional[List[str]]:
         """Build list of zarr paths for each FOV.
+
+        Args:
+            parameters: Acquisition parameters containing scan info.
 
         Returns:
             List of zarr paths (one per FOV) for HCS/per-FOV modes.
             None for 6D mode (single zarr store).
         """
-        import re
-
         base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
         scan_info = parameters.scan_position_information
 
@@ -469,13 +476,13 @@ class QtMultiPointController(MultiPointController, QObject):
             return None
 
         # Build fov_paths for HCS or per-FOV modes
-        fov_paths = []
+        fov_paths: List[str] = []
         for region_name in scan_info.scan_region_names:
             num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
             for fov in range(num_fovs):
                 if is_hcs:
                     # HCS: plate.ome.zarr/{row}/{col}/{fov}/0
-                    row_letter, col_num = self._parse_well_id_parts(region_name)
+                    row_letter, col_num = control.utils.parse_well_id(region_name)
                     path = os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
                 else:
                     # Per-FOV: zarr/{region}/fov_{n}.ome.zarr
@@ -484,25 +491,21 @@ class QtMultiPointController(MultiPointController, QObject):
 
         return fov_paths
 
-    def _detect_hcs_mode(self, scan_info) -> bool:
-        """Detect if this is an HCS (wellplate) acquisition."""
-        import re
+    def _detect_hcs_mode(self, scan_info: ScanCoordinates) -> bool:
+        """Detect if this is an HCS (wellplate) acquisition.
 
+        Args:
+            scan_info: Scan coordinates with region names.
+
+        Returns:
+            True if all region names match well ID pattern (e.g., A1, B12).
+        """
         well_pattern = re.compile(r"^[A-Z]+\d+$")
 
         for region_name in scan_info.scan_region_names:
             if not well_pattern.match(region_name):
                 return False
         return len(scan_info.scan_region_names) > 0
-
-    def _parse_well_id_parts(self, well_id: str):
-        """Parse well ID into row letter and column number."""
-        import re
-
-        match = re.match(r"^([A-Z]+)(\d+)$", well_id)
-        if match:
-            return match.group(1), match.group(2)
-        return well_id, "1"  # Fallback
 
 
 class HighContentScreeningGui(QMainWindow):
