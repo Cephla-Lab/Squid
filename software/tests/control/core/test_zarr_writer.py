@@ -177,18 +177,38 @@ class TestChunkShapeCalculation:
         assert chunk_shape == (1, 1, 1, 256, 256)
 
     def test_shard_shape_per_z_level(self):
+        """Test shard shape for BALANCED/BEST modes (per-z-level sharding)."""
         from control.core.zarr_writer import ZarrAcquisitionConfig, _get_shard_shape
+
+        # Use BALANCED compression to get actual sharding (FAST skips sharding)
+        config = ZarrAcquisitionConfig(
+            output_path="/tmp/test.zarr",
+            shape=(2, 4, 10, 2048, 2048),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            compression=ZarrCompression.BALANCED,
+        )
+
+        shard_shape = _get_shard_shape(config)
+        # Shard contains all channels for one z-level
+        assert shard_shape == (1, 4, 1, 2048, 2048)
+
+    def test_fast_mode_no_sharding(self):
+        """Test that FAST mode skips sharding for maximum write speed."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, _get_shard_shape, _get_chunk_shape
 
         config = ZarrAcquisitionConfig(
             output_path="/tmp/test.zarr",
             shape=(2, 4, 10, 2048, 2048),
             dtype=np.uint16,
             pixel_size_um=0.5,
+            compression=ZarrCompression.FAST,
         )
 
+        chunk_shape = _get_chunk_shape(config)
         shard_shape = _get_shard_shape(config)
-        # Shard contains all channels for one z-level
-        assert shard_shape == (1, 4, 1, 2048, 2048)
+        # FAST mode: shard_shape == chunk_shape (no internal sharding)
+        assert shard_shape == chunk_shape
 
 
 class TestCompressionCodecs:
@@ -200,7 +220,8 @@ class TestCompressionCodecs:
         codec = _get_compression_codec(ZarrCompression.FAST)
         assert codec["name"] == "blosc"
         assert codec["configuration"]["cname"] == "lz4"
-        assert codec["configuration"]["shuffle"] == "bitshuffle"
+        assert codec["configuration"]["clevel"] == 1  # Minimal compression for speed
+        assert codec["configuration"]["shuffle"] == "shuffle"  # Byte shuffle (faster than bitshuffle)
 
     def test_balanced_compression(self):
         from control.core.zarr_writer import _get_compression_codec
@@ -1095,8 +1116,26 @@ class TestSixDimensionalSupport:
         assert chunk_shape == (1, 1, 1, 1, 2048, 2048)
 
     def test_6d_shard_shape(self):
-        """Test shard shape calculation for 6D datasets."""
+        """Test shard shape calculation for 6D datasets with BALANCED compression."""
         from control.core.zarr_writer import ZarrAcquisitionConfig, _get_shard_shape
+
+        # Use BALANCED compression to get actual sharding (FAST skips sharding)
+        config = ZarrAcquisitionConfig(
+            output_path="/tmp/test.zarr",
+            shape=(5, 2, 4, 10, 2048, 2048),  # FOV, T, C, Z, Y, X
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            is_hcs=False,
+            compression=ZarrCompression.BALANCED,
+        )
+
+        shard_shape = _get_shard_shape(config)
+        # Shard contains all channels for one (fov, t, z) combination
+        assert shard_shape == (1, 1, 4, 1, 2048, 2048)
+
+    def test_6d_fast_mode_no_sharding(self):
+        """Test that FAST mode skips sharding for 6D datasets."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, _get_shard_shape, _get_chunk_shape
 
         config = ZarrAcquisitionConfig(
             output_path="/tmp/test.zarr",
@@ -1104,11 +1143,13 @@ class TestSixDimensionalSupport:
             dtype=np.uint16,
             pixel_size_um=0.5,
             is_hcs=False,
+            compression=ZarrCompression.FAST,
         )
 
+        chunk_shape = _get_chunk_shape(config)
         shard_shape = _get_shard_shape(config)
-        # Shard contains all channels for one (fov, t, z) combination
-        assert shard_shape == (1, 1, 4, 1, 2048, 2048)
+        # FAST mode: shard_shape == chunk_shape (no internal sharding)
+        assert shard_shape == chunk_shape
 
     def test_6d_writer_initialization(self, temp_dir):
         """Test 6D writer initializes correctly."""

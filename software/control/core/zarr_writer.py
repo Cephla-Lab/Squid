@@ -146,10 +146,10 @@ def _get_chunk_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
 
 
 def _get_shard_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
-    """Calculate shard shape for per-z-level sharding.
+    """Calculate shard shape for sharding configuration.
 
-    Each shard contains one complete z-slice with all channels.
-    This allows efficient finalization as soon as all channels for a z-level complete.
+    For FAST compression: no sharding (shard_shape = chunk_shape) for maximum write speed.
+    For BALANCED/BEST: per-z-level sharding for better file organization.
 
     Args:
         config: Zarr acquisition configuration
@@ -157,6 +157,12 @@ def _get_shard_shape(config: ZarrAcquisitionConfig) -> Tuple[int, ...]:
     Returns:
         Shard shape as (T, C, Z, Y, X) for 5D or (FOV, T, C, Z, Y, X) for 6D
     """
+    # FAST mode: skip sharding for maximum write speed
+    # Each chunk is its own file, eliminating shard coordination overhead
+    if config.compression == ZarrCompression.FAST:
+        return _get_chunk_shape(config)
+
+    # BALANCED/BEST: use per-z-level sharding for better file organization
     if config.ndim == 5:
         return (1, config.c_size, 1, config.y_size, config.x_size)
     else:  # 6D: (FOV, T, C, Z, Y, X) - shard contains all channels for one (fov, t, z)
@@ -173,12 +179,14 @@ def _get_compression_codec(compression: ZarrCompression) -> Dict[str, Any]:
         Codec configuration dict for TensorStore
     """
     if compression == ZarrCompression.FAST:
+        # LZ4 with minimal compression level and byte shuffle (faster than bitshuffle)
+        # for maximum write throughput at ~800-1200 MB/s
         return {
             "name": "blosc",
             "configuration": {
                 "cname": "lz4",
-                "clevel": 5,
-                "shuffle": "bitshuffle",
+                "clevel": 1,
+                "shuffle": "shuffle",
             },
         }
     elif compression == ZarrCompression.BALANCED:
@@ -726,10 +734,10 @@ def write_well_metadata(
 
 
 class SyncZarrWriter:
-    """Synchronous wrapper around ZarrWriterManager for use in job processing.
+    """Synchronous Zarr writer for use in job processing.
 
-    Provides a blocking interface for write operations, suitable for use
-    in the synchronous job processing architecture.
+    Directly uses TensorStore without asyncio overhead for write operations.
+    Only uses asyncio for initialization and finalization where it's unavoidable.
     """
 
     def __init__(self, config: ZarrAcquisitionConfig):
@@ -738,11 +746,15 @@ class SyncZarrWriter:
         Args:
             config: Zarr acquisition configuration
         """
-        self._manager = ZarrWriterManager(config)
+        self._config = config
+        self._dataset = None
+        self._pending_futures: List[Any] = []
+        self._initialized = False
+        self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Get or create the event loop."""
+        """Get or create the event loop (only used for init/finalize)."""
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_event_loop()
@@ -752,12 +764,223 @@ class SyncZarrWriter:
         return self._loop
 
     def initialize(self) -> None:
-        """Initialize the zarr dataset (blocking)."""
+        """Initialize the zarr dataset (blocking).
+
+        Uses asyncio only for TensorStore's async open operation.
+        """
+        if self._initialized:
+            log.warning("Writer already initialized")
+            return
+
+        ts = _get_tensorstore()
+        config = self._config
+
+        # Build TensorStore spec - reuse logic from ZarrWriterManager
+        os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
+
+        chunk_shape = _get_chunk_shape(config)
+        shard_shape = _get_shard_shape(config)
+        compression_codec = _get_compression_codec(config.compression)
+
+        # Dimension names and transpose order depend on 5D vs 6D
+        if config.ndim == 5:
+            transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+        else:
+            transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+
+        # Determine if we need sharding (when chunk != shard)
+        use_sharding = chunk_shape != shard_shape
+
+        if use_sharding:
+            codecs = [
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": list(chunk_shape),
+                        "codecs": [
+                            {"name": "transpose", "configuration": {"order": transpose_order}},
+                            {"name": "bytes", "configuration": {"endian": "little"}},
+                            compression_codec,
+                        ],
+                        "index_codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}},
+                            {"name": "crc32c"},
+                        ],
+                    },
+                }
+            ]
+            chunk_config = list(shard_shape)
+        else:
+            codecs = [
+                {"name": "transpose", "configuration": {"order": transpose_order}},
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                compression_codec,
+            ]
+            chunk_config = list(chunk_shape)
+
+        spec = {
+            "driver": "zarr3",
+            "kvstore": {"driver": "file", "path": config.output_path},
+            "metadata": {
+                "shape": list(config.shape),
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
+                "chunk_key_encoding": {"name": "default"},
+                "data_type": _dtype_to_zarr(config.dtype),
+                "codecs": codecs,
+                "fill_value": 0,
+            },
+        }
+
+        log.info(
+            f"Initializing Zarr v3 dataset: {config.output_path}, "
+            f"shape={config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
+            f"compression={config.compression.value}"
+        )
+
+        # Use asyncio only for the TensorStore open operation
+        async def _open():
+            return await ts.open(spec, create=True, delete_existing=True)
+
         loop = self._get_loop()
-        loop.run_until_complete(self._manager.initialize())
+        self._dataset = loop.run_until_complete(_open())
+        self._initialized = True
+        log.info("Zarr v3 dataset initialized successfully")
+
+        # Write metadata synchronously (just file I/O)
+        self._write_zarr_metadata()
+
+    def _write_zarr_metadata(self) -> None:
+        """Write OME-NGFF compliant metadata to .zattrs (synchronous file I/O)."""
+        config = self._config
+
+        # Build axes based on dimensionality
+        if config.ndim == 5:
+            axes = [
+                {"name": "t", "type": "time", "unit": "second"},
+                {"name": "c", "type": "channel"},
+                {"name": "z", "type": "space", "unit": "micrometer"},
+                {"name": "y", "type": "space", "unit": "micrometer"},
+                {"name": "x", "type": "space", "unit": "micrometer"},
+            ]
+            coordinate_transforms = [
+                {
+                    "type": "scale",
+                    "scale": [
+                        config.time_increment_s or 1.0,
+                        1.0,
+                        config.z_step_um or 1.0,
+                        config.pixel_size_um,
+                        config.pixel_size_um,
+                    ],
+                }
+            ]
+        else:
+            axes = [
+                {"name": "fov", "type": "fov"},
+                {"name": "t", "type": "time", "unit": "second"},
+                {"name": "c", "type": "channel"},
+                {"name": "z", "type": "space", "unit": "micrometer"},
+                {"name": "y", "type": "space", "unit": "micrometer"},
+                {"name": "x", "type": "space", "unit": "micrometer"},
+            ]
+            coordinate_transforms = [
+                {
+                    "type": "scale",
+                    "scale": [
+                        1.0,
+                        config.time_increment_s or 1.0,
+                        1.0,
+                        config.z_step_um or 1.0,
+                        config.pixel_size_um,
+                        config.pixel_size_um,
+                    ],
+                }
+            ]
+
+        # Build channel metadata (omero)
+        channels_meta = []
+        for i, name in enumerate(config.channel_names or []):
+            channel_info: Dict[str, Any] = {
+                "label": name,
+                "active": True,
+            }
+            if config.channel_colors and i < len(config.channel_colors):
+                color = config.channel_colors[i]
+                if color.startswith("#"):
+                    color = color[1:]
+                channel_info["color"] = color
+            if config.channel_wavelengths and i < len(config.channel_wavelengths):
+                wavelength = config.channel_wavelengths[i]
+                if wavelength is not None:
+                    channel_info["emission_wavelength"] = {
+                        "value": wavelength,
+                        "unit": "nanometer",
+                    }
+            # Add display window based on dtype
+            dtype = np.dtype(config.dtype)
+            if np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                channel_info["window"] = {
+                    "start": 0,
+                    "end": info.max,
+                    "min": 0,
+                    "max": info.max,
+                }
+            elif np.issubdtype(dtype, np.floating):
+                channel_info["window"] = {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                }
+            channels_meta.append(channel_info)
+
+        zattrs = {
+            "multiscales": [
+                {
+                    "version": "0.4",
+                    "name": os.path.basename(config.output_path),
+                    "axes": axes,
+                    "datasets": [
+                        {
+                            "path": "0",
+                            "coordinateTransformations": coordinate_transforms,
+                        }
+                    ],
+                    "coordinateTransformations": [{"type": "identity"}],
+                }
+            ],
+            "omero": {
+                "name": os.path.basename(config.output_path),
+                "version": "0.4",
+                "channels": channels_meta,
+            },
+            "_squid": {
+                "pixel_size_um": config.pixel_size_um,
+                "z_step_um": config.z_step_um,
+                "time_increment_s": config.time_increment_s,
+                "chunk_mode": config.chunk_mode.value,
+                "compression": config.compression.value,
+                "shape": list(config.shape),
+                "dtype": str(config.dtype),
+                "is_hcs": config.is_hcs,
+                "acquisition_complete": False,
+            },
+        }
+
+        zattrs_path = os.path.join(config.output_path, ".zattrs")
+        os.makedirs(os.path.dirname(zattrs_path), exist_ok=True)
+        with open(zattrs_path, "w") as f:
+            json.dump(zattrs, f, indent=2)
+
+        log.debug(f"Wrote OME-NGFF metadata to {zattrs_path}")
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame (blocking).
+        """Write a single frame (non-blocking, queues for async write).
+
+        This method directly uses TensorStore's write API without asyncio overhead.
+        The write is queued and will complete asynchronously. Call wait_for_pending()
+        or finalize() to ensure all writes are complete.
 
         Args:
             image: 2D image array (Y, X)
@@ -766,44 +989,126 @@ class SyncZarrWriter:
             z: Z-slice index
             fov: FOV index (required for 6D datasets, ignored for 5D)
         """
-        loop = self._get_loop()
-        loop.run_until_complete(self._manager.write_frame(image, t, c, z, fov))
+        if not self._initialized:
+            raise RuntimeError("Writer not initialized. Call initialize() first.")
+        if self._finalized:
+            raise RuntimeError("Writer already finalized.")
+
+        config = self._config
+
+        # Validate indices
+        if t < 0 or t >= config.shape[0 if config.ndim == 5 else 1]:
+            raise ValueError(f"Time index {t} out of range")
+        if c < 0 or c >= config.shape[1 if config.ndim == 5 else 2]:
+            raise ValueError(f"Channel index {c} out of range")
+        if z < 0 or z >= config.shape[2 if config.ndim == 5 else 3]:
+            raise ValueError(f"Z index {z} out of range")
+
+        if config.ndim == 6:
+            if fov is None:
+                raise ValueError("FOV index required for 6D dataset")
+            if not (0 <= fov < config.fov_size):
+                raise ValueError(f"FOV index {fov} out of range [0, {config.fov_size})")
+
+        # Ensure image is correct dtype
+        if image.dtype != config.dtype:
+            image = image.astype(config.dtype)
+
+        # Queue write directly using TensorStore (no asyncio overhead)
+        if config.ndim == 5:
+            future = self._dataset[t, c, z, :, :].write(image)
+            log.debug(f"Queued write for frame t={t}, c={c}, z={z}")
+        else:
+            future = self._dataset[fov, t, c, z, :, :].write(image)
+            log.debug(f"Queued write for frame fov={fov}, t={t}, c={c}, z={z}")
+
+        self._pending_futures.append(future)
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
 
         Args:
-            timeout_s: Optional timeout in seconds
+            timeout_s: Optional timeout in seconds (not currently enforced)
 
         Returns:
             Number of writes completed
         """
+        if not self._pending_futures:
+            return 0
+
+        count = len(self._pending_futures)
+        log.debug(f"Waiting for {count} pending writes...")
+
+        # Wait for all TensorStore futures in parallel using asyncio.gather
+        # This is more efficient than waiting sequentially
+        async def _wait_all():
+            await asyncio.gather(*self._pending_futures)
+
         loop = self._get_loop()
-        return loop.run_until_complete(self._manager.wait_for_pending(timeout_s))
+        loop.run_until_complete(_wait_all())
+
+        self._pending_futures.clear()
+        log.debug(f"Completed {count} pending writes")
+        return count
 
     @property
     def pending_write_count(self) -> int:
         """Number of writes currently pending."""
-        return self._manager.pending_write_count
+        return len(self._pending_futures)
 
     def finalize(self) -> None:
         """Finalize the dataset (blocking)."""
-        loop = self._get_loop()
-        loop.run_until_complete(self._manager.finalize())
+        if self._finalized:
+            log.warning("Writer already finalized")
+            return
+
+        log.info("Finalizing Zarr v3 dataset...")
+
+        # Wait for all pending writes
+        self.wait_for_pending()
+
+        # Update metadata with completion status
+        zattrs_path = os.path.join(self._config.output_path, ".zattrs")
+        if os.path.exists(zattrs_path):
+            with open(zattrs_path, "r") as f:
+                zattrs = json.load(f)
+            if "_squid" in zattrs:
+                zattrs["_squid"]["acquisition_complete"] = True
+            with open(zattrs_path, "w") as f:
+                json.dump(zattrs, f, indent=2)
+
+        self._finalized = True
+        log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
     def abort(self) -> None:
         """Abort and clean up (blocking)."""
-        loop = self._get_loop()
-        loop.run_until_complete(self._manager.abort())
+        log.warning("Aborting Zarr writer...")
+
+        # Clear pending futures (don't wait for them)
+        self._pending_futures.clear()
+
+        # Mark as incomplete in metadata
+        zattrs_path = os.path.join(self._config.output_path, ".zattrs")
+        if os.path.exists(zattrs_path):
+            with open(zattrs_path, "r") as f:
+                zattrs = json.load(f)
+            if "_squid" in zattrs:
+                zattrs["_squid"]["acquisition_complete"] = False
+                zattrs["_squid"]["aborted"] = True
+            with open(zattrs_path, "w") as f:
+                json.dump(zattrs, f, indent=2)
+
+        self._finalized = True
+        log.warning(f"Zarr writer aborted: {self._config.output_path}")
 
     @property
     def is_initialized(self) -> bool:
-        return self._manager.is_initialized
+        return self._initialized
 
     @property
     def is_finalized(self) -> bool:
-        return self._manager.is_finalized
+        return self._finalized
 
     @property
     def config(self) -> ZarrAcquisitionConfig:
-        return self._manager.config
+        return self._config
