@@ -487,6 +487,7 @@ class SaveZarrJob(Job):
 
         Call at end of acquisition to ensure all data is written.
         """
+        failed_paths = []
         for path, writer in list(cls._zarr_writers.items()):
             if writer.is_initialized and not writer.is_finalized:
                 try:
@@ -494,7 +495,10 @@ class SaveZarrJob(Job):
                     cls._log.info(f"Finalized zarr writer: {path}")
                 except Exception as e:
                     cls._log.error(f"Error finalizing writer {path}: {e}")
+                    failed_paths.append(path)
         cls._zarr_writers.clear()
+        if failed_paths:
+            cls._log.warning(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
 
     def run(self) -> bool:
         if self.zarr_writer_info is None:
@@ -620,8 +624,12 @@ class SaveZarrJob(Job):
                 compression=_def.ZARR_COMPRESSION,
                 is_hcs=is_hcs or not use_6d_fov,  # 5D for HCS and non-HCS default
             )
-            writer = SyncZarrWriter(config)
-            writer.initialize()
+            try:
+                writer = SyncZarrWriter(config)
+                writer.initialize()
+            except Exception as e:
+                self._log.error(f"Failed to initialize zarr writer for {output_path}: {e}")
+                raise
             self._zarr_writers[writer_key] = writer
             if is_hcs:
                 mode_str = "HCS 5D"
