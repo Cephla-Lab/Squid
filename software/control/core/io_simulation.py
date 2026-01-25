@@ -48,8 +48,8 @@ def throttle_for_speed(bytes_count: int, speed_mb_s: float) -> float:
     if speed_mb_s <= 0:
         return 0.0
     if bytes_count < 0:
-        log.warning(f"throttle_for_speed called with negative bytes_count={bytes_count}, treating as 0")
-        return 0.0
+        # Negative bytes indicates a serious bug upstream - fail fast
+        raise ValueError(f"throttle_for_speed called with negative bytes_count={bytes_count}")
     delay_s = (bytes_count / (1024 * 1024)) / speed_mb_s
     time.sleep(delay_s)
     return delay_s
@@ -112,6 +112,7 @@ def simulated_ome_tiff_write(
         Bytes "written" for this operation
     """
     # First plane for this stack - simulate initialization
+    is_first_plane = False
     with _simulated_ome_lock:
         if stack_key not in _simulated_ome_stacks:
             expected_count = shape[0] * shape[1] * shape[2]  # T * Z * C
@@ -120,9 +121,12 @@ def simulated_ome_tiff_write(
                 "written_planes": set(),
                 "expected_count": expected_count,
             }
-            # Simulate metadata/header write overhead (~4KB for OME-XML header)
-            throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+            is_first_plane = True
             log.debug(f"Initialized simulated OME stack: {stack_key}, expected planes: {expected_count}")
+
+    # Simulate metadata/header write overhead outside lock (~4KB for OME-XML header)
+    if is_first_plane:
+        throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
 
     # Simulate plane write with encoding
     buffer = BytesIO()
@@ -143,6 +147,7 @@ def simulated_ome_tiff_write(
 
     # Track this plane and check completion (with lock for shared state access)
     plane_key = f"{time_point}-{z_index}-{channel_index}"
+    is_complete = False
     with _simulated_ome_lock:
         stack_info = _simulated_ome_stacks[stack_key]
         stack_info["written_planes"].add(plane_key)
@@ -157,10 +162,12 @@ def simulated_ome_tiff_write(
 
         # Check completion and cleanup
         if is_complete:
-            # Stack complete - simulate finalization overhead (~8KB for OME-XML update)
-            throttle_for_speed(8192, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
             del _simulated_ome_stacks[stack_key]
-            log.debug(f"Completed simulated OME stack: {stack_key}")
+
+    # Simulate finalization overhead outside lock (~8KB for OME-XML update)
+    if is_complete:
+        throttle_for_speed(8192, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+        log.debug(f"Completed simulated OME stack: {stack_key}")
 
     return bytes_written
 
@@ -197,6 +204,7 @@ def simulated_zarr_write(
         Bytes "written" for this operation
     """
     # First frame for this dataset - simulate initialization (with lock for shared state)
+    is_first_frame = False
     with _simulated_zarr_lock:
         if stack_key not in _simulated_zarr_stacks:
             expected_count = shape[0] * shape[1] * shape[2]  # T * C * Z
@@ -205,9 +213,12 @@ def simulated_zarr_write(
                 "written_frames": set(),
                 "expected_count": expected_count,
             }
-            # Simulate metadata/zarr.json write overhead (~2KB)
-            throttle_for_speed(2048, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+            is_first_frame = True
             log.debug(f"Initialized simulated zarr dataset: {stack_key}, expected frames: {expected_count}")
+
+    # Simulate metadata/zarr.json write overhead outside lock (~2KB)
+    if is_first_frame:
+        throttle_for_speed(2048, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
 
     # Simulate frame write with blosc compression
     # Blosc typically achieves 2-4x compression on microscopy data
@@ -226,6 +237,7 @@ def simulated_zarr_write(
 
     # Track this frame and check completion (with lock for shared state access)
     frame_key = f"{time_point}-{channel_index}-{z_index}"
+    is_complete = False
     with _simulated_zarr_lock:
         stack_info = _simulated_zarr_stacks[stack_key]
         stack_info["written_frames"].add(frame_key)
@@ -240,9 +252,11 @@ def simulated_zarr_write(
 
         # Check completion and cleanup
         if is_complete:
-            # Dataset complete - simulate finalization overhead (~4KB for .zattrs update)
-            throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
             del _simulated_zarr_stacks[stack_key]
-            log.debug(f"Completed simulated zarr dataset: {stack_key}")
+
+    # Simulate finalization overhead outside lock (~4KB for .zattrs update)
+    if is_complete:
+        throttle_for_speed(4096, control._def.SIMULATED_DISK_IO_SPEED_MB_S)
+        log.debug(f"Completed simulated zarr dataset: {stack_key}")
 
     return bytes_written

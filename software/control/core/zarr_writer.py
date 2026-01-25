@@ -374,15 +374,18 @@ class ZarrWriter:
         self._initialized = False
         self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._owns_loop = False  # True if we created the loop ourselves
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create the event loop (only used for init/finalize)."""
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_event_loop()
+                self._owns_loop = False  # Using existing loop
             except RuntimeError:
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
+                self._owns_loop = True  # We created this loop
         return self._loop
 
     def initialize(self) -> None:
@@ -707,6 +710,7 @@ class ZarrWriter:
             # Don't raise - data is already written, just log the metadata issue
 
         self._finalized = True
+        self._cleanup_event_loop()
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
     def abort(self) -> None:
@@ -731,7 +735,22 @@ class ZarrWriter:
             log.error(f"Failed to update abort metadata at {zattrs_path}: {e}")
 
         self._finalized = True
+        self._cleanup_event_loop()
         log.warning(f"Zarr writer aborted: {self._config.output_path}")
+
+    def _cleanup_event_loop(self) -> None:
+        """Clean up the event loop to prevent resource leaks.
+
+        Only closes the loop if we created it ourselves (via new_event_loop).
+        Loops obtained from get_event_loop() are shared and should not be closed.
+        """
+        if self._loop is not None and self._owns_loop and not self._loop.is_closed():
+            try:
+                self._loop.close()
+            except Exception as e:
+                log.warning(f"Error closing event loop: {e}")
+        self._loop = None
+        self._owns_loop = False
 
     @property
     def is_initialized(self) -> bool:

@@ -462,9 +462,11 @@ class SaveZarrJob(Job):
     _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
     zarr_writer_info: Optional[ZarrWriterInfo] = field(default=None)
 
-    # Class-level writer storage keyed by output_path
-    # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
-    # process has its own copy of this class variable.
+    # Class-level writer storage keyed by output_path.
+    # SAFETY: JobRunner runs in a multiprocessing.Process (not threads), so each
+    # worker process has its own independent copy of this class variable.
+    # WARNING: This dict is NOT thread-safe. DO NOT use SaveZarrJob with threading
+    # (e.g., ThreadPoolExecutor) - it will cause race conditions and data corruption.
     _zarr_writers: ClassVar[Dict[str, "ZarrWriter"]] = {}
 
     @classmethod
