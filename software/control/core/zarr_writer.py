@@ -462,18 +462,25 @@ class ZarrWriter:
             self._cleanup_event_loop()
             raise
 
+    def _is_hcs_array_path(self) -> bool:
+        """Check if output_path is an HCS array path (needs group-level metadata).
+
+        HCS array paths end with /{fov}/0 where {fov} is a digit (field index).
+        E.g., plate.ome.zarr/A/1/0/0 -> True (array at field 0)
+              zarr/region/fov_0.ome.zarr -> False (non-HCS per-FOV)
+        """
+        path_parts = self._config.output_path.rstrip(os.sep).split(os.sep)
+        return len(path_parts) >= 2 and path_parts[-1] == "0" and path_parts[-2].isdigit()
+
     def _get_metadata_zarr_json_path(self) -> str:
         """Get the path to zarr.json containing OME metadata.
 
         For HCS (path ends with /0 and parent is field index), metadata is at parent group.
         For non-HCS, metadata is at the zarr store directly.
         """
-        config = self._config
-        path_parts = config.output_path.rstrip(os.sep).split(os.sep)
-        is_hcs_array_path = len(path_parts) >= 2 and path_parts[-1] == "0" and path_parts[-2].isdigit()
-        if is_hcs_array_path:
-            return os.path.join(os.path.dirname(config.output_path), "zarr.json")
-        return os.path.join(config.output_path, "zarr.json")
+        if self._is_hcs_array_path():
+            return os.path.join(os.path.dirname(self._config.output_path), "zarr.json")
+        return os.path.join(self._config.output_path, "zarr.json")
 
     def _write_zarr_metadata(self) -> None:
         """Write OME-NGFF 0.5 compliant metadata to zarr.json attributes."""
@@ -605,20 +612,11 @@ class ZarrWriter:
         # For HCS, output_path is the array path ({fov}/0), but OME-NGFF metadata
         # should be at the parent group level ({fov}/zarr.json), not the array level.
         # For non-HCS, output_path is the zarr store directly (fov_{n}.ome.zarr).
-        #
-        # Detect HCS by checking if path ends with /0 and parent is a field index (digit)
-        path_parts = config.output_path.rstrip(os.sep).split(os.sep)
-        is_hcs_array_path = (
-            len(path_parts) >= 2
-            and path_parts[-1] == "0"
-            and path_parts[-2].isdigit()  # Field index like "0", "1", "2"
-        )
+        zarr_json_path = self._get_metadata_zarr_json_path()
 
-        if is_hcs_array_path:
+        if self._is_hcs_array_path():
             # HCS: write group metadata to parent directory ({fov}/zarr.json)
-            group_path = os.path.dirname(config.output_path)
             group_zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": zattrs}
-            zarr_json_path = os.path.join(group_path, "zarr.json")
             try:
                 with open(zarr_json_path, "w") as f:
                     json.dump(group_zarr_json, f, indent=2)
@@ -628,7 +626,6 @@ class ZarrWriter:
                 raise RuntimeError(f"Failed to write zarr group metadata: {e}") from e
         else:
             # Non-HCS: write metadata to the zarr store's zarr.json
-            zarr_json_path = os.path.join(config.output_path, "zarr.json")
             try:
                 # Read existing zarr.json created by TensorStore
                 with open(zarr_json_path, "r") as f:

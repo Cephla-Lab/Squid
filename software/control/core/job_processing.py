@@ -426,16 +426,6 @@ class ZarrWriterInfo:
         else:
             return utils.build_per_fov_zarr_path(self.base_path, region_id, fov)
 
-    @staticmethod
-    def _parse_well_id_parts(well_id: str) -> Tuple[str, str]:
-        """Parse well ID to (row_letter, col_number) strings.
-
-        E.g., "A1" -> ("A", "1"), "B12" -> ("B", "12"), "AA3" -> ("AA", "3")
-
-        Delegates to control.utils.parse_well_id for consistency.
-        """
-        return utils.parse_well_id(well_id)
-
     def get_fov_count(self, region_id: str) -> int:
         """Get total FOV count for a region (for 6D shape calculation)."""
         return self.region_fov_counts.get(str(region_id), 1)
@@ -446,7 +436,7 @@ class ZarrWriterInfo:
 
     def get_well_path(self, well_id: str) -> str:
         """Get path to well directory (HCS mode only)."""
-        row_letter, col_num = self._parse_well_id_parts(well_id)
+        row_letter, col_num = utils.parse_well_id(well_id)
         return os.path.join(self.base_path, "plate.ome.zarr", row_letter, col_num)
 
     def get_hcs_structure(self) -> Tuple[List[str], List[int], List[Tuple[str, int]]]:
@@ -463,7 +453,7 @@ class ZarrWriterInfo:
         wells = []
 
         for well_id in self.region_fov_counts.keys():
-            row_letter, col_num = self._parse_well_id_parts(well_id)
+            row_letter, col_num = utils.parse_well_id(well_id)
             rows_set.add(row_letter)
             cols_set.add(int(col_num))
             wells.append((row_letter, int(col_num)))

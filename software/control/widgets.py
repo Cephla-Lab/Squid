@@ -314,6 +314,29 @@ class NDViewerTab(QWidget):
     # Push-based API for live acquisition (no polling)
     # -------------------------------------------------------------------------
 
+    def _ensure_viewer_ready(self, context: str = "acquisition") -> bool:
+        """Ensure ndviewer_light is imported and viewer widget is created.
+
+        Args:
+            context: Description for logging (e.g., "acquisition", "zarr acquisition")
+
+        Returns:
+            True if viewer is ready, False if import or creation failed.
+        """
+        try:
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        if self._viewer is None:
+            self._log.debug(f"Creating new LightweightViewer for {context}")
+            self._viewer = ndviewer_light.LightweightViewer()
+            self._layout.addWidget(self._viewer, 1)
+
+        return True
+
     def start_acquisition(
         self,
         channels: List[str],
@@ -334,20 +357,10 @@ class NDViewerTab(QWidget):
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            # Lazy import
-            from control import ndviewer_light
-        except ImportError as e:
-            self._log.error(f"Failed to import ndviewer_light: {e}")
-            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+        if not self._ensure_viewer_ready("TIFF acquisition"):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for acquisition")
-                self._viewer = ndviewer_light.LightweightViewer()
-                self._layout.addWidget(self._viewer, 1)
-
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
@@ -432,33 +445,24 @@ class NDViewerTab(QWidget):
         width: int,
         fov_paths: List[str],
     ) -> bool:
-        """Configure viewer for zarr-based live acquisition.
+        """Configure viewer for zarr-based live acquisition (5D per-FOV mode).
 
         Args:
-            zarr_path: Path to zarr store (for 6D mode)
+            zarr_path: Path to zarr store (unused in 5D mode)
             channels: List of channel names
             num_z: Number of z-levels
             fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1"])
             height: Image height in pixels
             width: Image width in pixels
-            fov_paths: List of zarr paths per FOV (empty for 6D mode)
+            fov_paths: List of zarr paths per FOV
 
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            from control import ndviewer_light
-        except ImportError as e:
-            self._log.error(f"Failed to import ndviewer_light: {e}")
-            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+        if not self._ensure_viewer_ready("Zarr 5D acquisition"):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for zarr acquisition")
-                self._viewer = ndviewer_light.LightweightViewer()
-                self._layout.addWidget(self._viewer, 1)
-
             # Check if ndviewer_light has zarr support
             if not hasattr(self._viewer, "start_zarr_acquisition"):
                 self._log.warning(
@@ -510,19 +514,10 @@ class NDViewerTab(QWidget):
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            from control import ndviewer_light
-        except ImportError as e:
-            self._log.error(f"Failed to import ndviewer_light: {e}")
-            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+        if not self._ensure_viewer_ready("Zarr 6D acquisition"):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for 6D multi-region acquisition")
-                self._viewer = ndviewer_light.LightweightViewer()
-                self._layout.addWidget(self._viewer, 1)
-
             # Check if ndviewer_light has 6D regions support
             if not hasattr(self._viewer, "start_zarr_acquisition_6d"):
                 self._log.warning(
