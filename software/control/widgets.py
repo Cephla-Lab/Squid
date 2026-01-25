@@ -901,7 +901,14 @@ class PreferencesDialog(QDialog):
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
-        # Zarr Chunk Mode (only visible when ZARR_V3 is selected)
+        # Advanced Zarr Options (collapsible group, only visible when ZARR_V3 is selected)
+        self.zarr_advanced_group = QGroupBox("Advanced Zarr Options")
+        self.zarr_advanced_group.setCheckable(True)
+        self.zarr_advanced_group.setChecked(False)  # Collapsed by default
+        zarr_advanced_layout = QFormLayout(self.zarr_advanced_group)
+        zarr_advanced_layout.setSpacing(8)
+
+        # Zarr Chunk Mode
         self.zarr_chunk_mode_combo = QComboBox()
         self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
         self.zarr_chunk_mode_combo.setToolTip(
@@ -911,10 +918,9 @@ class PreferencesDialog(QDialog):
         )
         zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
         self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
-        self.zarr_chunk_mode_label = QLabel("Zarr Chunk Mode:")
-        layout.addRow(self.zarr_chunk_mode_label, self.zarr_chunk_mode_combo)
+        zarr_advanced_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
-        # Zarr 6D FOV Dimension (only visible when ZARR_V3 is selected)
+        # Zarr 6D FOV Dimension
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
@@ -924,8 +930,9 @@ class PreferencesDialog(QDialog):
         )
         zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        self.zarr_6d_fov_label = QLabel("Use 6D FOV Dimension:")
-        layout.addRow(self.zarr_6d_fov_label, self.zarr_6d_fov_checkbox)
+        zarr_advanced_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+
+        layout.addRow(self.zarr_advanced_group)
 
         # Show/hide zarr options based on file saving format selection
         self._update_zarr_options_visibility()
@@ -1589,10 +1596,7 @@ class PreferencesDialog(QDialog):
         is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
-        self.zarr_chunk_mode_label.setVisible(is_zarr)
-        self.zarr_chunk_mode_combo.setVisible(is_zarr)
-        self.zarr_6d_fov_label.setVisible(is_zarr)
-        self.zarr_6d_fov_checkbox.setVisible(is_zarr)
+        self.zarr_advanced_group.setVisible(is_zarr)
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
