@@ -418,6 +418,183 @@ class NDViewerTab(QWidget):
         except Exception:
             self._log.exception("Failed to end NDViewer acquisition")
 
+    # -------------------------------------------------------------------------
+    # Zarr Push-based API for live acquisition (requires ndviewer_light zarr support)
+    # -------------------------------------------------------------------------
+
+    def start_zarr_acquisition(
+        self,
+        zarr_path: str,
+        channels: List[str],
+        num_z: int,
+        fov_labels: List[str],
+        height: int,
+        width: int,
+        fov_paths: List[str],
+    ) -> bool:
+        """Configure viewer for zarr-based live acquisition.
+
+        Args:
+            zarr_path: Path to zarr store (for 6D mode)
+            channels: List of channel names
+            num_z: Number of z-levels
+            fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1"])
+            height: Image height in pixels
+            width: Image width in pixels
+            fov_paths: List of zarr paths per FOV (empty for 6D mode)
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for zarr acquisition")
+                self._viewer = ndviewer_light.LightweightViewer()
+                self._layout.addWidget(self._viewer, 1)
+
+            # Check if ndviewer_light has zarr support
+            if not hasattr(self._viewer, "start_zarr_acquisition"):
+                self._log.warning(
+                    "ndviewer_light doesn't support zarr push API. "
+                    "Live viewing not available for Zarr format. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: zarr live view requires ndviewer_light with zarr support.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition(zarr_path, channels, num_z, fov_labels, height, width, fov_paths)
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+            self._log.info(
+                f"NDViewer configured for zarr acquisition: {len(channels)} channels, "
+                f"{num_z} z-levels, {len(fov_labels)} FOVs"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start zarr acquisition:\n{error_msg}")
+            return False
+
+    def start_zarr_acquisition_6d(
+        self,
+        region_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fovs_per_region: List[int],
+        height: int,
+        width: int,
+        region_labels: List[str],
+    ) -> bool:
+        """Configure viewer for 6D multi-region zarr acquisition.
+
+        Args:
+            region_paths: List of zarr paths (one per region)
+            channels: List of channel names
+            num_z: Number of z-levels
+            fovs_per_region: List of FOV counts per region
+            height: Image height in pixels
+            width: Image width in pixels
+            region_labels: List of region labels (e.g., ["region_1", "region_2"])
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for 6D multi-region acquisition")
+                self._viewer = ndviewer_light.LightweightViewer()
+                self._layout.addWidget(self._viewer, 1)
+
+            # Check if ndviewer_light has 6D regions support
+            if not hasattr(self._viewer, "start_zarr_acquisition_6d"):
+                self._log.warning(
+                    "ndviewer_light doesn't support 6D multi-region mode. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: 6D multi-region mode requires updated ndviewer_light.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition_6d(
+                region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+            )
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+
+            total_fovs = sum(fovs_per_region)
+            self._log.info(
+                f"NDViewer configured for 6D multi-region: {len(region_paths)} regions, "
+                f"{total_fovs} total FOVs, {len(channels)} channels, {num_z} z-levels"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start 6D multi-region zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start 6D regions acquisition:\n{error_msg}")
+            return False
+
+    def notify_zarr_frame(self, t: int, fov_idx: int, z: int, channel: str, region_idx: int = 0) -> None:
+        """Notify viewer that a zarr frame was written.
+
+        Called on main thread via Qt signal from worker thread.
+
+        Args:
+            t: Timepoint index
+            fov_idx: FOV index (local to region in 6D mode, flat index otherwise)
+            z: Z-level index
+            channel: Channel name
+            region_idx: Region index (only used in 6D multi-region mode)
+        """
+        self._log.debug(f"notify_zarr_frame called: t={t}, fov={fov_idx}, z={z}, ch={channel}")
+        if self._viewer is None:
+            self._log.warning("notify_zarr_frame: viewer is None")
+            return
+        try:
+            if hasattr(self._viewer, "notify_zarr_frame"):
+                self._viewer.notify_zarr_frame(t, fov_idx, z, channel, region_idx)
+            else:
+                self._log.warning("viewer doesn't have notify_zarr_frame method")
+        except Exception:
+            self._log.exception(
+                f"Failed to notify zarr frame: t={t}, fov={fov_idx}, z={z}, "
+                f"channel={channel}, region_idx={region_idx}"
+            )
+
+    def end_zarr_acquisition(self) -> None:
+        """Mark zarr acquisition as ended.
+
+        Call this when zarr acquisition completes. The viewer remains usable
+        for navigating the acquired data.
+        """
+        if self._viewer is None:
+            return
+        try:
+            if hasattr(self._viewer, "end_zarr_acquisition"):
+                self._viewer.end_zarr_acquisition()
+                self._log.debug("NDViewer zarr acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end zarr acquisition in NDViewer")
+
     def close(self) -> None:
         """Clean up viewer resources."""
         if self._viewer is not None:

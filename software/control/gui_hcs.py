@@ -196,9 +196,18 @@ class QtMultiPointController(MultiPointController, QObject):
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
-    # NDViewer push-based API signals
+    # NDViewer push-based API signals (TIFF mode)
     ndviewer_start_acquisition = Signal(list, int, int, int, list)  # channels, num_z, height, width, fov_labels
     ndviewer_register_image = Signal(int, int, int, str, str)  # t, fov_idx, z, channel, filepath
+    # NDViewer push-based API signals (Zarr mode)
+    ndviewer_start_zarr_acquisition = Signal(
+        str, list, int, list, int, int, list
+    )  # zarr_path, channels, num_z, fov_labels, height, width, fov_paths
+    ndviewer_start_zarr_acquisition_6d = Signal(
+        list, list, int, list, int, int, list
+    )  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+    ndviewer_notify_zarr_frame = Signal(int, int, int, str, int)  # t, fov_idx, z, channel, region_idx
+    ndviewer_end_zarr_acquisition = Signal()
 
     def __init__(
         self,
@@ -240,6 +249,9 @@ class QtMultiPointController(MultiPointController, QObject):
         # NDViewer push-based API state
         self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
         self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
+        self._using_zarr_viewer: bool = False  # Whether current acquisition uses zarr push API
+        self._using_6d_regions_mode: bool = False  # Whether using 6D multi-region mode
+        self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -269,9 +281,44 @@ class QtMultiPointController(MultiPointController, QObject):
         # Get image dimensions from camera (after binning)
         width, height = self.microscope.camera.get_resolution()
 
-        self.ndviewer_start_acquisition.emit(channels, num_z, height, width, self._ndviewer_fov_labels)
+        # Check save format to determine which API to use
+        if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            self._using_zarr_viewer = True
+
+            is_hcs = self._detect_hcs_mode(scan_info)
+            use_6d = control._def.ZARR_USE_6D_FOV_DIMENSION
+
+            if use_6d and not is_hcs:
+                # 6D mode (single or multi-region): use unified 6D regions API
+                self._using_6d_regions_mode = True
+                region_paths, fovs_per_region, region_labels = self._build_6d_region_info(parameters)
+
+                # Build region index map for notify_zarr_frame
+                self._ndviewer_region_index_map = {name: idx for idx, name in enumerate(scan_info.scan_region_names)}
+
+                self.ndviewer_start_zarr_acquisition_6d.emit(
+                    region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+                )
+            else:
+                # HCS or per-FOV modes: use fov_paths API
+                self._using_6d_regions_mode = False
+                fov_paths = self._build_zarr_fov_paths(parameters)
+
+                self.ndviewer_start_zarr_acquisition.emit(
+                    "", channels, num_z, self._ndviewer_fov_labels, height, width, fov_paths or []
+                )
+        else:
+            self._using_zarr_viewer = False
+            self._using_6d_regions_mode = False
+            self.ndviewer_start_acquisition.emit(channels, num_z, height, width, self._ndviewer_fov_labels)
 
     def _signal_acquisition_finished_fn(self):
+        # End zarr acquisition if active (before general acquisition_finished)
+        if self._using_zarr_viewer:
+            self.ndviewer_end_zarr_acquisition.emit()
+            self._using_zarr_viewer = False
+            self._using_6d_regions_mode = False
+
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
@@ -302,7 +349,7 @@ class QtMultiPointController(MultiPointController, QObject):
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
-        # NDViewer push-based API: register image file
+        # NDViewer push-based API: register image
         # Compute flat FOV index from region and fov within region
         region_offset = self._ndviewer_region_fov_offset.get(info.region_id)
         if region_offset is None:
@@ -314,13 +361,27 @@ class QtMultiPointController(MultiPointController, QObject):
             return
         flat_fov_idx = region_offset + info.fov
 
-        filepath = control.utils_acquisition.get_image_filepath(
-            info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
-        )
-
-        self.ndviewer_register_image.emit(
-            info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
-        )
+        if self._using_zarr_viewer:
+            # Zarr mode: notify frame (no filepath needed - viewer reads from zarr store)
+            if self._using_6d_regions_mode:
+                # 6D multi-region: pass region_idx and local FOV index
+                region_idx = self._ndviewer_region_index_map.get(info.region_id, 0)
+                self.ndviewer_notify_zarr_frame.emit(
+                    info.time_point, info.fov, info.z_index, info.configuration.name, region_idx
+                )
+            else:
+                # HCS/per-FOV modes: pass flat FOV index, region_idx=0
+                self.ndviewer_notify_zarr_frame.emit(
+                    info.time_point, flat_fov_idx, info.z_index, info.configuration.name, 0
+                )
+        else:
+            # TIFF mode: register with filepath
+            filepath = control.utils_acquisition.get_image_filepath(
+                info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
+            )
+            self.ndviewer_register_image.emit(
+                info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
+            )
 
     def _signal_current_configuration_fn(self, config: AcquisitionChannel):
         self.signal_current_configuration.emit(config)
@@ -357,6 +418,91 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_slack_acquisition_finished_fn(self, stats: AcquisitionStats):
         self.signal_slack_acq_finished.emit(stats)
+
+    # -------------------------------------------------------------------------
+    # Helper methods for Zarr FOV path building
+    # -------------------------------------------------------------------------
+
+    def _build_6d_region_info(self, parameters: AcquisitionParameters):
+        """Build region info for 6D mode (single or multi-region).
+
+        Returns:
+            Tuple of (region_paths, fovs_per_region, region_labels)
+        """
+        base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
+        scan_info = parameters.scan_position_information
+
+        region_paths = []
+        fovs_per_region = []
+        region_labels = []
+
+        for region_name in scan_info.scan_region_names:
+            # Path: zarr/{region}/acquisition.zarr
+            path = os.path.join(base_path, "zarr", region_name, "acquisition.zarr")
+            region_paths.append(path)
+
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
+            fovs_per_region.append(num_fovs)
+
+            region_labels.append(region_name)
+
+        return region_paths, fovs_per_region, region_labels
+
+    def _build_zarr_fov_paths(self, parameters: AcquisitionParameters):
+        """Build list of zarr paths for each FOV.
+
+        Returns:
+            List of zarr paths (one per FOV) for HCS/per-FOV modes.
+            None for 6D mode (single zarr store).
+        """
+        import re
+
+        base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
+        scan_info = parameters.scan_position_information
+
+        # Detect acquisition mode
+        is_hcs = self._detect_hcs_mode(scan_info)
+        use_6d = control._def.ZARR_USE_6D_FOV_DIMENSION
+
+        if use_6d and not is_hcs:
+            # 6D mode: single zarr per region, fov_paths=None
+            return None
+
+        # Build fov_paths for HCS or per-FOV modes
+        fov_paths = []
+        for region_name in scan_info.scan_region_names:
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
+            for fov in range(num_fovs):
+                if is_hcs:
+                    # HCS: plate.ome.zarr/{row}/{col}/{fov}/0
+                    row_letter, col_num = self._parse_well_id_parts(region_name)
+                    path = os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov), "0")
+                else:
+                    # Per-FOV: zarr/{region}/fov_{n}.ome.zarr
+                    path = os.path.join(base_path, "zarr", region_name, f"fov_{fov}.ome.zarr")
+                fov_paths.append(path)
+
+        return fov_paths
+
+    def _detect_hcs_mode(self, scan_info) -> bool:
+        """Detect if this is an HCS (wellplate) acquisition."""
+        import re
+
+        well_pattern = re.compile(r"^[A-Z]+\d+$")
+
+        for region_name in scan_info.scan_region_names:
+            if not well_pattern.match(region_name):
+                return False
+        return len(scan_info.scan_region_names) > 0
+
+    def _parse_well_id_parts(self, well_id: str):
+        """Parse well ID into row letter and column number."""
+        import re
+
+        match = re.match(r"^([A-Z]+)(\d+)$", well_id)
+        if match:
+            return match.group(1), match.group(2)
+        return well_id, "1"  # Fallback
 
 
 class HighContentScreeningGui(QMainWindow):
@@ -1304,9 +1450,17 @@ class HighContentScreeningGui(QMainWindow):
 
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
+            # TIFF mode signals
             self.multipointController.ndviewer_start_acquisition.connect(self.ndviewerTab.start_acquisition)
             self.multipointController.ndviewer_register_image.connect(self.ndviewerTab.register_image)
             self.multipointController.acquisition_finished.connect(self.ndviewerTab.end_acquisition)
+            # Zarr mode signals
+            self.multipointController.ndviewer_start_zarr_acquisition.connect(self.ndviewerTab.start_zarr_acquisition)
+            self.multipointController.ndviewer_start_zarr_acquisition_6d.connect(
+                self.ndviewerTab.start_zarr_acquisition_6d
+            )
+            self.multipointController.ndviewer_notify_zarr_frame.connect(self.ndviewerTab.notify_zarr_frame)
+            self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
