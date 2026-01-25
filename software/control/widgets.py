@@ -883,10 +883,27 @@ class PreferencesDialog(QDialog):
 
         # File Saving Format
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        self.file_saving_combo.addItems(["OME_TIFF", "ZARR_V3", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
         current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # Zarr Compression (only visible when ZARR_V3 is selected)
+        self.zarr_compression_combo = QComboBox()
+        self.zarr_compression_combo.addItems(["fast", "balanced", "best"])
+        self.zarr_compression_combo.setToolTip(
+            "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
+            "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
+            "best: blosc-zstd level 9, slower but best compression"
+        )
+        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
+        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_label = QLabel("Zarr Compression:")
+        layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
+
+        # Show/hide zarr compression based on file saving format selection
+        self._update_zarr_compression_visibility()
+        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_compression_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1541,6 +1558,12 @@ class PreferencesDialog(QDialog):
             else:
                 QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
+    def _update_zarr_compression_visibility(self):
+        """Show/hide zarr compression options based on file saving format."""
+        is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
+        self.zarr_compression_label.setVisible(is_zarr)
+        self.zarr_compression_combo.setVisible(is_zarr)
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
@@ -1553,6 +1576,7 @@ class PreferencesDialog(QDialog):
 
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
@@ -1721,6 +1745,11 @@ class PreferencesDialog(QDialog):
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
             self.file_saving_combo.currentText()
+        )
+
+        # Zarr compression (only applicable when using ZARR_V3)
+        control._def.ZARR_COMPRESSION = control._def.ZarrCompression.convert_to_enum(
+            self.zarr_compression_combo.currentText()
         )
 
         # Default saving path
