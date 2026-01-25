@@ -412,7 +412,9 @@ class HighContentScreeningGui(QMainWindow):
             self.streamHandler_focus_camera = core.QtStreamHandler(
                 accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
             )
-            self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
+            self.imageDisplayWindow_focus = core.ImageDisplayWindow(
+                liveController=self.liveController, show_LUT=False, autoLevels=False
+            )
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = LaserAutofocusController(
                 self.microcontroller,
@@ -786,7 +788,7 @@ class HighContentScreeningGui(QMainWindow):
             self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
                 self.laserAutofocusController, self.liveController
             )
-            self.imageDisplayWindow_focus = core.ImageDisplayWindow()
+            self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
 
         if RUN_FLUIDICS:
             self.fluidicsWidget = widgets.FluidicsWidget(self.fluidics)
