@@ -462,6 +462,19 @@ class ZarrWriter:
             self._cleanup_event_loop()
             raise
 
+    def _get_metadata_zarr_json_path(self) -> str:
+        """Get the path to zarr.json containing OME metadata.
+
+        For HCS (path ends with /0 and parent is field index), metadata is at parent group.
+        For non-HCS, metadata is at the zarr store directly.
+        """
+        config = self._config
+        path_parts = config.output_path.rstrip(os.sep).split(os.sep)
+        is_hcs_array_path = len(path_parts) >= 2 and path_parts[-1] == "0" and path_parts[-2].isdigit()
+        if is_hcs_array_path:
+            return os.path.join(os.path.dirname(config.output_path), "zarr.json")
+        return os.path.join(config.output_path, "zarr.json")
+
     def _write_zarr_metadata(self) -> None:
         """Write OME-NGFF 0.5 compliant metadata to zarr.json attributes."""
         config = self._config
@@ -589,23 +602,48 @@ class ZarrWriter:
         }
 
         # Write metadata to zarr.json attributes (strict Zarr v3 compliance)
-        # TensorStore creates zarr.json for the array; we add attributes to it
-        zarr_json_path = os.path.join(config.output_path, "zarr.json")
-        try:
-            # Read existing zarr.json created by TensorStore
-            with open(zarr_json_path, "r") as f:
-                zarr_json = json.load(f)
+        # For HCS, output_path is the array path ({fov}/0), but OME-NGFF metadata
+        # should be at the parent group level ({fov}/zarr.json), not the array level.
+        # For non-HCS, output_path is the zarr store directly (fov_{n}.ome.zarr).
+        #
+        # Detect HCS by checking if path ends with /0 and parent is a field index (digit)
+        path_parts = config.output_path.rstrip(os.sep).split(os.sep)
+        is_hcs_array_path = (
+            len(path_parts) >= 2
+            and path_parts[-1] == "0"
+            and path_parts[-2].isdigit()  # Field index like "0", "1", "2"
+        )
 
-            # Add OME metadata as attributes
-            zarr_json["attributes"] = zattrs
+        if is_hcs_array_path:
+            # HCS: write group metadata to parent directory ({fov}/zarr.json)
+            group_path = os.path.dirname(config.output_path)
+            group_zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": zattrs}
+            zarr_json_path = os.path.join(group_path, "zarr.json")
+            try:
+                with open(zarr_json_path, "w") as f:
+                    json.dump(group_zarr_json, f, indent=2)
+                log.debug(f"Wrote OME-NGFF group metadata to {zarr_json_path}")
+            except OSError as e:
+                log.error(f"Failed to write zarr group metadata to {zarr_json_path}: {e}")
+                raise RuntimeError(f"Failed to write zarr group metadata: {e}") from e
+        else:
+            # Non-HCS: write metadata to the zarr store's zarr.json
+            zarr_json_path = os.path.join(config.output_path, "zarr.json")
+            try:
+                # Read existing zarr.json created by TensorStore
+                with open(zarr_json_path, "r") as f:
+                    zarr_json = json.load(f)
 
-            # Write back
-            with open(zarr_json_path, "w") as f:
-                json.dump(zarr_json, f, indent=2)
-            log.debug(f"Wrote OME-NGFF metadata to {zarr_json_path}")
-        except (OSError, json.JSONDecodeError) as e:
-            log.error(f"Failed to write zarr metadata to {zarr_json_path}: {e}")
-            raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
+                # Add OME metadata as attributes
+                zarr_json["attributes"] = zattrs
+
+                # Write back
+                with open(zarr_json_path, "w") as f:
+                    json.dump(zarr_json, f, indent=2)
+                log.debug(f"Wrote OME-NGFF metadata to {zarr_json_path}")
+            except (OSError, json.JSONDecodeError) as e:
+                log.error(f"Failed to write zarr metadata to {zarr_json_path}: {e}")
+                raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
         """Write a single frame (non-blocking, queues for async write).
@@ -700,7 +738,7 @@ class ZarrWriter:
         self.wait_for_pending()
 
         # Update metadata with completion status (in zarr.json attributes)
-        zarr_json_path = os.path.join(self._config.output_path, "zarr.json")
+        zarr_json_path = self._get_metadata_zarr_json_path()
         try:
             if os.path.exists(zarr_json_path):
                 with open(zarr_json_path, "r") as f:
@@ -732,7 +770,7 @@ class ZarrWriter:
             self._pending_futures.clear()
 
             # Mark as incomplete in metadata (in zarr.json attributes)
-            zarr_json_path = os.path.join(self._config.output_path, "zarr.json")
+            zarr_json_path = self._get_metadata_zarr_json_path()
             try:
                 if os.path.exists(zarr_json_path):
                     with open(zarr_json_path, "r") as f:

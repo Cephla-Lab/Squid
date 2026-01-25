@@ -1608,15 +1608,39 @@ class TestHCSWorkflowIntegration:
             assert well_info["version"] == "0.5"
             assert len(well_info["images"]) == fovs_per_well
 
-            # Verify each FOV data array
+            # Verify each FOV data array and metadata location
             for fov in range(fovs_per_well):
-                fov_path = os.path.join(well_path, str(fov), "0")
-                assert os.path.exists(fov_path), f"FOV {fov} data path should exist"
+                fov_group_path = os.path.join(well_path, str(fov))
+                fov_array_path = os.path.join(fov_group_path, "0")
+                assert os.path.exists(fov_array_path), f"FOV {fov} data path should exist"
+
+                # Verify OME metadata is at GROUP level ({fov}/zarr.json), not array level ({fov}/0/zarr.json)
+                fov_group_zarr_json = os.path.join(fov_group_path, "zarr.json")
+                assert os.path.exists(fov_group_zarr_json), f"FOV {fov} group zarr.json should exist"
+
+                with open(fov_group_zarr_json) as f:
+                    fov_group_meta = json.load(f)
+
+                assert "attributes" in fov_group_meta
+                fov_attrs = fov_group_meta["attributes"]
+                assert "ome" in fov_attrs, "FOV group should have 'ome' namespace with multiscales/omero"
+                assert "multiscales" in fov_attrs["ome"], "FOV group should have multiscales"
+                assert "omero" in fov_attrs["ome"], "FOV group should have omero"
+                assert "_squid" in fov_attrs, "FOV group should have _squid metadata"
+
+                # Verify array-level zarr.json does NOT have OME attributes (TensorStore creates this)
+                fov_array_zarr_json = os.path.join(fov_array_path, "zarr.json")
+                if os.path.exists(fov_array_zarr_json):
+                    with open(fov_array_zarr_json) as f:
+                        array_meta = json.load(f)
+                    # Array should have zarr format info but not OME attributes
+                    array_attrs = array_meta.get("attributes", {})
+                    assert "ome" not in array_attrs, "Array-level zarr.json should not have OME metadata"
 
                 # Read data back using tensorstore
                 spec = {
                     "driver": "zarr3",
-                    "kvstore": {"driver": "file", "path": fov_path},
+                    "kvstore": {"driver": "file", "path": fov_array_path},
                 }
                 dataset = ts.open(spec).result()
 
