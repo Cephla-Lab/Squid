@@ -51,9 +51,9 @@ See [Downsampled Plate View](downsampled-plate-view.md) for more information abo
 
 ## Architecture
 
-### Push-Based API
+### Push-Based API (TIFF Mode)
 
-The NDViewer uses a push-based API for live acquisition viewing, eliminating filesystem polling:
+For TIFF/OME-TIFF formats, the NDViewer uses a push-based API for live acquisition viewing, eliminating filesystem polling:
 
 ```
 Acquisition Start
@@ -81,6 +81,50 @@ end_acquisition()
      │
      └── Navigation continues to work for browsing
 ```
+
+### Push-Based API (Zarr Mode)
+
+When saving to Zarr v3 format, a different API is used that reads directly from zarr stores instead of individual files:
+
+```
+Acquisition Start
+     │
+     ▼
+start_zarr_acquisition(zarr_path, channels, num_z, fov_labels, height, width, fov_paths)
+     │
+     ├── zarr_path: For 6D mode (single zarr store with FOV dimension)
+     ├── fov_paths: For HCS/per-FOV modes (list of zarr paths, one per FOV)
+     └── Configures viewer to read directly from zarr stores
+
+Each Frame Saved
+     │
+     ▼
+notify_zarr_frame(t, fov_idx, z, channel)
+     │
+     ├── No file path needed - viewer reads from zarr store
+     └── Debounced loading (200ms) for performance
+
+Acquisition End
+     │
+     ▼
+end_zarr_acquisition()
+     │
+     └── Zarr stores remain open for browsing
+```
+
+The API automatically selects TIFF or Zarr mode based on the `FILE_SAVING_OPTION` setting.
+
+**Zarr Acquisition Modes:**
+
+| Mode | Detection | zarr_path | fov_paths |
+|------|-----------|-----------|-----------|
+| **HCS** | Well-based acquisition | ignored | `[plate.zarr/A/1/0/0, ...]` |
+| **Per-FOV** | Non-HCS, `ZARR_USE_6D=False` | ignored | `[zarr/region/fov_0.ome.zarr, ...]` |
+| **6D** | Non-HCS, `ZARR_USE_6D=True` | `zarr/region/acquisition.zarr` | empty |
+
+**Limitation**: In 6D mode with multiple regions, only the first region is viewable during live acquisition. Reload the dataset after acquisition to view all regions.
+
+**Requirements**: Zarr live viewing requires ndviewer_light with zarr support. If the submodule doesn't have this feature, a placeholder message will be shown.
 
 ### Thread Safety
 
@@ -146,10 +190,17 @@ The slider must have a range > 0:
 ### Signal Connections
 
 ```python
-# In gui_hcs.py make_connections():
+# In gui_hcs.py OctoPi.__init__():
+
+# TIFF mode signals
 multipointController.ndviewer_start_acquisition.connect(ndviewerTab.start_acquisition)
 multipointController.ndviewer_register_image.connect(ndviewerTab.register_image)
 multipointController.acquisition_finished.connect(ndviewerTab.end_acquisition)
+
+# Zarr mode signals
+multipointController.ndviewer_start_zarr_acquisition.connect(ndviewerTab.start_zarr_acquisition)
+multipointController.ndviewer_notify_zarr_frame.connect(ndviewerTab.notify_zarr_frame)
+multipointController.ndviewer_end_zarr_acquisition.connect(ndviewerTab.end_zarr_acquisition)
 ```
 
 ### Key Classes
