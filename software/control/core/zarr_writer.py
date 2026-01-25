@@ -355,8 +355,8 @@ def write_well_metadata(
 # Synchronous wrapper for use in job processing
 
 
-class SyncZarrWriter:
-    """Synchronous Zarr writer for use in job processing.
+class ZarrWriter:
+    """Zarr v3 writer for use in job processing.
 
     Directly uses TensorStore without asyncio overhead for write operations.
     Only uses asyncio for initialization and finalization where it's unavoidable.

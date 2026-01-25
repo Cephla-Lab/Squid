@@ -16,7 +16,7 @@ import numpy as np
 # Add software dir to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from control.core.zarr_writer import SyncZarrWriter, ZarrAcquisitionConfig
+from control.core.zarr_writer import ZarrWriter, ZarrAcquisitionConfig
 from control._def import ZarrChunkMode, ZarrCompression
 
 
@@ -35,7 +35,7 @@ def benchmark_zarr_write(num_frames: int, image_shape: tuple, detailed: bool = F
             compression=ZarrCompression.FAST,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
 
         init_start = time.perf_counter()
         writer.initialize()
@@ -101,7 +101,7 @@ def benchmark_zarr_no_compression(num_frames: int, image_shape: tuple, detailed:
             compression=ZarrCompression.NONE,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
 
         init_start = time.perf_counter()
         writer.initialize()
@@ -138,7 +138,7 @@ def benchmark_zarr_no_sharding(num_frames: int, image_shape: tuple) -> float:
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os.path.join(tmpdir, "test.zarr")
 
-        from control.core.zarr_writer import SyncZarrWriter
+        from control.core.zarr_writer import ZarrWriter
         import tensorstore as ts
         import asyncio
 
@@ -151,7 +151,7 @@ def benchmark_zarr_no_sharding(num_frames: int, image_shape: tuple) -> float:
             compression=ZarrCompression.FAST,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
 
         # Use compression but no sharding (each chunk is also a shard)
         spec = {

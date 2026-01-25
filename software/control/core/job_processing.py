@@ -455,7 +455,7 @@ class ZarrWriterInfo:
 class SaveZarrJob(Job):
     """Job for saving images to Zarr v3 format using TensorStore.
 
-    Uses a process-local SyncZarrWriter that is initialized lazily on first write.
+    Uses a process-local ZarrWriter that is initialized lazily on first write.
     The zarr_writer_info field is injected by JobRunner.dispatch() before the job runs.
     """
 
@@ -465,7 +465,7 @@ class SaveZarrJob(Job):
     # Class-level writer storage keyed by output_path
     # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
     # process has its own copy of this class variable.
-    _zarr_writers: ClassVar[Dict[str, "SyncZarrWriter"]] = {}
+    _zarr_writers: ClassVar[Dict[str, "ZarrWriter"]] = {}
 
     @classmethod
     def clear_writers(cls) -> None:
@@ -569,7 +569,7 @@ class SaveZarrJob(Job):
             info: Capture info with t/c/z indices
             output_path: Path to the zarr dataset for this region/FOV
         """
-        from control.core.zarr_writer import SyncZarrWriter, ZarrAcquisitionConfig
+        from control.core.zarr_writer import ZarrWriter, ZarrAcquisitionConfig
         from control import _def
 
         is_hcs = self.zarr_writer_info.is_hcs
@@ -625,7 +625,7 @@ class SaveZarrJob(Job):
                 is_hcs=is_hcs or not use_6d_fov,  # 5D for HCS and non-HCS default
             )
             try:
-                writer = SyncZarrWriter(config)
+                writer = ZarrWriter(config)
                 writer.initialize()
             except Exception as e:
                 self._log.error(f"Failed to initialize zarr writer for {output_path}: {e}")

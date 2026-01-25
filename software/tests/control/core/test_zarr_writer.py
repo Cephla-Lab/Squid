@@ -1,6 +1,6 @@
 """Tests for Zarr v3 saving using TensorStore.
 
-These tests verify the SyncZarrWriter and related functionality
+These tests verify the ZarrWriter and related functionality
 for Zarr v3 saving during acquisition.
 """
 
@@ -282,8 +282,8 @@ class TestDtypeConversion:
             _dtype_to_zarr(np.dtype("complex64"))
 
 
-class TestSyncZarrWriter:
-    """Tests for synchronous ZarrWriter wrapper."""
+class TestZarrWriter:
+    """Tests for ZarrWriter."""
 
     @pytest.fixture
     def temp_dir(self):
@@ -292,7 +292,7 @@ class TestSyncZarrWriter:
             yield tmpdir
 
     def test_sync_lifecycle(self, temp_dir):
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -302,7 +302,7 @@ class TestSyncZarrWriter:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         assert writer.is_initialized
@@ -316,7 +316,7 @@ class TestSyncZarrWriter:
 
     def test_sync_writer_omero_channel_metadata(self, temp_dir):
         """Test that channel metadata (colors, wavelengths) is written to zattrs."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -329,7 +329,7 @@ class TestSyncZarrWriter:
             channel_wavelengths=[405, 488, None],  # None for brightfield
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
         writer.finalize()
 
@@ -737,8 +737,8 @@ class TestSaveZarrJobClassMethods:
         # Should not raise
 
 
-class TestSyncZarrWriterErrorHandling:
-    """Tests for error handling in SyncZarrWriter."""
+class TestZarrWriterErrorHandling:
+    """Tests for error handling in ZarrWriter."""
 
     @pytest.fixture
     def temp_dir(self):
@@ -748,7 +748,7 @@ class TestSyncZarrWriterErrorHandling:
 
     def test_write_before_initialize_raises(self, temp_dir):
         """Test that writing before initialization raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -757,7 +757,7 @@ class TestSyncZarrWriterErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         test_image = np.ones((32, 32), dtype=np.uint16)
 
         with pytest.raises(RuntimeError, match="not initialized"):
@@ -765,7 +765,7 @@ class TestSyncZarrWriterErrorHandling:
 
     def test_write_after_finalize_raises(self, temp_dir):
         """Test that writing after finalization raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -774,7 +774,7 @@ class TestSyncZarrWriterErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
         writer.finalize()
 
@@ -784,7 +784,7 @@ class TestSyncZarrWriterErrorHandling:
 
     def test_double_initialize_warning(self, temp_dir):
         """Test that double initialization logs a warning but doesn't fail."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -793,14 +793,14 @@ class TestSyncZarrWriterErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
         writer.initialize()  # Should warn but not fail
         assert writer.is_initialized
 
     def test_double_finalize_warning(self, temp_dir):
         """Test that double finalization logs a warning but doesn't fail."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -809,15 +809,15 @@ class TestSyncZarrWriterErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
         writer.finalize()
         writer.finalize()  # Should warn but not fail
         assert writer.is_finalized
 
 
-class TestSyncZarrWriterIndexValidation:
-    """Tests for index validation in SyncZarrWriter."""
+class TestZarrWriterIndexValidation:
+    """Tests for index validation in ZarrWriter."""
 
     @pytest.fixture
     def temp_dir(self):
@@ -827,7 +827,7 @@ class TestSyncZarrWriterIndexValidation:
 
     def test_invalid_time_index(self, temp_dir):
         """Test that out-of-range time index raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -836,7 +836,7 @@ class TestSyncZarrWriterIndexValidation:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         test_image = np.ones((32, 32), dtype=np.uint16)
@@ -846,7 +846,7 @@ class TestSyncZarrWriterIndexValidation:
 
     def test_invalid_channel_index(self, temp_dir):
         """Test that out-of-range channel index raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -855,7 +855,7 @@ class TestSyncZarrWriterIndexValidation:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         test_image = np.ones((32, 32), dtype=np.uint16)
@@ -865,7 +865,7 @@ class TestSyncZarrWriterIndexValidation:
 
     def test_invalid_z_index(self, temp_dir):
         """Test that out-of-range z index raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         config = ZarrAcquisitionConfig(
             output_path=os.path.join(temp_dir, "test.zarr"),
@@ -874,7 +874,7 @@ class TestSyncZarrWriterIndexValidation:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         test_image = np.ones((32, 32), dtype=np.uint16)
@@ -883,7 +883,7 @@ class TestSyncZarrWriterIndexValidation:
             writer.write_frame(test_image, t=0, c=0, z=10)  # z=10 is out of range
 
 
-class TestSyncZarrWriterMultipleFrames:
+class TestZarrWriterMultipleFrames:
     """Tests for writing multiple frames."""
 
     @pytest.fixture
@@ -894,7 +894,7 @@ class TestSyncZarrWriterMultipleFrames:
 
     def test_write_multiple_frames(self, temp_dir):
         """Test writing multiple frames to a dataset."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -904,7 +904,7 @@ class TestSyncZarrWriterMultipleFrames:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Write all frames
@@ -925,7 +925,7 @@ class TestSyncZarrWriterMultipleFrames:
         """Test that written data can be read back correctly."""
         import tensorstore as ts
 
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -935,7 +935,7 @@ class TestSyncZarrWriterMultipleFrames:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Write a known pattern
@@ -1053,7 +1053,7 @@ class TestSixDimensionalSupport:
 
     def test_6d_writer_initialization(self, temp_dir):
         """Test 6D writer initializes correctly."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test_6d.zarr")
         config = ZarrAcquisitionConfig(
@@ -1064,7 +1064,7 @@ class TestSixDimensionalSupport:
             is_hcs=False,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         assert writer.is_initialized
@@ -1084,7 +1084,7 @@ class TestSixDimensionalSupport:
 
     def test_6d_write_multiple_fovs(self, temp_dir):
         """Test writing to multiple FOV indices in a 6D dataset."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test_6d.zarr")
         config = ZarrAcquisitionConfig(
@@ -1095,7 +1095,7 @@ class TestSixDimensionalSupport:
             is_hcs=False,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Write to different FOV indices
@@ -1111,7 +1111,7 @@ class TestSixDimensionalSupport:
         """Test 6D data can be written and read back correctly."""
         import tensorstore as ts
 
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test_6d.zarr")
         config = ZarrAcquisitionConfig(
@@ -1122,7 +1122,7 @@ class TestSixDimensionalSupport:
             is_hcs=False,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Write different patterns to each FOV
@@ -1148,7 +1148,7 @@ class TestSixDimensionalSupport:
 
     def test_6d_missing_fov_raises_error(self, temp_dir):
         """Test that writing to 6D dataset without FOV index raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test_6d.zarr")
         config = ZarrAcquisitionConfig(
@@ -1159,7 +1159,7 @@ class TestSixDimensionalSupport:
             is_hcs=False,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         test_image = np.ones((32, 32), dtype=np.uint16)
@@ -1169,7 +1169,7 @@ class TestSixDimensionalSupport:
 
     def test_6d_invalid_fov_index_raises_error(self, temp_dir):
         """Test that out-of-range FOV index raises an error."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test_6d.zarr")
         config = ZarrAcquisitionConfig(
@@ -1180,7 +1180,7 @@ class TestSixDimensionalSupport:
             is_hcs=False,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         test_image = np.ones((32, 32), dtype=np.uint16)
@@ -1249,7 +1249,7 @@ class TestZarrWriterIOErrorHandling:
 
     def test_finalize_handles_corrupted_zattrs(self, temp_dir):
         """finalize() should handle corrupted .zattrs gracefully."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -1259,7 +1259,7 @@ class TestZarrWriterIOErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Corrupt the .zattrs file with invalid JSON
@@ -1273,7 +1273,7 @@ class TestZarrWriterIOErrorHandling:
 
     def test_abort_handles_corrupted_zattrs(self, temp_dir):
         """abort() should handle corrupted .zattrs gracefully."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -1283,7 +1283,7 @@ class TestZarrWriterIOErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Corrupt the .zattrs file with invalid JSON
@@ -1297,7 +1297,7 @@ class TestZarrWriterIOErrorHandling:
 
     def test_abort_handles_missing_zattrs(self, temp_dir):
         """abort() should handle missing .zattrs gracefully."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -1307,7 +1307,7 @@ class TestZarrWriterIOErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Delete the .zattrs file
@@ -1330,7 +1330,7 @@ class TestZarrWriterEmptyDataset:
 
     def test_finalize_empty_dataset(self, temp_dir):
         """Finalizing a dataset with zero frames written should work."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         config = ZarrAcquisitionConfig(
@@ -1340,7 +1340,7 @@ class TestZarrWriterEmptyDataset:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Finalize without writing any frames
@@ -1373,7 +1373,7 @@ class TestZarrWriterDtypeAutoConversion:
         """write_frame should auto-convert dtypes to target dtype."""
         import tensorstore as ts
 
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         output_path = os.path.join(temp_dir, "test.zarr")
         target_dtype = np.uint16
@@ -1384,7 +1384,7 @@ class TestZarrWriterDtypeAutoConversion:
             pixel_size_um=0.5,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
         writer.initialize()
 
         # Write image with different dtype
@@ -1416,7 +1416,7 @@ class TestZarrWriterMetadataErrorHandling:
 
     def test_write_metadata_raises_on_permission_error(self, temp_dir):
         """_write_zarr_metadata should raise RuntimeError on permission errors."""
-        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
         # Create a read-only directory
         readonly_dir = os.path.join(temp_dir, "readonly")
@@ -1430,7 +1430,7 @@ class TestZarrWriterMetadataErrorHandling:
             pixel_size_um=1.0,
         )
 
-        writer = SyncZarrWriter(config)
+        writer = ZarrWriter(config)
 
         # Make the directory read-only after creating the writer
         # Note: This test may be platform-specific
