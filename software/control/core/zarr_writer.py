@@ -249,400 +249,6 @@ def _dtype_to_zarr(dtype: np.dtype) -> str:
     raise ValueError(f"Unsupported dtype for zarr: {dtype}")
 
 
-class ZarrWriterManager:
-    """Manages TensorStore-based Zarr v3 saving.
-
-    This class handles the lifecycle of a Zarr v3 dataset during acquisition:
-    - Initialization: Creates the zarr structure with sharding configuration
-    - Writing: Async frame writes using TensorStore futures
-    - Finalization: Completes pending writes and writes OME-NGFF metadata
-
-    The writer uses per-z-level sharding to efficiently stream frames
-    while maintaining good read performance for visualization tools.
-
-    Usage:
-        config = ZarrAcquisitionConfig(...)
-        manager = ZarrWriterManager(config)
-        await manager.initialize()
-
-        # During acquisition:
-        await manager.write_frame(image, t=0, c=0, z=0)
-
-        # At end:
-        await manager.finalize()
-    """
-
-    def __init__(self, config: ZarrAcquisitionConfig):
-        """Initialize the writer manager.
-
-        Args:
-            config: Zarr acquisition configuration
-        """
-        self.config = config
-        self._dataset = None
-        self._pending_futures: List[Any] = []
-        self._initialized = False
-        self._finalized = False
-
-    @property
-    def is_initialized(self) -> bool:
-        return self._initialized
-
-    @property
-    def is_finalized(self) -> bool:
-        return self._finalized
-
-    async def initialize(self) -> None:
-        """Initialize the zarr dataset with TensorStore.
-
-        Creates the zarr v3 structure with sharding and compression configuration.
-        """
-        if self._initialized:
-            log.warning("ZarrWriterManager already initialized")
-            return
-
-        ts = _get_tensorstore()
-
-        # Ensure output directory exists
-        os.makedirs(os.path.dirname(self.config.output_path), exist_ok=True)
-
-        # Build TensorStore spec for zarr v3 with sharding
-        chunk_shape = _get_chunk_shape(self.config)
-        shard_shape = _get_shard_shape(self.config)
-        compression_codec = _get_compression_codec(self.config.compression)
-
-        # Dimension names and transpose order depend on 5D vs 6D
-        if self.config.ndim == 5:
-            dimension_names = ["t", "c", "z", "y", "x"]
-            transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
-        else:  # 6D: FOV, T, C, Z, Y, X
-            dimension_names = ["fov", "t", "c", "z", "y", "x"]
-            transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
-
-        # Determine if we need sharding (when chunk != shard)
-        use_sharding = chunk_shape != shard_shape
-
-        # Build inner codec chain (with or without compression)
-        inner_codecs = [
-            {"name": "transpose", "configuration": {"order": transpose_order}},
-            {"name": "bytes", "configuration": {"endian": "little"}},
-        ]
-        if compression_codec is not None:
-            inner_codecs.append(compression_codec)
-
-        if use_sharding:
-            codecs = [
-                {
-                    "name": "sharding_indexed",
-                    "configuration": {
-                        "chunk_shape": list(chunk_shape),
-                        "codecs": inner_codecs,
-                        "index_codecs": [
-                            {"name": "bytes", "configuration": {"endian": "little"}},
-                            {"name": "crc32c"},
-                        ],
-                    },
-                }
-            ]
-            chunk_config = list(shard_shape)
-        else:
-            codecs = inner_codecs
-            chunk_config = list(chunk_shape)
-
-        spec = {
-            "driver": "zarr3",
-            "kvstore": {"driver": "file", "path": self.config.output_path},
-            "metadata": {
-                "shape": list(self.config.shape),
-                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
-                "chunk_key_encoding": {"name": "default"},
-                "data_type": _dtype_to_zarr(self.config.dtype),
-                "codecs": codecs,
-                "dimension_names": dimension_names,
-            },
-        }
-
-        log.info(
-            f"Initializing Zarr v3 dataset: {self.config.output_path}, "
-            f"shape={self.config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
-            f"compression={self.config.compression.value}"
-        )
-
-        try:
-            self._dataset = await ts.open(spec, create=True, delete_existing=True)
-            self._initialized = True
-            log.info(f"Zarr v3 dataset initialized successfully")
-        except Exception as e:
-            log.error(f"Failed to initialize Zarr v3 dataset: {e}")
-            raise
-
-        # Write zarr.json and initial metadata
-        await self._write_zarr_metadata()
-
-    async def _write_zarr_metadata(self) -> None:
-        """Write OME-NGFF compliant metadata to .zattrs."""
-        # Build axes based on dimensionality
-        if self.config.ndim == 5:
-            # Standard 5D: T, C, Z, Y, X
-            axes = [
-                {"name": "t", "type": "time", "unit": "second"},
-                {"name": "c", "type": "channel"},
-                {"name": "z", "type": "space", "unit": "micrometer"},
-                {"name": "y", "type": "space", "unit": "micrometer"},
-                {"name": "x", "type": "space", "unit": "micrometer"},
-            ]
-            scale = [
-                self.config.time_increment_s or 1.0,
-                1.0,  # channel has no physical scale
-                self.config.z_step_um or 1.0,
-                self.config.pixel_size_um,
-                self.config.pixel_size_um,
-            ]
-        else:
-            # 6D with FOV first: FOV, T, C, Z, Y, X
-            axes = [
-                {"name": "fov", "type": "index"},  # FOV dimension first (index type)
-                {"name": "t", "type": "time", "unit": "second"},
-                {"name": "c", "type": "channel"},
-                {"name": "z", "type": "space", "unit": "micrometer"},
-                {"name": "y", "type": "space", "unit": "micrometer"},
-                {"name": "x", "type": "space", "unit": "micrometer"},
-            ]
-            scale = [
-                1.0,  # fov has no physical scale
-                self.config.time_increment_s or 1.0,
-                1.0,  # channel has no physical scale
-                self.config.z_step_um or 1.0,
-                self.config.pixel_size_um,
-                self.config.pixel_size_um,
-            ]
-
-        zattrs = {
-            "multiscales": [
-                {
-                    "version": "0.5",
-                    "name": "default",
-                    "axes": axes,
-                    "datasets": [
-                        {
-                            "path": ".",
-                            "coordinateTransformations": [
-                                {
-                                    "type": "scale",
-                                    "scale": scale,
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
-        }
-
-        # Add omero metadata for channel visualization
-        if self.config.channel_names:
-            channels_meta = []
-            for i, name in enumerate(self.config.channel_names):
-                channel_info = {
-                    "label": name,
-                    "active": True,
-                }
-
-                # Add color if available
-                if i < len(self.config.channel_colors) and self.config.channel_colors[i]:
-                    hex_color = self.config.channel_colors[i].lstrip("#")
-                    # Convert hex to int (RRGGBB -> 0xRRGGBB00 for OME-NGFF)
-                    try:
-                        rgb_int = int(hex_color, 16)
-                        # OME-NGFF uses RGBA as single integer: (R << 24) | (G << 16) | (B << 8) | A
-                        channel_info["color"] = (rgb_int << 8) | 0xFF  # Add alpha = 255
-                    except ValueError:
-                        pass
-
-                # Add wavelength if available (emission wavelength)
-                if i < len(self.config.channel_wavelengths) and self.config.channel_wavelengths[i]:
-                    channel_info["emission_wavelength"] = {
-                        "value": self.config.channel_wavelengths[i],
-                        "unit": "nanometer",
-                    }
-                    # Use same for excitation wavelength (approximation)
-                    channel_info["excitation_wavelength"] = {
-                        "value": self.config.channel_wavelengths[i],
-                        "unit": "nanometer",
-                    }
-
-                # Add display window based on dtype
-                dtype = np.dtype(self.config.dtype)
-                if np.issubdtype(dtype, np.integer):
-                    info = np.iinfo(dtype)
-                    channel_info["window"] = {
-                        "start": 0,
-                        "end": info.max,
-                        "min": 0,
-                        "max": info.max,
-                    }
-                elif np.issubdtype(dtype, np.floating):
-                    channel_info["window"] = {
-                        "start": 0.0,
-                        "end": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                    }
-
-                channels_meta.append(channel_info)
-
-            zattrs["omero"] = {"channels": channels_meta}
-
-        # Write .zattrs file
-        zattrs_path = os.path.join(self.config.output_path, ".zattrs")
-        with open(zattrs_path, "w") as f:
-            json.dump(zattrs, f, indent=2)
-
-        log.debug(f"Wrote OME-NGFF metadata to {zattrs_path}")
-
-    async def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame to the zarr dataset.
-
-        Args:
-            image: 2D image array (Y, X)
-            t: Time point index
-            c: Channel index
-            z: Z-slice index
-            fov: FOV index (required for 6D datasets, ignored for 5D)
-        """
-        if not self._initialized:
-            raise RuntimeError("ZarrWriterManager not initialized. Call initialize() first.")
-        if self._finalized:
-            raise RuntimeError("ZarrWriterManager already finalized.")
-
-        ts = _get_tensorstore()
-
-        # Validate indices
-        if not (0 <= t < self.config.t_size):
-            raise ValueError(f"Time index {t} out of range [0, {self.config.t_size})")
-        if not (0 <= c < self.config.c_size):
-            raise ValueError(f"Channel index {c} out of range [0, {self.config.c_size})")
-        if not (0 <= z < self.config.z_size):
-            raise ValueError(f"Z index {z} out of range [0, {self.config.z_size})")
-
-        # Validate FOV index for 6D datasets
-        if self.config.ndim == 6:
-            if fov is None:
-                raise ValueError("FOV index required for 6D dataset")
-            if not (0 <= fov < self.config.fov_size):
-                raise ValueError(f"FOV index {fov} out of range [0, {self.config.fov_size})")
-
-        # Ensure image is correct dtype
-        if image.dtype != self.config.dtype:
-            image = image.astype(self.config.dtype)
-
-        # Write frame asynchronously
-        if self.config.ndim == 5:
-            # 5D: [t, c, z, y, x]
-            future = self._dataset[t, c, z, :, :].write(image)
-            log.debug(f"Queued write for frame t={t}, c={c}, z={z}")
-        else:
-            # 6D: [fov, t, c, z, y, x] - FOV is first dimension
-            future = self._dataset[fov, t, c, z, :, :].write(image)
-            log.debug(f"Queued write for frame fov={fov}, t={t}, c={c}, z={z}")
-
-        self._pending_futures.append(future)
-
-    async def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
-        """Wait for all pending writes to complete.
-
-        Args:
-            timeout_s: Optional timeout in seconds
-
-        Returns:
-            Number of writes completed
-        """
-        ts = _get_tensorstore()
-
-        if not self._pending_futures:
-            return 0
-
-        count = len(self._pending_futures)
-        log.debug(f"Waiting for {count} pending writes...")
-
-        try:
-            # Await all pending futures
-            await asyncio.gather(*self._pending_futures)
-            self._pending_futures.clear()
-            log.debug(f"Completed {count} pending writes")
-            return count
-        except Exception as e:
-            log.error(f"Error during pending writes: {e}")
-            raise
-
-    @property
-    def pending_write_count(self) -> int:
-        """Number of writes currently pending."""
-        return len(self._pending_futures)
-
-    async def finalize(self) -> None:
-        """Finalize the zarr dataset.
-
-        Waits for all pending writes to complete and writes final metadata.
-        """
-        if self._finalized:
-            log.warning("ZarrWriterManager already finalized")
-            return
-
-        log.info("Finalizing Zarr v3 dataset...")
-
-        # Wait for all pending writes
-        await self.wait_for_pending()
-
-        # Update metadata with completion status
-        zattrs_path = os.path.join(self.config.output_path, ".zattrs")
-        if os.path.exists(zattrs_path):
-            with open(zattrs_path, "r") as f:
-                zattrs = json.load(f)
-        else:
-            zattrs = {}
-
-        zattrs["_squid_metadata"] = {
-            "acquisition_complete": True,
-            "shape": list(self.config.shape),
-            "dtype": str(self.config.dtype),
-        }
-
-        with open(zattrs_path, "w") as f:
-            json.dump(zattrs, f, indent=2)
-
-        self._finalized = True
-        log.info(f"Zarr v3 dataset finalized: {self.config.output_path}")
-
-    async def abort(self) -> None:
-        """Abort the acquisition and clean up.
-
-        Cancels pending writes and marks metadata as incomplete.
-        """
-        log.warning("Aborting Zarr writer...")
-
-        # Clear pending futures (don't wait for them)
-        self._pending_futures.clear()
-
-        # Update metadata to indicate incomplete acquisition
-        if self._initialized:
-            zattrs_path = os.path.join(self.config.output_path, ".zattrs")
-            if os.path.exists(zattrs_path):
-                try:
-                    with open(zattrs_path, "r") as f:
-                        zattrs = json.load(f)
-                    zattrs["_squid_metadata"] = {
-                        "acquisition_complete": False,
-                        "aborted": True,
-                    }
-                    with open(zattrs_path, "w") as f:
-                        json.dump(zattrs, f, indent=2)
-                except Exception as e:
-                    log.error(f"Failed to update metadata on abort: {e}")
-
-        self._finalized = True
-        log.info("Zarr writer aborted")
-
-
 # HCS Plate Metadata Functions
 
 
@@ -663,6 +269,9 @@ def write_plate_metadata(
         cols: List of column numbers (e.g., [1, 2, 3])
         wells: List of (row, col) tuples for wells with data
         plate_name: Name for the plate
+
+    Raises:
+        RuntimeError: If metadata files cannot be written
     """
     # Build well paths
     well_entries = []
@@ -685,18 +294,22 @@ def write_plate_metadata(
         }
     }
 
-    os.makedirs(plate_path, exist_ok=True)
-    zattrs_path = os.path.join(plate_path, ".zattrs")
-    with open(zattrs_path, "w") as f:
-        json.dump(plate_metadata, f, indent=2)
+    try:
+        os.makedirs(plate_path, exist_ok=True)
+        zattrs_path = os.path.join(plate_path, ".zattrs")
+        with open(zattrs_path, "w") as f:
+            json.dump(plate_metadata, f, indent=2)
 
-    # Write zarr.json for v3
-    zarr_json = {"zarr_format": 3, "node_type": "group"}
-    zarr_json_path = os.path.join(plate_path, "zarr.json")
-    with open(zarr_json_path, "w") as f:
-        json.dump(zarr_json, f, indent=2)
+        # Write zarr.json for v3
+        zarr_json = {"zarr_format": 3, "node_type": "group"}
+        zarr_json_path = os.path.join(plate_path, "zarr.json")
+        with open(zarr_json_path, "w") as f:
+            json.dump(zarr_json, f, indent=2)
 
-    log.debug(f"Wrote plate metadata to {zattrs_path}")
+        log.debug(f"Wrote plate metadata to {zattrs_path}")
+    except OSError as e:
+        log.error(f"Failed to write plate metadata to {plate_path}: {e}")
+        raise RuntimeError(f"Failed to write plate metadata: {e}") from e
 
 
 def write_well_metadata(
@@ -710,6 +323,9 @@ def write_well_metadata(
     Args:
         well_path: Path to well directory (e.g., plate.zarr/A/1)
         fields: List of field indices (FOVs) in this well
+
+    Raises:
+        RuntimeError: If metadata files cannot be written
     """
     well_metadata = {
         "well": {
@@ -718,18 +334,22 @@ def write_well_metadata(
         }
     }
 
-    os.makedirs(well_path, exist_ok=True)
-    zattrs_path = os.path.join(well_path, ".zattrs")
-    with open(zattrs_path, "w") as f:
-        json.dump(well_metadata, f, indent=2)
+    try:
+        os.makedirs(well_path, exist_ok=True)
+        zattrs_path = os.path.join(well_path, ".zattrs")
+        with open(zattrs_path, "w") as f:
+            json.dump(well_metadata, f, indent=2)
 
-    # Write zarr.json for v3
-    zarr_json = {"zarr_format": 3, "node_type": "group"}
-    zarr_json_path = os.path.join(well_path, "zarr.json")
-    with open(zarr_json_path, "w") as f:
-        json.dump(zarr_json, f, indent=2)
+        # Write zarr.json for v3
+        zarr_json = {"zarr_format": 3, "node_type": "group"}
+        zarr_json_path = os.path.join(well_path, "zarr.json")
+        with open(zarr_json_path, "w") as f:
+            json.dump(zarr_json, f, indent=2)
 
-    log.debug(f"Wrote well metadata to {zattrs_path}")
+        log.debug(f"Wrote well metadata to {zattrs_path}")
+    except OSError as e:
+        log.error(f"Failed to write well metadata to {well_path}: {e}")
+        raise RuntimeError(f"Failed to write well metadata: {e}") from e
 
 
 # Synchronous wrapper for use in job processing
@@ -777,7 +397,7 @@ class SyncZarrWriter:
         ts = _get_tensorstore()
         config = self._config
 
-        # Build TensorStore spec - reuse logic from ZarrWriterManager
+        # Build TensorStore spec
         os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
 
         chunk_shape = _get_chunk_shape(config)
@@ -971,11 +591,14 @@ class SyncZarrWriter:
         }
 
         zattrs_path = os.path.join(config.output_path, ".zattrs")
-        os.makedirs(os.path.dirname(zattrs_path), exist_ok=True)
-        with open(zattrs_path, "w") as f:
-            json.dump(zattrs, f, indent=2)
-
-        log.debug(f"Wrote OME-NGFF metadata to {zattrs_path}")
+        try:
+            os.makedirs(os.path.dirname(zattrs_path), exist_ok=True)
+            with open(zattrs_path, "w") as f:
+                json.dump(zattrs, f, indent=2)
+            log.debug(f"Wrote OME-NGFF metadata to {zattrs_path}")
+        except OSError as e:
+            log.error(f"Failed to write zarr metadata to {zattrs_path}: {e}")
+            raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
         """Write a single frame (non-blocking, queues for async write).
@@ -1071,13 +694,17 @@ class SyncZarrWriter:
 
         # Update metadata with completion status
         zattrs_path = os.path.join(self._config.output_path, ".zattrs")
-        if os.path.exists(zattrs_path):
-            with open(zattrs_path, "r") as f:
-                zattrs = json.load(f)
-            if "_squid" in zattrs:
-                zattrs["_squid"]["acquisition_complete"] = True
-            with open(zattrs_path, "w") as f:
-                json.dump(zattrs, f, indent=2)
+        try:
+            if os.path.exists(zattrs_path):
+                with open(zattrs_path, "r") as f:
+                    zattrs = json.load(f)
+                if "_squid" in zattrs:
+                    zattrs["_squid"]["acquisition_complete"] = True
+                with open(zattrs_path, "w") as f:
+                    json.dump(zattrs, f, indent=2)
+        except (OSError, json.JSONDecodeError) as e:
+            log.error(f"Failed to finalize zarr metadata at {zattrs_path}: {e}")
+            # Don't raise - data is already written, just log the metadata issue
 
         self._finalized = True
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
@@ -1091,14 +718,17 @@ class SyncZarrWriter:
 
         # Mark as incomplete in metadata
         zattrs_path = os.path.join(self._config.output_path, ".zattrs")
-        if os.path.exists(zattrs_path):
-            with open(zattrs_path, "r") as f:
-                zattrs = json.load(f)
-            if "_squid" in zattrs:
-                zattrs["_squid"]["acquisition_complete"] = False
-                zattrs["_squid"]["aborted"] = True
-            with open(zattrs_path, "w") as f:
-                json.dump(zattrs, f, indent=2)
+        try:
+            if os.path.exists(zattrs_path):
+                with open(zattrs_path, "r") as f:
+                    zattrs = json.load(f)
+                if "_squid" in zattrs:
+                    zattrs["_squid"]["acquisition_complete"] = False
+                    zattrs["_squid"]["aborted"] = True
+                with open(zattrs_path, "w") as f:
+                    json.dump(zattrs, f, indent=2)
+        except (OSError, json.JSONDecodeError) as e:
+            log.error(f"Failed to update abort metadata at {zattrs_path}: {e}")
 
         self._finalized = True
         log.warning(f"Zarr writer aborted: {self._config.output_path}")

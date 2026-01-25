@@ -1,6 +1,6 @@
 """Tests for Zarr v3 saving using TensorStore.
 
-These tests verify the ZarrWriterManager and related functionality
+These tests verify the SyncZarrWriter and related functionality
 for Zarr v3 saving during acquisition.
 """
 
@@ -280,130 +280,6 @@ class TestDtypeConversion:
 
         with pytest.raises(ValueError, match="Unsupported dtype"):
             _dtype_to_zarr(np.dtype("complex64"))
-
-
-class TestZarrWriterManager:
-    """Tests for ZarrWriterManager lifecycle."""
-
-    @pytest.fixture
-    def temp_dir(self):
-        """Create a temporary directory for test outputs."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yield tmpdir
-
-    @pytest.mark.asyncio
-    async def test_initialize_creates_dataset(self, temp_dir):
-        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriterManager
-
-        output_path = os.path.join(temp_dir, "test.zarr")
-        config = ZarrAcquisitionConfig(
-            output_path=output_path,
-            shape=(1, 2, 1, 64, 64),
-            dtype=np.uint16,
-            pixel_size_um=1.0,
-            channel_names=["DAPI", "GFP"],
-        )
-
-        manager = ZarrWriterManager(config)
-        await manager.initialize()
-
-        assert manager.is_initialized
-        assert not manager.is_finalized
-        assert os.path.exists(output_path)
-
-        # Check .zattrs contains OME-NGFF metadata
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        assert os.path.exists(zattrs_path)
-
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
-
-        assert "multiscales" in zattrs
-        assert zattrs["multiscales"][0]["version"] == "0.5"
-
-    @pytest.mark.asyncio
-    async def test_write_frame(self, temp_dir):
-        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriterManager
-
-        output_path = os.path.join(temp_dir, "test.zarr")
-        config = ZarrAcquisitionConfig(
-            output_path=output_path,
-            shape=(1, 1, 1, 32, 32),
-            dtype=np.uint16,
-            pixel_size_um=1.0,
-        )
-
-        manager = ZarrWriterManager(config)
-        await manager.initialize()
-
-        # Write a test frame
-        test_image = np.random.randint(0, 65535, (32, 32), dtype=np.uint16)
-        await manager.write_frame(test_image, t=0, c=0, z=0)
-
-        # Wait for write to complete
-        await manager.wait_for_pending()
-        assert manager.pending_write_count == 0
-
-    @pytest.mark.asyncio
-    async def test_finalize(self, temp_dir):
-        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriterManager
-
-        output_path = os.path.join(temp_dir, "test.zarr")
-        config = ZarrAcquisitionConfig(
-            output_path=output_path,
-            shape=(1, 1, 1, 32, 32),
-            dtype=np.uint16,
-            pixel_size_um=1.0,
-        )
-
-        manager = ZarrWriterManager(config)
-        await manager.initialize()
-
-        test_image = np.ones((32, 32), dtype=np.uint16) * 100
-        await manager.write_frame(test_image, t=0, c=0, z=0)
-
-        await manager.finalize()
-
-        assert manager.is_finalized
-
-        # Check metadata updated with completion status
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
-
-        assert "_squid_metadata" in zattrs
-        assert zattrs["_squid_metadata"]["acquisition_complete"] is True
-
-    @pytest.mark.asyncio
-    async def test_abort(self, temp_dir):
-        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriterManager
-
-        output_path = os.path.join(temp_dir, "test.zarr")
-        config = ZarrAcquisitionConfig(
-            output_path=output_path,
-            shape=(1, 1, 1, 32, 32),
-            dtype=np.uint16,
-            pixel_size_um=1.0,
-        )
-
-        manager = ZarrWriterManager(config)
-        await manager.initialize()
-
-        # Write a frame but abort before completion
-        test_image = np.ones((32, 32), dtype=np.uint16)
-        await manager.write_frame(test_image, t=0, c=0, z=0)
-
-        await manager.abort()
-
-        assert manager.is_finalized
-
-        # Check metadata indicates aborted state
-        zattrs_path = os.path.join(output_path, ".zattrs")
-        with open(zattrs_path) as f:
-            zattrs = json.load(f)
-
-        assert "_squid_metadata" in zattrs
-        assert zattrs["_squid_metadata"]["aborted"] is True
 
 
 class TestSyncZarrWriter:
@@ -1360,3 +1236,207 @@ class TestJobRunnerZarrDispatch:
         # Dispatching should raise because JobRunner has no zarr_writer_info
         with pytest.raises(ValueError, match="Cannot dispatch SaveZarrJob.*zarr_writer_info"):
             runner.dispatch(job)
+
+
+class TestZarrWriterIOErrorHandling:
+    """Tests for I/O error handling in zarr writer."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for test outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_finalize_handles_corrupted_zattrs(self, temp_dir):
+        """finalize() should handle corrupted .zattrs gracefully."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+
+        # Corrupt the .zattrs file with invalid JSON
+        zattrs_path = os.path.join(output_path, ".zattrs")
+        with open(zattrs_path, "w") as f:
+            f.write("not valid json {{{")
+
+        # finalize() should handle the error gracefully (log error, don't crash)
+        writer.finalize()  # Should not raise
+        assert writer.is_finalized
+
+    def test_abort_handles_corrupted_zattrs(self, temp_dir):
+        """abort() should handle corrupted .zattrs gracefully."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+
+        # Corrupt the .zattrs file with invalid JSON
+        zattrs_path = os.path.join(output_path, ".zattrs")
+        with open(zattrs_path, "w") as f:
+            f.write("not valid json {{{")
+
+        # abort() should handle the error gracefully (log error, don't crash)
+        writer.abort()  # Should not raise
+        assert writer.is_finalized
+
+    def test_abort_handles_missing_zattrs(self, temp_dir):
+        """abort() should handle missing .zattrs gracefully."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+
+        # Delete the .zattrs file
+        zattrs_path = os.path.join(output_path, ".zattrs")
+        os.remove(zattrs_path)
+
+        # abort() should handle the missing file gracefully
+        writer.abort()  # Should not raise
+        assert writer.is_finalized
+
+
+class TestZarrWriterEmptyDataset:
+    """Tests for empty dataset handling."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for test outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_finalize_empty_dataset(self, temp_dir):
+        """Finalizing a dataset with zero frames written should work."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+
+        # Finalize without writing any frames
+        writer.finalize()
+
+        assert writer.is_finalized
+
+        # Verify metadata exists and is valid
+        zattrs_path = os.path.join(output_path, ".zattrs")
+        assert os.path.exists(zattrs_path)
+
+        with open(zattrs_path) as f:
+            zattrs = json.load(f)
+
+        assert "_squid" in zattrs
+        assert zattrs["_squid"]["acquisition_complete"] is True
+
+
+class TestZarrWriterDtypeAutoConversion:
+    """Tests for automatic dtype conversion in write_frame."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for test outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    @pytest.mark.parametrize("source_dtype", [np.uint8, np.float32, np.int32])
+    def test_dtype_auto_conversion_to_uint16(self, temp_dir, source_dtype):
+        """write_frame should auto-convert dtypes to target dtype."""
+        import tensorstore as ts
+
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        output_path = os.path.join(temp_dir, "test.zarr")
+        target_dtype = np.uint16
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.dtype(target_dtype),
+            pixel_size_um=0.5,
+        )
+
+        writer = SyncZarrWriter(config)
+        writer.initialize()
+
+        # Write image with different dtype
+        image = np.ones((32, 32), dtype=source_dtype) * 100
+        writer.write_frame(image, t=0, c=0, z=0)
+        writer.wait_for_pending()
+        writer.finalize()
+
+        # Read back and verify dtype
+        spec = {
+            "driver": "zarr3",
+            "kvstore": {"driver": "file", "path": output_path},
+        }
+        dataset = ts.open(spec).result()
+        read_data = dataset[0, 0, 0, :, :].read().result()
+
+        assert read_data.dtype == target_dtype
+        np.testing.assert_array_equal(read_data, np.ones((32, 32), dtype=target_dtype) * 100)
+
+
+class TestZarrWriterMetadataErrorHandling:
+    """Tests for metadata write error handling."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for test outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_write_metadata_raises_on_permission_error(self, temp_dir):
+        """_write_zarr_metadata should raise RuntimeError on permission errors."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, SyncZarrWriter
+
+        # Create a read-only directory
+        readonly_dir = os.path.join(temp_dir, "readonly")
+        os.makedirs(readonly_dir)
+        output_path = os.path.join(readonly_dir, "test.zarr")
+
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+        )
+
+        writer = SyncZarrWriter(config)
+
+        # Make the directory read-only after creating the writer
+        # Note: This test may be platform-specific
+        # We'll use mock to simulate the permission error instead
+        from unittest.mock import patch
+
+        with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+            with pytest.raises(RuntimeError, match="Failed to write zarr metadata"):
+                writer._write_zarr_metadata()
