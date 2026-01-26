@@ -583,7 +583,7 @@ class ZarrWriter:
                         "axes": axes,
                         "datasets": [
                             {
-                                "path": "0",
+                                "path": "0" if self._is_ome_ngff_array_path() else ".",
                                 "coordinateTransformations": coordinate_transforms,
                             }
                         ],
