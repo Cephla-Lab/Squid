@@ -16,12 +16,13 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
-import serial
-import time
 import re
+import time
 from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
+
 import numpy as np
+import serial
 
 
 class NDViewerMode(Enum):

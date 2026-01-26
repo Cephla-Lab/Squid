@@ -652,11 +652,16 @@ class ZarrWriter:
                 raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame (blocking, waits for write to complete).
+        """Write a single frame and block until the TensorStore write completes.
 
-        This method uses TensorStore's write API and waits for the write to complete
-        before returning. This ensures data is visible to other processes reading
-        the same zarr store.
+        This method submits an asynchronous write via TensorStore's write API and
+        then waits on the resulting future (via future.result()) before returning.
+        This blocks the calling thread until the write has finished. The underlying
+        disk I/O is handled asynchronously by TensorStore; this method synchronously
+        waits for that async operation to complete.
+
+        This ensures data is visible to other processes reading the same zarr store
+        before this method returns.
 
         Args:
             image: 2D image array (Y, X)

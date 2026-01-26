@@ -591,8 +591,11 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
     Extracts alphabetic row identifier and numeric column identifier from
     a well ID string. Handles single and multi-letter rows.
 
+    Note:
+        Input is normalized to uppercase. Both "a1" and "A1" return ("A", "1").
+
     Args:
-        well_id: Well identifier, e.g., "A1", "B12", "AA3"
+        well_id: Well identifier, e.g., "A1", "B12", "AA3" (case-insensitive)
 
     Returns:
         Tuple of (row_letters, col_digits), e.g., ("A", "1"), ("AA", "3")
@@ -602,7 +605,7 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
         ("A", "1")
         >>> parse_well_id("B12")
         ("B", "12")
-        >>> parse_well_id("AA3")
+        >>> parse_well_id("aa3")  # lowercase normalized to uppercase
         ("AA", "3")
     """
     well_id = str(well_id).upper()
