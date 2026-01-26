@@ -19,6 +19,7 @@ from control.core.job_processing import (
     CaptureInfo,
     JobImage,
     JobRunner,
+    ZarrWriteResult,
     ZarrWriterInfo,
     SaveZarrJob,
 )
@@ -606,7 +607,7 @@ class TestSaveZarrJobWithSimulation:
 
             # Run should complete without error (simulated write)
             result = job.run()
-            assert result is True
+            assert isinstance(result, ZarrWriteResult)
 
         finally:
             control._def.SIMULATED_DISK_IO_ENABLED = original_enabled
@@ -654,7 +655,7 @@ class TestSaveZarrJobWithSimulation:
                         job.zarr_writer_info = zarr_info
 
                         result = job.run()
-                        assert result is True
+                        assert isinstance(result, ZarrWriteResult)
 
         finally:
             control._def.SIMULATED_DISK_IO_ENABLED = original_enabled
