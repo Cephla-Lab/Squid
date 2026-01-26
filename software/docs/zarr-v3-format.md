@@ -167,7 +167,7 @@ data = store["0"][:]  # Read entire array
 
 ### napari
 
-> **Note:** napari-ome-zarr does not yet support Zarr v3 format. Use TensorStore or zarr-python v3 to read Zarr v3 files until napari adds support.
+> **Note:** napari-ome-zarr does not yet support Zarr v3 format ([ome/napari-ome-zarr#139](https://github.com/ome/napari-ome-zarr/issues/139)). Use TensorStore or zarr-python v3 to read Zarr v3 files until napari adds support.
 
 ### TensorStore (for streaming)
 
