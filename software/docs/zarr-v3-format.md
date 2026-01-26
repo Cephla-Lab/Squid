@@ -167,11 +167,7 @@ data = store["0"][:]  # Read entire array
 
 ### napari
 
-```bash
-napari path/to/plate.ome.zarr
-```
-
-Or use the napari-ome-zarr plugin for full OME-NGFF support.
+> **Note:** napari-ome-zarr does not yet support Zarr v3 format. Use TensorStore or zarr-python v3 to read Zarr v3 files until napari adds support.
 
 ### TensorStore (for streaming)
 
