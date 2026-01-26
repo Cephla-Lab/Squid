@@ -155,32 +155,37 @@ See [NDViewer Tab](ndviewer-tab.md) for details on live viewing.
 
 ## Opening Zarr Files
 
-### Python (zarr-python v3)
+### TensorStore (Recommended)
 
-```python
-import zarr
-
-# Open zarr v3 store (requires zarr>=3.0 and Python >=3.11)
-store = zarr.open_group("path/to/plate.ome.zarr/A/1/0")
-data = store["0"][:]  # Read the 5D array
-```
-
-### napari
-
-> **Note:** napari-ome-zarr does not yet support Zarr v3 format ([ome/napari-ome-zarr#139](https://github.com/ome/napari-ome-zarr/issues/139)). Use TensorStore or zarr-python v3 to read Zarr v3 files until napari adds support.
-
-### TensorStore (for streaming)
+TensorStore is the recommended library for reading Zarr v3 files. It works with any Python version.
 
 ```python
 import tensorstore as ts
 
+# Open HCS plate array
 spec = {
     "driver": "zarr3",
-    "kvstore": {"driver": "file", "path": "path/to/acquisition.zarr/0"},
+    "kvstore": {"driver": "file", "path": "path/to/plate.ome.zarr/A/1/0/0"},
 }
-store = ts.open(spec).result()
-data = store.read().result()
+store = ts.open(spec, read=True).result()
+print(f"Shape: {store.shape}")  # (T, C, Z, Y, X)
+data = store[0, 0, 0, :, :].read().result()  # Read first frame
 ```
+
+### zarr-python v3
+
+Requires `zarr>=3.0` and **Python >=3.11**.
+
+```python
+import zarr
+
+store = zarr.open_group("path/to/plate.ome.zarr/A/1/0", mode='r')
+data = store["0"][0, 0, 0, :, :]  # Read first frame
+```
+
+### napari
+
+> **Note:** napari-ome-zarr does not yet support Zarr v3 format ([ome/napari-ome-zarr#139](https://github.com/ome/napari-ome-zarr/issues/139)). Use TensorStore to read Zarr v3 files until napari adds support.
 
 ## Related Documentation
 
