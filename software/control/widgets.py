@@ -2809,7 +2809,8 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
         self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
-        self.filter_slider.setValue(self.xlight.get_filter_slider())
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setValue(self.xlight.get_filter_slider())
 
         self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -2824,7 +2825,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
-        self.filter_slider.valueChanged.connect(self.set_filter_slider)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
             illumination_iris = self.xlight.illumination_iris
@@ -2930,7 +2932,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_illumination_iris.setEnabled(enable)
         self.slider_emission_iris.setEnabled(enable)
         self.spinbox_emission_iris.setEnabled(enable)
-        self.filter_slider.setEnabled(enable)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setEnabled(enable)
 
     def block_iris_control_signals(self, block: bool):
         self.slider_illumination_iris.blockSignals(block)
