@@ -50,10 +50,14 @@ static const int num_digital_pins = 4;
 static const int digitial_output_pins[num_digital_pins] = {6, 9, 10, 15}; // PWM 9, 12-14
 
 // camera trigger
-static const int camera_trigger_pins[] = {29, 30, 31, 32, 16, 28}; // trigger 1-6
+static const int camera_trigger_pins[] = {29, 30, 31, 32}; // trigger 1-4 (pin 16 used for W2 CS, pin 28 used for W2 CLK)
+
+// W2 clock pin
+const uint8_t pin_TMC4361_CLK_W2 = 28;
 
 // motors
-const uint8_t pin_TMC4361_CS[4] = {41, 36, 35, 34};
+// Chip select pins: [0]=X, [1]=Y, [2]=Z, [3]=W (filter wheel 1), [4]=W2 (filter wheel 2)
+const uint8_t pin_TMC4361_CS[5] = {41, 36, 35, 34, 16};
 const uint8_t pin_TMC4361_CLK = 37;
 
 // DAC
@@ -108,9 +112,9 @@ static const float BLUE_ADJUSTMENT_FACTOR = 1;
 /******************************************* steppers **********************************************/
 /***************************************************************************************************/
 const uint32_t clk_Hz_TMC4361 = 16000000;
-const uint8_t lft_sw_pol[4] = {0, 0, 0, 0};
-const uint8_t rht_sw_pol[4] = {0, 0, 0, 0};
-const uint8_t TMC4361_homing_sw[4] = {LEFT_SW, LEFT_SW, RGHT_SW, LEFT_SW};
+const uint8_t lft_sw_pol[5] = {0, 0, 0, 0, 0};
+const uint8_t rht_sw_pol[5] = {0, 0, 0, 0, 0};
+const uint8_t TMC4361_homing_sw[5] = {LEFT_SW, LEFT_SW, RGHT_SW, LEFT_SW, LEFT_SW};
 const int32_t vslow = 0x04FFFC00;
 
 typedef void (*CommandCallback)();

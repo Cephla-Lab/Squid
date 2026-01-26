@@ -35,16 +35,19 @@ void loop() {
   prepare_homing_y();
   prepare_homing_z();
   prepare_homing_w();
+  prepare_homing_w2();
 
   check_homing_x();
   check_homing_y();
   check_homing_z();
   check_homing_w();
+  check_homing_w2();
 
   finalize_homing_x();
   finalize_homing_y();
   finalize_homing_z();
   finalize_homing_w();
+  finalize_homing_w2();
   finalize_homing_xy();
 
   check_joystick();

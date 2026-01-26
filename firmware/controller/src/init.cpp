@@ -62,7 +62,7 @@ void init_power()
 
 void init_camera()
 {
-  for (int i = 0; i < 6; i++)
+  for (int i = 0; i < 4; i++)
   {
     pinMode(camera_trigger_pins[i], OUTPUT);
     digitalWrite(camera_trigger_pins[i], HIGH);
@@ -80,8 +80,8 @@ void init_io()
 
 void init_stages()
 {
-  // disable all axes 
-  for (int i = 0; i < 4; i++)
+  // disable all axes (including W2 at index 4)
+  for (int i = 0; i < 5; i++)
   {
     pinMode(pin_TMC4361_CS[i], OUTPUT);
     digitalWrite(pin_TMC4361_CS[i], HIGH);
@@ -100,8 +100,8 @@ void init_stages()
   /*********************************************************************************************************
    ************************************** TMC4361A + TMC2660 beginning *************************************
    *********************************************************************************************************/
-  // PID
-  for (int i = 0; i < 4; i++) {
+  // PID (including W2 at index 4)
+  for (int i = 0; i < 5; i++) {
     stage_PID_enabled[i] = 0;
 
     axes_pid_arg[i].p = (1<<12);
@@ -109,10 +109,15 @@ void init_stages()
     axes_pid_arg[i].d = 0;
   }
 
-  // clock
+  // clock for X, Y, Z, W (pin 37)
   pinMode(pin_TMC4361_CLK, OUTPUT);
   analogWriteFrequency(pin_TMC4361_CLK, clk_Hz_TMC4361);
   analogWrite(pin_TMC4361_CLK, 128); // 50% duty
+
+  // clock for W2 (pin 28) - same frequency as main clock
+  pinMode(pin_TMC4361_CLK_W2, OUTPUT);
+  analogWriteFrequency(pin_TMC4361_CLK_W2, clk_Hz_TMC4361);
+  analogWrite(pin_TMC4361_CLK_W2, 128); // 50% duty
 
   // initialize TMC4361 structs with default values and initialize CS pins
   for (int i = 0; i < STAGE_AXES; i++)

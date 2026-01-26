@@ -351,7 +351,7 @@ void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b)
 
 void ISR_strobeTimer()
 {
-  for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+  for (int camera_channel = 0; camera_channel < 4; camera_channel++)
   {
     // strobe pulse
     if (control_strobe[camera_channel])

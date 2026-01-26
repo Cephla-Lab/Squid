@@ -44,6 +44,7 @@ static const int ANALOG_WRITE_ONBOARD_DAC = 15;
 static const int SET_DAC80508_REFDIV_GAIN = 16;
 static const int SET_ILLUMINATION_INTENSITY_FACTOR = 17;
 static const int MOVETO_W = 18;
+static const int MOVE_W2 = 19;
 static const int SET_LIM_SWITCH_POLARITY = 20;
 static const int CONFIGURE_STEPPER_DRIVER = 21;
 static const int SET_MAX_VELOCITY_ACCELERATION = 22;
@@ -60,6 +61,7 @@ static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
 static const int SET_TRIGGER_MODE = 33;
 static const int SET_PIN_LEVEL = 41;
+static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
 static const int RESET = 255;
@@ -83,6 +85,7 @@ static const int AXIS_Z = 2;
 static const int AXIS_THETA = 3;
 static const int AXES_XY = 4;
 static const int AXIS_W = 5;
+static const int AXIS_W2 = 6;
 
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;

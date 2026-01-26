@@ -174,6 +174,7 @@ class CMD_SET:
     SET_DAC80508_REFDIV_GAIN = 16
     SET_ILLUMINATION_INTENSITY_FACTOR = 17
     MOVETO_W = 18
+    MOVE_W2 = 19
     MOVETO_X = 6
     MOVETO_Y = 7
     MOVETO_Z = 8
@@ -193,6 +194,7 @@ class CMD_SET:
     SET_AXIS_DISABLE_ENABLE = 32
     SET_TRIGGER_MODE = 33
     SET_PIN_LEVEL = 41
+    INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
     RESET = 255
@@ -222,6 +224,7 @@ class AXIS:
     THETA = 3
     XY = 4
     W = 5
+    W2 = 6
 
 
 class LIMIT_CODE:
@@ -980,6 +983,27 @@ SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_HOMING_ENABLED = True
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+
+# Multi-wheel SQUID filter wheel configuration
+# Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)
+SQUID_FILTERWHEEL_CONFIGS = {
+    1: {
+        "motor_slot_index": 3,  # W axis
+        "max_index": 8,
+        "min_index": 1,
+        "offset": 0.008,
+        "homing_enabled": True,
+        "transitions_per_revolution": 4000,
+    },
+    2: {
+        "motor_slot_index": 4,  # W2 axis
+        "max_index": 8,
+        "min_index": 1,
+        "offset": 0.008,
+        "homing_enabled": True,
+        "transitions_per_revolution": 4000,
+    },
+}
 
 # Stage
 USE_PRIOR_STAGE = False

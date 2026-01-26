@@ -8,6 +8,7 @@ void init_callbacks()
     cmd_map[MOVE_Y] = &callback_move_y;
     cmd_map[MOVE_Z] = &callback_move_z;
     cmd_map[MOVE_W] = &callback_move_w;
+    cmd_map[MOVE_W2] = &callback_move_w2;
     cmd_map[MOVETO_X] = &callback_move_to_x;
     cmd_map[MOVETO_Y] = &callback_move_to_y;
     cmd_map[MOVETO_Z] = &callback_move_to_z;
@@ -36,6 +37,7 @@ void init_callbacks()
     cmd_map[ENABLE_STAGE_PID] = &callback_enable_stage_pid;
     cmd_map[DISABLE_STAGE_PID] = &callback_disable_stage_pid;
     cmd_map[INITFILTERWHEEL] = &callback_initfilterwheel;
+    cmd_map[INITFILTERWHEEL_W2] = &callback_initfilterwheel_w2;
     cmd_map[SET_AXIS_DISABLE_ENABLE] = &callback_set_axis_disable_enable;
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
@@ -154,6 +156,35 @@ void callback_initfilterwheel()
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], 1);
 }
 
+void callback_initfilterwheel_w2()
+{
+    enable_filterwheel_w2 = true;
+
+    tmc4361A_init(&tmc4361[w2], pin_TMC4361_CS[w2], &tmc4361_configs[w2], tmc4361A_defaultRegisterResetState);
+    pinMode(pin_TMC4361_CS[w2], OUTPUT);
+    digitalWrite(pin_TMC4361_CS[w2], HIGH);
+
+    tmc4361A_tmc2660_config(&tmc4361[w2], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+    tmc4361A_tmc2660_init(&tmc4361[w2], clk_Hz_TMC4361);
+    tmc4361A_enableLimitSwitch(&tmc4361[w2], lft_sw_pol[w2], LEFT_SW, false);
+
+    // Calculate velocity and acceleration for W2 (same as W)
+    max_velocity_usteps[w2] = tmc4361A_vmmToMicrosteps(&tmc4361[w2], MAX_VELOCITY_W_mm);
+    max_acceleration_usteps[w2] = tmc4361A_ammToMicrosteps(&tmc4361[w2], MAX_ACCELERATION_W_mm);
+
+    tmc4361A_setMaxSpeed(&tmc4361[w2], max_velocity_usteps[w2]);
+    tmc4361A_setMaxAcceleration(&tmc4361[w2], max_acceleration_usteps[w2]);
+    tmc4361[w2].rampParam[ASTART_IDX] = 0;
+    tmc4361[w2].rampParam[DFINAL_IDX] = 0;
+    tmc4361A_sRampInit(&tmc4361[w2]);
+
+    tmc4361A_set_PID(&tmc4361[w2], PID_DISABLE);
+
+    tmc4361A_enableHomingLimit(&tmc4361[w2], rht_sw_pol[w2], TMC4361_homing_sw[w2], home_safety_margin[w2]);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], -1);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], 1);
+}
+
 void callback_set_axis_disable_enable()
 {
     int axis = buffer_rx[2];
@@ -229,19 +260,23 @@ void callback_reset()
     Y_commanded_movement_in_progress = false;
     Z_commanded_movement_in_progress = false;
     W_commanded_movement_in_progress = false;
+    W2_commanded_movement_in_progress = false;
     is_homing_X = false;
     is_homing_Y = false;
     is_homing_Z = false;
     is_homing_W = false;
+    is_homing_W2 = false;
     is_homing_XY = false;
     home_X_found = false;
     home_Y_found = false;
     home_Z_found = false;
     home_W_found = false;
+    home_W2_found = false;
     is_preparing_for_homing_X = false;
     is_preparing_for_homing_Y = false;
     is_preparing_for_homing_Z = false;
     is_preparing_for_homing_W = false;
+    is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
 }

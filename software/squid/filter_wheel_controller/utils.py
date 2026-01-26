@@ -148,7 +148,9 @@ def get_filter_wheel_controller(
         ValueError: If controller type is unknown or required dependencies are missing
     """
     if simulated:
-        return SimulatedFilterWheelController()
+        # Create simulated controller with correct number of wheels
+        num_wheels = len(config.indices) if config else 1
+        return SimulatedFilterWheelController(number_of_wheels=num_wheels)
 
     # Import here to avoid circular dependencies
     from squid.filter_wheel_controller.cephla import SquidFilterWheel
@@ -158,7 +160,9 @@ def get_filter_wheel_controller(
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:
             raise ValueError("SquidFilterWheel requires a microcontroller instance")
-        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config, skip_init=skip_init)
+        # Use multi-wheel configs if available, otherwise fall back to single config
+        configs = config.squid_wheel_configs if config.squid_wheel_configs else config.controller_config
+        return SquidFilterWheel(microcontroller=microcontroller, configs=configs)
 
     elif config.controller_type == FilterWheelControllerVariant.ZABER:
         return ZaberFilterController(config=config.controller_config)

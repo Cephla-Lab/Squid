@@ -8,6 +8,7 @@ void callback_move_x();
 void callback_move_y();
 void callback_move_z();
 void callback_move_w();
+void callback_move_w2();
 void callback_move_to_x();
 void callback_move_to_y();
 void callback_move_to_z();
