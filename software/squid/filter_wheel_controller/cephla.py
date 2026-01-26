@@ -72,27 +72,20 @@ class SquidFilterWheel(AbstractFilterWheelController):
             # W axis (first filter wheel)
             self.microcontroller.configure_squidfilter()
             time.sleep(0.5)
-            if HAS_ENCODER_W:
-                self.microcontroller.set_pid_arguments(motor_slot, PID_P_W, PID_I_W, PID_D_W)
-                self.microcontroller.configure_stage_pid(
-                    motor_slot, config.transitions_per_revolution, ENCODER_FLIP_DIR_W
-                )
-                self.microcontroller.turn_on_stage_pid(motor_slot, ENABLE_PID_W)
         elif motor_slot == 4:
             # W2 axis (second filter wheel)
             self.microcontroller.init_filter_wheel_w2()
             time.sleep(0.5)
             self.microcontroller.configure_squidfilter_w2()
             time.sleep(0.5)
-            # W2 uses same encoder settings as W if present
-            if HAS_ENCODER_W:
-                self.microcontroller.set_pid_arguments(motor_slot, PID_P_W, PID_I_W, PID_D_W)
-                self.microcontroller.configure_stage_pid(
-                    motor_slot, config.transitions_per_revolution, ENCODER_FLIP_DIR_W
-                )
-                self.microcontroller.turn_on_stage_pid(motor_slot, ENABLE_PID_W)
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}. Expected 3 (W) or 4 (W2).")
+
+        # Common PID setup for both wheels (they share identical encoder settings)
+        if HAS_ENCODER_W:
+            self.microcontroller.set_pid_arguments(motor_slot, PID_P_W, PID_I_W, PID_D_W)
+            self.microcontroller.configure_stage_pid(motor_slot, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
+            self.microcontroller.turn_on_stage_pid(motor_slot, ENABLE_PID_W)
 
     def _move_wheel(self, wheel_id: int, delta: float):
         """Move a specific wheel by delta distance.
@@ -190,23 +183,33 @@ class SquidFilterWheel(AbstractFilterWheelController):
             for wheel_id in self._configs.keys():
                 self._home_wheel(wheel_id)
 
-    def next_position(self, wheel_id: int = 1):
-        """Move to the next position on a wheel.
+    def _step_position(self, wheel_id: int, direction: int):
+        """Move position by one step in the given direction.
 
         Args:
-            wheel_id: The wheel to move (defaults to 1 for backward compatibility).
+            wheel_id: The ID of the wheel to move.
+            direction: +1 for next position, -1 for previous position.
         """
         if wheel_id not in self._configs:
             raise ValueError(f"Filter wheel index {wheel_id} not found")
 
         config = self._configs[wheel_id]
         current_pos = self._positions[wheel_id]
+        new_pos = current_pos + direction
 
-        if current_pos < config.max_index:
+        if config.min_index <= new_pos <= config.max_index:
             step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-            self._move_wheel(wheel_id, step_size)
+            self._move_wheel(wheel_id, direction * step_size)
             self.microcontroller.wait_till_operation_is_completed()
-            self._positions[wheel_id] = current_pos + 1
+            self._positions[wheel_id] = new_pos
+
+    def next_position(self, wheel_id: int = 1):
+        """Move to the next position on a wheel.
+
+        Args:
+            wheel_id: The wheel to move (defaults to 1 for backward compatibility).
+        """
+        self._step_position(wheel_id, 1)
 
     def previous_position(self, wheel_id: int = 1):
         """Move to the previous position on a wheel.
@@ -214,17 +217,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         Args:
             wheel_id: The wheel to move (defaults to 1 for backward compatibility).
         """
-        if wheel_id not in self._configs:
-            raise ValueError(f"Filter wheel index {wheel_id} not found")
-
-        config = self._configs[wheel_id]
-        current_pos = self._positions[wheel_id]
-
-        if current_pos > config.min_index:
-            step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-            self._move_wheel(wheel_id, -step_size)
-            self.microcontroller.wait_till_operation_is_completed()
-            self._positions[wheel_id] = current_pos - 1
+        self._step_position(wheel_id, -1)
 
     def set_filter_wheel_position(self, positions: Dict[int, int]):
         """Set filter wheel positions.

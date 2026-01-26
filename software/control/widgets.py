@@ -4779,6 +4779,7 @@ class FilterControllerWidget(QFrame):
         **kwargs
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.filterController: AbstractFilterWheelController = filterController
         self.liveController = liveController
         self.config_repo = config_repo
@@ -4901,9 +4902,9 @@ class FilterControllerWidget(QFrame):
                 combo_box.blockSignals(True)
                 combo_box.setCurrentIndex(current_pos - 1)
                 combo_box.blockSignals(False)
-            print(f"Filter wheel {wheel_id} position updated: {current_pos}")
+            self._log.debug(f"Filter wheel {wheel_id} position updated: {current_pos}")
         except Exception as e:
-            print(f"Error getting filter wheel {wheel_id} position: {e}")
+            self._log.error(f"Error getting filter wheel {wheel_id} position: {e}")
 
     def _on_selection_change(self, wheel_id: int, index: int):
         """Handle position selection from combo box."""
@@ -4925,7 +4926,7 @@ class FilterControllerWidget(QFrame):
                 if combo_box:
                     combo_box.setCurrentIndex(new_pos - 1)
         except Exception as e:
-            print(f"Error moving wheel {wheel_id} to next position: {e}")
+            self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
 
     def _go_to_previous_position(self, wheel_id: int):
         """Move to the previous position."""
@@ -4939,7 +4940,7 @@ class FilterControllerWidget(QFrame):
                 if combo_box:
                     combo_box.setCurrentIndex(new_pos - 1)
         except Exception as e:
-            print(f"Error moving wheel {wheel_id} to previous position: {e}")
+            self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
 
     def disable_movement_by_switching_channels(self, state):
         """Enable/disable automatic filter wheel movement when changing channels."""
