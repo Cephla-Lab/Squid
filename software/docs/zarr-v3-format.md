@@ -64,10 +64,11 @@ Combines all FOVs into a single zarr store per region. Non-standard but more eff
 {experiment}/
 └── zarr/
     └── {region}/
-        └── acquisition.zarr/
-            ├── zarr.json      # OME metadata
-            └── 0/             # 6D array (FOV, T, C, Z, Y, X)
+        └── acquisition.zarr/     # 6D array at root (FOV, T, C, Z, Y, X)
+            └── zarr.json         # OME metadata (datasets.path = ".")
 ```
+
+Note: Unlike HCS/per-FOV modes where the array is in a `/0` subdirectory, 6D mode stores the array at the zarr root with `datasets.path = "."` in the metadata.
 
 ## Array Structure
 
@@ -100,7 +101,7 @@ Shape: `(FOV, T, C, Z, Y, X)` where:
         {"name": "y", "type": "space", "unit": "micrometer"},
         {"name": "x", "type": "space", "unit": "micrometer"}
       ],
-      "datasets": [{"path": "0", "coordinateTransformations": [...]}]
+      "datasets": [{"path": "0", "coordinateTransformations": [...]}]  // "." for 6D mode
     }],
     "omero": {
       "version": "0.5",
