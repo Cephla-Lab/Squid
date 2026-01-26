@@ -312,6 +312,7 @@ void callback_configure_stepper_driver()
         }
         case AXIS_W2:
         {
+            // W2 shares motor settings with W (identical hardware)
             if (enable_filterwheel_w2 == true) {
             int microstepping_setting = buffer_rx[3];
             if (microstepping_setting > 128)
@@ -368,6 +369,7 @@ void callback_set_max_velocity_acceleration()
         }
         case AXIS_W2:
         {
+            // W2 shares motor settings with W (identical hardware)
             if (enable_filterwheel_w2 == true) {
             MAX_VELOCITY_W_mm = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 100;
             MAX_ACCELERATION_W_mm = float(uint16_t(buffer_rx[5]) * 256 + uint16_t(buffer_rx[6])) / 10;
@@ -413,6 +415,7 @@ void callback_set_lead_screw_pitch()
         }
         case AXIS_W2:
         {
+            // W2 shares motor settings with W (identical hardware)
             if (enable_filterwheel_w2 == true) {
             SCREW_PITCH_W_MM = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 1000;
             steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;

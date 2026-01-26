@@ -14,12 +14,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
     configuration including motor_slot_index which determines which hardware axis to use:
     - motor_slot_index 3 -> W axis (first filter wheel)
     - motor_slot_index 4 -> W2 axis (second filter wheel)
+
+    Note: W and W2 share the same motor settings (microstepping, current, velocity,
+    acceleration, screw pitch) as they use identical hardware.
     """
 
     def __init__(
         self,
         microcontroller: Microcontroller,
         configs: Union[SquidFilterWheelConfig, Dict[int, SquidFilterWheelConfig]],
+        skip_init: bool = False,
     ):
         """Initialize the SQUID filter wheel controller.
 
@@ -27,6 +31,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             microcontroller: The microcontroller instance for hardware control.
             configs: Either a single SquidFilterWheelConfig (backward compatible) or
                      a dict mapping wheel_id -> SquidFilterWheelConfig for multi-wheel support.
+            skip_init: If True, skip hardware initialization (for restart after settings change).
         """
         if microcontroller is None:
             raise Exception("Error, microcontroller is needed by the SquidFilterWheel")
@@ -42,15 +47,20 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # Track per-wheel positions (wheel_id -> position index)
         self._positions: Dict[int, int] = {}
 
-        # Initialize filter wheel hardware
-        self.microcontroller.init_filter_wheel()
-        time.sleep(0.5)
+        if not skip_init:
+            # Initialize filter wheel hardware
+            self.microcontroller.init_filter_wheel()
+            time.sleep(0.5)
 
-        # Configure each wheel
-        for wheel_id, config in self._configs.items():
-            self._configure_wheel(wheel_id, config)
-            # Initialize position tracking to min_index
-            self._positions[wheel_id] = config.min_index
+            # Configure each wheel
+            for wheel_id, config in self._configs.items():
+                self._configure_wheel(wheel_id, config)
+                # Initialize position tracking to min_index
+                self._positions[wheel_id] = config.min_index
+        else:
+            # Just initialize position tracking without hardware init
+            for wheel_id, config in self._configs.items():
+                self._positions[wheel_id] = config.min_index
 
         self._available_filter_wheels: List[int] = []
 
