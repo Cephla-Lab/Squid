@@ -14,7 +14,7 @@ This document outlines the implementation plan for multi-camera support in Squid
 
 ### Version
 
-All configuration files will be updated to **version 1.1**.
+All configuration files use **version 1.0**.
 
 ### Single-Camera vs Multi-Camera Behavior
 
@@ -40,7 +40,7 @@ Defines available cameras with user-friendly names mapped to hardware identifier
 **This file is only required for multi-camera systems.** Single-camera systems work without it.
 
 ```yaml
-version: 1.1
+version: 1.0
 cameras:
   - name: "Main Camera"           # User-friendly name (shown in UI)
     serial_number: "ABC12345"     # Hardware identifier
@@ -58,7 +58,7 @@ cameras:
 Defines available filter wheels with positions and filter names.
 
 ```yaml
-version: 1.1
+version: 1.0
 filter_wheels:
   - name: "Emission Filter Wheel"   # User-friendly name
     id: 1                            # Hardware ID for controller
@@ -90,7 +90,7 @@ Key changes from v1.0:
 #### Single-Camera Example (no cameras.yaml needed)
 
 ```yaml
-version: 1.1
+version: 1.0
 
 channels:
   - name: BF LED matrix full
@@ -115,7 +115,7 @@ channel_groups: []                         # Empty for single-camera, no groups 
 #### Multi-Camera Example (requires cameras.yaml)
 
 ```yaml
-version: 1.1
+version: 1.0
 
 channels:
   - name: BF LED matrix full
@@ -434,7 +434,7 @@ class ChannelGroup(BaseModel):
 
 class GeneralChannelConfig(BaseModel):
     """general.yaml - shared settings across all objectives."""
-    version: float = Field(1.1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(default_factory=list)
     channel_groups: List[ChannelGroup] = Field(default_factory=list)
 
@@ -455,7 +455,7 @@ class GeneralChannelConfig(BaseModel):
 
 class ObjectiveChannelConfig(BaseModel):
     """{objective}.yaml - objective-specific overrides."""
-    version: float = Field(1.1, description="Configuration format version")
+    version: float = Field(1.0, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(default_factory=list)
     # Note: channel_groups not included - defined only in general.yaml
 
