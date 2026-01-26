@@ -19,10 +19,11 @@
  * continues to work without timeouts.
  */
 
-#include "src/init.h"
-#include "src/commands.h"
-#include "src/illumination.h"
-#include "src/serial_communication.h"
+#include <Arduino.h>
+#include "init.h"
+#include "commands.h"
+#include "illumination.h"
+#include "serial_communication.h"
 
 void setup()
 {
