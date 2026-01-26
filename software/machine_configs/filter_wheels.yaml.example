@@ -1,7 +1,8 @@
 # Filter Wheel Registry Configuration (v1.0)
 #
 # This file defines all filter wheels in the system with their positions
-# and installed filters. Acquisition channels reference filter wheels by name.
+# and installed filters. Acquisition channels specify filter_position;
+# the wheel is resolved via hardware_bindings.yaml based on camera ID.
 #
 # This file is optional. If not present, filter wheel settings in channels
 # are ignored.

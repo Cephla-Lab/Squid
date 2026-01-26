@@ -1,4 +1,4 @@
-# Camera Registry Configuration (v1.1)
+# Camera Registry Configuration (v1.0)
 #
 # This file maps user-friendly camera names to hardware identifiers.
 # When configuring acquisition channels, users select cameras by name.
@@ -7,7 +7,7 @@
 #
 # Copy this file to cameras.yaml and edit for your system.
 
-version: 1.1
+version: 1.0
 
 cameras:
   # Primary imaging camera
