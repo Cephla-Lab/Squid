@@ -58,7 +58,7 @@ For non-wellplate acquisitions:
 
 ### 6D Mode (ZARR_USE_6D_FOV_DIMENSION=True)
 
-Combines all FOVs into a single zarr store per region. Non-standard but more efficient for some workflows:
+Combines all FOVs into a single zarr store per region. **Warning:** This is a non-standard OME-NGFF layout with a 6D (FOV, T, C, Z, Y, X) array structure. Most standard OME-NGFF viewers (napari-ome-zarr, OMERO, etc.) expect 5D arrays and may not read this format correctly. Use only with Squid or tools that explicitly support 6D arrays:
 
 ```
 {experiment}/

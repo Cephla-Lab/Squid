@@ -446,6 +446,13 @@ class ZarrWriter:
                 f"compression={config.compression.value}"
             )
 
+            # Warn if overwriting existing data
+            if os.path.exists(config.output_path):
+                log.warning(
+                    "Zarr v3 dataset path already exists and will be overwritten: %s",
+                    config.output_path,
+                )
+
             # Use asyncio only for the TensorStore open operation
             async def _open():
                 return await ts.open(spec, create=True, delete_existing=True)
