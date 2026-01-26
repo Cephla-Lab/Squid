@@ -263,6 +263,7 @@ class QtMultiPointController(MultiPointController, QObject):
         # NDViewer push-based API state
         self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
         self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
+        self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
 
@@ -283,9 +284,11 @@ class QtMultiPointController(MultiPointController, QObject):
         # Build FOV labels and region offset mapping
         self._ndviewer_fov_labels = []
         self._ndviewer_region_fov_offset = {}
+        self._ndviewer_region_idx_offset = []
         fov_idx = 0
         for region_name in scan_info.scan_region_names:
             self._ndviewer_region_fov_offset[region_name] = fov_idx
+            self._ndviewer_region_idx_offset.append(fov_idx)  # region_idx -> flat offset
             num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
             for i in range(num_fovs):
                 self._ndviewer_fov_labels.append(f"{region_name}:{i}")
@@ -426,14 +429,25 @@ class QtMultiPointController(MultiPointController, QObject):
         """Called when subprocess completes writing a zarr frame.
 
         This is the correct time to notify the viewer - after data is on disk.
+
+        Args:
+            fov: Local FOV index within the region (not flat/global index)
+            time_point: Time point index
+            z_index: Z slice index
+            channel_name: Channel name string
+            region_idx: Index of the region in scan order
         """
         if self._ndviewer_mode == NDViewerMode.ZARR_6D:
             # 6D mode: pass local FOV index and region_idx
             self.ndviewer_notify_zarr_frame.emit(time_point, fov, z_index, channel_name, region_idx)
         elif self._ndviewer_mode == NDViewerMode.ZARR_5D:
-            # 5D mode: compute flat FOV index, region_idx=0
-            # For 5D mode, fov is already the flat index from the job
-            self.ndviewer_notify_zarr_frame.emit(time_point, fov, z_index, channel_name, 0)
+            # 5D mode: compute flat FOV index from local FOV + region offset
+            # fov is the local index within the region, we need the global/flat index
+            if region_idx < len(self._ndviewer_region_idx_offset):
+                flat_fov = self._ndviewer_region_idx_offset[region_idx] + fov
+            else:
+                flat_fov = fov
+            self.ndviewer_notify_zarr_frame.emit(time_point, flat_fov, z_index, channel_name, 0)
 
     # -------------------------------------------------------------------------
     # Helper methods for Zarr FOV path building
