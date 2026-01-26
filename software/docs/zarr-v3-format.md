@@ -9,7 +9,7 @@ Squid supports saving acquisition data in Zarr v3 format with OME-NGFF 0.5 metad
 - **High performance**: TensorStore backend with sharding for ~200 MB/s write speed
 - **Compression options**: None, Fast (LZ4), Balanced (Zstd), Best (Zstd level 9)
 - **Streaming support**: Data can be read during acquisition
-- **OME-NGFF compliance**: Metadata compatible with standard viewers
+- **OME-NGFF 0.5 metadata**: Standard metadata format (note: viewer support for Zarr v3 is still emerging)
 
 ## Enabling Zarr v3
 
@@ -143,7 +143,7 @@ Zarr v3 uses sharding to optimize both read and write performance:
 
 When acquiring with Zarr v3 format, the NDViewer automatically uses the zarr push API for live viewing. This requires:
 
-1. ndviewer_light with zarr support (PR #25)
+1. ndviewer_light with zarr support
 2. The zarr stores to be accessible from the main process
 
 See [NDViewer Tab](ndviewer-tab.md) for details on live viewing.
@@ -155,14 +155,14 @@ See [NDViewer Tab](ndviewer-tab.md) for details on live viewing.
 
 ## Opening Zarr Files
 
-### Python (zarr-python)
+### Python (zarr-python v3)
 
 ```python
 import zarr
 
-# Open zarr v3 store
-store = zarr.open("path/to/acquisition.zarr")
-data = store["0"][:]  # Read entire array
+# Open zarr v3 store (requires zarr>=3.0)
+store = zarr.open_group("path/to/plate.ome.zarr/A/1/0")
+data = store["0"][:]  # Read the 5D array
 ```
 
 ### napari
