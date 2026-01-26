@@ -43,6 +43,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start-server", help="Auto-start the MCP control server for programmatic control", action="store_true"
     )
+    parser.add_argument(
+        "--skip-init",
+        help="Skip hardware initialization and homing (for restart after settings change)",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     log = squid.logging.get_logger("main_hcs")
@@ -66,9 +71,12 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    microscope = control.microscope.Microscope.build_from_global_config(args.simulation)
+    microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
     win = gui.HighContentScreeningGui(
-        microscope=microscope, is_simulation=args.simulation, live_only_mode=args.live_only
+        microscope=microscope,
+        is_simulation=args.simulation,
+        live_only_mode=args.live_only,
+        skip_init=args.skip_init,
     )
 
     microscope_utils_menu = QMenu("Utils", win)
@@ -89,11 +97,11 @@ if __name__ == "__main__":
             "Images are encoded to memory (exercises RAM/CPU) but NOT saved to disk.\n"
             f"Simulated write speed: {control._def.SIMULATED_DISK_IO_SPEED_MB_S} MB/s\n\n"
             "This mode is for development/testing only.\n\n"
-            "To disable: Settings > Preferences > Advanced",
+            "To disable: Settings > Settings... > Dev tab",
             QMessageBox.Ok,
         )
 
-    win.show()
+    win.showMaximized()
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": win.microscope}

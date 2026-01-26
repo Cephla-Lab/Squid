@@ -297,6 +297,20 @@ class GxipyCameraModel(enum.Enum):
             return None
 
 
+class FLIRCameraModel(enum.Enum):
+    BFS_U3_63S4M_C = "BFS-U3-63S4M-C"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["FLIRCameraModel"]:
+        """
+        Attempts to convert the given string to a FLIR camera model.  This ignores all letter cases.
+        """
+        try:
+            return FLIRCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
 class ToupcamCameraModel(enum.Enum):
     ITR3CMOS26000KMA = "ITR3CMOS26000KMA"
     ITR3CMOS09000KMA = "ITR3CMOS09000KMA"
@@ -447,6 +461,7 @@ class CameraConfig(pydantic.BaseModel):
     # support multiple models from the same brand.
     camera_model: Optional[
         Union[
+            FLIRCameraModel,
             GxipyCameraModel,
             TucsenCameraModel,
             ToupcamCameraModel,

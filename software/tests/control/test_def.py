@@ -172,3 +172,58 @@ class TestConfAttributeReader:
         assert conf_attribute_reader("value\t# comment1  # comment2") == "value"
         # Should strip at first  #, not at later \t#
         assert conf_attribute_reader("value # comment1\t# comment2") == "value"
+
+
+class TestParseSimSetting:
+    """Tests for _parse_sim_setting() simulation setting parser.
+
+    Note: _parse_sim_setting is defined inside a try block in _def.py at module load time,
+    so we test it by recreating the logic.
+    """
+
+    @staticmethod
+    def _parse_sim_setting(value_str):
+        """Recreate _parse_sim_setting logic for testing (original is local to try block)."""
+        val = value_str.strip().lower()
+        if val in ("true", "1", "yes", "simulate"):
+            return True
+        # Everything else = False (real hardware)
+        return False
+
+    def test_parses_true_values(self):
+        """Test that true/simulate values return True."""
+        assert self._parse_sim_setting("true") is True
+        assert self._parse_sim_setting("True") is True
+        assert self._parse_sim_setting("TRUE") is True
+        assert self._parse_sim_setting("1") is True
+        assert self._parse_sim_setting("yes") is True
+        assert self._parse_sim_setting("simulate") is True
+
+    def test_parses_false_values(self):
+        """Test that false/real values return False."""
+        assert self._parse_sim_setting("false") is False
+        assert self._parse_sim_setting("False") is False
+        assert self._parse_sim_setting("FALSE") is False
+        assert self._parse_sim_setting("0") is False
+        assert self._parse_sim_setting("no") is False
+        assert self._parse_sim_setting("real") is False
+
+    def test_legacy_auto_values_default_to_false(self):
+        """Test that legacy auto/none values default to False (real hardware)."""
+        # For backwards compatibility with old configs
+        assert self._parse_sim_setting("none") is False
+        assert self._parse_sim_setting("auto") is False
+        assert self._parse_sim_setting("") is False
+
+    def test_strips_whitespace(self):
+        """Test that leading/trailing whitespace is stripped."""
+        assert self._parse_sim_setting("  true  ") is True
+        assert self._parse_sim_setting("  false  ") is False
+
+    def test_unrecognized_values_default_to_false(self):
+        """Test that unrecognized values default to False (real hardware)."""
+        # Typos and invalid values default to real hardware for safety
+        assert self._parse_sim_setting("treu") is False
+        assert self._parse_sim_setting("fasle") is False
+        assert self._parse_sim_setting("simualte") is False
+        assert self._parse_sim_setting("invalid") is False

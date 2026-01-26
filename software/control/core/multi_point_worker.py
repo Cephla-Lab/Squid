@@ -13,6 +13,7 @@ from control._def import *
 from control._def import DOWNSAMPLED_VIEW_JOB_TIMEOUT_S, DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S
 import control._def
 from control import utils
+from control.slack_notifier import TimepointStats, AcquisitionStats
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -32,10 +33,13 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
+from control.core.job_processing import ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
     SaveOMETiffJob,
+    SaveZarrJob,
+    ZarrWriterInfo,
     AcquisitionInfo,
     Job,
     JobImage,
@@ -76,10 +80,20 @@ class MultiPointWorker:
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
         alignment_widget=None,
+        slack_notifier=None,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
         self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
+        self._slack_notifier = slack_notifier  # Optional SlackNotifier for notifications
+
+        # Slack notification tracking counters
+        self._timepoint_image_count = 0
+        self._timepoint_fov_count = 0
+        self._timepoint_start_time = 0.0
+        self._acquisition_error_count = 0
+        self._laser_af_successes = 0
+        self._laser_af_failures = 0
         self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
         self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
@@ -179,9 +193,12 @@ class MultiPointWorker:
         self.skip_saving = acquisition_parameters.skip_saving
         job_classes = []
         use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
+        use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
         if not self.skip_saving:
             if use_ome_tiff:
                 job_classes.append(SaveOMETiffJob)
+            elif use_zarr_v3:
+                job_classes.append(SaveZarrJob)
             else:
                 job_classes.append(SaveImageJob)
 
@@ -243,6 +260,57 @@ class MultiPointWorker:
         # Get the current log file path to share with subprocess workers
         log_file_path = squid.logging.get_current_log_file_path()
 
+        # Build ZarrWriterInfo if using ZARR_V3 format
+        # Output structure depends on acquisition type and settings:
+        # - HCS (wells): {experiment_path}/plate.ome.zarr/{row}/{col}/{fov}/0  (5D per FOV, OME-NGFF compliant)
+        # - Non-HCS default: {experiment_path}/zarr/{region}/fov_{n}.ome.zarr  (5D per FOV, OME-NGFF compliant)
+        # - Non-HCS 6D: {experiment_path}/zarr/{region}/acquisition.zarr  (6D, non-standard)
+        zarr_writer_info = None
+        if use_zarr_v3:
+            # Detect HCS mode using well-based acquisition state.
+            # is_loaded_wells already reflects the result of _is_well_based_acquisition(),
+            # so we only need to combine it with is_select_wells here.
+            is_hcs = is_select_wells or is_loaded_wells
+
+            # Pre-compute FOV counts per region (needed for 6D shape calculation in non-HCS mode)
+            region_fov_counts = {}
+            for region_id, coords in self.scan_region_fov_coords_mm.items():
+                region_fov_counts[str(region_id)] = len(coords)
+
+            # Extract channel metadata for zarr output
+            channel_names = [cfg.name for cfg in self.selected_configurations]
+            channel_colors = [cfg.display_color for cfg in self.selected_configurations]
+
+            # Get wavelengths from illumination config
+            channel_wavelengths = []
+            illumination_config = self.microscope.config_repo.get_illumination_config()
+            for cfg in self.selected_configurations:
+                wavelength = cfg.get_illumination_wavelength(illumination_config) if illumination_config else None
+                channel_wavelengths.append(wavelength)
+
+            zarr_writer_info = ZarrWriterInfo(
+                base_path=self.experiment_path,
+                t_size=self.Nt,
+                c_size=len(self.selected_configurations),
+                z_size=self.NZ,
+                is_hcs=is_hcs,
+                use_6d_fov=control._def.ZARR_USE_6D_FOV_DIMENSION,
+                region_fov_counts=region_fov_counts,
+                pixel_size_um=self._pixel_size_um,
+                z_step_um=self._physical_size_z_um,
+                time_increment_s=self._time_increment_s,
+                channel_names=channel_names,
+                channel_colors=channel_colors,
+                channel_wavelengths=channel_wavelengths,
+            )
+            if is_hcs:
+                mode_str = "HCS plate hierarchy"
+            elif control._def.ZARR_USE_6D_FOV_DIMENSION:
+                mode_str = "per-region 6D (non-standard)"
+            else:
+                mode_str = "per-FOV 5D (OME-NGFF compliant)"
+            self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
+
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
@@ -254,6 +322,8 @@ class MultiPointWorker:
                     bp_pending_jobs=self._backpressure.pending_jobs_value,
                     bp_pending_bytes=self._backpressure.pending_bytes_value,
                     bp_capacity_event=self._backpressure.capacity_event,
+                    # Pass zarr writer info for ZARR_V3 format
+                    zarr_writer_info=zarr_writer_info,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
@@ -342,6 +412,19 @@ class MultiPointWorker:
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
             sleep_time = min(self.dt / 20.0, 0.5)
 
+            # Send Slack acquisition start notification
+            if self._slack_notifier is not None:
+                try:
+                    self._slack_notifier.notify_acquisition_start(
+                        experiment_id=self.experiment_ID or "unknown",
+                        num_regions=len(self.scan_region_names) if self.scan_region_names else 0,
+                        num_timepoints=self.Nt,
+                        num_channels=len(self.selected_configurations) if self.selected_configurations else 0,
+                        num_z_levels=self.NZ,
+                    )
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack acquisition start notification: {e}")
+
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
                 if self.abort_requested_fn():
@@ -405,6 +488,22 @@ class MultiPointWorker:
                 self.camera.remove_frame_callback(this_image_callback_id)
 
             self._finish_jobs()
+
+            # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
+            if self._slack_notifier is not None:
+                try:
+                    total_duration = time.time() - self.timestamp_acquisition_started
+                    stats = AcquisitionStats(
+                        total_images=self.image_count,
+                        total_timepoints=self.time_point,
+                        total_duration_seconds=total_duration,
+                        errors_encountered=self._acquisition_error_count,
+                        experiment_id=self.experiment_ID or "unknown",
+                    )
+                    self.callbacks.signal_slack_acquisition_finished(stats)
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+
             self.callbacks.signal_acquisition_finished()
 
     def _wait_for_outstanding_callback_images(self):
@@ -469,6 +568,11 @@ class MultiPointWorker:
     def run_single_time_point(self):
         try:
             start = time.time()
+            self._timepoint_start_time = start
+            self._timepoint_image_count = 0
+            self._timepoint_fov_count = 0
+            self._laser_af_successes = 0
+            self._laser_af_failures = 0
             self.microcontroller.enable_joystick(False)
 
             self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
@@ -502,6 +606,29 @@ class MultiPointWorker:
 
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
+
+            # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
+            if self._slack_notifier is not None:
+                try:
+                    elapsed = time.time() - self.timestamp_acquisition_started
+                    timepoint_duration = time.time() - self._timepoint_start_time
+                    self._slack_notifier.record_timepoint_duration(timepoint_duration)
+                    estimated_remaining = self._slack_notifier.estimate_remaining_time(self.time_point + 1, self.Nt)
+                    stats = TimepointStats(
+                        timepoint=self.time_point + 1,
+                        total_timepoints=self.Nt,
+                        elapsed_seconds=elapsed,
+                        estimated_remaining_seconds=estimated_remaining,
+                        images_captured=self._timepoint_image_count,
+                        fovs_captured=self._timepoint_fov_count,
+                        laser_af_successes=self._laser_af_successes,
+                        laser_af_failures=self._laser_af_failures,
+                        laser_af_failure_reasons=[],
+                    )
+                    # Use callback to allow main thread to capture screenshot before sending
+                    self.callbacks.signal_slack_timepoint_notification(stats)
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack timepoint notification: {e}")
 
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
@@ -613,12 +740,28 @@ class MultiPointWorker:
         """
         if job_result.exception is not None:
             self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+            self._acquisition_error_count += 1
+
+            # Send Slack error notification
+            if self._slack_notifier is not None:
+                try:
+                    context = {"job_id": job_result.job_id}
+                    self._slack_notifier.notify_error(
+                        str(job_result.exception),
+                        context,
+                    )
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack error notification: {e}")
             return False
         else:
             self._log.info(f"Got result for job {job_result.job_id}, it completed!")
             # Handle DownsampledViewResult - update plate view
             if isinstance(job_result.result, DownsampledViewResult) and job_result.result.well_images:
                 self._handle_downsampled_view_result(job_result.result)
+            # Handle ZarrWriteResult - notify viewer that frame is written
+            elif isinstance(job_result.result, ZarrWriteResult):
+                r = job_result.result
+                self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
             return True
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
@@ -1095,6 +1238,9 @@ class MultiPointWorker:
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
+        # Increment FOV counter for Slack notification stats
+        self._timepoint_fov_count += 1
+
     def _select_config(self, config: AcquisitionChannel):
         self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
@@ -1122,6 +1268,7 @@ class MultiPointWorker:
             self._log.info("laser reflection af")
             try:
                 self.laser_auto_focus_controller.move_to_target(0)
+                self._laser_af_successes += 1
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
@@ -1130,6 +1277,7 @@ class MultiPointWorker:
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                     exc_info=e,
                 )
+                self._laser_af_failures += 1
                 return False
         return True
 
@@ -1174,6 +1322,10 @@ class MultiPointWorker:
                     self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
                     self.request_abort_fn()
                     return
+
+                # Increment image counter for Slack notification stats
+                self._timepoint_image_count += 1
+                self.image_count += 1
 
                 with self._timing.get_timer("job creation and dispatch"):
                     for job_class, job_runner in self._job_runners:

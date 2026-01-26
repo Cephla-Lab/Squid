@@ -213,6 +213,7 @@ class MultiPointController:
         self.thread: Optional[Thread] = None
         self._per_acq_log_handler = None
         self._memory_monitor: Optional[MemoryMonitor] = None
+        self._slack_notifier = None  # Optional SlackNotifier for notifications
 
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
@@ -256,6 +257,10 @@ class MultiPointController:
     def set_alignment_widget(self, alignment_widget):
         """Set the alignment widget for coordinate offset during acquisitions."""
         self._alignment_widget = alignment_widget
+
+    def set_slack_notifier(self, slack_notifier):
+        """Set the Slack notifier for acquisition notifications."""
+        self._slack_notifier = slack_notifier
 
     def _start_per_acquisition_log(self) -> None:
         if not control._def.ENABLE_PER_ACQUISITION_LOG:
@@ -815,6 +820,7 @@ class MultiPointController:
                 request_abort_fn=self.request_abort_aquisition,
                 extra_job_classes=[],
                 alignment_widget=self._alignment_widget,
+                slack_notifier=self._slack_notifier,
             )
 
             # Signal after worker creation so backpressure_controller is available

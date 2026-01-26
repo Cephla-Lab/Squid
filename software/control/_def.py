@@ -294,15 +294,15 @@ class FileSavingOption(Enum):
     """File saving options.
 
     INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
-    TODO: Move all file saving related settings to this enum.
     MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
     OME_TIFF: Save data to OME-TIFF stacks with full metadata.
-    TODO: Add zarr saving options.
+    ZARR_V3: Save data to Zarr v3 format with sharding.
     """
 
     INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
     MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
     OME_TIFF = "OME_TIFF"
+    ZARR_V3 = "ZARR_V3"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
@@ -316,6 +316,56 @@ class FileSavingOption(Enum):
             return FileSavingOption[option.upper()]
         except KeyError:
             raise ValueError(f"Invalid file saving option: {option}")
+
+
+class ZarrChunkMode(Enum):
+    """Zarr chunk size configuration.
+
+    FULL_FRAME: Each chunk is a full image plane (simplest, default).
+    TILED_512: 512x512 pixel chunks for tiled visualization.
+    TILED_256: 256x256 pixel chunks for fine-grained streaming.
+    """
+
+    FULL_FRAME = "full_frame"
+    TILED_512 = "tiled_512"
+    TILED_256 = "tiled_256"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrChunkMode"]) -> "ZarrChunkMode":
+        """Convert string or enum to ZarrChunkMode enum."""
+        if isinstance(option, ZarrChunkMode):
+            return option
+        try:
+            return ZarrChunkMode(option.lower())
+        except ValueError:
+            raise ValueError(
+                f"Invalid zarr chunk mode: '{option}'. Expected 'full_frame', 'tiled_512', or 'tiled_256'."
+            )
+
+
+class ZarrCompression(Enum):
+    """Zarr compression presets optimized for different use cases.
+
+    NONE: No compression, maximum write speed (~2x faster than TIFF).
+    FAST: blosc-lz4, ~1000 MB/s encode, ~2x compression ratio. Safe for 10-20 fps.
+    BALANCED: blosc-zstd level 3, ~500 MB/s encode, ~3-4x ratio.
+    BEST: blosc-zstd level 9, slowest but best compression ratio.
+    """
+
+    NONE = "none"
+    FAST = "fast"
+    BALANCED = "balanced"
+    BEST = "best"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrCompression"]) -> "ZarrCompression":
+        """Convert string or enum to ZarrCompression enum."""
+        if isinstance(option, ZarrCompression):
+            return option
+        try:
+            return ZarrCompression(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid zarr compression: '{option}'. Expected 'none', 'fast', 'balanced', or 'best'.")
 
 
 class FocusMeasureOperator(Enum):
@@ -695,6 +745,17 @@ SIMULATED_DISK_IO_ENABLED = False
 SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
 SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
 
+# Per-component hardware simulation controls
+# These settings only apply when running WITHOUT the --simulation flag.
+# When --simulation is used, ALL components are simulated regardless of these settings.
+# Values: False = use real hardware (default), True = simulate this component
+SIMULATE_CAMERA = False
+SIMULATE_MICROCONTROLLER = False  # Also controls stage (stage uses MCU)
+SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
+SIMULATE_FILTER_WHEEL = False
+SIMULATE_OBJECTIVE_CHANGER = False
+SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
 ACQUISITION_THROTTLING_ENABLED = True
@@ -1053,6 +1114,15 @@ USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
+# Zarr v3 saving configuration
+ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
+ZARR_COMPRESSION = ZarrCompression.FAST  # Safe for 10-20 fps, ~1000 MB/s encode
+
+# Use 6D array with FOV dimension for non-HCS acquisitions (non-standard, not OME-NGFF compliant)
+# When False (default): creates per-FOV 5D zarr files (OME-NGFF compliant)
+# When True: creates single 6D zarr with shape (FOV, T, C, Z, Y, X)
+ZARR_USE_6D_FOV_DIMENSION = False
+
 ##########################################################
 #### start of loading machine specific configurations ####
 ##########################################################
@@ -1081,6 +1151,19 @@ USE_JUPYTER_CONSOLE = False
 ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
+
+
+# Slack Notifications - send real-time notifications during acquisition
+class SlackNotifications:
+    ENABLED = False
+    BOT_TOKEN = None  # Slack Bot Token (xoxb-...) for API access
+    CHANNEL_ID = None  # Slack Channel ID (C...) to post to
+    NOTIFY_ON_ERROR = True
+    NOTIFY_ON_TIMEPOINT_COMPLETE = True
+    NOTIFY_ON_ACQUISITION_START = False
+    NOTIFY_ON_ACQUISITION_FINISHED = True
+    SEND_MOSAIC_SNAPSHOTS = True
+
 
 try:
     with open("cache/config_file_path.txt", "r") as file:
@@ -1178,6 +1261,8 @@ MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum
 FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
+ZARR_CHUNK_MODE = ZarrChunkMode.convert_to_enum(ZARR_CHUNK_MODE)
+ZARR_COMPRESSION = ZarrCompression.convert_to_enum(ZARR_COMPRESSION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 
@@ -1264,3 +1349,39 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
+
+    # Load per-component simulation settings from config file
+    def _parse_sim_setting(value_str):
+        """Parse simulation setting: True (simulate) or False (real hardware)."""
+        val = value_str.strip().lower()
+        if val in ("true", "1", "yes", "simulate"):
+            return True
+        # Everything else (false, none, auto, unrecognized) = real hardware
+        return False
+
+    try:
+        _sim_config = ConfigParser()
+        _sim_config.read(CACHED_CONFIG_FILE_PATH)
+        if _sim_config.has_section("SIMULATION"):
+            if _sim_config.has_option("SIMULATION", "simulate_camera"):
+                SIMULATE_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_camera"))
+                log.info(f"Loaded SIMULATE_CAMERA={SIMULATE_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_microcontroller"):
+                SIMULATE_MICROCONTROLLER = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_microcontroller"))
+                log.info(f"Loaded SIMULATE_MICROCONTROLLER={SIMULATE_MICROCONTROLLER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_spinning_disk"):
+                SIMULATE_SPINNING_DISK = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_spinning_disk"))
+                log.info(f"Loaded SIMULATE_SPINNING_DISK={SIMULATE_SPINNING_DISK} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_filter_wheel"):
+                SIMULATE_FILTER_WHEEL = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_filter_wheel"))
+                log.info(f"Loaded SIMULATE_FILTER_WHEEL={SIMULATE_FILTER_WHEEL} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_objective_changer"):
+                SIMULATE_OBJECTIVE_CHANGER = _parse_sim_setting(
+                    _sim_config.get("SIMULATION", "simulate_objective_changer")
+                )
+                log.info(f"Loaded SIMULATE_OBJECTIVE_CHANGER={SIMULATE_OBJECTIVE_CHANGER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
+                SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
+                log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+    except Exception as e:
+        log.warning(f"Failed to load SIMULATION settings from config: {e}")

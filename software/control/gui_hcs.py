@@ -1,5 +1,7 @@
 # set QT_API environment variable
 import os
+import subprocess
+import sys
 from configparser import ConfigParser
 
 from control.core.auto_focus_controller import AutoFocusController
@@ -14,10 +16,23 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
-import serial
+import re
 import time
-from typing import Any, Optional, Tuple
+from enum import Enum, auto
+from typing import Any, List, Optional, Tuple
+
 import numpy as np
+import serial
+
+
+class NDViewerMode(Enum):
+    """NDViewer acquisition mode for tracking active viewer state."""
+
+    INACTIVE = auto()  # No acquisition active
+    TIFF = auto()  # TIFF/OME-TIFF file-based viewing
+    ZARR_5D = auto()  # Zarr 5D per-FOV mode (HCS or non-HCS)
+    ZARR_6D = auto()  # Zarr 6D with FOV as dimension
+
 
 # qt libraries
 from qtpy.QtCore import *
@@ -48,6 +63,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.utils
 import control.utils_acquisition
 import control.microscope
 import control.widgets as widgets
@@ -90,6 +106,10 @@ if RUN_FLUIDICS:
 
 # Import the custom widget
 from control.custom_multipoint_widget import TemplateMultiPointWidget
+
+# Slack notifications
+from control.slack_notifier import SlackNotifier, TimepointStats, AcquisitionStats
+from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_cache
 
 
 class MovementUpdater(QObject):
@@ -187,9 +207,21 @@ class QtMultiPointController(MultiPointController, QObject):
     # Plate view signals
     plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
     plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
-    # NDViewer push-based API signals
+    # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
+    signal_slack_timepoint = Signal(object)  # TimepointStats
+    signal_slack_acq_finished = Signal(object)  # AcquisitionStats
+    # NDViewer push-based API signals (TIFF mode)
     ndviewer_start_acquisition = Signal(list, int, int, int, list)  # channels, num_z, height, width, fov_labels
     ndviewer_register_image = Signal(int, int, int, str, str)  # t, fov_idx, z, channel, filepath
+    # NDViewer push-based API signals (Zarr mode)
+    ndviewer_start_zarr_acquisition = Signal(
+        list, list, int, list, int, int
+    )  # fov_paths, channels, num_z, fov_labels, height, width
+    ndviewer_start_zarr_acquisition_6d = Signal(
+        list, list, int, list, int, int, list
+    )  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+    ndviewer_notify_zarr_frame = Signal(int, int, int, str, int)  # t, fov_idx, z, channel, region_idx
+    ndviewer_end_zarr_acquisition = Signal()
 
     def __init__(
         self,
@@ -218,6 +250,9 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
                 signal_plate_view_update=self._signal_plate_view_update_fn,
+                signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
+                signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
+                signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -229,6 +264,9 @@ class QtMultiPointController(MultiPointController, QObject):
         # NDViewer push-based API state
         self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
         self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
+        self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
+        self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
+        self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -247,9 +285,11 @@ class QtMultiPointController(MultiPointController, QObject):
         # Build FOV labels and region offset mapping
         self._ndviewer_fov_labels = []
         self._ndviewer_region_fov_offset = {}
+        self._ndviewer_region_idx_offset = []
         fov_idx = 0
         for region_name in scan_info.scan_region_names:
             self._ndviewer_region_fov_offset[region_name] = fov_idx
+            self._ndviewer_region_idx_offset.append(fov_idx)  # region_idx -> flat offset
             num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
             for i in range(num_fovs):
                 self._ndviewer_fov_labels.append(f"{region_name}:{i}")
@@ -258,9 +298,41 @@ class QtMultiPointController(MultiPointController, QObject):
         # Get image dimensions from camera (after binning)
         width, height = self.microscope.camera.get_resolution()
 
-        self.ndviewer_start_acquisition.emit(channels, num_z, height, width, self._ndviewer_fov_labels)
+        # Check save format to determine which API to use
+        if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            is_hcs = self._detect_hcs_mode(scan_info)
+            use_6d = control._def.ZARR_USE_6D_FOV_DIMENSION
+
+            if use_6d and not is_hcs:
+                # 6D mode (single or multi-region): use unified 6D regions API
+                self._ndviewer_mode = NDViewerMode.ZARR_6D
+                region_paths, fovs_per_region, region_labels = self._build_6d_region_info(parameters)
+
+                # Build region index map for notify_zarr_frame
+                self._ndviewer_region_index_map = {name: idx for idx, name in enumerate(scan_info.scan_region_names)}
+
+                self.ndviewer_start_zarr_acquisition_6d.emit(
+                    region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+                )
+            else:
+                # HCS or per-FOV modes: use fov_paths API (5D per-FOV)
+                self._ndviewer_mode = NDViewerMode.ZARR_5D
+                fov_paths = self._build_zarr_fov_paths(parameters)
+
+                self.ndviewer_start_zarr_acquisition.emit(
+                    fov_paths or [], channels, num_z, self._ndviewer_fov_labels, height, width
+                )
+        else:
+            self._ndviewer_mode = NDViewerMode.TIFF
+            self.ndviewer_start_acquisition.emit(channels, num_z, height, width, self._ndviewer_fov_labels)
 
     def _signal_acquisition_finished_fn(self):
+        # End zarr acquisition if active (before general acquisition_finished)
+        if self._ndviewer_mode in (NDViewerMode.ZARR_5D, NDViewerMode.ZARR_6D):
+            self.ndviewer_end_zarr_acquisition.emit()
+            self._ndviewer_region_index_map = {}
+        self._ndviewer_mode = NDViewerMode.INACTIVE
+
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
@@ -291,7 +363,7 @@ class QtMultiPointController(MultiPointController, QObject):
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
-        # NDViewer push-based API: register image file
+        # NDViewer push-based API: register image
         # Compute flat FOV index from region and fov within region
         region_offset = self._ndviewer_region_fov_offset.get(info.region_id)
         if region_offset is None:
@@ -303,13 +375,18 @@ class QtMultiPointController(MultiPointController, QObject):
             return
         flat_fov_idx = region_offset + info.fov
 
-        filepath = control.utils_acquisition.get_image_filepath(
-            info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
-        )
-
-        self.ndviewer_register_image.emit(
-            info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
-        )
+        if self._ndviewer_mode in (NDViewerMode.ZARR_6D, NDViewerMode.ZARR_5D):
+            # Zarr modes: notification happens via signal_zarr_frame_written callback
+            # when the subprocess completes writing, not here (too early).
+            pass
+        else:
+            # TIFF mode: register with filepath (synchronous write, notification is correct here)
+            filepath = control.utils_acquisition.get_image_filepath(
+                info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
+            )
+            self.ndviewer_register_image.emit(
+                info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
+            )
 
     def _signal_current_configuration_fn(self, config: AcquisitionChannel):
         self.signal_current_configuration.emit(config)
@@ -341,6 +418,119 @@ class QtMultiPointController(MultiPointController, QObject):
             plate_view_update.plate_image,
         )
 
+    def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
+        self.signal_slack_timepoint.emit(stats)
+
+    def _signal_slack_acquisition_finished_fn(self, stats: AcquisitionStats):
+        self.signal_slack_acq_finished.emit(stats)
+
+    def _signal_zarr_frame_written_fn(
+        self, fov: int, time_point: int, z_index: int, channel_name: str, region_idx: int
+    ):
+        """Called when subprocess completes writing a zarr frame.
+
+        This is the correct time to notify the viewer - after data is on disk.
+
+        Args:
+            fov: Local FOV index within the region (not flat/global index)
+            time_point: Time point index
+            z_index: Z slice index
+            channel_name: Channel name string
+            region_idx: Index of the region in scan order
+        """
+        if self._ndviewer_mode == NDViewerMode.ZARR_6D:
+            # 6D mode: pass local FOV index and region_idx
+            self.ndviewer_notify_zarr_frame.emit(time_point, fov, z_index, channel_name, region_idx)
+        elif self._ndviewer_mode == NDViewerMode.ZARR_5D:
+            # 5D mode: compute flat FOV index from local FOV + region offset
+            # fov is the local index within the region, we need the global/flat index
+            if region_idx < len(self._ndviewer_region_idx_offset):
+                flat_fov = self._ndviewer_region_idx_offset[region_idx] + fov
+            else:
+                flat_fov = fov
+            self.ndviewer_notify_zarr_frame.emit(time_point, flat_fov, z_index, channel_name, 0)
+
+    # -------------------------------------------------------------------------
+    # Helper methods for Zarr FOV path building
+    # -------------------------------------------------------------------------
+
+    def _build_6d_region_info(self, parameters: AcquisitionParameters) -> Tuple[List[str], List[int], List[str]]:
+        """Build region info for 6D mode (single or multi-region).
+
+        Args:
+            parameters: Acquisition parameters containing scan info.
+
+        Returns:
+            Tuple of (region_paths, fovs_per_region, region_labels)
+        """
+        base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
+        scan_info = parameters.scan_position_information
+
+        region_paths: List[str] = []
+        fovs_per_region: List[int] = []
+        region_labels: List[str] = []
+
+        for region_name in scan_info.scan_region_names:
+            path = control.utils.build_6d_zarr_path(base_path, region_name)
+            region_paths.append(path)
+
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
+            fovs_per_region.append(num_fovs)
+
+            region_labels.append(region_name)
+
+        return region_paths, fovs_per_region, region_labels
+
+    def _build_zarr_fov_paths(self, parameters: AcquisitionParameters) -> Optional[List[str]]:
+        """Build list of zarr paths for each FOV.
+
+        Args:
+            parameters: Acquisition parameters containing scan info.
+
+        Returns:
+            List of zarr paths (one per FOV) for HCS/per-FOV modes.
+            None for 6D mode (single zarr store).
+        """
+        base_path = os.path.join(parameters.base_path, parameters.experiment_ID)
+        scan_info = parameters.scan_position_information
+
+        # Detect acquisition mode
+        is_hcs = self._detect_hcs_mode(scan_info)
+        use_6d = control._def.ZARR_USE_6D_FOV_DIMENSION
+
+        if use_6d and not is_hcs:
+            # 6D mode: single zarr per region, fov_paths=None
+            return None
+
+        # Build fov_paths for HCS or per-FOV modes
+        fov_paths: List[str] = []
+        for region_name in scan_info.scan_region_names:
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_name, []))
+            for fov in range(num_fovs):
+                if is_hcs:
+                    path = control.utils.build_hcs_zarr_fov_path(base_path, region_name, fov)
+                else:
+                    path = control.utils.build_per_fov_zarr_path(base_path, region_name, fov)
+                fov_paths.append(path)
+
+        return fov_paths
+
+    def _detect_hcs_mode(self, scan_info: ScanCoordinates) -> bool:
+        """Detect if this is an HCS (wellplate) acquisition.
+
+        Args:
+            scan_info: Scan coordinates with region names.
+
+        Returns:
+            True if all region names match well ID pattern (e.g., A1, B12).
+        """
+        well_pattern = re.compile(r"^[A-Z]+\d+$")
+
+        for region_name in scan_info.scan_region_names:
+            if not well_pattern.match(region_name):
+                return False
+        return len(scan_info.scan_region_names) > 0
+
 
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
@@ -348,11 +538,18 @@ class HighContentScreeningGui(QMainWindow):
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
-        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+        self,
+        microscope: control.microscope.Microscope,
+        is_simulation=False,
+        live_only_mode=False,
+        skip_init=False,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
+        self._skip_init = skip_init
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -388,7 +585,9 @@ class HighContentScreeningGui(QMainWindow):
             self.streamHandler_focus_camera = core.QtStreamHandler(
                 accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
             )
-            self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
+            self.imageDisplayWindow_focus = core.ImageDisplayWindow(
+                liveController=self.liveController, show_LUT=False, autoLevels=False
+            )
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = LaserAutofocusController(
                 self.microcontroller,
@@ -414,8 +613,14 @@ class HighContentScreeningGui(QMainWindow):
         self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
         self.scanCoordinates: Optional[ScanCoordinates] = None
+        self.slackNotifier: Optional[SlackNotifier] = None
+        self.slackSettingsDialog: Optional[SlackSettingsDialog] = None
+
+        # Load Slack settings from cache
+        load_slack_settings_from_cache()
+
         self.load_objects(is_simulation=is_simulation)
-        self.setup_hardware()
+        self.setup_hardware(skip_init=self._skip_init)
 
         self.setup_movement_updater()
 
@@ -472,8 +677,14 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize live scan grid state
         self.wellplateMultiPointWidget.initialize_live_scan_grid_state()
 
-        # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
-        if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+        # Initialize Slack notifier
+        self._setup_slack_notifier()
+
+        # Skip cached position restoration on restart (hardware position hasn't changed)
+        if self._skip_init:
+            self.log.info("Skipping cached position restoration (--skip-init flag set)")
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+            # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             if cached_pos := squid.stage.utils.get_cached_position():
                 self.log.info(
                     f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
@@ -498,8 +709,8 @@ class HighContentScreeningGui(QMainWindow):
         menubar = self.menuBar()
         settings_menu = menubar.addMenu("Settings")
 
-        # Configuration action
-        config_action = QAction("Configuration...", self)
+        # Settings action (opens Preferences dialog)
+        config_action = QAction("Settings...", self)
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
@@ -517,6 +728,13 @@ class HighContentScreeningGui(QMainWindow):
 
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
+
+        # Notifications section
+        settings_menu.addSeparator()
+        slack_action = QAction("Slack Notifications...", self)
+        slack_action.setMenuRole(QAction.NoRole)
+        slack_action.triggered.connect(self.openSlackSettings)
+        settings_menu.addAction(slack_action)
 
         # Illumination Channel Configuration (in Advanced menu)
         channel_config_action = QAction("Illumination Channel Configuration", self)
@@ -587,7 +805,7 @@ class HighContentScreeningGui(QMainWindow):
             fluidics=self.fluidics,
         )
 
-    def setup_hardware(self):
+    def setup_hardware(self, skip_init: bool = False):
         # Setup hardware components
         if not self.microcontroller:
             raise ValueError("Microcontroller must be none-None for hardware setup.")
@@ -596,23 +814,27 @@ class HighContentScreeningGui(QMainWindow):
             x_config = self.stage.get_config().X_AXIS
             y_config = self.stage.get_config().Y_AXIS
             z_config = self.stage.get_config().Z_AXIS
-            self.log.info(
-                f"Setting stage limits to:"
-                f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
-                f" y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}],"
-                f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
-            )
 
-            self.stage.set_limits(
-                x_pos_mm=x_config.MAX_POSITION,
-                x_neg_mm=x_config.MIN_POSITION,
-                y_pos_mm=y_config.MAX_POSITION,
-                y_neg_mm=y_config.MIN_POSITION,
-                z_pos_mm=z_config.MAX_POSITION,
-                z_neg_mm=z_config.MIN_POSITION,
-            )
+            if skip_init:
+                self.log.info("Skipping hardware initialization (--skip-init flag set)")
+            else:
+                self.log.info(
+                    f"Setting stage limits to:"
+                    f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
+                    f" y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}],"
+                    f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
+                )
 
-            self.microscope.home_xyz()
+                self.stage.set_limits(
+                    x_pos_mm=x_config.MAX_POSITION,
+                    x_neg_mm=x_config.MIN_POSITION,
+                    y_pos_mm=y_config.MAX_POSITION,
+                    y_neg_mm=y_config.MIN_POSITION,
+                    z_pos_mm=z_config.MAX_POSITION,
+                    z_neg_mm=z_config.MIN_POSITION,
+                )
+
+                self.microscope.home_xyz()
 
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
@@ -751,7 +973,7 @@ class HighContentScreeningGui(QMainWindow):
             self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
                 self.laserAutofocusController, self.liveController
             )
-            self.imageDisplayWindow_focus = core.ImageDisplayWindow()
+            self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
 
         if RUN_FLUIDICS:
             self.fluidicsWidget = widgets.FluidicsWidget(self.fluidics)
@@ -1088,6 +1310,11 @@ class HighContentScreeningGui(QMainWindow):
         self.backpressureMonitorWidget.setVisible(False)
         self._bp_monitor_should_show = False
 
+        # Warning/Error display widget (auto-hides when empty)
+        self.warningErrorWidget = widgets.WarningErrorWidget()
+        self.warningErrorWidget.setVisible(False)
+        self._warning_handler = None
+
     def setup_layout(self):
         layout = QVBoxLayout()
 
@@ -1158,6 +1385,11 @@ class HighContentScreeningGui(QMainWindow):
         # Only visible during acquisition when throttling is enabled
         if self.backpressureMonitorWidget is not None:
             self.statusBar().addWidget(self.backpressureMonitorWidget)  # Left-aligned
+
+        # Add warning/error display widget to status bar
+        # Auto-hides when no messages pending
+        if self.warningErrorWidget is not None:
+            self.statusBar().addWidget(self.warningErrorWidget)  # Left-aligned
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1259,9 +1491,17 @@ class HighContentScreeningGui(QMainWindow):
 
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
+            # TIFF mode signals
             self.multipointController.ndviewer_start_acquisition.connect(self.ndviewerTab.start_acquisition)
             self.multipointController.ndviewer_register_image.connect(self.ndviewerTab.register_image)
             self.multipointController.acquisition_finished.connect(self.ndviewerTab.end_acquisition)
+            # Zarr mode signals
+            self.multipointController.ndviewer_start_zarr_acquisition.connect(self.ndviewerTab.start_zarr_acquisition)
+            self.multipointController.ndviewer_start_zarr_acquisition_6d.connect(
+                self.ndviewerTab.start_zarr_acquisition_6d
+            )
+            self.multipointController.ndviewer_notify_zarr_frame.connect(self.ndviewerTab.notify_zarr_frame)
+            self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1665,11 +1905,66 @@ class HighContentScreeningGui(QMainWindow):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
-            dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog = widgets.PreferencesDialog(
+                config,
+                CACHED_CONFIG_FILE_PATH,
+                parent=self,
+                on_restart=self.restart_application,
+            )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
+
+    def _setup_slack_notifier(self):
+        """Initialize the Slack notifier and wire up connections."""
+        # Create the slack notifier
+        self.slackNotifier = SlackNotifier()
+
+        # Set slack notifier on multipoint controller
+        if self.multipointController is not None:
+            self.multipointController.set_slack_notifier(self.slackNotifier)
+            # Connect Slack notification signals to handlers (runs on main thread for proper ordering)
+            self.multipointController.signal_slack_timepoint.connect(self._handle_slack_timepoint_notification)
+            self.multipointController.signal_slack_acq_finished.connect(self._handle_slack_acquisition_finished)
+
+        self.log.info("Slack notifier initialized")
+
+    def _handle_slack_timepoint_notification(self, stats: TimepointStats):
+        """Handle Slack timepoint notification on the main Qt thread.
+
+        Captures screenshot from mosaic widget (if available) and sends notification.
+        """
+        try:
+            # Capture screenshot from mosaic widget (must be done on main Qt thread)
+            mosaic_image = None
+            if self.napariMosaicDisplayWidget is not None:
+                mosaic_image = self.napariMosaicDisplayWidget.get_screenshot()
+
+            # Send notification with screenshot
+            if self.slackNotifier is not None:
+                self.slackNotifier.notify_timepoint_complete(stats, mosaic_image)
+        except Exception as e:
+            self.log.warning(f"Failed to send Slack timepoint notification: {e}")
+
+    def _handle_slack_acquisition_finished(self, stats: AcquisitionStats):
+        """Handle Slack acquisition finished notification on the main Qt thread."""
+        try:
+            if self.slackNotifier is not None:
+                self.slackNotifier.notify_acquisition_finished(stats)
+        except Exception as e:
+            self.log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+
+    def openSlackSettings(self):
+        """Open the Slack notifications settings dialog."""
+        if self.slackSettingsDialog is None:
+            self.slackSettingsDialog = SlackSettingsDialog(
+                slack_notifier=self.slackNotifier,
+                parent=self,
+            )
+        self.slackSettingsDialog.show()
+        self.slackSettingsDialog.raise_()
+        self.slackSettingsDialog.activateWindow()
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
@@ -1935,7 +2230,10 @@ class HighContentScreeningGui(QMainWindow):
 
     def _update_status_bar_visibility(self):
         """Show or hide status bar based on whether any monitor widgets should be visible."""
-        self.statusBar().setVisible(self._ram_monitor_should_show or self._bp_monitor_should_show)
+        warning_has_messages = self.warningErrorWidget is not None and self.warningErrorWidget.has_messages()
+        self.statusBar().setVisible(
+            self._ram_monitor_should_show or self._bp_monitor_should_show or warning_has_messages
+        )
 
     def _connect_ram_monitor_widget(self):
         """Connect RAM monitor widget to memory monitor during acquisition."""
@@ -2007,6 +2305,36 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug("Backpressure monitor: disconnected from acquisition")
         self._update_status_bar_visibility()
 
+    def _connect_warning_handler(self):
+        """Connect logging handler to warning/error widget."""
+        if self.warningErrorWidget is None:
+            return
+
+        self._warning_handler = widgets.QtLoggingHandler()
+        self._warning_handler.signal_message_logged.connect(self.warningErrorWidget.add_message)
+        squid.logging.get_logger().addHandler(self._warning_handler)
+        self.log.debug("Warning/error widget: connected logging handler")
+
+    def _disconnect_warning_handler(self):
+        """Disconnect logging handler from warning/error widget.
+
+        Uses robust error handling to ensure cleanup completes even if
+        individual operations fail (e.g., handler already removed).
+        """
+        if self._warning_handler is not None:
+            try:
+                squid.logging.get_logger().removeHandler(self._warning_handler)
+            except Exception as e:
+                self.log.debug(f"Error removing warning handler (may already be removed): {e}")
+
+            try:
+                self._warning_handler.close()
+            except Exception as e:
+                self.log.debug(f"Error closing warning handler: {e}")
+
+            self._warning_handler = None
+            self.log.debug("Warning/error widget: disconnected logging handler")
+
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
         if self.alignmentWidget is not None:
@@ -2044,11 +2372,12 @@ class HighContentScreeningGui(QMainWindow):
     def showEvent(self, event):
         """Handle window show event to initialize visibility-dependent widgets."""
         super().showEvent(event)
-        # Initialize RAM monitor visibility now that window is shown
-        if hasattr(self, "_ram_monitor_initialized") and self._ram_monitor_initialized:
+        # Initialize visibility-dependent widgets now that window is shown
+        if hasattr(self, "_show_event_initialized") and self._show_event_initialized:
             return  # Only initialize once
-        self._ram_monitor_initialized = True
+        self._show_event_initialized = True
         self._update_ram_monitor_visibility()
+        self._connect_warning_handler()
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
@@ -2066,6 +2395,214 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.log.warning("NDViewer tab exists but not found in tab widget")
 
+    def restart_application(self):
+        """Restart the application with --skip-init flag.
+
+        Performs hardware cleanup, spawns a new process with --skip-init flag,
+        then quits the current application. Hardware initialization is skipped in the new
+        process since hardware is already in a known state.
+        """
+        self.log.info("Restarting application with --skip-init...")
+
+        # Build new args list, preserving original arguments but adding --skip-init
+        args = [sys.executable] + sys.argv
+        if "--skip-init" not in args:
+            args.append("--skip-init")
+
+        # Clean up hardware BEFORE spawning new process to release resources
+        self._cleanup_for_restart()
+
+        # Spawn new process AFTER cleanup so it can acquire hardware
+        try:
+            subprocess.Popen(args)
+        except OSError as e:
+            self.log.exception("Failed to spawn new process for restart")
+            QMessageBox.critical(
+                self,
+                "Restart Failed",
+                f"Failed to restart the application.\n\nError: {e}\n\n"
+                "The application will now close. Please restart manually.",
+            )
+            # Still quit since hardware is already cleaned up
+            QApplication.instance().quit()
+            return
+
+        # Quit the application
+        QApplication.instance().quit()
+
+    def _cleanup_common(self, for_restart: bool = False):
+        """Common cleanup logic shared between closeEvent and restart.
+
+        Args:
+            for_restart: If True, skip Z retraction and objective reset (preserving position),
+                        and wrap operations in try-except to ensure cleanup completes.
+        """
+        context = "restart" if for_restart else "shutdown"
+
+        # Cache position and settings
+        try:
+            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
+        except ValueError as e:
+            # ValueError is expected when position is out of bounds
+            self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Unexpected error caching position during {context}")
+            else:
+                raise
+
+        try:
+            squid.camera.settings_cache.save_camera_settings(self.camera)
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error saving camera settings during {context}")
+            else:
+                raise
+
+        try:
+            self._disconnect_warning_handler()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error disconnecting warning handler during {context}")
+            else:
+                raise
+
+        # Clean up multipoint controller
+        if self.multipointController is not None:
+            try:
+                self.multipointController.close()
+            except Exception:
+                self.log.exception(f"Error closing multipoint controller during {context}")
+
+        # Clean up NDViewer
+        if self.ndviewerTab is not None:
+            try:
+                self.ndviewerTab.close()
+            except Exception:
+                self.log.exception(f"Error closing NDViewer tab during {context}")
+
+        # Close napari viewers (they run background threads that prevent clean exit)
+        for widget_name in [
+            "napariLiveWidget",
+            "napariMultiChannelWidget",
+            "napariMosaicDisplayWidget",
+            "napariPlateViewWidget",
+        ]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None and hasattr(widget, "viewer"):
+                try:
+                    widget.viewer.close()
+                except Exception:
+                    self.log.exception(f"Error closing {widget_name} viewer during {context}")
+                    if not for_restart:
+                        raise
+
+        try:
+            self.movement_update_timer.stop()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error stopping movement update timer during {context}")
+            else:
+                raise
+
+        # Close filter wheel
+        if self.emission_filter_wheel:
+            try:
+                if not for_restart:
+                    self.emission_filter_wheel.set_filter_wheel_position({1: 1})
+                self.emission_filter_wheel.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing filter wheel during {context}")
+                else:
+                    raise
+
+        # Stop laser autofocus
+        if SUPPORT_LASER_AUTOFOCUS:
+            try:
+                self.liveController_focus_camera.stop_live()
+                self.imageDisplayWindow_focus.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing laser AF during {context}")
+                else:
+                    raise
+
+        # Stop live view and close camera
+        try:
+            self.liveController.stop_live()
+            self.camera.stop_streaming()
+            self.camera.close()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error closing camera during {context}")
+            else:
+                raise
+
+        # Retract Z, reset objective changer, and turn off PIDs only on full shutdown
+        # (for restart, preserve hardware state since new process will use --skip-init)
+        if not for_restart:
+            try:
+                self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+                if USE_XERYON:
+                    self.objective_changer.moveToZero()
+            except Exception:
+                self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
+
+            try:
+                self.microcontroller.turn_off_all_pid()
+            except Exception:
+                self.log.exception(f"Error turning off PID during {context}")
+
+        # Turn off CellX lasers
+        if ENABLE_CELLX:
+            try:
+                for channel in [1, 2, 3, 4]:
+                    self.cellx.turn_off(channel)
+                self.cellx.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing CellX during {context}")
+                else:
+                    raise
+
+        # Close fluidics
+        if RUN_FLUIDICS:
+            try:
+                self.fluidics.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing fluidics during {context}")
+                else:
+                    raise
+
+        # Close image display resources
+        try:
+            self.imageSaver.close()
+            self.imageDisplay.close()
+            if not SINGLE_WINDOW:
+                self.imageDisplayWindow.close()
+                self.imageArrayDisplayWindow.close()
+                self.tabbedImageDisplayWindow.close()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error closing display windows during {context}")
+            else:
+                raise
+
+        # Close microcontroller last (releases serial port)
+        try:
+            self.microcontroller.close()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error closing microcontroller during {context}")
+            else:
+                raise
+
+    def _cleanup_for_restart(self):
+        """Clean up hardware and resources for restart (preserves Z position)."""
+        self._cleanup_common(for_restart=True)
+
     def closeEvent(self, event):
         # Show confirmation dialog
         reply = QMessageBox.question(
@@ -2080,66 +2617,8 @@ class HighContentScreeningGui(QMainWindow):
             event.ignore()
             return
 
-        try:
-            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
-        except ValueError as e:
-            self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+        self._cleanup_common(for_restart=False)
 
-        # Save camera settings (binning, pixel format)
-        squid.camera.settings_cache.save_camera_settings(self.camera)
-
-        # Clean up multipoint controller resources (queues, timers, process pools)
-        if self.multipointController is not None:
-            try:
-                self.multipointController.close()
-            except Exception:
-                self.log.exception("Error closing multipoint controller during shutdown")
-
-        # Clean up NDViewer resources (file handles, timers)
-        if self.ndviewerTab is not None:
-            try:
-                self.ndviewerTab.close()
-            except Exception:
-                self.log.exception("Error closing NDViewer tab during shutdown")
-
-        self.movement_update_timer.stop()
-
-        if self.emission_filter_wheel:
-            self.emission_filter_wheel.set_filter_wheel_position({1: 1})
-            self.emission_filter_wheel.close()
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.liveController_focus_camera.stop_live()
-            self.imageDisplayWindow_focus.close()
-
-        self.liveController.stop_live()
-        self.camera.stop_streaming()
-        self.camera.close()
-
-        # retract z
-        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-
-        # reset objective changer
-        if USE_XERYON:
-            self.objective_changer.moveToZero()
-
-        self.microcontroller.turn_off_all_pid()
-
-        if ENABLE_CELLX:
-            for channel in [1, 2, 3, 4]:
-                self.cellx.turn_off(channel)
-            self.cellx.close()
-
-        if RUN_FLUIDICS:
-            self.fluidics.close()
-
-        self.imageSaver.close()
-        self.imageDisplay.close()
-        if not SINGLE_WINDOW:
-            self.imageDisplayWindow.close()
-            self.imageArrayDisplayWindow.close()
-            self.tabbedImageDisplayWindow.close()
-
-        self.microcontroller.close()
         try:
             self.cswWindow.closeForReal(event)
         except AttributeError:

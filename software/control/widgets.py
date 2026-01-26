@@ -316,6 +316,29 @@ class NDViewerTab(QWidget):
     # Push-based API for live acquisition (no polling)
     # -------------------------------------------------------------------------
 
+    def _ensure_viewer_ready(self, context: str = "acquisition") -> bool:
+        """Ensure ndviewer_light is imported and viewer widget is created.
+
+        Args:
+            context: Description for logging (e.g., "acquisition", "zarr acquisition")
+
+        Returns:
+            True if viewer is ready, False if import or creation failed.
+        """
+        try:
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        if self._viewer is None:
+            self._log.debug(f"Creating new LightweightViewer for {context}")
+            self._viewer = ndviewer_light.LightweightViewer()
+            self._layout.addWidget(self._viewer, 1)
+
+        return True
+
     def start_acquisition(
         self,
         channels: List[str],
@@ -336,20 +359,10 @@ class NDViewerTab(QWidget):
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            # Lazy import
-            from control import ndviewer_light
-        except ImportError as e:
-            self._log.error(f"Failed to import ndviewer_light: {e}")
-            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+        if not self._ensure_viewer_ready("TIFF acquisition"):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for acquisition")
-                self._viewer = ndviewer_light.LightweightViewer()
-                self._layout.addWidget(self._viewer, 1)
-
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
@@ -419,6 +432,163 @@ class NDViewerTab(QWidget):
             self._log.debug("NDViewer acquisition ended")
         except Exception:
             self._log.exception("Failed to end NDViewer acquisition")
+
+    # -------------------------------------------------------------------------
+    # Zarr Push-based API for live acquisition (requires ndviewer_light zarr support)
+    # -------------------------------------------------------------------------
+
+    def start_zarr_acquisition(
+        self,
+        fov_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fov_labels: List[str],
+        height: int,
+        width: int,
+    ) -> bool:
+        """Configure viewer for zarr-based live acquisition (5D per-FOV mode).
+
+        Args:
+            fov_paths: List of zarr paths per FOV
+            channels: List of channel names
+            num_z: Number of z-levels
+            fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1"])
+            height: Image height in pixels
+            width: Image width in pixels
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self._ensure_viewer_ready("Zarr 5D acquisition"):
+            return False
+
+        try:
+            # Check if ndviewer_light has zarr support
+            if not hasattr(self._viewer, "start_zarr_acquisition"):
+                self._log.warning(
+                    "ndviewer_light doesn't support zarr push API. "
+                    "Live viewing not available for Zarr format. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: zarr live view requires ndviewer_light with zarr support.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+            self._log.info(
+                f"NDViewer configured for zarr acquisition: {len(channels)} channels, "
+                f"{num_z} z-levels, {len(fov_labels)} FOVs"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start zarr acquisition:\n{error_msg}")
+            return False
+
+    def start_zarr_acquisition_6d(
+        self,
+        region_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fovs_per_region: List[int],
+        height: int,
+        width: int,
+        region_labels: List[str],
+    ) -> bool:
+        """Configure viewer for 6D multi-region zarr acquisition.
+
+        Args:
+            region_paths: List of zarr paths (one per region)
+            channels: List of channel names
+            num_z: Number of z-levels
+            fovs_per_region: List of FOV counts per region
+            height: Image height in pixels
+            width: Image width in pixels
+            region_labels: List of region labels (e.g., ["region_1", "region_2"])
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self._ensure_viewer_ready("Zarr 6D acquisition"):
+            return False
+
+        try:
+            # Check if ndviewer_light has 6D regions support
+            if not hasattr(self._viewer, "start_zarr_acquisition_6d"):
+                self._log.warning(
+                    "ndviewer_light doesn't support 6D multi-region mode. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: 6D multi-region mode requires updated ndviewer_light.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition_6d(
+                region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+            )
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+
+            total_fovs = sum(fovs_per_region)
+            self._log.info(
+                f"NDViewer configured for 6D multi-region: {len(region_paths)} regions, "
+                f"{total_fovs} total FOVs, {len(channels)} channels, {num_z} z-levels"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start 6D multi-region zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start 6D regions acquisition:\n{error_msg}")
+            return False
+
+    def notify_zarr_frame(self, t: int, fov_idx: int, z: int, channel: str, region_idx: int = 0) -> None:
+        """Notify viewer that a zarr frame was written.
+
+        Called on main thread via Qt signal from worker thread.
+
+        Args:
+            t: Timepoint index
+            fov_idx: FOV index (local to region in 6D mode, flat index otherwise)
+            z: Z-level index
+            channel: Channel name
+            region_idx: Region index (only used in 6D multi-region mode)
+        """
+        self._log.debug(f"notify_zarr_frame called: t={t}, fov={fov_idx}, z={z}, ch={channel}")
+        if self._viewer is None:
+            self._log.warning("notify_zarr_frame: viewer is None")
+            return
+        try:
+            if hasattr(self._viewer, "notify_zarr_frame"):
+                self._viewer.notify_zarr_frame(t, fov_idx, z, channel, region_idx)
+            else:
+                self._log.warning("viewer doesn't have notify_zarr_frame method")
+        except Exception:
+            self._log.exception(
+                f"Failed to notify zarr frame: t={t}, fov={fov_idx}, z={z}, "
+                f"channel={channel}, region_idx={region_idx}"
+            )
+
+    def end_zarr_acquisition(self) -> None:
+        """Mark zarr acquisition as ended.
+
+        Call this when zarr acquisition completes. The viewer remains usable
+        for navigating the acquired data.
+        """
+        if self._viewer is None:
+            return
+        try:
+            if hasattr(self._viewer, "end_zarr_acquisition"):
+                self._viewer.end_zarr_acquisition()
+                self._log.debug("NDViewer zarr acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end zarr acquisition in NDViewer")
 
     def close(self) -> None:
         """Clean up viewer resources."""
@@ -841,12 +1011,13 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
-        self.setWindowTitle("Configuration")
+        self._on_restart = on_restart  # Optional callback for application restart
+        self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
         self._init_ui()
@@ -864,6 +1035,7 @@ class PreferencesDialog(QDialog):
         self._create_camera_tab()
         self._create_views_tab()
         self._create_advanced_tab()
+        self._create_development_tab()
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -884,10 +1056,28 @@ class PreferencesDialog(QDialog):
 
         # File Saving Format
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
         current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # Zarr Compression (only visible when ZARR_V3 is selected)
+        self.zarr_compression_combo = QComboBox()
+        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.setToolTip(
+            "none: No compression, maximum speed (~2x faster than TIFF)\n"
+            "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
+            "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
+            "best: blosc-zstd level 9, slower but best compression"
+        )
+        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
+        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_label = QLabel("Zarr Compression:")
+        layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
+
+        # Show/hide zarr options based on file saving format selection
+        self._update_zarr_options_visibility()
+        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -992,11 +1182,15 @@ class PreferencesDialog(QDialog):
         tab = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { background-color: palette(light); border: none; }"
+            "QScrollArea > QWidget > QWidget { background-color: palette(light); }"
+        )
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
 
         # Stage & Motion section (requires restart)
-        stage_group = CollapsibleGroupBox("Stage && Motion *")
+        stage_group = CollapsibleGroupBox("Stage && Motion *", collapsed=True)
         stage_layout = QFormLayout()
 
         self.max_vel_x = QDoubleSpinBox()
@@ -1056,8 +1250,37 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
+        # Zarr v3 Options section
+        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        zarr_layout = QFormLayout()
+
+        self.zarr_chunk_mode_combo = QComboBox()
+        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.setToolTip(
+            "full_frame: Each chunk is a full image plane (simplest, default)\n"
+            "tiled_512: 512x512 pixel chunks for tiled visualization\n"
+            "tiled_256: 256x256 pixel chunks for fine-grained streaming"
+        )
+        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
+        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
+
+        self.zarr_6d_fov_checkbox = QCheckBox()
+        self.zarr_6d_fov_checkbox.setToolTip(
+            "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
+            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
+            "all FOVs together. When disabled (default), creates separate 5D\n"
+            "OME-NGFF compliant zarr files per FOV."
+        )
+        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
+        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+
+        zarr_group.content.addLayout(zarr_layout)
+        layout.addWidget(zarr_group)
+
         # Contrast Autofocus section
-        af_group = CollapsibleGroupBox("Contrast Autofocus")
+        af_group = CollapsibleGroupBox("Contrast Autofocus", collapsed=True)
         af_layout = QFormLayout()
 
         self.af_stop_threshold = QDoubleSpinBox()
@@ -1082,7 +1305,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(af_group)
 
         # Hardware Configuration section
-        hw_group = CollapsibleGroupBox("Hardware Configuration")
+        hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
         self.z_motor_combo = QComboBox()
@@ -1121,43 +1344,74 @@ class PreferencesDialog(QDialog):
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
-        # Development Settings section
-        dev_group = CollapsibleGroupBox("Development Settings")
-        dev_layout = QFormLayout()
+        # Software Position Limits section
+        limits_group = CollapsibleGroupBox("Software Position Limits", collapsed=True)
+        limits_layout = QFormLayout()
 
-        self.simulated_io_checkbox = QCheckBox()
-        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
-        self.simulated_io_checkbox.setToolTip(
-            "When enabled, images are encoded to memory but NOT saved to disk.\n"
-            "Use this for development/testing to avoid SSD wear."
-        )
-        dev_layout.addRow("Simulated Disk I/O *:", self.simulated_io_checkbox)
+        self.limit_x_pos = QDoubleSpinBox()
+        self.limit_x_pos.setRange(0, 500)
+        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
+        self.limit_x_pos.setSuffix(" mm")
+        limits_layout.addRow("X Positive:", self.limit_x_pos)
 
-        self.simulated_io_speed_spinbox = QDoubleSpinBox()
-        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
-        self.simulated_io_speed_spinbox.setValue(
-            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
-        )
-        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
-        self.simulated_io_speed_spinbox.setToolTip(
-            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
-        )
-        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+        self.limit_x_neg = QDoubleSpinBox()
+        self.limit_x_neg.setRange(0, 500)
+        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
+        self.limit_x_neg.setSuffix(" mm")
+        limits_layout.addRow("X Negative:", self.limit_x_neg)
 
-        self.simulated_io_compression_checkbox = QCheckBox()
-        self.simulated_io_compression_checkbox.setChecked(
-            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
-        )
-        self.simulated_io_compression_checkbox.setToolTip(
-            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
-        )
-        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+        self.limit_y_pos = QDoubleSpinBox()
+        self.limit_y_pos.setRange(0, 500)
+        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
+        self.limit_y_pos.setSuffix(" mm")
+        limits_layout.addRow("Y Positive:", self.limit_y_pos)
 
-        dev_group.content.addLayout(dev_layout)
-        layout.addWidget(dev_group)
+        self.limit_y_neg = QDoubleSpinBox()
+        self.limit_y_neg.setRange(0, 500)
+        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
+        self.limit_y_neg.setSuffix(" mm")
+        limits_layout.addRow("Y Negative:", self.limit_y_neg)
+
+        self.limit_z_pos = QDoubleSpinBox()
+        self.limit_z_pos.setRange(0, 50)
+        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
+        self.limit_z_pos.setSuffix(" mm")
+        limits_layout.addRow("Z Positive:", self.limit_z_pos)
+
+        self.limit_z_neg = QDoubleSpinBox()
+        self.limit_z_neg.setRange(0, 50)
+        self.limit_z_neg.setDecimals(3)
+        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
+        self.limit_z_neg.setSuffix(" mm")
+        limits_layout.addRow("Z Negative:", self.limit_z_neg)
+
+        limits_group.content.addLayout(limits_layout)
+        layout.addWidget(limits_group)
+
+        # Tracking section (hidden - widgets exist for config persistence)
+        tracking_group = CollapsibleGroupBox("Tracking", collapsed=True)
+        tracking_layout = QFormLayout()
+
+        self.enable_tracking_checkbox = QCheckBox()
+        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
+        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
+
+        self.default_tracker_combo = QComboBox()
+        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
+        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
+        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
+
+        self.search_area_ratio = QSpinBox()
+        self.search_area_ratio.setRange(1, 50)
+        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
+        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
+
+        tracking_group.content.addLayout(tracking_layout)
+        layout.addWidget(tracking_group)
+        tracking_group.hide()  # Hidden but widgets exist for config save/load
 
         # Acquisition Throttling section
-        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling", collapsed=True)
         throttle_layout = QFormLayout()
 
         self.throttling_enabled_checkbox = QCheckBox()
@@ -1214,73 +1468,8 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
-        # Software Position Limits section
-        limits_group = CollapsibleGroupBox("Software Position Limits")
-        limits_layout = QFormLayout()
-
-        self.limit_x_pos = QDoubleSpinBox()
-        self.limit_x_pos.setRange(0, 500)
-        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
-        self.limit_x_pos.setSuffix(" mm")
-        limits_layout.addRow("X Positive:", self.limit_x_pos)
-
-        self.limit_x_neg = QDoubleSpinBox()
-        self.limit_x_neg.setRange(0, 500)
-        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
-        self.limit_x_neg.setSuffix(" mm")
-        limits_layout.addRow("X Negative:", self.limit_x_neg)
-
-        self.limit_y_pos = QDoubleSpinBox()
-        self.limit_y_pos.setRange(0, 500)
-        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
-        self.limit_y_pos.setSuffix(" mm")
-        limits_layout.addRow("Y Positive:", self.limit_y_pos)
-
-        self.limit_y_neg = QDoubleSpinBox()
-        self.limit_y_neg.setRange(0, 500)
-        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
-        self.limit_y_neg.setSuffix(" mm")
-        limits_layout.addRow("Y Negative:", self.limit_y_neg)
-
-        self.limit_z_pos = QDoubleSpinBox()
-        self.limit_z_pos.setRange(0, 50)
-        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
-        self.limit_z_pos.setSuffix(" mm")
-        limits_layout.addRow("Z Positive:", self.limit_z_pos)
-
-        self.limit_z_neg = QDoubleSpinBox()
-        self.limit_z_neg.setRange(0, 50)
-        self.limit_z_neg.setDecimals(3)
-        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
-        self.limit_z_neg.setSuffix(" mm")
-        limits_layout.addRow("Z Negative:", self.limit_z_neg)
-
-        limits_group.content.addLayout(limits_layout)
-        layout.addWidget(limits_group)
-
-        # Tracking section
-        tracking_group = CollapsibleGroupBox("Tracking")
-        tracking_layout = QFormLayout()
-
-        self.enable_tracking_checkbox = QCheckBox()
-        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
-        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
-
-        self.default_tracker_combo = QComboBox()
-        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
-        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
-        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
-
-        self.search_area_ratio = QSpinBox()
-        self.search_area_ratio.setRange(1, 50)
-        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
-        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
-
-        tracking_group.content.addLayout(tracking_layout)
-        layout.addWidget(tracking_group)
-
         # Diagnostics section
-        diagnostics_group = CollapsibleGroupBox("Diagnostics")
+        diagnostics_group = CollapsibleGroupBox("Diagnostics", collapsed=True)
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
@@ -1295,6 +1484,19 @@ class PreferencesDialog(QDialog):
 
         diagnostics_group.content.addLayout(diagnostics_layout)
         layout.addWidget(diagnostics_group)
+
+        # Developer Options section
+        dev_options_group = CollapsibleGroupBox("Developer Options", collapsed=True)
+        dev_options_layout = QFormLayout()
+
+        self.show_dev_tab_checkbox = QCheckBox()
+        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
+        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
+        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
+        dev_options_layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
+
+        dev_options_group.content.addLayout(dev_options_layout)
+        layout.addWidget(dev_options_group)
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
@@ -1421,6 +1623,107 @@ class PreferencesDialog(QDialog):
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
+    def _create_development_tab(self):
+        """Create the Development tab for development/testing settings."""
+        self.dev_tab = QWidget()
+        layout = QVBoxLayout(self.dev_tab)
+        layout.setSpacing(10)
+
+        # Use Simulated Hardware section
+        hw_sim_group = CollapsibleGroupBox("Use Simulated Hardware *")
+        hw_sim_layout = QFormLayout()
+
+        # Helper to create simulation checkboxes
+        def create_sim_checkbox(config_key):
+            checkbox = QCheckBox()
+            current = self._get_config_value("SIMULATION", config_key, "false").lower()
+            checkbox.setChecked(current in ("true", "1", "yes", "simulate"))
+            return checkbox
+
+        sim_tooltip = "Simulate this component (even without --simulation flag).\nWith --simulation flag, ALL components are always simulated."
+
+        self.sim_camera_checkbox = create_sim_checkbox("simulate_camera")
+        self.sim_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Camera:", self.sim_camera_checkbox)
+
+        self.sim_mcu_checkbox = create_sim_checkbox("simulate_microcontroller")
+        self.sim_mcu_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate MCU/Stage:", self.sim_mcu_checkbox)
+
+        self.sim_spinning_disk_checkbox = create_sim_checkbox("simulate_spinning_disk")
+        self.sim_spinning_disk_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Spinning Disk:", self.sim_spinning_disk_checkbox)
+
+        self.sim_filter_wheel_checkbox = create_sim_checkbox("simulate_filter_wheel")
+        self.sim_filter_wheel_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Filter Wheel:", self.sim_filter_wheel_checkbox)
+
+        self.sim_objective_changer_checkbox = create_sim_checkbox("simulate_objective_changer")
+        self.sim_objective_changer_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Objective Changer:", self.sim_objective_changer_checkbox)
+
+        self.sim_laser_af_camera_checkbox = create_sim_checkbox("simulate_laser_af_camera")
+        self.sim_laser_af_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Laser AF Camera:", self.sim_laser_af_camera_checkbox)
+
+        hw_sim_group.content.addLayout(hw_sim_layout)
+        layout.addWidget(hw_sim_group)
+
+        # Simulated Disk I/O section
+        dev_group = CollapsibleGroupBox("Simulated Disk I/O *")
+        dev_layout = QFormLayout()
+
+        self.simulated_io_checkbox = QCheckBox()
+        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
+        self.simulated_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this for development/testing to avoid SSD wear."
+        )
+        dev_layout.addRow("Enable Simulated Disk I/O:", self.simulated_io_checkbox)
+
+        self.simulated_io_speed_spinbox = QDoubleSpinBox()
+        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_io_speed_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_io_speed_spinbox.setToolTip(
+            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+
+        self.simulated_io_compression_checkbox = QCheckBox()
+        self.simulated_io_compression_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        )
+        self.simulated_io_compression_checkbox.setToolTip(
+            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
+        )
+        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
+        # Legend
+        legend_label = QLabel("* Requires software restart to take effect")
+        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(legend_label)
+
+        layout.addStretch()
+        self._dev_tab_index = self.tab_widget.addTab(self.dev_tab, "Dev")
+
+        # Initially hide if not enabled
+        if not self._get_config_bool("GENERAL", "show_dev_tab", False):
+            self.tab_widget.setTabVisible(self._dev_tab_index, False)
+
+    def _toggle_dev_tab_visibility(self, state):
+        """Show or hide the Dev tab based on checkbox state."""
+        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
+        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
+        state_value = getattr(state, "value", state)
+        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
+        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
+
     def _get_config_value(self, section, option, default=""):
         try:
             return self.config.get(section, option)
@@ -1458,6 +1761,12 @@ class PreferencesDialog(QDialog):
             else:
                 QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
+    def _update_zarr_options_visibility(self):
+        """Show/hide zarr options based on file saving format."""
+        is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
+        self.zarr_compression_label.setVisible(is_zarr)
+        self.zarr_compression_combo.setVisible(is_zarr)
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
@@ -1471,7 +1780,13 @@ class PreferencesDialog(QDialog):
 
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
+        self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
+        self.config.set(
+            "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
+        )
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1549,7 +1864,7 @@ class PreferencesDialog(QDialog):
         self.config.set("SOFTWARE_POS_LIMIT", "z_positive", str(self.limit_z_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
 
-        # Advanced - Tracking
+        # Advanced - Tracking (hidden but still saved)
         self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
@@ -1586,6 +1901,21 @@ class PreferencesDialog(QDialog):
             "VIEWS",
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
+        )
+
+        # Hardware Simulation settings (in [SIMULATION] section)
+        self._ensure_section("SIMULATION")
+        self.config.set("SIMULATION", "simulate_camera", str(self.sim_camera_checkbox.isChecked()).lower())
+        self.config.set("SIMULATION", "simulate_microcontroller", str(self.sim_mcu_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_spinning_disk", str(self.sim_spinning_disk_checkbox.isChecked()).lower()
+        )
+        self.config.set("SIMULATION", "simulate_filter_wheel", str(self.sim_filter_wheel_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_objective_changer", str(self.sim_objective_changer_checkbox.isChecked()).lower()
+        )
+        self.config.set(
+            "SIMULATION", "simulate_laser_af_camera", str(self.sim_laser_af_camera_checkbox.isChecked()).lower()
         )
 
         # Save to file
@@ -1625,6 +1955,19 @@ class PreferencesDialog(QDialog):
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
             self.file_saving_combo.currentText()
         )
+
+        # Zarr compression (only applicable when using ZARR_V3)
+        control._def.ZARR_COMPRESSION = control._def.ZarrCompression.convert_to_enum(
+            self.zarr_compression_combo.currentText()
+        )
+
+        # Zarr chunk mode
+        control._def.ZARR_CHUNK_MODE = control._def.ZarrChunkMode.convert_to_enum(
+            self.zarr_chunk_mode_combo.currentText()
+        )
+
+        # Zarr 6D FOV dimension
+        control._def.ZARR_USE_6D_FOV_DIMENSION = self.zarr_6d_fov_checkbox.isChecked()
 
         # Default saving path
         control._def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
@@ -1667,7 +2010,7 @@ class PreferencesDialog(QDialog):
         control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
         control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
 
-        # Tracking settings
+        # Tracking settings (hidden but still updated)
         control._def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
         control._def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
         control._def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
@@ -1708,10 +2051,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
 
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        new_val = self.zarr_6d_fov_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "show_dev_tab", False)
+        new_val = self.show_dev_tab_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
@@ -1922,7 +2275,7 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
-        # Advanced - Tracking (live update)
+        # Advanced - Tracking (hidden but still tracked)
         old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
         new_val = self.enable_tracking_checkbox.isChecked()
         if old_val != new_val:
@@ -1993,7 +2346,72 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
+        # Hardware Simulation settings (require restart)
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
+        new_val = self.sim_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Camera *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "false").lower() == "true"
+        new_val = self.sim_mcu_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate MCU/Stage *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "false").lower() == "true"
+        new_val = self.sim_spinning_disk_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Spinning Disk *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "false").lower() == "true"
+        new_val = self.sim_filter_wheel_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Filter Wheel *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "false").lower() == "true"
+        new_val = self.sim_objective_changer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Objective Changer *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false").lower() == "true"
+        new_val = self.sim_laser_af_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Laser AF Camera *", str(old_val), str(new_val), True))
+
         return changes
+
+    def _offer_restart_dialog(self):
+        """Show a dialog offering to restart the application now."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Restart Required")
+        msg.setText("Settings have been saved. This change requires a restart to take effect.")
+        msg.setInformativeText("Would you like to restart now?")
+        msg.setIcon(QMessageBox.Information)
+        restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+        msg.addButton("Later", QMessageBox.RejectRole)
+        msg.exec_()
+        if msg.clickedButton() == restart_btn:
+            self._trigger_restart()
+
+    def _trigger_restart(self):
+        """Trigger application restart via callback."""
+        if self._on_restart:
+            try:
+                self._on_restart()
+            except Exception as e:
+                self._log.exception("Failed to restart application")
+                QMessageBox.warning(
+                    self,
+                    "Restart Failed",
+                    f"An error occurred while trying to restart the application.\n\n"
+                    f"Error: {e}\n\nPlease restart the application manually.",
+                )
+        else:
+            self._log.error("No restart callback configured")
+            QMessageBox.warning(
+                self,
+                "Restart Failed",
+                "Could not trigger automatic restart.\nPlease restart the application manually.",
+            )
 
     def _save_and_close(self):
         changes = self._get_changes()
@@ -2010,9 +2428,7 @@ class PreferencesDialog(QDialog):
             if not self._apply_settings():
                 return  # Save failed, dialog stays open
             if requires_restart:
-                QMessageBox.information(
-                    self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
-                )
+                self._offer_restart_dialog()
             self.accept()
             return
 
@@ -2050,6 +2466,21 @@ class PreferencesDialog(QDialog):
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
+
+        # Track which button was clicked
+        dialog.restart_requested = False
+
+        if requires_restart:
+            save_restart_btn = QPushButton("Save and Restart")
+            save_restart_btn.setToolTip("Save settings and restart the application now")
+
+            def on_save_restart():
+                dialog.restart_requested = True
+                dialog.accept()
+
+            save_restart_btn.clicked.connect(on_save_restart)
+            button_layout.addWidget(save_restart_btn)
+
         save_btn = QPushButton("Save")
         cancel_btn = QPushButton("Cancel")
         save_btn.clicked.connect(dialog.accept)
@@ -2060,6 +2491,8 @@ class PreferencesDialog(QDialog):
 
         if dialog.exec_() == QDialog.Accepted:
             if self._apply_settings():
+                if dialog.restart_requested:
+                    self._trigger_restart()
                 self.accept()
             # If save failed, dialog stays open (error already shown)
 
@@ -2629,6 +3062,8 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
         self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setValue(self.xlight.get_filter_slider())
 
         self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -2643,7 +3078,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
-        self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
             illumination_iris = self.xlight.illumination_iris
@@ -2700,13 +3136,13 @@ class SpinningDiskConfocalWidget(QWidget):
 
         filterSliderLayout = QHBoxLayout()
         filterSliderLayout.addWidget(QLabel("Filter Slider"))
-        # self.dropdown_filter_slider = QComboBox(self)
-        # self.dropdown_filter_slider.addItems(["0", "1", "2", "3"])
-        self.dropdown_filter_slider = QSlider(Qt.Horizontal)
-        self.dropdown_filter_slider.setRange(0, 3)
-        self.dropdown_filter_slider.setTickPosition(QSlider.TicksBelow)
-        self.dropdown_filter_slider.setTickInterval(1)
-        filterSliderLayout.addWidget(self.dropdown_filter_slider)
+        # self.filter_slider = QComboBox(self)
+        # self.filter_slider.addItems(["0", "1", "2", "3"])
+        self.filter_slider = QSlider(Qt.Horizontal)
+        self.filter_slider.setRange(0, 3)
+        self.filter_slider.setTickPosition(QSlider.TicksBelow)
+        self.filter_slider.setTickInterval(1)
+        filterSliderLayout.addWidget(self.filter_slider)
 
         self.btn_toggle_widefield = QPushButton("Switch to Confocal")
 
@@ -2739,6 +3175,7 @@ class SpinningDiskConfocalWidget(QWidget):
         layout.setColumnStretch(3, 1)
         self.setLayout(layout)
 
+    @Slot(bool)
     def enable_all_buttons(self, enable: bool):
         self.dropdown_emission_filter.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
@@ -2748,7 +3185,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_illumination_iris.setEnabled(enable)
         self.slider_emission_iris.setEnabled(enable)
         self.spinbox_emission_iris.setEnabled(enable)
-        self.dropdown_filter_slider.setEnabled(enable)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setEnabled(enable)
 
     def block_iris_control_signals(self, block: bool):
         self.slider_illumination_iris.blockSignals(block)
@@ -2758,22 +3196,33 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def toggle_disk_position(self):
         self.enable_all_buttons(False)
-        if self.disk_position_state == 1:
-            self.disk_position_state = self.xlight.set_disk_position(0)
-            self.btn_toggle_widefield.setText("Switch to Confocal")
-        else:
-            self.disk_position_state = self.xlight.set_disk_position(1)
+        target_position = 0 if self.disk_position_state == 1 else 1
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(
+                self, "_on_disk_position_toggled", Qt.QueuedConnection, Q_ARG(int, target_position)
+            )
+
+        utils.threaded_operation_helper(self.xlight.set_disk_position, on_finished, position=target_position)
+
+    @Slot(int)
+    def _on_disk_position_toggled(self, position):
+        self.disk_position_state = position
+        if position == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
+        else:
+            self.btn_toggle_widefield.setText("Switch to Confocal")
         self.enable_all_buttons(True)
         self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
 
     def toggle_motor(self):
         self.enable_all_buttons(False)
-        if self.btn_toggle_motor.isChecked():
-            self.xlight.set_disk_motor_state(True)
-        else:
-            self.xlight.set_disk_motor_state(False)
-        self.enable_all_buttons(True)
+        state = self.btn_toggle_motor.isChecked()
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_disk_motor_state, on_finished, state=state)
 
     def set_emission_filter(self, index):
         self.enable_all_buttons(False)
@@ -2813,9 +3262,12 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def set_filter_slider(self, index):
         self.enable_all_buttons(False)
-        position = str(self.dropdown_filter_slider.value())
-        self.xlight.set_filter_slider(position)
-        self.enable_all_buttons(True)
+        position = str(self.filter_slider.value())
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_filter_slider, on_finished, position=position)
 
     def get_confocal_mode(self) -> bool:
         """Get current confocal mode state.
@@ -11250,6 +11702,20 @@ class NapariMosaicDisplayWidget(QWidget):
     def activate(self):
         self.viewer.window.activate()
 
+    def get_screenshot(self) -> Optional[np.ndarray]:
+        """Capture the current mosaic view as a numpy array.
+
+        Returns:
+            RGB image array of the current view, or None if no layers exist.
+        """
+        if not self.layers_initialized:
+            return None
+        try:
+            # Use napari's screenshot functionality
+            return self.viewer.screenshot(canvas_only=True)
+        except Exception:
+            return None
+
 
 class NapariPlateViewWidget(QWidget):
     """Widget for displaying downsampled plate view with multi-channel support.
@@ -15854,3 +16320,467 @@ class FilterWheelConfiguratorDialog(QDialog):
         except Exception as e:
             self._log.exception(f"Unexpected error saving filter wheel config: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")
+
+
+class _QtLogSignalHolder(QObject):
+    """QObject that holds the signal for QtLoggingHandler.
+
+    Defined at module level to avoid dynamic class creation.
+    """
+
+    message_logged = Signal(int, str, str)  # level, logger_name, message
+
+
+class QtLoggingHandler(logging.Handler):
+    """Logging handler that emits Qt signals for WARNING+ messages.
+
+    Thread-safe: Qt signal system handles cross-thread delivery automatically.
+    Used by WarningErrorWidget to display warnings/errors in the status bar.
+    """
+
+    def __init__(self, min_level: int = logging.WARNING):
+        super().__init__()
+        self.setLevel(min_level)
+        self._signal_holder = _QtLogSignalHolder()
+        self.setFormatter(logging.Formatter(fmt=squid.logging.LOG_FORMAT, datefmt=squid.logging.LOG_DATEFORMAT))
+        # Intentionally reuse the private thread_id filter from squid.logging for consistent
+        # formatting across all log handlers. This creates a controlled dependency on
+        # squid.logging's internal API.
+        self.addFilter(squid.logging._thread_id_filter)
+
+    @property
+    def signal_message_logged(self):
+        return self._signal_holder.message_logged
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self._signal_holder.message_logged.emit(record.levelno, record.name, msg)
+        except Exception:
+            self.handleError(record)
+
+
+class WarningErrorWidget(QWidget):
+    """Status bar widget displaying logged warnings and errors.
+
+    Features:
+    - Color-coded: yellow for warnings, red for errors
+    - Shows timestamp for each message
+    - Expandable popup showing all messages when multiple exist
+    - Deduplication: repeated identical messages show count instead of duplicates
+    - Rate limiting: max 10 messages per second to prevent GUI freeze
+    """
+
+    MAX_MESSAGES = 100  # Prevent unbounded memory growth
+    RATE_LIMIT_WINDOW_MS = 1000  # 1 second window
+    RATE_LIMIT_MAX_MESSAGES = 10  # Max messages per window
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # List of dicts with keys: id, level, logger_name, message, count, datetime
+        self._messages = []
+        self._next_message_id = 0
+        self._rate_limit_timestamps = []  # For rate limiting
+        self._dropped_count = 0  # Track rate-limited messages
+        self._popup = None
+        self._setup_ui()
+
+    def closeEvent(self, event):
+        """Clean up popup when widget is closed."""
+        self._cleanup_popup()
+        super().closeEvent(event)
+
+    def _cleanup_popup(self):
+        """Safely clean up popup if it exists."""
+        if self._popup is not None:
+            try:
+                self._popup.hide()
+                self._popup.deleteLater()
+            except RuntimeError:
+                # Popup may already be deleted
+                pass
+            self._popup = None
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(6)
+
+        # Level icon (warning/error indicator) - circular badge
+        self.label_icon = QLabel()
+        self.label_icon.setFixedSize(20, 20)
+        self.label_icon.setAlignment(Qt.AlignCenter)
+
+        # Message text
+        self.label_text = QLabel()
+
+        # Expand button (shows when multiple messages or dropped messages)
+        self.btn_expand = QPushButton()
+        self.btn_expand.setFixedHeight(18)
+        self.btn_expand.setMinimumWidth(32)  # Allow width to grow for longer text
+        self.btn_expand.setCursor(Qt.PointingHandCursor)
+        self.btn_expand.setStyleSheet(
+            "QPushButton { background-color: #666; color: white; border-radius: 9px; "
+            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
+            "QPushButton:hover { background-color: #444; }"
+            "QPushButton:pressed { background-color: #222; }"
+        )
+        self.btn_expand.clicked.connect(self._on_expand_clicked)
+        self.btn_expand.setVisible(False)
+
+        # Dismiss button (X)
+        self.btn_dismiss = QPushButton("✕")
+        self.btn_dismiss.setFixedSize(18, 18)
+        self.btn_dismiss.setCursor(Qt.PointingHandCursor)
+        self.btn_dismiss.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #888; font-size: 14px; padding: 0px; }"
+            "QPushButton:hover { color: #000; }"
+        )
+        self.btn_dismiss.clicked.connect(self.dismiss_current)
+
+        layout.addWidget(self.label_icon)
+        layout.addWidget(self.label_text)
+        layout.addWidget(self.btn_expand)
+        layout.addWidget(self.btn_dismiss)
+        layout.addStretch()  # Push everything to the left
+
+    def _on_expand_clicked(self):
+        """Handle expand button click."""
+        self._toggle_popup()
+
+    def _toggle_popup(self):
+        """Toggle the popup showing all messages."""
+        if self._popup is not None and self._popup.isVisible():
+            self._cleanup_popup()
+            return
+        self._show_popup()
+
+    def _show_popup(self):
+        """Show popup with scrollable list of all messages."""
+        # Recreate popup each time to ensure fresh state
+        self._cleanup_popup()
+
+        self._popup = QFrame(self.window(), Qt.Popup | Qt.FramelessWindowHint)
+        self._popup.setStyleSheet("QFrame { background-color: white; border: 1px solid #aaa; border-radius: 6px; }")
+
+        popup_layout = QVBoxLayout(self._popup)
+        popup_layout.setContentsMargins(0, 0, 0, 0)
+        popup_layout.setSpacing(0)
+
+        # Header with title and Clear All button
+        header = QWidget()
+        header.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_label = QLabel(f"<b>Warnings & Errors</b> ({len(self._messages)})")
+        btn_clear = QPushButton("Clear All")
+        btn_clear.setCursor(Qt.PointingHandCursor)
+        btn_clear.setStyleSheet(
+            "QPushButton { background-color: #e74c3c; color: white; border: none; "
+            "border-radius: 4px; padding: 4px 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #c0392b; }"
+        )
+        btn_clear.clicked.connect(self._clear_all_from_popup)
+        header_layout.addWidget(header_label)
+        header_layout.addStretch()
+        header_layout.addWidget(btn_clear)
+        popup_layout.addWidget(header)
+
+        # Scrollable list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("QScrollArea { border: none; background: white; }")
+
+        list_widget = QWidget()
+        list_widget.setStyleSheet("background: white;")
+        list_layout = QVBoxLayout(list_widget)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(0)
+
+        # Add messages (newest first) - use message ID for dismiss callback
+        for msg in reversed(self._messages):
+            item_widget = self._create_popup_item(msg)
+            list_layout.addWidget(item_widget)
+
+        list_layout.addStretch()
+        scroll.setWidget(list_widget)
+        popup_layout.addWidget(scroll)
+
+        # Size and position
+        self._popup.setFixedWidth(550)
+        self._popup.setMinimumHeight(100)
+        self._popup.setMaximumHeight(350)
+
+        # Position above this widget (popup appears above status bar)
+        # with bounds checking to stay on screen
+        global_pos = self.mapToGlobal(QPoint(0, 0))
+        popup_height = min(350, 50 + len(self._messages) * 60)
+        self._popup.setFixedHeight(popup_height)
+
+        # Calculate position, ensuring popup stays on screen
+        popup_x = global_pos.x()
+        popup_y = global_pos.y() - popup_height - 5
+
+        # Get available screen geometry
+        from qtpy.QtWidgets import QApplication
+
+        screen = QApplication.screenAt(global_pos)
+        if screen is not None:
+            screen_geo = screen.availableGeometry()
+            # Ensure popup doesn't go above screen top
+            if popup_y < screen_geo.top():
+                # Show below the widget instead
+                popup_y = global_pos.y() + self.height() + 5
+            # Ensure popup doesn't go off right edge (and not past left edge on narrow screens)
+            if popup_x + 550 > screen_geo.right():
+                popup_x = max(screen_geo.left(), screen_geo.right() - 550)
+
+        self._popup.move(popup_x, popup_y)
+        self._popup.show()
+
+    def _create_popup_item(self, msg: dict) -> QWidget:
+        """Create a single item widget for the popup list."""
+        level = msg["level"]
+        message = msg["message"]
+        count = msg["count"]
+        dt = msg["datetime"]
+        msg_id = msg["id"]
+
+        item = QWidget()
+        is_error = level >= logging.ERROR
+        bg_color = "#fef2f2" if is_error else "#fefce8"
+        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid #eee;")
+
+        layout = QHBoxLayout(item)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        # Level indicator
+        icon_label = QLabel("⬤")
+        icon_color = "#dc2626" if is_error else "#ca8a04"
+        icon_label.setStyleSheet(f"color: {icon_color}; font-size: 8px;")
+        icon_label.setFixedWidth(14)
+        icon_label.setAlignment(Qt.AlignCenter)
+
+        # Date/Time - show full date and time
+        time_str = dt.strftime("%m/%d %H:%M:%S")
+        time_label = QLabel(time_str)
+        time_label.setStyleSheet("color: #666; font-size: 11px; font-family: monospace;")
+        time_label.setFixedWidth(90)
+
+        # Message (allow wrapping)
+        core_msg = self._extract_core_message(message)
+        if count > 1:
+            core_msg = f"{core_msg} <b style='color: #666;'>(×{count})</b>"
+        msg_label = QLabel(core_msg)
+        msg_label.setWordWrap(True)
+        msg_label.setStyleSheet("font-size: 12px; color: #333;")
+        msg_label.setTextFormat(Qt.RichText)
+
+        # Dismiss button - use message ID for stable reference
+        btn_dismiss = QPushButton("✕")
+        btn_dismiss.setFixedSize(20, 20)
+        btn_dismiss.setCursor(Qt.PointingHandCursor)
+        btn_dismiss.setStyleSheet(
+            "QPushButton { background: #ddd; border: none; color: #666; border-radius: 10px; font-size: 12px; }"
+            "QPushButton:hover { background: #ccc; color: #333; }"
+        )
+        btn_dismiss.clicked.connect(lambda checked, mid=msg_id: self._dismiss_by_id(mid))
+
+        layout.addWidget(icon_label, 0, Qt.AlignTop)
+        layout.addWidget(time_label, 0, Qt.AlignTop)
+        layout.addWidget(msg_label, 1)
+        layout.addWidget(btn_dismiss, 0, Qt.AlignTop)
+
+        return item
+
+    def _dismiss_by_id(self, msg_id: int):
+        """Dismiss a message by its unique ID."""
+        for i, msg in enumerate(self._messages):
+            if msg["id"] == msg_id:
+                self._messages.pop(i)
+                self._update_display()
+                if self._popup is not None:
+                    if self._messages:
+                        # Refresh popup with updated list
+                        self._cleanup_popup()
+                        self._show_popup()
+                    else:
+                        self._cleanup_popup()
+                return
+
+    def _clear_all_from_popup(self):
+        """Clear all messages and close popup."""
+        self.clear_all()
+        self._cleanup_popup()
+
+    def add_message(self, level: int, logger_name: str, message: str):
+        """Add a new warning/error message to the queue."""
+        # Rate limiting - but never rate-limit ERROR or higher (they're too important to drop)
+        now_ms = time.time() * 1000
+        cutoff = now_ms - self.RATE_LIMIT_WINDOW_MS
+        self._rate_limit_timestamps = [t for t in self._rate_limit_timestamps if t > cutoff]
+
+        if level < logging.ERROR and len(self._rate_limit_timestamps) >= self.RATE_LIMIT_MAX_MESSAGES:
+            self._dropped_count += 1
+            self._update_display()  # Update to show dropped count
+            return  # Rate limited
+
+        # Extract datetime from message or use current time
+        dt = self._extract_datetime(message)
+
+        # Deduplication - check if identical message already exists
+        # Note: duplicates don't consume rate limit slots since they don't create new entries
+        core_msg = self._extract_core_message(message)
+        for i, msg in enumerate(self._messages):
+            if self._extract_core_message(msg["message"]) == core_msg and msg["level"] == level:
+                # Update with new datetime and increment count
+                msg["datetime"] = dt
+                msg["count"] += 1
+                msg["message"] = message  # Update to latest message text
+                self._messages.append(self._messages.pop(i))  # Move to end
+                self._update_display()
+                return
+
+        # New message - consume rate limit slot and assign unique ID
+        self._rate_limit_timestamps.append(now_ms)
+        if len(self._messages) >= self.MAX_MESSAGES:
+            self._messages.pop(0)
+
+        new_msg = {
+            "id": self._next_message_id,
+            "level": level,
+            "logger_name": logger_name,
+            "message": message,
+            "count": 1,
+            "datetime": dt,
+        }
+        self._next_message_id += 1
+        self._messages.append(new_msg)
+        self._update_display()
+
+    def dismiss_current(self):
+        """Dismiss the most recent message."""
+        if self._messages:
+            self._messages.pop()
+            self._update_display()
+
+    def clear_all(self):
+        """Clear all messages and reset dropped count."""
+        self._messages.clear()
+        self._dropped_count = 0
+        self._update_display()
+
+    def get_dropped_count(self) -> int:
+        """Return the number of messages dropped due to rate limiting."""
+        return self._dropped_count
+
+    def has_messages(self) -> bool:
+        """Return True if there are pending messages."""
+        return len(self._messages) > 0
+
+    def _update_display(self):
+        """Update the main widget display."""
+        if not self._messages:
+            self.setVisible(False)
+            return
+
+        self.setVisible(True)
+        msg = self._messages[-1]
+        level = msg["level"]
+        message = msg["message"]
+        count = msg["count"]
+        dt = msg["datetime"]
+        is_error = level >= logging.ERROR
+
+        # Colors
+        if is_error:
+            bg_color = "#fef2f2"
+            text_color = "#b91c1c"
+            icon_text = "✕"
+            icon_style = (
+                "background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 10px;"
+            )
+        else:
+            bg_color = "#fefce8"
+            text_color = "#a16207"
+            icon_text = "!"
+            icon_style = (
+                "background-color: #eab308; color: white; font-weight: bold; font-size: 14px; border-radius: 10px;"
+            )
+
+        self.setStyleSheet(f"background-color: {bg_color}; border-radius: 4px;")
+        self.label_icon.setText(icon_text)
+        self.label_icon.setStyleSheet(icon_style)
+
+        # Format message with compact time (HH:MM only)
+        time_str = dt.strftime("%H:%M")
+        display_msg = self._format_display_message(message)
+        if count > 1:
+            display_msg = f"[{time_str}] {display_msg} (×{count})"
+        else:
+            display_msg = f"[{time_str}] {display_msg}"
+        self.label_text.setText(display_msg)
+        self.label_text.setStyleSheet(f"color: {text_color}; font-weight: bold;")
+
+        # Tooltip shows full message with date and dropped count if any
+        full_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+        tooltip = f"{full_time}\n{self._extract_core_message(message)}"
+        if self._dropped_count > 0:
+            tooltip += f"\n\n⚠ {self._dropped_count} message(s) dropped due to rate limiting"
+        self.setToolTip(tooltip)
+
+        # Show expand button if multiple messages or dropped messages
+        msg_count = len(self._messages)
+        if msg_count > 1 or self._dropped_count > 0:
+            if self._dropped_count > 0:
+                # Show both additional messages and dropped count
+                extra = msg_count - 1
+                if extra > 0:
+                    self.btn_expand.setText(f"+{extra} ({self._dropped_count}⚠)")
+                else:
+                    self.btn_expand.setText(f"({self._dropped_count}⚠)")
+            else:
+                self.btn_expand.setText(f"+{msg_count - 1}")
+            self.btn_expand.setVisible(True)
+        else:
+            self.btn_expand.setVisible(False)
+
+    def _extract_datetime(self, message: str) -> datetime:
+        """Extract datetime from log message."""
+        # Format: "2026-01-22 23:44:23.123 - ..."
+        try:
+            if " - " in message:
+                datetime_part = message.split(" - ")[0]
+                # Parse "2026-01-22 23:44:23.123"
+                if "." in datetime_part:
+                    datetime_part = datetime_part.rsplit(".", 1)[0]
+                return datetime.strptime(datetime_part, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, IndexError):
+            # Timestamp is optional - fall back to current time if parsing fails
+            pass
+        return datetime.now()
+
+    # Pattern to match file location suffix like " (widgets.py:123)"
+    _FILE_LOCATION_PATTERN = re.compile(r" \([^)]+:\d+\)$")
+
+    def _extract_core_message(self, message: str) -> str:
+        """Extract core message content (without timestamp/thread/location)."""
+        for marker in [" - WARNING - ", " - ERROR - ", " - CRITICAL - "]:
+            if marker in message:
+                parts = message.split(marker, 1)
+                if len(parts) > 1:
+                    msg = parts[1]
+                    # Strip file location suffix like " (widgets.py:123)" but not arbitrary parentheses
+                    msg = self._FILE_LOCATION_PATTERN.sub("", msg)
+                    return msg
+        return message
+
+    def _format_display_message(self, message: str) -> str:
+        """Format message for single-line display."""
+        msg = self._extract_core_message(message)
+        if len(msg) > 60:
+            msg = msg[:57] + "..."
+        return msg
