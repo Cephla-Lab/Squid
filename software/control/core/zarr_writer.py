@@ -707,7 +707,10 @@ class ZarrWriter:
         # Wait for write to complete (blocking)
         # TensorStore futures have a .result() method that blocks until complete
         future.result()
-        log.debug(f"Write complete")
+        if config.ndim == 5:
+            log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
+        else:
+            log.debug(f"Write complete for frame fov={fov}, t={t}, c={c}, z={z}")
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
