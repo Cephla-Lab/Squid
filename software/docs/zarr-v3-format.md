@@ -160,7 +160,7 @@ See [NDViewer Tab](ndviewer-tab.md) for details on live viewing.
 ```python
 import zarr
 
-# Open zarr v3 store (requires zarr>=3.0)
+# Open zarr v3 store (requires zarr>=3.0 and Python >=3.11)
 store = zarr.open_group("path/to/plate.ome.zarr/A/1/0")
 data = store["0"][:]  # Read the 5D array
 ```
