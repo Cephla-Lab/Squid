@@ -468,6 +468,17 @@ class ZarrWriterInfo:
 
 
 @dataclass
+class ZarrWriteResult:
+    """Result from a SaveZarrJob, containing frame info for viewer notification."""
+
+    fov: int
+    time_point: int
+    z_index: int
+    channel_name: str
+    region_idx: int = 0
+
+
+@dataclass
 class SaveZarrJob(Job):
     """Job for saving images to Zarr v3 format using TensorStore.
 
@@ -563,7 +574,7 @@ class SaveZarrJob(Job):
             self._hcs_wells_written.add(well_path)
             self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
-    def run(self) -> bool:
+    def run(self) -> ZarrWriteResult:
         if self.zarr_writer_info is None:
             raise ValueError(
                 "SaveZarrJob.run() requires zarr_writer_info but it is None. "
@@ -580,6 +591,16 @@ class SaveZarrJob(Job):
         region_id = str(info.region_id) if info.region_id is not None else "0"
         fov = info.fov if info.fov is not None else 0
         output_path = self.zarr_writer_info.get_output_path(region_id, fov)
+
+        # Build result with frame info for viewer notification
+        region_names = list(self.zarr_writer_info.region_fov_counts.keys())
+        result = ZarrWriteResult(
+            fov=fov,
+            time_point=info.time_point or 0,
+            z_index=info.z_index,
+            channel_name=info.configuration.name,
+            region_idx=region_names.index(region_id) if region_id in region_names else 0,
+        )
 
         # Determine shape based on acquisition mode
         is_hcs = self.zarr_writer_info.is_hcs
@@ -619,10 +640,10 @@ class SaveZarrJob(Job):
                 f"SaveZarrJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"to {output_path} (image shape={image.shape})"
             )
-            return True
+            return result
 
         self._save_zarr(image, info, output_path)
-        return True
+        return result
 
     def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
         """Write image to zarr dataset using TensorStore.

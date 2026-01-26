@@ -214,8 +214,8 @@ class QtMultiPointController(MultiPointController, QObject):
     ndviewer_register_image = Signal(int, int, int, str, str)  # t, fov_idx, z, channel, filepath
     # NDViewer push-based API signals (Zarr mode)
     ndviewer_start_zarr_acquisition = Signal(
-        str, list, int, list, int, int, list
-    )  # zarr_path, channels, num_z, fov_labels, height, width, fov_paths
+        list, list, int, list, int, int
+    )  # fov_paths, channels, num_z, fov_labels, height, width
     ndviewer_start_zarr_acquisition_6d = Signal(
         list, list, int, list, int, int, list
     )  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels
@@ -251,6 +251,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_plate_view_update=self._signal_plate_view_update_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
+                signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -315,7 +316,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 fov_paths = self._build_zarr_fov_paths(parameters)
 
                 self.ndviewer_start_zarr_acquisition.emit(
-                    "", channels, num_z, self._ndviewer_fov_labels, height, width, fov_paths or []
+                    fov_paths or [], channels, num_z, self._ndviewer_fov_labels, height, width
                 )
         else:
             self._ndviewer_mode = NDViewerMode.TIFF
@@ -370,19 +371,12 @@ class QtMultiPointController(MultiPointController, QObject):
             return
         flat_fov_idx = region_offset + info.fov
 
-        if self._ndviewer_mode == NDViewerMode.ZARR_6D:
-            # 6D multi-region: pass region_idx and local FOV index
-            region_idx = self._ndviewer_region_index_map.get(info.region_id, 0)
-            self.ndviewer_notify_zarr_frame.emit(
-                info.time_point, info.fov, info.z_index, info.configuration.name, region_idx
-            )
-        elif self._ndviewer_mode == NDViewerMode.ZARR_5D:
-            # HCS/per-FOV modes: pass flat FOV index, region_idx=0
-            self.ndviewer_notify_zarr_frame.emit(
-                info.time_point, flat_fov_idx, info.z_index, info.configuration.name, 0
-            )
+        if self._ndviewer_mode in (NDViewerMode.ZARR_6D, NDViewerMode.ZARR_5D):
+            # Zarr modes: notification happens via signal_zarr_frame_written callback
+            # when the subprocess completes writing, not here (too early).
+            pass
         else:
-            # TIFF mode: register with filepath
+            # TIFF mode: register with filepath (synchronous write, notification is correct here)
             filepath = control.utils_acquisition.get_image_filepath(
                 info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
             )
@@ -425,6 +419,21 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_slack_acquisition_finished_fn(self, stats: AcquisitionStats):
         self.signal_slack_acq_finished.emit(stats)
+
+    def _signal_zarr_frame_written_fn(
+        self, fov: int, time_point: int, z_index: int, channel_name: str, region_idx: int
+    ):
+        """Called when subprocess completes writing a zarr frame.
+
+        This is the correct time to notify the viewer - after data is on disk.
+        """
+        if self._ndviewer_mode == NDViewerMode.ZARR_6D:
+            # 6D mode: pass local FOV index and region_idx
+            self.ndviewer_notify_zarr_frame.emit(time_point, fov, z_index, channel_name, region_idx)
+        elif self._ndviewer_mode == NDViewerMode.ZARR_5D:
+            # 5D mode: compute flat FOV index, region_idx=0
+            # For 5D mode, fov is already the flat index from the job
+            self.ndviewer_notify_zarr_frame.emit(time_point, fov, z_index, channel_name, 0)
 
     # -------------------------------------------------------------------------
     # Helper methods for Zarr FOV path building

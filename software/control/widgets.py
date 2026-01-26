@@ -437,24 +437,22 @@ class NDViewerTab(QWidget):
 
     def start_zarr_acquisition(
         self,
-        zarr_path: str,
+        fov_paths: List[str],
         channels: List[str],
         num_z: int,
         fov_labels: List[str],
         height: int,
         width: int,
-        fov_paths: List[str],
     ) -> bool:
         """Configure viewer for zarr-based live acquisition (5D per-FOV mode).
 
         Args:
-            zarr_path: Path to zarr store (unused in 5D mode)
+            fov_paths: List of zarr paths per FOV
             channels: List of channel names
             num_z: Number of z-levels
             fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1"])
             height: Image height in pixels
             width: Image width in pixels
-            fov_paths: List of zarr paths per FOV
 
         Returns:
             True if successful, False otherwise.
@@ -476,7 +474,7 @@ class NDViewerTab(QWidget):
                 )
                 return False
 
-            self._viewer.start_zarr_acquisition(zarr_path, channels, num_z, fov_labels, height, width, fov_paths)
+            self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -2047,6 +2045,11 @@ class PreferencesDialog(QDialog):
         new_val = self.file_saving_combo.currentText()
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        new_val = self.zarr_6d_fov_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()

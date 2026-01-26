@@ -122,3 +122,6 @@ class MultiPointControllerFunctions:
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None
     signal_slack_acquisition_finished: Callable[["AcquisitionStats"], None] = lambda *a, **kw: None
+    # Zarr frame written callback - called when subprocess completes writing a frame
+    # Args: (fov, time_point, z_index, channel_name, region_idx)
+    signal_zarr_frame_written: Callable[[int, int, int, str, int], None] = lambda *a, **kw: None

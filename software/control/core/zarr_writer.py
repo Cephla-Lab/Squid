@@ -645,11 +645,11 @@ class ZarrWriter:
                 raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame (non-blocking, queues for async write).
+        """Write a single frame (blocking, waits for write to complete).
 
-        This method directly uses TensorStore's write API without asyncio overhead.
-        The write is queued and will complete asynchronously. Call wait_for_pending()
-        or finalize() to ensure all writes are complete.
+        This method uses TensorStore's write API and waits for the write to complete
+        before returning. This ensures data is visible to other processes reading
+        the same zarr store.
 
         Args:
             image: 2D image array (Y, X)
@@ -683,15 +683,19 @@ class ZarrWriter:
         if image.dtype != config.dtype:
             image = image.astype(config.dtype)
 
-        # Queue write directly using TensorStore (no asyncio overhead)
+        # Write using TensorStore and wait for completion
+        # This ensures data is flushed before we notify the viewer
         if config.ndim == 5:
             future = self._dataset[t, c, z, :, :].write(image)
-            log.debug(f"Queued write for frame t={t}, c={c}, z={z}")
+            log.debug(f"Writing frame t={t}, c={c}, z={z}")
         else:
             future = self._dataset[fov, t, c, z, :, :].write(image)
-            log.debug(f"Queued write for frame fov={fov}, t={t}, c={c}, z={z}")
+            log.debug(f"Writing frame fov={fov}, t={t}, c={c}, z={z}")
 
-        self._pending_futures.append(future)
+        # Wait for write to complete (blocking)
+        # TensorStore futures have a .result() method that blocks until complete
+        future.result()
+        log.debug(f"Write complete")
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
