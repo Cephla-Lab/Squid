@@ -1053,7 +1053,7 @@ class PreferencesDialog(QDialog):
 
         # File Saving Format
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems(["OME_TIFF", "ZARR_V3", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
         current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
