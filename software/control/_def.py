@@ -272,18 +272,19 @@ class ILLUMINATION_CODE:
 
     # Laser ports - port-based names (preferred)
     # These correspond to controller_port D1-D5 in illumination_channel_config.yaml
+    # Note: D3/D4 are not sequential due to physical wiring
     ILLUMINATION_D1 = 11
     ILLUMINATION_D2 = 12
-    ILLUMINATION_D3 = 13
-    ILLUMINATION_D4 = 14
+    ILLUMINATION_D3 = 14  # 561nm
+    ILLUMINATION_D4 = 13  # 638nm
     ILLUMINATION_D5 = 15
 
     # Laser ports - legacy wavelength-based names (deprecated, kept for compatibility)
     # Use ILLUMINATION_D1-D5 for new code; wavelength is configured in YAML
     ILLUMINATION_SOURCE_405NM = ILLUMINATION_D1  # Alias for ILLUMINATION_D1
     ILLUMINATION_SOURCE_488NM = ILLUMINATION_D2  # Alias for ILLUMINATION_D2
-    ILLUMINATION_SOURCE_638NM = ILLUMINATION_D3  # Alias for ILLUMINATION_D3
-    ILLUMINATION_SOURCE_561NM = ILLUMINATION_D4  # Alias for ILLUMINATION_D4
+    ILLUMINATION_SOURCE_561NM = ILLUMINATION_D3  # Alias for ILLUMINATION_D3
+    ILLUMINATION_SOURCE_638NM = ILLUMINATION_D4  # Alias for ILLUMINATION_D4
     ILLUMINATION_SOURCE_730NM = ILLUMINATION_D5  # Alias for ILLUMINATION_D5
 
 

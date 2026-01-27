@@ -127,16 +127,16 @@ static const int ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20;
 // These correspond to controller_port D1-D5 in software configuration
 static const int ILLUMINATION_D1 = 11;
 static const int ILLUMINATION_D2 = 12;
-static const int ILLUMINATION_D3 = 13;
-static const int ILLUMINATION_D4 = 14;
+static const int ILLUMINATION_D3 = 14;  // 561nm - note: not sequential
+static const int ILLUMINATION_D4 = 13;  // 638nm - note: not sequential
 static const int ILLUMINATION_D5 = 15;
 
 // Laser ports - legacy wavelength-based names (deprecated, kept for compatibility)
 // Use ILLUMINATION_D1-D5 for new code; wavelength is configured in software YAML
 static const int ILLUMINATION_SOURCE_405NM = 11;  // Alias for ILLUMINATION_D1
 static const int ILLUMINATION_SOURCE_488NM = 12;  // Alias for ILLUMINATION_D2
-static const int ILLUMINATION_SOURCE_638NM = 13;  // Alias for ILLUMINATION_D3
-static const int ILLUMINATION_SOURCE_561NM = 14;  // Alias for ILLUMINATION_D4
+static const int ILLUMINATION_SOURCE_561NM = 14;  // Alias for ILLUMINATION_D3
+static const int ILLUMINATION_SOURCE_638NM = 13;  // Alias for ILLUMINATION_D4
 static const int ILLUMINATION_SOURCE_730NM = 15;  // Alias for ILLUMINATION_D5
 
 #endif // CONSTANTS_PROTOCOL_H
