@@ -40,34 +40,30 @@ void callback_move_z()
     }
 }
 
+// Helper function for filter wheel movement (shared by W and W2)
+static void move_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
+{
+    if (!enabled) return;
+
+    long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
+    long current_position = tmc4361A_currentPosition(&tmc4361[axis]);
+    *direction = sgn(relative_position);
+    *target_position = current_position + relative_position;
+    if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
+    {
+        *movement_in_progress = true;
+        mcu_cmd_execution_in_progress = true;
+    }
+}
+
 void callback_move_w()
 {
-    if (enable_filterwheel == true) {
-        long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-        long current_position = tmc4361A_currentPosition(&tmc4361[w]);
-        W_direction = sgn(relative_position);
-        W_commanded_target_position = current_position + relative_position;
-        if ( tmc4361A_moveTo(&tmc4361[w], W_commanded_target_position) == 0)
-        {
-        W_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
-        }
-    }
+    move_filterwheel(w, enable_filterwheel, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
 }
 
 void callback_move_w2()
 {
-    if (enable_filterwheel_w2 == true) {
-        long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-        long current_position = tmc4361A_currentPosition(&tmc4361[w2]);
-        W2_direction = sgn(relative_position);
-        W2_commanded_target_position = current_position + relative_position;
-        if ( tmc4361A_moveTo(&tmc4361[w2], W2_commanded_target_position) == 0)
-        {
-        W2_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
-        }
-    }
+    move_filterwheel(w2, enable_filterwheel_w2, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
 }
 
 void callback_move_to_x()

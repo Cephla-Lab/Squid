@@ -131,58 +131,44 @@ void callback_disable_stage_pid()
     stage_PID_enabled[axis] = 0;
 }
 
+// Helper function for filter wheel initialization (shared by W and W2)
+static void init_filterwheel_axis(uint8_t axis)
+{
+    tmc4361A_init(&tmc4361[axis], pin_TMC4361_CS[axis], &tmc4361_configs[axis], tmc4361A_defaultRegisterResetState);
+    pinMode(pin_TMC4361_CS[axis], OUTPUT);
+    digitalWrite(pin_TMC4361_CS[axis], HIGH);
+
+    tmc4361A_tmc2660_config(&tmc4361[axis], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+    tmc4361A_tmc2660_init(&tmc4361[axis], clk_Hz_TMC4361);
+    tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
+
+    // Calculate velocity and acceleration (ensures values are set for both W and W2)
+    max_velocity_usteps[axis] = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
+    max_acceleration_usteps[axis] = tmc4361A_ammToMicrosteps(&tmc4361[axis], MAX_ACCELERATION_W_mm);
+
+    tmc4361A_setMaxSpeed(&tmc4361[axis], max_velocity_usteps[axis]);
+    tmc4361A_setMaxAcceleration(&tmc4361[axis], max_acceleration_usteps[axis]);
+    tmc4361[axis].rampParam[ASTART_IDX] = 0;
+    tmc4361[axis].rampParam[DFINAL_IDX] = 0;
+    tmc4361A_sRampInit(&tmc4361[axis]);
+
+    tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+
+    tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], 1);
+}
+
 void callback_initfilterwheel()
 {
     enable_filterwheel = true;
-
-    tmc4361A_init(&tmc4361[w], pin_TMC4361_CS[w], &tmc4361_configs[w], tmc4361A_defaultRegisterResetState);
-    pinMode(pin_TMC4361_CS[w], OUTPUT);
-    digitalWrite(pin_TMC4361_CS[w], HIGH);
-
-    tmc4361A_tmc2660_config(&tmc4361[w], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W); // need to make current scaling on TMC2660 is > 16 (out of 31)
-    tmc4361A_tmc2660_init(&tmc4361[w], clk_Hz_TMC4361);   // set up ICs with SPI control and other parameters
-        tmc4361A_enableLimitSwitch(&tmc4361[w], lft_sw_pol[w], LEFT_SW, false);
-
-    tmc4361A_setMaxSpeed(&tmc4361[w], max_velocity_usteps[w]);
-    tmc4361A_setMaxAcceleration(&tmc4361[w], max_acceleration_usteps[w]);
-    tmc4361[w].rampParam[ASTART_IDX] = 0;
-    tmc4361[w].rampParam[DFINAL_IDX] = 0;
-    tmc4361A_sRampInit(&tmc4361[w]);
-
-    tmc4361A_set_PID(&tmc4361[w], PID_DISABLE);
-
-    tmc4361A_enableHomingLimit(&tmc4361[w], rht_sw_pol[w], TMC4361_homing_sw[w], home_safety_margin[w]);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], -1);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], 1);
+    init_filterwheel_axis(w);
 }
 
 void callback_initfilterwheel_w2()
 {
     enable_filterwheel_w2 = true;
-
-    tmc4361A_init(&tmc4361[w2], pin_TMC4361_CS[w2], &tmc4361_configs[w2], tmc4361A_defaultRegisterResetState);
-    pinMode(pin_TMC4361_CS[w2], OUTPUT);
-    digitalWrite(pin_TMC4361_CS[w2], HIGH);
-
-    tmc4361A_tmc2660_config(&tmc4361[w2], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
-    tmc4361A_tmc2660_init(&tmc4361[w2], clk_Hz_TMC4361);
-    tmc4361A_enableLimitSwitch(&tmc4361[w2], lft_sw_pol[w2], LEFT_SW, false);
-
-    // Calculate velocity and acceleration for W2 (same as W)
-    max_velocity_usteps[w2] = tmc4361A_vmmToMicrosteps(&tmc4361[w2], MAX_VELOCITY_W_mm);
-    max_acceleration_usteps[w2] = tmc4361A_ammToMicrosteps(&tmc4361[w2], MAX_ACCELERATION_W_mm);
-
-    tmc4361A_setMaxSpeed(&tmc4361[w2], max_velocity_usteps[w2]);
-    tmc4361A_setMaxAcceleration(&tmc4361[w2], max_acceleration_usteps[w2]);
-    tmc4361[w2].rampParam[ASTART_IDX] = 0;
-    tmc4361[w2].rampParam[DFINAL_IDX] = 0;
-    tmc4361A_sRampInit(&tmc4361[w2]);
-
-    tmc4361A_set_PID(&tmc4361[w2], PID_DISABLE);
-
-    tmc4361A_enableHomingLimit(&tmc4361[w2], rht_sw_pol[w2], TMC4361_homing_sw[w2], home_safety_margin[w2]);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], -1);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], 1);
+    init_filterwheel_axis(w2);
 }
 
 void callback_set_axis_disable_enable()
