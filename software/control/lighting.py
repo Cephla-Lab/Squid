@@ -6,6 +6,7 @@ from typing import Dict
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
+from control._def import ILLUMINATION_CODE
 
 
 class LightSourceType(Enum):
@@ -47,20 +48,22 @@ class IlluminationController:
         self.light_source_type = light_source_type
         self.light_source = light_source
         self.disable_intensity_calibration = disable_intensity_calibration
-        # Default channel mappings
+        # Default wavelength -> source code mappings
+        # Maps common wavelengths to their corresponding laser port source codes
+        # Multiple wavelengths can map to the same port (e.g., 470nm and 488nm both to D2)
         default_mappings = {
-            405: 11,
-            470: 12,
-            488: 12,
-            545: 14,
-            550: 14,
-            555: 14,
-            561: 14,
-            638: 13,
-            640: 13,
-            730: 15,
-            735: 15,
-            750: 15,
+            405: ILLUMINATION_CODE.ILLUMINATION_D1,
+            470: ILLUMINATION_CODE.ILLUMINATION_D2,
+            488: ILLUMINATION_CODE.ILLUMINATION_D2,
+            545: ILLUMINATION_CODE.ILLUMINATION_D4,
+            550: ILLUMINATION_CODE.ILLUMINATION_D4,
+            555: ILLUMINATION_CODE.ILLUMINATION_D4,
+            561: ILLUMINATION_CODE.ILLUMINATION_D4,
+            638: ILLUMINATION_CODE.ILLUMINATION_D3,
+            640: ILLUMINATION_CODE.ILLUMINATION_D3,
+            730: ILLUMINATION_CODE.ILLUMINATION_D5,
+            735: ILLUMINATION_CODE.ILLUMINATION_D5,
+            750: ILLUMINATION_CODE.ILLUMINATION_D5,
         }
 
         # Try to load mappings from file

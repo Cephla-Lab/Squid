@@ -12,6 +12,8 @@ from typing import ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from control._def import ILLUMINATION_CODE
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,20 +102,20 @@ class IlluminationChannelConfig(BaseModel):
     version: float = Field(1.0, description="Configuration format version")
     controller_port_mapping: Dict[str, int] = Field(
         default_factory=lambda: {
-            # Laser ports
-            "D1": 11,  # 405nm laser
-            "D2": 12,  # 488nm laser
-            "D3": 13,  # 638nm laser
-            "D4": 14,  # 561nm laser
-            "D5": 15,  # 730nm laser
-            # LED matrix patterns (USB port number encodes the pattern)
-            "USB1": 0,  # full
-            "USB2": 1,  # left_half
-            "USB3": 2,  # right_half
-            "USB4": 3,  # dark_field
-            "USB5": 4,  # low_na
-            "USB7": 7,  # top_half
-            "USB8": 8,  # bottom_half
+            # Laser ports - reference constants from _def.py
+            "D1": ILLUMINATION_CODE.ILLUMINATION_D1,
+            "D2": ILLUMINATION_CODE.ILLUMINATION_D2,
+            "D3": ILLUMINATION_CODE.ILLUMINATION_D3,
+            "D4": ILLUMINATION_CODE.ILLUMINATION_D4,
+            "D5": ILLUMINATION_CODE.ILLUMINATION_D5,
+            # LED matrix patterns - reference constants from _def.py
+            "USB1": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_FULL,
+            "USB2": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF,
+            "USB3": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF,
+            "USB4": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFTB_RIGHTR,
+            "USB5": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LOW_NA,
+            "USB7": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF,
+            "USB8": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF,
         },
         description="Mapping from controller port to source code",
     )
