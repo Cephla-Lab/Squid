@@ -8,11 +8,11 @@
 extern byte buffer_rx[512];
 extern byte buffer_tx[MSG_LENGTH];
 
-extern uint32_t max_velocity_usteps[5];
-extern uint32_t max_acceleration_usteps[5];
+extern uint32_t max_velocity_usteps[TOTAL_AXES];
+extern uint32_t max_acceleration_usteps[TOTAL_AXES];
 
-extern ConfigurationTypeDef tmc4361_configs[5];
-extern TMC4361ATypeDef tmc4361[5];
+extern ConfigurationTypeDef tmc4361_configs[TOTAL_AXES];
+extern TMC4361ATypeDef tmc4361[TOTAL_AXES];
 
 extern elapsedMicros us_since_x_home_found;
 extern elapsedMicros us_since_y_home_found;
@@ -28,11 +28,11 @@ extern long Z_POS_LIMIT;
 extern long Z_NEG_LIMIT;
 
 // PID
-extern bool stage_PID_enabled[5];
-extern PID_ARGUMENTS axes_pid_arg[5];
+extern bool stage_PID_enabled[TOTAL_AXES];
+extern PID_ARGUMENTS axes_pid_arg[TOTAL_AXES];
 
 // home safety margin
-extern uint16_t home_safety_margin[5];
+extern uint16_t home_safety_margin[TOTAL_AXES];
 
 extern volatile int buffer_rx_ptr;
 extern byte cmd_id;

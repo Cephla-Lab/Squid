@@ -1,10 +1,14 @@
 import time
 from typing import List, Dict, Optional, Union
 
+import squid.logging
 from control._def import *
 from control.microcontroller import Microcontroller
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo
 from squid.config import SquidFilterWheelConfig
+
+
+_log = squid.logging.get_logger(__name__)
 
 
 class SquidFilterWheel(AbstractFilterWheelController):
@@ -60,7 +64,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         self._available_filter_wheels: List[int] = []
 
-    # Map motor_slot_index to AXIS constants
+    # Map motor_slot_index to AXIS protocol constants for MCU communication.
+    # Note: These are PROTOCOL constants (AXIS.W=5, AXIS.W2=6), NOT firmware array indices.
+    # The firmware has a separate mapping: w=3, w2=4 for internal arrays.
+    # The protocol_axis_to_internal() function in firmware handles this conversion.
     _MOTOR_SLOT_TO_AXIS = {3: AXIS.W, 4: AXIS.W2}
 
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
@@ -100,6 +107,54 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.move_w2_usteps(usteps)
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
+
+    def _move_to_position(self, wheel_id: int, target_pos: int):
+        """Move wheel to target position with automatic re-home on failure.
+
+        If the movement times out (e.g., motor stall), this method will:
+        1. Log a warning
+        2. Re-home the wheel to re-synchronize position tracking
+        3. Retry the movement to the target position
+        4. Raise an exception if retry also fails
+
+        Args:
+            wheel_id: The ID of the wheel to move.
+            target_pos: The target position index.
+
+        Raises:
+            TimeoutError: If both the initial move and retry after re-home fail.
+        """
+        config = self._configs[wheel_id]
+        current_pos = self._positions[wheel_id]
+
+        if target_pos == current_pos:
+            return
+
+        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
+        delta = (target_pos - current_pos) * step_size
+
+        try:
+            self._move_wheel(wheel_id, delta)
+            self.microcontroller.wait_till_operation_is_completed()
+            self._positions[wheel_id] = target_pos
+        except TimeoutError:
+            _log.warning(f"Filter wheel {wheel_id} movement timed out. " f"Re-homing to re-sync position tracking...")
+            # Re-home to re-synchronize position tracking
+            self._home_wheel(wheel_id)
+
+            # Retry the movement (position is now at min_index after homing)
+            current_pos = self._positions[wheel_id]
+            delta = (target_pos - current_pos) * step_size
+            try:
+                self._move_wheel(wheel_id, delta)
+                self.microcontroller.wait_till_operation_is_completed()
+                self._positions[wheel_id] = target_pos
+                _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
+            except TimeoutError:
+                _log.error(
+                    f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
+                )
+                raise
 
     def _home_wheel(self, wheel_id: int):
         """Home a specific wheel.
@@ -192,10 +247,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         new_pos = current_pos + direction
 
         if config.min_index <= new_pos <= config.max_index:
-            step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-            self._move_wheel(wheel_id, direction * step_size)
-            self.microcontroller.wait_till_operation_is_completed()
-            self._positions[wheel_id] = new_pos
+            self._move_to_position(wheel_id, new_pos)
 
     def next_position(self, wheel_id: int = 1):
         """Move to the next position on a wheel.
@@ -228,13 +280,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             if pos not in range(config.min_index, config.max_index + 1):
                 raise ValueError(f"Filter wheel {wheel_id} position {pos} is out of range")
 
-            current_pos = self._positions[wheel_id]
-            if pos != current_pos:
-                step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-                delta = (pos - current_pos) * step_size
-                self._move_wheel(wheel_id, delta)
-                self.microcontroller.wait_till_operation_is_completed()
-                self._positions[wheel_id] = pos
+            self._move_to_position(wheel_id, pos)
 
     def get_filter_wheel_position(self) -> Dict[int, int]:
         """Get current positions of all configured wheels.

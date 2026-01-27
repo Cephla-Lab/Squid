@@ -78,7 +78,12 @@ static const int HOME_NEGATIVE = 1;
 static const int HOME_POSITIVE = 0;
 static const int HOME_OR_ZERO_ZERO = 2;
 
-// Axis identifiers
+// Axis identifiers for protocol communication (sent from software to firmware).
+// IMPORTANT: These are PROTOCOL constants, NOT internal array indices!
+// The firmware uses different internal indices (see def/def_v1.h):
+//   Protocol: AXIS_X=0, AXIS_Y=1, AXIS_Z=2, AXIS_W=5, AXIS_W2=6
+//   Internal: x=1, y=0, z=2, w=3, w2=4
+// Use protocol_axis_to_internal() to convert when accessing arrays.
 static const int AXIS_X = 0;
 static const int AXIS_Y = 1;
 static const int AXIS_Z = 2;

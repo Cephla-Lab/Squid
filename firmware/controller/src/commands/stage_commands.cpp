@@ -233,17 +233,27 @@ void callback_set_home_safety_margin()
             tmc4361A_enableHomingLimit(&tmc4361[w], rht_sw_pol[w], TMC4361_homing_sw[w], home_safety_margin[w]);
             break;
         }
+        case AXIS_W2:
+        {
+            uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+            float home_safety_margin_mm = float(margin) / 1000.0;
+            home_safety_margin[w2] = tmc4361A_xmmToMicrosteps(&tmc4361[w2], home_safety_margin_mm);
+            tmc4361A_enableHomingLimit(&tmc4361[w2], rht_sw_pol[w2], TMC4361_homing_sw[w2], home_safety_margin[w2]);
+            break;
+        }
     }
 }
 
 void callback_set_pid_arguments()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     uint16_t p = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
     uint8_t  i = uint8_t(buffer_rx[5]);
     uint8_t  d = uint8_t(buffer_rx[6]);
 
-    axes_pid_arg[axis].p = p; 
+    axes_pid_arg[axis].p = p;
     axes_pid_arg[axis].i = i;
     axes_pid_arg[axis].d = d;
 }

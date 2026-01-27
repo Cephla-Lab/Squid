@@ -8,7 +8,12 @@
 // LED matrix
 #define DOTSTAR_NUM_LEDS 128
 
-// Axis assignment
+// Internal axis indices for array access (tmc4361[], axes_pid_arg[], etc.).
+// IMPORTANT: These are INTERNAL indices, NOT protocol constants!
+// The protocol uses different values (see constants_protocol.h):
+//   Protocol: AXIS_X=0, AXIS_Y=1, AXIS_Z=2, AXIS_W=5, AXIS_W2=6
+//   Internal: x=1, y=0, z=2, w=3, w2=4
+// Use protocol_axis_to_internal() to convert protocol values to these indices.
 static const uint8_t x = 1;
 static const uint8_t y = 0;
 static const uint8_t z = 2;

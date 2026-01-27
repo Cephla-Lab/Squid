@@ -99,7 +99,9 @@ void callback_set_pin_level()
 
 void callback_configure_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     int flip_direction = buffer_rx[3];
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
     // Init encoder. transitions per revolution, velocity filter wait time (# of clock cycles), IIR filter exponent, vmean update frequency, invert direction (must increase as microsteps increases)
@@ -123,14 +125,18 @@ void callback_configure_stage_pid()
 
 void callback_enable_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
 }
 
 void callback_disable_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
 }
@@ -177,7 +183,9 @@ void callback_initfilterwheel_w2()
 
 void callback_set_axis_disable_enable()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     int status = buffer_rx[3];
     if (status == 0) {
         tmc4361A_tmc2660_disable_driver(&tmc4361[axis]);

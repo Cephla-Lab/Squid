@@ -3,11 +3,11 @@
 byte buffer_rx[512];
 byte buffer_tx[MSG_LENGTH];
 
-uint32_t max_velocity_usteps[5];
-uint32_t max_acceleration_usteps[5];
+uint32_t max_velocity_usteps[TOTAL_AXES];
+uint32_t max_acceleration_usteps[TOTAL_AXES];
 
-ConfigurationTypeDef tmc4361_configs[5];
-TMC4361ATypeDef tmc4361[5];
+ConfigurationTypeDef tmc4361_configs[TOTAL_AXES];
+TMC4361ATypeDef tmc4361[TOTAL_AXES];
 
 elapsedMicros us_since_x_home_found;
 elapsedMicros us_since_y_home_found;
@@ -24,11 +24,11 @@ long Z_NEG_LIMIT = Z_NEG_LIMIT_MM * steps_per_mm_Z;
 
 
 // PID
-bool stage_PID_enabled[5] = {0};
-PID_ARGUMENTS axes_pid_arg[5] = {0};
+bool stage_PID_enabled[TOTAL_AXES] = {0};
+PID_ARGUMENTS axes_pid_arg[TOTAL_AXES] = {0};
 
 // home safety margin
-uint16_t home_safety_margin[5] = {4, 4, 4, 4, 4};
+uint16_t home_safety_margin[TOTAL_AXES] = {4, 4, 4, 4, 4};
 
 volatile int buffer_rx_ptr = 0;
 byte cmd_id = 0;
