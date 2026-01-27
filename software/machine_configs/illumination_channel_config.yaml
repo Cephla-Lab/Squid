@@ -5,8 +5,8 @@ version: 1
 controller_port_mapping:
   D1: 11   # 405nm laser
   D2: 12   # 488nm laser
-  D3: 13   # 638nm laser
-  D4: 14   # 561nm laser
+  D3: 14   # 561nm laser
+  D4: 13   # 638nm laser
   D5: 15   # 730nm laser
   USB1: 0  # LED full
   USB2: 1  # LED left_half
@@ -47,13 +47,13 @@ channels:
 
   - name: Fluorescence 561 nm Ex
     type: epi_illumination
-    controller_port: D4
+    controller_port: D3
     wavelength_nm: 561
     intensity_calibration_file: 561.csv
 
   - name: Fluorescence 638 nm Ex
     type: epi_illumination
-    controller_port: D3
+    controller_port: D4
     wavelength_nm: 638
     intensity_calibration_file: 638.csv
 
