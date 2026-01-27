@@ -16358,10 +16358,13 @@ class FilterWheelConfiguratorDialog(QDialog):
                             FilterWheelDefinition(type=FilterWheelType.EMISSION, positions=default_positions.copy())
                         )
                     else:
-                        # Multi-wheel: use id to distinguish
+                        # Multi-wheel: use id and name to distinguish
                         wheels.append(
                             FilterWheelDefinition(
-                                id=wheel_id, type=FilterWheelType.EMISSION, positions=default_positions.copy()
+                                id=wheel_id,
+                                name=f"Wheel {wheel_id}",
+                                type=FilterWheelType.EMISSION,
+                                positions=default_positions.copy(),
                             )
                         )
                 self.registry = FilterWheelRegistryConfig(filter_wheels=wheels)
@@ -16380,7 +16383,10 @@ class FilterWheelConfiguratorDialog(QDialog):
                     )
                     self.registry.filter_wheels.append(
                         FilterWheelDefinition(
-                            id=wheel_id, type=FilterWheelType.EMISSION, positions=default_positions.copy()
+                            id=wheel_id,
+                            name=f"Wheel {wheel_id}",
+                            type=FilterWheelType.EMISSION,
+                            positions=default_positions.copy(),
                         )
                     )
 

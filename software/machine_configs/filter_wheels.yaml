@@ -1,14 +1,26 @@
 version: 1.0
 filter_wheels:
-- name: "Emission"
+- name: Emission
   id: 1
   type: emission
   positions:
-    1: channel 1 filter
-    2: channel 2 filter
-    3: Position 3
-    4: Position 4
-    5: Position 5
-    6: Position 6
-    7: Position 7
-    8: Position 8
+    '1': channel 1 filter
+    '2': channel 2 filter
+    '3': Position 3
+    '4': Position 4
+    '5': Position 5
+    '6': Position 6
+    '7': Position 7
+    '8': Position 8
+- name: Emission 2
+  id: 2
+  type: emission
+  positions:
+    '1': 2-1
+    '2': 2-2
+    '3': Position 3
+    '4': Position 4
+    '5': Position 5
+    '6': Position 6
+    '7': Position 7
+    '8': Position 8
