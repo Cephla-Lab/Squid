@@ -621,16 +621,18 @@ class Microcontroller:
         self.send_command(cmd)
         self.log.debug("initialize the drivers")
 
-    def init_filter_wheel(self):
-        self._cmd_id = 0
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.INITFILTERWHEEL
-        self.send_command(cmd)
+    def init_filter_wheel(self, axis=AXIS.W):
+        """Initialize a filter wheel axis.
 
-    def init_filter_wheel_w2(self):
+        Args:
+            axis: The axis to initialize (AXIS.W or AXIS.W2). Defaults to AXIS.W.
+        """
+        cmd_map = {AXIS.W: CMD_SET.INITFILTERWHEEL, AXIS.W2: CMD_SET.INITFILTERWHEEL_W2}
+        if axis not in cmd_map:
+            raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
         self._cmd_id = 0
         cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.INITFILTERWHEEL_W2
+        cmd[1] = cmd_map[axis]
         self.send_command(cmd)
 
     def turn_on_illumination(self):
@@ -1041,21 +1043,19 @@ class Microcontroller:
         self.set_home_safety_margin(AXIS.Z, int(Z_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
 
-    def configure_squidfilter(self):
-        self.set_leadscrew_pitch(AXIS.W, SCREW_PITCH_W_MM)
-        self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.W, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
-        self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.W, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
-        self.wait_till_operation_is_completed()
+    def configure_squidfilter(self, axis=AXIS.W):
+        """Configure a filter wheel motor.
 
-    def configure_squidfilter_w2(self):
-        """Configure the second filter wheel motor (W2 axis)."""
-        self.set_leadscrew_pitch(AXIS.W2, SCREW_PITCH_W_MM)
+        Args:
+            axis: The axis to configure (AXIS.W or AXIS.W2). Defaults to AXIS.W.
+        """
+        if axis not in (AXIS.W, AXIS.W2):
+            raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
+        self.set_leadscrew_pitch(axis, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.W2, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(axis, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.W2, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(axis, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):

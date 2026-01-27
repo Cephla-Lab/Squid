@@ -32,7 +32,6 @@ class SquidFilterWheelConfig(pydantic.BaseModel):
     max_index: int
     min_index: int
     offset: float
-    homing_enabled: bool
     motor_slot_index: int
     transitions_per_revolution: int
 
@@ -97,7 +96,6 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
                         max_index=wheel_cfg["max_index"],
                         min_index=wheel_cfg["min_index"],
                         offset=wheel_cfg["offset"],
-                        homing_enabled=wheel_cfg["homing_enabled"],
                         motor_slot_index=wheel_cfg["motor_slot_index"],
                         transitions_per_revolution=wheel_cfg["transitions_per_revolution"],
                     )
@@ -107,7 +105,6 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
             max_index=_def.SQUID_FILTERWHEEL_MAX_INDEX,
             min_index=_def.SQUID_FILTERWHEEL_MIN_INDEX,
             offset=_def.SQUID_FILTERWHEEL_OFFSET,
-            homing_enabled=_def.SQUID_FILTERWHEEL_HOMING_ENABLED,
             motor_slot_index=_def.SQUID_FILTERWHEEL_MOTORSLOTINDEX,
             transitions_per_revolution=_def.SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION,
         )

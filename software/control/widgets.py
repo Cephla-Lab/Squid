@@ -4806,8 +4806,8 @@ class FilterControllerWidget(QFrame):
                     for wheel in registry.filter_wheels:
                         if wheel.id == wheel_id and wheel.name:
                             return wheel.name
-            except Exception:
-                pass
+            except Exception as e:
+                self._log.warning(f"Failed to get filter wheel name for wheel_id={wheel_id}: {e}")
         # Default name
         return f"Wheel {wheel_id}"
 

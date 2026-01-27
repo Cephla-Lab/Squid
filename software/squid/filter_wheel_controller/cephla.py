@@ -48,10 +48,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._positions: Dict[int, int] = {}
 
         if not skip_init:
-            # Initialize filter wheel hardware
-            self.microcontroller.init_filter_wheel()
-            time.sleep(0.5)
-
             # Configure each wheel
             for wheel_id, config in self._configs.items():
                 self._configure_wheel(wheel_id, config)
@@ -64,22 +60,20 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         self._available_filter_wheels: List[int] = []
 
+    # Map motor_slot_index to AXIS constants
+    _MOTOR_SLOT_TO_AXIS = {3: AXIS.W, 4: AXIS.W2}
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index
-
-        if motor_slot == 3:
-            # W axis (first filter wheel)
-            self.microcontroller.configure_squidfilter()
-            time.sleep(0.5)
-        elif motor_slot == 4:
-            # W2 axis (second filter wheel)
-            self.microcontroller.init_filter_wheel_w2()
-            time.sleep(0.5)
-            self.microcontroller.configure_squidfilter_w2()
-            time.sleep(0.5)
-        else:
+        axis = self._MOTOR_SLOT_TO_AXIS.get(motor_slot)
+        if axis is None:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}. Expected 3 (W) or 4 (W2).")
+
+        self.microcontroller.init_filter_wheel(axis)
+        time.sleep(0.5)
+        self.microcontroller.configure_squidfilter(axis)
+        time.sleep(0.5)
 
         # Common PID setup for both wheels (they share identical encoder settings)
         if HAS_ENCODER_W:

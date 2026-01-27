@@ -980,7 +980,6 @@ OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
 SQUID_FILTERWHEEL_MAX_INDEX = 8
 SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
-SQUID_FILTERWHEEL_HOMING_ENABLED = True
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
 
@@ -992,7 +991,6 @@ SQUID_FILTERWHEEL_CONFIGS = {
         "max_index": 8,
         "min_index": 1,
         "offset": 0.008,
-        "homing_enabled": True,
         "transitions_per_revolution": 4000,
     },
     2: {
@@ -1000,7 +998,6 @@ SQUID_FILTERWHEEL_CONFIGS = {
         "max_index": 8,
         "min_index": 1,
         "offset": 0.008,
-        "homing_enabled": True,
         "transitions_per_revolution": 4000,
     },
 }

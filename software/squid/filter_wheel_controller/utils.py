@@ -160,8 +160,8 @@ def get_filter_wheel_controller(
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:
             raise ValueError("SquidFilterWheel requires a microcontroller instance")
-        # Use multi-wheel configs if available, otherwise fall back to single config
-        configs = config.squid_wheel_configs if config.squid_wheel_configs else config.controller_config
+        # Use multi-wheel configs if explicitly set, otherwise fall back to single config
+        configs = config.squid_wheel_configs if config.squid_wheel_configs is not None else config.controller_config
         return SquidFilterWheel(microcontroller=microcontroller, configs=configs, skip_init=skip_init)
 
     elif config.controller_type == FilterWheelControllerVariant.ZABER:

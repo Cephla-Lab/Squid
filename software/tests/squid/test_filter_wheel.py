@@ -54,7 +54,6 @@ def test_filter_wheel_config_creation():
         max_index=8,
         min_index=1,
         offset=0.008,
-        homing_enabled=True,
         motor_slot_index=3,
         transitions_per_revolution=4000,
     )
@@ -84,7 +83,6 @@ class TestSquidFilterWheelSkipInit:
             max_index=8,
             min_index=1,
             offset=0.008,
-            homing_enabled=True,
             motor_slot_index=3,
             transitions_per_revolution=4000,
         )
