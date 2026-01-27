@@ -929,7 +929,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
-                self.emission_filter_wheel, self.liveController
+                self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)

@@ -4869,7 +4869,8 @@ class FilterControllerWidget(QFrame):
         # Position combo box
         combo_box = QComboBox()
         for i in range(1, num_positions + 1):
-            filter_name = position_names.get(i, f"Position {i}")
+            # Try both int and string keys (YAML may load as strings)
+            filter_name = position_names.get(i) or position_names.get(str(i)) or f"Position {i}"
             combo_box.addItem(f"{i}: {filter_name}")
         self._combo_boxes[wheel_id] = combo_box
 
