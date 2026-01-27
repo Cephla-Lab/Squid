@@ -7,7 +7,8 @@ that combine external scripts with the built-in acquisition system.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from threading import Event, Thread
+import shlex
+from threading import Event, Lock, Thread
 from typing import Callable, List, Optional
 import subprocess
 import sys
@@ -47,13 +48,22 @@ class SequenceItem:
         return self.sequence_type == SequenceType.ACQUISITION
 
     def get_cycle_values(self) -> List[int]:
-        """Parse comma-separated cycle values."""
+        """Parse comma-separated cycle values.
+
+        Returns:
+            List of integers parsed from cycle_arg_values.
+
+        Raises:
+            ValueError: If cycle_arg_values contains non-integer values.
+        """
         if not self.cycle_arg_values:
             return []
         try:
             return [int(v.strip()) for v in self.cycle_arg_values.split(",")]
-        except ValueError:
-            return []
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid cycle values '{self.cycle_arg_values}': expected comma-separated integers"
+            ) from e
 
     def build_command(self, cycle_value: Optional[int] = None) -> List[str]:
         """Build the command to execute this script.
@@ -66,22 +76,15 @@ class SequenceItem:
         if self.is_acquisition():
             raise ValueError("Cannot build command for acquisition sequence")
 
-        cmd = []
-
         if self.conda_env:
-            # Use conda environment
-            cmd = ["conda", "run", "-n", self.conda_env, "python"]
+            cmd = ["conda", "run", "-n", self.conda_env, "python", self.script_path]
         elif self.python_path:
-            # Use specific Python executable
-            cmd = [self.python_path]
+            cmd = [self.python_path, self.script_path]
         else:
-            # Use the same Python that's running Squid (most reliable default)
-            cmd = [sys.executable]
-
-        cmd.append(self.script_path)
+            cmd = [sys.executable, self.script_path]
 
         if self.arguments:
-            cmd.extend(self.arguments.split())
+            cmd.extend(shlex.split(self.arguments))
 
         if cycle_value is not None and self.cycle_arg_name:
             cmd.extend([f"--{self.cycle_arg_name}", str(cycle_value)])
@@ -112,7 +115,9 @@ class Workflow:
     def ensure_acquisition_exists(self):
         """Ensure the Acquisition sequence exists (add if missing)."""
         if not self.has_acquisition():
-            self.sequences.insert(0, SequenceItem(name="Acquisition", sequence_type=SequenceType.ACQUISITION, included=True))
+            self.sequences.insert(
+                0, SequenceItem(name="Acquisition", sequence_type=SequenceType.ACQUISITION, included=True)
+            )
 
     def validate_cycle_args(self) -> List[str]:
         """Validate cycle arguments match num_cycles. Returns list of errors."""
@@ -121,7 +126,9 @@ class Workflow:
             if seq.cycle_arg_values:
                 values = seq.get_cycle_values()
                 if len(values) != self.num_cycles:
-                    errors.append(f"Sequence '{seq.name}': has {len(values)} cycle values, but Cycles={self.num_cycles}")
+                    errors.append(
+                        f"Sequence '{seq.name}': has {len(values)} cycle values, but Cycles={self.num_cycles}"
+                    )
         return errors
 
     def to_dict(self) -> dict:
@@ -176,6 +183,10 @@ class Workflow:
         """Load workflow from YAML file."""
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
+        if data is None:
+            raise ValueError(f"Workflow file '{file_path}' is empty")
+        if not isinstance(data, dict):
+            raise ValueError(f"Workflow file must contain a YAML dictionary, got {type(data).__name__}")
         return cls.from_dict(data)
 
 
@@ -205,6 +216,7 @@ class WorkflowRunner(QObject):
         self._paused = False
         self._resume_event = Event()
         self._current_process: Optional[subprocess.Popen] = None
+        self._process_lock = Lock()  # Protects _current_process access
         self._acquisition_complete_event = Event()
         self._current_cycle = 0
         self._thread: Optional[Thread] = None
@@ -252,8 +264,9 @@ class WorkflowRunner(QObject):
         """Request the workflow to abort immediately (kills current process)."""
         self._log.info("Workflow abort requested")
         self._abort_requested = True
-        if self._current_process:
-            self._current_process.terminate()
+        with self._process_lock:
+            if self._current_process:
+                self._current_process.terminate()
         # If paused, resume to allow the workflow to exit
         if self._paused:
             self._resume_event.set()
@@ -276,6 +289,8 @@ class WorkflowRunner(QObject):
         """Execute the workflow (runs in background thread)."""
         if not self._workflow:
             self._log.error("No workflow set")
+            self.signal_error.emit("No workflow configured")
+            self.signal_workflow_finished.emit(False)
             return
 
         self._running = True
@@ -301,14 +316,16 @@ class WorkflowRunner(QObject):
                 self.signal_script_output.emit(f"CYCLE {cycle + 1}/{num_cycles}")
                 self.signal_script_output.emit(f"{'='*50}")
 
-                for idx, seq in enumerate(included_sequences):
+                for seq in included_sequences:
                     if self._abort_requested:
                         self._log.info("Workflow stopped by user")
                         success = False
                         break
 
+                    # Find actual index in full sequence list for UI highlighting
+                    seq_index = self._workflow.sequences.index(seq)
                     self._log.info(f"Starting sequence: {seq.name}")
-                    self.signal_sequence_started.emit(idx, seq.name)
+                    self.signal_sequence_started.emit(seq_index, seq.name)
 
                     seq_success = True
                     if seq.is_acquisition():
@@ -321,7 +338,7 @@ class WorkflowRunner(QObject):
                                 cycle_value = values[cycle]
                         seq_success = self._run_script(seq, cycle_value)
 
-                    self.signal_sequence_finished.emit(idx, seq.name, seq_success)
+                    self.signal_sequence_finished.emit(seq_index, seq.name, seq_success)
 
                     if not seq_success:
                         success = False
@@ -385,9 +402,10 @@ class WorkflowRunner(QObject):
             self._log.info(f"Running command: {' '.join(cmd)}")
             self.signal_script_output.emit(f"$ {' '.join(cmd)}")
 
-            self._current_process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-            )
+            with self._process_lock:
+                self._current_process = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                )
 
             # Stream output
             for line in self._current_process.stdout:
@@ -420,4 +438,5 @@ class WorkflowRunner(QObject):
             return False
 
         finally:
-            self._current_process = None
+            with self._process_lock:
+                self._current_process = None

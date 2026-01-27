@@ -1816,9 +1816,8 @@ class HighContentScreeningGui(QMainWindow):
             self.workflowRunner.signal_request_acquisition.connect(self._run_acquisition_for_workflow)
             self.workflowRunner.signal_error.connect(self._on_workflow_error)
             self.workflowRunner.signal_script_output.connect(self._on_script_output)
-
-        # Connect acquisition finished signal to workflow runner
-        self.multipointController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
+            # Connect acquisition finished signal (permanent connection)
+            self.multipointController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
 
         self.workflowRunner.set_workflow(workflow)
         self.workflowRunner.set_acquisition_path_getter(self._get_actual_acquisition_path)
@@ -1841,13 +1840,6 @@ class HighContentScreeningGui(QMainWindow):
         self._set_workflow_controls_enabled(True)
         if self.workflowRunnerDialog:
             self.workflowRunnerDialog.on_workflow_finished(success)
-
-        # Disconnect acquisition finished signal
-        if self.workflowRunner:
-            try:
-                self.multipointController.acquisition_finished.disconnect(self.workflowRunner.on_acquisition_finished)
-            except TypeError:
-                pass  # Already disconnected
 
     def _on_sequence_started(self, index: int, name: str):
         """Handle sequence start."""
@@ -1906,44 +1898,49 @@ class HighContentScreeningGui(QMainWindow):
             self.workflowRunner.request_stop()
 
     def _set_workflow_controls_enabled(self, enabled: bool):
-        """Enable/disable main window controls during workflow."""
-        # Disable navigation controls
-        if hasattr(self, "navigationWidget") and self.navigationWidget:
-            self.navigationWidget.setEnabled(enabled)
+        """Enable/disable main window controls during workflow.
 
-        # Disable live control (but keep display active)
-        if hasattr(self, "liveControlWidget") and self.liveControlWidget:
-            self.liveControlWidget.setEnabled(enabled)
-
-        # Disable autofocus widget
-        if hasattr(self, "autofocusWidget") and self.autofocusWidget:
-            self.autofocusWidget.setEnabled(enabled)
-
-        # Disable objective widget
-        if hasattr(self, "objectivesWidget") and self.objectivesWidget:
-            self.objectivesWidget.setEnabled(enabled)
+        Note: imageDisplayWindow stays enabled for live updates during acquisition.
+        """
+        # Disable control widgets
+        widget_names = ["navigationWidget", "liveControlWidget", "autofocusWidget", "objectivesWidget"]
+        for name in widget_names:
+            widget = getattr(self, name, None)
+            if widget:
+                widget.setEnabled(enabled)
 
         # Disable tab switching and current tab content
-        if hasattr(self, "recordTabWidget") and self.recordTabWidget:
-            self.recordTabWidget.tabBar().setEnabled(enabled)
-            current_widget = self.recordTabWidget.currentWidget()
+        record_tab = getattr(self, "recordTabWidget", None)
+        if record_tab:
+            record_tab.tabBar().setEnabled(enabled)
+            current_widget = record_tab.currentWidget()
             if current_widget:
                 current_widget.setEnabled(enabled)
-
-        # Note: imageDisplayWindow stays enabled for live updates during acquisition
 
     def _run_acquisition_for_workflow(self):
         """Called by workflow runner to start acquisition."""
         self.log.info("Workflow requesting acquisition start")
         widget = self.recordTabWidget.currentWidget()
-        if hasattr(widget, "btn_startAcquisition") and hasattr(widget, "toggle_acquisition"):
-            # Re-enable widget for acquisition
-            widget.setEnabled(True)
-            if not widget.btn_startAcquisition.isChecked():
-                widget.btn_startAcquisition.setChecked(True)
-                widget.toggle_acquisition(True)
-        else:
-            self.log.error("Current widget does not support acquisition")
+
+        # Check if current tab supports acquisition
+        has_acquisition = hasattr(widget, "btn_startAcquisition") and hasattr(widget, "toggle_acquisition")
+        if not has_acquisition:
+            self._handle_acquisition_tab_error()
+            return
+
+        # Re-enable widget and start acquisition
+        widget.setEnabled(True)
+        if not widget.btn_startAcquisition.isChecked():
+            widget.btn_startAcquisition.setChecked(True)
+            widget.toggle_acquisition(True)
+
+    def _handle_acquisition_tab_error(self):
+        """Handle error when current tab does not support acquisition."""
+        error_msg = "Current tab does not support acquisition - switch to a multipoint tab"
+        self.log.error(error_msg)
+        if self.workflowRunner:
+            self.workflowRunner.signal_error.emit(error_msg)
+            self.workflowRunner.on_acquisition_finished()
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""

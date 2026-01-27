@@ -4,7 +4,6 @@ import os
 import sys
 import tempfile
 import pytest
-from unittest.mock import MagicMock, patch
 
 from control.workflow_runner import (
     SequenceItem,
@@ -64,13 +63,14 @@ class TestSequenceItem:
         assert seq.get_cycle_values() == [1, 2, 3]
 
     def test_get_cycle_values_invalid(self):
-        """Test get_cycle_values with invalid values returns empty."""
+        """Test get_cycle_values with invalid values raises ValueError."""
         seq = SequenceItem(
             name="Test",
             sequence_type=SequenceType.SCRIPT,
             cycle_arg_values="a,b,c",
         )
-        assert seq.get_cycle_values() == []
+        with pytest.raises(ValueError, match="Invalid cycle values"):
+            seq.get_cycle_values()
 
     def test_build_command_acquisition_raises(self):
         """Test build_command raises for acquisition sequence."""

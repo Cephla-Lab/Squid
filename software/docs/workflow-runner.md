@@ -164,5 +164,5 @@ if __name__ == "__main__":
 - Test scripts independently before adding to workflow
 - Use the **Pause** feature to inspect results between cycles
 - The Acquisition sequence uses whichever multipoint tab is active when you click Run
-- Script errors are displayed in the log and stop the workflow
+- Script errors are displayed in the log (workflow continues with remaining sequences)
 - You can uncheck **Include** on the Acquisition sequence to run only scripts

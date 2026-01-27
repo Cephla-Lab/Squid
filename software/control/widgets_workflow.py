@@ -5,7 +5,6 @@ Dialog and widgets for configuring and running workflow sequences.
 """
 
 import os
-from typing import Optional
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
@@ -140,7 +139,10 @@ class AddSequenceDialog(QDialog):
 
         if not os.path.exists(script_path):
             reply = QMessageBox.question(
-                self, "Script Not Found", f"Script '{script_path}' does not exist. Add anyway?", QMessageBox.Yes | QMessageBox.No
+                self,
+                "Script Not Found",
+                f"Script '{script_path}' does not exist. Add anyway?",
+                QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
                 return
@@ -308,56 +310,68 @@ class WorkflowRunnerDialog(QDialog):
         self.table.setRowCount(len(self._workflow.sequences))
 
         for row, seq in enumerate(self._workflow.sequences):
-            # Include checkbox
-            checkbox = QCheckBox()
-            checkbox.setChecked(seq.included)
-            checkbox.toggled.connect(lambda checked, r=row: self._on_include_toggled(r, checked))
-            cell_widget = QWidget()
-            cell_layout = QHBoxLayout(cell_widget)
-            cell_layout.addWidget(checkbox)
-            cell_layout.setAlignment(Qt.AlignCenter)
-            cell_layout.setContentsMargins(0, 0, 0, 0)
-            self.table.setCellWidget(row, self.COL_INCLUDE, cell_widget)
+            self._populate_table_row(row, seq)
 
-            # Name (read-only for Acquisition)
-            name_item = QTableWidgetItem(seq.name)
-            if seq.is_acquisition():
-                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-                name_item.setBackground(QColor(240, 240, 255))  # Light blue tint
-            self.table.setItem(row, self.COL_NAME, name_item)
+    def _populate_table_row(self, row: int, seq: SequenceItem):
+        """Populate a single table row with sequence data."""
+        is_acq = seq.is_acquisition()
 
-            # Command (script path + args, or "Built-in" for Acquisition)
-            if seq.is_acquisition():
-                cmd_item = QTableWidgetItem("(Built-in Acquisition)")
-                cmd_item.setFlags(cmd_item.flags() & ~Qt.ItemIsEditable)
-                cmd_item.setForeground(QColor(128, 128, 128))
-                cmd_item.setBackground(QColor(240, 240, 255))
-            else:
-                cmd_text = seq.script_path or ""
-                if seq.arguments:
-                    cmd_text += f" {seq.arguments}"
-                if seq.conda_env:
-                    cmd_text = f"[{seq.conda_env}] {cmd_text}"
-                elif seq.python_path:
-                    cmd_text = f"[{os.path.basename(seq.python_path)}] {cmd_text}"
-                cmd_item = QTableWidgetItem(cmd_text)
-            self.table.setItem(row, self.COL_COMMAND, cmd_item)
+        # Include checkbox
+        checkbox = QCheckBox()
+        checkbox.setChecked(seq.included)
+        checkbox.toggled.connect(lambda checked, r=row: self._on_include_toggled(r, checked))
+        cell_widget = QWidget()
+        cell_layout = QHBoxLayout(cell_widget)
+        cell_layout.addWidget(checkbox)
+        cell_layout.setAlignment(Qt.AlignCenter)
+        cell_layout.setContentsMargins(0, 0, 0, 0)
+        self.table.setCellWidget(row, self.COL_INCLUDE, cell_widget)
 
-            # Cycle Arg name
-            cycle_arg_item = QTableWidgetItem(seq.cycle_arg_name or "")
-            if seq.is_acquisition():
-                cycle_arg_item.setFlags(cycle_arg_item.flags() & ~Qt.ItemIsEditable)
-                cycle_arg_item.setForeground(QColor(128, 128, 128))
-                cycle_arg_item.setBackground(QColor(240, 240, 255))
-            self.table.setItem(row, self.COL_CYCLE_ARG, cycle_arg_item)
+        # Name
+        name_item = QTableWidgetItem(seq.name)
+        self._apply_acquisition_styling(name_item, is_acq)
+        self.table.setItem(row, self.COL_NAME, name_item)
 
-            # Cycle Values
-            cycle_values_item = QTableWidgetItem(seq.cycle_arg_values or "")
-            if seq.is_acquisition():
-                cycle_values_item.setFlags(cycle_values_item.flags() & ~Qt.ItemIsEditable)
-                cycle_values_item.setForeground(QColor(128, 128, 128))
-                cycle_values_item.setBackground(QColor(240, 240, 255))
-            self.table.setItem(row, self.COL_CYCLE_VALUES, cycle_values_item)
+        # Command
+        cmd_item = self._create_command_item(seq)
+        self.table.setItem(row, self.COL_COMMAND, cmd_item)
+
+        # Cycle Arg name
+        cycle_arg_item = QTableWidgetItem(seq.cycle_arg_name or "")
+        self._apply_acquisition_styling(cycle_arg_item, is_acq, include_foreground=True)
+        self.table.setItem(row, self.COL_CYCLE_ARG, cycle_arg_item)
+
+        # Cycle Values
+        cycle_values_item = QTableWidgetItem(seq.cycle_arg_values or "")
+        self._apply_acquisition_styling(cycle_values_item, is_acq, include_foreground=True)
+        self.table.setItem(row, self.COL_CYCLE_VALUES, cycle_values_item)
+
+    def _create_command_item(self, seq: SequenceItem) -> QTableWidgetItem:
+        """Create the command column item for a sequence."""
+        if seq.is_acquisition():
+            item = QTableWidgetItem("(Built-in Acquisition)")
+            self._apply_acquisition_styling(item, is_acquisition=True, include_foreground=True)
+            return item
+
+        cmd_text = seq.script_path or ""
+        if seq.arguments:
+            cmd_text += f" {seq.arguments}"
+        if seq.conda_env:
+            cmd_text = f"[{seq.conda_env}] {cmd_text}"
+        elif seq.python_path:
+            cmd_text = f"[{os.path.basename(seq.python_path)}] {cmd_text}"
+        return QTableWidgetItem(cmd_text)
+
+    def _apply_acquisition_styling(
+        self, item: QTableWidgetItem, is_acquisition: bool, include_foreground: bool = False
+    ):
+        """Apply read-only styling for acquisition sequence items."""
+        if not is_acquisition:
+            return
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        item.setBackground(QColor(240, 240, 255))  # Light blue
+        if include_foreground:
+            item.setForeground(QColor(128, 128, 128))  # Gray text
 
     def _on_include_toggled(self, row: int, checked: bool):
         """Handle include checkbox toggle."""
@@ -401,11 +415,15 @@ class WorkflowRunnerDialog(QDialog):
         seq = self._workflow.sequences[current_row]
         if seq.is_acquisition():
             QMessageBox.warning(
-                self, "Cannot Remove", "The 'Acquisition' sequence cannot be removed. " "Uncheck 'Include' to skip it instead."
+                self,
+                "Cannot Remove",
+                "The 'Acquisition' sequence cannot be removed. " "Uncheck 'Include' to skip it instead.",
             )
             return
 
-        reply = QMessageBox.question(self, "Confirm Remove", f"Remove sequence '{seq.name}'?", QMessageBox.Yes | QMessageBox.No)
+        reply = QMessageBox.question(
+            self, "Confirm Remove", f"Remove sequence '{seq.name}'?", QMessageBox.Yes | QMessageBox.No
+        )
         if reply == QMessageBox.Yes:
             del self._workflow.sequences[current_row]
             self._load_workflow_to_table()
@@ -463,7 +481,9 @@ class WorkflowRunnerDialog(QDialog):
         # Confirmation
         seq_names = [s.name for s in included]
         num_cycles = self._workflow.num_cycles
-        msg = f"Run workflow with {len(included)} sequences?\n\n" + "\n".join(f"  {i+1}. {name}" for i, name in enumerate(seq_names))
+        msg = f"Run workflow with {len(included)} sequences?\n\n" + "\n".join(
+            f"  {i+1}. {name}" for i, name in enumerate(seq_names)
+        )
 
         if num_cycles > 1:
             msg += f"\n\nThis will repeat for {num_cycles} cycles."
@@ -525,19 +545,20 @@ class WorkflowRunnerDialog(QDialog):
     def highlight_sequence(self, index: int):
         """Highlight the currently running sequence."""
         for row in range(self.table.rowCount()):
-            is_running = row == index
+            background = self._get_row_background_color(row, is_running=(row == index))
             for col in range(self.table.columnCount()):
                 item = self.table.item(row, col)
                 if item:
-                    if is_running:
-                        item.setBackground(QColor(200, 255, 200))  # Light green
-                    else:
-                        # Restore original color
-                        seq = self._workflow.sequences[row] if row < len(self._workflow.sequences) else None
-                        if seq and seq.is_acquisition():
-                            item.setBackground(QColor(240, 240, 255))  # Light blue
-                        else:
-                            item.setBackground(QColor(255, 255, 255))  # White
+                    item.setBackground(background)
+
+    def _get_row_background_color(self, row: int, is_running: bool = False) -> QColor:
+        """Get the appropriate background color for a table row."""
+        if is_running:
+            return QColor(200, 255, 200)  # Light green for running
+        seq = self._workflow.sequences[row] if row < len(self._workflow.sequences) else None
+        if seq and seq.is_acquisition():
+            return QColor(240, 240, 255)  # Light blue for acquisition
+        return QColor(255, 255, 255)  # White for scripts
 
     def clear_highlight(self):
         """Clear all row highlights."""
@@ -547,29 +568,30 @@ class WorkflowRunnerDialog(QDialog):
         """Update UI based on running state."""
         self._is_running = running
         self._is_paused = False
-        self.btn_run.setEnabled(not running)
-        self.btn_insert_above.setEnabled(not running)
-        self.btn_insert_below.setEnabled(not running)
-        self.btn_remove.setEnabled(not running)
-        self.btn_save.setEnabled(not running)
-        self.btn_load.setEnabled(not running)
-        self.spinbox_cycles.setEnabled(not running)
 
-        # Pause and Stop buttons
+        # Enable/disable editing controls (inverse of running state)
+        for widget in [
+            self.btn_run,
+            self.btn_insert_above,
+            self.btn_insert_below,
+            self.btn_remove,
+            self.btn_save,
+            self.btn_load,
+            self.spinbox_cycles,
+        ]:
+            widget.setEnabled(not running)
+
+        # Pause and Stop buttons enabled when running
         self.btn_pause.setEnabled(running)
         self.btn_stop.setEnabled(running)
         self.btn_pause.setText("Pause")
 
         if running:
-            self.btn_run.setText("Run")
             self.label_status.setText("Workflow running...")
             self.label_status.setStyleSheet("color: blue;")
-            # Clear output for new run
             self.text_output.clear()
         else:
-            self.btn_run.setText("Run")
             self.clear_highlight()
-            # Reset status if not set by on_workflow_finished
             if "Running:" in self.label_status.text():
                 self.label_status.setText("Ready")
                 self.label_status.setStyleSheet("color: black;")
@@ -621,9 +643,7 @@ class WorkflowRunnerDialog(QDialog):
         from datetime import datetime
 
         default_name = f"workflow_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Log", default_name, "Text Files (*.txt);;All Files (*)"
-        )
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Log", default_name, "Text Files (*.txt);;All Files (*)")
         if file_path:
             try:
                 with open(file_path, "w") as f:
@@ -634,3 +654,20 @@ class WorkflowRunnerDialog(QDialog):
                 QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
                 self.label_status.setText(f"Save failed: {e}")
                 self.label_status.setStyleSheet("color: red;")
+
+    def closeEvent(self, event):
+        """Handle dialog close - warn if workflow is running."""
+        if self._is_running:
+            reply = QMessageBox.question(
+                self,
+                "Workflow Running",
+                "A workflow is currently running. Stop it and close?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self.signal_stop_workflow.emit()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
