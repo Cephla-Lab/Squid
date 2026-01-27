@@ -123,7 +123,7 @@ static const int ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8;
 static const int ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20;
 
-// Laser ports - port-based names (preferred)
+// Illumination Control TTL Ports - port-based names (preferred)
 // These correspond to controller_port D1-D5 in software configuration
 static const int ILLUMINATION_D1 = 11;
 static const int ILLUMINATION_D2 = 12;
@@ -131,7 +131,7 @@ static const int ILLUMINATION_D3 = 14;  // 561nm - note: not sequential
 static const int ILLUMINATION_D4 = 13;  // 638nm - note: not sequential
 static const int ILLUMINATION_D5 = 15;
 
-// Laser ports - legacy wavelength-based names (deprecated, kept for compatibility)
+// Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
 // Use ILLUMINATION_D1-D5 for new code; wavelength is configured in software YAML
 static const int ILLUMINATION_SOURCE_405NM = 11;  // Same value as ILLUMINATION_D1
 static const int ILLUMINATION_SOURCE_488NM = 12;  // Same value as ILLUMINATION_D2

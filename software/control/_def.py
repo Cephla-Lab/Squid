@@ -251,7 +251,7 @@ class ILLUMINATION_CODE:
     LED Matrix Patterns (USB ports):
         USB1-USB8 map to pattern codes 0-8+.
 
-    Laser Ports (D1-D5):
+    Illumination Control TTL Ports (D1-D5):
         Port-based names (ILLUMINATION_D1-D5) are preferred for new code.
         Wavelength-based names (ILLUMINATION_SOURCE_405NM, etc.) are kept as
         aliases for backward compatibility. The actual wavelength is configured
@@ -270,7 +270,7 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
 
-    # Laser ports - port-based names (preferred)
+    # Illumination Control TTL Ports - port-based names (preferred)
     # These correspond to controller_port D1-D5 in illumination_channel_config.yaml
     # Note: D3/D4 are not sequential due to physical wiring
     ILLUMINATION_D1 = 11
@@ -279,7 +279,7 @@ class ILLUMINATION_CODE:
     ILLUMINATION_D4 = 13  # 638nm
     ILLUMINATION_D5 = 15
 
-    # Laser ports - legacy wavelength-based names (deprecated, kept for compatibility)
+    # Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
     # Use ILLUMINATION_D1-D5 for new code; wavelength is configured in YAML
     ILLUMINATION_SOURCE_405NM = ILLUMINATION_D1  # Alias for ILLUMINATION_D1
     ILLUMINATION_SOURCE_488NM = ILLUMINATION_D2  # Alias for ILLUMINATION_D2
