@@ -238,23 +238,23 @@ void turn_on_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_D1:  // 405nm
+    case ILLUMINATION_D1:
       if(INTERLOCK_OK())
         digitalWrite(PIN_ILLUMINATION_D1, HIGH);
       break;
-    case ILLUMINATION_D2:  // 488nm
+    case ILLUMINATION_D2:
       if(INTERLOCK_OK())
         digitalWrite(PIN_ILLUMINATION_D2, HIGH);
       break;
-    case ILLUMINATION_D3:  // 561nm
+    case ILLUMINATION_D3:
       if(INTERLOCK_OK())
         digitalWrite(PIN_ILLUMINATION_D3, HIGH);
       break;
-    case ILLUMINATION_D4:  // 638nm
+    case ILLUMINATION_D4:
       if(INTERLOCK_OK())
         digitalWrite(PIN_ILLUMINATION_D4, HIGH);
       break;
-    case ILLUMINATION_D5:  // 730nm
+    case ILLUMINATION_D5:
       if(INTERLOCK_OK())
         digitalWrite(PIN_ILLUMINATION_D5, HIGH);
       break;
@@ -294,19 +294,19 @@ void turn_off_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_D1:  // 405nm
+    case ILLUMINATION_D1:
       digitalWrite(PIN_ILLUMINATION_D1, LOW);
       break;
-    case ILLUMINATION_D2:  // 488nm
+    case ILLUMINATION_D2:
       digitalWrite(PIN_ILLUMINATION_D2, LOW);
       break;
-    case ILLUMINATION_D3:  // 561nm
+    case ILLUMINATION_D3:
       digitalWrite(PIN_ILLUMINATION_D3, LOW);
       break;
-    case ILLUMINATION_D4:  // 638nm
+    case ILLUMINATION_D4:
       digitalWrite(PIN_ILLUMINATION_D4, LOW);
       break;
-    case ILLUMINATION_D5:  // 730nm
+    case ILLUMINATION_D5:
       digitalWrite(PIN_ILLUMINATION_D5, LOW);
       break;
   }
@@ -319,19 +319,19 @@ void set_illumination(int source, uint16_t intensity)
   illumination_intensity = intensity * illumination_intensity_factor;
   switch (source)
   {
-    case ILLUMINATION_SOURCE_405NM:
+    case ILLUMINATION_D1:
       set_DAC8050x_output(0, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_488NM:
+    case ILLUMINATION_D2:
       set_DAC8050x_output(1, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_638NM:
-      set_DAC8050x_output(3, illumination_intensity);
-      break;
-    case ILLUMINATION_SOURCE_561NM:
+    case ILLUMINATION_D3:
       set_DAC8050x_output(2, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_730NM:
+    case ILLUMINATION_D4:
+      set_DAC8050x_output(3, illumination_intensity);
+      break;
+    case ILLUMINATION_D5:
       set_DAC8050x_output(4, illumination_intensity);
       break;
   }

@@ -16,7 +16,7 @@ void init_serial_communication()
 void init_lasers_and_led_driver() {
 #ifndef DISABLE_LASER_INTERLOCK
   // laser safety interlock
-  pinMode(LASER_INTERLOCK, INPUT_PULLUP);
+  pinMode(PIN_ILLUMINATION_INTERLOCK, INPUT_PULLUP);
 #endif
 
   // Illumination Control TTL Ports

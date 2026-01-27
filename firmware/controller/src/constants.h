@@ -25,13 +25,13 @@ typedef struct pid_arguments {
 /***************************************************************************************************/
 // Teensy4.1 board v1 def
 
-// Illumination Control TTL Ports - pin assignments
-// Note: D3/D4 source codes are swapped (D3=14, D4=13) but pins are in order
-static const int PIN_ILLUMINATION_D1 = 5;   // 405nm
-static const int PIN_ILLUMINATION_D2 = 4;   // 488nm
-static const int PIN_ILLUMINATION_D3 = 22;  // 561nm
-static const int PIN_ILLUMINATION_D4 = 3;   // 638nm
-static const int PIN_ILLUMINATION_D5 = 23;  // 730nm
+// Illumination Control TTL Ports - GPIO pin assignments
+// Pin numbers are based on PCB layout, not sequential
+static const int PIN_ILLUMINATION_D1 = 5;
+static const int PIN_ILLUMINATION_D2 = 4;
+static const int PIN_ILLUMINATION_D3 = 22;
+static const int PIN_ILLUMINATION_D4 = 3;
+static const int PIN_ILLUMINATION_D5 = 23;
 static const int PIN_ILLUMINATION_INTERLOCK = 2;
 
 // Legacy aliases (deprecated, kept for compatibility)
@@ -46,7 +46,7 @@ static const int LASER_INTERLOCK = PIN_ILLUMINATION_INTERLOCK;
 #ifdef DISABLE_LASER_INTERLOCK
 static inline bool INTERLOCK_OK() { return true; }
 #else
-static inline bool INTERLOCK_OK() { return digitalRead(LASER_INTERLOCK) == LOW; }
+static inline bool INTERLOCK_OK() { return digitalRead(PIN_ILLUMINATION_INTERLOCK) == LOW; }
 #endif
 
 // PWM6 2

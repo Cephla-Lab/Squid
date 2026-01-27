@@ -125,18 +125,19 @@ static const int ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20;
 
 // Illumination Control TTL Ports - port-based names (preferred)
 // These correspond to controller_port D1-D5 in software configuration
+// Note: D3/D4 source codes are non-sequential (14, 13) for historical API compatibility
 static const int ILLUMINATION_D1 = 11;
 static const int ILLUMINATION_D2 = 12;
-static const int ILLUMINATION_D3 = 14;  // 561nm - note: not sequential
-static const int ILLUMINATION_D4 = 13;  // 638nm - note: not sequential
+static const int ILLUMINATION_D3 = 14;
+static const int ILLUMINATION_D4 = 13;
 static const int ILLUMINATION_D5 = 15;
 
 // Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
 // Use ILLUMINATION_D1-D5 for new code; wavelength is configured in software YAML
-static const int ILLUMINATION_SOURCE_405NM = 11;  // Same value as ILLUMINATION_D1
-static const int ILLUMINATION_SOURCE_488NM = 12;  // Same value as ILLUMINATION_D2
-static const int ILLUMINATION_SOURCE_561NM = 14;  // Same value as ILLUMINATION_D3
-static const int ILLUMINATION_SOURCE_638NM = 13;  // Same value as ILLUMINATION_D4
-static const int ILLUMINATION_SOURCE_730NM = 15;  // Same value as ILLUMINATION_D5
+static const int ILLUMINATION_SOURCE_405NM = 11;
+static const int ILLUMINATION_SOURCE_488NM = 12;
+static const int ILLUMINATION_SOURCE_561NM = 14;
+static const int ILLUMINATION_SOURCE_638NM = 13;
+static const int ILLUMINATION_SOURCE_730NM = 15;
 
 #endif // CONSTANTS_PROTOCOL_H
