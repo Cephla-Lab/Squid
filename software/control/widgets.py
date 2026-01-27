@@ -4853,10 +4853,24 @@ class FilterControllerWidget(QFrame):
         except Exception:
             num_positions = 8  # Fallback
 
+        # Get position names from registry if available
+        position_names = {}
+        if self.config_repo:
+            try:
+                registry = self.config_repo.get_filter_wheel_registry()
+                if registry and registry.filter_wheels:
+                    for wheel in registry.filter_wheels:
+                        if wheel.id == wheel_id:
+                            position_names = wheel.positions
+                            break
+            except Exception as e:
+                self._log.warning(f"Failed to get filter position names for wheel {wheel_id}: {e}")
+
         # Position combo box
         combo_box = QComboBox()
         for i in range(1, num_positions + 1):
-            combo_box.addItem(f"Position {i}")
+            filter_name = position_names.get(i, f"Position {i}")
+            combo_box.addItem(f"{i}: {filter_name}")
         self._combo_boxes[wheel_id] = combo_box
 
         # Create buttons
@@ -15580,7 +15594,7 @@ def _populate_filter_positions_for_combo(
     config_repo,
     current_position: Optional[int] = None,
 ) -> None:
-    """Populate filter position dropdown, auto-resolving single-wheel systems.
+    """Populate filter position dropdown, auto-resolving wheel selection.
 
     Args:
         combo: The QComboBox to populate
@@ -15599,21 +15613,21 @@ def _populate_filter_positions_for_combo(
         combo.setEnabled(False)
         return
 
-    # Resolve wheel: explicit name, or auto-select if single wheel
+    # Resolve wheel: explicit name, or auto-select first wheel
     wheel = None
     if channel_wheel and channel_wheel not in ("(None)", "auto"):
         # Explicit wheel name specified
         wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
         if not wheel and registry:
             logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
-    elif has_registry and len(registry.filter_wheels) == 1:
-        # Single wheel system - auto-select
+    elif has_registry:
+        # Auto-select first wheel (works for both single and multi-wheel systems)
         wheel = registry.get_first_wheel()
 
     if not wheel:
         # No wheel resolved - check if we should show default positions or N/A
         if has_registry or _is_filter_wheel_enabled():
-            # Filter wheel exists but no selection - show default positions
+            # Filter wheel enabled but no registry - show default positions
             combo.setEnabled(True)
             for pos in range(1, 9):
                 combo.addItem(f"Position {pos}", pos)
