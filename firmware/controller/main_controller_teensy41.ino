@@ -16,14 +16,14 @@ void setup() {
 
 void loop() {
 
-  // laser safety interlock - turn off all lasers if interlock is triggered
+  // Illumination safety interlock - turn off all TTL ports if interlock is triggered
   if (!INTERLOCK_OK())
   {
-    digitalWrite(LASER_405nm,LOW);
-    digitalWrite(LASER_488nm,LOW);
-    digitalWrite(LASER_561nm,LOW);
-    digitalWrite(LASER_638nm,LOW);
-    digitalWrite(LASER_730nm,LOW);
+    digitalWrite(PIN_ILLUMINATION_D1, LOW);
+    digitalWrite(PIN_ILLUMINATION_D2, LOW);
+    digitalWrite(PIN_ILLUMINATION_D3, LOW);
+    digitalWrite(PIN_ILLUMINATION_D4, LOW);
+    digitalWrite(PIN_ILLUMINATION_D5, LOW);
   }
 
   joystick_packetSerial.update();

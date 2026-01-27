@@ -238,25 +238,25 @@ void turn_on_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_SOURCE_405NM:
+    case ILLUMINATION_D1:  // 405nm
       if(INTERLOCK_OK())
-        digitalWrite(LASER_405nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D1, HIGH);
       break;
-    case ILLUMINATION_SOURCE_488NM:
+    case ILLUMINATION_D2:  // 488nm
       if(INTERLOCK_OK())
-        digitalWrite(LASER_488nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D2, HIGH);
       break;
-    case ILLUMINATION_SOURCE_638NM:
+    case ILLUMINATION_D3:  // 561nm
       if(INTERLOCK_OK())
-        digitalWrite(LASER_638nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D3, HIGH);
       break;
-    case ILLUMINATION_SOURCE_561NM:
+    case ILLUMINATION_D4:  // 638nm
       if(INTERLOCK_OK())
-        digitalWrite(LASER_561nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D4, HIGH);
       break;
-    case ILLUMINATION_SOURCE_730NM:
+    case ILLUMINATION_D5:  // 730nm
       if(INTERLOCK_OK())
-        digitalWrite(LASER_730nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D5, HIGH);
       break;
   }
 }
@@ -294,20 +294,20 @@ void turn_off_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_SOURCE_405NM:
-      digitalWrite(LASER_405nm, LOW);
+    case ILLUMINATION_D1:  // 405nm
+      digitalWrite(PIN_ILLUMINATION_D1, LOW);
       break;
-    case ILLUMINATION_SOURCE_488NM:
-      digitalWrite(LASER_488nm, LOW);
+    case ILLUMINATION_D2:  // 488nm
+      digitalWrite(PIN_ILLUMINATION_D2, LOW);
       break;
-    case ILLUMINATION_SOURCE_638NM:
-      digitalWrite(LASER_638nm, LOW);
+    case ILLUMINATION_D3:  // 561nm
+      digitalWrite(PIN_ILLUMINATION_D3, LOW);
       break;
-    case ILLUMINATION_SOURCE_561NM:
-      digitalWrite(LASER_561nm, LOW);
+    case ILLUMINATION_D4:  // 638nm
+      digitalWrite(PIN_ILLUMINATION_D4, LOW);
       break;
-    case ILLUMINATION_SOURCE_730NM:
-      digitalWrite(LASER_730nm, LOW);
+    case ILLUMINATION_D5:  // 730nm
+      digitalWrite(PIN_ILLUMINATION_D5, LOW);
       break;
   }
   illumination_is_on = false;
