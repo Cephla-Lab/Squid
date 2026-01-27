@@ -83,10 +83,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
         time.sleep(0.5)
 
         # Common PID setup for both wheels (they share identical encoder settings)
+        # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
+        # because the firmware's protocol_axis_to_internal() handles mapping.
         if HAS_ENCODER_W:
-            self.microcontroller.set_pid_arguments(motor_slot, PID_P_W, PID_I_W, PID_D_W)
-            self.microcontroller.configure_stage_pid(motor_slot, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
-            self.microcontroller.turn_on_stage_pid(motor_slot, ENABLE_PID_W)
+            self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
+            self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
+            self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
 
     def _move_wheel(self, wheel_id: int, delta: float):
         """Move a specific wheel by delta distance.
