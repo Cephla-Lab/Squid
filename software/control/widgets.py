@@ -16324,30 +16324,58 @@ class FilterWheelConfiguratorDialog(QDialog):
 
     def _load_config(self):
         """Load filter wheel registry from config."""
-        from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition
+        from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition, FilterWheelType
 
         self.registry = self.config_repo.get_filter_wheel_registry()
 
         # Check if filter wheel is enabled in .ini
         filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+        configured_indices = getattr(control._def, "EMISSION_FILTER_WHEEL_INDICES", [1])
 
-        # If no registry exists but filter wheel is enabled, create one with an unnamed wheel
+        # If no registry exists but filter wheel is enabled, create one with wheels for all configured indices
         if self.registry is None:
             if filter_wheel_enabled:
-                # Create unnamed wheel with default positions
                 default_positions = {i: f"Position {i}" for i in range(1, 9)}
-                self.registry = FilterWheelRegistryConfig(
-                    filter_wheels=[FilterWheelDefinition(positions=default_positions)]
-                )
+                wheels = []
+                for wheel_id in configured_indices:
+                    if len(configured_indices) == 1:
+                        # Single wheel: no name/id needed
+                        wheels.append(
+                            FilterWheelDefinition(type=FilterWheelType.EMISSION, positions=default_positions.copy())
+                        )
+                    else:
+                        # Multi-wheel: use id to distinguish
+                        wheels.append(
+                            FilterWheelDefinition(
+                                id=wheel_id, type=FilterWheelType.EMISSION, positions=default_positions.copy()
+                            )
+                        )
+                self.registry = FilterWheelRegistryConfig(filter_wheels=wheels)
             else:
                 self.registry = FilterWheelRegistryConfig(filter_wheels=[])
+
+        # Ensure registry has entries for all wheels configured in .ini
+        # This handles the case where user updated .ini but didn't update filter_wheels.yaml
+        if filter_wheel_enabled and len(configured_indices) > 1:
+            existing_ids = {w.id for w in self.registry.filter_wheels if w.id is not None}
+            default_positions = {i: f"Position {i}" for i in range(1, 9)}
+            for wheel_id in configured_indices:
+                if wheel_id not in existing_ids:
+                    self._log.info(
+                        f"Auto-creating filter wheel entry for wheel {wheel_id} (configured in .ini but missing in filter_wheels.yaml)"
+                    )
+                    self.registry.filter_wheels.append(
+                        FilterWheelDefinition(
+                            id=wheel_id, type=FilterWheelType.EMISSION, positions=default_positions.copy()
+                        )
+                    )
 
         # For single wheel systems: remove name if present (migrate from old "Emission" name)
         is_single_wheel = len(self.registry.filter_wheels) == 1
         if is_single_wheel:
             wheel = self.registry.filter_wheels[0]
             if wheel.name is not None or wheel.id is not None:
-                self.registry.filter_wheels[0] = FilterWheelDefinition(positions=wheel.positions)
+                self.registry.filter_wheels[0] = FilterWheelDefinition(type=wheel.type, positions=wheel.positions)
 
         # Hide wheel selector for single-wheel systems
         self.wheel_label.setVisible(not is_single_wheel)
