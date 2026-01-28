@@ -33,6 +33,43 @@ class ShutterControlMode(Enum):
 
 
 class IlluminationController:
+    """Controls microscope illumination (LEDs, lasers, LED matrix).
+
+    Two API styles are available:
+
+    **Legacy API (single-channel, any firmware):**
+        Use when only ONE illumination source is needed at a time.
+        This is the standard acquisition workflow.
+
+        - set_intensity(wavelength, intensity) - Set intensity by wavelength
+        - turn_on_illumination() / turn_off_illumination() - Control current source
+
+        Example:
+            controller.set_intensity(488, 50)  # 488nm at 50%
+            controller.turn_on_illumination()
+            # ... acquire image ...
+            controller.turn_off_illumination()
+
+    **Multi-port API (firmware v1.0+):**
+        Use when MULTIPLE illumination sources must be ON simultaneously.
+        Requires firmware v1.0 or later (checked automatically).
+
+        - set_port_intensity(port_index, intensity) - Set intensity by port (0=D1, 1=D2, ...)
+        - turn_on_port(port_index) / turn_off_port(port_index) - Control specific port
+        - turn_on_multiple_ports([port_indices]) - Turn on multiple ports at once
+        - turn_off_all_ports() - Turn off all ports
+
+        Example:
+            controller.set_port_intensity(0, 50)  # D1 at 50%
+            controller.set_port_intensity(1, 30)  # D2 at 30%
+            controller.turn_on_multiple_ports([0, 1])  # Both ON simultaneously
+            # ... acquire image ...
+            controller.turn_off_all_ports()
+
+    Note: The two APIs share underlying hardware state. Using legacy commands
+    will update the corresponding port state, and vice versa.
+    """
+
     def __init__(
         self,
         microcontroller: Microcontroller,
@@ -43,7 +80,13 @@ class IlluminationController:
         disable_intensity_calibration=False,
     ):
         """
-        disable_intensity_calibration: for Squid LEDs and lasers only - set to True to control LED/laser current directly
+        Args:
+            microcontroller: MCU interface for hardware communication
+            intensity_control_mode: How intensity is controlled (DAC or software)
+            shutter_control_mode: How shutter is controlled (TTL or software)
+            light_source_type: Type of light source (SquidLED, SquidLaser, etc.)
+            light_source: External light source object (for software control)
+            disable_intensity_calibration: Set True to control LED/laser current directly
         """
         self.microcontroller = microcontroller
         self.intensity_control_mode = intensity_control_mode
