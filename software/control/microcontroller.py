@@ -767,6 +767,9 @@ class Microcontroller:
     def set_port_intensity(self, port_index: int, intensity: float):
         """Set DAC intensity for a specific port without changing on/off state.
 
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
             intensity: Intensity percentage (0-100), clamped to valid range
@@ -790,6 +793,9 @@ class Microcontroller:
     def turn_on_port(self, port_index: int):
         """Turn on a specific illumination port.
 
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
 
@@ -807,6 +813,9 @@ class Microcontroller:
     def turn_off_port(self, port_index: int):
         """Turn off a specific illumination port.
 
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
 
@@ -823,6 +832,9 @@ class Microcontroller:
 
     def set_port_illumination(self, port_index: int, intensity: float, turn_on: bool):
         """Set intensity and on/off state for a specific port in one command.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
 
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
@@ -852,6 +864,9 @@ class Microcontroller:
         This allows turning multiple ports on/off in a single command while
         leaving other ports unchanged.
 
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
         Args:
             port_mask: 16-bit mask of which ports to update (bit 0=D1, bit 15=D16)
             on_mask: 16-bit mask of on/off state for selected ports (1=on, 0=off)
@@ -870,7 +885,11 @@ class Microcontroller:
         self.send_command(cmd)
 
     def turn_off_all_ports(self):
-        """Turn off all illumination ports."""
+        """Turn off all illumination ports.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+        """
         self.log.debug("[MCU] turn_off_all_ports")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
