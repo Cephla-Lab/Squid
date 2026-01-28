@@ -535,6 +535,12 @@ def validate_channel_group(
     """
     errors = []
 
+    # Check for duplicate channel names in the group
+    channel_names = [entry.name for entry in group.channels]
+    if len(channel_names) != len(set(channel_names)):
+        duplicates = [name for name in set(channel_names) if channel_names.count(name) > 1]
+        errors.append(f"Group '{group.name}' has duplicate channels: {duplicates}")
+
     # Track cameras used (v1.0: camera field is int ID)
     cameras_used: List[Optional[int]] = []
     for entry in group.channels:
