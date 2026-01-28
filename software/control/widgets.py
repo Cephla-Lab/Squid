@@ -5,6 +5,7 @@ import json
 import yaml
 import logging
 import sys
+from enum import IntEnum
 from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 
@@ -149,6 +150,117 @@ def save_last_used_saving_path(path: str) -> None:
                 f.write(path)
         except OSError:
             pass  # Silently fail - caching is a convenience feature
+
+
+# -----------------------------------------------------------------------------
+# Z-stack mode helpers (shared between FlexibleMultiPointWidget and WellplateMultiPointWidget)
+# -----------------------------------------------------------------------------
+
+
+class ZStackMode(IntEnum):
+    """Z-stack acquisition modes.
+
+    Values 0-2 match Z_STACKING_CONFIG_MAP in _def.py for worker configuration.
+    SET_RANGE is UI-only (uses FROM_BOTTOM for worker, but different AF behavior).
+    """
+
+    FROM_BOTTOM = 0  # Start at current Z, go up
+    FROM_CENTER = 1  # Center around current Z
+    FROM_TOP = 2  # Start at current Z, go down
+    SET_RANGE = 3  # User specifies absolute Z min/max (UI-only)
+
+    @property
+    def allows_contrast_af(self) -> bool:
+        """Contrast AF only works when focus plane is at center of z-stack."""
+        return self == ZStackMode.FROM_CENTER
+
+    @property
+    def allows_laser_af(self) -> bool:
+        """Laser AF only works when starting from bottom (can find surface first)."""
+        return self == ZStackMode.FROM_BOTTOM
+
+    @property
+    def worker_config_index(self) -> int:
+        """Get the index for Z_STACKING_CONFIG_MAP (SET_RANGE uses FROM_BOTTOM)."""
+        if self == ZStackMode.SET_RANGE:
+            return ZStackMode.FROM_BOTTOM.value
+        return self.value
+
+
+def calculate_z_range(current_z_mm: float, dz_um: float, nz: int, mode: ZStackMode) -> tuple:
+    """Calculate z-range based on current position and z-stack mode.
+
+    Args:
+        current_z_mm: Current stage Z position in mm
+        dz_um: Step size in micrometers
+        nz: Number of z-slices
+        mode: Z-stack mode (FROM_BOTTOM, FROM_CENTER, or FROM_TOP)
+
+    Returns:
+        Tuple of (min_z_mm, max_z_mm) for set_z_range()
+
+    Note:
+        SET_RANGE mode should not use this function - the user specifies Z min/max directly.
+    """
+    dz_mm = dz_um / 1000
+    total_z_travel = dz_mm * (nz - 1)
+
+    if mode == ZStackMode.FROM_CENTER:
+        half_range = total_z_travel / 2
+        return (current_z_mm - half_range, current_z_mm + half_range)
+    elif mode == ZStackMode.FROM_TOP:
+        return (current_z_mm - total_z_travel, current_z_mm)
+    else:  # FROM_BOTTOM (default)
+        return (current_z_mm, current_z_mm + total_z_travel)
+
+
+def update_autofocus_checkboxes(
+    contrast_af_allowed: bool,
+    laser_af_allowed: bool,
+    contrast_af_checkbox: QCheckBox,
+    laser_af_checkbox: QCheckBox,
+) -> None:
+    """Update autofocus checkbox enabled states.
+
+    Args:
+        contrast_af_allowed: Whether contrast AF should be enabled
+        laser_af_allowed: Whether laser AF should be enabled
+        contrast_af_checkbox: The contrast autofocus checkbox
+        laser_af_checkbox: The laser/reflection autofocus checkbox
+    """
+    contrast_af_checkbox.setEnabled(contrast_af_allowed)
+    laser_af_checkbox.setEnabled(laser_af_allowed)
+
+    # Uncheck if disabled
+    if not contrast_af_allowed and contrast_af_checkbox.isChecked():
+        contrast_af_checkbox.setChecked(False)
+    if not laser_af_allowed and laser_af_checkbox.isChecked():
+        laser_af_checkbox.setChecked(False)
+
+
+def log_af_restriction_warnings(
+    yaml_contrast_af: bool,
+    yaml_laser_af: bool,
+    actual_contrast_af: bool,
+    actual_laser_af: bool,
+    log: logging.Logger,
+) -> None:
+    """Log warnings if autofocus settings were modified due to z-mode restrictions.
+
+    Args:
+        yaml_contrast_af: Contrast AF setting from YAML
+        yaml_laser_af: Laser AF setting from YAML
+        actual_contrast_af: Actual contrast AF checkbox state after z-mode restrictions
+        actual_laser_af: Actual laser AF checkbox state after z-mode restrictions
+        log: Logger instance
+    """
+    warnings = []
+    if yaml_contrast_af and not actual_contrast_af:
+        warnings.append("Contrast AF was disabled (only allowed for 'From Center' mode)")
+    if yaml_laser_af and not actual_laser_af:
+        warnings.append("Laser AF was disabled (only allowed for 'From Bottom' mode)")
+    if warnings:
+        log.warning(f"YAML autofocus settings modified: {'; '.join(warnings)}")
 
 
 class WrapperWindow(QMainWindow):
@@ -5564,6 +5676,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_stack)
         dz_half.addSpacerItem(edge_spacer)
 
         dt_half = QHBoxLayout()
@@ -5688,7 +5801,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
+        self.combobox_z_stack.currentIndexChanged.connect(self.multipointController.set_z_stacking_config)
+        self.combobox_z_stack.currentIndexChanged.connect(self.on_z_stack_mode_changed)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -5715,6 +5829,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        # Initialize AF checkbox states based on default z-stack mode
+        self.on_z_stack_mode_changed(self.combobox_z_stack.currentIndex())
 
     def setup_layout(self):
         self.grid = QVBoxLayout()
@@ -5725,6 +5841,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.grid.addLayout(self.grid_acquisition)
         self.grid.addLayout(self.row_progress_layout)
         self.setLayout(self.grid)
+
+    def on_z_stack_mode_changed(self, index):
+        """Handle z-stack mode dropdown change - update autofocus checkbox states.
+
+        Args:
+            index: 0=From Bottom, 1=From Center, 2=From Top
+        """
+        try:
+            mode = ZStackMode(index)
+        except ValueError:
+            self._log.error(f"Invalid z-stack mode index: {index}. Using default (From Bottom).")
+            mode = ZStackMode.FROM_BOTTOM
+
+        update_autofocus_checkboxes(
+            contrast_af_allowed=mode.allows_contrast_af,
+            laser_af_allowed=mode.allows_laser_af,
+            contrast_af_checkbox=self.checkbox_withAutofocus,
+            laser_af_checkbox=self.checkbox_withReflectionAutofocus,
+        )
+        self._log.debug(f"Z-stack mode changed to: {mode.name}")
 
     def toggle_z_range_controls(self, state):
         is_visible = bool(state)
@@ -5738,8 +5874,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             if widget is not None:
                 widget.setVisible(is_visible)
 
-        # Disable reflection autofocus checkbox if Z-range is visible
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
         current_z = self.stage.get_pos().z_mm * 1000
@@ -6014,9 +6148,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
             else:
                 z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+                mode = ZStackMode(self.combobox_z_stack.currentIndex())
+                z_range = calculate_z_range(
+                    z,
+                    self.entry_deltaZ.value(),
+                    self.entry_NZ.value(),
+                    mode,
+                )
+                self.multipointController.set_z_range(*z_range)
 
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
@@ -6580,6 +6719,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
             self.checkbox_usePiezo,
+            self.combobox_z_stack,
         ]
 
         # Add optional widgets if they exist
@@ -6606,6 +6746,21 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Z-stacking mode - map YAML config to combobox index
+            z_stack_mode_map = {
+                "FROM BOTTOM": ZStackMode.FROM_BOTTOM,
+                "FROM CENTER": ZStackMode.FROM_CENTER,
+                "FROM TOP": ZStackMode.FROM_TOP,
+            }
+            z_stack_mode = z_stack_mode_map.get(yaml_data.z_stacking_config)
+            if z_stack_mode is None:
+                self._log.warning(
+                    f"Unknown z_stacking_config in YAML: '{yaml_data.z_stacking_config}'. "
+                    f"Valid values: {list(z_stack_mode_map.keys())}. Using 'FROM BOTTOM'."
+                )
+                z_stack_mode = ZStackMode.FROM_BOTTOM
+            self.combobox_z_stack.setCurrentIndex(z_stack_mode.value)
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -6634,6 +6789,19 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+
+            # Sync z_stacking_config and AF states with loaded z_stack mode (signals were blocked during load)
+            self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentIndex())
+            self.on_z_stack_mode_changed(self.combobox_z_stack.currentIndex())
+
+            # Warn if AF settings were modified due to z-mode restrictions
+            log_af_restriction_warnings(
+                yaml_data.contrast_af,
+                yaml_data.laser_af,
+                self.checkbox_withAutofocus.isChecked(),
+                self.checkbox_withReflectionAutofocus.isChecked(),
+                self._log,
+            )
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -6984,7 +7152,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(["From Bottom", "From Center", "Set Range"])
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -7262,6 +7430,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Load cached acquisition settings
         self.load_multipoint_widget_config_from_cache()
 
+        # Initialize AF checkbox states based on current z-mode (in case no cache exists)
+        self.on_z_mode_changed(self.combobox_z_mode.currentText())
+
         # Connect settings saving to relevant value changes
         self.checkbox_xy.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.combobox_xy_mode.currentTextChanged.connect(self.save_multipoint_widget_config_to_cache)
@@ -7363,8 +7534,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            valid_z_modes = ["From Bottom", "From Center", "Set Range"]
+            if z_mode in valid_z_modes:
                 self.combobox_z_mode.setCurrentText(z_mode)
+            else:
+                self._log.warning(f"Invalid z_mode in cache: '{z_mode}'. Valid values: {valid_z_modes}. Using default.")
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
             self.entry_overlap.setValue(settings.get("fov_overlap", 10))
@@ -7416,6 +7590,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 # Also ensure Z range controls are properly toggled based on loaded Z mode
                 if self.combobox_z_mode.currentText() == "Set Range":
                     self.toggle_z_range_controls(True)
+
+            # Sync z_stacking_config with loaded z_mode (signals were blocked during load)
+            self.on_z_mode_changed(self.combobox_z_mode.currentText())
 
             # Ensure Time controls are properly shown based on loaded Time state
             if self.checkbox_time.isChecked():
@@ -7733,11 +7910,35 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self._log.debug(f"Z acquisition {'enabled' if checked else 'disabled'}")
 
-    def on_z_mode_changed(self, mode):
+    def on_z_mode_changed(self, mode_text):
         """Handle Z mode dropdown change"""
+        # Map UI text to ZStackMode enum
+        mode_map = {
+            "From Bottom": ZStackMode.FROM_BOTTOM,
+            "From Center": ZStackMode.FROM_CENTER,
+            "Set Range": ZStackMode.SET_RANGE,
+        }
+        mode = mode_map.get(mode_text)
+        if mode is None:
+            self._log.error(
+                f"Invalid z-mode: '{mode_text}'. Valid modes: {list(mode_map.keys())}. Using 'From Bottom'."
+            )
+            mode = ZStackMode.FROM_BOTTOM
+
         # Show/hide Z-min/Z-max controls based on mode
-        self.toggle_z_range_controls(mode == "Set Range")
-        self._log.debug(f"Z mode changed to: {mode}")
+        self.toggle_z_range_controls(mode == ZStackMode.SET_RANGE)
+
+        # Set the z-stacking configuration in the controller (SET_RANGE uses FROM_BOTTOM for worker)
+        self.multipointController.set_z_stacking_config(mode.worker_config_index)
+
+        # Update autofocus checkbox states based on z-stack mode
+        update_autofocus_checkboxes(
+            contrast_af_allowed=mode.allows_contrast_af,
+            laser_af_allowed=mode.allows_laser_af,
+            contrast_af_checkbox=self.checkbox_withAutofocus,
+            laser_af_checkbox=self.checkbox_withReflectionAutofocus,
+        )
+        self._log.debug(f"Z mode changed to: {mode.name}")
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
@@ -8019,10 +8220,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 if widget:
                     widget.setVisible(is_visible)
 
-        # Disable and uncheck reflection autofocus checkbox if Z-range is visible
-        if is_visible:
-            self.checkbox_withReflectionAutofocus.setChecked(False)
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
+        # Note: Autofocus checkbox states are now managed by on_z_mode_changed()
+        # via update_autofocus_checkboxes()
+
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
         current_z = self.stage.get_pos().z_mm * 1000
@@ -8342,7 +8542,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             self.scanCoordinates.sort_coordinates()
 
-            if self.combobox_z_mode.currentText() == "Set Range":
+            z_mode = self.combobox_z_mode.currentText()
+            if z_mode == "Set Range":
                 # Set Z-range (convert from μm to mm)
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
@@ -8350,9 +8551,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
                 z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+                mode = ZStackMode.FROM_CENTER if z_mode == "From Center" else ZStackMode.FROM_BOTTOM
+                z_range = calculate_z_range(
+                    z,
+                    self.entry_deltaZ.value(),
+                    self.entry_NZ.value(),
+                    mode,
+                )
+                self.multipointController.set_z_range(*z_range)
+                self._log.debug(f"Set z-range ({mode.name}): {z_range}")
 
             if self.checkbox_useFocusMap.isChecked():
                 # Try to fit the surface
@@ -8782,9 +8989,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z mode - map YAML config to combobox text
             z_mode_map = {
                 "FROM BOTTOM": "From Bottom",
+                "FROM CENTER": "From Center",
                 "SET RANGE": "Set Range",
             }
             z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            if yaml_data.z_stacking_config == "FROM TOP":
+                self._log.warning(
+                    f"YAML has z_stacking_config='FROM TOP' which is not supported in wellplate mode. "
+                    f"Using 'From Bottom' instead."
+                )
             self.combobox_z_mode.setCurrentText(z_mode)
 
             # Piezo setting
@@ -8843,6 +9056,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # Sync z_stacking_config with loaded z_mode (signals were blocked during load)
+            self.on_z_mode_changed(self.combobox_z_mode.currentText())
+
+            # Warn if AF settings were modified due to z-mode restrictions
+            log_af_restriction_warnings(
+                yaml_data.contrast_af,
+                yaml_data.laser_af,
+                self.checkbox_withAutofocus.isChecked(),
+                self.checkbox_withReflectionAutofocus.isChecked(),
+                self._log,
+            )
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""
