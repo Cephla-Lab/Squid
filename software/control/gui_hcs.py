@@ -743,6 +743,13 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
+        # Channel Group Configuration (only shown if multi-camera system)
+        camera_count = len(self.microscope.config_repo.get_camera_names())
+        if camera_count > 1:
+            channel_group_config_action = QAction("Channel Group Configuration", self)
+            channel_group_config_action.triggered.connect(self.openChannelGroupConfigEditor)
+            advanced_menu.addAction(channel_group_config_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -2131,6 +2138,12 @@ class HighContentScreeningGui(QMainWindow):
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openChannelGroupConfigEditor(self):
+        """Open the channel group configuration dialog"""
+        dialog = widgets.ChannelGroupEditorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

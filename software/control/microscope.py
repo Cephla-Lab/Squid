@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 
@@ -27,6 +27,11 @@ import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
+from squid.camera.config_factory import (
+    DEFAULT_SINGLE_CAMERA_ID,
+    create_camera_configs,
+    get_primary_camera_id,
+)
 
 if control._def.USE_XERYON:
     from control.objective_changer_2_pos_controller import (
@@ -291,12 +296,39 @@ class Microscope:
 
             return True
 
-        camera = squid.camera.utils.get_camera(
-            config=squid.config.get_camera_config(),
-            simulated=camera_simulated,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
+        # Get camera registry for multi-camera support
+        from control.core.config import ConfigRepository
+
+        config_repo = ConfigRepository()
+        camera_registry = config_repo.get_camera_registry()
+
+        # Generate per-camera configs from registry + base template
+        base_camera_config = squid.config.get_camera_config()
+        camera_configs = create_camera_configs(camera_registry, base_camera_config)
+
+        # Instantiate all cameras
+        cameras: Dict[int, AbstractCamera] = {}
+        for camera_id, cam_config in camera_configs.items():
+            cam_trigger_log.info(f"Initializing camera {camera_id} (SN: {cam_config.serial_number})")
+            try:
+                camera = squid.camera.utils.get_camera(
+                    config=cam_config,
+                    simulated=camera_simulated,
+                    hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+                    hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+                )
+                cameras[camera_id] = camera
+            except Exception as e:
+                cam_trigger_log.error(f"Failed to initialize camera {camera_id}: {e}")
+                # Close any cameras we've already opened
+                for cleanup_cam_id, opened_camera in cameras.items():
+                    try:
+                        opened_camera.close()
+                    except Exception as cleanup_exc:
+                        cam_trigger_log.error(f"Cleanup failed for camera {cleanup_cam_id}: {cleanup_exc}")
+                raise RuntimeError(f"Failed to initialize camera {camera_id}: {e}") from e
+
+        cam_trigger_log.info(f"Initialized {len(cameras)} camera(s): IDs {sorted(cameras.keys())}")
 
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
@@ -329,10 +361,11 @@ class Microscope:
 
         return Microscope(
             stage=stage,
-            camera=camera,
+            cameras=cameras,
             illumination_controller=illumination_controller,
             addons=addons,
             low_level_drivers=low_level_devices,
+            config_repo=config_repo,
             simulated=simulated,
             skip_init=skip_init,
         )
@@ -340,11 +373,12 @@ class Microscope:
     def __init__(
         self,
         stage: AbstractStage,
-        camera: AbstractCamera,
+        cameras: Union[AbstractCamera, Dict[int, AbstractCamera]],
         illumination_controller: IlluminationController,
         addons: MicroscopeAddons,
         low_level_drivers: LowLevelDrivers,
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
+        config_repo: Optional["ConfigRepository"] = None,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
         skip_init: bool = False,
@@ -352,7 +386,20 @@ class Microscope:
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.stage: AbstractStage = stage
-        self.camera: AbstractCamera = camera
+
+        # Multi-camera support: accept either a single camera or a dict of cameras
+        # For backward compatibility, a single camera is wrapped in a dict with default ID
+        if isinstance(cameras, dict):
+            self._cameras: Dict[int, AbstractCamera] = cameras
+        else:
+            # Backward compatibility: wrap single camera in dict
+            self._cameras = {DEFAULT_SINGLE_CAMERA_ID: cameras}
+
+        self._primary_camera_id: int = get_primary_camera_id(list(self._cameras.keys()))
+        self._log.info(
+            f"Initialized with {len(self._cameras)} camera(s), " f"primary camera ID: {self._primary_camera_id}"
+        )
+
         self.illumination_controller: IlluminationController = illumination_controller
 
         self.addons = addons
@@ -362,8 +409,8 @@ class Microscope:
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
 
-        # Centralized config management
-        self.config_repo: ConfigRepository = ConfigRepository()
+        # Centralized config management - reuse passed repo or create new one
+        self.config_repo: ConfigRepository = config_repo if config_repo is not None else ConfigRepository()
 
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
@@ -393,7 +440,11 @@ class Microscope:
                 for_displacement_measurement=True,
             )
 
-        self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
+        self.live_controller: LiveController = LiveController(
+            microscope=self,
+            camera=self._cameras[self._primary_camera_id],
+            initial_camera_id=self._primary_camera_id,
+        )
 
         # Sync confocal mode from hardware (must be after LiveController creation)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
@@ -402,14 +453,68 @@ class Microscope:
         if not skip_prepare_for_use:
             self._prepare_for_use(skip_init=skip_init)
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MULTI-CAMERA API
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def camera(self) -> AbstractCamera:
+        """Get the primary camera (backward compatible).
+
+        Returns:
+            The primary camera instance (camera with lowest ID).
+        """
+        return self._cameras[self._primary_camera_id]
+
+    def get_camera(self, camera_id: int) -> AbstractCamera:
+        """Get a camera by its ID.
+
+        Args:
+            camera_id: The camera ID (from cameras.yaml).
+
+        Returns:
+            The camera instance.
+
+        Raises:
+            ValueError: If camera_id is not found.
+        """
+        if camera_id not in self._cameras:
+            available = sorted(self._cameras.keys())
+            raise ValueError(f"Camera ID {camera_id} not found. Available IDs: {available}")
+        return self._cameras[camera_id]
+
+    def get_camera_ids(self) -> List[int]:
+        """Get sorted list of all camera IDs.
+
+        Returns:
+            List of camera IDs in ascending order.
+        """
+        return sorted(self._cameras.keys())
+
+    def get_camera_count(self) -> int:
+        """Get the number of cameras.
+
+        Returns:
+            Number of cameras in the system.
+        """
+        return len(self._cameras)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # INITIALIZATION AND LIFECYCLE
+    # ═══════════════════════════════════════════════════════════════════════════
+
     def _prepare_for_use(self, skip_init: bool = False):
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         self.addons.prepare_for_use(skip_init=skip_init)
 
-        self.camera.set_pixel_format(
-            squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        # Initialize all cameras with default settings
+        default_pixel_format = squid.config.CameraPixelFormat.from_string(
+            control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT
         )
-        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        for camera_id, camera in self._cameras.items():
+            self._log.debug(f"Initializing camera {camera_id}")
+            camera.set_pixel_format(default_pixel_format)
+            camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
@@ -711,10 +816,17 @@ class Microscope:
             except Exception as e:
                 self._log.warning(f"Error closing focus camera: {e}")
 
-        try:
-            self.camera.close()
-        except Exception as e:
-            self._log.warning(f"Error closing camera: {e}")
+        # Close all cameras
+        for camera_id, camera in self._cameras.items():
+            try:
+                # Stop streaming first (some cameras require this before close)
+                try:
+                    camera.stop_streaming()
+                except Exception as stream_e:
+                    self._log.debug(f"stop_streaming for camera {camera_id}: {stream_e}")
+                camera.close()
+            except Exception as e:
+                self._log.warning(f"Error closing camera {camera_id}: {e}")
 
     def move_to_position(self, x: float, y: float, z: float) -> None:
         """Move the stage to an absolute XYZ position.

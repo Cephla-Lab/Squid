@@ -18,6 +18,16 @@ if TYPE_CHECKING:
 import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
+from control.models import (
+    AcquisitionChannel,
+    CameraSettings,
+    ChannelGroup,
+    ChannelGroupEntry,
+    GeneralChannelConfig,
+    IlluminationSettings,
+    SynchronizationMode,
+    validate_channel_group,
+)
 from control.core.multi_point_controller import MultiPointController
 from control.core.downsampled_views import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
@@ -15438,6 +15448,42 @@ def _populate_filter_positions_for_combo(
     combo.setCurrentIndex(0)
 
 
+def _populate_camera_combo(
+    combo: QComboBox,
+    config_repo,
+    current_camera_id: Optional[int] = None,
+    include_none: bool = True,
+) -> None:
+    """Populate a camera combo box from the camera registry.
+
+    Args:
+        combo: The QComboBox to populate
+        config_repo: ConfigRepository instance
+        current_camera_id: Camera ID to select (None for "(None)" option)
+        include_none: Whether to include "(None)" as first option
+    """
+    combo.clear()
+
+    if include_none:
+        combo.addItem("(None)", None)
+
+    registry = config_repo.get_camera_registry()
+    if registry:
+        for cam in registry.cameras:
+            combo.addItem(cam.name, cam.id)
+
+    # Set current selection
+    if current_camera_id is not None:
+        for i in range(combo.count()):
+            if combo.itemData(i) == current_camera_id:
+                combo.setCurrentIndex(i)
+                return
+
+    # Default to first item (usually "(None)")
+    if combo.count() > 0:
+        combo.setCurrentIndex(0)
+
+
 class AcquisitionChannelConfiguratorDialog(QDialog):
     """Dialog for editing acquisition channel configurations.
 
@@ -15601,7 +15647,6 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _populate_row(self, row: int, channel):
         """Populate a table row with channel data."""
-        from control.models import AcquisitionChannel
 
         # Enabled checkbox
         checkbox_widget = QWidget()
@@ -15629,13 +15674,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
                 illum_combo.setCurrentText(current_illum)
         self.table.setCellWidget(row, self.COL_ILLUMINATION, illum_combo)
 
-        # Camera dropdown
+        # Camera dropdown - stores camera ID (int) as userData, displays name
         camera_combo = QComboBox()
-        camera_combo.addItem("(None)")
-        camera_names = self.config_repo.get_camera_names()
-        camera_combo.addItems(camera_names)
-        if channel.camera and channel.camera in camera_names:
-            camera_combo.setCurrentText(channel.camera)
+        _populate_camera_combo(camera_combo, self.config_repo, channel.camera)
         self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
 
         # Filter wheel dropdown
@@ -15785,7 +15826,6 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
     def _export_config(self):
         """Export current channel configuration to a YAML file."""
-        from control.models import GeneralChannelConfig
         import yaml
 
         # Get save file path
@@ -15821,7 +15861,6 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
     def _import_config(self):
         """Import channel configuration from a YAML file."""
         from pydantic import ValidationError
-        from control.models import GeneralChannelConfig
         import yaml
 
         # Get file path
@@ -15892,11 +15931,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             if illum_combo and isinstance(illum_combo, QComboBox):
                 channel.illumination_settings.illumination_channel = illum_combo.currentText()
 
-            # Camera
+            # Camera - extract camera ID from userData (int or None)
             camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
             if camera_combo and isinstance(camera_combo, QComboBox):
-                camera_text = camera_combo.currentText()
-                channel.camera = camera_text if camera_text != "(None)" else None
+                channel.camera = camera_combo.currentData()  # Returns int or None
 
             # Filter wheel: None = no selection, else explicit wheel name
             wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
@@ -15940,11 +15978,12 @@ class AddAcquisitionChannelDialog(QDialog):
         layout.addRow("Illumination:", self.illumination_combo)
 
         # Camera dropdown (hidden if single camera - 0 or 1 cameras)
-        camera_names = self.config_repo.get_camera_names()
-        if len(camera_names) > 1:
+        # Stores camera ID (int) as userData, displays name
+        registry = self.config_repo.get_camera_registry()
+        camera_count = len(registry.cameras) if registry else 0
+        if camera_count > 1:
             self.camera_combo = QComboBox()
-            self.camera_combo.addItem("(None)")
-            self.camera_combo.addItems(camera_names)
+            _populate_camera_combo(self.camera_combo, self.config_repo)
             layout.addRow("Camera:", self.camera_combo)
         else:
             self.camera_combo = None
@@ -16020,20 +16059,13 @@ class AddAcquisitionChannelDialog(QDialog):
 
     def get_channel(self):
         """Build AcquisitionChannel from dialog inputs."""
-        from control.models import (
-            AcquisitionChannel,
-            CameraSettings,
-            IlluminationSettings,
-        )
-
         name = self.name_edit.text().strip()
         illum_name = self.illumination_combo.currentText()
 
-        # Camera
+        # Camera - extract camera ID from userData (int or None)
         camera = None
         if self.camera_combo:
-            camera_text = self.camera_combo.currentText()
-            camera = camera_text if camera_text != "(None)" else None
+            camera = self.camera_combo.currentData()  # Returns int or None
 
         # Filter wheel and position
         filter_wheel = None
@@ -16259,6 +16291,674 @@ class FilterWheelConfiguratorDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Configuration data could not be serialized:\n{e}")
         except Exception as e:
             self._log.exception(f"Unexpected error saving filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHANNEL GROUP CONFIGURATION UI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ChannelPickerDialog(QDialog):
+    """Dialog for selecting channels to add to a group."""
+
+    def __init__(self, available_channels: list, existing_names: list, parent=None):
+        """
+        Args:
+            available_channels: List of channel names that can be selected.
+            existing_names: List of channel names already in the group (shown but disabled).
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Select Channels")
+        self.setMinimumWidth(300)
+
+        self._available_channels = available_channels
+        self._existing_names = set(existing_names)
+        self._selected_names = []
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        instructions = QLabel("Select channels to add to the group:")
+        layout.addWidget(instructions)
+
+        # Checkboxes for each channel
+        self._checkboxes = []
+        for name in self._available_channels:
+            cb = QCheckBox(name)
+            if name in self._existing_names:
+                cb.setChecked(True)
+                cb.setEnabled(False)
+                cb.setToolTip("Already in group")
+            self._checkboxes.append(cb)
+            layout.addWidget(cb)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        btn_ok = QPushButton("Add Selected")
+        btn_ok.clicked.connect(self._on_accept)
+        button_layout.addWidget(btn_ok)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _on_accept(self):
+        """Collect selected channels and accept."""
+        self._selected_names = []
+        for cb in self._checkboxes:
+            if cb.isChecked() and cb.isEnabled():
+                self._selected_names.append(cb.text())
+        self.accept()
+
+    def get_selected_channels(self) -> list:
+        """Get list of newly selected channel names (excludes existing)."""
+        return self._selected_names
+
+
+class AddChannelGroupDialog(QDialog):
+    """Dialog for creating a new channel group."""
+
+    def __init__(self, existing_names: list, parent=None):
+        """
+        Args:
+            existing_names: List of existing group names (for validation).
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Add Channel Group")
+        self.setMinimumWidth(350)
+
+        self._existing_names = set(existing_names)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QFormLayout(self)
+
+        # Group name
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., BF + GFP Simultaneous")
+        layout.addRow("Group Name:", self.name_edit)
+
+        # Synchronization mode
+        self.sync_combo = QComboBox()
+        self.sync_combo.addItem("Sequential (one channel at a time)", "sequential")
+        self.sync_combo.addItem("Simultaneous (multi-camera)", "simultaneous")
+        layout.addRow("Mode:", self.sync_combo)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        btn_ok = QPushButton("Create")
+        btn_ok.clicked.connect(self._validate_and_accept)
+        button_layout.addWidget(btn_ok)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(btn_cancel)
+
+        layout.addRow(button_layout)
+
+    def _validate_and_accept(self):
+        """Validate input before accepting."""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Group name cannot be empty.")
+            return
+
+        if name in self._existing_names:
+            QMessageBox.warning(self, "Validation Error", f"Group '{name}' already exists.")
+            return
+
+        self.accept()
+
+    def get_group_name(self) -> str:
+        """Get the entered group name."""
+        return self.name_edit.text().strip()
+
+    def get_sync_mode(self) -> str:
+        """Get the selected synchronization mode ('sequential' or 'simultaneous')."""
+        return self.sync_combo.currentData()
+
+
+class ChannelGroupDetailWidget(QWidget):
+    """Widget for editing a single channel group's details."""
+
+    signal_modified = Signal()  # Emitted when group is modified
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self._current_group = None
+        self._channels = []  # Available AcquisitionChannel objects
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Empty state label (shown when no group selected)
+        self.empty_label = QLabel("Select a group from the list\nor create a new one.")
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet("color: #888; font-style: italic;")
+        layout.addWidget(self.empty_label)
+
+        # Group detail container (hidden when no group selected)
+        self.detail_container = QWidget()
+        detail_layout = QVBoxLayout(self.detail_container)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Group name (read-only for now)
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Group:"))
+        self.name_label = QLabel()
+        self.name_label.setStyleSheet("font-weight: bold;")
+        name_layout.addWidget(self.name_label)
+        name_layout.addStretch()
+        detail_layout.addLayout(name_layout)
+
+        # Synchronization mode
+        sync_layout = QHBoxLayout()
+        sync_layout.addWidget(QLabel("Mode:"))
+        self.sync_combo = QComboBox()
+        self.sync_combo.addItem("Sequential", "sequential")
+        self.sync_combo.addItem("Simultaneous", "simultaneous")
+        self.sync_combo.currentIndexChanged.connect(self._on_sync_changed)
+        sync_layout.addWidget(self.sync_combo)
+        sync_layout.addStretch()
+        detail_layout.addLayout(sync_layout)
+
+        # Channels table
+        detail_layout.addWidget(QLabel("Channels:"))
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Channel", "Camera", "Offset (μs)", ""])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.table.setColumnWidth(3, 30)  # Remove button column
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        detail_layout.addWidget(self.table)
+
+        # Channel buttons
+        chan_btn_layout = QHBoxLayout()
+        self.btn_add_channel = QPushButton("Add Channel")
+        self.btn_add_channel.clicked.connect(self._add_channel)
+        chan_btn_layout.addWidget(self.btn_add_channel)
+
+        self.btn_move_up = QPushButton("▲")
+        self.btn_move_up.setFixedWidth(30)
+        self.btn_move_up.clicked.connect(self._move_channel_up)
+        chan_btn_layout.addWidget(self.btn_move_up)
+
+        self.btn_move_down = QPushButton("▼")
+        self.btn_move_down.setFixedWidth(30)
+        self.btn_move_down.clicked.connect(self._move_channel_down)
+        chan_btn_layout.addWidget(self.btn_move_down)
+
+        chan_btn_layout.addStretch()
+        detail_layout.addLayout(chan_btn_layout)
+
+        # Validation warnings
+        self.warning_label = QLabel()
+        self.warning_label.setStyleSheet("color: #c00; font-size: 11px;")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setVisible(False)
+        detail_layout.addWidget(self.warning_label)
+
+        layout.addWidget(self.detail_container)
+        self.detail_container.setVisible(False)
+
+    def set_channels(self, channels: list):
+        """Set available channels for selection."""
+        self._channels = channels
+
+    def load_group(self, group):
+        """Load a channel group for editing."""
+        self._current_group = group
+
+        if group is None:
+            self.empty_label.setVisible(True)
+            self.detail_container.setVisible(False)
+            return
+
+        self.empty_label.setVisible(False)
+        self.detail_container.setVisible(True)
+
+        # Set name
+        self.name_label.setText(group.name)
+
+        # Set sync mode
+        index = 0 if group.synchronization.value == "sequential" else 1
+        self.sync_combo.blockSignals(True)
+        self.sync_combo.setCurrentIndex(index)
+        self.sync_combo.blockSignals(False)
+
+        # Load channels into table
+        self._populate_table()
+        self._validate()
+
+    def _populate_table(self):
+        """Populate the channels table."""
+        # Disconnect signals from existing cell widgets before clearing
+        # This prevents stale lambda callbacks with invalid row indices
+        for row in range(self.table.rowCount()):
+            offset_widget = self.table.cellWidget(row, 2)
+            if offset_widget is not None:
+                try:
+                    offset_widget.valueChanged.disconnect()
+                except (TypeError, RuntimeError):
+                    # TypeError: No connections to disconnect
+                    # RuntimeError: Widget was already deleted
+                    pass
+            remove_widget = self.table.cellWidget(row, 3)
+            if remove_widget is not None:
+                try:
+                    remove_widget.clicked.disconnect()
+                except (TypeError, RuntimeError):
+                    # TypeError: No connections to disconnect
+                    # RuntimeError: Widget was already deleted
+                    pass
+
+        self.table.setRowCount(0)
+
+        if self._current_group is None:
+            return
+
+        for entry in self._current_group.channels:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # Channel name (read-only)
+            name_item = QTableWidgetItem(entry.name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, name_item)
+
+            # Camera (look up from channels list)
+            camera_text = "(None)"
+            for ch in self._channels:
+                if ch.name == entry.name:
+                    if ch.camera is not None:
+                        registry = self.config_repo.get_camera_registry()
+                        if registry:
+                            cam_def = registry.get_camera_by_id(ch.camera)
+                            if cam_def:
+                                camera_text = cam_def.name
+                    break
+            camera_item = QTableWidgetItem(camera_text)
+            camera_item.setFlags(camera_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 1, camera_item)
+
+            # Offset (editable spinbox)
+            offset_spin = QDoubleSpinBox()
+            offset_spin.setRange(0, 1000000)  # Up to 1 second
+            offset_spin.setDecimals(1)
+            offset_spin.setSuffix(" μs")
+            offset_spin.setValue(entry.offset_us)
+            offset_spin.valueChanged.connect(lambda v, r=row: self._on_offset_changed(r, v))
+            self.table.setCellWidget(row, 2, offset_spin)
+
+            # Remove button
+            remove_btn = QPushButton("✕")
+            remove_btn.setFixedSize(24, 24)
+            remove_btn.setStyleSheet("border: none; color: #888;")
+            remove_btn.clicked.connect(lambda checked, r=row: self._remove_channel(r))
+            self.table.setCellWidget(row, 3, remove_btn)
+
+        # Update offset column visibility based on mode
+        is_simultaneous = self.sync_combo.currentData() == "simultaneous"
+        self.table.setColumnHidden(2, not is_simultaneous)
+
+    def _on_sync_changed(self, index):
+        """Handle synchronization mode change."""
+        if self._current_group is None:
+            return
+
+        mode = SynchronizationMode.SEQUENTIAL if index == 0 else SynchronizationMode.SIMULTANEOUS
+        self._current_group.synchronization = mode
+
+        # Show/hide offset column
+        self.table.setColumnHidden(2, index == 0)
+
+        self._validate()
+        self.signal_modified.emit()
+
+    def _on_offset_changed(self, row: int, value: float):
+        """Handle offset value change."""
+        if self._current_group is None or row >= len(self._current_group.channels):
+            return
+
+        self._current_group.channels[row].offset_us = value
+        self.signal_modified.emit()
+
+    def _add_channel(self):
+        """Add channels to the group."""
+        if self._current_group is None:
+            return
+
+        available_names = [ch.name for ch in self._channels]
+        existing_names = [entry.name for entry in self._current_group.channels]
+
+        dialog = ChannelPickerDialog(available_names, existing_names, self)
+        if dialog.exec_() == QDialog.Accepted:
+            selected = dialog.get_selected_channels()
+            for name in selected:
+                self._current_group.channels.append(ChannelGroupEntry(name=name, offset_us=0.0))
+            self._populate_table()
+            self._validate()
+            self.signal_modified.emit()
+
+    def _remove_channel(self, row: int):
+        """Remove a channel from the group."""
+        if self._current_group is None or row >= len(self._current_group.channels):
+            return
+
+        # Don't allow removing the last channel
+        if len(self._current_group.channels) <= 1:
+            QMessageBox.warning(self, "Cannot Remove", "A group must have at least one channel.")
+            return
+
+        del self._current_group.channels[row]
+        self._populate_table()
+        self._validate()
+        self.signal_modified.emit()
+
+    def _move_channel_up(self):
+        """Move selected channel up in the list."""
+        row = self.table.currentRow()
+        if row <= 0 or self._current_group is None:
+            return
+
+        channels = self._current_group.channels
+        channels[row], channels[row - 1] = channels[row - 1], channels[row]
+        self._populate_table()
+        self.table.selectRow(row - 1)
+        self.signal_modified.emit()
+
+    def _move_channel_down(self):
+        """Move selected channel down in the list."""
+        row = self.table.currentRow()
+        if self._current_group is None or row < 0 or row >= len(self._current_group.channels) - 1:
+            return
+
+        channels = self._current_group.channels
+        channels[row], channels[row + 1] = channels[row + 1], channels[row]
+        self._populate_table()
+        self.table.selectRow(row + 1)
+        self.signal_modified.emit()
+
+    def _validate(self):
+        """Validate the current group and show warnings."""
+        if self._current_group is None:
+            self.warning_label.setVisible(False)
+            return
+
+        errors = validate_channel_group(self._current_group, self._channels)
+        if errors:
+            self.warning_label.setText("\n".join(errors))
+            self.warning_label.setVisible(True)
+        else:
+            self.warning_label.setVisible(False)
+
+    def get_validation_errors(self) -> list:
+        """Get validation errors for the current group."""
+        if self._current_group is None:
+            return []
+
+        return validate_channel_group(self._current_group, self._channels)
+
+
+class ChannelGroupEditorDialog(QDialog):
+    """Master-detail dialog for editing channel groups.
+
+    Edits user_profiles/{profile}/channel_configs/general.yaml (channel_groups field).
+    """
+
+    signal_config_updated = Signal()
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.general_config = None
+        self._is_dirty = False  # Track unsaved changes
+
+        self.setWindowTitle("Channel Group Configuration")
+        self.setMinimumSize(700, 500)
+
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+
+        # Left panel: group list
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 10, 0)
+
+        left_layout.addWidget(QLabel("Channel Groups:"))
+
+        self.group_list = QListWidget()
+        self.group_list.setMinimumWidth(180)
+        self.group_list.currentRowChanged.connect(self._on_group_selected)
+        left_layout.addWidget(self.group_list)
+
+        # Group list buttons
+        list_btn_layout = QHBoxLayout()
+        self.btn_add_group = QPushButton("Add")
+        self.btn_add_group.clicked.connect(self._add_group)
+        list_btn_layout.addWidget(self.btn_add_group)
+
+        self.btn_remove_group = QPushButton("Remove")
+        self.btn_remove_group.clicked.connect(self._remove_group)
+        list_btn_layout.addWidget(self.btn_remove_group)
+
+        left_layout.addLayout(list_btn_layout)
+
+        layout.addWidget(left_panel)
+
+        # Right panel: group detail
+        self.detail_widget = ChannelGroupDetailWidget(self.config_repo, self)
+        self.detail_widget.signal_modified.connect(self._on_modified)
+        layout.addWidget(self.detail_widget, 1)
+
+        # Bottom buttons (spans both panels)
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(layout)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_config)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        main_layout.addLayout(button_layout)
+
+        # Replace the main layout
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setLayout(QVBoxLayout())
+        self.layout().setContentsMargins(10, 10, 10, 10)
+        self.layout().addWidget(central_widget)
+
+    def _load_config(self):
+        """Load channel configuration."""
+        original_config = self.config_repo.get_general_config()
+
+        if original_config is None:
+            self.general_config = None
+        else:
+            # Work on a deep copy to avoid mutating the original until save
+            self.general_config = original_config.model_copy(deep=True)
+
+        self._is_dirty = False
+
+        if self.general_config is None:
+            QMessageBox.warning(
+                self,
+                "No Configuration",
+                "No channel configuration found. Please ensure a profile is loaded.",
+            )
+            return
+
+        # Pass available channels to detail widget
+        self.detail_widget.set_channels(self.general_config.channels)
+
+        # Populate group list
+        self.group_list.clear()
+        for group in self.general_config.channel_groups:
+            self.group_list.addItem(group.name)
+
+        # Select first group if any
+        if self.group_list.count() > 0:
+            self.group_list.setCurrentRow(0)
+
+    def _on_group_selected(self, row: int):
+        """Handle group selection change."""
+        if self.general_config is None or row < 0:
+            self.detail_widget.load_group(None)
+            return
+
+        if row < len(self.general_config.channel_groups):
+            self.detail_widget.load_group(self.general_config.channel_groups[row])
+        else:
+            self.detail_widget.load_group(None)
+
+    def _on_modified(self):
+        """Handle modification in detail widget."""
+        self._is_dirty = True
+
+        # Update list item text if name changed (future: allow name editing)
+        row = self.group_list.currentRow()
+        if row >= 0 and self.general_config and row < len(self.general_config.channel_groups):
+            group = self.general_config.channel_groups[row]
+            item = self.group_list.item(row)
+            if item and item.text() != group.name:
+                item.setText(group.name)
+
+    def _add_group(self):
+        """Add a new channel group."""
+        if self.general_config is None:
+            return
+
+        existing_names = [g.name for g in self.general_config.channel_groups]
+        dialog = AddChannelGroupDialog(existing_names, self)
+
+        if dialog.exec_() == QDialog.Accepted:
+            name = dialog.get_group_name()
+            mode_str = dialog.get_sync_mode()
+            mode = SynchronizationMode.SEQUENTIAL if mode_str == "sequential" else SynchronizationMode.SIMULTANEOUS
+
+            # Create group with first available channel as default
+            default_channel = self.general_config.channels[0].name if self.general_config.channels else "Channel"
+            new_group = ChannelGroup(
+                name=name,
+                synchronization=mode,
+                channels=[ChannelGroupEntry(name=default_channel)],
+            )
+
+            self.general_config.channel_groups.append(new_group)
+            self.group_list.addItem(name)
+            self.group_list.setCurrentRow(self.group_list.count() - 1)
+            self._is_dirty = True
+
+    def _remove_group(self):
+        """Remove selected channel group."""
+        row = self.group_list.currentRow()
+        if row < 0 or self.general_config is None:
+            return
+
+        group_name = self.group_list.item(row).text()
+        reply = QMessageBox.question(
+            self,
+            "Confirm Removal",
+            f"Remove channel group '{group_name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+
+        if reply == QMessageBox.Yes:
+            del self.general_config.channel_groups[row]
+            self.group_list.takeItem(row)
+            self._is_dirty = True
+
+            # Select another group if available
+            if self.group_list.count() > 0:
+                self.group_list.setCurrentRow(min(row, self.group_list.count() - 1))
+            else:
+                self.detail_widget.load_group(None)
+
+    def closeEvent(self, event):
+        """Handle dialog close - warn about unsaved changes."""
+        if self._is_dirty:
+            reply = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                "You have unsaved changes. Discard them?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+        super().closeEvent(event)
+
+    def _save_config(self):
+        """Save channel group configuration."""
+        if self.general_config is None:
+            return
+
+        # Validate all groups before saving
+        all_errors = []
+        for group in self.general_config.channel_groups:
+            errors = validate_channel_group(group, self.general_config.channels)
+            if errors:
+                all_errors.extend([f"Group '{group.name}': {e}" for e in errors])
+
+        if all_errors:
+            reply = QMessageBox.warning(
+                self,
+                "Validation Warnings",
+                "The following issues were found:\n\n" + "\n".join(all_errors) + "\n\nSave anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        try:
+            profile = self.config_repo.current_profile
+            if not profile:
+                QMessageBox.critical(self, "Error", "No profile loaded.")
+                return
+            self.config_repo.save_general_config(profile, self.general_config)
+            self._is_dirty = False  # Reset dirty flag before close
+            self.signal_config_updated.emit()
+            QMessageBox.information(self, "Saved", "Channel group configuration saved.")
+            self.accept()
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save channel group config: {e}")
+            QMessageBox.critical(self, "Error", f"Cannot write configuration file:\n{e}")
+        except yaml.YAMLError as e:
+            self._log.error(f"Failed to serialize channel group config: {e}")
+            QMessageBox.critical(self, "Error", f"Configuration data could not be serialized:\n{e}")
+        except Exception as e:
+            self._log.exception(f"Unexpected error saving channel group config: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")
 
 
