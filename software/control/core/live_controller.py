@@ -25,10 +25,16 @@ class LiveController:
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
+        initial_camera_id: Optional[int] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
         self.camera: AbstractCamera = camera
+        # Track which camera is currently active (for multi-camera support)
+        # Use explicit ID if provided, otherwise fall back to microscope's primary
+        self._active_camera_id: int = (
+            initial_camera_id if initial_camera_id is not None else microscope._primary_camera_id
+        )
         self.currentConfiguration: Optional[AcquisitionChannel] = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
@@ -113,6 +119,54 @@ class LiveController:
         Called during initialization to sync state with actual hardware position.
         """
         self.toggle_confocal_widefield(confocal)
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Multi-camera support
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _get_target_camera_id(self, configuration: "AcquisitionChannel") -> int:
+        """Get the camera ID to use for the given channel configuration.
+
+        Args:
+            configuration: The acquisition channel configuration
+
+        Returns:
+            Camera ID to use. If channel.camera is None, returns the primary camera ID.
+        """
+        if configuration.camera is not None:
+            return configuration.camera
+        return self.microscope._primary_camera_id
+
+    def _switch_camera(self, camera_id: int) -> None:
+        """Switch to a different camera for live preview.
+
+        This method updates the active camera used by the LiveController.
+        The caller is responsible for stopping live view before calling
+        this method if necessary.
+
+        Args:
+            camera_id: The camera ID to switch to
+
+        Raises:
+            ValueError: If the camera ID is not found in the microscope
+        """
+        if camera_id == self._active_camera_id:
+            return  # Already using this camera
+
+        new_camera = self.microscope.get_camera(camera_id)
+        old_camera_id = self._active_camera_id
+
+        self._log.info(f"Switching live camera: {old_camera_id} -> {camera_id}")
+        self.camera = new_camera
+        self._active_camera_id = camera_id
+
+    def get_active_camera_id(self) -> int:
+        """Get the ID of the currently active camera.
+
+        Returns:
+            The camera ID currently being used for live preview.
+        """
+        return self._active_camera_id
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Channel configuration access
@@ -452,8 +506,26 @@ class LiveController:
             return
         self._log.info("setting microscope mode to " + configuration.name)
 
-        # temporarily stop live while changing mode
-        if self.is_live is True:
+        # Check if we need to switch cameras (multi-camera support)
+        target_camera_id = self._get_target_camera_id(configuration)
+
+        # Validate target camera exists BEFORE any state changes
+        if target_camera_id not in self.microscope._cameras:
+            available = sorted(self.microscope._cameras.keys())
+            self._log.error(
+                f"Channel '{configuration.name}' requires camera {target_camera_id}, "
+                f"but only cameras {available} exist. Mode not changed."
+            )
+            return  # Exit cleanly, no state changed
+
+        needs_camera_switch = target_camera_id != self._active_camera_id
+
+        # Save live state and temporarily disable to prevent race conditions
+        # (frame callbacks accessing camera during switch)
+        was_live = self.is_live
+
+        if was_live:
+            self.is_live = False  # Prevent concurrent access during mode change
             self._stop_existing_timer()
             if self.control_illumination:
                 # Turn off illumination BEFORE switching self.currentConfiguration.
@@ -461,6 +533,17 @@ class LiveController:
                 # laser wavelength to turn off. If we switch first, we'd turn off the NEW
                 # channel's laser instead of the OLD channel's laser (which is still on).
                 self.turn_off_illumination()
+
+            # Stop streaming on old camera before switching
+            if needs_camera_switch:
+                self.camera.stop_streaming()
+
+        # Switch camera if needed
+        if needs_camera_switch:
+            self._switch_camera(target_camera_id)
+            # Start streaming on new camera if we were live
+            if was_live:
+                self.camera.start_streaming()
 
         self.currentConfiguration = configuration
 
@@ -476,7 +559,8 @@ class LiveController:
             self.update_illumination()
 
         # restart live
-        if self.is_live is True:
+        if was_live:
+            self.is_live = True  # Restore live state
             if self.control_illumination:
                 self.turn_on_illumination()
             self._start_new_timer()
