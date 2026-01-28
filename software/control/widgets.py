@@ -5564,6 +5564,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_stack)
         dz_half.addSpacerItem(edge_spacer)
 
         dt_half = QHBoxLayout()
@@ -5688,7 +5689,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
+        self.combobox_z_stack.currentIndexChanged.connect(self.multipointController.set_z_stacking_config)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -6014,9 +6015,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
             else:
                 z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
+                dz_mm = self.entry_deltaZ.value() / 1000  # Convert from μm to mm
                 Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+                total_z_travel = dz_mm * (Nz - 1)
+
+                z_stack_mode = self.combobox_z_stack.currentIndex()
+                if z_stack_mode == 1:  # From Center
+                    # z_range[0] = bottom (start), z_range[1] = top (end)
+                    # Z-stack centered around current position
+                    half_range = total_z_travel / 2
+                    self.multipointController.set_z_range(z - half_range, z + half_range)
+                elif z_stack_mode == 2:  # From Top (Z-max)
+                    # z_range[0] = bottom (end), z_range[1] = top (start)
+                    # Current position is top, acquisition goes down
+                    self.multipointController.set_z_range(z - total_z_travel, z)
+                else:  # From Bottom (Z-min) - default
+                    # z_range[0] = bottom (start), z_range[1] = top (end)
+                    # Current position is bottom
+                    self.multipointController.set_z_range(z, z + total_z_travel)
 
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
@@ -6580,6 +6596,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
             self.checkbox_usePiezo,
+            self.combobox_z_stack,
         ]
 
         # Add optional widgets if they exist
@@ -6606,6 +6623,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Z-stacking mode - map YAML config to combobox index
+            z_stack_index_map = {"FROM BOTTOM": 0, "FROM CENTER": 1, "FROM TOP": 2}
+            z_stack_index = z_stack_index_map.get(yaml_data.z_stacking_config, 0)
+            self.combobox_z_stack.setCurrentIndex(z_stack_index)
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -6634,6 +6656,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+
+            # Sync z_stacking_config with loaded z_stack mode (signals were blocked during load)
+            self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentIndex())
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -6984,7 +7009,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(["From Bottom", "From Center", "Set Range"])
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -7363,7 +7388,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            if z_mode in ["From Bottom", "From Center", "Set Range"]:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -7416,6 +7441,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 # Also ensure Z range controls are properly toggled based on loaded Z mode
                 if self.combobox_z_mode.currentText() == "Set Range":
                     self.toggle_z_range_controls(True)
+
+            # Sync z_stacking_config with loaded z_mode (signals were blocked during load)
+            self.on_z_mode_changed(self.combobox_z_mode.currentText())
 
             # Ensure Time controls are properly shown based on loaded Time state
             if self.checkbox_time.isChecked():
@@ -7737,6 +7765,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """Handle Z mode dropdown change"""
         # Show/hide Z-min/Z-max controls based on mode
         self.toggle_z_range_controls(mode == "Set Range")
+
+        # Set the z-stacking configuration in the controller
+        # Map combobox text to Z_STACKING_CONFIG_MAP index
+        z_config_map = {"From Bottom": 0, "From Center": 1, "Set Range": 0}  # Set Range uses From Bottom config
+        config_index = z_config_map.get(mode, 0)
+        self.multipointController.set_z_stacking_config(config_index)
+
         self._log.debug(f"Z mode changed to: {mode}")
 
     def on_time_toggled(self, checked):
@@ -8342,7 +8377,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             self.scanCoordinates.sort_coordinates()
 
-            if self.combobox_z_mode.currentText() == "Set Range":
+            z_mode = self.combobox_z_mode.currentText()
+            if z_mode == "Set Range":
                 # Set Z-range (convert from μm to mm)
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
@@ -8350,9 +8386,20 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
                 z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
+                dz_mm = self.entry_deltaZ.value() / 1000  # Convert from μm to mm
                 Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+                total_z_travel = dz_mm * (Nz - 1)
+
+                if z_mode == "From Center":
+                    # z_range[0] = bottom (start), z_range[1] = top (end)
+                    # Z-stack centered around current position
+                    half_range = total_z_travel / 2
+                    self.multipointController.set_z_range(z - half_range, z + half_range)
+                    self._log.debug(f"Set z-range (from center): ({z - half_range}, {z + half_range})")
+                else:
+                    # From Bottom: z-stack starts at current position going up
+                    self.multipointController.set_z_range(z, z + total_z_travel)
+                    self._log.debug(f"Set z-range (from bottom): ({z}, {z + total_z_travel})")
 
             if self.checkbox_useFocusMap.isChecked():
                 # Try to fit the surface
@@ -8782,6 +8829,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z mode - map YAML config to combobox text
             z_mode_map = {
                 "FROM BOTTOM": "From Bottom",
+                "FROM CENTER": "From Center",
                 "SET RANGE": "Set Range",
             }
             z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
@@ -8843,6 +8891,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # Sync z_stacking_config with loaded z_mode (signals were blocked during load)
+            self.on_z_mode_changed(self.combobox_z_mode.currentText())
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

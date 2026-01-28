@@ -1282,10 +1282,8 @@ class MultiPointWorker:
         return True
 
     def prepare_z_stack(self):
-        # move to bottom of the z stack
-        if self.z_stacking_config == "FROM CENTER":
-            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        # UI already calculated correct z_range - just stabilize
+        # (initialize_z_stack already moved to z_range[0] which is the bottom)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
