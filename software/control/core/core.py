@@ -1747,13 +1747,18 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.setFixedSize(int(width), int(height))
 
     def display_image(self, image, illumination_source):
-        if illumination_source < 11:
+        # Map illumination source code to port index for widget selection
+        # Port indices: D1=0, D2=1, D3=2, D4=3, D5=4
+        # Source codes: D1=11, D2=12, D3=14, D4=13, D5=15 (non-sequential D3/D4!)
+        port_index = source_code_to_port_index(illumination_source)
+        if port_index < 0:
+            # Not a D1-D5 source, use default widget
             self.graphics_widget_1.img.setImage(image, autoLevels=False)
-        elif illumination_source == 11:
+        elif port_index == 0:  # D1
             self.graphics_widget_2.img.setImage(image, autoLevels=False)
-        elif illumination_source == 12:
+        elif port_index == 1:  # D2
             self.graphics_widget_3.img.setImage(image, autoLevels=False)
-        elif illumination_source == 13:
+        elif port_index == 3:  # D4 (matches original code behavior)
             self.graphics_widget_4.img.setImage(image, autoLevels=False)
 
 
