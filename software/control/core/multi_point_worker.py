@@ -1282,8 +1282,7 @@ class MultiPointWorker:
         return True
 
     def prepare_z_stack(self):
-        # UI already calculated correct z_range - just stabilize
-        # (initialize_z_stack already moved to z_range[0] which is the bottom)
+        # Allow stage to stabilize after moving to z_range start position
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
