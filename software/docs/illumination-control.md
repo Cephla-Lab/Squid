@@ -14,13 +14,13 @@ Two software APIs are available:
 
 ## Hardware Ports
 
-| Port | Source Code | DAC Channel | GPIO Pin | Typical Use |
-|------|-------------|-------------|----------|-------------|
-| D1 | 11 | 0 | PIN_D1 | 405nm (violet) |
-| D2 | 12 | 1 | PIN_D2 | 470/488nm (blue) |
-| D3 | 14 | 2 | PIN_D3 | 545-561nm (green) |
-| D4 | 13 | 3 | PIN_D4 | 638/640nm (red) |
-| D5 | 15 | 4 | PIN_D5 | 730-750nm (NIR) |
+| Port | Port Index | Source Code | DAC Channel | GPIO Pin | Typical Use |
+|------|------------|-------------|-------------|----------|-------------|
+| D1 | 0 | 11 | 0 | PIN_D1 | 405nm (violet) |
+| D2 | 1 | 12 | 1 | PIN_D2 | 470/488nm (blue) |
+| D3 | 2 | 14 | 2 | PIN_D3 | 545-561nm (green) |
+| D4 | 3 | 13 | 3 | PIN_D4 | 638/640nm (red) |
+| D5 | 4 | 15 | 4 | PIN_D5 | 730-750nm (NIR) |
 
 **Important:** D3 and D4 have non-sequential source codes (14 and 13) for historical API compatibility. The multi-port API uses sequential port indices (0-4) which map correctly internally.
 
