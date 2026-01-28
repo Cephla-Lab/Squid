@@ -932,6 +932,11 @@ SORT_DURING_MULTIPOINT = False
 
 INVERTED_OBJECTIVE = False
 
+# Illumination intensity scaling factor - scales DAC output for different hardware:
+#   0.6 = Squid LEDs (0-1.5V output range)
+#   0.8 = Squid laser engine (0-2V output range)
+#   1.0 = Full range (0-2.5V output, when DAC gain is 1 instead of 2)
+# This factor is applied to ALL illumination commands (legacy and multi-port).
 ILLUMINATION_INTENSITY_FACTOR = 0.6
 
 CAMERA_TYPE = "Default"

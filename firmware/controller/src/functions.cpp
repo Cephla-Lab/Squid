@@ -438,6 +438,9 @@ void turn_off_port(int port_index)
   illumination_port_is_on[port_index] = false;
 }
 
+// Set DAC intensity for a specific port without changing on/off state.
+// The intensity is scaled by illumination_intensity_factor before being sent to DAC.
+// The unscaled value is stored in illumination_port_intensity[] for reference.
 void set_port_intensity(int port_index, uint16_t intensity)
 {
   if (port_index < 0 || port_index >= NUM_ILLUMINATION_PORTS)
@@ -449,7 +452,7 @@ void set_port_intensity(int port_index, uint16_t intensity)
 
   uint16_t scaled_intensity = intensity * illumination_intensity_factor;
   set_DAC8050x_output(dac_channel, scaled_intensity);
-  illumination_port_intensity[port_index] = intensity;
+  illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
 }
 
 void turn_off_all_ports()

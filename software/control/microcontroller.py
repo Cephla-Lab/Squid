@@ -1587,6 +1587,19 @@ class Microcontroller:
         return int(signed)
 
     def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
+        """Set the illumination intensity scaling factor on the MCU.
+
+        This factor scales the DAC output voltage for ALL illumination commands
+        (both legacy single-source and new multi-port commands).
+
+        Recommended values for different hardware:
+            0.6 = Squid LEDs (0-1.5V output range)
+            0.8 = Squid laser engine (0-2V output range)
+            1.0 = Full range (0-2.5V output, when DAC gain is 1 instead of 2)
+
+        Args:
+            illumination_intensity_factor: Scaling factor (0.01-1.0, clamped)
+        """
         if illumination_intensity_factor > 1:
             illumination_intensity_factor = 1
 
