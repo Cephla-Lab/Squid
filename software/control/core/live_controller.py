@@ -63,6 +63,10 @@ class LiveController:
         # Confocal mode state - when True, use confocal_override from acquisition configs
         self._confocal_mode: bool = False
 
+        # Callback for camera switch notifications (for multi-camera support)
+        # Signature: on_camera_switched(old_camera: AbstractCamera, new_camera: AbstractCamera)
+        self.on_camera_switched: Optional[callable] = None
+
     # ─────────────────────────────────────────────────────────────────────────────
     # Illumination config helpers
     # ─────────────────────────────────────────────────────────────────────────────
@@ -154,11 +158,19 @@ class LiveController:
             return  # Already using this camera
 
         new_camera = self.microscope.get_camera(camera_id)
+        old_camera = self.camera
         old_camera_id = self._active_camera_id
 
         self._log.info(f"Switching live camera: {old_camera_id} -> {camera_id}")
         self.camera = new_camera
         self._active_camera_id = camera_id
+
+        # Notify listeners of camera switch (e.g., to move frame callbacks)
+        if self.on_camera_switched:
+            try:
+                self.on_camera_switched(old_camera, new_camera)
+            except Exception as e:
+                self._log.error(f"Error in on_camera_switched callback: {e}")
 
     def get_active_camera_id(self) -> int:
         """Get the ID of the currently active camera.
@@ -213,6 +225,18 @@ class LiveController:
 
         # Filter to only enabled channels
         channels = [ch for ch in channels if ch.enabled]
+
+        # In multi-camera systems, filter out enabled channels without camera assignment
+        # (UI should prevent this, but enforce here as safety check)
+        if len(self.microscope._cameras) > 1:
+            unassigned = [ch for ch in channels if ch.camera is None]
+            if unassigned:
+                self._log.warning(
+                    f"Skipping {len(unassigned)} enabled channel(s) without camera assignment "
+                    f"in multi-camera system: {[ch.name for ch in unassigned]}. "
+                    f"Assign cameras in Settings > Acquisition Channel Configuration."
+                )
+            channels = [ch for ch in channels if ch.camera is not None]
 
         # Apply confocal mode if active
         return apply_confocal_override(channels, self._confocal_mode)

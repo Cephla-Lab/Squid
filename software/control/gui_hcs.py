@@ -850,8 +850,12 @@ class HighContentScreeningGui(QMainWindow):
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER)
         else:
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
+        self._frame_callback = self.streamHandler.get_frame_callback()
+        self._frame_callback_id = self.camera.add_frame_callback(self._frame_callback)
         self.camera.enable_callbacks(enabled=True)
+
+        # Register callback to move frame callback when live camera switches (multi-camera support)
+        self.liveController.on_camera_switched = self._on_live_camera_switched
 
         if self.camera_focus:
             self.camera_focus.set_acquisition_mode(
@@ -868,6 +872,21 @@ class HighContentScreeningGui(QMainWindow):
                 self.objective_changer.moveToPosition1(move_z=False)
             elif DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_2:
                 self.objective_changer.moveToPosition2(move_z=False)
+
+    def _on_live_camera_switched(self, old_camera, new_camera):
+        """Handle camera switch for live preview (multi-camera support).
+
+        Moves the frame callback from the old camera to the new camera so that
+        frames from the new camera are properly displayed.
+
+        Note: At this point, old_camera has already stopped streaming.
+        """
+        self.log.info(f"Moving frame callback from old camera to new camera")
+        old_callback_id = self._frame_callback_id
+        # Add to new camera first to minimize window with no callbacks
+        self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
+        # Then remove from old camera (already stopped, just cleanup)
+        old_camera.remove_frame_callback(old_callback_id)
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:

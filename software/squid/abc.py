@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List, Dict
 import abc
 import enum
+import threading
 import time
 
 import pydantic
@@ -417,7 +418,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         # Frame callbacks is a list of (id, callback) managed by add_frame_callback and remove_frame_callback.
         # Your frame receiving functions should call self._send_frame_to_callbacks(frame), and doesn't need
         # to do more than that.
+        # Protected by _frame_callbacks_lock for thread safety (camera threads vs GUI/TCP threads).
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
+        self._frame_callbacks_lock = threading.Lock()
         self._frame_callbacks_enabled = True
 
         # Software crop is applied after hardware crop (setting ROI). The ratio is based on size after hardware crop.
@@ -459,22 +462,24 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         Returns the callback ID that can be used to remove the callback later if needed.
         """
-        try:
-            next_id = max(t[0] for t in self._frame_callbacks) + 1
-        except ValueError:
-            next_id = 1
+        with self._frame_callbacks_lock:
+            try:
+                next_id = max(t[0] for t in self._frame_callbacks) + 1
+            except ValueError:
+                next_id = 1
 
-        self._frame_callbacks.append((next_id, frame_callback))
+            self._frame_callbacks.append((next_id, frame_callback))
 
         return next_id
 
     def remove_frame_callback(self, callback_id):
-        try:
-            idx_to_remove = [t[0] for t in self._frame_callbacks].index(callback_id)
-            self._log.debug(f"Removing callback with id={callback_id} at idx={idx_to_remove}.")
-            del self._frame_callbacks[idx_to_remove]
-        except ValueError:
-            self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
+        with self._frame_callbacks_lock:
+            try:
+                idx_to_remove = [t[0] for t in self._frame_callbacks].index(callback_id)
+                self._log.debug(f"Removing callback with id={callback_id} at idx={idx_to_remove}.")
+                del self._frame_callbacks[idx_to_remove]
+            except ValueError:
+                self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
 
     def _propogate_frame(self, camera_frame: CameraFrame):
         """
@@ -485,7 +490,11 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         if not self._frame_callbacks_enabled:
             return
-        for _, cb in self._frame_callbacks:
+        # Copy the callback list under lock to avoid iteration issues if list is modified
+        with self._frame_callbacks_lock:
+            callbacks = list(self._frame_callbacks)
+        # Call callbacks outside the lock to avoid deadlocks
+        for _, cb in callbacks:
             cb(camera_frame)
 
     @abc.abstractmethod
