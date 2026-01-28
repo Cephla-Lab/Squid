@@ -193,6 +193,13 @@ class CMD_SET:
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
     SET_TRIGGER_MODE = 33
+    # Multi-port illumination commands (firmware v1.0+)
+    SET_PORT_INTENSITY = 34  # Set DAC intensity for specific port only
+    TURN_ON_PORT = 35  # Turn on GPIO for specific port
+    TURN_OFF_PORT = 36  # Turn off GPIO for specific port
+    SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
+    SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
+    TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
@@ -286,6 +293,67 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_561NM = ILLUMINATION_D3
     ILLUMINATION_SOURCE_638NM = ILLUMINATION_D4
     ILLUMINATION_SOURCE_730NM = ILLUMINATION_D5
+
+
+class ILLUMINATION_PORT:
+    """Port indices for multi-port illumination control (firmware v1.0+).
+
+    Port indices (0-15) for up to 16 illumination ports.
+    These are used with the new multi-port illumination commands
+    (SET_PORT_INTENSITY, TURN_ON_PORT, etc.).
+
+    Note: These are port indices, NOT the legacy source codes (11-15).
+    For legacy source codes, use ILLUMINATION_CODE.ILLUMINATION_D1, etc.
+    """
+
+    D1 = 0
+    D2 = 1
+    D3 = 2
+    D4 = 3
+    D5 = 4
+    # D6-D16 can be added as hardware expands
+
+
+def source_code_to_port_index(source_code: int) -> int:
+    """Map legacy illumination source code to port index.
+
+    Legacy source codes are non-sequential for historical API compatibility:
+        D1 = 11, D2 = 12, D3 = 14, D4 = 13, D5 = 15
+    Note: D3 and D4 are swapped!
+
+    Args:
+        source_code: Legacy source code (11-15 for D1-D5)
+
+    Returns:
+        Port index (0-4), or -1 for unknown source codes
+    """
+    mapping = {
+        ILLUMINATION_CODE.ILLUMINATION_D1: 0,  # 11 -> 0
+        ILLUMINATION_CODE.ILLUMINATION_D2: 1,  # 12 -> 1
+        ILLUMINATION_CODE.ILLUMINATION_D3: 2,  # 14 -> 2 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D4: 3,  # 13 -> 3 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D5: 4,  # 15 -> 4
+    }
+    return mapping.get(source_code, -1)
+
+
+def port_index_to_source_code(port_index: int) -> int:
+    """Map port index to legacy illumination source code.
+
+    Args:
+        port_index: Port index (0-4 for D1-D5)
+
+    Returns:
+        Legacy source code (11-15), or -1 for invalid port index
+    """
+    mapping = {
+        0: ILLUMINATION_CODE.ILLUMINATION_D1,  # 0 -> 11
+        1: ILLUMINATION_CODE.ILLUMINATION_D2,  # 1 -> 12
+        2: ILLUMINATION_CODE.ILLUMINATION_D3,  # 2 -> 14
+        3: ILLUMINATION_CODE.ILLUMINATION_D4,  # 3 -> 13
+        4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
+    }
+    return mapping.get(port_index, -1)
 
 
 class VOLUMETRIC_IMAGING:

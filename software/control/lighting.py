@@ -2,11 +2,17 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
 from control._def import ILLUMINATION_CODE
+
+# Import and re-export mapping functions (canonical location is _def.py)
+from control._def import source_code_to_port_index, port_index_to_source_code
+
+# Number of illumination ports supported (matches firmware)
+NUM_ILLUMINATION_PORTS = 16
 
 
 class LightSourceType(Enum):
@@ -75,6 +81,10 @@ class IlluminationController:
         self.current_channel = None
         self.intensity_luts = {}  # Store LUTs for each wavelength
         self.max_power = {}  # Store max power for each wavelength
+
+        # Multi-port illumination state tracking (16 ports max)
+        self.port_is_on = {i: False for i in range(NUM_ILLUMINATION_PORTS)}
+        self.port_intensity = {i: 0.0 for i in range(NUM_ILLUMINATION_PORTS)}
 
         if self.light_source_type is not None:
             self._configure_light_source()
@@ -212,6 +222,98 @@ class IlluminationController:
 
     def get_shutter_state(self):
         return self.is_on
+
+    # Multi-port illumination methods (firmware v1.0+)
+    # These allow multiple ports to be ON simultaneously with independent intensities
+
+    def set_port_intensity(self, port_index: int, intensity: float):
+        """Set intensity for a specific port without changing on/off state.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100)
+        """
+        if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port index: {port_index}")
+        self.microcontroller.set_port_intensity(port_index, intensity)
+        self.port_intensity[port_index] = intensity
+
+    def turn_on_port(self, port_index: int):
+        """Turn on a specific illumination port.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+        """
+        if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port index: {port_index}")
+        self.microcontroller.turn_on_port(port_index)
+        self.microcontroller.wait_till_operation_is_completed()
+        self.port_is_on[port_index] = True
+
+    def turn_off_port(self, port_index: int):
+        """Turn off a specific illumination port.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+        """
+        if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port index: {port_index}")
+        self.microcontroller.turn_off_port(port_index)
+        self.microcontroller.wait_till_operation_is_completed()
+        self.port_is_on[port_index] = False
+
+    def set_port_illumination(self, port_index: int, intensity: float, turn_on: bool):
+        """Set intensity and on/off state for a specific port in one command.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100)
+            turn_on: Whether to turn the port on
+        """
+        if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port index: {port_index}")
+        self.microcontroller.set_port_illumination(port_index, intensity, turn_on)
+        self.microcontroller.wait_till_operation_is_completed()
+        self.port_intensity[port_index] = intensity
+        self.port_is_on[port_index] = turn_on
+
+    def turn_on_multiple_ports(self, port_indices: List[int]):
+        """Turn on multiple ports simultaneously.
+
+        Args:
+            port_indices: List of port indices to turn on (0=D1, 1=D2, etc.)
+        """
+        if not port_indices:
+            return
+
+        # Build port mask and on mask
+        port_mask = 0
+        on_mask = 0
+        for port_index in port_indices:
+            if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
+                raise ValueError(f"Invalid port index: {port_index}")
+            port_mask |= 1 << port_index
+            on_mask |= 1 << port_index
+
+        self.microcontroller.set_multi_port_mask(port_mask, on_mask)
+        self.microcontroller.wait_till_operation_is_completed()
+        for port_index in port_indices:
+            self.port_is_on[port_index] = True
+
+    def turn_off_all_ports(self):
+        """Turn off all illumination ports."""
+        self.microcontroller.turn_off_all_ports()
+        self.microcontroller.wait_till_operation_is_completed()
+        for i in range(NUM_ILLUMINATION_PORTS):
+            self.port_is_on[i] = False
+
+    def get_active_ports(self) -> List[int]:
+        """Get list of currently active (on) port indices.
+
+        Returns:
+            List of port indices that are currently on.
+        """
+        return [i for i in range(NUM_ILLUMINATION_PORTS) if self.port_is_on[i]]
 
     def close(self):
         if self.light_source is not None:

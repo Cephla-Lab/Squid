@@ -60,6 +60,13 @@ _CMD_NAMES = {
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
     CMD_SET.SET_PIN_LEVEL: "SET_PIN_LEVEL",
+    # Multi-port illumination commands (firmware v1.0+)
+    CMD_SET.SET_PORT_INTENSITY: "SET_PORT_INTENSITY",
+    CMD_SET.TURN_ON_PORT: "TURN_ON_PORT",
+    CMD_SET.TURN_OFF_PORT: "TURN_OFF_PORT",
+    CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
+    CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
+    CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -171,8 +178,16 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 
 class SimSerial(AbstractCephlaMicroSerial):
+    # Number of illumination ports for simulation
+    NUM_ILLUMINATION_PORTS = 16
+    # Simulated firmware version (1.0 supports multi-port illumination)
+    FIRMWARE_VERSION_MAJOR = 1
+    FIRMWARE_VERSION_MINOR = 0
+
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch) -> bytes:
+    def response_bytes_for(
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+    ) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -181,13 +196,16 @@ class SimSerial(AbstractCephlaMicroSerial):
         - Z pos (4 bytes)
         - Theta (4 bytes)
         - buttons and switches (1 byte)
-        - reserved (4 bytes)
+        - reserved (4 bytes) - byte 22 contains firmware version
         - CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        reserved_state = 0  # This is just filler for the 4 reserved bytes.
+        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
+        # High nibble = major version, low nibble = minor version
+        version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
+        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
         )
@@ -210,6 +228,15 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.w2 = 0
         self.joystick_button = False
         self.switch = False
+
+        # Multi-port illumination state for simulation
+        self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
+        self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Legacy illumination state tracking (for backward compatibility)
+        # Maps legacy source codes (11-15) to port indices (0-4)
+        self._illumination_source = None  # Currently selected legacy source
+        self._illumination_is_on = False  # Legacy global on/off state
 
         self._closed = False
 
@@ -263,6 +290,57 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.w = 0
             elif axis == AXIS.W2:
                 self.w2 = 0
+        # Multi-port illumination commands
+        elif command_byte == CMD_SET.SET_PORT_INTENSITY:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = False
+        elif command_byte == CMD_SET.SET_PORT_ILLUMINATION:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                turn_on = write_bytes[5] != 0
+                self.port_intensity[port_index] = intensity
+                self.port_is_on[port_index] = turn_on
+        elif command_byte == CMD_SET.SET_MULTI_PORT_MASK:
+            port_mask = (write_bytes[2] << 8) | write_bytes[3]
+            on_mask = (write_bytes[4] << 8) | write_bytes[5]
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                if port_mask & (1 << i):
+                    self.port_is_on[i] = bool(on_mask & (1 << i))
+        elif command_byte == CMD_SET.TURN_OFF_ALL_PORTS:
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
+        # Legacy illumination commands - sync with multi-port state
+        elif command_byte == CMD_SET.SET_ILLUMINATION:
+            source = write_bytes[2]
+            intensity = (write_bytes[3] << 8) | write_bytes[4]
+            self._illumination_source = source
+            # Update port intensity for the corresponding port
+            port_index = source_code_to_port_index(source)
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_ILLUMINATION:
+            self._illumination_is_on = True
+            # Turn on the currently selected source's port
+            if self._illumination_source is not None:
+                port_index = source_code_to_port_index(self._illumination_source)
+                if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                    self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_ILLUMINATION:
+            self._illumination_is_on = False
+            # Turn off all ports (matches firmware behavior)
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
 
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
@@ -544,6 +622,10 @@ class Microcontroller:
         self.joystick_event_listeners = []
         self.switch_state = 0
 
+        # Firmware version (major, minor) - detected from response byte 22
+        # (0, 0) indicates legacy firmware without version reporting
+        self.firmware_version = (0, 0)
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -664,6 +746,101 @@ class Microcontroller:
         cmd[3] = min(int(g * 255), 255)
         cmd[4] = min(int(r * 255), 255)
         cmd[5] = min(int(b * 255), 255)
+        self.send_command(cmd)
+
+    # Multi-port illumination commands (firmware v1.0+)
+    # These allow multiple ports to be ON simultaneously with independent intensities
+
+    def set_port_intensity(self, port_index: int, intensity: float):
+        """Set DAC intensity for a specific port without changing on/off state.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100), clamped to valid range
+        """
+        self.log.debug(f"[MCU] set_port_intensity: port={port_index}, intensity={intensity}")
+        # Clamp intensity to valid range
+        intensity = max(0, min(100, intensity))
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PORT_INTENSITY
+        cmd[2] = port_index
+        intensity_value = int((intensity / 100) * 65535)
+        cmd[3] = intensity_value >> 8
+        cmd[4] = intensity_value & 0xFF
+        self.send_command(cmd)
+
+    def turn_on_port(self, port_index: int):
+        """Turn on a specific illumination port.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+        """
+        self.log.debug(f"[MCU] turn_on_port: port={port_index}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_ON_PORT
+        cmd[2] = port_index
+        self.send_command(cmd)
+
+    def turn_off_port(self, port_index: int):
+        """Turn off a specific illumination port.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+        """
+        self.log.debug(f"[MCU] turn_off_port: port={port_index}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_OFF_PORT
+        cmd[2] = port_index
+        self.send_command(cmd)
+
+    def set_port_illumination(self, port_index: int, intensity: float, turn_on: bool):
+        """Set intensity and on/off state for a specific port in one command.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100), clamped to valid range
+            turn_on: Whether to turn the port on
+        """
+        self.log.debug(f"[MCU] set_port_illumination: port={port_index}, intensity={intensity}, on={turn_on}")
+        # Clamp intensity to valid range
+        intensity = max(0, min(100, intensity))
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PORT_ILLUMINATION
+        cmd[2] = port_index
+        intensity_value = int((intensity / 100) * 65535)
+        cmd[3] = intensity_value >> 8
+        cmd[4] = intensity_value & 0xFF
+        cmd[5] = 1 if turn_on else 0
+        self.send_command(cmd)
+
+    def set_multi_port_mask(self, port_mask: int, on_mask: int):
+        """Set on/off state for multiple ports using masks.
+
+        This allows turning multiple ports on/off in a single command while
+        leaving other ports unchanged.
+
+        Args:
+            port_mask: 16-bit mask of which ports to update (bit 0=D1, bit 15=D16)
+            on_mask: 16-bit mask of on/off state for selected ports (1=on, 0=off)
+
+        Example:
+            # Turn on D1 and D2, turn off D3, leave others unchanged
+            set_multi_port_mask(0x0007, 0x0003)  # port_mask=D1|D2|D3, on_mask=D1|D2
+        """
+        self.log.debug(f"[MCU] set_multi_port_mask: port_mask=0x{port_mask:04X}, on_mask=0x{on_mask:04X}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MULTI_PORT_MASK
+        cmd[2] = (port_mask >> 8) & 0xFF
+        cmd[3] = port_mask & 0xFF
+        cmd[4] = (on_mask >> 8) & 0xFF
+        cmd[5] = on_mask & 0xFF
+        self.send_command(cmd)
+
+    def turn_off_all_ports(self):
+        """Turn off all illumination ports."""
+        self.log.debug("[MCU] turn_off_all_ports")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
@@ -1292,6 +1469,11 @@ class Microcontroller:
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
 
+                # Firmware version from byte 22: high nibble = major, low nibble = minor
+                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
+                version_byte = msg[22]
+                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
 
@@ -1302,6 +1484,17 @@ class Microcontroller:
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
+
+    def supports_multi_port(self) -> bool:
+        """Check if firmware supports multi-port illumination commands.
+
+        Multi-port illumination was added in firmware version 1.0.
+        Legacy firmware (version 0.0) only supports single-source illumination.
+
+        Returns:
+            True if firmware version >= 1.0, False otherwise.
+        """
+        return self.firmware_version >= (1, 0)
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state
