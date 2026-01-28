@@ -18,64 +18,86 @@ def base_camera_config():
 
 
 class TestCameraConfigFactory:
-    """Tests for create_camera_configs()."""
+    """Tests for create_camera_configs().
 
-    def test_no_registry_returns_single_camera(self, base_camera_config):
-        """When no registry exists, return single camera with ID 1."""
+    Note: create_camera_configs() respects INI settings:
+    - USE_MULTI_CAMERA=False (default): Returns single camera with ID 1
+    - USE_MULTI_CAMERA=True: Uses MULTI_CAMERA_IDS and MULTI_CAMERA_SNS from INI
+    - Serial numbers come from MULTI_CAMERA_SNS (INI), not from cameras.yaml
+    - cameras.yaml (registry) is optional and provides friendly names only
+    """
+
+    def test_no_registry_returns_single_camera(self, base_camera_config, monkeypatch):
+        """When USE_MULTI_CAMERA=False, return single camera with ID 1."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", False)
         configs = create_camera_configs(None, base_camera_config)
         assert list(configs.keys()) == [1]
         assert configs[1] == base_camera_config
 
-    def test_empty_registry_returns_single_camera(self, base_camera_config):
-        """When registry has no cameras, return single camera with ID 1."""
+    def test_empty_registry_returns_single_camera(self, base_camera_config, monkeypatch):
+        """When USE_MULTI_CAMERA=False, return single camera with ID 1."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", False)
         registry = CameraRegistryConfig(cameras=[])
         configs = create_camera_configs(registry, base_camera_config)
         assert list(configs.keys()) == [1]
 
-    def test_single_camera_registry(self, base_camera_config):
-        """Single camera in registry gets default ID 1 and default name."""
-        registry = CameraRegistryConfig(
-            cameras=[
-                CameraDefinition(serial_number="SN001"),  # ID and name will default
-            ]
-        )
-        configs = create_camera_configs(registry, base_camera_config)
+    def test_multi_camera_disabled_ignores_ini_settings(self, base_camera_config, monkeypatch):
+        """When USE_MULTI_CAMERA=False, INI settings are ignored."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", False)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "SN001", 2: "SN002"})
+        configs = create_camera_configs(None, base_camera_config)
+        # Should return single camera with base config
+        assert list(configs.keys()) == [1]
+        assert configs[1].serial_number == base_camera_config.serial_number
+
+    def test_single_camera_from_ini(self, base_camera_config, monkeypatch):
+        """Single camera gets serial number from INI."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "SN001"})
+        configs = create_camera_configs(None, base_camera_config)
         assert list(configs.keys()) == [1]
         assert configs[1].serial_number == "SN001"
 
-    def test_multi_camera_registry(self, base_camera_config):
-        """Multiple cameras in registry each get their own config."""
-        registry = CameraRegistryConfig(
-            cameras=[
-                CameraDefinition(id=1, name="Main", serial_number="SN001"),
-                CameraDefinition(id=2, name="Side", serial_number="SN002"),
-            ]
-        )
-        configs = create_camera_configs(registry, base_camera_config)
+    def test_multi_camera_from_ini(self, base_camera_config, monkeypatch):
+        """Multiple cameras get serial numbers from INI."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "SN001", 2: "SN002"})
+        configs = create_camera_configs(None, base_camera_config)
         assert sorted(configs.keys()) == [1, 2]
         assert configs[1].serial_number == "SN001"
         assert configs[2].serial_number == "SN002"
 
-    def test_camera_ids_not_sequential(self, base_camera_config):
+    def test_camera_ids_not_sequential(self, base_camera_config, monkeypatch):
         """Camera IDs don't have to be sequential."""
-        registry = CameraRegistryConfig(
-            cameras=[
-                CameraDefinition(id=5, name="A", serial_number="SN005"),
-                CameraDefinition(id=10, name="B", serial_number="SN010"),
-            ]
-        )
-        configs = create_camera_configs(registry, base_camera_config)
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [5, 10])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {5: "SN005", 10: "SN010"})
+        configs = create_camera_configs(None, base_camera_config)
         assert sorted(configs.keys()) == [5, 10]
 
-    def test_base_config_is_copied(self, base_camera_config):
+    def test_base_config_is_copied(self, base_camera_config, monkeypatch):
         """Each camera gets a deep copy of base config."""
-        registry = CameraRegistryConfig(
-            cameras=[
-                CameraDefinition(id=1, name="A", serial_number="SN001"),
-                CameraDefinition(id=2, name="B", serial_number="SN002"),
-            ]
-        )
-        configs = create_camera_configs(registry, base_camera_config)
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "SN001", 2: "SN002"})
+        configs = create_camera_configs(None, base_camera_config)
 
         # Verify they're different objects
         assert configs[1] is not configs[2]
@@ -88,6 +110,63 @@ class TestCameraConfigFactory:
         # Verify other properties are copied from base
         assert configs[1].camera_type == base_camera_config.camera_type
         assert configs[2].camera_type == base_camera_config.camera_type
+
+    def test_missing_serial_number_raises(self, base_camera_config, monkeypatch):
+        """Missing serial number in MULTI_CAMERA_SNS raises error."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "SN001"})  # Missing camera 2
+
+        with pytest.raises(ValueError, match="Missing serial numbers"):
+            create_camera_configs(None, base_camera_config)
+
+    def test_empty_sns_dict_raises(self, base_camera_config, monkeypatch):
+        """Empty MULTI_CAMERA_SNS dict raises specific error."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {})  # Empty dict
+
+        with pytest.raises(ValueError, match="MULTI_CAMERA_SNS is empty"):
+            create_camera_configs(None, base_camera_config)
+
+    def test_string_keys_in_sns_dict(self, base_camera_config, monkeypatch):
+        """String keys in MULTI_CAMERA_SNS are converted to int (INI parser behavior)."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        # INI parser may give us string keys
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {"1": "SN001", "2": "SN002"})
+        configs = create_camera_configs(None, base_camera_config)
+        assert sorted(configs.keys()) == [1, 2]
+        assert configs[1].serial_number == "SN001"
+        assert configs[2].serial_number == "SN002"
+
+    def test_registry_provides_names_only(self, base_camera_config, monkeypatch):
+        """Registry (cameras.yaml) provides names but serial numbers come from INI."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_MULTI_CAMERA", True)
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_IDS", [1, 2])
+        monkeypatch.setattr(control._def, "MULTI_CAMERA_SNS", {1: "INI_SN1", 2: "INI_SN2"})
+
+        # Registry has different serial numbers (should be ignored)
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(id=1, name="Main Camera", serial_number="YAML_SN1"),
+                CameraDefinition(id=2, name="Side Camera", serial_number="YAML_SN2"),
+            ]
+        )
+        configs = create_camera_configs(registry, base_camera_config)
+
+        # Serial numbers should come from INI, not YAML
+        assert sorted(configs.keys()) == [1, 2]
+        assert configs[1].serial_number == "INI_SN1"
+        assert configs[2].serial_number == "INI_SN2"
 
 
 class TestGetPrimaryCameraId:

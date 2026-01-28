@@ -743,6 +743,12 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
+        # Camera Configuration (only shown if multi-camera is enabled)
+        if USE_MULTI_CAMERA:
+            camera_config_action = QAction("Camera Configuration", self)
+            camera_config_action.triggered.connect(self.openCameraConfigEditor)
+            advanced_menu.addAction(camera_config_action)
+
         # Channel Group Configuration (only shown if multi-camera system)
         camera_count = len(self.microscope.config_repo.get_camera_names())
         if camera_count > 1:
@@ -2160,6 +2166,12 @@ class HighContentScreeningGui(QMainWindow):
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openCameraConfigEditor(self):
+        """Open the camera configuration dialog"""
+        dialog = widgets.CameraConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

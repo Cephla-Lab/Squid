@@ -583,6 +583,51 @@ the migration script.
 - ✅ Legacy pre-YAML configs migrated via `tools/migrate_acquisition_configs.py`
 - ✅ Write v1.0 format on save
 
+### Phase 1.5: INI Settings and Camera Configuration UI ✅ COMPLETE
+
+**Scope**: Add INI configuration settings and Camera Configuration UI dialog (following the filter wheel pattern).
+
+**Design**: Hybrid INI + YAML approach:
+- **INI**: Serial numbers (required) - like filter wheel indices
+- **YAML**: Friendly names (optional) - like filter wheel position names
+- **All cameras must be the same type** (specified by `camera_type` in INI)
+
+**INI Settings** (in `control/_def.py`):
+```python
+# Multi-camera support (all cameras must be same type as CAMERA_TYPE)
+USE_MULTI_CAMERA = False          # Enable multi-camera mode
+MULTI_CAMERA_IDS = [1]            # List of camera IDs to instantiate
+MULTI_CAMERA_SNS = {}             # Camera ID -> serial number mapping
+```
+
+**Example INI configuration:**
+```ini
+[GENERAL]
+camera_type = Toupcam
+use_multi_camera = True
+multi_camera_ids = [1, 2]
+multi_camera_sns = {"1": "ABC123", "2": "DEF456"}
+```
+
+**Behavior:**
+- `USE_MULTI_CAMERA=False` (default): Single-camera mode
+- `USE_MULTI_CAMERA=True`: Multi-camera mode using `MULTI_CAMERA_IDS` and `MULTI_CAMERA_SNS`
+- Serial numbers **must** be in INI (validation error if missing)
+- `cameras.yaml` is optional and provides friendly names only
+
+**Files modified**:
+- ✅ `control/_def.py` - Added `USE_MULTI_CAMERA`, `MULTI_CAMERA_IDS`, `MULTI_CAMERA_SNS` settings
+- ✅ `control/widgets.py` - Added `CameraConfiguratorDialog` class
+- ✅ `control/gui_hcs.py` - Added "Camera Configuration" menu item (Settings > Advanced)
+- ✅ `squid/camera/config_factory.py` - INI settings integration in `create_camera_configs()`
+- ✅ `tests/control/test_microscope_cameras.py` - Updated tests with INI mocking
+
+**UI:**
+- **Camera Configuration dialog** (Settings > Advanced > Camera Configuration, when `USE_MULTI_CAMERA=True`)
+  - View camera IDs and serial numbers (from INI, read-only)
+  - Edit camera names (saved to `cameras.yaml`)
+  - Shows warning if serial number not configured in INI
+
 ### Phase 2: UI Integration (In Progress)
 
 **Scope**: Update UI to use camera/filter wheel names and support channel groups.
@@ -597,31 +642,44 @@ the migration script.
 - ✅ **Filter Wheel Configuration dialog** (Settings > Advanced > Filter Wheel Configuration)
   - Configure filter position names (e.g., "DAPI emission" instead of "Position 1")
   - Saves to `machine_configs/filter_wheels.yaml`
+- ✅ **Channel Group Configuration dialog** (Settings > Advanced > Channel Group Configuration)
+  - Create/edit channel groups for multi-camera acquisition
+  - Configure synchronization mode (simultaneous vs sequential)
+  - Saves to `general.yaml` in profile
 - ✅ Filter wheel/position selector in Add Channel dialog
 - ✅ Disabled channels filtered from live controller dropdown
 
 **Remaining**:
-- [ ] Camera selector dropdown in channel configuration (for multi-camera)
-- [ ] Channel group editor widget
-- [ ] Acquisition setup to select channel groups
+- [ ] Camera selector dropdown in CameraSettingsWidget (to switch which camera's settings are shown)
+- [ ] Acquisition setup to select channel groups for acquisition
 
-### Phase 3: Acquisition Engine
+### Phase 3: Acquisition Engine (Partially Complete)
 
 **Scope**: Implement multi-camera acquisition with channel groups.
 
-**Changes**:
-- [ ] `LiveController` - Support multiple camera instances
-- [ ] `MultiPointWorker` - Process channel groups with synchronization
-- [ ] Hardware triggering with timing offsets
+**Completed**:
+- ✅ `Microscope` - Multi-camera instantiation via `build_from_global_config()`
+- ✅ `Microscope` - Camera dict API (`get_camera(id)`, `get_camera_ids()`, `camera_count`)
+- ✅ `LiveController` - Support multiple camera instances with `switch_camera()`
+- ✅ `LiveController` - Camera switching on channel change (`set_microscope_mode`)
 
-### Phase 4: Testing and Documentation
+**Remaining**:
+- [ ] `MultiPointWorker` - Process channel groups with synchronization
+- [ ] Hardware triggering with timing offsets for simultaneous acquisition
+- [ ] Per-camera triggering for multi-camera simultaneous capture
+
+### Phase 4: Testing and Documentation (In Progress)
 
 **Scope**: Comprehensive testing and user documentation.
 
 **Deliverables**:
 - ✅ Unit tests for new models (v1.0 schema validation)
+- ✅ Unit tests for camera config factory (INI settings integration)
+- ✅ Unit tests for Microscope multi-camera API
+- ✅ Unit tests for LiveController camera switching
+- ✅ Documentation: configuration-system.md (INI settings + cameras.yaml)
 - [ ] Integration tests for multi-camera acquisition
-- [ ] User documentation updates
+- [ ] End-to-end multi-camera acquisition testing
 
 ---
 
@@ -631,7 +689,7 @@ the migration script.
 
 | File | Description |
 |------|-------------|
-| `machine_configs/cameras.yaml` | Camera registry |
+| `machine_configs/cameras.yaml` | Camera registry (names, serial numbers) |
 | `machine_configs/filter_wheels.yaml` | Filter wheel registry |
 | `control/models/camera_registry.py` | CameraRegistryConfig model |
 | `control/models/filter_wheel_config.py` | FilterWheelRegistryConfig model |
@@ -640,10 +698,16 @@ the migration script.
 
 | File | Changes |
 |------|---------|
+| `control/_def.py` | Added `USE_MULTI_CAMERA`, `MULTI_CAMERA_IDS` settings |
+| `control/widgets.py` | Added `CameraConfiguratorDialog` class |
+| `control/gui_hcs.py` | Added "Camera Configuration" menu item |
+| `squid/camera/config_factory.py` | INI settings integration in `create_camera_configs()` |
+| `control/microscope.py` | Multi-camera instantiation and API |
+| `control/core/live_controller.py` | Camera switching support |
 | `control/models/acquisition_config.py` | Restructure for v1.0 schema |
 | `control/models/__init__.py` | Export new models |
 | `control/core/config/repository.py` | Load new config files |
-| `control/core/config/utils.py` | Validation utilities |
+| `tests/control/test_microscope_cameras.py` | Multi-camera tests with INI mocking |
 | `user_profiles/*/channel_configs/*.yaml` | New v1.0 schema format |
 
 ---
