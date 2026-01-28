@@ -754,6 +754,15 @@ class Microcontroller:
 
     # Multi-port illumination commands (firmware v1.0+)
     # These allow multiple ports to be ON simultaneously with independent intensities
+    # Maximum number of ports supported by firmware
+    _MAX_ILLUMINATION_PORTS = 16
+
+    def _validate_port_index(self, port_index: int):
+        """Validate port index is in valid range (0-15)."""
+        if not isinstance(port_index, int):
+            raise TypeError(f"port_index must be an integer, got {type(port_index).__name__}")
+        if port_index < 0 or port_index >= self._MAX_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port_index {port_index}, must be 0-{self._MAX_ILLUMINATION_PORTS - 1}")
 
     def set_port_intensity(self, port_index: int, intensity: float):
         """Set DAC intensity for a specific port without changing on/off state.
@@ -761,7 +770,12 @@ class Microcontroller:
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
             intensity: Intensity percentage (0-100), clamped to valid range
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
         """
+        self._validate_port_index(port_index)
         self.log.debug(f"[MCU] set_port_intensity: port={port_index}, intensity={intensity}")
         # Clamp intensity to valid range
         intensity = max(0, min(100, intensity))
@@ -778,7 +792,12 @@ class Microcontroller:
 
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
         """
+        self._validate_port_index(port_index)
         self.log.debug(f"[MCU] turn_on_port: port={port_index}")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_ON_PORT
@@ -790,7 +809,12 @@ class Microcontroller:
 
         Args:
             port_index: Port index (0=D1, 1=D2, etc.)
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
         """
+        self._validate_port_index(port_index)
         self.log.debug(f"[MCU] turn_off_port: port={port_index}")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_PORT
@@ -804,7 +828,12 @@ class Microcontroller:
             port_index: Port index (0=D1, 1=D2, etc.)
             intensity: Intensity percentage (0-100), clamped to valid range
             turn_on: Whether to turn the port on
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
         """
+        self._validate_port_index(port_index)
         self.log.debug(f"[MCU] set_port_illumination: port={port_index}, intensity={intensity}, on={turn_on}")
         # Clamp intensity to valid range
         intensity = max(0, min(100, intensity))

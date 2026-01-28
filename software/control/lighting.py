@@ -236,6 +236,7 @@ class IlluminationController:
         if port_index < 0 or port_index >= NUM_ILLUMINATION_PORTS:
             raise ValueError(f"Invalid port index: {port_index}")
         self.microcontroller.set_port_intensity(port_index, intensity)
+        self.microcontroller.wait_till_operation_is_completed()
         self.port_intensity[port_index] = intensity
 
     def turn_on_port(self, port_index: int):

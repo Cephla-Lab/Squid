@@ -113,17 +113,14 @@ class TestPortIndexBoundaries:
         mcu.wait_till_operation_is_completed()
         assert mcu._serial.port_is_on[15] is True
 
-    def test_port_index_16_accepted_by_mcu(self, mcu):
-        """Port index 16 is accepted by MCU (no validation at MCU level).
+    def test_port_index_16_rejected_by_mcu(self, mcu):
+        """Port index 16 is rejected by Microcontroller validation.
 
-        Note: IlluminationController validates port indices, but Microcontroller
-        methods do not. Use IlluminationController for validated access.
+        Microcontroller validates port indices (0-15) before sending commands.
         """
-        # MCU methods don't validate - they just send the command
-        # The command will be sent, but won't affect SimSerial (out of range)
-        mcu.turn_on_port(16)
-        mcu.wait_till_operation_is_completed()
-        # No error raised - MCU doesn't validate
+        with pytest.raises(ValueError) as exc_info:
+            mcu.turn_on_port(16)
+        assert "Invalid port_index 16" in str(exc_info.value)
 
     def test_negative_port_index_fails_byte_conversion(self, mcu):
         """Negative port index fails during byte conversion."""
