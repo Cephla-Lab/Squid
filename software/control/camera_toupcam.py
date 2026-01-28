@@ -178,6 +178,9 @@ class ToupcamCamera(AbstractCamera):
             if not len(sn_matches):
                 all_sn = [d.id for d in devices]
                 raise ValueError(f"Could not find camera with SN={sn}, options are: {','.join(all_sn)}")
+            # Use the matched index
+            index = sn_matches[0]
+            log.info(f"Found camera with SN={sn} at index={index}")
 
         for idx, device in enumerate(devices):
             log.info(
@@ -237,7 +240,11 @@ class ToupcamCamera(AbstractCamera):
         # is what the camera driver calls when a new frame is available.
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
-        (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
+        # Use serial number from config if available, otherwise fall back to index=0
+        if self._config.serial_number:
+            (self._camera, self._capabilities) = ToupcamCamera._open(sn=self._config.serial_number)
+        else:
+            (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
         self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
 
