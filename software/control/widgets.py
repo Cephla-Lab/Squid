@@ -6686,6 +6686,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentIndex())
             self.on_z_stack_mode_changed(self.combobox_z_stack.currentIndex())
 
+            # Warn if AF settings were modified due to z-mode restrictions
+            af_warnings = []
+            if yaml_data.contrast_af and not self.checkbox_withAutofocus.isChecked():
+                af_warnings.append("Contrast AF was disabled (only allowed for 'From Center' mode)")
+            if yaml_data.laser_af and not self.checkbox_withReflectionAutofocus.isChecked():
+                af_warnings.append("Laser AF was disabled (only allowed for 'From Bottom' mode)")
+            if af_warnings:
+                self._log.warning(f"YAML autofocus settings modified: {'; '.join(af_warnings)}")
+
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
 
@@ -8877,6 +8886,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 "SET RANGE": "Set Range",
             }
             z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            if yaml_data.z_stacking_config == "FROM TOP":
+                self._log.warning(
+                    f"YAML has z_stacking_config='FROM TOP' which is not supported in wellplate mode. "
+                    f"Using 'From Bottom' instead."
+                )
             self.combobox_z_mode.setCurrentText(z_mode)
 
             # Piezo setting
@@ -8938,6 +8952,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             # Sync z_stacking_config with loaded z_mode (signals were blocked during load)
             self.on_z_mode_changed(self.combobox_z_mode.currentText())
+
+            # Warn if AF settings were modified due to z-mode restrictions
+            af_warnings = []
+            if yaml_data.contrast_af and not self.checkbox_withAutofocus.isChecked():
+                af_warnings.append("Contrast AF was disabled (only allowed for 'From Center' mode)")
+            if yaml_data.laser_af and not self.checkbox_withReflectionAutofocus.isChecked():
+                af_warnings.append("Laser AF was disabled (only allowed for 'From Bottom' mode)")
+            if af_warnings:
+                self._log.warning(f"YAML autofocus settings modified: {'; '.join(af_warnings)}")
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""
