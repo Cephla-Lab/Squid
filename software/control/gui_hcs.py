@@ -96,7 +96,6 @@ import control.serial_peripherals as serial_peripherals
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
 
-SINGLE_WINDOW = True  # set to False if use separate windows for display and control
 
 if USE_JUPYTER_CONSOLE:
     from control.console import JupyterWidget
@@ -339,10 +338,6 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
-        if not USE_NAPARI_FOR_MULTIPOINT:
-            ill_config = self.microscope.config_repo.get_illumination_config()
-            source_code = info.configuration.get_illumination_source_code(ill_config) if ill_config else 0
-            self.image_to_display_multi.emit(frame.frame, source_code)
         # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
         stepper_z_um = info.position.z_mm * 1000
         if IS_PIEZO_ONLY:
@@ -662,7 +657,6 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
-        self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
         self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
@@ -1138,14 +1132,10 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
-                )
-                self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
-            else:
-                self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
-                self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
+            self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
+                self.objectiveStore, self.camera, self.contrastManager
+            )
+            self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
 
             self.napariMosaicDisplayWidget = None
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
@@ -1372,10 +1362,7 @@ class HighContentScreeningGui(QMainWindow):
         self.centralWidget.setLayout(layout)
         self.centralWidget.setFixedWidth(self.centralWidget.minimumSizeHint().width())
 
-        if SINGLE_WINDOW:
-            self.setupSingleWindowLayout()
-        else:
-            self.setupMultiWindowLayout()
+        self.setupSingleWindowLayout()
 
         # Add RAM monitor widget to left side of status bar
         # Status bar is hidden when RAM monitoring is disabled
@@ -1431,16 +1418,6 @@ class HighContentScreeningGui(QMainWindow):
 
         self.setMinimumSize(*self._getMainWindowMinimumSize())
         self.onTabChanged(self.recordTabWidget.currentIndex())
-
-    def setupMultiWindowLayout(self):
-        self.setCentralWidget(self.centralWidget)
-        self.tabbedImageDisplayWindow = QMainWindow()
-        self.tabbedImageDisplayWindow.setCentralWidget(self.imageDisplayTabs)
-        self.tabbedImageDisplayWindow.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
-        self.tabbedImageDisplayWindow.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
-        (width_min, height_min) = self._getMainWindowMinimumSize()
-        self.tabbedImageDisplayWindow.setFixedSize(width_min, height_min)
-        self.tabbedImageDisplayWindow.show()
 
     def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
@@ -1702,54 +1679,51 @@ class HighContentScreeningGui(QMainWindow):
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"] = [
-                    (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
-                    (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
-                ]
+            self.napari_connections["napariMultiChannelWidget"] = [
+                (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
+                (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
+            ]
 
-                if ENABLE_FLEXIBLE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
+            if ENABLE_FLEXIBLE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-                if RUN_FLUIDICS:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-            else:
-                self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
+            if ENABLE_WELLPLATE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
+            if RUN_FLUIDICS:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
             # Setup mosaic display widget connections
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
@@ -1893,10 +1867,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
             elif USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-            elif USE_NAPARI_FOR_MULTIPOINT:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:
-                self.imageDisplayTabs.setCurrentIndex(0)
+                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
 
     def openLedMatrixSettings(self):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
@@ -2749,10 +2721,6 @@ class HighContentScreeningGui(QMainWindow):
         try:
             self.imageSaver.close()
             self.imageDisplay.close()
-            if not SINGLE_WINDOW:
-                self.imageDisplayWindow.close()
-                self.imageArrayDisplayWindow.close()
-                self.tabbedImageDisplayWindow.close()
         except Exception:
             if for_restart:
                 self.log.exception(f"Error closing display windows during {context}")
