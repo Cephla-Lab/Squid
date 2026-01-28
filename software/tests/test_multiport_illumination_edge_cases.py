@@ -246,25 +246,22 @@ class TestFirmwareVersionCheck:
         yield mcu
         mcu.close()
 
-    def test_firmware_version_detected(self, mcu):
-        """Microcontroller should detect firmware version from response."""
+    def test_firmware_version_detected_at_init(self, mcu):
+        """Firmware version should be detected during Microcontroller init."""
         # Version is read from response byte 22 (nibble-encoded)
         # SimSerial reports version 1.0 by default
+        # Early detection sends TURN_OFF_ALL_PORTS during __init__
         assert hasattr(mcu, "firmware_version")
         assert mcu.firmware_version is not None
-        # Need to trigger a response to get version - send any command
-        mcu.turn_off_all_ports()
-        mcu.wait_till_operation_is_completed()
+        # Version should already be populated - no need to send a command first
         assert mcu.firmware_version == (1, 0)
 
-    def test_supports_multi_port_check(self, mcu):
-        """Should have method to check if firmware supports multi-port commands."""
+    def test_supports_multi_port_accurate_at_init(self, mcu):
+        """supports_multi_port() should return accurate result immediately after init."""
         assert hasattr(mcu, "supports_multi_port")
         assert callable(mcu.supports_multi_port)
-        # Trigger response to get version
-        mcu.turn_off_all_ports()
-        mcu.wait_till_operation_is_completed()
-        # SimSerial simulates v1.0 firmware which supports multi-port
+        # Should return True immediately - no need to send a command first
+        # (Early detection populates firmware_version during __init__)
         assert mcu.supports_multi_port() is True
 
     def test_multi_port_command_fails_on_old_firmware(self):

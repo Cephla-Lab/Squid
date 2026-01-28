@@ -649,6 +649,10 @@ class Microcontroller:
             self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
             time.sleep(0.5)
 
+        # Detect firmware version early by sending a harmless command
+        # This ensures supports_multi_port() returns accurate results immediately
+        self._detect_firmware_version()
+
     def _warn_if_reads_stale(self):
         if self._is_simulated:
             return
@@ -1484,6 +1488,18 @@ class Microcontroller:
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
+
+    def _detect_firmware_version(self):
+        """Detect firmware version by sending a harmless command.
+
+        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off)
+        to trigger a response from which we can read the firmware version.
+        This ensures supports_multi_port() returns accurate results immediately
+        after Microcontroller initialization.
+        """
+        self.turn_off_all_ports()
+        self.wait_till_operation_is_completed()
+        self.log.debug(f"Detected firmware version: {self.firmware_version}")
 
     def supports_multi_port(self) -> bool:
         """Check if firmware supports multi-port illumination commands.
