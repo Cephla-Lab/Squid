@@ -117,7 +117,6 @@ controller.turn_off_all_ports()
 | Z-stack with single channel per slice | Legacy | Standard workflow |
 | Simultaneous multi-color imaging | Multi-port | Multiple sources ON at once |
 | Custom light mixing experiments | Multi-port | Independent control of each port |
-| FRET imaging | Multi-port | Need excitation + emission control |
 | Backward compatibility required | Legacy | Works with older firmware |
 
 ## Firmware Version Detection
