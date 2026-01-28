@@ -16014,6 +16014,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         checkbox = QCheckBox()
         enabled = channel.enabled if hasattr(channel, "enabled") else True
         checkbox.setChecked(enabled)
+        # In multi-camera systems, disable checkbox interaction if no camera assigned
+        # (preserves stored enabled value, just prevents user from enabling without camera)
+        camera_names = self.config_repo.get_camera_names()
+        if len(camera_names) > 1 and channel.camera is None:
+            checkbox.setEnabled(False)
+            checkbox.setToolTip("Assign a camera to enable this channel")
         checkbox_layout.addWidget(checkbox)
         self.table.setCellWidget(row, self.COL_ENABLED, checkbox_widget)
 
@@ -16035,24 +16041,31 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         # Camera dropdown - stores camera ID (int) as userData, displays name
         camera_combo = QComboBox()
         _populate_camera_combo(camera_combo, self.config_repo, channel.camera)
+        camera_combo.currentIndexChanged.connect(lambda _idx, r=row: self._on_camera_changed(r))
         self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
 
-        # Filter wheel dropdown
+        # Filter wheel dropdown - filtered by camera's hardware binding
         wheel_combo = QComboBox()
-        wheel_combo.addItem("(None)")
-        wheel_names = self.config_repo.get_filter_wheel_names()
-        wheel_combo.addItems(wheel_names)
-        # Set selection if channel has explicit wheel name
-        if channel.filter_wheel and channel.filter_wheel in wheel_names:
-            wheel_combo.setCurrentText(channel.filter_wheel)
+        self._populate_wheel_combo_for_camera(wheel_combo, channel.camera, channel.filter_wheel)
         wheel_combo.currentTextChanged.connect(lambda text, r=row: self._on_wheel_changed(r, text))
         self.table.setCellWidget(row, self.COL_FILTER_WHEEL, wheel_combo)
 
-        # Filter position dropdown - function auto-resolves single-wheel systems
+        # Filter position dropdown - use the wheel that was just selected (may differ from stored value)
         position_combo = QComboBox()
-        _populate_filter_positions_for_combo(
-            position_combo, channel.filter_wheel, self.config_repo, channel.filter_position
-        )
+        if channel.camera is not None:
+            selected_wheel = wheel_combo.currentText()
+            _populate_filter_positions_for_combo(
+                position_combo,
+                selected_wheel if selected_wheel != "(None)" else None,
+                self.config_repo,
+                channel.filter_position,
+            )
+        else:
+            # No camera selected - disable filter wheel and position, show empty
+            wheel_combo.setEnabled(False)
+            wheel_combo.setToolTip("Select a camera to enable filter wheel")
+            position_combo.setEnabled(False)
+            position_combo.setToolTip("Select a camera to enable filter position")
         self.table.setCellWidget(row, self.COL_FILTER_POSITION, position_combo)
 
         # Display color (color picker button - fills cell width)
@@ -16068,6 +16081,89 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
         if position_combo:
             _populate_filter_positions_for_combo(position_combo, wheel_name, self.config_repo)
+
+    def _on_camera_changed(self, row: int):
+        """Update filter wheel options and enabled checkbox when camera selection changes."""
+        camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
+        wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
+        position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+        if camera_combo is None or wheel_combo is None:
+            return
+
+        camera_id = camera_combo.currentData()
+
+        # Update enabled checkbox state based on camera selection (multi-camera only)
+        camera_names = self.config_repo.get_camera_names()
+        if len(camera_names) > 1:
+            checkbox_widget = self.table.cellWidget(row, self.COL_ENABLED)
+            if checkbox_widget:
+                checkbox = checkbox_widget.findChild(QCheckBox)
+                if checkbox:
+                    if camera_id is None:
+                        checkbox.setEnabled(False)
+                        checkbox.setToolTip("Assign a camera to enable this channel")
+                    else:
+                        checkbox.setEnabled(True)
+                        checkbox.setToolTip("")
+
+        if camera_id is None:
+            # No camera selected - disable filter wheel and position, clear position
+            wheel_combo.setEnabled(False)
+            wheel_combo.setToolTip("Select a camera to enable filter wheel")
+            if position_combo:
+                position_combo.clear()
+                position_combo.setEnabled(False)
+                position_combo.setToolTip("Select a camera to enable filter position")
+        else:
+            # Camera selected - enable and populate filter wheel and position
+            wheel_combo.setEnabled(True)
+            wheel_combo.setToolTip("")
+            current_wheel = wheel_combo.currentText()
+            self._populate_wheel_combo_for_camera(
+                wheel_combo, camera_id, current_wheel if current_wheel != "(None)" else None
+            )
+
+            # Update filter positions for the new wheel
+            new_wheel = wheel_combo.currentText()
+            if position_combo:
+                _populate_filter_positions_for_combo(
+                    position_combo, new_wheel if new_wheel != "(None)" else None, self.config_repo
+                )
+                position_combo.setEnabled(True)
+                position_combo.setToolTip("")
+
+    def _populate_wheel_combo_for_camera(
+        self, combo: QComboBox, camera_id: Optional[int], current_wheel: Optional[str]
+    ):
+        """Populate filter wheel combo based on camera's hardware binding.
+
+        If hardware_bindings.yaml defines a filter wheel for the camera, only show that wheel.
+        Otherwise, show all available filter wheels.
+        """
+        combo.blockSignals(True)
+        combo.clear()
+
+        # Get the bound wheel for this camera
+        bound_wheel = None
+        if camera_id is not None:
+            bound_wheel = self.config_repo.get_effective_emission_wheel(camera_id)
+            self._log.debug(f"Camera {camera_id} -> bound_wheel: {bound_wheel}")
+
+        if bound_wheel and bound_wheel.name:
+            # Camera has a bound wheel - only show that wheel (no (None) option)
+            combo.addItem(bound_wheel.name)
+            combo.setCurrentText(bound_wheel.name)
+            self._log.debug(f"Showing only bound wheel: {bound_wheel.name}")
+        else:
+            # No binding - show all wheels with (None) option (backwards compatible)
+            combo.addItem("(None)")
+            wheel_names = self.config_repo.get_filter_wheel_names()
+            combo.addItems(wheel_names)
+            if current_wheel and current_wheel in wheel_names:
+                combo.setCurrentText(current_wheel)
+            self._log.debug(f"No binding for camera {camera_id}, showing all wheels: {wheel_names}")
+
+        combo.blockSignals(False)
 
     def _pick_color(self, row: int):
         """Open color picker for a row."""
@@ -16838,30 +16934,36 @@ class ChannelGroupDetailWidget(QWidget):
         # Channels table
         detail_layout.addWidget(QLabel("Channels:"))
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Channel", "Camera", "Offset (μs)", ""])
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Channel", "Camera", "Offset (μs)"])
+        self.table.verticalHeader().setVisible(False)  # Hide row numbers
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.setColumnWidth(3, 30)  # Remove button column
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setMaximumHeight(200)  # Don't let table grow too tall
         detail_layout.addWidget(self.table)
 
-        # Channel buttons
+        # Channel buttons - inline with table
         chan_btn_layout = QHBoxLayout()
-        self.btn_add_channel = QPushButton("Add Channel")
+        self.btn_add_channel = QPushButton("Add")
         self.btn_add_channel.clicked.connect(self._add_channel)
         chan_btn_layout.addWidget(self.btn_add_channel)
 
+        self.btn_remove_channel = QPushButton("Remove")
+        self.btn_remove_channel.clicked.connect(self._remove_selected_channel)
+        chan_btn_layout.addWidget(self.btn_remove_channel)
+
         self.btn_move_up = QPushButton("▲")
         self.btn_move_up.setFixedWidth(30)
+        self.btn_move_up.setToolTip("Move channel up")
         self.btn_move_up.clicked.connect(self._move_channel_up)
         chan_btn_layout.addWidget(self.btn_move_up)
 
         self.btn_move_down = QPushButton("▼")
         self.btn_move_down.setFixedWidth(30)
+        self.btn_move_down.setToolTip("Move channel down")
         self.btn_move_down.clicked.connect(self._move_channel_down)
         chan_btn_layout.addWidget(self.btn_move_down)
 
@@ -16874,6 +16976,9 @@ class ChannelGroupDetailWidget(QWidget):
         self.warning_label.setWordWrap(True)
         self.warning_label.setVisible(False)
         detail_layout.addWidget(self.warning_label)
+
+        # Add stretch to push everything up
+        detail_layout.addStretch()
 
         layout.addWidget(self.detail_container)
         self.detail_container.setVisible(False)
@@ -16920,14 +17025,6 @@ class ChannelGroupDetailWidget(QWidget):
                     # TypeError: No connections to disconnect
                     # RuntimeError: Widget was already deleted
                     pass
-            remove_widget = self.table.cellWidget(row, 3)
-            if remove_widget is not None:
-                try:
-                    remove_widget.clicked.disconnect()
-                except (TypeError, RuntimeError):
-                    # TypeError: No connections to disconnect
-                    # RuntimeError: Widget was already deleted
-                    pass
 
         self.table.setRowCount(0)
 
@@ -16935,44 +17032,7 @@ class ChannelGroupDetailWidget(QWidget):
             return
 
         for entry in self._current_group.channels:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            # Channel name (read-only)
-            name_item = QTableWidgetItem(entry.name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, name_item)
-
-            # Camera (look up from channels list)
-            camera_text = "(None)"
-            for ch in self._channels:
-                if ch.name == entry.name:
-                    if ch.camera is not None:
-                        registry = self.config_repo.get_camera_registry()
-                        if registry:
-                            cam_def = registry.get_camera_by_id(ch.camera)
-                            if cam_def:
-                                camera_text = cam_def.name
-                    break
-            camera_item = QTableWidgetItem(camera_text)
-            camera_item.setFlags(camera_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, camera_item)
-
-            # Offset (editable spinbox)
-            offset_spin = QDoubleSpinBox()
-            offset_spin.setRange(0, 1000000)  # Up to 1 second
-            offset_spin.setDecimals(1)
-            offset_spin.setSuffix(" μs")
-            offset_spin.setValue(entry.offset_us)
-            offset_spin.valueChanged.connect(lambda v, r=row: self._on_offset_changed(r, v))
-            self.table.setCellWidget(row, 2, offset_spin)
-
-            # Remove button
-            remove_btn = QPushButton("✕")
-            remove_btn.setFixedSize(24, 24)
-            remove_btn.setStyleSheet("border: none; color: #888;")
-            remove_btn.clicked.connect(lambda checked, r=row: self._remove_channel(r))
-            self.table.setCellWidget(row, 3, remove_btn)
+            self._add_channel_row(entry.name, entry.offset_us)
 
         # Update offset column visibility based on mode
         is_simultaneous = self.sync_combo.currentData() == "simultaneous"
@@ -17000,26 +17060,93 @@ class ChannelGroupDetailWidget(QWidget):
         self._current_group.channels[row].offset_us = value
         self.signal_modified.emit()
 
+    def _add_channel_row(self, channel_name: str, offset_us: float = 0.0):
+        """Add a row to the channels table."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        # Channel name (read-only) - show with illumination info
+        display_text = channel_name
+        for ch in self._channels:
+            if ch.name == channel_name:
+                illum = ch.illumination_settings.illumination_channel if ch.illumination_settings else ""
+                if illum and ch.name != illum:
+                    display_text = f"{ch.name} ({illum})"
+                break
+        channel_item = QTableWidgetItem(display_text)
+        channel_item.setFlags(channel_item.flags() & ~Qt.ItemIsEditable)
+        channel_item.setData(Qt.UserRole, channel_name)  # Store actual name
+        self.table.setItem(row, 0, channel_item)
+
+        # Camera (look up from channels list) - read-only display
+        camera_text = self._get_camera_for_channel(channel_name)
+        camera_item = QTableWidgetItem(camera_text)
+        camera_item.setFlags(camera_item.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(row, 1, camera_item)
+
+        # Offset (editable spinbox)
+        offset_spin = QDoubleSpinBox()
+        offset_spin.setRange(0, 1000000)  # Up to 1 second
+        offset_spin.setDecimals(1)
+        offset_spin.setSuffix(" μs")
+        offset_spin.setValue(offset_us)
+        offset_spin.valueChanged.connect(lambda v, r=row: self._on_offset_changed(r, v))
+        self.table.setCellWidget(row, 2, offset_spin)
+
+    def _get_camera_for_channel(self, channel_name: str) -> str:
+        """Get camera display name for a channel."""
+        if not channel_name:
+            return "(None)"
+        for ch in self._channels:
+            if ch.name == channel_name:
+                if ch.camera is not None:
+                    registry = self.config_repo.get_camera_registry()
+                    if registry:
+                        cam_def = registry.get_camera_by_id(ch.camera)
+                        if cam_def:
+                            return cam_def.name
+                break
+        return "(None)"
+
     def _add_channel(self):
-        """Add channels to the group."""
+        """Add a new channel to the group via picker dialog."""
         if self._current_group is None:
             return
 
-        available_names = [ch.name for ch in self._channels]
-        existing_names = [entry.name for entry in self._current_group.channels]
+        # Get channels already in the group
+        existing_names = {entry.name for entry in self._current_group.channels}
 
-        dialog = ChannelPickerDialog(available_names, existing_names, self)
+        # Filter to channels not already in the group
+        available_channels = [ch for ch in self._channels if ch.name not in existing_names]
+
+        if not available_channels:
+            QMessageBox.information(self, "No Channels", "All channels are already in this group.")
+            return
+
+        # Show picker dialog
+        dialog = ChannelPickerDialog(available_channels, self)
         if dialog.exec_() == QDialog.Accepted:
             selected = dialog.get_selected_channels()
-            for name in selected:
-                self._current_group.channels.append(ChannelGroupEntry(name=name, offset_us=0.0))
-            self._populate_table()
+            for channel_name in selected:
+                # Add to model
+                self._current_group.channels.append(ChannelGroupEntry(name=channel_name, offset_us=0.0))
+                # Add row to table
+                self._add_channel_row(channel_name, 0.0)
+
+            # Update offset column visibility based on mode
+            is_simultaneous = self.sync_combo.currentData() == "simultaneous"
+            self.table.setColumnHidden(2, not is_simultaneous)
+
             self._validate()
             self.signal_modified.emit()
 
-    def _remove_channel(self, row: int):
-        """Remove a channel from the group."""
-        if self._current_group is None or row >= len(self._current_group.channels):
+    def _remove_selected_channel(self):
+        """Remove the selected channel from the group."""
+        if self._current_group is None:
+            return
+
+        row = self.table.currentRow()
+        if row < 0:
             return
 
         # Don't allow removing the last channel
@@ -17027,7 +17154,11 @@ class ChannelGroupDetailWidget(QWidget):
             QMessageBox.warning(self, "Cannot Remove", "A group must have at least one channel.")
             return
 
-        del self._current_group.channels[row]
+        # Remove from model
+        if row < len(self._current_group.channels):
+            del self._current_group.channels[row]
+
+        # Repopulate table to fix row indices
         self._populate_table()
         self._validate()
         self.signal_modified.emit()
@@ -17039,6 +17170,9 @@ class ChannelGroupDetailWidget(QWidget):
             return
 
         channels = self._current_group.channels
+        if row >= len(channels):
+            return
+
         channels[row], channels[row - 1] = channels[row - 1], channels[row]
         self._populate_table()
         self.table.selectRow(row - 1)
@@ -17047,10 +17181,13 @@ class ChannelGroupDetailWidget(QWidget):
     def _move_channel_down(self):
         """Move selected channel down in the list."""
         row = self.table.currentRow()
-        if self._current_group is None or row < 0 or row >= len(self._current_group.channels) - 1:
+        if self._current_group is None or row < 0:
             return
 
         channels = self._current_group.channels
+        if row >= len(channels) - 1:
+            return
+
         channels[row], channels[row + 1] = channels[row + 1], channels[row]
         self._populate_table()
         self.table.selectRow(row + 1)
@@ -17062,7 +17199,9 @@ class ChannelGroupDetailWidget(QWidget):
             self.warning_label.setVisible(False)
             return
 
+        # Run model validation
         errors = validate_channel_group(self._current_group, self._channels)
+
         if errors:
             self.warning_label.setText("\n".join(errors))
             self.warning_label.setVisible(True)
@@ -17099,22 +17238,29 @@ class ChannelGroupEditorDialog(QDialog):
         self._load_config()
 
     def _setup_ui(self):
-        layout = QHBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        # Content area (left list + right detail)
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(15)
 
         # Left panel: group list
         left_panel = QWidget()
+        left_panel.setFixedWidth(200)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 10, 0)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
         left_layout.addWidget(QLabel("Channel Groups:"))
 
         self.group_list = QListWidget()
-        self.group_list.setMinimumWidth(180)
         self.group_list.currentRowChanged.connect(self._on_group_selected)
         left_layout.addWidget(self.group_list)
 
         # Group list buttons
         list_btn_layout = QHBoxLayout()
+        list_btn_layout.setSpacing(5)
         self.btn_add_group = QPushButton("Add")
         self.btn_add_group.clicked.connect(self._add_group)
         list_btn_layout.addWidget(self.btn_add_group)
@@ -17124,37 +17270,36 @@ class ChannelGroupEditorDialog(QDialog):
         list_btn_layout.addWidget(self.btn_remove_group)
 
         left_layout.addLayout(list_btn_layout)
-
-        layout.addWidget(left_panel)
+        content_layout.addWidget(left_panel)
 
         # Right panel: group detail
         self.detail_widget = ChannelGroupDetailWidget(self.config_repo, self)
         self.detail_widget.signal_modified.connect(self._on_modified)
-        layout.addWidget(self.detail_widget, 1)
+        content_layout.addWidget(self.detail_widget, 1)
 
-        # Bottom buttons (spans both panels)
-        main_layout = QVBoxLayout()
-        main_layout.addLayout(layout)
+        main_layout.addLayout(content_layout, 1)
 
+        # Separator line
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        main_layout.addWidget(line)
+
+        # Bottom buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
         self.btn_save = QPushButton("Save")
+        self.btn_save.setMinimumWidth(80)
         self.btn_save.clicked.connect(self._save_config)
         button_layout.addWidget(self.btn_save)
 
         self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setMinimumWidth(80)
         self.btn_cancel.clicked.connect(self.reject)
         button_layout.addWidget(self.btn_cancel)
 
         main_layout.addLayout(button_layout)
-
-        # Replace the main layout
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setLayout(QVBoxLayout())
-        self.layout().setContentsMargins(10, 10, 10, 10)
-        self.layout().addWidget(central_widget)
 
     def _load_config(self):
         """Load channel configuration."""
