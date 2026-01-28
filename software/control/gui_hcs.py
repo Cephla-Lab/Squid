@@ -615,6 +615,8 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates: Optional[ScanCoordinates] = None
         self.slackNotifier: Optional[SlackNotifier] = None
         self.slackSettingsDialog: Optional[SlackSettingsDialog] = None
+        self.workflowRunnerDialog = None
+        self.workflowRunner = None
 
         # Load Slack settings from cache
         load_slack_settings_from_cache()
@@ -1965,6 +1967,173 @@ class HighContentScreeningGui(QMainWindow):
         self.slackSettingsDialog.show()
         self.slackSettingsDialog.raise_()
         self.slackSettingsDialog.activateWindow()
+
+    def openWorkflowRunner(self):
+        """Open the Workflow Runner dialog."""
+        from control.widgets_workflow import WorkflowRunnerDialog
+        from control.workflow_runner import WorkflowRunner
+
+        if self.workflowRunnerDialog is None:
+            self.workflowRunnerDialog = WorkflowRunnerDialog(parent=self)
+            self.workflowRunnerDialog.signal_run_workflow.connect(self._start_workflow)
+            self.workflowRunnerDialog.signal_pause_workflow.connect(self._pause_workflow)
+            self.workflowRunnerDialog.signal_resume_workflow.connect(self._resume_workflow)
+            self.workflowRunnerDialog.signal_stop_workflow.connect(self._stop_workflow)
+
+        self.workflowRunnerDialog.show()
+        self.workflowRunnerDialog.raise_()
+        self.workflowRunnerDialog.activateWindow()
+
+    def _get_actual_acquisition_path(self) -> str:
+        """Get the actual acquisition path (base_path + experiment_ID with timestamp)."""
+        if hasattr(self, "multipointController") and self.multipointController:
+            base = self.multipointController.base_path
+            exp_id = self.multipointController.experiment_ID
+            if base and exp_id:
+                return os.path.join(base, exp_id)
+        return None
+
+    def _start_workflow(self, workflow):
+        """Start executing a workflow."""
+        from control.workflow_runner import WorkflowRunner
+
+        # Create runner if needed
+        if self.workflowRunner is None:
+            self.workflowRunner = WorkflowRunner(self)
+            self.workflowRunner.signal_workflow_started.connect(self._on_workflow_started)
+            self.workflowRunner.signal_workflow_finished.connect(self._on_workflow_finished)
+            self.workflowRunner.signal_workflow_paused.connect(self._on_workflow_paused)
+            self.workflowRunner.signal_workflow_resumed.connect(self._on_workflow_resumed)
+            self.workflowRunner.signal_sequence_started.connect(self._on_sequence_started)
+            self.workflowRunner.signal_sequence_finished.connect(self._on_sequence_finished)
+            self.workflowRunner.signal_request_acquisition.connect(self._run_acquisition_for_workflow)
+            self.workflowRunner.signal_error.connect(self._on_workflow_error)
+            self.workflowRunner.signal_script_output.connect(self._on_script_output)
+            # Connect acquisition finished signal (permanent connection)
+            self.multipointController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
+
+        self.workflowRunner.set_workflow(workflow)
+        self.workflowRunner.set_acquisition_path_getter(self._get_actual_acquisition_path)
+
+        # Enable running state immediately (before thread starts)
+        # This ensures Pause/Stop buttons are enabled right away
+        self._set_workflow_controls_enabled(False)
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.set_running_state(True)
+
+        self.workflowRunner.start()
+
+    def _on_workflow_started(self):
+        """Called when workflow thread starts (from background thread signal)."""
+        self.log.info("Workflow started signal received")
+
+    def _on_workflow_finished(self, success: bool):
+        """Re-enable main window controls when workflow finishes."""
+        self.log.info(f"Workflow finished, success={success}")
+        self._set_workflow_controls_enabled(True)
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_workflow_finished(success)
+
+    def _on_sequence_started(self, index: int, name: str):
+        """Handle sequence start."""
+        self.log.info(f"Sequence started: {name} (index {index})")
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_sequence_started(index, name)
+
+    def _on_sequence_finished(self, index: int, name: str, success: bool):
+        """Handle sequence completion."""
+        self.log.info(f"Sequence finished: {name}, success={success}")
+
+        # Disable acquisition widget again after acquisition completes (if workflow still running)
+        if name == "Acquisition" and self.workflowRunner and self.workflowRunner.is_running():
+            widget = self.recordTabWidget.currentWidget()
+            if widget:
+                widget.setEnabled(False)
+
+    def _on_workflow_error(self, error_msg: str):
+        """Handle workflow error."""
+        self.log.error(f"Workflow error: {error_msg}")
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_error(error_msg)
+
+    def _on_script_output(self, line: str):
+        """Handle script output."""
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_script_output(line)
+
+    def _on_workflow_paused(self):
+        """Handle workflow paused."""
+        self.log.info("Workflow paused - enabling GUI controls")
+        self._set_workflow_controls_enabled(True)  # Re-enable GUI while paused
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_workflow_paused()
+
+    def _on_workflow_resumed(self):
+        """Handle workflow resumed."""
+        self.log.info("Workflow resumed - disabling GUI controls")
+        self._set_workflow_controls_enabled(False)  # Disable GUI when resumed
+        if self.workflowRunnerDialog:
+            self.workflowRunnerDialog.on_workflow_resumed()
+
+    def _pause_workflow(self):
+        """Pause the workflow after current sequence."""
+        if self.workflowRunner:
+            self.workflowRunner.request_pause()
+
+    def _resume_workflow(self):
+        """Resume the paused workflow."""
+        if self.workflowRunner:
+            self.workflowRunner.request_resume()
+
+    def _stop_workflow(self):
+        """Stop the workflow after current sequence."""
+        if self.workflowRunner:
+            self.workflowRunner.request_stop()
+
+    def _set_workflow_controls_enabled(self, enabled: bool):
+        """Enable/disable main window controls during workflow.
+
+        Note: imageDisplayWindow stays enabled for live updates during acquisition.
+        """
+        # Disable control widgets
+        widget_names = ["navigationWidget", "liveControlWidget", "autofocusWidget", "objectivesWidget"]
+        for name in widget_names:
+            widget = getattr(self, name, None)
+            if widget:
+                widget.setEnabled(enabled)
+
+        # Disable tab switching and current tab content
+        record_tab = getattr(self, "recordTabWidget", None)
+        if record_tab:
+            record_tab.tabBar().setEnabled(enabled)
+            current_widget = record_tab.currentWidget()
+            if current_widget:
+                current_widget.setEnabled(enabled)
+
+    def _run_acquisition_for_workflow(self):
+        """Called by workflow runner to start acquisition."""
+        self.log.info("Workflow requesting acquisition start")
+        widget = self.recordTabWidget.currentWidget()
+
+        # Check if current tab supports acquisition
+        has_acquisition = hasattr(widget, "btn_startAcquisition") and hasattr(widget, "toggle_acquisition")
+        if not has_acquisition:
+            self._handle_acquisition_tab_error()
+            return
+
+        # Re-enable widget and start acquisition
+        widget.setEnabled(True)
+        if not widget.btn_startAcquisition.isChecked():
+            widget.btn_startAcquisition.setChecked(True)
+            widget.toggle_acquisition(True)
+
+    def _handle_acquisition_tab_error(self):
+        """Handle error when current tab does not support acquisition."""
+        error_msg = "Current tab does not support acquisition - switch to a multipoint tab"
+        self.log.error(error_msg)
+        if self.workflowRunner:
+            self.workflowRunner.signal_error.emit(error_msg)
+            self.workflowRunner.on_acquisition_finished()
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""

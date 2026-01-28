@@ -85,6 +85,10 @@ if __name__ == "__main__":
     stage_utils_action.triggered.connect(win.stageUtils.show)
     microscope_utils_menu.addAction(stage_utils_action)
 
+    workflow_runner_action = QAction("Workflow Runner...", win)
+    workflow_runner_action.triggered.connect(win.openWorkflowRunner)
+    microscope_utils_menu.addAction(workflow_runner_action)
+
     menu_bar = win.menuBar()
     menu_bar.addMenu(microscope_utils_menu)
 
