@@ -60,6 +60,18 @@ static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
 static const int SET_TRIGGER_MODE = 33;
+
+// Multi-port illumination commands (firmware v1.0+)
+// Separate commands (matches existing SET_ILLUMINATION pattern)
+static const int SET_PORT_INTENSITY = 34;      // Set DAC intensity for specific port only
+static const int TURN_ON_PORT = 35;            // Turn on GPIO for specific port
+static const int TURN_OFF_PORT = 36;           // Turn off GPIO for specific port
+// Combined command (convenience)
+static const int SET_PORT_ILLUMINATION = 37;   // Set intensity + on/off in one command
+// Multi-port commands
+static const int SET_MULTI_PORT_MASK = 38;     // Set on/off for multiple ports (partial update)
+static const int TURN_OFF_ALL_PORTS = 39;      // Turn off all illumination ports
+
 static const int SET_PIN_LEVEL = 41;
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;

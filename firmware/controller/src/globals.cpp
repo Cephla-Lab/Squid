@@ -136,3 +136,7 @@ uint8_t led_matrix_r = 0;
 uint8_t led_matrix_g = 0;
 uint8_t led_matrix_b = 0;
 bool illumination_is_on = false;
+
+// Multi-port illumination control (all ports off and at zero intensity by default)
+bool illumination_port_is_on[NUM_ILLUMINATION_PORTS] = {false};
+uint16_t illumination_port_intensity[NUM_ILLUMINATION_PORTS] = {0};

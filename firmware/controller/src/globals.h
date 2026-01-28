@@ -140,4 +140,9 @@ extern uint8_t led_matrix_g;
 extern uint8_t led_matrix_b;
 extern bool illumination_is_on;
 
+// Multi-port illumination control (supports up to 16 ports D1-D16)
+#define NUM_ILLUMINATION_PORTS 16
+extern bool illumination_port_is_on[NUM_ILLUMINATION_PORTS];
+extern uint16_t illumination_port_intensity[NUM_ILLUMINATION_PORTS];
+
 #endif // GLOBALS_H
