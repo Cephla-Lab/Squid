@@ -312,6 +312,158 @@ class TestLegacyNewInteraction:
             assert mcu._serial.port_is_on[i] is False
 
 
+class TestD3D4RoundTrip:
+    """Round-trip tests verifying legacy and new commands control the same hardware.
+
+    This is critical for the D3/D4 non-sequential mapping:
+    - D3 has source code 14, maps to port index 2
+    - D4 has source code 13, maps to port index 3
+    """
+
+    @pytest.fixture
+    def mcu(self):
+        sim_serial = SimSerial()
+        mcu = Microcontroller(sim_serial, reset_and_initialize=False)
+        yield mcu
+        mcu.close()
+
+    def test_legacy_d3_controls_port_2(self, mcu):
+        """Legacy D3 (source 14) and new port_index 2 control the same hardware."""
+        # Set intensity via legacy D3
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D3, 60)
+        mcu.wait_till_operation_is_completed()
+
+        # Verify port 2 received the intensity (not port 3!)
+        expected = int(0.6 * 65535)
+        assert mcu._serial.port_intensity[2] == expected
+        assert mcu._serial.port_intensity[3] == 0  # D4 should be unchanged
+
+        # Turn on via new API using port 2
+        mcu.turn_on_port(2)
+        mcu.wait_till_operation_is_completed()
+
+        # Port 2 should be on
+        assert mcu._serial.port_is_on[2] is True
+        assert mcu._serial.port_is_on[3] is False
+
+    def test_legacy_d4_controls_port_3(self, mcu):
+        """Legacy D4 (source 13) and new port_index 3 control the same hardware."""
+        # Set intensity via legacy D4
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D4, 80)
+        mcu.wait_till_operation_is_completed()
+
+        # Verify port 3 received the intensity (not port 2!)
+        expected = int(0.8 * 65535)
+        assert mcu._serial.port_intensity[3] == expected
+        assert mcu._serial.port_intensity[2] == 0  # D3 should be unchanged
+
+        # Turn on via new API using port 3
+        mcu.turn_on_port(3)
+        mcu.wait_till_operation_is_completed()
+
+        # Port 3 should be on
+        assert mcu._serial.port_is_on[3] is True
+        assert mcu._serial.port_is_on[2] is False
+
+    def test_new_intensity_legacy_turn_on_d3(self, mcu):
+        """Set intensity via new API, turn on via legacy - D3 case."""
+        # Set intensity on port 2 via new API
+        mcu.set_port_intensity(2, 70)
+        mcu.wait_till_operation_is_completed()
+
+        # Select D3 via legacy (source 14)
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D3, 70)
+        mcu.wait_till_operation_is_completed()
+
+        # Turn on via legacy
+        mcu.turn_on_illumination()
+        mcu.wait_till_operation_is_completed()
+
+        # Port 2 (D3) should be on
+        assert mcu._serial.port_is_on[2] is True
+
+    def test_new_intensity_legacy_turn_on_d4(self, mcu):
+        """Set intensity via new API, turn on via legacy - D4 case."""
+        # Set intensity on port 3 via new API
+        mcu.set_port_intensity(3, 55)
+        mcu.wait_till_operation_is_completed()
+
+        # Select D4 via legacy (source 13)
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D4, 55)
+        mcu.wait_till_operation_is_completed()
+
+        # Turn on via legacy
+        mcu.turn_on_illumination()
+        mcu.wait_till_operation_is_completed()
+
+        # Port 3 (D4) should be on
+        assert mcu._serial.port_is_on[3] is True
+
+    def test_d3_d4_independent_control(self, mcu):
+        """D3 and D4 should be independently controllable despite adjacent source codes."""
+        # Set different intensities for D3 (source 14 -> port 2) and D4 (source 13 -> port 3)
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D3, 30)
+        mcu.wait_till_operation_is_completed()
+        mcu.set_illumination(ILLUMINATION_CODE.ILLUMINATION_D4, 90)
+        mcu.wait_till_operation_is_completed()
+
+        # Verify correct mapping
+        assert mcu._serial.port_intensity[2] == int(0.3 * 65535)  # D3 -> port 2
+        assert mcu._serial.port_intensity[3] == int(0.9 * 65535)  # D4 -> port 3
+
+        # Turn on both via new API
+        mcu.turn_on_port(2)
+        mcu.wait_till_operation_is_completed()
+        mcu.turn_on_port(3)
+        mcu.wait_till_operation_is_completed()
+
+        # Both should be on independently
+        assert mcu._serial.port_is_on[2] is True
+        assert mcu._serial.port_is_on[3] is True
+
+        # Turn off D3 via legacy turn_off (turns off all)
+        mcu.turn_off_illumination()
+        mcu.wait_till_operation_is_completed()
+
+        # Both should be off (legacy turn_off affects all)
+        assert mcu._serial.port_is_on[2] is False
+        assert mcu._serial.port_is_on[3] is False
+
+    def test_all_five_ports_round_trip(self, mcu):
+        """Verify all 5 ports map correctly: D1-D5 to ports 0-4."""
+        mappings = [
+            (ILLUMINATION_CODE.ILLUMINATION_D1, 0),  # 11 -> 0
+            (ILLUMINATION_CODE.ILLUMINATION_D2, 1),  # 12 -> 1
+            (ILLUMINATION_CODE.ILLUMINATION_D3, 2),  # 14 -> 2 (non-sequential!)
+            (ILLUMINATION_CODE.ILLUMINATION_D4, 3),  # 13 -> 3 (non-sequential!)
+            (ILLUMINATION_CODE.ILLUMINATION_D5, 4),  # 15 -> 4
+        ]
+
+        for source_code, expected_port in mappings:
+            # Reset all ports
+            mcu.turn_off_all_ports()
+            mcu.wait_till_operation_is_completed()
+            for i in range(5):
+                mcu.set_port_intensity(i, 0)
+                mcu.wait_till_operation_is_completed()
+
+            # Set intensity via legacy
+            mcu.set_illumination(source_code, 50)
+            mcu.wait_till_operation_is_completed()
+
+            # Verify only the expected port has intensity
+            expected_intensity = int(0.5 * 65535)
+            for port in range(5):
+                if port == expected_port:
+                    assert (
+                        mcu._serial.port_intensity[port] == expected_intensity
+                    ), f"Source {source_code} should map to port {expected_port}"
+                else:
+                    assert (
+                        mcu._serial.port_intensity[port] == 0
+                    ), f"Port {port} should be unchanged when setting source {source_code}"
+
+
 class TestFirmwareVersionBehavior:
     """Test firmware version detection and behavior."""
 
