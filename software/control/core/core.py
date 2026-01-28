@@ -1760,6 +1760,9 @@ class ImageArrayDisplayWindow(QMainWindow):
             self.graphics_widget_3.img.setImage(image, autoLevels=False)
         elif port_index == 3:  # D4 (matches original code behavior)
             self.graphics_widget_4.img.setImage(image, autoLevels=False)
+        else:
+            # D3 (port_index=2) and D5 (port_index=4) fall back to default widget
+            self.graphics_widget_1.img.setImage(image, autoLevels=False)
 
 
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator
