@@ -11,7 +11,7 @@ void tearDown(void) {}
 void test_command_ids_are_unique(void) {
     std::set<int> ids;
     int commands[] = {
-        MOVE_X, MOVE_Y, MOVE_Z, MOVE_THETA, MOVE_W,
+        MOVE_X, MOVE_Y, MOVE_Z, MOVE_THETA, MOVE_W, MOVE_W2,
         HOME_OR_ZERO, MOVETO_X, MOVETO_Y, MOVETO_Z,
         SET_LIM, TURN_ON_ILLUMINATION, TURN_OFF_ILLUMINATION,
         SET_ILLUMINATION, SET_ILLUMINATION_LED_MATRIX,
@@ -22,7 +22,10 @@ void test_command_ids_are_unique(void) {
         SET_OFFSET_VELOCITY, CONFIGURE_STAGE_PID, ENABLE_STAGE_PID,
         DISABLE_STAGE_PID, SET_HOME_SAFETY_MERGIN, SET_PID_ARGUMENTS,
         SEND_HARDWARE_TRIGGER, SET_STROBE_DELAY, SET_AXIS_DISABLE_ENABLE,
-        SET_PIN_LEVEL, INITFILTERWHEEL, INITIALIZE, RESET
+        SET_PIN_LEVEL, INITFILTERWHEEL, INITFILTERWHEEL_W2, INITIALIZE, RESET,
+        // Multi-port illumination commands (firmware v1.0+)
+        SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
+        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -38,7 +41,7 @@ void test_command_ids_are_unique(void) {
 
 void test_command_ids_fit_in_byte(void) {
     int commands[] = {
-        MOVE_X, MOVE_Y, MOVE_Z, MOVE_THETA, MOVE_W,
+        MOVE_X, MOVE_Y, MOVE_Z, MOVE_THETA, MOVE_W, MOVE_W2,
         HOME_OR_ZERO, MOVETO_X, MOVETO_Y, MOVETO_Z,
         SET_LIM, TURN_ON_ILLUMINATION, TURN_OFF_ILLUMINATION,
         SET_ILLUMINATION, SET_ILLUMINATION_LED_MATRIX,
@@ -49,7 +52,10 @@ void test_command_ids_fit_in_byte(void) {
         SET_OFFSET_VELOCITY, CONFIGURE_STAGE_PID, ENABLE_STAGE_PID,
         DISABLE_STAGE_PID, SET_HOME_SAFETY_MERGIN, SET_PID_ARGUMENTS,
         SEND_HARDWARE_TRIGGER, SET_STROBE_DELAY, SET_AXIS_DISABLE_ENABLE,
-        SET_PIN_LEVEL, INITFILTERWHEEL, INITIALIZE, RESET
+        SET_PIN_LEVEL, INITFILTERWHEEL, INITFILTERWHEEL_W2, INITIALIZE, RESET,
+        // Multi-port illumination commands (firmware v1.0+)
+        SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
+        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -74,6 +80,38 @@ void test_axis_ids_are_sequential(void) {
     TEST_ASSERT_EQUAL_INT(3, AXIS_THETA);
     TEST_ASSERT_EQUAL_INT(4, AXES_XY);
     TEST_ASSERT_EQUAL_INT(5, AXIS_W);
+    TEST_ASSERT_EQUAL_INT(6, AXIS_W2);
+}
+
+void test_multiport_illumination_commands(void) {
+    // Verify multi-port illumination command IDs are in expected range
+    TEST_ASSERT_EQUAL_INT(34, SET_PORT_INTENSITY);
+    TEST_ASSERT_EQUAL_INT(35, TURN_ON_PORT);
+    TEST_ASSERT_EQUAL_INT(36, TURN_OFF_PORT);
+    TEST_ASSERT_EQUAL_INT(37, SET_PORT_ILLUMINATION);
+    TEST_ASSERT_EQUAL_INT(38, SET_MULTI_PORT_MASK);
+    TEST_ASSERT_EQUAL_INT(39, TURN_OFF_ALL_PORTS);
+
+    // Verify they don't conflict with legacy illumination commands
+    TEST_ASSERT_NOT_EQUAL(TURN_ON_ILLUMINATION, TURN_ON_PORT);
+    TEST_ASSERT_NOT_EQUAL(TURN_OFF_ILLUMINATION, TURN_OFF_PORT);
+    TEST_ASSERT_NOT_EQUAL(SET_ILLUMINATION, SET_PORT_INTENSITY);
+}
+
+void test_illumination_source_codes(void) {
+    // Legacy illumination source codes (non-sequential D3/D4!)
+    TEST_ASSERT_EQUAL_INT(11, ILLUMINATION_D1);
+    TEST_ASSERT_EQUAL_INT(12, ILLUMINATION_D2);
+    TEST_ASSERT_EQUAL_INT(14, ILLUMINATION_D3);  // Note: 14, not 13!
+    TEST_ASSERT_EQUAL_INT(13, ILLUMINATION_D4);  // Note: 13, not 14!
+    TEST_ASSERT_EQUAL_INT(15, ILLUMINATION_D5);
+
+    // Verify legacy wavelength aliases match port codes
+    TEST_ASSERT_EQUAL_INT(ILLUMINATION_D1, ILLUMINATION_SOURCE_405NM);
+    TEST_ASSERT_EQUAL_INT(ILLUMINATION_D2, ILLUMINATION_SOURCE_488NM);
+    TEST_ASSERT_EQUAL_INT(ILLUMINATION_D3, ILLUMINATION_SOURCE_561NM);
+    TEST_ASSERT_EQUAL_INT(ILLUMINATION_D4, ILLUMINATION_SOURCE_638NM);
+    TEST_ASSERT_EQUAL_INT(ILLUMINATION_D5, ILLUMINATION_SOURCE_730NM);
 }
 
 int main(int argc, char **argv) {
@@ -83,6 +121,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_ids_fit_in_byte);
     RUN_TEST(test_message_lengths);
     RUN_TEST(test_axis_ids_are_sequential);
+    RUN_TEST(test_multiport_illumination_commands);
+    RUN_TEST(test_illumination_source_codes);
 
     return UNITY_END();
 }
