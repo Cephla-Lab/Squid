@@ -1692,6 +1692,79 @@ class NavigationViewer(QFrame):
             return
 
 
+class ImageArrayDisplayWindow(QMainWindow):
+
+    def __init__(self, window_title=""):
+        super().__init__()
+        self.setWindowTitle(window_title)
+        self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
+        self.widget = QWidget()
+
+        # interpret image data as row-major instead of col-major
+        pg.setConfigOptions(imageAxisOrder="row-major")
+
+        self.graphics_widget_1 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_1.view = self.graphics_widget_1.addViewBox()
+        self.graphics_widget_1.view.setAspectLocked(True)
+        self.graphics_widget_1.img = pg.ImageItem(border="w")
+        self.graphics_widget_1.view.addItem(self.graphics_widget_1.img)
+        self.graphics_widget_1.view.invertY()
+
+        self.graphics_widget_2 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_2.view = self.graphics_widget_2.addViewBox()
+        self.graphics_widget_2.view.setAspectLocked(True)
+        self.graphics_widget_2.img = pg.ImageItem(border="w")
+        self.graphics_widget_2.view.addItem(self.graphics_widget_2.img)
+        self.graphics_widget_2.view.invertY()
+
+        self.graphics_widget_3 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_3.view = self.graphics_widget_3.addViewBox()
+        self.graphics_widget_3.view.setAspectLocked(True)
+        self.graphics_widget_3.img = pg.ImageItem(border="w")
+        self.graphics_widget_3.view.addItem(self.graphics_widget_3.img)
+        self.graphics_widget_3.view.invertY()
+
+        self.graphics_widget_4 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_4.view = self.graphics_widget_4.addViewBox()
+        self.graphics_widget_4.view.setAspectLocked(True)
+        self.graphics_widget_4.img = pg.ImageItem(border="w")
+        self.graphics_widget_4.view.addItem(self.graphics_widget_4.img)
+        self.graphics_widget_4.view.invertY()
+        ## Layout
+        layout = QGridLayout()
+        layout.addWidget(self.graphics_widget_1, 0, 0)
+        layout.addWidget(self.graphics_widget_2, 0, 1)
+        layout.addWidget(self.graphics_widget_3, 1, 0)
+        layout.addWidget(self.graphics_widget_4, 1, 1)
+        self.widget.setLayout(layout)
+        self.setCentralWidget(self.widget)
+
+        # set window size
+        desktopWidget = QDesktopWidget()
+        width = min(desktopWidget.height() * 0.9, 1000)  # @@@TO MOVE@@@#
+        height = width
+        self.setFixedSize(int(width), int(height))
+
+    def display_image(self, image, illumination_source):
+        # Map illumination source code to port index for widget selection
+        # Port indices: D1=0, D2=1, D3=2, D4=3, D5=4
+        # Source codes: D1=11, D2=12, D3=14, D4=13, D5=15 (non-sequential D3/D4!)
+        port_index = source_code_to_port_index(illumination_source)
+        if port_index < 0:
+            # Not a D1-D5 source, use default widget
+            self.graphics_widget_1.img.setImage(image, autoLevels=False)
+        elif port_index == 0:  # D1
+            self.graphics_widget_2.img.setImage(image, autoLevels=False)
+        elif port_index == 1:  # D2
+            self.graphics_widget_3.img.setImage(image, autoLevels=False)
+        elif port_index == 3:  # D4 (matches original code behavior)
+            self.graphics_widget_4.img.setImage(image, autoLevels=False)
+        else:
+            # D3 (port_index=2) and D5 (port_index=4) fall back to default widget
+            self.graphics_widget_1.img.setImage(image, autoLevels=False)
+
+
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator
 
 
