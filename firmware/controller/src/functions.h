@@ -3,6 +3,7 @@
 
 #include "constants.h"
 #include "globals.h"
+#include "utils/illumination_mapping.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -55,8 +56,7 @@ void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b);
 void ISR_strobeTimer();
 
 // Multi-port illumination control
-// Maps source code (11-15) to port index (0-4), returns -1 for invalid source
-int illumination_source_to_port_index(int source);
+// illumination_source_to_port_index() is provided by utils/illumination_mapping.h
 // Gets GPIO pin for port index, returns -1 for invalid port
 int port_index_to_pin(int port_index);
 // Per-port control functions (interlock checked for turn_on)

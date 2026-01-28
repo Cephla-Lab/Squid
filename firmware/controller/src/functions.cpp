@@ -370,20 +370,8 @@ void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b)
 /********************************** Multi-port illumination control ********************************/
 /***************************************************************************************************/
 
-// Maps illumination source code (e.g., ILLUMINATION_D1=11) to port index (0-4)
-// Returns -1 for invalid source codes
-int illumination_source_to_port_index(int source)
-{
-  switch (source)
-  {
-    case ILLUMINATION_D1: return 0;
-    case ILLUMINATION_D2: return 1;
-    case ILLUMINATION_D3: return 2;
-    case ILLUMINATION_D4: return 3;
-    case ILLUMINATION_D5: return 4;
-    default: return -1;
-  }
-}
+// illumination_source_to_port_index() is provided by utils/illumination_mapping.h
+// to ensure firmware and tests use the same mapping logic.
 
 // Gets GPIO pin for port index (0-15), returns -1 for unsupported ports
 int port_index_to_pin(int port_index)

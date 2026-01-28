@@ -5,9 +5,9 @@ that may reveal bugs or missing functionality.
 """
 
 import pytest
-from control._def import CMD_SET, ILLUMINATION_PORT, ILLUMINATION_CODE
+from control._def import CMD_SET, ILLUMINATION_CODE
 from control.microcontroller import Microcontroller, SimSerial
-from control.lighting import IlluminationController, NUM_ILLUMINATION_PORTS
+from control.lighting import IlluminationController
 
 
 class TestIntensityBoundaryConditions:
@@ -190,7 +190,7 @@ class TestPortIndexMapping:
             4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 15
         }
 
-        from control.lighting import port_index_to_source_code
+        from control._def import port_index_to_source_code
 
         for port_idx, expected_source in expected_mapping.items():
             assert port_index_to_source_code(port_idx) == expected_source
@@ -205,14 +205,14 @@ class TestPortIndexMapping:
             ILLUMINATION_CODE.ILLUMINATION_D5: 4,
         }
 
-        from control.lighting import source_code_to_port_index
+        from control._def import source_code_to_port_index
 
         for source_code, expected_port in expected_mapping.items():
             assert source_code_to_port_index(source_code) == expected_port
 
     def test_invalid_port_index_returns_negative_one(self):
         """Invalid port indices should return -1."""
-        from control.lighting import port_index_to_source_code
+        from control._def import port_index_to_source_code
 
         assert port_index_to_source_code(-1) == -1
         assert port_index_to_source_code(5) == -1
@@ -220,7 +220,7 @@ class TestPortIndexMapping:
 
     def test_invalid_source_code_returns_negative_one(self):
         """Invalid source codes should return -1."""
-        from control.lighting import source_code_to_port_index
+        from control._def import source_code_to_port_index
 
         assert source_code_to_port_index(0) == -1
         assert source_code_to_port_index(10) == -1
@@ -228,7 +228,7 @@ class TestPortIndexMapping:
 
     def test_round_trip_port_to_source_to_port(self):
         """Round trip: port -> source -> port should give same value."""
-        from control.lighting import port_index_to_source_code, source_code_to_port_index
+        from control._def import port_index_to_source_code, source_code_to_port_index
 
         for port in range(5):
             source = port_index_to_source_code(port)

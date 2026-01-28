@@ -5,9 +5,9 @@ and that edge cases are handled consistently on both sides.
 """
 
 import pytest
-from control._def import CMD_SET, ILLUMINATION_PORT, ILLUMINATION_CODE
+from control._def import CMD_SET, ILLUMINATION_CODE
 from control.microcontroller import Microcontroller, SimSerial
-from control.lighting import IlluminationController, NUM_ILLUMINATION_PORTS
+from control.lighting import IlluminationController
 
 
 class TestProtocolByteAgreement:
@@ -478,6 +478,7 @@ class TestFirmwareVersionBehavior:
         """Firmware version should be detected after any command."""
         # Initially might be (0, 0) until we get a response
         initial = mcu.firmware_version
+        assert isinstance(initial, tuple) and len(initial) == 2
 
         # Send a command to trigger response
         mcu.turn_off_all_ports()
