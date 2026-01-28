@@ -8221,7 +8221,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     widget.setVisible(is_visible)
 
         # Note: Autofocus checkbox states are now managed by on_z_mode_changed()
-        # via update_autofocus_checkboxes_for_z_mode()
+        # via update_autofocus_checkboxes()
 
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
