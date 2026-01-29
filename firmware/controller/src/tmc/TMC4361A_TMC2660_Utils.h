@@ -115,6 +115,7 @@ void tmc4361A_setBits(TMC4361ATypeDef *tmc4361A, uint8_t address, int32_t dat);
 void tmc4361A_rstBits(TMC4361ATypeDef *tmc4361A, uint8_t address, int32_t dat);
 uint8_t tmc4361A_readSwitchEvent(TMC4361ATypeDef *tmc4361A);
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A);
+void tmc4361A_trapRampInit(TMC4361ATypeDef *tmc4361A);  // trapezoidal ramp (faster, no S-curve)
 void tmc4361A_setSRampParam(TMC4361ATypeDef *tmc4361A, uint8_t idx, int32_t param);
 void tmc4361A_adjustBows(TMC4361ATypeDef *tmc4361A);
 

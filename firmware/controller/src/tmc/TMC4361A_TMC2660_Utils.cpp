@@ -1000,6 +1000,30 @@ void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
 
 /*
   -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_trapRampInit() initializes trapezoidal ramp (no S-curve).
+               Faster than S-shaped ramp but with more abrupt acceleration changes.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_trapRampInit(TMC4361ATypeDef *tmc4361A) {
+  // positioning mode, trapezoidal ramp (no TMC4361A_RAMP_SSHAPE)
+  tmc4361A_writeInt(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION);
+  tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK);
+  // BOW values are ignored in trapezoidal mode, but set to 0 for clarity
+  tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_BOW3, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_BOW4, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_AMAX, tmc4361A->rampParam[AMAX_IDX]);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_DMAX, tmc4361A->rampParam[DMAX_IDX]);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_ASTART, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_DFINAL, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_VMAX, tmc4361A->rampParam[VMAX_IDX]);
+
+  return;
+}
+
+/*
+  -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_setSRampParam() writes a single ramp parameter to the TMC4361A.
 
   OPERATION:   We change a variable in the shared struct and call sRampInit() to write the data.

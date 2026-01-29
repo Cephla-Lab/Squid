@@ -107,7 +107,7 @@ const uint8_t DAC8050x_CONFIG_ADDR = 0x03;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 static const int interval_send_pos_update = 10000; // in us
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 5000; // in us (optimized from 10000 for faster position detection)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
 
