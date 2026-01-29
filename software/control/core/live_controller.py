@@ -67,6 +67,10 @@ class LiveController:
         # Signature: on_camera_switched(old_camera: AbstractCamera, new_camera: AbstractCamera)
         self.on_camera_switched: Optional[callable] = None
 
+        # Callback for trigger mode change notifications (for multi-camera support)
+        # Signature: on_trigger_mode_changed(new_mode: TriggerMode)
+        self.on_trigger_mode_changed: Optional[callable] = None
+
     # ─────────────────────────────────────────────────────────────────────────────
     # Illumination config helpers
     # ─────────────────────────────────────────────────────────────────────────────
@@ -164,6 +168,27 @@ class LiveController:
         self._log.info(f"Switching live camera: {old_camera_id} -> {camera_id}")
         self.camera = new_camera
         self._active_camera_id = camera_id
+
+        # Read the new camera's acquisition mode and update trigger_mode to match
+        cam_mode = new_camera.get_acquisition_mode()
+        if cam_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            new_trigger_mode = TriggerMode.SOFTWARE
+        elif cam_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            new_trigger_mode = TriggerMode.HARDWARE
+        elif cam_mode == CameraAcquisitionMode.CONTINUOUS:
+            new_trigger_mode = TriggerMode.CONTINUOUS
+        else:
+            new_trigger_mode = TriggerMode.SOFTWARE  # fallback
+
+        if new_trigger_mode != self.trigger_mode:
+            self._log.info(f"Trigger mode changed: {self.trigger_mode} -> {new_trigger_mode}")
+            self.trigger_mode = new_trigger_mode
+            # Notify UI to update trigger mode display
+            if self.on_trigger_mode_changed:
+                try:
+                    self.on_trigger_mode_changed(new_trigger_mode)
+                except Exception as e:
+                    self._log.error(f"Error in on_trigger_mode_changed callback: {e}")
 
         # Notify listeners of camera switch (e.g., to move frame callbacks)
         if self.on_camera_switched:

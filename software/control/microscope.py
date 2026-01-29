@@ -273,29 +273,6 @@ class Microscope:
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
-        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
-            # NOTE(imo): If this succeeds, it means we sent the request,
-            # but we didn't necessarily get confirmation of success.
-            if addons.nl5 and control._def.NL5_USE_DOUT:
-                addons.nl5.start_acquisition()
-            else:
-                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
-                cam_trigger_log.debug(
-                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
-                )
-                low_level_devices.microcontroller.send_hardware_trigger(
-                    illumination_time is not None, illumination_time_us
-                )
-            return True
-
-        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
-            strobe_delay_us = int(1000 * strobe_delay_ms)
-            cam_trigger_log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
-            low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us)
-            low_level_devices.microcontroller.wait_till_operation_is_completed()
-
-            return True
-
         # Get camera registry for multi-camera support
         from control.core.config import ConfigRepository
 
@@ -306,16 +283,56 @@ class Microscope:
         base_camera_config = squid.config.get_camera_config()
         camera_configs = create_camera_configs(camera_registry, base_camera_config)
 
+        def make_hw_trigger_fn(trigger_channel: int):
+            """Create a hardware trigger function for a specific camera channel."""
+
+            def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+                # NOTE(imo): If this succeeds, it means we sent the request,
+                # but we didn't necessarily get confirmation of success.
+                if addons.nl5 and control._def.NL5_USE_DOUT:
+                    addons.nl5.start_acquisition()
+                else:
+                    illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
+                    cam_trigger_log.debug(
+                        f"Sending hw trigger ch={trigger_channel} with illumination_time="
+                        f"{illumination_time_us if illumination_time else None} [us]"
+                    )
+                    low_level_devices.microcontroller.send_hardware_trigger(
+                        illumination_time is not None, illumination_time_us, trigger_channel
+                    )
+                return True
+
+            return acquisition_camera_hw_trigger_fn
+
+        def make_hw_strobe_delay_fn(trigger_channel: int):
+            """Create a strobe delay function for a specific camera channel."""
+
+            def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+                strobe_delay_us = int(1000 * strobe_delay_ms)
+                cam_trigger_log.debug(
+                    f"Setting microcontroller strobe delay ch={trigger_channel} to {strobe_delay_us} [us]"
+                )
+                low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us, trigger_channel)
+                low_level_devices.microcontroller.wait_till_operation_is_completed()
+
+                return True
+
+            return acquisition_camera_hw_strobe_delay_fn
+
         # Instantiate all cameras
         cameras: Dict[int, AbstractCamera] = {}
         for camera_id, cam_config in camera_configs.items():
-            cam_trigger_log.info(f"Initializing camera {camera_id} (SN: {cam_config.serial_number})")
+            # Get trigger channel from registry (defaults to camera_id - 1 if not configured)
+            trigger_channel = camera_registry.get_trigger_channel(camera_id) if camera_registry else (camera_id - 1)
+            cam_trigger_log.info(
+                f"Initializing camera {camera_id} (SN: {cam_config.serial_number}, trigger_ch={trigger_channel})"
+            )
             try:
                 camera = squid.camera.utils.get_camera(
                     config=cam_config,
                     simulated=camera_simulated,
-                    hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-                    hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+                    hw_trigger_fn=make_hw_trigger_fn(trigger_channel),
+                    hw_set_strobe_delay_ms_fn=make_hw_strobe_delay_fn(trigger_channel),
                 )
                 cameras[camera_id] = camera
             except Exception as e:
@@ -663,8 +680,16 @@ class Microscope:
             self._wait_for_microcontroller()
             self.camera.send_trigger()
         elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
+            # Get trigger channel for active camera
+            active_camera_id = self.live_controller._active_camera_id
+            camera_registry = self.config_repo.get_camera_registry()
+            trigger_channel = (
+                camera_registry.get_trigger_channel(active_camera_id) if camera_registry else (active_camera_id - 1)
+            )
             self.low_level_drivers.microcontroller.send_hardware_trigger(
-                control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                control_illumination=True,
+                illumination_on_time_us=self.camera.get_exposure_time() * 1000,
+                trigger_output_ch=trigger_channel,
             )
 
         try:

@@ -43,15 +43,21 @@ Defines available cameras with user-friendly names mapped to hardware identifier
 version: 1.0
 cameras:
   - name: "Main Camera"           # User-friendly name (shown in UI)
-    serial_number: "ABC12345"     # Hardware identifier
+    id: 1                          # Camera ID (matches INI MULTI_CAMERA_IDS)
+    serial_number: "ABC12345"     # Hardware identifier (from INI, read-only in UI)
     model: "Hamamatsu C15440"     # Optional: for display
+    trigger_channel: 0             # Optional: MCU trigger output channel (0-based)
 
   - name: "Side Camera"
+    id: 2
     serial_number: "DEF67890"
     model: "Basler acA2040"
+    trigger_channel: 1             # Optional: defaults to (id - 1) if not set
 ```
 
 **Location**: `machine_configs/cameras.yaml`
+
+**Note**: Serial numbers are configured in the INI file (`multi_camera_sns = {"1": "ABC12345", "2": "DEF67890"}`). The `cameras.yaml` file provides friendly names and trigger channel mappings.
 
 ### New Machine Config: `filter_wheels.yaml`
 

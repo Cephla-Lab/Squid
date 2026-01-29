@@ -862,6 +862,8 @@ class HighContentScreeningGui(QMainWindow):
 
         # Register callback to move frame callback when live camera switches (multi-camera support)
         self.liveController.on_camera_switched = self._on_live_camera_switched
+        # Register callback to update UI when trigger mode changes (multi-camera support)
+        self.liveController.on_trigger_mode_changed = self._on_trigger_mode_changed
 
         if self.camera_focus:
             self.camera_focus.set_acquisition_mode(
@@ -893,6 +895,18 @@ class HighContentScreeningGui(QMainWindow):
         self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
         # Then remove from old camera (already stopped, just cleanup)
         old_camera.remove_frame_callback(old_callback_id)
+
+    def _on_trigger_mode_changed(self, new_mode):
+        """Handle trigger mode change when switching cameras (multi-camera support).
+
+        Updates the UI to reflect the new camera's trigger mode.
+        """
+        self.log.info(f"Updating UI trigger mode to: {new_mode}")
+        if hasattr(self, "liveControlWidget") and self.liveControlWidget:
+            # Use QTimer to safely update UI from potentially non-GUI thread
+            from qtpy.QtCore import QTimer
+
+            QTimer.singleShot(0, lambda: self.liveControlWidget.update_trigger_mode_display(new_mode))
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:

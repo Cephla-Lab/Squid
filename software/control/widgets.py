@@ -4228,6 +4228,16 @@ class LiveControlWidget(QFrame):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
 
+    def update_trigger_mode_display(self, trigger_mode):
+        """Update the trigger mode dropdown without calling back to controller.
+
+        Used when the trigger mode changes externally (e.g., camera switch) and
+        we just need to update the UI to reflect the current state.
+        """
+        self.dropdown_triggerManu.blockSignals(True)
+        self.dropdown_triggerManu.setCurrentText(trigger_mode)
+        self.dropdown_triggerManu.blockSignals(False)
+
 
 class PiezoWidget(QFrame):
     def __init__(self, piezo: PiezoStage, *args, **kwargs):
@@ -16779,7 +16789,7 @@ class CameraConfiguratorDialog(QDialog):
 
         # Instructions
         instructions = QLabel(
-            "Configure camera names. Names appear in channel configuration dropdowns.\n"
+            "Configure camera names and trigger channels.\n"
             "Serial numbers are configured in the .ini file (read-only here)."
         )
         instructions.setWordWrap(True)
@@ -16787,11 +16797,12 @@ class CameraConfiguratorDialog(QDialog):
 
         # Camera table
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Serial Number (from INI)"])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Serial Number (from INI)", "Trigger Ch"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
 
@@ -16833,22 +16844,27 @@ class CameraConfiguratorDialog(QDialog):
         if self.registry is None:
             self.registry = CameraRegistryConfig(cameras=[])
 
-        # Build name lookup from existing registry
+        # Build lookups from existing registry
         name_lookup = {}
+        trigger_channel_lookup = {}
         for cam in self.registry.cameras:
             if cam.id is not None:
                 name_lookup[cam.id] = cam.name
+                trigger_channel_lookup[cam.id] = cam.trigger_channel
 
         # Rebuild registry from INI IDs + serial numbers
         cameras = []
         for cam_id in configured_ids:
             serial_number = camera_sns.get(cam_id, "")
             name = name_lookup.get(cam_id, f"Camera {cam_id}")
+            # Default trigger channel: camera ID 1 → channel 0, etc.
+            trigger_channel = trigger_channel_lookup.get(cam_id, cam_id - 1)
             cameras.append(
                 CameraDefinition(
                     id=cam_id,
                     name=name,
                     serial_number=serial_number if serial_number else "NOT_CONFIGURED",
+                    trigger_channel=trigger_channel,
                 )
             )
         self.registry = CameraRegistryConfig(cameras=cameras)
@@ -16875,6 +16891,10 @@ class CameraConfiguratorDialog(QDialog):
                 sn_item.setText("NOT CONFIGURED - add to INI")
             self.table.setItem(row, 2, sn_item)
 
+            # Trigger Channel (editable)
+            trigger_ch = camera.trigger_channel if camera.trigger_channel is not None else (camera.id - 1)
+            self.table.setItem(row, 3, QTableWidgetItem(str(trigger_ch)))
+
     def _save_config(self):
         """Save camera names to YAML file."""
         from control.models.camera_registry import CameraDefinition
@@ -16898,21 +16918,33 @@ class CameraConfiguratorDialog(QDialog):
             if reply == QMessageBox.No:
                 return
 
-        # Sync names from table to registry
+        # Sync names and trigger channels from table to registry
         for row in range(self.table.rowCount()):
             cam_id = int(self.table.item(row, 0).text())
             name = self.table.item(row, 1).text().strip() or f"Camera {cam_id}"
+            trigger_ch_text = self.table.item(row, 3).text().strip()
+            try:
+                trigger_channel = int(trigger_ch_text) if trigger_ch_text else (cam_id - 1)
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Trigger Channel",
+                    f"Camera {cam_id}: '{trigger_ch_text}' is not a valid trigger channel.\n"
+                    "Please enter a number (0-based channel index).",
+                )
+                return
 
-            # Update name in registry
+            # Update name and trigger channel in registry
             for camera in self.registry.cameras:
                 if camera.id == cam_id:
                     camera.name = name
+                    camera.trigger_channel = trigger_channel
                     break
 
         try:
             self.config_repo.save_camera_registry(self.registry)
             self.signal_config_updated.emit()
-            QMessageBox.information(self, "Saved", "Camera names saved.")
+            QMessageBox.information(self, "Saved", "Camera configuration saved.")
             self.accept()
         except (PermissionError, OSError) as e:
             self._log.error(f"Failed to save camera config: {e}")

@@ -144,7 +144,7 @@ multi_camera_sns = {"1": "ABC12345", "2": "DEF67890"}
 | `multi_camera_ids` | `[1]` | List of camera IDs to instantiate. |
 | `multi_camera_sns` | `{}` | **Required for multi-camera.** Maps camera ID to serial number. |
 
-**YAML Configuration (optional, for friendly names):**
+**YAML Configuration (optional, for friendly names and trigger channels):**
 
 ```yaml
 version: 1.0
@@ -154,12 +154,21 @@ cameras:
   - id: 1                          # Camera ID (matches INI)
     name: "Main Camera"            # User-friendly name for UI
     serial_number: "ABC12345"      # Informational only (actual SN from INI)
+    trigger_channel: 0             # MCU trigger output channel (0-based)
 
   # Secondary camera
   - id: 2
     name: "Side Camera"
     serial_number: "DEF67890"
+    trigger_channel: 1             # Optional: defaults to (id - 1) if not set
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes (multi-camera) | Camera ID matching INI `multi_camera_ids` |
+| `name` | No | User-friendly name shown in UI (defaults to "Camera N") |
+| `serial_number` | No | Informational; actual SN comes from INI |
+| `trigger_channel` | No | MCU trigger output channel (0-based). Defaults to `id - 1` |
 
 **Fields:**
 
