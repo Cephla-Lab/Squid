@@ -893,12 +893,15 @@ class HighContentScreeningGui(QMainWindow):
         from qtpy.QtCore import QTimer
 
         def switch_callback():
-            self.log.info(f"Moving frame callback from old camera to new camera")
-            old_callback_id = self._frame_callback_id
-            # Add to new camera first to minimize window with no callbacks
-            self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
-            # Then remove from old camera (already stopped, just cleanup)
-            old_camera.remove_frame_callback(old_callback_id)
+            try:
+                self.log.info(f"Moving frame callback from old camera to new camera")
+                old_callback_id = self._frame_callback_id
+                # Add to new camera first to minimize window with no callbacks
+                self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
+                # Then remove from old camera (already stopped, just cleanup)
+                old_camera.remove_frame_callback(old_callback_id)
+            except Exception as e:
+                self.log.error(f"Failed to switch camera frame callback: {e}")
 
         QTimer.singleShot(0, switch_callback)
 
@@ -912,7 +915,14 @@ class HighContentScreeningGui(QMainWindow):
             # Use QTimer to safely update UI from potentially non-GUI thread
             from qtpy.QtCore import QTimer
 
-            QTimer.singleShot(0, lambda: self.liveControlWidget.update_trigger_mode_display(new_mode))
+            def update_display():
+                try:
+                    if self.liveControlWidget is not None:
+                        self.liveControlWidget.update_trigger_mode_display(new_mode)
+                except Exception as e:
+                    self.log.error(f"Failed to update trigger mode display: {e}")
+
+            QTimer.singleShot(0, update_display)
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:

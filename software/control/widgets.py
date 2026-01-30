@@ -157,8 +157,12 @@ def save_last_used_saving_path(path: str) -> None:
             os.makedirs("cache", exist_ok=True)
             with open(cache_file, "w") as f:
                 f.write(path)
-        except OSError:
-            pass  # Silently fail - caching is a convenience feature
+        except OSError as e:
+            # Log at debug level - caching is a convenience feature but
+            # repeated failures could indicate disk issues
+            import logging
+
+            logging.getLogger(__name__).debug(f"Failed to cache saving path: {e}")
 
 
 class WrapperWindow(QMainWindow):
