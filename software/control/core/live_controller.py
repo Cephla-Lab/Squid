@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import Callable, List, Optional, TYPE_CHECKING
 
 import squid.logging
 from control.microcontroller import Microcontroller
@@ -21,6 +21,11 @@ _CAM_MODE_TO_TRIGGER = {
 
 if TYPE_CHECKING:
     from control.models import AcquisitionChannel, IlluminationChannelConfig
+
+# Type aliases for callbacks (multi-camera support)
+# Note: TriggerMode values are strings (e.g., "Software Trigger"), not class instances
+OnCameraSwitchedCallback = Callable[[AbstractCamera, AbstractCamera], None]
+OnTriggerModeChangedCallback = Callable[[str], None]
 
 
 class LiveController:
@@ -71,12 +76,10 @@ class LiveController:
         self._confocal_mode: bool = False
 
         # Callback for camera switch notifications (for multi-camera support)
-        # Signature: on_camera_switched(old_camera: AbstractCamera, new_camera: AbstractCamera)
-        self.on_camera_switched: Optional[callable] = None
+        self.on_camera_switched: Optional[OnCameraSwitchedCallback] = None
 
         # Callback for trigger mode change notifications (for multi-camera support)
-        # Signature: on_trigger_mode_changed(new_mode: TriggerMode)
-        self.on_trigger_mode_changed: Optional[callable] = None
+        self.on_trigger_mode_changed: Optional[OnTriggerModeChangedCallback] = None
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Illumination config helpers
@@ -549,10 +552,19 @@ class LiveController:
             self._set_trigger_fps(fps)
 
     # set microscope mode
-    def set_microscope_mode(self, configuration: "AcquisitionChannel"):
+    def set_microscope_mode(self, configuration: "AcquisitionChannel") -> bool:
+        """Set the microscope mode to the given channel configuration.
+
+        Args:
+            configuration: The acquisition channel configuration to apply.
+
+        Returns:
+            True if mode was successfully set, False if there was an error
+            (e.g., None configuration, invalid camera ID).
+        """
         if configuration is None:
             self._log.error("set_microscope_mode() called with None configuration - this is a bug in the caller")
-            return
+            return False
         self._log.info("setting microscope mode to " + configuration.name)
 
         # Check if we need to switch cameras (multi-camera support)
@@ -565,7 +577,7 @@ class LiveController:
                 f"Channel '{configuration.name}' requires camera {target_camera_id}, "
                 f"but only cameras {available} exist. Mode not changed."
             )
-            return  # Exit cleanly, no state changed
+            return False  # Exit cleanly, no state changed
 
         needs_camera_switch = target_camera_id != self._active_camera_id
 
@@ -614,6 +626,7 @@ class LiveController:
                 self.turn_on_illumination()
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")
+        return True
 
     def get_trigger_mode(self):
         return self.trigger_mode

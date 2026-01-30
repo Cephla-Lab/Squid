@@ -176,4 +176,9 @@ class CameraRegistryConfig(BaseModel):
         if camera and camera.trigger_channel is not None:
             return camera.trigger_channel
         # Default: camera ID 1 → channel 0, camera ID 2 → channel 1, etc.
-        return camera_id - 1 if camera_id >= 1 else 0
+        default_channel = camera_id - 1 if camera_id >= 1 else 0
+        if camera is None:
+            logger.warning(
+                f"Camera ID {camera_id} not found in registry, " f"using default trigger channel {default_channel}"
+            )
+        return default_channel
