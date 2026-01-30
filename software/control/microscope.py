@@ -659,6 +659,20 @@ class Microscope:
             self.addons.camera_focus.enable_callbacks(True)
             self.addons.camera_focus.start_streaming()
 
+    def get_trigger_channel_for_camera(self, camera_id: int) -> int:
+        """Get the trigger channel for a camera.
+
+        Args:
+            camera_id: The camera ID to look up.
+
+        Returns:
+            The trigger channel from camera registry, or camera_id - 1 as fallback.
+        """
+        camera_registry = self.config_repo.get_camera_registry()
+        if camera_registry:
+            return camera_registry.get_trigger_channel(camera_id)
+        return camera_id - 1
+
     def acquire_image(self) -> np.ndarray:
         """Acquire a single image from the camera.
 
@@ -682,10 +696,7 @@ class Microscope:
         elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
             # Get trigger channel for active camera
             active_camera_id = self.live_controller._active_camera_id
-            camera_registry = self.config_repo.get_camera_registry()
-            trigger_channel = (
-                camera_registry.get_trigger_channel(active_camera_id) if camera_registry else (active_camera_id - 1)
-            )
+            trigger_channel = self.get_trigger_channel_for_camera(active_camera_id)
             self.low_level_drivers.microcontroller.send_hardware_trigger(
                 control_illumination=True,
                 illumination_on_time_us=self.camera.get_exposure_time() * 1000,

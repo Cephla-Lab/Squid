@@ -4202,31 +4202,34 @@ class LiveControlWidget(QFrame):
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
 
     def update_config_exposure_time(self, new_value):
-        if self.is_switching_mode == False:
-            self.currentConfiguration.exposure_time = new_value
-            self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "ExposureTime", new_value
-            )
-            self.signal_newExposureTime.emit(new_value)
+        if self.is_switching_mode:
+            return
+        self.currentConfiguration.exposure_time = new_value
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective, self.currentConfiguration.name, "ExposureTime", new_value
+        )
+        self.signal_newExposureTime.emit(new_value)
 
     def update_config_analog_gain(self, new_value):
-        if self.is_switching_mode == False:
-            self.currentConfiguration.analog_gain = new_value
-            self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "AnalogGain", new_value
-            )
-            self.signal_newAnalogGain.emit(new_value)
+        if self.is_switching_mode:
+            return
+        self.currentConfiguration.analog_gain = new_value
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective, self.currentConfiguration.name, "AnalogGain", new_value
+        )
+        self.signal_newAnalogGain.emit(new_value)
 
     def update_config_illumination_intensity(self, new_value):
-        if self.is_switching_mode == False:
-            self.currentConfiguration.illumination_intensity = new_value
-            self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective,
-                self.currentConfiguration.name,
-                "IlluminationIntensity",
-                new_value,
-            )
-            self.liveController.update_illumination()
+        if self.is_switching_mode:
+            return
+        self.currentConfiguration.illumination_intensity = new_value
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+            "IlluminationIntensity",
+            new_value,
+        )
+        self.liveController.update_illumination()
 
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)

@@ -89,12 +89,7 @@ class AutofocusWorker:
                 else:
                     # Get trigger channel for active camera
                     active_camera_id = self.liveController._active_camera_id
-                    camera_registry = self.liveController.microscope.config_repo.get_camera_registry()
-                    trigger_channel = (
-                        camera_registry.get_trigger_channel(active_camera_id)
-                        if camera_registry
-                        else (active_camera_id - 1)
-                    )
+                    trigger_channel = self.liveController.microscope.get_trigger_channel_for_camera(active_camera_id)
                     self.microcontroller.send_hardware_trigger(
                         control_illumination=True,
                         illumination_on_time_us=self.camera.get_exposure_time() * 1000,

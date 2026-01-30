@@ -12,6 +12,13 @@ from control._def import *
 from control.core.config.utils import apply_confocal_override
 from control.models import merge_channel_configs
 
+# Mapping from camera acquisition mode to LiveController trigger mode
+_CAM_MODE_TO_TRIGGER = {
+    CameraAcquisitionMode.SOFTWARE_TRIGGER: TriggerMode.SOFTWARE,
+    CameraAcquisitionMode.HARDWARE_TRIGGER: TriggerMode.HARDWARE,
+    CameraAcquisitionMode.CONTINUOUS: TriggerMode.CONTINUOUS,
+}
+
 if TYPE_CHECKING:
     from control.models import AcquisitionChannel, IlluminationChannelConfig
 
@@ -171,14 +178,7 @@ class LiveController:
 
         # Read the new camera's acquisition mode and update trigger_mode to match
         cam_mode = new_camera.get_acquisition_mode()
-        if cam_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            new_trigger_mode = TriggerMode.SOFTWARE
-        elif cam_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            new_trigger_mode = TriggerMode.HARDWARE
-        elif cam_mode == CameraAcquisitionMode.CONTINUOUS:
-            new_trigger_mode = TriggerMode.CONTINUOUS
-        else:
-            new_trigger_mode = TriggerMode.SOFTWARE  # fallback
+        new_trigger_mode = _CAM_MODE_TO_TRIGGER.get(cam_mode, TriggerMode.SOFTWARE)
 
         if new_trigger_mode != self.trigger_mode:
             self._log.info(f"Trigger mode changed: {self.trigger_mode} -> {new_trigger_mode}")
