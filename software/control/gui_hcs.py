@@ -888,13 +888,19 @@ class HighContentScreeningGui(QMainWindow):
         frames from the new camera are properly displayed.
 
         Note: At this point, old_camera has already stopped streaming.
+        Uses QTimer.singleShot for thread safety since this may be called from non-GUI thread.
         """
-        self.log.info(f"Moving frame callback from old camera to new camera")
-        old_callback_id = self._frame_callback_id
-        # Add to new camera first to minimize window with no callbacks
-        self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
-        # Then remove from old camera (already stopped, just cleanup)
-        old_camera.remove_frame_callback(old_callback_id)
+        from qtpy.QtCore import QTimer
+
+        def switch_callback():
+            self.log.info(f"Moving frame callback from old camera to new camera")
+            old_callback_id = self._frame_callback_id
+            # Add to new camera first to minimize window with no callbacks
+            self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
+            # Then remove from old camera (already stopped, just cleanup)
+            old_camera.remove_frame_callback(old_callback_id)
+
+        QTimer.singleShot(0, switch_callback)
 
     def _on_trigger_mode_changed(self, new_mode):
         """Handle trigger mode change when switching cameras (multi-camera support).

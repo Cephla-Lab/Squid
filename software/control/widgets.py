@@ -17329,8 +17329,12 @@ class ChannelGroupDetailWidget(QWidget):
             QMessageBox.information(self, "No Channels", "All channels are already in this group.")
             return
 
-        # Show picker dialog
-        dialog = ChannelPickerDialog(available_channels, self)
+        # Show picker dialog - pass channel names (not objects) and existing names
+        dialog = ChannelPickerDialog(
+            [ch.name for ch in available_channels],
+            list(existing_names),
+            self,
+        )
         if dialog.exec_() == QDialog.Accepted:
             selected = dialog.get_selected_channels()
             for channel_name in selected:
@@ -17567,6 +17571,16 @@ class ChannelGroupEditorDialog(QDialog):
         if self.general_config is None:
             return
 
+        # Check that channels exist before allowing group creation
+        if not self.general_config.channels:
+            QMessageBox.warning(
+                self,
+                "No Channels",
+                "Cannot create channel group: no acquisition channels defined.\n"
+                "Please configure acquisition channels first.",
+            )
+            return
+
         existing_names = [g.name for g in self.general_config.channel_groups]
         dialog = AddChannelGroupDialog(existing_names, self)
 
@@ -17576,7 +17590,7 @@ class ChannelGroupEditorDialog(QDialog):
             mode = SynchronizationMode.SEQUENTIAL if mode_str == "sequential" else SynchronizationMode.SIMULTANEOUS
 
             # Create group with first available channel as default
-            default_channel = self.general_config.channels[0].name if self.general_config.channels else "Channel"
+            default_channel = self.general_config.channels[0].name
             new_group = ChannelGroup(
                 name=name,
                 synchronization=mode,
