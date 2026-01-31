@@ -475,9 +475,6 @@ void turn_off_all_ports()
       illumination_timer_active[i] = false;
     }
   }
-  // Also turn off LED matrix if it was on
-  clear_matrix(matrix);
-  illumination_is_on = false;
 }
 
 void ISR_strobeTimer()
