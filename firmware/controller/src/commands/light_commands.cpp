@@ -96,3 +96,27 @@ void callback_turn_off_all_ports()
 {
     turn_off_all_ports();
 }
+
+// Command byte layout: [cmd_id, 40, timeout_b3, timeout_b2, timeout_b1, timeout_b0, 0, crc]
+// timeout is 32-bit unsigned milliseconds (max 3,600,000 = 1 hour)
+void callback_set_illumination_timeout()
+{
+    uint32_t requested_timeout = ((uint32_t)buffer_rx[2] << 24)
+                                | ((uint32_t)buffer_rx[3] << 16)
+                                | ((uint32_t)buffer_rx[4] << 8)
+                                | (uint32_t)buffer_rx[5];
+
+    // Clamp to max allowed timeout
+    if (requested_timeout > MAX_ILLUMINATION_TIMEOUT_MS)
+    {
+        requested_timeout = MAX_ILLUMINATION_TIMEOUT_MS;
+    }
+
+    // Treat 0 as "use default"
+    if (requested_timeout == 0)
+    {
+        requested_timeout = DEFAULT_ILLUMINATION_TIMEOUT_MS;
+    }
+
+    illumination_timeout_ms = requested_timeout;
+}

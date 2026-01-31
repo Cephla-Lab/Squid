@@ -200,6 +200,7 @@ class CMD_SET:
     SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
     SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
     TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
+    SET_ILLUMINATION_TIMEOUT = 40  # Set auto-shutoff timeout for illumination
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
@@ -354,6 +355,20 @@ def port_index_to_source_code(port_index: int) -> int:
         4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
     }
     return mapping.get(port_index, -1)
+
+
+# Illumination safety timeout (firmware auto-shutoff)
+# Must match firmware constants in constants.h
+NUM_TIMEOUT_PORTS = 5  # D1-D5 (ports 0-4) have timeout protection
+DEFAULT_ILLUMINATION_TIMEOUT_MS = 3000  # 3 seconds (matches firmware)
+MAX_ILLUMINATION_TIMEOUT_MS = 3600000  # 1 hour (matches firmware)
+
+# Configurable timeout in seconds (0 = use firmware default of 3s)
+ILLUMINATION_TIMEOUT_S = DEFAULT_ILLUMINATION_TIMEOUT_MS / 1000.0
+
+# Response byte positions for MCU protocol (24-byte response)
+RESPONSE_BYTE_PORT_STATUS = 19  # Illumination port status, bits 0-4 = D1-D5
+RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Nibble-encoded: high=major, low=minor
 
 
 class VOLUMETRIC_IMAGING:

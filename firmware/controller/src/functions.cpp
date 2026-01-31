@@ -204,6 +204,26 @@ IntervalTimer strobeTimer;
 
 CRGB matrix[NUM_LEDS] = {0};
 
+// Helper: Start timeout timer for a port on LOW->HIGH transition
+// Only starts if port was previously off and has timeout support
+static void start_timeout_timer_if_transition(int port_index, bool was_off)
+{
+  if (was_off && port_index >= 0 && port_index < NUM_TIMEOUT_PORTS)
+  {
+    illumination_timer_start[port_index] = millis();
+    illumination_timer_active[port_index] = true;
+  }
+}
+
+// Helper: Stop timeout timer for a port
+static void stop_timeout_timer(int port_index)
+{
+  if (port_index >= 0 && port_index < NUM_TIMEOUT_PORTS)
+  {
+    illumination_timer_active[port_index] = false;
+  }
+}
+
 void turn_on_illumination()
 {
   illumination_is_on = true;
@@ -211,7 +231,11 @@ void turn_on_illumination()
   // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
   int port_index = illumination_source_to_port_index(illumination_source);
   if (port_index >= 0)
+  {
+    bool was_off = !illumination_port_is_on[port_index];
     illumination_port_is_on[port_index] = true;
+    start_timeout_timer_if_transition(port_index, was_off);
+  }
 
   switch (illumination_source)
   {
@@ -272,7 +296,10 @@ void turn_off_illumination()
   // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
   int port_index = illumination_source_to_port_index(illumination_source);
   if (port_index >= 0)
+  {
     illumination_port_is_on[port_index] = false;
+    stop_timeout_timer(port_index);
+  }
 
   switch(illumination_source)
   {
@@ -408,8 +435,10 @@ void turn_on_port(int port_index)
 
   if (INTERLOCK_OK())
   {
+    bool was_off = !illumination_port_is_on[port_index];
     digitalWrite(pin, HIGH);
     illumination_port_is_on[port_index] = true;
+    start_timeout_timer_if_transition(port_index, was_off);
   }
 }
 
@@ -424,6 +453,7 @@ void turn_off_port(int port_index)
 
   digitalWrite(pin, LOW);
   illumination_port_is_on[port_index] = false;
+  stop_timeout_timer(port_index);
 }
 
 // Set DAC intensity for a specific port without changing on/off state.
@@ -443,20 +473,15 @@ void set_port_intensity(int port_index, uint16_t intensity)
   illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
 }
 
+// Turn off all discrete illumination ports (D1-D16).
+// Note: This function intentionally does NOT affect the LED matrix.
+// Use clear_matrix() separately if LED matrix control is needed.
 void turn_off_all_ports()
 {
   for (int i = 0; i < NUM_ILLUMINATION_PORTS; i++)
   {
-    int pin = port_index_to_pin(i);
-    if (pin >= 0)
-    {
-      digitalWrite(pin, LOW);
-      illumination_port_is_on[i] = false;
-    }
+    turn_off_port(i);  // Handles pin, state, and timer in one place
   }
-  // Also turn off LED matrix if it was on
-  clear_matrix(matrix);
-  illumination_is_on = false;
 }
 
 void ISR_strobeTimer()

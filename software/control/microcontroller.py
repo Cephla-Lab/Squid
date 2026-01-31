@@ -67,6 +67,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
     CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
     CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
+    CMD_SET.SET_ILLUMINATION_TIMEOUT: "SET_ILLUMINATION_TIMEOUT",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -180,32 +181,38 @@ class AbstractCephlaMicroSerial(abc.ABC):
 class SimSerial(AbstractCephlaMicroSerial):
     # Number of illumination ports for simulation
     NUM_ILLUMINATION_PORTS = 16
-    # Simulated firmware version (1.0 supports multi-port illumination)
+    # Simulated firmware version
+    # v1.0: multi-port illumination support
+    # v1.1: illumination timeout (auto-shutoff) and port status reporting
+    # Note: SimSerial does NOT simulate actual timeout auto-shutoff behavior
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 0
+    FIRMWARE_VERSION_MINOR = 1
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1), port_status=0
     ) -> bytes:
         """
-        - command ID (1 byte)
-        - execution status (1 byte)
-        - X pos (4 bytes)
-        - Y pos (4 bytes)
-        - Z pos (4 bytes)
-        - Theta (4 bytes)
-        - buttons and switches (1 byte)
-        - reserved (4 bytes) - byte 22 contains firmware version
-        - CRC (1 byte)
+        - byte 0: command ID (1 byte)
+        - byte 1: execution status (1 byte)
+        - bytes 2-5: X pos (4 bytes)
+        - bytes 6-9: Y pos (4 bytes)
+        - bytes 10-13: Z pos (4 bytes)
+        - bytes 14-17: Theta (4 bytes)
+        - byte 18: buttons and switches (1 byte)
+        - byte 19: illumination port status, bits 0-4 = D1-D5 (firmware v1.1+)
+        - bytes 20-21: reserved (2 bytes)
+        - byte 22: firmware version (1 byte)
+        - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
+        # Firmware version is nibble-encoded in byte 22
         # High nibble = major version, low nibble = minor version
         version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
-        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
+        # Pack reserved bytes 19-22: port_status in byte 19, version in byte 22
+        reserved_state = (port_status << 24) | version_byte
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
         )
@@ -232,6 +239,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         # Multi-port illumination state for simulation
         self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Illumination timeout (firmware v1.1+)
+        self.illumination_timeout_ms = DEFAULT_ILLUMINATION_TIMEOUT_MS
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -341,6 +351,22 @@ class SimSerial(AbstractCephlaMicroSerial):
             # Turn off all ports (matches firmware behavior)
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
+        elif command_byte == CMD_SET.SET_ILLUMINATION_TIMEOUT:
+            # Parse timeout value from bytes 2-5 (big-endian 32-bit unsigned)
+            requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
+            # Clamp to max
+            if requested_timeout > MAX_ILLUMINATION_TIMEOUT_MS:
+                requested_timeout = MAX_ILLUMINATION_TIMEOUT_MS
+            # Treat 0 as "use default"
+            if requested_timeout == 0:
+                requested_timeout = DEFAULT_ILLUMINATION_TIMEOUT_MS
+            self.illumination_timeout_ms = requested_timeout
+
+        # Calculate port status for response (bits 0-4 = D1-D5)
+        port_status = 0
+        for i in range(min(NUM_TIMEOUT_PORTS, len(self.port_is_on))):
+            if self.port_is_on[i]:
+                port_status |= 1 << i
 
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
@@ -352,6 +378,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.theta,
                 self.joystick_button,
                 self.switch,
+                port_status=port_status,
             )
         )
 
@@ -626,6 +653,11 @@ class Microcontroller:
         # (0, 0) indicates legacy firmware without version reporting
         self.firmware_version = (0, 0)
 
+        # Illumination port on/off state from firmware (byte 19)
+        # Updated from periodic position updates, reflects actual hardware state
+        # Index 0-4 = ports D1-D5, matching firmware NUM_TIMEOUT_PORTS
+        self.illumination_port_is_on = [False] * NUM_TIMEOUT_PORTS
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -825,6 +857,9 @@ class Microcontroller:
         """
         self._validate_port_index(port_index)
         self.log.debug(f"[MCU] turn_off_port: port={port_index}")
+        # Update local state immediately to prevent spurious auto-shutoff warning
+        if port_index < len(self.illumination_port_is_on):
+            self.illumination_port_is_on[port_index] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_PORT
         cmd[2] = port_index
@@ -847,6 +882,9 @@ class Microcontroller:
         """
         self._validate_port_index(port_index)
         self.log.debug(f"[MCU] set_port_illumination: port={port_index}, intensity={intensity}, on={turn_on}")
+        # Update local state immediately to prevent spurious auto-shutoff warning
+        if not turn_on and port_index < len(self.illumination_port_is_on):
+            self.illumination_port_is_on[port_index] = False
         # Clamp intensity to valid range
         intensity = max(0, min(100, intensity))
         cmd = bytearray(self.tx_buffer_length)
@@ -876,6 +914,10 @@ class Microcontroller:
             set_multi_port_mask(0x0007, 0x0003)  # port_mask=D1|D2|D3, on_mask=D1|D2
         """
         self.log.debug(f"[MCU] set_multi_port_mask: port_mask=0x{port_mask:04X}, on_mask=0x{on_mask:04X}")
+        # Update local state immediately for ports being turned off to prevent spurious warnings
+        for i in range(len(self.illumination_port_is_on)):
+            if port_mask & (1 << i) and not (on_mask & (1 << i)):
+                self.illumination_port_is_on[i] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_MULTI_PORT_MASK
         cmd[2] = (port_mask >> 8) & 0xFF
@@ -891,8 +933,49 @@ class Microcontroller:
         sending another command if ordering matters.
         """
         self.log.debug("[MCU] turn_off_all_ports")
+        # Update local state immediately to prevent spurious auto-shutoff warnings
+        for i in range(len(self.illumination_port_is_on)):
+            self.illumination_port_is_on[i] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
+        self.send_command(cmd)
+
+    def set_illumination_timeout(self, timeout_s: float) -> None:
+        """Set firmware illumination auto-shutoff timeout.
+
+        The firmware will automatically turn off any illumination port that has
+        been continuously on for longer than this timeout. This is a safety feature
+        to protect against software crashes or bugs that leave lasers on.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            timeout_s: Timeout in seconds. Valid range is 0 to 3600 (1 hour).
+                Values below 0 are clamped to 0. Values above 3600 are clamped to 3600.
+                A value of 0 tells the firmware to use its default timeout (3s).
+        """
+        # Convert to milliseconds and clamp to valid range
+        timeout_ms = int(timeout_s * 1000)
+        original_ms = timeout_ms
+        timeout_ms = max(0, min(timeout_ms, MAX_ILLUMINATION_TIMEOUT_MS))  # 0 means use default
+
+        # Warn if value was clamped
+        if timeout_ms != original_ms:
+            max_s = MAX_ILLUMINATION_TIMEOUT_MS / 1000.0
+            self.log.warning(
+                f"[MCU] set_illumination_timeout: requested {timeout_s}s clamped to "
+                f"{timeout_ms / 1000.0}s (valid range: 0-{max_s}s)"
+            )
+
+        self.log.debug(f"[MCU] set_illumination_timeout: {timeout_s}s ({timeout_ms}ms)")
+
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ILLUMINATION_TIMEOUT
+        cmd[2] = (timeout_ms >> 24) & 0xFF
+        cmd[3] = (timeout_ms >> 16) & 0xFF
+        cmd[4] = (timeout_ms >> 8) & 0xFF
+        cmd[5] = timeout_ms & 0xFF
         self.send_command(cmd)
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
@@ -1431,15 +1514,17 @@ class Microcontroller:
 
                 # parse the message
                 """
-                - command ID (1 byte)
-                - execution status (1 byte)
-                - X pos (4 bytes)
-                - Y pos (4 bytes)
-                - Z pos (4 bytes)
-                - Theta (4 bytes)
-                - buttons and switches (1 byte)
-                - reserved (4 bytes)
-                - CRC (1 byte)
+                - byte 0: command ID (1 byte)
+                - byte 1: execution status (1 byte)
+                - bytes 2-5: X pos (4 bytes)
+                - bytes 6-9: Y pos (4 bytes)
+                - bytes 10-13: Z pos (4 bytes)
+                - bytes 14-17: Theta (4 bytes)
+                - byte 18: buttons and switches (1 byte)
+                - byte 19: illumination port status, bits 0-4 = D1-D5 (1 byte, firmware v1.1+)
+                - bytes 20-21: reserved (2 bytes)
+                - byte 22: firmware version (1 byte)
+                - byte 23: CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
@@ -1523,8 +1608,22 @@ class Microcontroller:
 
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[22]
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+
+                # Illumination port status from byte 19: bits 0-4 = D1-D5 on/off state
+                # This reflects actual hardware state, updated even after firmware auto-shutoff
+                port_status = msg[RESPONSE_BYTE_PORT_STATUS]
+                for i in range(NUM_TIMEOUT_PORTS):
+                    new_state = bool(port_status & (1 << i))
+                    old_state = self.illumination_port_is_on[i]
+                    # Log when firmware turns off a port (possible timeout auto-shutoff)
+                    if old_state and not new_state:
+                        self.log.warning(
+                            f"[MCU] Illumination port D{i + 1} turned off by firmware "
+                            "(possible timeout auto-shutoff)"
+                        )
+                    self.illumination_port_is_on[i] = new_state
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()

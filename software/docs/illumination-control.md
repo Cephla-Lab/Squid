@@ -119,6 +119,70 @@ controller.turn_off_all_ports()
 | Custom light mixing experiments | Multi-port | Independent control of each port |
 | Backward compatibility required | Legacy | Works with older firmware |
 
+## Illumination Timeout (Auto-Shutoff Safety)
+
+**Requires firmware v1.1 or later.**
+
+The firmware includes automatic timeout protection for illumination ports D1-D5. If illumination is left on (e.g., due to software crash), it will automatically turn off after the timeout period.
+
+### Default Behavior
+
+- **Default timeout:** 3 seconds
+- **Maximum timeout:** 3600 seconds (1 hour)
+- **Protected ports:** D1-D5 only (port indices 0-4)
+
+### Configuring Timeout
+
+The timeout is automatically configured at software startup via `Microscope.prepare_for_use()`. To customize:
+
+```python
+# In configuration or startup code
+from control._def import ILLUMINATION_TIMEOUT_S
+
+# Default is 3 seconds, defined in _def.py
+# The microscope will configure this at startup
+```
+
+To change the timeout programmatically (before creating Microscope):
+
+```python
+# Set timeout via microcontroller directly
+microcontroller.set_illumination_timeout(5.0)  # 5 seconds
+microcontroller.wait_till_operation_is_completed()
+```
+
+### Timeout Values
+
+| Value | Behavior |
+|-------|----------|
+| 0 | Use firmware default (3 seconds) |
+| 0.001 - 3600 | Set timeout in seconds |
+| > 3600 | Clamped to 3600 seconds |
+
+### How It Works
+
+1. When a port turns ON (was off → now on), the timeout timer starts
+2. While the port remains on, the timer counts up
+3. If timer exceeds timeout, firmware automatically turns off the port
+4. Firmware reports auto-shutoff events via status byte in responses
+5. Software logs a warning when auto-shutoff is detected
+
+### Monitoring Auto-Shutoff Events
+
+The software automatically monitors for auto-shutoff events and logs warnings:
+
+```
+WARNING - [MCU] Illumination port D1 turned off by firmware (possible timeout auto-shutoff)
+```
+
+### MCU Protocol
+
+| Command | Code | Description |
+|---------|------|-------------|
+| SET_ILLUMINATION_TIMEOUT | 40 | Set timeout value (0 = default) |
+
+Response byte 19 contains port status bitmask (bits 0-4 = D1-D5 on/off state).
+
 ## Firmware Version Detection
 
 The software automatically detects firmware version from MCU responses:
@@ -158,15 +222,16 @@ For low-level debugging or firmware development:
 
 | Command | Code | Description |
 |---------|------|-------------|
-| SET_ILLUMINATION | 5 | Legacy: set source + intensity |
-| TURN_ON_ILLUMINATION | 6 | Legacy: turn on current source |
-| TURN_OFF_ILLUMINATION | 7 | Legacy: turn off current source |
+| TURN_ON_ILLUMINATION | 10 | Legacy: turn on current source |
+| TURN_OFF_ILLUMINATION | 11 | Legacy: turn off current source |
+| SET_ILLUMINATION | 12 | Legacy: set source + intensity |
 | SET_PORT_INTENSITY | 34 | Multi-port: set DAC for port |
 | TURN_ON_PORT | 35 | Multi-port: turn on GPIO for port |
 | TURN_OFF_PORT | 36 | Multi-port: turn off GPIO for port |
 | SET_PORT_ILLUMINATION | 37 | Multi-port: combined intensity + on/off |
 | SET_MULTI_PORT_MASK | 38 | Multi-port: control multiple ports |
 | TURN_OFF_ALL_PORTS | 39 | Multi-port: turn off all ports |
+| SET_ILLUMINATION_TIMEOUT | 40 | Set auto-shutoff timeout (v1.1+) |
 
 ## Troubleshooting
 
