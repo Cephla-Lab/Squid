@@ -145,4 +145,9 @@ extern bool illumination_is_on;
 extern bool illumination_port_is_on[NUM_ILLUMINATION_PORTS];
 extern uint16_t illumination_port_intensity[NUM_ILLUMINATION_PORTS];
 
+// Illumination timeout (auto-shutoff safety)
+extern uint32_t illumination_timeout_ms;
+extern uint32_t illumination_timer_start[NUM_TIMEOUT_PORTS];
+extern bool illumination_timer_active[NUM_TIMEOUT_PORTS];
+
 #endif // GLOBALS_H
