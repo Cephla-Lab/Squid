@@ -895,6 +895,34 @@ class Microcontroller:
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
 
+    def set_illumination_timeout(self, timeout_s: float) -> None:
+        """Set firmware illumination auto-shutoff timeout.
+
+        The firmware will automatically turn off any illumination port that has
+        been continuously on for longer than this timeout. This is a safety feature
+        to protect against software crashes or bugs that leave lasers on.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            timeout_s: Timeout in seconds (0.001 to 3600). Values outside this
+                range are clamped. A value of 0 uses the firmware default (3s).
+        """
+        # Convert to milliseconds and clamp to valid range
+        timeout_ms = int(timeout_s * 1000)
+        timeout_ms = max(0, min(timeout_ms, 3600000))  # 0 means use default
+
+        self.log.debug(f"[MCU] set_illumination_timeout: {timeout_s}s ({timeout_ms}ms)")
+
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ILLUMINATION_TIMEOUT
+        cmd[2] = (timeout_ms >> 24) & 0xFF
+        cmd[3] = (timeout_ms >> 16) & 0xFF
+        cmd[4] = (timeout_ms >> 8) & 0xFF
+        cmd[5] = timeout_ms & 0xFF
+        self.send_command(cmd)
+
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
