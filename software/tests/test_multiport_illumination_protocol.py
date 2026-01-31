@@ -484,8 +484,8 @@ class TestFirmwareVersionBehavior:
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed()
 
-        # Now version should be detected (SimSerial reports 1.0)
-        assert mcu.firmware_version == (1, 0)
+        # Now version should be detected (SimSerial reports 1.1 with timeout support)
+        assert mcu.firmware_version == (1, 1)
 
     def test_supports_multi_port_true_for_v1(self, mcu):
         """supports_multi_port() should return True for v1.0+."""
@@ -507,7 +507,7 @@ class TestFirmwareVersionBehavior:
         mcu.wait_till_operation_is_completed()
         v3 = mcu.firmware_version
 
-        assert v1 == v2 == v3 == (1, 0)
+        assert v1 == v2 == v3 == (1, 1)
 
 
 class TestMultiPortMaskEdgeCases:

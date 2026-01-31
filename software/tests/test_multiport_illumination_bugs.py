@@ -374,13 +374,13 @@ class TestResponseVersionParsing:
         mcu = Microcontroller(sim, reset_and_initialize=False)
 
         # Before any command, version might be (0, 0)
-        # After command, SimSerial returns 1.0
+        # After command, SimSerial returns 1.1 (with timeout support)
 
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed()
 
         # Should now have version from SimSerial
-        assert mcu.firmware_version == (1, 0)
+        assert mcu.firmware_version == (1, 1)
         mcu.close()
 
     def test_supports_multi_port_false_for_v0(self):

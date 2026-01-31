@@ -249,12 +249,12 @@ class TestFirmwareVersionCheck:
     def test_firmware_version_detected_at_init(self, mcu):
         """Firmware version should be detected during Microcontroller init."""
         # Version is read from response byte 22 (nibble-encoded)
-        # SimSerial reports version 1.0 by default
+        # SimSerial reports version 1.1 by default (with timeout support)
         # Early detection sends TURN_OFF_ALL_PORTS during __init__
         assert hasattr(mcu, "firmware_version")
         assert mcu.firmware_version is not None
         # Version should already be populated - no need to send a command first
-        assert mcu.firmware_version == (1, 0)
+        assert mcu.firmware_version == (1, 1)
 
     def test_supports_multi_port_accurate_at_init(self, mcu):
         """supports_multi_port() should return accurate result immediately after init."""
