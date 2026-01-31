@@ -16314,6 +16314,7 @@ class WarningErrorWidget(QWidget):
     MAX_MESSAGES = 100  # Prevent unbounded memory growth
     RATE_LIMIT_WINDOW_MS = 1000  # 1 second window
     RATE_LIMIT_MAX_MESSAGES = 10  # Max messages per window
+    POLL_INTERVAL_MS = 100  # How often to poll handler for new messages
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -16323,10 +16324,52 @@ class WarningErrorWidget(QWidget):
         self._rate_limit_timestamps = []  # For rate limiting
         self._dropped_count = 0  # Track rate-limited messages
         self._popup = None
+        self._handler = None
+        self._poll_timer = None
         self._setup_ui()
 
+    def connect_handler(self, handler: "BufferingHandler"):
+        """Connect to a logging handler and start polling for messages.
+
+        Must be called from the GUI thread (creates QTimer which is not thread-safe).
+
+        Args:
+            handler: The BufferingHandler to poll for messages.
+        """
+        # Disconnect any existing handler first to avoid orphaned timers
+        self.disconnect_handler()
+
+        self._handler = handler
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_messages)
+        self._poll_timer.start(self.POLL_INTERVAL_MS)
+
+    def disconnect_handler(self):
+        """Disconnect from the logging handler and stop polling.
+
+        Must be called from the GUI thread (QTimer operations are not thread-safe).
+        """
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer.deleteLater()
+            self._poll_timer = None
+        self._handler = None
+
+    def _poll_messages(self):
+        """Poll the handler for new messages."""
+        if self._handler is None:
+            return
+        try:
+            for level, logger_name, message in self._handler.get_pending():
+                self.add_message(level, logger_name, message)
+        except Exception as e:
+            # Log but don't crash the timer - allow recovery on next poll.
+            # Qt silently swallows exceptions in timer callbacks, so we must log explicitly.
+            squid.logging.get_logger(__name__).error(f"Error polling warning/error messages: {e}", exc_info=True)
+
     def closeEvent(self, event):
-        """Clean up popup when widget is closed."""
+        """Clean up popup and timer when widget is closed."""
+        self.disconnect_handler()
         self._cleanup_popup()
         super().closeEvent(event)
 
