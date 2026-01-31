@@ -127,6 +127,11 @@ static const float BLUE_ADJUSTMENT_FACTOR = 1;
 #define LED_MATRIX_DATA_PIN 26
 #define LED_MATRIX_CLOCK_PIN 27
 
+// Illumination timeout (auto-shutoff safety)
+#define NUM_TIMEOUT_PORTS 5
+#define DEFAULT_ILLUMINATION_TIMEOUT_MS 3000
+#define MAX_ILLUMINATION_TIMEOUT_MS 3600000
+
 /***************************************************************************************************/
 /******************************************* steppers **********************************************/
 /***************************************************************************************************/
