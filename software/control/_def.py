@@ -200,6 +200,7 @@ class CMD_SET:
     SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
     SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
     TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
+    SET_ILLUMINATION_TIMEOUT = 40  # Set auto-shutoff timeout for illumination
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
