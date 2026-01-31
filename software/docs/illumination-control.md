@@ -133,7 +133,7 @@ The firmware includes automatic timeout protection for illumination ports D1-D5.
 
 ### Configuring Timeout
 
-The timeout is automatically configured at software startup via `Microscope.__init__()`. To customize:
+The timeout is automatically configured at software startup via `Microscope.prepare_for_use()`. To customize:
 
 ```python
 # In configuration or startup code
@@ -172,14 +172,14 @@ microcontroller.wait_till_operation_is_completed()
 The software automatically monitors for auto-shutoff events and logs warnings:
 
 ```
-WARNING - Illumination auto-shutoff detected on ports: [0, 2] (port was on for longer than timeout)
+WARNING - [MCU] Illumination port D1 turned off by firmware (possible timeout auto-shutoff)
 ```
 
 ### MCU Protocol
 
 | Command | Code | Description |
 |---------|------|-------------|
-| SET_ILLUMINATION_TIMEOUT | 45 | Set timeout value (0 = default) |
+| SET_ILLUMINATION_TIMEOUT | 40 | Set timeout value (0 = default) |
 
 Response byte 19 contains port status bitmask (bits 0-4 = D1-D5 on/off state).
 
@@ -222,16 +222,16 @@ For low-level debugging or firmware development:
 
 | Command | Code | Description |
 |---------|------|-------------|
-| SET_ILLUMINATION | 5 | Legacy: set source + intensity |
-| TURN_ON_ILLUMINATION | 6 | Legacy: turn on current source |
-| TURN_OFF_ILLUMINATION | 7 | Legacy: turn off current source |
+| TURN_ON_ILLUMINATION | 10 | Legacy: turn on current source |
+| TURN_OFF_ILLUMINATION | 11 | Legacy: turn off current source |
+| SET_ILLUMINATION | 12 | Legacy: set source + intensity |
 | SET_PORT_INTENSITY | 34 | Multi-port: set DAC for port |
 | TURN_ON_PORT | 35 | Multi-port: turn on GPIO for port |
 | TURN_OFF_PORT | 36 | Multi-port: turn off GPIO for port |
 | SET_PORT_ILLUMINATION | 37 | Multi-port: combined intensity + on/off |
 | SET_MULTI_PORT_MASK | 38 | Multi-port: control multiple ports |
 | TURN_OFF_ALL_PORTS | 39 | Multi-port: turn off all ports |
-| SET_ILLUMINATION_TIMEOUT | 45 | Set auto-shutoff timeout (v1.1+) |
+| SET_ILLUMINATION_TIMEOUT | 40 | Set auto-shutoff timeout (v1.1+) |
 
 ## Troubleshooting
 
