@@ -412,7 +412,10 @@ class Microscope:
             if mcu.firmware_version >= (1, 1):
                 timeout_s = getattr(control._def, "ILLUMINATION_TIMEOUT_S", 3.0)
                 mcu.set_illumination_timeout(timeout_s)
-                self._log.info(f"Illumination timeout configured: {timeout_s}s")
+                mcu.wait_till_operation_is_completed()  # Ensure command is processed
+                self._log.info(
+                    f"Illumination timeout set to {timeout_s}s " f"(firmware may clamp to 0.001-3600s range)"
+                )
             else:
                 self._log.debug(
                     f"Illumination timeout not configured: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} "

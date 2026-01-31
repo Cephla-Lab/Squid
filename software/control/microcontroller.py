@@ -181,9 +181,12 @@ class AbstractCephlaMicroSerial(abc.ABC):
 class SimSerial(AbstractCephlaMicroSerial):
     # Number of illumination ports for simulation
     NUM_ILLUMINATION_PORTS = 16
-    # Simulated firmware version (1.0 supports multi-port illumination)
+    # Simulated firmware version
+    # v1.0: multi-port illumination support
+    # v1.1: illumination timeout (auto-shutoff) and port status reporting
+    # Note: SimSerial does NOT simulate actual timeout auto-shutoff behavior
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 1  # Supports illumination timeout (v1.1+)
+    FIRMWARE_VERSION_MINOR = 1
 
     @staticmethod
     def response_bytes_for(
@@ -238,7 +241,7 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
 
         # Illumination timeout (firmware v1.1+)
-        self.illumination_timeout_ms = ILLUMINATION_TIMEOUT_DEFAULT_MS
+        self.illumination_timeout_ms = DEFAULT_ILLUMINATION_TIMEOUT_MS
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -352,11 +355,11 @@ class SimSerial(AbstractCephlaMicroSerial):
             # Parse timeout value from bytes 2-5 (big-endian 32-bit unsigned)
             requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
             # Clamp to max
-            if requested_timeout > ILLUMINATION_TIMEOUT_MAX_MS:
-                requested_timeout = ILLUMINATION_TIMEOUT_MAX_MS
+            if requested_timeout > MAX_ILLUMINATION_TIMEOUT_MS:
+                requested_timeout = MAX_ILLUMINATION_TIMEOUT_MS
             # Treat 0 as "use default"
             if requested_timeout == 0:
-                requested_timeout = ILLUMINATION_TIMEOUT_DEFAULT_MS
+                requested_timeout = DEFAULT_ILLUMINATION_TIMEOUT_MS
             self.illumination_timeout_ms = requested_timeout
 
         # Calculate port status for response (bits 0-4 = D1-D5)
@@ -935,17 +938,18 @@ class Microcontroller:
         sending another command if ordering matters.
 
         Args:
-            timeout_s: Timeout in seconds (0.001 to 3600). Values outside this
-                range are clamped. A value of 0 uses the firmware default (3s).
+            timeout_s: Timeout in seconds. Valid range is 0 to 3600 (1 hour).
+                Values below 0 are clamped to 0. Values above 3600 are clamped to 3600.
+                A value of 0 tells the firmware to use its default timeout (3s).
         """
         # Convert to milliseconds and clamp to valid range
         timeout_ms = int(timeout_s * 1000)
         original_ms = timeout_ms
-        timeout_ms = max(0, min(timeout_ms, ILLUMINATION_TIMEOUT_MAX_MS))  # 0 means use default
+        timeout_ms = max(0, min(timeout_ms, MAX_ILLUMINATION_TIMEOUT_MS))  # 0 means use default
 
         # Warn if value was clamped
         if timeout_ms != original_ms:
-            max_s = ILLUMINATION_TIMEOUT_MAX_MS / 1000.0
+            max_s = MAX_ILLUMINATION_TIMEOUT_MS / 1000.0
             self.log.warning(
                 f"[MCU] set_illumination_timeout: requested {timeout_s}s clamped to "
                 f"{timeout_ms / 1000.0}s (valid range: 0-{max_s}s)"
@@ -1591,12 +1595,12 @@ class Microcontroller:
 
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[22]
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 # Illumination port status from byte 19: bits 0-4 = D1-D5 on/off state
                 # This reflects actual hardware state, updated even after firmware auto-shutoff
-                port_status = msg[19]
+                port_status = msg[RESPONSE_BYTE_PORT_STATUS]
                 for i in range(NUM_TIMEOUT_PORTS):
                     new_state = bool(port_status & (1 << i))
                     old_state = self.illumination_port_is_on[i]
