@@ -238,7 +238,7 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
 
         # Illumination timeout (firmware v1.1+)
-        self.illumination_timeout_ms = 3000  # Default 3 seconds
+        self.illumination_timeout_ms = ILLUMINATION_TIMEOUT_DEFAULT_MS
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -351,17 +351,17 @@ class SimSerial(AbstractCephlaMicroSerial):
         elif command_byte == CMD_SET.SET_ILLUMINATION_TIMEOUT:
             # Parse timeout value from bytes 2-5 (big-endian 32-bit unsigned)
             requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
-            # Clamp to max (3600000ms = 1 hour)
-            if requested_timeout > 3600000:
-                requested_timeout = 3600000
+            # Clamp to max
+            if requested_timeout > ILLUMINATION_TIMEOUT_MAX_MS:
+                requested_timeout = ILLUMINATION_TIMEOUT_MAX_MS
             # Treat 0 as "use default"
             if requested_timeout == 0:
-                requested_timeout = 3000
+                requested_timeout = ILLUMINATION_TIMEOUT_DEFAULT_MS
             self.illumination_timeout_ms = requested_timeout
 
         # Calculate port status for response (bits 0-4 = D1-D5)
         port_status = 0
-        for i in range(min(5, len(self.port_is_on))):
+        for i in range(min(NUM_TIMEOUT_PORTS, len(self.port_is_on))):
             if self.port_is_on[i]:
                 port_status |= 1 << i
 
@@ -652,8 +652,8 @@ class Microcontroller:
 
         # Illumination port on/off state from firmware (byte 19)
         # Updated from periodic position updates, reflects actual hardware state
-        # Index 0-4 = ports D1-D5
-        self.illumination_port_is_on = [False] * 5
+        # Index 0-4 = ports D1-D5, matching firmware NUM_TIMEOUT_PORTS
+        self.illumination_port_is_on = [False] * NUM_TIMEOUT_PORTS
 
         self.last_command = None
         self.last_command_send_timestamp = time.time()
@@ -941,13 +941,14 @@ class Microcontroller:
         # Convert to milliseconds and clamp to valid range
         timeout_ms = int(timeout_s * 1000)
         original_ms = timeout_ms
-        timeout_ms = max(0, min(timeout_ms, 3600000))  # 0 means use default
+        timeout_ms = max(0, min(timeout_ms, ILLUMINATION_TIMEOUT_MAX_MS))  # 0 means use default
 
         # Warn if value was clamped
         if timeout_ms != original_ms:
+            max_s = ILLUMINATION_TIMEOUT_MAX_MS / 1000.0
             self.log.warning(
                 f"[MCU] set_illumination_timeout: requested {timeout_s}s clamped to "
-                f"{timeout_ms / 1000.0}s (valid range: 0-3600s)"
+                f"{timeout_ms / 1000.0}s (valid range: 0-{max_s}s)"
             )
 
         self.log.debug(f"[MCU] set_illumination_timeout: {timeout_s}s ({timeout_ms}ms)")
@@ -1596,8 +1597,16 @@ class Microcontroller:
                 # Illumination port status from byte 19: bits 0-4 = D1-D5 on/off state
                 # This reflects actual hardware state, updated even after firmware auto-shutoff
                 port_status = msg[19]
-                for i in range(5):
-                    self.illumination_port_is_on[i] = bool(port_status & (1 << i))
+                for i in range(NUM_TIMEOUT_PORTS):
+                    new_state = bool(port_status & (1 << i))
+                    old_state = self.illumination_port_is_on[i]
+                    # Log when firmware turns off a port (possible timeout auto-shutoff)
+                    if old_state and not new_state:
+                        self.log.warning(
+                            f"[MCU] Illumination port D{i + 1} turned off by firmware "
+                            "(possible timeout auto-shutoff)"
+                        )
+                    self.illumination_port_is_on[i] = new_state
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()

@@ -8,6 +8,7 @@
 /***************************************************************************************************/
 // Version is sent in response byte 22 as nibble-encoded: high nibble = major, low nibble = minor
 // Version 1.0 = first version with multi-port illumination support
+// Version 1.1 = adds illumination timeout (auto-shutoff) and port status reporting in byte 19
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 1
 

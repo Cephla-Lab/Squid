@@ -357,8 +357,13 @@ def port_index_to_source_code(port_index: int) -> int:
     return mapping.get(port_index, -1)
 
 
-# Illumination safety timeout (seconds) - firmware auto-shutoff
-# Default: 3.0s, Max: 3600.0s (1 hour)
+# Illumination safety timeout (firmware auto-shutoff)
+# Must match firmware constants in constants.h
+NUM_TIMEOUT_PORTS = 5  # D1-D5 (ports 0-4) have timeout protection
+ILLUMINATION_TIMEOUT_DEFAULT_MS = 3000  # 3 seconds
+ILLUMINATION_TIMEOUT_MAX_MS = 3600000  # 1 hour
+
+# Configurable timeout in seconds (0 = use firmware default)
 ILLUMINATION_TIMEOUT_S = 3.0
 
 
