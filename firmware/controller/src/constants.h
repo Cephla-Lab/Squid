@@ -9,7 +9,7 @@
 // Version is sent in response byte 22 as nibble-encoded: high nibble = major, low nibble = minor
 // Version 1.0 = first version with multi-port illumination support
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 0
+#define FIRMWARE_VERSION_MINOR 1
 
 #include "def/def_v1.h"
 
