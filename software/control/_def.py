@@ -357,6 +357,11 @@ def port_index_to_source_code(port_index: int) -> int:
     return mapping.get(port_index, -1)
 
 
+# Illumination safety timeout (seconds) - firmware auto-shutoff
+# Default: 3.0s, Max: 3600.0s (1 hour)
+ILLUMINATION_TIMEOUT_S = 3.0
+
+
 class VOLUMETRIC_IMAGING:
     NUM_PLANES_PER_VOLUME = 20
 
