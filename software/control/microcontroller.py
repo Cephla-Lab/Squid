@@ -857,6 +857,9 @@ class Microcontroller:
         """
         self._validate_port_index(port_index)
         self.log.debug(f"[MCU] turn_off_port: port={port_index}")
+        # Update local state immediately to prevent spurious auto-shutoff warning
+        if port_index < len(self.illumination_port_is_on):
+            self.illumination_port_is_on[port_index] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_PORT
         cmd[2] = port_index
@@ -879,6 +882,9 @@ class Microcontroller:
         """
         self._validate_port_index(port_index)
         self.log.debug(f"[MCU] set_port_illumination: port={port_index}, intensity={intensity}, on={turn_on}")
+        # Update local state immediately to prevent spurious auto-shutoff warning
+        if not turn_on and port_index < len(self.illumination_port_is_on):
+            self.illumination_port_is_on[port_index] = False
         # Clamp intensity to valid range
         intensity = max(0, min(100, intensity))
         cmd = bytearray(self.tx_buffer_length)
@@ -908,6 +914,10 @@ class Microcontroller:
             set_multi_port_mask(0x0007, 0x0003)  # port_mask=D1|D2|D3, on_mask=D1|D2
         """
         self.log.debug(f"[MCU] set_multi_port_mask: port_mask=0x{port_mask:04X}, on_mask=0x{on_mask:04X}")
+        # Update local state immediately for ports being turned off to prevent spurious warnings
+        for i in range(len(self.illumination_port_is_on)):
+            if port_mask & (1 << i) and not (on_mask & (1 << i)):
+                self.illumination_port_is_on[i] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_MULTI_PORT_MASK
         cmd[2] = (port_mask >> 8) & 0xFF
@@ -923,6 +933,9 @@ class Microcontroller:
         sending another command if ordering matters.
         """
         self.log.debug("[MCU] turn_off_all_ports")
+        # Update local state immediately to prevent spurious auto-shutoff warnings
+        for i in range(len(self.illumination_port_is_on)):
+            self.illumination_port_is_on[i] = False
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
