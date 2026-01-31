@@ -72,6 +72,15 @@ void send_position_update()
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
+    // Illumination port status in byte 19: bits 0-4 = D1-D5 on/off state
+    uint8_t port_status = 0;
+    for (int i = 0; i < NUM_TIMEOUT_PORTS; i++)
+    {
+      if (illumination_port_is_on[i])
+        port_status |= (1 << i);
+    }
+    buffer_tx[19] = port_status;
+
     // Firmware version in byte 22: high nibble = major, low nibble = minor
     buffer_tx[22] = (FIRMWARE_VERSION_MAJOR << 4) | (FIRMWARE_VERSION_MINOR & 0x0F);
 

@@ -626,6 +626,11 @@ class Microcontroller:
         # (0, 0) indicates legacy firmware without version reporting
         self.firmware_version = (0, 0)
 
+        # Illumination port on/off state from firmware (byte 19)
+        # Updated from periodic position updates, reflects actual hardware state
+        # Index 0-4 = ports D1-D5
+        self.illumination_port_is_on = [False] * 5
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -1459,15 +1464,17 @@ class Microcontroller:
 
                 # parse the message
                 """
-                - command ID (1 byte)
-                - execution status (1 byte)
-                - X pos (4 bytes)
-                - Y pos (4 bytes)
-                - Z pos (4 bytes)
-                - Theta (4 bytes)
-                - buttons and switches (1 byte)
-                - reserved (4 bytes)
-                - CRC (1 byte)
+                - byte 0: command ID (1 byte)
+                - byte 1: execution status (1 byte)
+                - bytes 2-5: X pos (4 bytes)
+                - bytes 6-9: Y pos (4 bytes)
+                - bytes 10-13: Z pos (4 bytes)
+                - bytes 14-17: Theta (4 bytes)
+                - byte 18: buttons and switches (1 byte)
+                - byte 19: illumination port status, bits 0-4 = D1-D5 (1 byte, firmware v1.1+)
+                - bytes 20-21: reserved (2 bytes)
+                - byte 22: firmware version (1 byte)
+                - byte 23: CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
@@ -1553,6 +1560,12 @@ class Microcontroller:
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
                 version_byte = msg[22]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+
+                # Illumination port status from byte 19: bits 0-4 = D1-D5 on/off state
+                # This reflects actual hardware state, updated even after firmware auto-shutoff
+                port_status = msg[19]
+                for i in range(5):
+                    self.illumination_port_is_on[i] = bool(port_status & (1 << i))
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
