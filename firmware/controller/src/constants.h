@@ -128,6 +128,7 @@ static const float BLUE_ADJUSTMENT_FACTOR = 1;
 #define LED_MATRIX_CLOCK_PIN 27
 
 // Illumination timeout (auto-shutoff safety)
+// NUM_TIMEOUT_PORTS covers D1-D5 (ports 0-4), the laser ports with timeout protection
 #define NUM_TIMEOUT_PORTS 5
 #define DEFAULT_ILLUMINATION_TIMEOUT_MS 3000
 #define MAX_ILLUMINATION_TIMEOUT_MS 3600000

@@ -67,6 +67,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
     CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
     CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
+    CMD_SET.SET_ILLUMINATION_TIMEOUT: "SET_ILLUMINATION_TIMEOUT",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -182,30 +183,33 @@ class SimSerial(AbstractCephlaMicroSerial):
     NUM_ILLUMINATION_PORTS = 16
     # Simulated firmware version (1.0 supports multi-port illumination)
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 0
+    FIRMWARE_VERSION_MINOR = 1  # Supports illumination timeout (v1.1+)
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1), port_status=0
     ) -> bytes:
         """
-        - command ID (1 byte)
-        - execution status (1 byte)
-        - X pos (4 bytes)
-        - Y pos (4 bytes)
-        - Z pos (4 bytes)
-        - Theta (4 bytes)
-        - buttons and switches (1 byte)
-        - reserved (4 bytes) - byte 22 contains firmware version
-        - CRC (1 byte)
+        - byte 0: command ID (1 byte)
+        - byte 1: execution status (1 byte)
+        - bytes 2-5: X pos (4 bytes)
+        - bytes 6-9: Y pos (4 bytes)
+        - bytes 10-13: Z pos (4 bytes)
+        - bytes 14-17: Theta (4 bytes)
+        - byte 18: buttons and switches (1 byte)
+        - byte 19: illumination port status, bits 0-4 = D1-D5 (firmware v1.1+)
+        - bytes 20-21: reserved (2 bytes)
+        - byte 22: firmware version (1 byte)
+        - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
+        # Firmware version is nibble-encoded in byte 22
         # High nibble = major version, low nibble = minor version
         version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
-        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
+        # Pack reserved bytes 19-22: port_status in byte 19, version in byte 22
+        reserved_state = (port_status << 24) | version_byte
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
         )
@@ -232,6 +236,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         # Multi-port illumination state for simulation
         self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Illumination timeout (firmware v1.1+)
+        self.illumination_timeout_ms = 3000  # Default 3 seconds
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -341,6 +348,22 @@ class SimSerial(AbstractCephlaMicroSerial):
             # Turn off all ports (matches firmware behavior)
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
+        elif command_byte == CMD_SET.SET_ILLUMINATION_TIMEOUT:
+            # Parse timeout value from bytes 2-5 (big-endian 32-bit unsigned)
+            requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
+            # Clamp to max (3600000ms = 1 hour)
+            if requested_timeout > 3600000:
+                requested_timeout = 3600000
+            # Treat 0 as "use default"
+            if requested_timeout == 0:
+                requested_timeout = 3000
+            self.illumination_timeout_ms = requested_timeout
+
+        # Calculate port status for response (bits 0-4 = D1-D5)
+        port_status = 0
+        for i in range(min(5, len(self.port_is_on))):
+            if self.port_is_on[i]:
+                port_status |= 1 << i
 
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
@@ -352,6 +375,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.theta,
                 self.joystick_button,
                 self.switch,
+                port_status=port_status,
             )
         )
 
@@ -916,7 +940,15 @@ class Microcontroller:
         """
         # Convert to milliseconds and clamp to valid range
         timeout_ms = int(timeout_s * 1000)
+        original_ms = timeout_ms
         timeout_ms = max(0, min(timeout_ms, 3600000))  # 0 means use default
+
+        # Warn if value was clamped
+        if timeout_ms != original_ms:
+            self.log.warning(
+                f"[MCU] set_illumination_timeout: requested {timeout_s}s clamped to "
+                f"{timeout_ms / 1000.0}s (valid range: 0-3600s)"
+            )
 
         self.log.debug(f"[MCU] set_illumination_timeout: {timeout_s}s ({timeout_ms}ms)")
 

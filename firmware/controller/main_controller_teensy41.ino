@@ -27,6 +27,7 @@ void loop() {
   }
 
   // Illumination timeout check - auto-shutoff ports that have been on too long
+  // Note: unsigned arithmetic handles millis() overflow correctly (wraps every ~49 days)
   for (int i = 0; i < NUM_TIMEOUT_PORTS; i++)
   {
     if (illumination_timer_active[i])
