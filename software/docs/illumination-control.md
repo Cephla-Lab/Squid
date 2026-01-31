@@ -119,6 +119,70 @@ controller.turn_off_all_ports()
 | Custom light mixing experiments | Multi-port | Independent control of each port |
 | Backward compatibility required | Legacy | Works with older firmware |
 
+## Illumination Timeout (Auto-Shutoff Safety)
+
+**Requires firmware v1.1 or later.**
+
+The firmware includes automatic timeout protection for illumination ports D1-D5. If illumination is left on (e.g., due to software crash), it will automatically turn off after the timeout period.
+
+### Default Behavior
+
+- **Default timeout:** 3 seconds
+- **Maximum timeout:** 3600 seconds (1 hour)
+- **Protected ports:** D1-D5 only (port indices 0-4)
+
+### Configuring Timeout
+
+The timeout is automatically configured at software startup via `Microscope.__init__()`. To customize:
+
+```python
+# In configuration or startup code
+from control._def import ILLUMINATION_TIMEOUT_S
+
+# Default is 3 seconds, defined in _def.py
+# The microscope will configure this at startup
+```
+
+To change the timeout programmatically (before creating Microscope):
+
+```python
+# Set timeout via microcontroller directly
+microcontroller.set_illumination_timeout(5.0)  # 5 seconds
+microcontroller.wait_till_operation_is_completed()
+```
+
+### Timeout Values
+
+| Value | Behavior |
+|-------|----------|
+| 0 | Use firmware default (3 seconds) |
+| 0.001 - 3600 | Set timeout in seconds |
+| > 3600 | Clamped to 3600 seconds |
+
+### How It Works
+
+1. When a port turns ON (was off → now on), the timeout timer starts
+2. While the port remains on, the timer counts up
+3. If timer exceeds timeout, firmware automatically turns off the port
+4. Firmware reports auto-shutoff events via status byte in responses
+5. Software logs a warning when auto-shutoff is detected
+
+### Monitoring Auto-Shutoff Events
+
+The software automatically monitors for auto-shutoff events and logs warnings:
+
+```
+WARNING - Illumination auto-shutoff detected on ports: [0, 2] (port was on for longer than timeout)
+```
+
+### MCU Protocol
+
+| Command | Code | Description |
+|---------|------|-------------|
+| SET_ILLUMINATION_TIMEOUT | 45 | Set timeout value (0 = default) |
+
+Response byte 19 contains port status bitmask (bits 0-4 = D1-D5 on/off state).
+
 ## Firmware Version Detection
 
 The software automatically detects firmware version from MCU responses:
@@ -167,6 +231,7 @@ For low-level debugging or firmware development:
 | SET_PORT_ILLUMINATION | 37 | Multi-port: combined intensity + on/off |
 | SET_MULTI_PORT_MASK | 38 | Multi-port: control multiple ports |
 | TURN_OFF_ALL_PORTS | 39 | Multi-port: turn off all ports |
+| SET_ILLUMINATION_TIMEOUT | 45 | Set auto-shutoff timeout (v1.1+) |
 
 ## Troubleshooting
 
