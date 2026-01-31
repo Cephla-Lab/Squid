@@ -225,6 +225,10 @@ def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBU
         if isinstance(handler, (logging.FileHandler, logging.handlers.BaseRotatingHandler)):
             if getattr(handler, "baseFilename", None) == abs_path:
                 if not replace_existing:
+                    log.warning(
+                        f"FileHandler already exists for {abs_path} and replace_existing=False. "
+                        f"Not adding duplicate handler."
+                    )
                     return None
                 root_logger.removeHandler(handler)
                 try:
@@ -290,14 +294,15 @@ class BufferingHandler(py_logging.Handler):
     - Headless scripts (programmatic access to recent warnings)
     - Forked subprocesses (queue is ignored, no crash)
 
-    Fork-compatible: Uses a standard Python queue with bounded size. When
-    inherited by forked subprocesses, the queue accumulates messages with
-    no consumer but is bounded to prevent memory growth. Messages exceeding
-    the limit are dropped (tracked via dropped_count).
+    Fork-compatible: Uses a standard Python queue.Queue which, when inherited
+    by forked subprocesses, becomes an isolated copy (not shared with parent).
+    Messages accumulate in the subprocess with no consumer, but the bounded
+    size (MAX_BUFFERED_MESSAGES) prevents memory growth.
 
     Thread-safe: Python's queue.Queue handles cross-thread access safely.
     Multiple threads can call emit() concurrently, and get_pending() can
-    be called while other threads emit.
+    be called while other threads emit. The dropped_count is protected by
+    a lock for accurate counting under contention.
 
     Example usage::
 
@@ -325,13 +330,15 @@ class BufferingHandler(py_logging.Handler):
         self.setLevel(min_level)
         self._queue: queue.Queue = queue.Queue(maxsize=self.MAX_BUFFERED_MESSAGES)
         self._dropped_count = 0
+        self._dropped_count_lock = threading.Lock()
         self.setFormatter(py_logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATEFORMAT))
         self.addFilter(_thread_id_filter)
 
     @property
     def dropped_count(self) -> int:
         """Number of messages dropped due to full buffer."""
-        return self._dropped_count
+        with self._dropped_count_lock:
+            return self._dropped_count
 
     def emit(self, record: py_logging.LogRecord):
         """Buffer a log record. Drops message if buffer is full."""
@@ -339,7 +346,8 @@ class BufferingHandler(py_logging.Handler):
             msg = self.format(record)
             self._queue.put_nowait((record.levelno, record.name, msg))
         except queue.Full:
-            self._dropped_count += 1
+            with self._dropped_count_lock:
+                self._dropped_count += 1
         except Exception:
             self.handleError(record)
 

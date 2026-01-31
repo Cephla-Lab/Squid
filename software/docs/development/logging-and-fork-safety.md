@@ -26,7 +26,7 @@ Main Process                    Forked Subprocess
 ┌─────────────────────┐         ┌─────────────────────┐
 │ BufferingHandler    │  fork   │ BufferingHandler    │
 │  └─ queue.Queue     │ ─────→  │  └─ queue.Queue     │
-│     (fork-safe)     │         │     (isolated copy) │
+│   (fork-compatible) │         │     (isolated copy) │
 └─────────────────────┘         └─────────────────────┘
          │                                 │
          │ poll via QTimer                 │ messages accumulate
@@ -39,16 +39,17 @@ Main Process                    Forked Subprocess
 | Property | Description |
 |----------|-------------|
 | Fork-compatible | Uses `queue.Queue` which survives fork as isolated copy |
-| Thread-safe | `queue.Queue` handles concurrent access |
+| Thread-safe | `queue.Queue` handles concurrent access; `dropped_count` protected by lock |
 | Headless-safe | No Qt dependencies in core handler |
 | Bounded | Max 1000 messages prevents memory growth in subprocess |
-| Observable | `dropped_count` property tracks overflow |
+| Observable | `dropped_count` property tracks overflow accurately under contention |
 
 ## Usage
 
 ### GUI Application
 
 ```python
+import logging
 from squid.logging import BufferingHandler, get_logger
 
 # Create and attach handler
@@ -66,6 +67,7 @@ get_logger().removeHandler(handler)
 ### Headless Script
 
 ```python
+import logging
 from squid.logging import BufferingHandler, get_logger
 
 handler = BufferingHandler(min_level=logging.WARNING)
