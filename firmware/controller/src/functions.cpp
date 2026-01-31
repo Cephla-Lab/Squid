@@ -434,6 +434,12 @@ void turn_off_port(int port_index)
 
   digitalWrite(pin, LOW);
   illumination_port_is_on[port_index] = false;
+
+  // Stop timer when port turns off
+  if (port_index < NUM_TIMEOUT_PORTS)
+  {
+    illumination_timer_active[port_index] = false;
+  }
 }
 
 // Set DAC intensity for a specific port without changing on/off state.
