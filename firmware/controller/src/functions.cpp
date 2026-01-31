@@ -469,6 +469,11 @@ void turn_off_all_ports()
       digitalWrite(pin, LOW);
       illumination_port_is_on[i] = false;
     }
+    // Stop timer for timeout-supported ports
+    if (i < NUM_TIMEOUT_PORTS)
+    {
+      illumination_timer_active[i] = false;
+    }
   }
   // Also turn off LED matrix if it was on
   clear_matrix(matrix);
