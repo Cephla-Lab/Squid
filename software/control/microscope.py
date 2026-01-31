@@ -406,6 +406,12 @@ class Microscope:
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         self.addons.prepare_for_use(skip_init=skip_init)
 
+        # Configure illumination safety timeout
+        if self.low_level_drivers.microcontroller:
+            timeout_s = getattr(control._def, "ILLUMINATION_TIMEOUT_S", 3.0)
+            self.low_level_drivers.microcontroller.set_illumination_timeout(timeout_s)
+            self._log.info(f"Illumination timeout configured: {timeout_s}s")
+
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
