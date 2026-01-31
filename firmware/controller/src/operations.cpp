@@ -114,6 +114,33 @@ void prepare_homing_w()
   }
 }
 
+void prepare_homing_w2()
+{
+  if (is_preparing_for_homing_W2)
+  {
+    if (homing_direction_W2 == HOME_NEGATIVE) // use the left limit switch for homing
+    {
+      if (tmc4361A_readLimitSwitches(&tmc4361[w2]) != 0x00)
+      {
+        is_preparing_for_homing_W2 = false;
+        is_homing_W2 = true;
+        tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+        tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], RGHT_DIR * HOMING_VELOCITY_W ));
+      }
+    }
+    else // use the right limit switch for homing
+    {
+      if (tmc4361A_readLimitSwitches(&tmc4361[w2]) != 0x00)
+      {
+        is_preparing_for_homing_W2 = false;
+        is_homing_W2 = true;
+        tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+        tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], LEFT_DIR * HOMING_VELOCITY_W ));
+      }
+    }
+  }
+}
+
 void check_homing_x()
 {
   if (is_homing_X && !home_X_found)
@@ -254,6 +281,41 @@ void check_homing_w()
   }
 }
 
+void check_homing_w2()
+{
+  if (is_homing_W2 && !home_W2_found)
+  {
+    if (homing_direction_W2 == HOME_NEGATIVE) // use the left limit switch for homing
+    {
+      if (tmc4361A_readLimitSwitches(&tmc4361[w2]) == 0x00)
+      {
+        home_W2_found = true;
+        us_since_w2_home_found = 0;
+        if (enable_filterwheel_w2 == true) {
+          tmc4361[w2].xmin = tmc4361A_readInt(&tmc4361[w2], TMC4361A_X_LATCH_RD);
+          tmc4361A_setCurrentPosition(&tmc4361[w2], tmc4361[w2].xmin);
+        }
+        W2_commanded_movement_in_progress = true;
+        W2_commanded_target_position = tmc4361[w2].xmin;
+      }
+    }
+    else // use the right limit switch for homing
+    {
+      if (tmc4361A_readLimitSwitches(&tmc4361[w2]) == 0x00)
+      {
+        home_W2_found = true;
+        us_since_w2_home_found = 0;
+        if (enable_filterwheel_w2 == true) {
+          tmc4361[w2].xmax = tmc4361A_readInt(&tmc4361[w2], TMC4361A_X_LATCH_RD);
+          tmc4361A_setCurrentPosition(&tmc4361[w2], tmc4361[w2].xmax);
+        }
+        W2_commanded_movement_in_progress = true;
+        W2_commanded_target_position = tmc4361[w2].xmax;
+      }
+    }
+  }
+}
+
 void finalize_homing_x()
 {
   if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 500 * 1000 ) )
@@ -319,6 +381,23 @@ void finalize_homing_w()
   }
 }
 
+void finalize_homing_w2()
+{
+  if (is_homing_W2 && home_W2_found && ( tmc4361A_currentPosition(&tmc4361[w2]) == tmc4361A_targetPosition(&tmc4361[w2]) || us_since_w2_home_found > 500 * 1000 ) )
+  {
+    if (enable_filterwheel_w2 == true) {
+      tmc4361A_write_encoder(&tmc4361[w2], 0);
+      if (stage_PID_enabled[w2])
+        tmc4361A_set_PID(&tmc4361[w2], PID_BPG0);
+    }
+    W2_pos = 0;
+    is_homing_W2 = false;
+    W2_commanded_movement_in_progress = false;
+    W2_commanded_target_position = 0;
+    mcu_cmd_execution_in_progress = false;
+  }
+}
+
 void finalize_homing_xy()
 {
   if (is_homing_XY && home_X_found && !is_homing_X && home_Y_found && !is_homing_Y)
@@ -331,7 +410,7 @@ void finalize_homing_xy()
 void do_camera_trigger()
 {
   if (trigger_mode == 0) {
-    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+    for (int camera_channel = 0; camera_channel < 4; camera_channel++)
     {
       // end the trigger pulse
       if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
@@ -343,7 +422,7 @@ void do_camera_trigger()
   }
   else {
     // for level trigger logic
-    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+    for (int camera_channel = 0; camera_channel < 4; camera_channel++)
     {
       // end the trigger pulse after strobe_delay + illumination_on_time
       // so illumination is fully contained within the trigger pulse
@@ -420,23 +499,30 @@ void check_position()
     if (X_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !is_homing_X && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) // homing is handled separately
     {
       X_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (Y_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !is_homing_Y && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y]))
     {
       Y_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (Z_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !is_homing_Z && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z]))
     {
       Z_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (enable_filterwheel == true) {
       if (W_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !is_homing_W && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w]))
       {
         W_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      }
+    }
+    if (enable_filterwheel_w2 == true) {
+      if (W2_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !is_homing_W2 && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2]))
+      {
+        W2_commanded_movement_in_progress = false;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
       }
     }
   }
@@ -455,7 +541,7 @@ void check_limits()
       if ( ( X_direction == LEFT_DIR && event == LEFT_SW ) || ( X_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         X_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+        mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
     if (Y_commanded_movement_in_progress && !is_homing_Y) // homing is handled separately
@@ -465,7 +551,7 @@ void check_limits()
       if ( ( Y_direction == LEFT_DIR && event == LEFT_SW ) || ( Y_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Y_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
     if (Z_commanded_movement_in_progress && !is_homing_Z) // homing is handled separately
@@ -475,7 +561,7 @@ void check_limits()
       if ( ( Z_direction == LEFT_DIR && event == LEFT_SW ) || ( Z_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Z_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
   }

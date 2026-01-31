@@ -26,55 +26,51 @@ from control.models import (
 
 @pytest.fixture
 def sample_channel():
-    """Create a sample acquisition channel."""
+    """Create a sample acquisition channel (v1.0 schema)."""
     return AcquisitionChannel(
         name="Test Channel",
+        display_color="#00FF00",
+        camera=1,  # v1.0: camera is int ID, null for single-camera
         illumination_settings=IlluminationSettings(
-            illumination_channels=["488nm"],
-            intensity={"488nm": 50.0},
+            illumination_channel="488nm",
+            intensity=50.0,
         ),
-        camera_settings={
-            "camera_1": CameraSettings(
-                display_color="#00FF00",
-                exposure_time_ms=100.0,
-                gain_mode=0.0,
-            )
-        },
+        camera_settings=CameraSettings(
+            exposure_time_ms=100.0,
+            gain_mode=0.0,
+        ),
     )
 
 
 @pytest.fixture
 def sample_channel_with_confocal_override():
-    """Create a channel with confocal override settings."""
+    """Create a channel with confocal override settings (v1.0 schema)."""
     return AcquisitionChannel(
         name="Confocal Channel",
+        display_color="#00FF00",
+        camera=1,  # v1.0: camera is int ID
         illumination_settings=IlluminationSettings(
-            illumination_channels=["488nm"],
-            intensity={"488nm": 50.0},
+            illumination_channel="488nm",
+            intensity=50.0,
         ),
-        camera_settings={
-            "camera_1": CameraSettings(
-                display_color="#00FF00",
-                exposure_time_ms=100.0,
-                gain_mode=0.0,
-            )
-        },
-        confocal_settings=ConfocalSettings(
-            filter_wheel_id=1,
-            emission_filter_wheel_position=2,
+        camera_settings=CameraSettings(
+            exposure_time_ms=100.0,
+            gain_mode=0.0,
         ),
+        # v1.0: confocal_override contains iris settings only (no confocal_settings at channel level)
         confocal_override=AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
-                illumination_channels=["488nm"],
-                intensity={"488nm": 75.0},  # Higher intensity for confocal
+                illumination_channel="488nm",
+                intensity=75.0,  # Higher intensity for confocal
             ),
-            camera_settings={
-                "camera_1": CameraSettings(
-                    display_color="#00FF00",
-                    exposure_time_ms=200.0,  # Longer exposure for confocal
-                    gain_mode=1.0,
-                )
-            },
+            camera_settings=CameraSettings(
+                exposure_time_ms=200.0,  # Longer exposure for confocal
+                gain_mode=1.0,
+            ),
+            confocal_settings=ConfocalSettings(
+                illumination_iris=50.0,
+                emission_iris=50.0,
+            ),
         ),
     )
 
@@ -88,7 +84,7 @@ class TestApplyConfocalOverride:
         result = apply_confocal_override(channels, confocal_mode=False)
 
         assert result is channels  # Same list object
-        assert result[0].illumination_settings.intensity["488nm"] == 50.0
+        assert result[0].illumination_settings.intensity == 50.0
 
     def test_returns_unchanged_when_no_override(self, sample_channel):
         """Test that channels without override are unchanged even in confocal mode."""
@@ -96,17 +92,18 @@ class TestApplyConfocalOverride:
         result = apply_confocal_override(channels, confocal_mode=True)
 
         # Should be a new list with same channel (no override to apply)
-        assert result[0].illumination_settings.intensity["488nm"] == 50.0
+        assert result[0].illumination_settings.intensity == 50.0
 
     def test_applies_override_when_confocal_mode_true(self, sample_channel_with_confocal_override):
-        """Test that confocal override is applied when confocal_mode is True."""
+        """Test that confocal override is applied when confocal_mode is True (v1.0 schema)."""
         channels = [sample_channel_with_confocal_override]
         result = apply_confocal_override(channels, confocal_mode=True)
 
         # Should have override values
-        assert result[0].illumination_settings.intensity["488nm"] == 75.0
-        assert result[0].camera_settings["camera_1"].exposure_time_ms == 200.0
-        assert result[0].camera_settings["camera_1"].gain_mode == 1.0
+        assert result[0].illumination_settings.intensity == 75.0
+        # v1.0: camera_settings is a single object, not a Dict
+        assert result[0].camera_settings.exposure_time_ms == 200.0
+        assert result[0].camera_settings.gain_mode == 1.0
 
     def test_preserves_non_overridden_channels(self, sample_channel, sample_channel_with_confocal_override):
         """Test that channels without override are preserved alongside overridden ones."""
@@ -114,10 +111,10 @@ class TestApplyConfocalOverride:
         result = apply_confocal_override(channels, confocal_mode=True)
 
         # First channel should be unchanged (no override)
-        assert result[0].illumination_settings.intensity["488nm"] == 50.0
+        assert result[0].illumination_settings.intensity == 50.0
 
         # Second channel should have override applied
-        assert result[1].illumination_settings.intensity["488nm"] == 75.0
+        assert result[1].illumination_settings.intensity == 75.0
 
     def test_empty_list(self):
         """Test with empty channel list."""
@@ -126,46 +123,43 @@ class TestApplyConfocalOverride:
 
 
 class TestGetEffectiveChannels:
-    """Tests for get_effective_channels function."""
+    """Tests for get_effective_channels function (v1.0 schema)."""
 
     def test_merges_general_and_objective(self):
-        """Test that general and objective configs are merged."""
+        """Test that general and objective configs are merged (v1.0 schema)."""
         general = GeneralChannelConfig(
-            version=1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
+                    display_color="#00FF00",
+                    camera=1,  # v1.0: camera is int ID
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["488nm"],
-                        intensity={"488nm": 50.0},
-                        z_offset_um=5.0,
+                        illumination_channel="488nm",
+                        intensity=50.0,
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#00FF00",
-                            exposure_time_ms=100.0,
-                            gain_mode=0.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
+                    z_offset_um=5.0,  # v1.0: at channel level
                 )
             ],
         )
 
         objective = ObjectiveChannelConfig(
-            version=1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
+                    display_color="#FFFFFF",  # Ignored - from general
                     illumination_settings=IlluminationSettings(
-                        intensity={"488nm": 75.0},  # Objective-specific intensity
+                        intensity=75.0,  # Objective-specific intensity
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#00FF00",
-                            exposure_time_ms=50.0,  # Objective-specific exposure
-                            gain_mode=1.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=50.0,  # Objective-specific exposure
+                        gain_mode=1.0,
+                    ),
                 )
             ],
         )
@@ -174,56 +168,53 @@ class TestGetEffectiveChannels:
 
         assert len(result) == 1
         ch = result[0]
-        # From general: illumination_channels, z_offset_um, display_color
-        assert ch.illumination_settings.illumination_channels == ["488nm"]
-        assert ch.illumination_settings.z_offset_um == 5.0
-        assert ch.camera_settings["camera_1"].display_color == "#00FF00"
+        # From general: illumination_channel, z_offset_um, display_color
+        assert ch.illumination_settings.illumination_channel == "488nm"
+        assert ch.z_offset_um == 5.0  # v1.0: at channel level
+        assert ch.display_color == "#00FF00"  # v1.0: at channel level
         # From objective: intensity, exposure_time_ms, gain_mode
-        assert ch.illumination_settings.intensity["488nm"] == 75.0
-        assert ch.camera_settings["camera_1"].exposure_time_ms == 50.0
-        assert ch.camera_settings["camera_1"].gain_mode == 1.0
+        assert ch.illumination_settings.intensity == 75.0
+        assert ch.camera_settings.exposure_time_ms == 50.0
+        assert ch.camera_settings.gain_mode == 1.0
 
     def test_applies_confocal_override_when_mode_true(self):
-        """Test that confocal override is applied when confocal_mode is True."""
+        """Test that confocal override is applied when confocal_mode is True (v1.0 schema)."""
         general = GeneralChannelConfig(
-            version=1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
+                    display_color="#00FF00",
+                    camera=1,  # v1.0: camera is int ID
                     illumination_settings=IlluminationSettings(
-                        illumination_channels=["488nm"],
-                        intensity={"488nm": 50.0},
+                        illumination_channel="488nm",
+                        intensity=50.0,
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#00FF00",
-                            exposure_time_ms=100.0,
-                            gain_mode=0.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
                 )
             ],
         )
 
         objective = ObjectiveChannelConfig(
-            version=1,
+            version=1.0,
             channels=[
                 AcquisitionChannel(
                     name="Channel 1",
+                    display_color="#FFFFFF",
                     illumination_settings=IlluminationSettings(
-                        intensity={"488nm": 60.0},
+                        intensity=60.0,
                     ),
-                    camera_settings={
-                        "camera_1": CameraSettings(
-                            display_color="#00FF00",
-                            exposure_time_ms=80.0,
-                            gain_mode=0.0,
-                        )
-                    },
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=80.0,
+                        gain_mode=0.0,
+                    ),
                     confocal_override=AcquisitionChannelOverride(
                         illumination_settings=IlluminationSettings(
-                            illumination_channels=["488nm"],
-                            intensity={"488nm": 90.0},
+                            illumination_channel="488nm",
+                            intensity=90.0,
                         ),
                     ),
                 )
@@ -232,11 +223,143 @@ class TestGetEffectiveChannels:
 
         # Without confocal mode
         result_widefield = get_effective_channels(general, objective, confocal_mode=False)
-        assert result_widefield[0].illumination_settings.intensity["488nm"] == 60.0
+        assert result_widefield[0].illumination_settings.intensity == 60.0
 
         # With confocal mode
         result_confocal = get_effective_channels(general, objective, confocal_mode=True)
-        assert result_confocal[0].illumination_settings.intensity["488nm"] == 90.0
+        assert result_confocal[0].illumination_settings.intensity == 90.0
+
+
+class TestEnabledChannelFiltering:
+    """Tests for enabled channel filtering behavior."""
+
+    def test_enabled_field_default_is_true(self):
+        """Test that enabled field defaults to True."""
+        channel = AcquisitionChannel(
+            name="Test Channel",
+            display_color="#00FF00",
+            illumination_settings=IlluminationSettings(
+                illumination_channel="488nm",
+                intensity=50.0,
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=100.0,
+                gain_mode=0.0,
+            ),
+        )
+        assert channel.enabled is True
+
+    def test_enabled_false_can_be_set(self):
+        """Test that enabled can be set to False."""
+        channel = AcquisitionChannel(
+            name="Test Channel",
+            display_color="#00FF00",
+            enabled=False,
+            illumination_settings=IlluminationSettings(
+                illumination_channel="488nm",
+                intensity=50.0,
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=100.0,
+                gain_mode=0.0,
+            ),
+        )
+        assert channel.enabled is False
+
+    def test_enabled_preserved_in_get_effective_channels(self):
+        """Test that enabled=False is preserved through get_effective_channels."""
+        general = GeneralChannelConfig(
+            version=1.0,
+            channels=[
+                AcquisitionChannel(
+                    name="Enabled Channel",
+                    display_color="#00FF00",
+                    enabled=True,
+                    illumination_settings=IlluminationSettings(
+                        illumination_channel="488nm",
+                        intensity=50.0,
+                    ),
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
+                ),
+                AcquisitionChannel(
+                    name="Disabled Channel",
+                    display_color="#FF0000",
+                    enabled=False,
+                    illumination_settings=IlluminationSettings(
+                        illumination_channel="561nm",
+                        intensity=50.0,
+                    ),
+                    camera_settings=CameraSettings(
+                        exposure_time_ms=100.0,
+                        gain_mode=0.0,
+                    ),
+                ),
+            ],
+        )
+
+        # Use empty objective config (not None) since merge_channel_configs expects ObjectiveChannelConfig
+        objective = ObjectiveChannelConfig(version=1.0, channels=[])
+
+        result = get_effective_channels(general, objective, confocal_mode=False)
+
+        assert len(result) == 2
+        enabled_ch = next(ch for ch in result if ch.name == "Enabled Channel")
+        disabled_ch = next(ch for ch in result if ch.name == "Disabled Channel")
+        assert enabled_ch.enabled is True
+        assert disabled_ch.enabled is False
+
+    def test_filter_enabled_channels(self):
+        """Test filtering to only enabled channels (simulates LiveController behavior)."""
+        channels = [
+            AcquisitionChannel(
+                name="Channel A",
+                display_color="#00FF00",
+                enabled=True,
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+            AcquisitionChannel(
+                name="Channel B",
+                display_color="#FF0000",
+                enabled=False,
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+            AcquisitionChannel(
+                name="Channel C",
+                display_color="#0000FF",
+                enabled=True,
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+        ]
+
+        # This is the filtering logic used in LiveController.get_channels()
+        enabled_channels = [ch for ch in channels if ch.enabled]
+
+        assert len(enabled_channels) == 2
+        assert all(ch.enabled for ch in enabled_channels)
+        assert "Channel A" in [ch.name for ch in enabled_channels]
+        assert "Channel B" not in [ch.name for ch in enabled_channels]
+        assert "Channel C" in [ch.name for ch in enabled_channels]
+
+    def test_filter_all_disabled_returns_empty(self):
+        """Test that filtering all-disabled channels returns empty list."""
+        channels = [
+            AcquisitionChannel(
+                name="Channel A",
+                display_color="#00FF00",
+                enabled=False,
+                illumination_settings=IlluminationSettings(intensity=50.0),
+                camera_settings=CameraSettings(exposure_time_ms=100.0, gain_mode=0.0),
+            ),
+        ]
+
+        enabled_channels = [ch for ch in channels if ch.enabled]
+        assert enabled_channels == []
 
 
 class TestCopyProfileConfigs:
@@ -260,36 +383,37 @@ class TestCopyProfileConfigs:
         (source / "channel_configs").mkdir(parents=True)
         (source / "laser_af_configs").mkdir(parents=True)
 
-        # Write some config files
+        # Write some config files (v1.0 schema)
         (source / "channel_configs" / "general.yaml").write_text(
             """
-version: 1
+version: 1.0
+channel_groups: []
 channels:
   - name: "Test"
+    display_color: "#00FF00"
+    camera: null
+    z_offset_um: 0.0
     illumination_settings:
-      illumination_channels: ["488nm"]
-      intensity:
-        "488nm": 50.0
+      illumination_channel: "488nm"
+      intensity: 50.0
     camera_settings:
-      camera_1:
-        display_color: "#00FF00"
-        exposure_time_ms: 100.0
-        gain_mode: 0.0
+      exposure_time_ms: 100.0
+      gain_mode: 0.0
 """
         )
         (source / "channel_configs" / "20x.yaml").write_text(
             """
-version: 1
+version: 1.0
 channels:
   - name: "Test"
+    display_color: "#00FF00"
+    camera: null
+    z_offset_um: 0.0
     illumination_settings:
-      intensity:
-        "488nm": 75.0
+      intensity: 75.0
     camera_settings:
-      camera_1:
-        display_color: "#00FF00"
-        exposure_time_ms: 50.0
-        gain_mode: 1.0
+      exposure_time_ms: 50.0
+      gain_mode: 1.0
 """
         )
         (source / "laser_af_configs" / "20x.yaml").write_text(

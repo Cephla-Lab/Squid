@@ -207,6 +207,12 @@ CRGB matrix[NUM_LEDS] = {0};
 void turn_on_illumination()
 {
   illumination_is_on = true;
+
+  // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
+  int port_index = illumination_source_to_port_index(illumination_source);
+  if (port_index >= 0)
+    illumination_port_is_on[port_index] = true;
+
   switch (illumination_source)
   {
     case ILLUMINATION_SOURCE_LED_ARRAY_FULL:
@@ -238,31 +244,36 @@ void turn_on_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_SOURCE_405NM:
+    case ILLUMINATION_D1:
       if(INTERLOCK_OK())
-        digitalWrite(LASER_405nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D1, HIGH);
       break;
-    case ILLUMINATION_SOURCE_488NM:
+    case ILLUMINATION_D2:
       if(INTERLOCK_OK())
-        digitalWrite(LASER_488nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D2, HIGH);
       break;
-    case ILLUMINATION_SOURCE_638NM:
+    case ILLUMINATION_D3:
       if(INTERLOCK_OK())
-        digitalWrite(LASER_638nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D3, HIGH);
       break;
-    case ILLUMINATION_SOURCE_561NM:
+    case ILLUMINATION_D4:
       if(INTERLOCK_OK())
-        digitalWrite(LASER_561nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D4, HIGH);
       break;
-    case ILLUMINATION_SOURCE_730NM:
+    case ILLUMINATION_D5:
       if(INTERLOCK_OK())
-        digitalWrite(LASER_730nm, HIGH);
+        digitalWrite(PIN_ILLUMINATION_D5, HIGH);
       break;
   }
 }
 
 void turn_off_illumination()
 {
+  // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
+  int port_index = illumination_source_to_port_index(illumination_source);
+  if (port_index >= 0)
+    illumination_port_is_on[port_index] = false;
+
   switch(illumination_source)
   {
     case ILLUMINATION_SOURCE_LED_ARRAY_FULL:
@@ -294,20 +305,20 @@ void turn_off_illumination()
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
-    case ILLUMINATION_SOURCE_405NM:
-      digitalWrite(LASER_405nm, LOW);
+    case ILLUMINATION_D1:
+      digitalWrite(PIN_ILLUMINATION_D1, LOW);
       break;
-    case ILLUMINATION_SOURCE_488NM:
-      digitalWrite(LASER_488nm, LOW);
+    case ILLUMINATION_D2:
+      digitalWrite(PIN_ILLUMINATION_D2, LOW);
       break;
-    case ILLUMINATION_SOURCE_638NM:
-      digitalWrite(LASER_638nm, LOW);
+    case ILLUMINATION_D3:
+      digitalWrite(PIN_ILLUMINATION_D3, LOW);
       break;
-    case ILLUMINATION_SOURCE_561NM:
-      digitalWrite(LASER_561nm, LOW);
+    case ILLUMINATION_D4:
+      digitalWrite(PIN_ILLUMINATION_D4, LOW);
       break;
-    case ILLUMINATION_SOURCE_730NM:
-      digitalWrite(LASER_730nm, LOW);
+    case ILLUMINATION_D5:
+      digitalWrite(PIN_ILLUMINATION_D5, LOW);
       break;
   }
   illumination_is_on = false;
@@ -317,21 +328,27 @@ void set_illumination(int source, uint16_t intensity)
 {
   illumination_source = source;
   illumination_intensity = intensity * illumination_intensity_factor;
+
+  // Update per-port intensity for D1-D5 sources (backward compatibility with new multi-port tracking)
+  int port_index = illumination_source_to_port_index(source);
+  if (port_index >= 0)
+    illumination_port_intensity[port_index] = intensity;
+
   switch (source)
   {
-    case ILLUMINATION_SOURCE_405NM:
+    case ILLUMINATION_D1:
       set_DAC8050x_output(0, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_488NM:
+    case ILLUMINATION_D2:
       set_DAC8050x_output(1, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_638NM:
-      set_DAC8050x_output(3, illumination_intensity);
-      break;
-    case ILLUMINATION_SOURCE_561NM:
+    case ILLUMINATION_D3:
       set_DAC8050x_output(2, illumination_intensity);
       break;
-    case ILLUMINATION_SOURCE_730NM:
+    case ILLUMINATION_D4:
+      set_DAC8050x_output(3, illumination_intensity);
+      break;
+    case ILLUMINATION_D5:
       set_DAC8050x_output(4, illumination_intensity);
       break;
   }
@@ -349,9 +366,102 @@ void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b)
     turn_on_illumination(); //update the illumination
 }
 
+/***************************************************************************************************/
+/********************************** Multi-port illumination control ********************************/
+/***************************************************************************************************/
+
+// illumination_source_to_port_index() is provided by utils/illumination_mapping.h
+// to ensure firmware and tests use the same mapping logic.
+
+// Gets GPIO pin for port index (0-15), returns -1 for unsupported ports
+int port_index_to_pin(int port_index)
+{
+  switch (port_index)
+  {
+    case 0: return PIN_ILLUMINATION_D1;
+    case 1: return PIN_ILLUMINATION_D2;
+    case 2: return PIN_ILLUMINATION_D3;
+    case 3: return PIN_ILLUMINATION_D4;
+    case 4: return PIN_ILLUMINATION_D5;
+    // Ports 5-15 can be added here as hardware expands
+    default: return -1;
+  }
+}
+
+// Gets DAC channel for port index (0-15), returns -1 for unsupported ports
+static int port_index_to_dac_channel(int port_index)
+{
+  // Currently ports 0-4 map directly to DAC channels 0-4
+  if (port_index >= 0 && port_index < 5)
+    return port_index;
+  return -1;
+}
+
+void turn_on_port(int port_index)
+{
+  if (port_index < 0 || port_index >= NUM_ILLUMINATION_PORTS)
+    return;
+
+  int pin = port_index_to_pin(port_index);
+  if (pin < 0)
+    return;
+
+  if (INTERLOCK_OK())
+  {
+    digitalWrite(pin, HIGH);
+    illumination_port_is_on[port_index] = true;
+  }
+}
+
+void turn_off_port(int port_index)
+{
+  if (port_index < 0 || port_index >= NUM_ILLUMINATION_PORTS)
+    return;
+
+  int pin = port_index_to_pin(port_index);
+  if (pin < 0)
+    return;
+
+  digitalWrite(pin, LOW);
+  illumination_port_is_on[port_index] = false;
+}
+
+// Set DAC intensity for a specific port without changing on/off state.
+// The intensity is scaled by illumination_intensity_factor before being sent to DAC.
+// The unscaled value is stored in illumination_port_intensity[] for reference.
+void set_port_intensity(int port_index, uint16_t intensity)
+{
+  if (port_index < 0 || port_index >= NUM_ILLUMINATION_PORTS)
+    return;
+
+  int dac_channel = port_index_to_dac_channel(port_index);
+  if (dac_channel < 0)
+    return;
+
+  uint16_t scaled_intensity = intensity * illumination_intensity_factor;
+  set_DAC8050x_output(dac_channel, scaled_intensity);
+  illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
+}
+
+void turn_off_all_ports()
+{
+  for (int i = 0; i < NUM_ILLUMINATION_PORTS; i++)
+  {
+    int pin = port_index_to_pin(i);
+    if (pin >= 0)
+    {
+      digitalWrite(pin, LOW);
+      illumination_port_is_on[i] = false;
+    }
+  }
+  // Also turn off LED matrix if it was on
+  clear_matrix(matrix);
+  illumination_is_on = false;
+}
+
 void ISR_strobeTimer()
 {
-  for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+  for (int camera_channel = 0; camera_channel < 4; camera_channel++)
   {
     // strobe pulse
     if (control_strobe[camera_channel])

@@ -1,0 +1,30 @@
+# Camera Registry Configuration (v1.0)
+#
+# This file maps user-friendly camera names to hardware identifiers.
+# When configuring acquisition channels, users select cameras by name.
+#
+# This file is optional. If not present, the system assumes a single-camera setup.
+#
+# Copy this file to cameras.yaml and edit for your system.
+
+version: 1.0
+
+cameras:
+  # Primary imaging camera
+  - name: "Main Camera"
+    serial_number: "ABC12345"      # Camera serial number (from manufacturer)
+    model: "Hamamatsu C15440"      # Optional: displayed in UI for reference
+
+  # Secondary camera for simultaneous imaging (multi-camera systems)
+  # - name: "Side Camera"
+  #   serial_number: "DEF67890"
+  #   model: "Basler acA2040"
+
+  # Example: Dual-camera fluorescence system
+  # - name: "GFP Camera"
+  #   serial_number: "CAM001"
+  #   model: "Photometrics Prime 95B"
+  #
+  # - name: "RFP Camera"
+  #   serial_number: "CAM002"
+  #   model: "Photometrics Prime 95B"

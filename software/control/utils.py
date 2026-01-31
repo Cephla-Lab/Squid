@@ -583,3 +583,87 @@ class TimingManager:
 
     def get_intervals(self, name) -> List[float]:
         return self.get_timer(name).get_intervals()
+
+
+def parse_well_id(well_id: str) -> Tuple[str, str]:
+    """Parse well ID to (row_letter, col_number) strings.
+
+    Extracts alphabetic row identifier and numeric column identifier from
+    a well ID string. Handles single and multi-letter rows.
+
+    Note:
+        Input is normalized to uppercase. Both "a1" and "A1" return ("A", "1").
+
+    Args:
+        well_id: Well identifier, e.g., "A1", "B12", "AA3" (case-insensitive)
+
+    Returns:
+        Tuple of (row_letters, col_digits), e.g., ("A", "1"), ("AA", "3")
+
+    Examples:
+        >>> parse_well_id("A1")
+        ("A", "1")
+        >>> parse_well_id("B12")
+        ("B", "12")
+        >>> parse_well_id("aa3")  # lowercase normalized to uppercase
+        ("AA", "3")
+    """
+    well_id = str(well_id).upper()
+    letter_part = ""
+    number_part = ""
+    for char in well_id:
+        if char.isalpha():
+            letter_part += char
+        else:
+            number_part += char
+    return (letter_part, number_part)
+
+
+# -----------------------------------------------------------------------------
+# Zarr path building utilities
+# -----------------------------------------------------------------------------
+
+
+def build_hcs_zarr_fov_path(base_path: str, well_id: str, fov: int) -> str:
+    """Build path for HCS (wellplate) zarr FOV group (OME-NGFF compliant).
+
+    Returns the field GROUP path per OME-NGFF spec. The image array is at
+    {group_path}/0 (resolution level 0).
+
+    Args:
+        base_path: Base experiment path (e.g., /data/experiment_001)
+        well_id: Well identifier (e.g., "A1", "B12")
+        fov: FOV index within the well
+
+    Returns:
+        Path to zarr group: {base_path}/plate.ome.zarr/{row}/{col}/{fov}
+    """
+    row_letter, col_num = parse_well_id(well_id)
+    return os.path.join(base_path, "plate.ome.zarr", row_letter, col_num, str(fov))
+
+
+def build_per_fov_zarr_path(base_path: str, region_id: str, fov: int) -> str:
+    """Build path for non-HCS per-FOV zarr store.
+
+    Args:
+        base_path: Base experiment path (e.g., /data/experiment_001)
+        region_id: Region identifier (e.g., "region_0", "scan_area_1")
+        fov: FOV index within the region
+
+    Returns:
+        Path to zarr store: {base_path}/zarr/{region_id}/fov_{fov}.ome.zarr
+    """
+    return os.path.join(base_path, "zarr", str(region_id), f"fov_{fov}.ome.zarr")
+
+
+def build_6d_zarr_path(base_path: str, region_id: str) -> str:
+    """Build path for 6D (FOV as dimension) zarr store.
+
+    Args:
+        base_path: Base experiment path (e.g., /data/experiment_001)
+        region_id: Region identifier (e.g., "region_0")
+
+    Returns:
+        Path to zarr store: {base_path}/zarr/{region_id}/acquisition.zarr
+    """
+    return os.path.join(base_path, "zarr", str(region_id), "acquisition.zarr")

@@ -1,17 +1,28 @@
 """
-Acquisition channel configuration models.
+Acquisition channel configuration models (v1.0 schema).
 
 These models define user-facing acquisition settings. They are organized as:
 - general.yaml: Shared settings across all objectives
 - {objective}.yaml: Objective-specific overrides with optional confocal_override
 
 The merge logic combines these two configs:
-- From general.yaml: illumination_channels, display_color, emission_filter_wheel_position, z_offset_um
-- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override
+- From general.yaml: name, enabled, display_color, camera (ID), illumination_channel, filter_wheel,
+                     filter_position, z_offset_um
+- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override (iris settings)
+
+Filter wheel resolution:
+- hardware_bindings.yaml maps camera ID → filter wheel reference (confocal or standalone)
+- Channel config specifies filter_position; actual wheel is resolved via hardware binding
+- filter_wheel field is optional override (default "auto" uses hardware binding)
+
+Camera identification:
+- Single camera: camera field is null (no cameras.yaml needed)
+- Multi-camera: camera field is integer ID (references cameras.yaml)
 """
 
 import logging
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from enum import Enum
+from typing import List, Optional, Set, Union, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -22,12 +33,15 @@ logger = logging.getLogger(__name__)
 
 
 class CameraSettings(BaseModel):
-    """Per-camera settings in an acquisition channel."""
+    """Per-camera settings in an acquisition channel.
 
-    display_color: str = Field("#FFFFFF", description="Color for display/visualization")
-    exposure_time_ms: float = Field(..., description="Exposure time in milliseconds")
+    Note: In v1.0, display_color moved to AcquisitionChannel level.
+    """
+
+    exposure_time_ms: float = Field(..., gt=0, description="Exposure time in milliseconds")
     gain_mode: float = Field(
         ...,
+        ge=0,
         description="Gain setting (currently analog gain value, may become enum in future)",
     )
     pixel_format: Optional[str] = Field(None, description="Pixel format (e.g., 'Mono12')")
@@ -36,12 +50,20 @@ class CameraSettings(BaseModel):
 
 
 class ConfocalSettings(BaseModel):
-    """Confocal-specific settings in an acquisition channel."""
+    """Confocal-specific settings for objective-specific tuning.
 
-    filter_wheel_id: int = Field(1, description="Filter wheel ID (default: 1)")
-    emission_filter_wheel_position: int = Field(1, description="Filter slot position (default: 1)")
-    illumination_iris: Optional[float] = Field(None, description="Illumination iris setting (objective-specific)")
-    emission_iris: Optional[float] = Field(None, description="Emission iris setting (objective-specific)")
+    These settings are used in confocal_override (objective.yaml) to provide
+    iris aperture settings when confocal mode is active.
+
+    Note: Filter wheel selection is handled via hardware_bindings.yaml, not here.
+    The camera's bound filter wheel (confocal or standalone) is resolved at runtime.
+    """
+
+    # Iris settings (objective-specific), 0-100% of aperture
+    illumination_iris: Optional[float] = Field(
+        None, ge=0, le=100, description="Illumination iris aperture percentage (0-100)"
+    )
+    emission_iris: Optional[float] = Field(None, ge=0, le=100, description="Emission iris aperture percentage (0-100)")
 
     model_config = {"extra": "forbid"}
 
@@ -49,15 +71,14 @@ class ConfocalSettings(BaseModel):
 class IlluminationSettings(BaseModel):
     """Illumination configuration for an acquisition channel.
 
-    Note: illumination_channels is required in general.yaml but should be
+    Note: illumination_channel is required in general.yaml but should be
     omitted in objective-specific files (which only contain overrides).
     """
 
-    illumination_channels: Optional[List[str]] = Field(
-        None, description="Names of illumination channels from illumination_channel_config (only in general.yaml)"
+    illumination_channel: Optional[str] = Field(
+        None, description="Illumination channel name from illumination_channel_config (only in general.yaml)"
     )
-    intensity: Dict[str, float] = Field(..., description="Channel name -> intensity percentage mapping")
-    z_offset_um: float = Field(0.0, description="Z offset in micrometers")
+    intensity: float = Field(..., ge=0, le=100, description="Illumination intensity percentage (0-100)")
 
     model_config = {"extra": "forbid"}
 
@@ -72,31 +93,52 @@ class AcquisitionChannelOverride(BaseModel):
     illumination_settings: Optional[IlluminationSettings] = Field(
         None, description="Override illumination settings for confocal mode"
     )
-    camera_settings: Optional[Dict[str, CameraSettings]] = Field(
-        None, description="Override camera settings for confocal mode"
-    )
+    camera_settings: Optional[CameraSettings] = Field(None, description="Override camera settings for confocal mode")
     confocal_settings: Optional[ConfocalSettings] = Field(None, description="Override confocal settings")
 
     model_config = {"extra": "forbid"}
 
 
 class AcquisitionChannel(BaseModel):
-    """A single acquisition channel configuration."""
+    """A single acquisition channel configuration (v1.0 schema).
 
-    name: str = Field(..., description="Display name for this acquisition channel")
+    Key changes in v1.0:
+    - camera field is integer ID (references cameras.yaml), null for single-camera
+    - filter_wheel resolved via hardware_bindings.yaml based on camera ID
+    - z_offset_um at channel level (not in illumination_settings)
+    - confocal_settings removed (iris settings in confocal_override only)
+    """
+
+    name: str = Field(..., min_length=1, description="Display name for this acquisition channel")
+    enabled: bool = Field(True, description="Whether channel is enabled for selection in UI")
+    display_color: str = Field(
+        "#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$", description="Hex color for UI visualization (e.g., '#FF0000')"
+    )
+
+    # Camera assignment (optional for single-camera systems)
+    camera: Optional[int] = Field(
+        None, ge=1, description="Camera ID (references cameras.yaml). Null for single-camera systems."
+    )
+    camera_settings: CameraSettings = Field(..., description="Camera settings for this channel")
+
+    # Filter wheel - resolved via hardware_bindings.yaml based on camera ID
+    # "auto" = use camera's bound wheel from hardware_bindings, or specific name to override
+    filter_wheel: Optional[str] = Field(
+        None,
+        description="Filter wheel override. 'auto' = use camera's hardware binding, "
+        "or specify wheel name to override. Null = no filter wheel.",
+    )
+    filter_position: Optional[int] = Field(None, ge=1, description="Position in filter wheel")
+
+    # Z offset applied when switching to this channel
+    z_offset_um: float = Field(0.0, description="Z offset in micrometers")
+
+    # Illumination
     illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
-    camera_settings: Dict[str, CameraSettings] = Field(
-        default_factory=dict, description="Camera ID -> settings mapping"
-    )
-    emission_filter_wheel_position: Optional[Dict[int, int]] = Field(
-        None, description="Body filter wheel: wheel_id -> position (if available)"
-    )
-    confocal_settings: Optional[ConfocalSettings] = Field(
-        None, description="Confocal settings (only if confocal in light path)"
-    )
-    # Objective-specific override for confocal mode
+
+    # Objective-specific override for confocal mode (iris settings)
     confocal_override: Optional[AcquisitionChannelOverride] = Field(
-        None, description="Settings to use when in confocal mode"
+        None, description="Confocal iris settings (objective-specific)"
     )
 
     model_config = {"extra": "forbid"}
@@ -114,76 +156,50 @@ class AcquisitionChannel(BaseModel):
 
     @property
     def exposure_time(self) -> float:
-        """Primary camera exposure time in ms."""
-        camera = next(iter(self.camera_settings.values()), None)
-        return camera.exposure_time_ms if camera else 20.0
+        """Camera exposure time in ms."""
+        return self.camera_settings.exposure_time_ms
 
     @exposure_time.setter
     def exposure_time(self, value: float) -> None:
-        """Set primary camera exposure time in ms."""
-        if self.camera_settings:
-            camera_id = next(iter(self.camera_settings.keys()))
-            self.camera_settings[camera_id].exposure_time_ms = value
+        """Set camera exposure time in ms."""
+        self.camera_settings.exposure_time_ms = value
 
     @property
     def analog_gain(self) -> float:
-        """Primary camera analog gain."""
-        camera = next(iter(self.camera_settings.values()), None)
-        return camera.gain_mode if camera else 0.0
+        """Camera analog gain."""
+        return self.camera_settings.gain_mode
 
     @analog_gain.setter
     def analog_gain(self, value: float) -> None:
-        """Set primary camera analog gain."""
-        if self.camera_settings:
-            camera_id = next(iter(self.camera_settings.keys()))
-            self.camera_settings[camera_id].gain_mode = value
+        """Set camera analog gain."""
+        self.camera_settings.gain_mode = value
 
-    @property
-    def display_color(self) -> str:
-        """Primary camera display color as hex string."""
-        camera = next(iter(self.camera_settings.values()), None)
-        return camera.display_color if camera else "#FFFFFF"
+    # Note: display_color is now a field, not a property
 
     @property
     def illumination_intensity(self) -> float:
-        """Primary illumination channel intensity."""
-        if self.illumination_settings.illumination_channels:
-            ch_name = self.illumination_settings.illumination_channels[0]
-            return self.illumination_settings.intensity.get(ch_name, 20.0)
-        # Fall back to first intensity value if no channels specified
-        if self.illumination_settings.intensity:
-            return next(iter(self.illumination_settings.intensity.values()))
-        return 20.0
+        """Illumination intensity percentage."""
+        return self.illumination_settings.intensity
 
     @illumination_intensity.setter
     def illumination_intensity(self, value: float) -> None:
-        """Set primary illumination channel intensity."""
-        if self.illumination_settings.illumination_channels:
-            ch_name = self.illumination_settings.illumination_channels[0]
-            self.illumination_settings.intensity[ch_name] = value
-        elif self.illumination_settings.intensity:
-            # Update first intensity value
-            first_key = next(iter(self.illumination_settings.intensity.keys()))
-            self.illumination_settings.intensity[first_key] = value
+        """Set illumination intensity percentage."""
+        self.illumination_settings.intensity = value
 
     @property
     def primary_illumination_channel(self) -> Optional[str]:
-        """Name of the primary illumination channel."""
-        if self.illumination_settings.illumination_channels:
-            return self.illumination_settings.illumination_channels[0]
-        return None
+        """Name of the illumination channel."""
+        return self.illumination_settings.illumination_channel
 
     @property
     def z_offset(self) -> float:
         """Z offset in micrometers."""
-        return self.illumination_settings.z_offset_um
+        return self.z_offset_um
 
     @property
-    def emission_filter_position(self) -> int:
-        """Primary emission filter wheel position."""
-        if self.emission_filter_wheel_position:
-            return next(iter(self.emission_filter_wheel_position.values()), 1)
-        return 1
+    def emission_filter_position(self) -> Optional[int]:
+        """Body filter wheel position (for backward compatibility)."""
+        return self.filter_position
 
     def get_illumination_source_code(self, illumination_config: "IlluminationChannelConfig") -> int:
         """Get the illumination source code for the primary illumination channel.
@@ -234,21 +250,22 @@ class AcquisitionChannel(BaseModel):
         if self.confocal_override.illumination_settings:
             merged_illumination = self.confocal_override.illumination_settings
 
-        merged_camera = dict(self.camera_settings)
+        # For v1.0, camera_settings is a single object
+        merged_camera = self.camera_settings
         if self.confocal_override.camera_settings:
-            merged_camera.update(self.confocal_override.camera_settings)
-
-        merged_confocal = self.confocal_settings
-        if self.confocal_override.confocal_settings:
-            merged_confocal = self.confocal_override.confocal_settings
+            merged_camera = self.confocal_override.camera_settings
 
         return AcquisitionChannel(
             name=self.name,
-            illumination_settings=merged_illumination,
+            enabled=self.enabled,
+            display_color=self.display_color,
+            camera=self.camera,
             camera_settings=merged_camera,
-            emission_filter_wheel_position=self.emission_filter_wheel_position,
-            confocal_settings=merged_confocal,
-            confocal_override=None,  # Already applied
+            filter_wheel=self.filter_wheel,
+            filter_position=self.filter_position,
+            z_offset_um=self.z_offset_um,
+            illumination_settings=merged_illumination,
+            confocal_override=self.confocal_override,  # Keep for iris settings access
         )
 
 
@@ -258,10 +275,15 @@ class GeneralChannelConfig(BaseModel):
 
     This file defines the base acquisition channels that are available.
     Objective-specific files can override these settings.
+
+    v1.0 adds channel_groups for multi-camera acquisition support.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels")
+    channel_groups: List["ChannelGroup"] = Field(
+        default_factory=list, description="Channel groups for multi-camera acquisition (v1.0+)"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -272,6 +294,17 @@ class GeneralChannelConfig(BaseModel):
                 return ch
         return None
 
+    def get_group_by_name(self, name: str) -> Optional["ChannelGroup"]:
+        """Get a channel group by name."""
+        for group in self.channel_groups:
+            if group.name == name:
+                return group
+        return None
+
+    def get_group_names(self) -> List[str]:
+        """Get list of all channel group names."""
+        return [group.name for group in self.channel_groups]
+
 
 class ObjectiveChannelConfig(BaseModel):
     """
@@ -279,9 +312,11 @@ class ObjectiveChannelConfig(BaseModel):
 
     This file contains objective-specific settings that override the
     general.yaml settings. It can also include confocal_override sections.
+
+    Note: channel_groups are NOT included here - they are defined only in general.yaml.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(
         default_factory=list, description="List of acquisition channel overrides"
     )
@@ -301,13 +336,12 @@ def merge_channel_configs(
     objective: ObjectiveChannelConfig,
 ) -> List[AcquisitionChannel]:
     """
-    Merge general.yaml and objective.yaml into final acquisition channels.
+    Merge general.yaml and objective.yaml into final acquisition channels (v1.0 schema).
 
     The merge takes:
-    - From general: name, illumination_channels, display_color, emission_filter_wheel_position,
-                    z_offset_um, base confocal_settings (filter_wheel_id, emission_filter_wheel_position)
-    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format,
-                      confocal iris settings, confocal_override
+    - From general: name, display_color, camera (ID), illumination_channel, filter_wheel,
+                    filter_position, z_offset_um
+    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override
 
     Args:
         general: General channel configuration (defines channel identity)
@@ -328,52 +362,33 @@ def merge_channel_configs(
             continue
 
         # Merge illumination settings
-        # general: illumination_channels, z_offset_um
+        # general: illumination_channel
         # objective: intensity
         merged_illumination = IlluminationSettings(
-            illumination_channels=gen_channel.illumination_settings.illumination_channels,
+            illumination_channel=gen_channel.illumination_settings.illumination_channel,
             intensity=obj_channel.illumination_settings.intensity,
-            z_offset_um=gen_channel.illumination_settings.z_offset_um,  # From general
         )
 
-        # Merge camera settings
-        # general: display_color
+        # Merge camera settings (v1.0: single object, not Dict)
+        # general: (nothing - display_color is now at channel level)
         # objective: exposure_time_ms, gain_mode, pixel_format
-        merged_camera: Dict[str, CameraSettings] = {}
-        for camera_id, gen_cam in gen_channel.camera_settings.items():
-            obj_cam = obj_channel.camera_settings.get(camera_id)
-            if obj_cam:
-                merged_camera[camera_id] = CameraSettings(
-                    display_color=gen_cam.display_color,
-                    exposure_time_ms=obj_cam.exposure_time_ms,
-                    gain_mode=obj_cam.gain_mode,
-                    pixel_format=obj_cam.pixel_format,
-                )
-            else:
-                # No objective camera settings - use general
-                merged_camera[camera_id] = gen_cam
-
-        # Merge confocal settings
-        # general: filter_wheel_id, emission_filter_wheel_position
-        # objective: illumination_iris, emission_iris
-        merged_confocal = None
-        if gen_channel.confocal_settings or obj_channel.confocal_settings:
-            gen_confocal = gen_channel.confocal_settings or ConfocalSettings()
-            obj_confocal = obj_channel.confocal_settings or ConfocalSettings()
-            merged_confocal = ConfocalSettings(
-                filter_wheel_id=gen_confocal.filter_wheel_id,
-                emission_filter_wheel_position=gen_confocal.emission_filter_wheel_position,
-                illumination_iris=obj_confocal.illumination_iris,
-                emission_iris=obj_confocal.emission_iris,
-            )
+        merged_camera = CameraSettings(
+            exposure_time_ms=obj_channel.camera_settings.exposure_time_ms,
+            gain_mode=obj_channel.camera_settings.gain_mode,
+            pixel_format=obj_channel.camera_settings.pixel_format,
+        )
 
         merged_channel = AcquisitionChannel(
             name=gen_channel.name,
-            illumination_settings=merged_illumination,
+            enabled=gen_channel.enabled,  # From general
+            display_color=gen_channel.display_color,  # From general
+            camera=gen_channel.camera,  # From general (camera ID)
             camera_settings=merged_camera,
-            emission_filter_wheel_position=gen_channel.emission_filter_wheel_position,
-            confocal_settings=merged_confocal,
-            confocal_override=obj_channel.confocal_override,  # From objective only
+            filter_wheel=gen_channel.filter_wheel,  # From general
+            filter_position=gen_channel.filter_position,  # From general
+            z_offset_um=gen_channel.z_offset_um,  # From general
+            illumination_settings=merged_illumination,
+            confocal_override=obj_channel.confocal_override,  # From objective (iris settings)
         )
         merged_channels.append(merged_channel)
 
@@ -385,7 +400,7 @@ def validate_illumination_references(
     illumination_config: "IlluminationChannelConfig",
 ) -> List[str]:
     """
-    Validate that all illumination_channels references in acquisition config
+    Validate that all illumination_channel references in acquisition config
     exist in illumination_channel_config.yaml.
 
     Args:
@@ -396,28 +411,16 @@ def validate_illumination_references(
         List of error messages. Empty list if all references are valid.
     """
     errors = []
-
-    # Build set of valid illumination channel names
     valid_names: Set[str] = {ch.name for ch in illumination_config.channels}
 
     for acq_channel in config.channels:
-        ill_channels = acq_channel.illumination_settings.illumination_channels
-        if ill_channels:
-            for ill_name in ill_channels:
-                if ill_name not in valid_names:
-                    errors.append(
-                        f"Acquisition channel '{acq_channel.name}' references "
-                        f"illumination channel '{ill_name}' which does not exist in "
-                        f"illumination_channel_config.yaml"
-                    )
-
-        # Also validate intensity dict keys
-        for intensity_key in acq_channel.illumination_settings.intensity.keys():
-            if intensity_key not in valid_names:
-                errors.append(
-                    f"Acquisition channel '{acq_channel.name}' has intensity for "
-                    f"'{intensity_key}' which does not exist in illumination_channel_config.yaml"
-                )
+        ill_channel = acq_channel.illumination_settings.illumination_channel
+        if ill_channel and ill_channel not in valid_names:
+            errors.append(
+                f"Acquisition channel '{acq_channel.name}' references "
+                f"illumination channel '{ill_channel}' which does not exist in "
+                f"illumination_channel_config.yaml"
+            )
 
     return errors
 
@@ -434,9 +437,8 @@ def get_illumination_channel_names(config: GeneralChannelConfig) -> Set[str]:
     """
     names: Set[str] = set()
     for acq_channel in config.channels:
-        if acq_channel.illumination_settings.illumination_channels:
-            names.update(acq_channel.illumination_settings.illumination_channels)
-        names.update(acq_channel.illumination_settings.intensity.keys())
+        if acq_channel.illumination_settings.illumination_channel:
+            names.add(acq_channel.illumination_settings.illumination_channel)
     return names
 
 
@@ -448,9 +450,121 @@ class AcquisitionOutputConfig(BaseModel):
     to record what settings were used during acquisition.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     objective: str = Field(..., description="Objective used for acquisition")
     confocal_mode: bool = Field(False, description="Whether confocal mode was active")
     channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels used")
 
     model_config = {"extra": "forbid"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel Groups (v1.0)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SynchronizationMode(str, Enum):
+    """Synchronization mode for channel groups."""
+
+    SIMULTANEOUS = "simultaneous"  # Multi-camera parallel capture with timing offsets
+    SEQUENTIAL = "sequential"  # Channels captured one after another
+
+
+class ChannelGroupEntry(BaseModel):
+    """A channel entry within a channel group."""
+
+    name: str = Field(..., min_length=1, description="Channel name (must exist in channels list)")
+    offset_us: float = Field(
+        0.0,
+        ge=0,
+        description="Trigger offset in microseconds (only used for simultaneous mode)",
+    )
+
+    model_config = {"extra": "forbid"}
+
+
+class ChannelGroup(BaseModel):
+    """
+    A group of channels to be acquired together.
+
+    Channel groups define how multiple channels are acquired:
+    - simultaneous: Multiple cameras trigger at the same time (with optional offsets)
+    - sequential: Channels are captured one after another
+
+    For simultaneous mode, each channel must use a different camera.
+    """
+
+    name: str = Field(..., min_length=1, description="Group name for UI")
+    synchronization: SynchronizationMode = Field(
+        SynchronizationMode.SEQUENTIAL,
+        description="Capture mode: simultaneous or sequential",
+    )
+    channels: List[ChannelGroupEntry] = Field(..., min_length=1, description="Channels in this group")
+
+    model_config = {"extra": "forbid"}
+
+    def get_channel_names(self) -> List[str]:
+        """Get list of channel names in this group."""
+        return [entry.name for entry in self.channels]
+
+    def get_channel_offset(self, channel_name: str) -> float:
+        """Get offset for a channel in microseconds."""
+        for entry in self.channels:
+            if entry.name == channel_name:
+                return entry.offset_us
+        return 0.0
+
+    def get_channels_sorted_by_offset(self) -> List[ChannelGroupEntry]:
+        """Get channels sorted by trigger offset (for simultaneous mode)."""
+        return sorted(self.channels, key=lambda c: c.offset_us)
+
+
+def validate_channel_group(
+    group: ChannelGroup,
+    channels: List[AcquisitionChannel],
+) -> List[str]:
+    """
+    Validate channel group configuration.
+
+    Args:
+        group: Channel group to validate
+        channels: List of available channels
+
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+
+    # Track cameras used (v1.0: camera field is int ID)
+    cameras_used: List[Optional[int]] = []
+    for entry in group.channels:
+        channel = next((c for c in channels if c.name == entry.name), None)
+        if channel is None:
+            errors.append(f"Channel '{entry.name}' not found in channels list")
+            continue
+
+        # Get camera ID from channel (v1.0 schema)
+        cameras_used.append(channel.camera)
+
+        # Warn if channel in simultaneous mode has no camera assigned
+        if group.synchronization == SynchronizationMode.SIMULTANEOUS and channel.camera is None:
+            errors.append(f"Channel '{entry.name}' has no camera ID but is in simultaneous group '{group.name}'")
+
+        # Warn if offset specified for sequential mode
+        if group.synchronization == SynchronizationMode.SEQUENTIAL and entry.offset_us != 0:
+            errors.append(
+                f"Channel '{entry.name}' has offset_us={entry.offset_us} "
+                f"but group '{group.name}' is sequential (offset will be ignored)"
+            )
+
+    # For simultaneous mode, all cameras must be different (excluding None which is already warned)
+    if group.synchronization == SynchronizationMode.SIMULTANEOUS:
+        non_null_cameras = [c for c in cameras_used if c is not None]
+        if len(non_null_cameras) != len(set(non_null_cameras)):
+            duplicate_cameras = [c for c in set(non_null_cameras) if non_null_cameras.count(c) > 1]
+            errors.append(
+                f"Group '{group.name}' uses simultaneous mode but has "
+                f"multiple channels on same camera ID: {duplicate_cameras}"
+            )
+
+    return errors

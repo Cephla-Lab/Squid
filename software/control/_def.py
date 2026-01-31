@@ -174,6 +174,7 @@ class CMD_SET:
     SET_DAC80508_REFDIV_GAIN = 16
     SET_ILLUMINATION_INTENSITY_FACTOR = 17
     MOVETO_W = 18
+    MOVE_W2 = 19
     MOVETO_X = 6
     MOVETO_Y = 7
     MOVETO_Z = 8
@@ -192,7 +193,15 @@ class CMD_SET:
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
     SET_TRIGGER_MODE = 33
+    # Multi-port illumination commands (firmware v1.0+)
+    SET_PORT_INTENSITY = 34  # Set DAC intensity for specific port only
+    TURN_ON_PORT = 35  # Turn on GPIO for specific port
+    TURN_OFF_PORT = 36  # Turn off GPIO for specific port
+    SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
+    SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
+    TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
     SET_PIN_LEVEL = 41
+    INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
     RESET = 255
@@ -222,6 +231,7 @@ class AXIS:
     THETA = 3
     XY = 4
     W = 5
+    W2 = 6
 
 
 class LIMIT_CODE:
@@ -243,6 +253,19 @@ class LIMIT_SWITCH_POLARITY:
 
 
 class ILLUMINATION_CODE:
+    """Illumination source codes for MCU communication.
+
+    LED Matrix Patterns (USB ports):
+        USB1-USB8 map to pattern codes 0-8+.
+
+    Illumination Control TTL Ports (D1-D5):
+        Port-based names (ILLUMINATION_D1-D5) are preferred for new code.
+        Wavelength-based names (ILLUMINATION_SOURCE_405NM, etc.) are kept as
+        aliases for backward compatibility. The actual wavelength is configured
+        in the illumination_channel_config.yaml file, not hardcoded here.
+    """
+
+    # LED matrix patterns (USB ports)
     ILLUMINATION_SOURCE_LED_ARRAY_FULL = 0
     ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF = 1
     ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF = 2
@@ -253,11 +276,84 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7
     ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
-    ILLUMINATION_SOURCE_405NM = 11
-    ILLUMINATION_SOURCE_488NM = 12
-    ILLUMINATION_SOURCE_638NM = 13
-    ILLUMINATION_SOURCE_561NM = 14
-    ILLUMINATION_SOURCE_730NM = 15
+
+    # Illumination Control TTL Ports - port-based names (preferred)
+    # These correspond to controller_port D1-D5 in illumination_channel_config.yaml
+    # Note: D3/D4 source codes are non-sequential (14, 13) for historical API compatibility
+    ILLUMINATION_D1 = 11
+    ILLUMINATION_D2 = 12
+    ILLUMINATION_D3 = 14
+    ILLUMINATION_D4 = 13
+    ILLUMINATION_D5 = 15
+
+    # Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
+    # Use ILLUMINATION_D1-D5 for new code; wavelength is configured in YAML
+    ILLUMINATION_SOURCE_405NM = ILLUMINATION_D1
+    ILLUMINATION_SOURCE_488NM = ILLUMINATION_D2
+    ILLUMINATION_SOURCE_561NM = ILLUMINATION_D3
+    ILLUMINATION_SOURCE_638NM = ILLUMINATION_D4
+    ILLUMINATION_SOURCE_730NM = ILLUMINATION_D5
+
+
+class ILLUMINATION_PORT:
+    """Port indices for multi-port illumination control (firmware v1.0+).
+
+    Port indices (0-15) for up to 16 illumination ports.
+    These are used with the new multi-port illumination commands
+    (SET_PORT_INTENSITY, TURN_ON_PORT, etc.).
+
+    Note: These are port indices, NOT the legacy source codes (11-15).
+    For legacy source codes, use ILLUMINATION_CODE.ILLUMINATION_D1, etc.
+    """
+
+    D1 = 0
+    D2 = 1
+    D3 = 2
+    D4 = 3
+    D5 = 4
+    # D6-D16 can be added as hardware expands
+
+
+def source_code_to_port_index(source_code: int) -> int:
+    """Map legacy illumination source code to port index.
+
+    Legacy source codes are non-sequential for historical API compatibility:
+        D1 = 11, D2 = 12, D3 = 14, D4 = 13, D5 = 15
+    Note: D3 and D4 are swapped!
+
+    Args:
+        source_code: Legacy source code (11-15 for D1-D5)
+
+    Returns:
+        Port index (0-4), or -1 for unknown source codes
+    """
+    mapping = {
+        ILLUMINATION_CODE.ILLUMINATION_D1: 0,  # 11 -> 0
+        ILLUMINATION_CODE.ILLUMINATION_D2: 1,  # 12 -> 1
+        ILLUMINATION_CODE.ILLUMINATION_D3: 2,  # 14 -> 2 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D4: 3,  # 13 -> 3 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D5: 4,  # 15 -> 4
+    }
+    return mapping.get(source_code, -1)
+
+
+def port_index_to_source_code(port_index: int) -> int:
+    """Map port index to legacy illumination source code.
+
+    Args:
+        port_index: Port index (0-4 for D1-D5)
+
+    Returns:
+        Legacy source code (11-15), or -1 for invalid port index
+    """
+    mapping = {
+        0: ILLUMINATION_CODE.ILLUMINATION_D1,  # 0 -> 11
+        1: ILLUMINATION_CODE.ILLUMINATION_D2,  # 1 -> 12
+        2: ILLUMINATION_CODE.ILLUMINATION_D3,  # 2 -> 14
+        3: ILLUMINATION_CODE.ILLUMINATION_D4,  # 3 -> 13
+        4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
+    }
+    return mapping.get(port_index, -1)
 
 
 class VOLUMETRIC_IMAGING:
@@ -294,15 +390,15 @@ class FileSavingOption(Enum):
     """File saving options.
 
     INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
-    TODO: Move all file saving related settings to this enum.
     MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
     OME_TIFF: Save data to OME-TIFF stacks with full metadata.
-    TODO: Add zarr saving options.
+    ZARR_V3: Save data to Zarr v3 format with sharding.
     """
 
     INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
     MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
     OME_TIFF = "OME_TIFF"
+    ZARR_V3 = "ZARR_V3"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
@@ -316,6 +412,56 @@ class FileSavingOption(Enum):
             return FileSavingOption[option.upper()]
         except KeyError:
             raise ValueError(f"Invalid file saving option: {option}")
+
+
+class ZarrChunkMode(Enum):
+    """Zarr chunk size configuration.
+
+    FULL_FRAME: Each chunk is a full image plane (simplest, default).
+    TILED_512: 512x512 pixel chunks for tiled visualization.
+    TILED_256: 256x256 pixel chunks for fine-grained streaming.
+    """
+
+    FULL_FRAME = "full_frame"
+    TILED_512 = "tiled_512"
+    TILED_256 = "tiled_256"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrChunkMode"]) -> "ZarrChunkMode":
+        """Convert string or enum to ZarrChunkMode enum."""
+        if isinstance(option, ZarrChunkMode):
+            return option
+        try:
+            return ZarrChunkMode(option.lower())
+        except ValueError:
+            raise ValueError(
+                f"Invalid zarr chunk mode: '{option}'. Expected 'full_frame', 'tiled_512', or 'tiled_256'."
+            )
+
+
+class ZarrCompression(Enum):
+    """Zarr compression presets optimized for different use cases.
+
+    NONE: No compression, maximum write speed (~2x faster than TIFF).
+    FAST: blosc-lz4, ~1000 MB/s encode, ~2x compression ratio. Safe for 10-20 fps.
+    BALANCED: blosc-zstd level 3, ~500 MB/s encode, ~3-4x ratio.
+    BEST: blosc-zstd level 9, slowest but best compression ratio.
+    """
+
+    NONE = "none"
+    FAST = "fast"
+    BALANCED = "balanced"
+    BEST = "best"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZarrCompression"]) -> "ZarrCompression":
+        """Convert string or enum to ZarrCompression enum."""
+        if isinstance(option, ZarrCompression):
+            return option
+        try:
+            return ZarrCompression(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid zarr compression: '{option}'. Expected 'none', 'fast', 'balanced', or 'best'.")
 
 
 class FocusMeasureOperator(Enum):
@@ -561,15 +707,6 @@ ACQUISITION_CONFIGURATIONS_PATH = Path("user_profiles")
 FILE_ID_PADDING = 0
 
 
-class PLATE_READER:
-    NUMBER_OF_ROWS = 8
-    NUMBER_OF_COLUMNS = 12
-    ROW_SPACING_MM = 9
-    COLUMN_SPACING_MM = 9
-    OFFSET_COLUMN_1_MM = 20
-    OFFSET_ROW_A_MM = 20
-
-
 CAMERA_PIXEL_SIZE_UM = {
     "IMX290": 2.9,
     "IMX178": 2.4,
@@ -695,6 +832,17 @@ SIMULATED_DISK_IO_ENABLED = False
 SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
 SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
 
+# Per-component hardware simulation controls
+# These settings only apply when running WITHOUT the --simulation flag.
+# When --simulation is used, ALL components are simulated regardless of these settings.
+# Values: False = use real hardware (default), True = simulate this component
+SIMULATE_CAMERA = False
+SIMULATE_MICROCONTROLLER = False  # Also controls stage (stage uses MCU)
+SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
+SIMULATE_FILTER_WHEEL = False
+SIMULATE_OBJECTIVE_CHANGER = False
+SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
 ACQUISITION_THROTTLING_ENABLED = True
@@ -775,6 +923,11 @@ SORT_DURING_MULTIPOINT = False
 
 INVERTED_OBJECTIVE = False
 
+# Illumination intensity scaling factor - scales DAC output for different hardware:
+#   0.6 = Squid LEDs (0-1.5V output range)
+#   0.8 = Squid laser engine (0-2V output range)
+#   1.0 = Full range (0-2.5V output, when DAC gain is 1 instead of 2)
+# This factor is applied to ALL illumination commands (legacy and multi-port).
 ILLUMINATION_INTENSITY_FACTOR = 0.6
 
 CAMERA_TYPE = "Default"
@@ -822,7 +975,6 @@ LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
 USE_NAPARI_FOR_LIVE_VIEW = False
-USE_NAPARI_FOR_MULTIPOINT = True
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 USE_NAPARI_WELL_SELECTION = False
 USE_NAPARI_FOR_LIVE_CONTROL = False
@@ -916,9 +1068,27 @@ OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
 SQUID_FILTERWHEEL_MAX_INDEX = 8
 SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
-SQUID_FILTERWHEEL_HOMING_ENABLED = True
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+
+# Multi-wheel SQUID filter wheel configuration
+# Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)
+SQUID_FILTERWHEEL_CONFIGS = {
+    1: {
+        "motor_slot_index": 3,  # W axis
+        "max_index": 8,
+        "min_index": 1,
+        "offset": 0.008,
+        "transitions_per_revolution": 4000,
+    },
+    2: {
+        "motor_slot_index": 4,  # W2 axis
+        "max_index": 8,
+        "min_index": 1,
+        "offset": 0.008,
+        "transitions_per_revolution": 4000,
+    },
+}
 
 # Stage
 USE_PRIOR_STAGE = False
@@ -1053,6 +1223,15 @@ USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
+# Zarr v3 saving configuration
+ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
+ZARR_COMPRESSION = ZarrCompression.FAST  # Safe for 10-20 fps, ~1000 MB/s encode
+
+# Use 6D array with FOV dimension for non-HCS acquisitions (non-standard, not OME-NGFF compliant)
+# When False (default): creates per-FOV 5D zarr files (OME-NGFF compliant)
+# When True: creates single 6D zarr with shape (FOV, T, C, Z, Y, X)
+ZARR_USE_6D_FOV_DIMENSION = False
+
 ##########################################################
 #### start of loading machine specific configurations ####
 ##########################################################
@@ -1081,6 +1260,19 @@ USE_JUPYTER_CONSOLE = False
 ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
+
+
+# Slack Notifications - send real-time notifications during acquisition
+class SlackNotifications:
+    ENABLED = False
+    BOT_TOKEN = None  # Slack Bot Token (xoxb-...) for API access
+    CHANNEL_ID = None  # Slack Channel ID (C...) to post to
+    NOTIFY_ON_ERROR = True
+    NOTIFY_ON_TIMEPOINT_COMPLETE = True
+    NOTIFY_ON_ACQUISITION_START = False
+    NOTIFY_ON_ACQUISITION_FINISHED = True
+    SEND_MOSAIC_SNAPSHOTS = True
+
 
 try:
     with open("cache/config_file_path.txt", "r") as file:
@@ -1178,6 +1370,8 @@ MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum
 FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
+ZARR_CHUNK_MODE = ZarrChunkMode.convert_to_enum(ZARR_CHUNK_MODE)
+ZARR_COMPRESSION = ZarrCompression.convert_to_enum(ZARR_COMPRESSION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 
@@ -1264,3 +1458,39 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
+
+    # Load per-component simulation settings from config file
+    def _parse_sim_setting(value_str):
+        """Parse simulation setting: True (simulate) or False (real hardware)."""
+        val = value_str.strip().lower()
+        if val in ("true", "1", "yes", "simulate"):
+            return True
+        # Everything else (false, none, auto, unrecognized) = real hardware
+        return False
+
+    try:
+        _sim_config = ConfigParser()
+        _sim_config.read(CACHED_CONFIG_FILE_PATH)
+        if _sim_config.has_section("SIMULATION"):
+            if _sim_config.has_option("SIMULATION", "simulate_camera"):
+                SIMULATE_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_camera"))
+                log.info(f"Loaded SIMULATE_CAMERA={SIMULATE_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_microcontroller"):
+                SIMULATE_MICROCONTROLLER = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_microcontroller"))
+                log.info(f"Loaded SIMULATE_MICROCONTROLLER={SIMULATE_MICROCONTROLLER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_spinning_disk"):
+                SIMULATE_SPINNING_DISK = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_spinning_disk"))
+                log.info(f"Loaded SIMULATE_SPINNING_DISK={SIMULATE_SPINNING_DISK} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_filter_wheel"):
+                SIMULATE_FILTER_WHEEL = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_filter_wheel"))
+                log.info(f"Loaded SIMULATE_FILTER_WHEEL={SIMULATE_FILTER_WHEEL} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_objective_changer"):
+                SIMULATE_OBJECTIVE_CHANGER = _parse_sim_setting(
+                    _sim_config.get("SIMULATION", "simulate_objective_changer")
+                )
+                log.info(f"Loaded SIMULATE_OBJECTIVE_CHANGER={SIMULATE_OBJECTIVE_CHANGER} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
+                SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
+                log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+    except Exception as e:
+        log.warning(f"Failed to load SIMULATION settings from config: {e}")

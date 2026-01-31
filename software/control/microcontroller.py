@@ -31,6 +31,7 @@ _CMD_NAMES = {
     CMD_SET.MOVE_Z: "MOVE_Z",
     CMD_SET.MOVE_THETA: "MOVE_THETA",
     CMD_SET.MOVE_W: "MOVE_W",
+    CMD_SET.MOVE_W2: "MOVE_W2",
     CMD_SET.HOME_OR_ZERO: "HOME_OR_ZERO",
     CMD_SET.MOVETO_X: "MOVETO_X",
     CMD_SET.MOVETO_Y: "MOVETO_Y",
@@ -59,7 +60,15 @@ _CMD_NAMES = {
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
     CMD_SET.SET_PIN_LEVEL: "SET_PIN_LEVEL",
+    # Multi-port illumination commands (firmware v1.0+)
+    CMD_SET.SET_PORT_INTENSITY: "SET_PORT_INTENSITY",
+    CMD_SET.TURN_ON_PORT: "TURN_ON_PORT",
+    CMD_SET.TURN_OFF_PORT: "TURN_OFF_PORT",
+    CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
+    CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
+    CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
+    CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
     CMD_SET.RESET: "RESET",
 }
@@ -82,6 +91,7 @@ _default_y_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_S
 _default_z_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_Z)
 _default_theta_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_THETA)
 _default_w_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_W)
+_default_w2_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_W)  # W2 uses same sign as W
 
 
 # to do (7/28/2021) - add functions for configuring the stepper motors
@@ -168,8 +178,16 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 
 class SimSerial(AbstractCephlaMicroSerial):
+    # Number of illumination ports for simulation
+    NUM_ILLUMINATION_PORTS = 16
+    # Simulated firmware version (1.0 supports multi-port illumination)
+    FIRMWARE_VERSION_MAJOR = 1
+    FIRMWARE_VERSION_MINOR = 0
+
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch) -> bytes:
+    def response_bytes_for(
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+    ) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -178,13 +196,16 @@ class SimSerial(AbstractCephlaMicroSerial):
         - Z pos (4 bytes)
         - Theta (4 bytes)
         - buttons and switches (1 byte)
-        - reserved (4 bytes)
+        - reserved (4 bytes) - byte 22 contains firmware version
         - CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        reserved_state = 0  # This is just filler for the 4 reserved bytes.
+        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
+        # High nibble = major version, low nibble = minor version
+        version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
+        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
         )
@@ -203,8 +224,19 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.y = 0
         self.z = 0
         self.theta = 0
+        self.w = 0
+        self.w2 = 0
         self.joystick_button = False
         self.switch = False
+
+        # Multi-port illumination state for simulation
+        self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
+        self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Legacy illumination state tracking (for backward compatibility)
+        # Maps legacy source codes (11-15) to port indices (0-4)
+        self._illumination_source = None  # Currently selected legacy source
+        self._illumination_is_on = False  # Legacy global on/off state
 
         self._closed = False
 
@@ -227,6 +259,10 @@ class SimSerial(AbstractCephlaMicroSerial):
             self.z += self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVE_THETA:
             self.theta += self.unpack_position(position_bytes)
+        elif command_byte == CMD_SET.MOVE_W:
+            self.w += self.unpack_position(position_bytes)
+        elif command_byte == CMD_SET.MOVE_W2:
+            self.w2 += self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVETO_X:
             self.x = self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVETO_Y:
@@ -250,6 +286,61 @@ class SimSerial(AbstractCephlaMicroSerial):
             elif axis == AXIS.XY:
                 self.x = 0
                 self.y = 0
+            elif axis == AXIS.W:
+                self.w = 0
+            elif axis == AXIS.W2:
+                self.w2 = 0
+        # Multi-port illumination commands
+        elif command_byte == CMD_SET.SET_PORT_INTENSITY:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = False
+        elif command_byte == CMD_SET.SET_PORT_ILLUMINATION:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                turn_on = write_bytes[5] != 0
+                self.port_intensity[port_index] = intensity
+                self.port_is_on[port_index] = turn_on
+        elif command_byte == CMD_SET.SET_MULTI_PORT_MASK:
+            port_mask = (write_bytes[2] << 8) | write_bytes[3]
+            on_mask = (write_bytes[4] << 8) | write_bytes[5]
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                if port_mask & (1 << i):
+                    self.port_is_on[i] = bool(on_mask & (1 << i))
+        elif command_byte == CMD_SET.TURN_OFF_ALL_PORTS:
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
+        # Legacy illumination commands - sync with multi-port state
+        elif command_byte == CMD_SET.SET_ILLUMINATION:
+            source = write_bytes[2]
+            intensity = (write_bytes[3] << 8) | write_bytes[4]
+            self._illumination_source = source
+            # Update port intensity for the corresponding port
+            port_index = source_code_to_port_index(source)
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_ILLUMINATION:
+            self._illumination_is_on = True
+            # Turn on the currently selected source's port
+            if self._illumination_source is not None:
+                port_index = source_code_to_port_index(self._illumination_source)
+                if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                    self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_ILLUMINATION:
+            self._illumination_is_on = False
+            # Turn off all ports (matches firmware behavior)
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
 
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
@@ -531,6 +622,10 @@ class Microcontroller:
         self.joystick_event_listeners = []
         self.switch_state = 0
 
+        # Firmware version (major, minor) - detected from response byte 22
+        # (0, 0) indicates legacy firmware without version reporting
+        self.firmware_version = (0, 0)
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -553,6 +648,10 @@ class Microcontroller:
             self.configure_actuators()
             self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
             time.sleep(0.5)
+
+        # Detect firmware version early by sending a harmless command
+        # This ensures supports_multi_port() returns accurate results immediately
+        self._detect_firmware_version()
 
     def _warn_if_reads_stale(self):
         if self._is_simulated:
@@ -609,12 +708,19 @@ class Microcontroller:
         self.send_command(cmd)
         self.log.debug("initialize the drivers")
 
-    def init_filter_wheel(self):
+    def init_filter_wheel(self, axis=AXIS.W):
+        """Initialize a filter wheel axis.
+
+        Args:
+            axis: The axis to initialize (AXIS.W or AXIS.W2). Defaults to AXIS.W.
+        """
+        cmd_map = {AXIS.W: CMD_SET.INITFILTERWHEEL, AXIS.W2: CMD_SET.INITFILTERWHEEL_W2}
+        if axis not in cmd_map:
+            raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
         self._cmd_id = 0
         cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.INITFILTERWHEEL
+        cmd[1] = cmd_map[axis]
         self.send_command(cmd)
-        print("initialize filter wheel")  # debug
 
     def turn_on_illumination(self):
         self.log.debug("[MCU] turn_on_illumination")
@@ -644,6 +750,149 @@ class Microcontroller:
         cmd[3] = min(int(g * 255), 255)
         cmd[4] = min(int(r * 255), 255)
         cmd[5] = min(int(b * 255), 255)
+        self.send_command(cmd)
+
+    # Multi-port illumination commands (firmware v1.0+)
+    # These allow multiple ports to be ON simultaneously with independent intensities
+    # Maximum number of ports supported by firmware
+    _MAX_ILLUMINATION_PORTS = 16
+
+    def _validate_port_index(self, port_index: int):
+        """Validate port index is in valid range (0-15)."""
+        if not isinstance(port_index, int):
+            raise TypeError(f"port_index must be an integer, got {type(port_index).__name__}")
+        if port_index < 0 or port_index >= self._MAX_ILLUMINATION_PORTS:
+            raise ValueError(f"Invalid port_index {port_index}, must be 0-{self._MAX_ILLUMINATION_PORTS - 1}")
+
+    def set_port_intensity(self, port_index: int, intensity: float):
+        """Set DAC intensity for a specific port without changing on/off state.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100), clamped to valid range
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
+        """
+        self._validate_port_index(port_index)
+        self.log.debug(f"[MCU] set_port_intensity: port={port_index}, intensity={intensity}")
+        # Clamp intensity to valid range
+        intensity = max(0, min(100, intensity))
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PORT_INTENSITY
+        cmd[2] = port_index
+        intensity_value = int((intensity / 100) * 65535)
+        cmd[3] = intensity_value >> 8
+        cmd[4] = intensity_value & 0xFF
+        self.send_command(cmd)
+
+    def turn_on_port(self, port_index: int):
+        """Turn on a specific illumination port.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
+        """
+        self._validate_port_index(port_index)
+        self.log.debug(f"[MCU] turn_on_port: port={port_index}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_ON_PORT
+        cmd[2] = port_index
+        self.send_command(cmd)
+
+    def turn_off_port(self, port_index: int):
+        """Turn off a specific illumination port.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
+        """
+        self._validate_port_index(port_index)
+        self.log.debug(f"[MCU] turn_off_port: port={port_index}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_OFF_PORT
+        cmd[2] = port_index
+        self.send_command(cmd)
+
+    def set_port_illumination(self, port_index: int, intensity: float, turn_on: bool):
+        """Set intensity and on/off state for a specific port in one command.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            port_index: Port index (0=D1, 1=D2, etc.)
+            intensity: Intensity percentage (0-100), clamped to valid range
+            turn_on: Whether to turn the port on
+
+        Raises:
+            ValueError: If port_index is out of range (0-15)
+            TypeError: If port_index is not an integer
+        """
+        self._validate_port_index(port_index)
+        self.log.debug(f"[MCU] set_port_illumination: port={port_index}, intensity={intensity}, on={turn_on}")
+        # Clamp intensity to valid range
+        intensity = max(0, min(100, intensity))
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PORT_ILLUMINATION
+        cmd[2] = port_index
+        intensity_value = int((intensity / 100) * 65535)
+        cmd[3] = intensity_value >> 8
+        cmd[4] = intensity_value & 0xFF
+        cmd[5] = 1 if turn_on else 0
+        self.send_command(cmd)
+
+    def set_multi_port_mask(self, port_mask: int, on_mask: int):
+        """Set on/off state for multiple ports using masks.
+
+        This allows turning multiple ports on/off in a single command while
+        leaving other ports unchanged.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            port_mask: 16-bit mask of which ports to update (bit 0=D1, bit 15=D16)
+            on_mask: 16-bit mask of on/off state for selected ports (1=on, 0=off)
+
+        Example:
+            # Turn on D1 and D2, turn off D3, leave others unchanged
+            set_multi_port_mask(0x0007, 0x0003)  # port_mask=D1|D2|D3, on_mask=D1|D2
+        """
+        self.log.debug(f"[MCU] set_multi_port_mask: port_mask=0x{port_mask:04X}, on_mask=0x{on_mask:04X}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MULTI_PORT_MASK
+        cmd[2] = (port_mask >> 8) & 0xFF
+        cmd[3] = port_mask & 0xFF
+        cmd[4] = (on_mask >> 8) & 0xFF
+        cmd[5] = on_mask & 0xFF
+        self.send_command(cmd)
+
+    def turn_off_all_ports(self):
+        """Turn off all illumination ports.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+        """
+        self.log.debug("[MCU] turn_off_all_ports")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
@@ -753,6 +1002,9 @@ class Microcontroller:
     def move_w_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_W)
 
+    def move_w2_usteps(self, usteps):
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_W2)
+
     def set_off_set_velocity_x(self, off_set_velocity):
         # off_set_velocity is in mm/s
         cmd = bytearray(self.tx_buffer_length)
@@ -825,6 +1077,13 @@ class Microcontroller:
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
+    def home_w2(self, homing_direction: HomingDirection = _default_w2_homing_direction):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W2
+        cmd[3] = homing_direction.value
+        self.send_command(cmd)
+
     def zero_x(self):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
@@ -850,6 +1109,13 @@ class Microcontroller:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.W
+        cmd[3] = HOME_OR_ZERO.ZERO
+        self.send_command(cmd)
+
+    def zero_w2(self):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W2
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
@@ -1007,12 +1273,19 @@ class Microcontroller:
         self.set_home_safety_margin(AXIS.Z, int(Z_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
 
-    def configure_squidfilter(self):
-        self.set_leadscrew_pitch(AXIS.W, SCREW_PITCH_W_MM)
+    def configure_squidfilter(self, axis=AXIS.W):
+        """Configure a filter wheel motor.
+
+        Args:
+            axis: The axis to configure (AXIS.W or AXIS.W2). Defaults to AXIS.W.
+        """
+        if axis not in (AXIS.W, AXIS.W2):
+            raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
+        self.set_leadscrew_pitch(axis, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.W, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(axis, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.W, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(axis, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):
@@ -1248,6 +1521,11 @@ class Microcontroller:
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
 
+                # Firmware version from byte 22: high nibble = major, low nibble = minor
+                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
+                version_byte = msg[22]
+                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
 
@@ -1258,6 +1536,29 @@ class Microcontroller:
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
+
+    def _detect_firmware_version(self):
+        """Detect firmware version by sending a harmless command.
+
+        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off)
+        to trigger a response from which we can read the firmware version.
+        This ensures supports_multi_port() returns accurate results immediately
+        after Microcontroller initialization.
+        """
+        self.turn_off_all_ports()
+        self.wait_till_operation_is_completed()
+        self.log.debug(f"Detected firmware version: {self.firmware_version}")
+
+    def supports_multi_port(self) -> bool:
+        """Check if firmware supports multi-port illumination commands.
+
+        Multi-port illumination was added in firmware version 1.0.
+        Legacy firmware (version 0.0) only supports single-source illumination.
+
+        Returns:
+            True if firmware version >= 1.0, False otherwise.
+        """
+        return self.firmware_version >= (1, 0)
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state
@@ -1305,6 +1606,19 @@ class Microcontroller:
         return int(signed)
 
     def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
+        """Set the illumination intensity scaling factor on the MCU.
+
+        This factor scales the DAC output voltage for ALL illumination commands
+        (both legacy single-source and new multi-port commands).
+
+        Recommended values for different hardware:
+            0.6 = Squid LEDs (0-1.5V output range)
+            0.8 = Squid laser engine (0-2V output range)
+            1.0 = Full range (0-2.5V output, when DAC gain is 1 instead of 2)
+
+        Args:
+            illumination_intensity_factor: Scaling factor (0.01-1.0, clamped)
+        """
         if illumination_intensity_factor > 1:
             illumination_intensity_factor = 1
 

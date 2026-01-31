@@ -26,7 +26,11 @@ from control.models import (
     AcquisitionChannel,
     AcquisitionOutputConfig,
     CameraMappingsConfig,
+    CameraRegistryConfig,
     ConfocalConfig,
+    FilterWheelDefinition,
+    FilterWheelRegistryConfig,
+    FilterWheelType,
     GeneralChannelConfig,
     IlluminationChannelConfig,
     IlluminationSettings,
@@ -34,6 +38,12 @@ from control.models import (
     LaserAFConfig,
     ObjectiveChannelConfig,
     merge_channel_configs,
+)
+from control.models.hardware_bindings import (
+    FilterWheelReference,
+    HardwareBindingsConfig,
+    FILTER_WHEEL_SOURCE_CONFOCAL,
+    FILTER_WHEEL_SOURCE_STANDALONE,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,11 +63,13 @@ class ConfigRepository:
         ├── machine_configs/
         │   ├── illumination_channel_config.yaml
         │   ├── confocal_config.yaml (optional)
-        │   └── camera_mappings.yaml
+        │   ├── camera_mappings.yaml (legacy)
+        │   ├── cameras.yaml (v1.1 - camera registry)
+        │   └── filter_wheels.yaml (v1.1 - filter wheel registry)
         └── user_profiles/
             └── {profile}/
                 ├── channel_configs/
-                │   ├── general.yaml
+                │   ├── general.yaml (includes channel_groups in v1.1)
                 │   └── {objective}.yaml
                 └── laser_af_configs/
                     └── {objective}.yaml
@@ -139,16 +151,24 @@ class ConfigRepository:
         Save a Pydantic model to a YAML file.
 
         Creates parent directories if needed.
-        Raises on permission or disk errors.
+        Raises on permission or disk errors (after logging).
         """
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
-        data = model.model_dump(exclude_none=False, mode="json")
+            # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
+            # exclude_none=True omits optional fields when None (cleaner YAML files)
+            data = model.model_dump(exclude_none=True, mode="json")
 
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        logger.debug(f"Saved config to {path}")
+            with open(path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            logger.debug(f"Saved config to {path}")
+        except PermissionError:
+            logger.error(f"Permission denied writing {path}")
+            raise
+        except (OSError, yaml.YAMLError) as e:
+            logger.error(f"Failed to save config to {path}: {e}")
+            raise
 
     def _get_profile_path(self, profile: Optional[str] = None) -> Path:
         """Get path for a profile, defaulting to current profile."""
@@ -211,8 +231,16 @@ class ConfigRepository:
             obj_list = objectives or (list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None)
             if ensure_default_configs(self, profile, obj_list):
                 logger.info(f"Generated default configs for profile '{profile}'")
+        except ImportError as e:
+            # Expected if running without full dependencies or in test environment
+            logger.debug(f"Could not generate default configs (module not available): {e}")
+        except FileNotFoundError as e:
+            # Expected if illumination config doesn't exist yet
+            logger.warning(f"Could not generate default configs (missing required config): {e}")
+        except (PermissionError, OSError) as e:
+            logger.error(f"Failed to generate default configs (filesystem error): {e}")
         except Exception as e:
-            logger.warning(f"Could not generate default configs: {e}")
+            logger.error(f"Unexpected error generating default configs: {e}")
 
         self.set_profile(profile)
 
@@ -366,6 +394,203 @@ class ConfigRepository:
         path = self.machine_configs_path / "camera_mappings.yaml"
         self._save_yaml(path, config)
         self._machine_cache["camera_mappings"] = config
+
+    # ───────────────────────────────────────────────────────────────────────────
+    # v1.1 Machine Configs: Camera Registry and Filter Wheels
+    # ───────────────────────────────────────────────────────────────────────────
+
+    def get_camera_registry(self) -> Optional[CameraRegistryConfig]:
+        """
+        Load camera registry configuration (cached).
+
+        Returns None if cameras.yaml doesn't exist (single-camera system or legacy config).
+        """
+        cache_key = "camera_registry"
+        if cache_key not in self._machine_cache:
+            path = self.machine_configs_path / "cameras.yaml"
+            self._machine_cache[cache_key] = self._load_yaml(path, CameraRegistryConfig)
+        return self._machine_cache[cache_key]
+
+    def get_filter_wheel_registry(self) -> Optional[FilterWheelRegistryConfig]:
+        """
+        Load filter wheel registry configuration (cached).
+
+        Returns None if filter_wheels.yaml doesn't exist.
+        """
+        cache_key = "filter_wheel_registry"
+        if cache_key not in self._machine_cache:
+            path = self.machine_configs_path / "filter_wheels.yaml"
+            self._machine_cache[cache_key] = self._load_yaml(path, FilterWheelRegistryConfig)
+        return self._machine_cache[cache_key]
+
+    def save_camera_registry(self, config: CameraRegistryConfig) -> None:
+        """Save camera registry configuration and update cache."""
+        path = self.machine_configs_path / "cameras.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["camera_registry"] = config
+
+    def save_filter_wheel_registry(self, config: FilterWheelRegistryConfig) -> None:
+        """Save filter wheel registry configuration and update cache."""
+        path = self.machine_configs_path / "filter_wheels.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["filter_wheel_registry"] = config
+
+    def get_camera_names(self) -> List[str]:
+        """Get list of available camera names from registry."""
+        registry = self.get_camera_registry()
+        if registry:
+            return registry.get_camera_names()
+        return []
+
+    def get_filter_wheel_names(self) -> List[str]:
+        """Get list of available filter wheel names from registry."""
+        registry = self.get_filter_wheel_registry()
+        if registry:
+            return registry.get_wheel_names()
+        return []
+
+    # ───────────────────────────────────────────────────────────────────────────
+    # v1.1 Hardware Bindings and Filter Wheel Aggregation
+    # ───────────────────────────────────────────────────────────────────────────
+
+    def get_hardware_bindings(self) -> Optional[HardwareBindingsConfig]:
+        """
+        Load hardware bindings configuration (cached).
+
+        Returns None if hardware_bindings.yaml doesn't exist.
+        """
+        cache_key = "hardware_bindings"
+        if cache_key not in self._machine_cache:
+            path = self.machine_configs_path / "hardware_bindings.yaml"
+            self._machine_cache[cache_key] = self._load_yaml(path, HardwareBindingsConfig)
+        return self._machine_cache[cache_key]
+
+    def save_hardware_bindings(self, config: HardwareBindingsConfig) -> None:
+        """Save hardware bindings configuration and update cache."""
+        path = self.machine_configs_path / "hardware_bindings.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["hardware_bindings"] = config
+
+    def get_all_filter_wheels(self) -> Dict[str, List[FilterWheelDefinition]]:
+        """
+        Aggregate filter wheels from all sources.
+
+        Returns a dict mapping source name to list of wheels:
+        - "standalone": wheels from filter_wheels.yaml
+        - "confocal": wheels from confocal_config.yaml
+
+        Each source has its own ID namespace (no global conflicts).
+        """
+        result: Dict[str, List[FilterWheelDefinition]] = {}
+
+        # Standalone wheels from filter_wheels.yaml
+        registry = self.get_filter_wheel_registry()
+        if registry and registry.filter_wheels:
+            result[FILTER_WHEEL_SOURCE_STANDALONE] = list(registry.filter_wheels)
+
+        # Confocal wheels from confocal_config.yaml
+        confocal = self.get_confocal_config()
+        if confocal and confocal.filter_wheels:
+            result[FILTER_WHEEL_SOURCE_CONFOCAL] = list(confocal.filter_wheels)
+
+        return result
+
+    def get_emission_wheels(self) -> Dict[str, List[FilterWheelDefinition]]:
+        """
+        Get all emission filter wheels, grouped by source.
+
+        Returns dict: source -> list of emission wheels
+        """
+        all_wheels = self.get_all_filter_wheels()
+        return {
+            source: [w for w in wheels if w.type == FilterWheelType.EMISSION]
+            for source, wheels in all_wheels.items()
+            if any(w.type == FilterWheelType.EMISSION for w in wheels)
+        }
+
+    def get_excitation_wheels(self) -> Dict[str, List[FilterWheelDefinition]]:
+        """
+        Get all excitation filter wheels, grouped by source.
+
+        Returns dict: source -> list of excitation wheels
+        """
+        all_wheels = self.get_all_filter_wheels()
+        return {
+            source: [w for w in wheels if w.type == FilterWheelType.EXCITATION]
+            for source, wheels in all_wheels.items()
+            if any(w.type == FilterWheelType.EXCITATION for w in wheels)
+        }
+
+    def resolve_wheel_reference(self, ref: FilterWheelReference) -> Optional[FilterWheelDefinition]:
+        """
+        Resolve a source-qualified reference to a wheel definition.
+
+        Args:
+            ref: FilterWheelReference with source and id/name
+
+        Returns:
+            FilterWheelDefinition if found, None otherwise
+        """
+        all_wheels = self.get_all_filter_wheels()
+        source_wheels = all_wheels.get(ref.source.value, [])
+
+        for wheel in source_wheels:
+            if ref.id is not None and wheel.id == ref.id:
+                return wheel
+            if ref.name is not None and wheel.name == ref.name:
+                return wheel
+
+        available_info = (
+            f"Available in '{ref.source.value}': {[w.name for w in source_wheels]}"
+            if source_wheels
+            else f"No wheels found in source '{ref.source.value}'"
+        )
+        logger.warning(
+            f"Filter wheel reference not found: {ref}. {available_info}. "
+            f"Check that hardware_bindings.yaml references match your "
+            f"filter_wheels.yaml or confocal.yaml."
+        )
+        return None
+
+    def get_effective_emission_wheel(self, camera_id: int) -> Optional[FilterWheelDefinition]:
+        """
+        Get emission wheel for a camera, using explicit or implicit binding.
+
+        Resolution order:
+        1. Explicit binding from hardware_bindings.yaml
+        2. Implicit binding: if exactly 1 camera and 1 emission wheel
+
+        For implicit binding, a missing cameras.yaml is treated as a single-camera
+        system (legacy/default mode).
+
+        Args:
+            camera_id: Camera ID
+
+        Returns:
+            FilterWheelDefinition if binding exists, None otherwise
+        """
+        # Try explicit binding first
+        bindings = self.get_hardware_bindings()
+        if bindings:
+            ref = bindings.get_emission_wheel_ref(camera_id)
+            if ref:
+                return self.resolve_wheel_reference(ref)
+            # Explicit file exists but no binding for this camera
+            return None
+
+        # No explicit bindings file - try implicit binding
+        emission_wheels = self.get_emission_wheels()
+        all_emission = [w for wheels in emission_wheels.values() for w in wheels]
+
+        cameras = self.get_camera_registry()
+        # Treat missing cameras.yaml as single-camera system (legacy/default mode)
+        camera_count = len(cameras.cameras) if cameras else 1
+
+        # Implicit binding only for single camera + single emission wheel
+        if camera_count == 1 and len(all_emission) == 1:
+            return all_emission[0]
+
+        return None
 
     def ensure_machine_configs_directory(self) -> None:
         """Create machine_configs directory if it doesn't exist."""
@@ -524,26 +749,26 @@ class ConfigRepository:
             if general_config is None:
                 logger.warning("No general config to create objective config from")
                 return False
-            # Create objective config from general config
+            # Create objective config from general config (v1.1 schema)
             obj_config = ObjectiveChannelConfig(
-                version=1,
+                version=1.1,
                 channels=[
                     AcquisitionChannel(
                         name=ch.name,
-                        illumination_settings=IlluminationSettings(
-                            illumination_channels=None,
-                            intensity=dict(ch.illumination_settings.intensity),
-                            z_offset_um=0.0,
+                        display_color=ch.display_color,
+                        camera=ch.camera,
+                        camera_settings=CameraSettings(
+                            exposure_time_ms=ch.camera_settings.exposure_time_ms,
+                            gain_mode=ch.camera_settings.gain_mode,
+                            pixel_format=ch.camera_settings.pixel_format,
                         ),
-                        camera_settings={
-                            cam_id: CameraSettings(
-                                display_color=cam.display_color,
-                                exposure_time_ms=cam.exposure_time_ms,
-                                gain_mode=cam.gain_mode,
-                                pixel_format=cam.pixel_format,
-                            )
-                            for cam_id, cam in ch.camera_settings.items()
-                        },
+                        filter_wheel=None,  # Objective files don't include filter wheel
+                        filter_position=None,
+                        illumination_settings=IlluminationSettings(
+                            illumination_channel=None,  # From general.yaml
+                            intensity=ch.illumination_settings.intensity,
+                            z_offset_um=0.0,  # Placeholder, from general.yaml
+                        ),
                     )
                     for ch in general_config.channels
                 ],
@@ -557,12 +782,10 @@ class ConfigRepository:
 
         # Update the field
         if location == "camera":
-            for cam_settings in acq_channel.camera_settings.values():
-                setattr(cam_settings, field, value)
-                break
+            # v1.1: camera_settings is a single object, not a Dict
+            setattr(acq_channel.camera_settings, field, value)
         elif location == "illumination":
-            for key in acq_channel.illumination_settings.intensity:
-                acq_channel.illumination_settings.intensity[key] = value
+            acq_channel.illumination_settings.intensity = value
 
         # Save
         self.save_objective_config(profile, objective, obj_config)

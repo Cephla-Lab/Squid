@@ -6,9 +6,11 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
@@ -314,6 +316,29 @@ class NDViewerTab(QWidget):
     # Push-based API for live acquisition (no polling)
     # -------------------------------------------------------------------------
 
+    def _ensure_viewer_ready(self, context: str = "acquisition") -> bool:
+        """Ensure ndviewer_light is imported and viewer widget is created.
+
+        Args:
+            context: Description for logging (e.g., "acquisition", "zarr acquisition")
+
+        Returns:
+            True if viewer is ready, False if import or creation failed.
+        """
+        try:
+            from control import ndviewer_light
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        if self._viewer is None:
+            self._log.debug(f"Creating new LightweightViewer for {context}")
+            self._viewer = ndviewer_light.LightweightViewer()
+            self._layout.addWidget(self._viewer, 1)
+
+        return True
+
     def start_acquisition(
         self,
         channels: List[str],
@@ -334,20 +359,10 @@ class NDViewerTab(QWidget):
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            # Lazy import
-            from control import ndviewer_light
-        except ImportError as e:
-            self._log.error(f"Failed to import ndviewer_light: {e}")
-            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+        if not self._ensure_viewer_ready("TIFF acquisition"):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for acquisition")
-                self._viewer = ndviewer_light.LightweightViewer()
-                self._layout.addWidget(self._viewer, 1)
-
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
@@ -417,6 +432,163 @@ class NDViewerTab(QWidget):
             self._log.debug("NDViewer acquisition ended")
         except Exception:
             self._log.exception("Failed to end NDViewer acquisition")
+
+    # -------------------------------------------------------------------------
+    # Zarr Push-based API for live acquisition (requires ndviewer_light zarr support)
+    # -------------------------------------------------------------------------
+
+    def start_zarr_acquisition(
+        self,
+        fov_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fov_labels: List[str],
+        height: int,
+        width: int,
+    ) -> bool:
+        """Configure viewer for zarr-based live acquisition (5D per-FOV mode).
+
+        Args:
+            fov_paths: List of zarr paths per FOV
+            channels: List of channel names
+            num_z: Number of z-levels
+            fov_labels: List of FOV labels (e.g., ["A1:0", "A1:1"])
+            height: Image height in pixels
+            width: Image width in pixels
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self._ensure_viewer_ready("Zarr 5D acquisition"):
+            return False
+
+        try:
+            # Check if ndviewer_light has zarr support
+            if not hasattr(self._viewer, "start_zarr_acquisition"):
+                self._log.warning(
+                    "ndviewer_light doesn't support zarr push API. "
+                    "Live viewing not available for Zarr format. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: zarr live view requires ndviewer_light with zarr support.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+            self._log.info(
+                f"NDViewer configured for zarr acquisition: {len(channels)} channels, "
+                f"{num_z} z-levels, {len(fov_labels)} FOVs"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start zarr acquisition:\n{error_msg}")
+            return False
+
+    def start_zarr_acquisition_6d(
+        self,
+        region_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fovs_per_region: List[int],
+        height: int,
+        width: int,
+        region_labels: List[str],
+    ) -> bool:
+        """Configure viewer for 6D multi-region zarr acquisition.
+
+        Args:
+            region_paths: List of zarr paths (one per region)
+            channels: List of channel names
+            num_z: Number of z-levels
+            fovs_per_region: List of FOV counts per region
+            height: Image height in pixels
+            width: Image width in pixels
+            region_labels: List of region labels (e.g., ["region_1", "region_2"])
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self._ensure_viewer_ready("Zarr 6D acquisition"):
+            return False
+
+        try:
+            # Check if ndviewer_light has 6D regions support
+            if not hasattr(self._viewer, "start_zarr_acquisition_6d"):
+                self._log.warning(
+                    "ndviewer_light doesn't support 6D multi-region mode. "
+                    "Update ndviewer_light submodule to enable this feature."
+                )
+                self._show_placeholder(
+                    "NDViewer: 6D multi-region mode requires updated ndviewer_light.\n"
+                    "Update the ndviewer_light submodule."
+                )
+                return False
+
+            self._viewer.start_zarr_acquisition_6d(
+                region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+            )
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+
+            total_fovs = sum(fovs_per_region)
+            self._log.info(
+                f"NDViewer configured for 6D multi-region: {len(region_paths)} regions, "
+                f"{total_fovs} total FOVs, {len(channels)} channels, {num_z} z-levels"
+            )
+            return True
+        except Exception as e:
+            self._log.exception("Failed to start 6D multi-region zarr acquisition in NDViewer")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start 6D regions acquisition:\n{error_msg}")
+            return False
+
+    def notify_zarr_frame(self, t: int, fov_idx: int, z: int, channel: str, region_idx: int = 0) -> None:
+        """Notify viewer that a zarr frame was written.
+
+        Called on main thread via Qt signal from worker thread.
+
+        Args:
+            t: Timepoint index
+            fov_idx: FOV index (local to region in 6D mode, flat index otherwise)
+            z: Z-level index
+            channel: Channel name
+            region_idx: Region index (only used in 6D multi-region mode)
+        """
+        self._log.debug(f"notify_zarr_frame called: t={t}, fov={fov_idx}, z={z}, ch={channel}")
+        if self._viewer is None:
+            self._log.warning("notify_zarr_frame: viewer is None")
+            return
+        try:
+            if hasattr(self._viewer, "notify_zarr_frame"):
+                self._viewer.notify_zarr_frame(t, fov_idx, z, channel, region_idx)
+            else:
+                self._log.warning("viewer doesn't have notify_zarr_frame method")
+        except Exception:
+            self._log.exception(
+                f"Failed to notify zarr frame: t={t}, fov={fov_idx}, z={z}, "
+                f"channel={channel}, region_idx={region_idx}"
+            )
+
+    def end_zarr_acquisition(self) -> None:
+        """Mark zarr acquisition as ended.
+
+        Call this when zarr acquisition completes. The viewer remains usable
+        for navigating the acquired data.
+        """
+        if self._viewer is None:
+            return
+        try:
+            if hasattr(self._viewer, "end_zarr_acquisition"):
+                self._viewer.end_zarr_acquisition()
+                self._log.debug("NDViewer zarr acquisition ended")
+        except Exception:
+            self._log.exception("Failed to end zarr acquisition in NDViewer")
 
     def close(self) -> None:
         """Clean up viewer resources."""
@@ -647,7 +819,8 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
             self.config.write(configfile)
         try:
             self.main_window.close()
-        except:
+        except (AttributeError, RuntimeError):
+            # main_window may be None or already closed
             pass
         self.close()
 
@@ -838,12 +1011,13 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
-        self.setWindowTitle("Configuration")
+        self._on_restart = on_restart  # Optional callback for application restart
+        self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
         self._init_ui()
@@ -861,6 +1035,7 @@ class PreferencesDialog(QDialog):
         self._create_camera_tab()
         self._create_views_tab()
         self._create_advanced_tab()
+        self._create_development_tab()
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -881,10 +1056,28 @@ class PreferencesDialog(QDialog):
 
         # File Saving Format
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
         current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # Zarr Compression (only visible when ZARR_V3 is selected)
+        self.zarr_compression_combo = QComboBox()
+        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.setToolTip(
+            "none: No compression, maximum speed (~2x faster than TIFF)\n"
+            "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
+            "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
+            "best: blosc-zstd level 9, slower but best compression"
+        )
+        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
+        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_label = QLabel("Zarr Compression:")
+        layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
+
+        # Show/hide zarr options based on file saving format selection
+        self._update_zarr_options_visibility()
+        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -989,11 +1182,15 @@ class PreferencesDialog(QDialog):
         tab = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { background-color: palette(light); border: none; }"
+            "QScrollArea > QWidget > QWidget { background-color: palette(light); }"
+        )
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
 
         # Stage & Motion section (requires restart)
-        stage_group = CollapsibleGroupBox("Stage && Motion *")
+        stage_group = CollapsibleGroupBox("Stage && Motion *", collapsed=True)
         stage_layout = QFormLayout()
 
         self.max_vel_x = QDoubleSpinBox()
@@ -1053,8 +1250,37 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
+        # Zarr v3 Options section
+        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        zarr_layout = QFormLayout()
+
+        self.zarr_chunk_mode_combo = QComboBox()
+        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.setToolTip(
+            "full_frame: Each chunk is a full image plane (simplest, default)\n"
+            "tiled_512: 512x512 pixel chunks for tiled visualization\n"
+            "tiled_256: 256x256 pixel chunks for fine-grained streaming"
+        )
+        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
+        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
+
+        self.zarr_6d_fov_checkbox = QCheckBox()
+        self.zarr_6d_fov_checkbox.setToolTip(
+            "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
+            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
+            "all FOVs together. When disabled (default), creates separate 5D\n"
+            "OME-NGFF compliant zarr files per FOV."
+        )
+        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
+        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+
+        zarr_group.content.addLayout(zarr_layout)
+        layout.addWidget(zarr_group)
+
         # Contrast Autofocus section
-        af_group = CollapsibleGroupBox("Contrast Autofocus")
+        af_group = CollapsibleGroupBox("Contrast Autofocus", collapsed=True)
         af_layout = QFormLayout()
 
         self.af_stop_threshold = QDoubleSpinBox()
@@ -1079,7 +1305,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(af_group)
 
         # Hardware Configuration section
-        hw_group = CollapsibleGroupBox("Hardware Configuration")
+        hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
         self.z_motor_combo = QComboBox()
@@ -1118,43 +1344,74 @@ class PreferencesDialog(QDialog):
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
-        # Development Settings section
-        dev_group = CollapsibleGroupBox("Development Settings")
-        dev_layout = QFormLayout()
+        # Software Position Limits section
+        limits_group = CollapsibleGroupBox("Software Position Limits", collapsed=True)
+        limits_layout = QFormLayout()
 
-        self.simulated_io_checkbox = QCheckBox()
-        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
-        self.simulated_io_checkbox.setToolTip(
-            "When enabled, images are encoded to memory but NOT saved to disk.\n"
-            "Use this for development/testing to avoid SSD wear."
-        )
-        dev_layout.addRow("Simulated Disk I/O *:", self.simulated_io_checkbox)
+        self.limit_x_pos = QDoubleSpinBox()
+        self.limit_x_pos.setRange(0, 500)
+        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
+        self.limit_x_pos.setSuffix(" mm")
+        limits_layout.addRow("X Positive:", self.limit_x_pos)
 
-        self.simulated_io_speed_spinbox = QDoubleSpinBox()
-        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
-        self.simulated_io_speed_spinbox.setValue(
-            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
-        )
-        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
-        self.simulated_io_speed_spinbox.setToolTip(
-            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
-        )
-        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+        self.limit_x_neg = QDoubleSpinBox()
+        self.limit_x_neg.setRange(0, 500)
+        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
+        self.limit_x_neg.setSuffix(" mm")
+        limits_layout.addRow("X Negative:", self.limit_x_neg)
 
-        self.simulated_io_compression_checkbox = QCheckBox()
-        self.simulated_io_compression_checkbox.setChecked(
-            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
-        )
-        self.simulated_io_compression_checkbox.setToolTip(
-            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
-        )
-        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+        self.limit_y_pos = QDoubleSpinBox()
+        self.limit_y_pos.setRange(0, 500)
+        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
+        self.limit_y_pos.setSuffix(" mm")
+        limits_layout.addRow("Y Positive:", self.limit_y_pos)
 
-        dev_group.content.addLayout(dev_layout)
-        layout.addWidget(dev_group)
+        self.limit_y_neg = QDoubleSpinBox()
+        self.limit_y_neg.setRange(0, 500)
+        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
+        self.limit_y_neg.setSuffix(" mm")
+        limits_layout.addRow("Y Negative:", self.limit_y_neg)
+
+        self.limit_z_pos = QDoubleSpinBox()
+        self.limit_z_pos.setRange(0, 50)
+        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
+        self.limit_z_pos.setSuffix(" mm")
+        limits_layout.addRow("Z Positive:", self.limit_z_pos)
+
+        self.limit_z_neg = QDoubleSpinBox()
+        self.limit_z_neg.setRange(0, 50)
+        self.limit_z_neg.setDecimals(3)
+        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
+        self.limit_z_neg.setSuffix(" mm")
+        limits_layout.addRow("Z Negative:", self.limit_z_neg)
+
+        limits_group.content.addLayout(limits_layout)
+        layout.addWidget(limits_group)
+
+        # Tracking section (hidden - widgets exist for config persistence)
+        tracking_group = CollapsibleGroupBox("Tracking", collapsed=True)
+        tracking_layout = QFormLayout()
+
+        self.enable_tracking_checkbox = QCheckBox()
+        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
+        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
+
+        self.default_tracker_combo = QComboBox()
+        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
+        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
+        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
+
+        self.search_area_ratio = QSpinBox()
+        self.search_area_ratio.setRange(1, 50)
+        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
+        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
+
+        tracking_group.content.addLayout(tracking_layout)
+        layout.addWidget(tracking_group)
+        tracking_group.hide()  # Hidden but widgets exist for config save/load
 
         # Acquisition Throttling section
-        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling", collapsed=True)
         throttle_layout = QFormLayout()
 
         self.throttling_enabled_checkbox = QCheckBox()
@@ -1211,73 +1468,8 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
-        # Software Position Limits section
-        limits_group = CollapsibleGroupBox("Software Position Limits")
-        limits_layout = QFormLayout()
-
-        self.limit_x_pos = QDoubleSpinBox()
-        self.limit_x_pos.setRange(0, 500)
-        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
-        self.limit_x_pos.setSuffix(" mm")
-        limits_layout.addRow("X Positive:", self.limit_x_pos)
-
-        self.limit_x_neg = QDoubleSpinBox()
-        self.limit_x_neg.setRange(0, 500)
-        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
-        self.limit_x_neg.setSuffix(" mm")
-        limits_layout.addRow("X Negative:", self.limit_x_neg)
-
-        self.limit_y_pos = QDoubleSpinBox()
-        self.limit_y_pos.setRange(0, 500)
-        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
-        self.limit_y_pos.setSuffix(" mm")
-        limits_layout.addRow("Y Positive:", self.limit_y_pos)
-
-        self.limit_y_neg = QDoubleSpinBox()
-        self.limit_y_neg.setRange(0, 500)
-        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
-        self.limit_y_neg.setSuffix(" mm")
-        limits_layout.addRow("Y Negative:", self.limit_y_neg)
-
-        self.limit_z_pos = QDoubleSpinBox()
-        self.limit_z_pos.setRange(0, 50)
-        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
-        self.limit_z_pos.setSuffix(" mm")
-        limits_layout.addRow("Z Positive:", self.limit_z_pos)
-
-        self.limit_z_neg = QDoubleSpinBox()
-        self.limit_z_neg.setRange(0, 50)
-        self.limit_z_neg.setDecimals(3)
-        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
-        self.limit_z_neg.setSuffix(" mm")
-        limits_layout.addRow("Z Negative:", self.limit_z_neg)
-
-        limits_group.content.addLayout(limits_layout)
-        layout.addWidget(limits_group)
-
-        # Tracking section
-        tracking_group = CollapsibleGroupBox("Tracking")
-        tracking_layout = QFormLayout()
-
-        self.enable_tracking_checkbox = QCheckBox()
-        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
-        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
-
-        self.default_tracker_combo = QComboBox()
-        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
-        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
-        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
-
-        self.search_area_ratio = QSpinBox()
-        self.search_area_ratio.setRange(1, 50)
-        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
-        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
-
-        tracking_group.content.addLayout(tracking_layout)
-        layout.addWidget(tracking_group)
-
         # Diagnostics section
-        diagnostics_group = CollapsibleGroupBox("Diagnostics")
+        diagnostics_group = CollapsibleGroupBox("Diagnostics", collapsed=True)
         diagnostics_layout = QFormLayout()
 
         self.enable_memory_profiling_checkbox = QCheckBox()
@@ -1292,6 +1484,19 @@ class PreferencesDialog(QDialog):
 
         diagnostics_group.content.addLayout(diagnostics_layout)
         layout.addWidget(diagnostics_group)
+
+        # Developer Options section
+        dev_options_group = CollapsibleGroupBox("Developer Options", collapsed=True)
+        dev_options_layout = QFormLayout()
+
+        self.show_dev_tab_checkbox = QCheckBox()
+        self.show_dev_tab_checkbox.setChecked(self._get_config_bool("GENERAL", "show_dev_tab", False))
+        self.show_dev_tab_checkbox.setToolTip("Show the Dev tab with development/testing settings")
+        self.show_dev_tab_checkbox.stateChanged.connect(self._toggle_dev_tab_visibility)
+        dev_options_layout.addRow("Show Dev Tab:", self.show_dev_tab_checkbox)
+
+        dev_options_group.content.addLayout(dev_options_layout)
+        layout.addWidget(dev_options_group)
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
@@ -1418,6 +1623,107 @@ class PreferencesDialog(QDialog):
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
+    def _create_development_tab(self):
+        """Create the Development tab for development/testing settings."""
+        self.dev_tab = QWidget()
+        layout = QVBoxLayout(self.dev_tab)
+        layout.setSpacing(10)
+
+        # Use Simulated Hardware section
+        hw_sim_group = CollapsibleGroupBox("Use Simulated Hardware *")
+        hw_sim_layout = QFormLayout()
+
+        # Helper to create simulation checkboxes
+        def create_sim_checkbox(config_key):
+            checkbox = QCheckBox()
+            current = self._get_config_value("SIMULATION", config_key, "false").lower()
+            checkbox.setChecked(current in ("true", "1", "yes", "simulate"))
+            return checkbox
+
+        sim_tooltip = "Simulate this component (even without --simulation flag).\nWith --simulation flag, ALL components are always simulated."
+
+        self.sim_camera_checkbox = create_sim_checkbox("simulate_camera")
+        self.sim_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Camera:", self.sim_camera_checkbox)
+
+        self.sim_mcu_checkbox = create_sim_checkbox("simulate_microcontroller")
+        self.sim_mcu_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate MCU/Stage:", self.sim_mcu_checkbox)
+
+        self.sim_spinning_disk_checkbox = create_sim_checkbox("simulate_spinning_disk")
+        self.sim_spinning_disk_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Spinning Disk:", self.sim_spinning_disk_checkbox)
+
+        self.sim_filter_wheel_checkbox = create_sim_checkbox("simulate_filter_wheel")
+        self.sim_filter_wheel_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Filter Wheel:", self.sim_filter_wheel_checkbox)
+
+        self.sim_objective_changer_checkbox = create_sim_checkbox("simulate_objective_changer")
+        self.sim_objective_changer_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Objective Changer:", self.sim_objective_changer_checkbox)
+
+        self.sim_laser_af_camera_checkbox = create_sim_checkbox("simulate_laser_af_camera")
+        self.sim_laser_af_camera_checkbox.setToolTip(sim_tooltip)
+        hw_sim_layout.addRow("Simulate Laser AF Camera:", self.sim_laser_af_camera_checkbox)
+
+        hw_sim_group.content.addLayout(hw_sim_layout)
+        layout.addWidget(hw_sim_group)
+
+        # Simulated Disk I/O section
+        dev_group = CollapsibleGroupBox("Simulated Disk I/O *")
+        dev_layout = QFormLayout()
+
+        self.simulated_io_checkbox = QCheckBox()
+        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
+        self.simulated_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this for development/testing to avoid SSD wear."
+        )
+        dev_layout.addRow("Enable Simulated Disk I/O:", self.simulated_io_checkbox)
+
+        self.simulated_io_speed_spinbox = QDoubleSpinBox()
+        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_io_speed_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_io_speed_spinbox.setToolTip(
+            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+
+        self.simulated_io_compression_checkbox = QCheckBox()
+        self.simulated_io_compression_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        )
+        self.simulated_io_compression_checkbox.setToolTip(
+            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
+        )
+        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
+        # Legend
+        legend_label = QLabel("* Requires software restart to take effect")
+        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(legend_label)
+
+        layout.addStretch()
+        self._dev_tab_index = self.tab_widget.addTab(self.dev_tab, "Dev")
+
+        # Initially hide if not enabled
+        if not self._get_config_bool("GENERAL", "show_dev_tab", False):
+            self.tab_widget.setTabVisible(self._dev_tab_index, False)
+
+    def _toggle_dev_tab_visibility(self, state):
+        """Show or hide the Dev tab based on checkbox state."""
+        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
+        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
+        state_value = getattr(state, "value", state)
+        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
+        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
+
     def _get_config_value(self, section, option, default=""):
         try:
             return self.config.get(section, option)
@@ -1455,19 +1761,32 @@ class PreferencesDialog(QDialog):
             else:
                 QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
+    def _update_zarr_options_visibility(self):
+        """Show/hide zarr options based on file saving format."""
+        is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
+        self.zarr_compression_label.setVisible(is_zarr)
+        self.zarr_compression_combo.setVisible(is_zarr)
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
             self.config.add_section(section)
 
-    def _apply_settings(self):
+    def _apply_settings(self) -> bool:
+        """Apply settings to config file. Returns True on success, False on failure."""
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
 
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
+        self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
+        self.config.set(
+            "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
+        )
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1545,7 +1864,7 @@ class PreferencesDialog(QDialog):
         self.config.set("SOFTWARE_POS_LIMIT", "z_positive", str(self.limit_z_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
 
-        # Advanced - Tracking
+        # Advanced - Tracking (hidden but still saved)
         self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
@@ -1584,6 +1903,21 @@ class PreferencesDialog(QDialog):
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
         )
 
+        # Hardware Simulation settings (in [SIMULATION] section)
+        self._ensure_section("SIMULATION")
+        self.config.set("SIMULATION", "simulate_camera", str(self.sim_camera_checkbox.isChecked()).lower())
+        self.config.set("SIMULATION", "simulate_microcontroller", str(self.sim_mcu_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_spinning_disk", str(self.sim_spinning_disk_checkbox.isChecked()).lower()
+        )
+        self.config.set("SIMULATION", "simulate_filter_wheel", str(self.sim_filter_wheel_checkbox.isChecked()).lower())
+        self.config.set(
+            "SIMULATION", "simulate_objective_changer", str(self.sim_objective_changer_checkbox.isChecked()).lower()
+        )
+        self.config.set(
+            "SIMULATION", "simulate_laser_af_camera", str(self.sim_laser_af_camera_checkbox.isChecked()).lower()
+        )
+
         # Save to file
         try:
             with open(self.config_filepath, "w") as f:
@@ -1604,7 +1938,7 @@ class PreferencesDialog(QDialog):
                     f"System error: {e}"
                 ),
             )
-            return
+            return False
 
         # Update runtime values for settings that can be applied live
         try:
@@ -1613,6 +1947,7 @@ class PreferencesDialog(QDialog):
             self._log.exception("Failed to apply live settings")
 
         self.signal_config_changed.emit()
+        return True
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
@@ -1620,6 +1955,19 @@ class PreferencesDialog(QDialog):
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
             self.file_saving_combo.currentText()
         )
+
+        # Zarr compression (only applicable when using ZARR_V3)
+        control._def.ZARR_COMPRESSION = control._def.ZarrCompression.convert_to_enum(
+            self.zarr_compression_combo.currentText()
+        )
+
+        # Zarr chunk mode
+        control._def.ZARR_CHUNK_MODE = control._def.ZarrChunkMode.convert_to_enum(
+            self.zarr_chunk_mode_combo.currentText()
+        )
+
+        # Zarr 6D FOV dimension
+        control._def.ZARR_USE_6D_FOV_DIMENSION = self.zarr_6d_fov_checkbox.isChecked()
 
         # Default saving path
         control._def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
@@ -1662,7 +2010,7 @@ class PreferencesDialog(QDialog):
         control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
         control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
 
-        # Tracking settings
+        # Tracking settings (hidden but still updated)
         control._def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
         control._def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
         control._def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
@@ -1703,10 +2051,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
 
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        new_val = self.zarr_6d_fov_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "show_dev_tab", False)
+        new_val = self.show_dev_tab_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
@@ -1917,7 +2275,7 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
-        # Advanced - Tracking (live update)
+        # Advanced - Tracking (hidden but still tracked)
         old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
         new_val = self.enable_tracking_checkbox.isChecked()
         if old_val != new_val:
@@ -1988,7 +2346,72 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
+        # Hardware Simulation settings (require restart)
+        old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
+        new_val = self.sim_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Camera *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_microcontroller", "false").lower() == "true"
+        new_val = self.sim_mcu_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate MCU/Stage *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_spinning_disk", "false").lower() == "true"
+        new_val = self.sim_spinning_disk_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Spinning Disk *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_filter_wheel", "false").lower() == "true"
+        new_val = self.sim_filter_wheel_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Filter Wheel *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_objective_changer", "false").lower() == "true"
+        new_val = self.sim_objective_changer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Objective Changer *", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_value("SIMULATION", "simulate_laser_af_camera", "false").lower() == "true"
+        new_val = self.sim_laser_af_camera_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Laser AF Camera *", str(old_val), str(new_val), True))
+
         return changes
+
+    def _offer_restart_dialog(self):
+        """Show a dialog offering to restart the application now."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Restart Required")
+        msg.setText("Settings have been saved. This change requires a restart to take effect.")
+        msg.setInformativeText("Would you like to restart now?")
+        msg.setIcon(QMessageBox.Information)
+        restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+        msg.addButton("Later", QMessageBox.RejectRole)
+        msg.exec_()
+        if msg.clickedButton() == restart_btn:
+            self._trigger_restart()
+
+    def _trigger_restart(self):
+        """Trigger application restart via callback."""
+        if self._on_restart:
+            try:
+                self._on_restart()
+            except Exception as e:
+                self._log.exception("Failed to restart application")
+                QMessageBox.warning(
+                    self,
+                    "Restart Failed",
+                    f"An error occurred while trying to restart the application.\n\n"
+                    f"Error: {e}\n\nPlease restart the application manually.",
+                )
+        else:
+            self._log.error("No restart callback configured")
+            QMessageBox.warning(
+                self,
+                "Restart Failed",
+                "Could not trigger automatic restart.\nPlease restart the application manually.",
+            )
 
     def _save_and_close(self):
         changes = self._get_changes()
@@ -2002,11 +2425,10 @@ class PreferencesDialog(QDialog):
 
         # For single change, save directly without confirmation
         if len(changes) == 1:
-            self._apply_settings()
+            if not self._apply_settings():
+                return  # Save failed, dialog stays open
             if requires_restart:
-                QMessageBox.information(
-                    self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
-                )
+                self._offer_restart_dialog()
             self.accept()
             return
 
@@ -2044,6 +2466,21 @@ class PreferencesDialog(QDialog):
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
+
+        # Track which button was clicked
+        dialog.restart_requested = False
+
+        if requires_restart:
+            save_restart_btn = QPushButton("Save and Restart")
+            save_restart_btn.setToolTip("Save settings and restart the application now")
+
+            def on_save_restart():
+                dialog.restart_requested = True
+                dialog.accept()
+
+            save_restart_btn.clicked.connect(on_save_restart)
+            button_layout.addWidget(save_restart_btn)
+
         save_btn = QPushButton("Save")
         cancel_btn = QPushButton("Cancel")
         save_btn.clicked.connect(dialog.accept)
@@ -2053,8 +2490,11 @@ class PreferencesDialog(QDialog):
         layout.addLayout(button_layout)
 
         if dialog.exec_() == QDialog.Accepted:
-            self._apply_settings()
-            self.accept()
+            if self._apply_settings():
+                if dialog.restart_requested:
+                    self._trigger_restart()
+                self.accept()
+            # If save failed, dialog stays open (error already shown)
 
 
 class StageUtils(QDialog):
@@ -2622,6 +3062,8 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
         self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setValue(self.xlight.get_filter_slider())
 
         self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -2636,7 +3078,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
-        self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
             illumination_iris = self.xlight.illumination_iris
@@ -2693,13 +3136,13 @@ class SpinningDiskConfocalWidget(QWidget):
 
         filterSliderLayout = QHBoxLayout()
         filterSliderLayout.addWidget(QLabel("Filter Slider"))
-        # self.dropdown_filter_slider = QComboBox(self)
-        # self.dropdown_filter_slider.addItems(["0", "1", "2", "3"])
-        self.dropdown_filter_slider = QSlider(Qt.Horizontal)
-        self.dropdown_filter_slider.setRange(0, 3)
-        self.dropdown_filter_slider.setTickPosition(QSlider.TicksBelow)
-        self.dropdown_filter_slider.setTickInterval(1)
-        filterSliderLayout.addWidget(self.dropdown_filter_slider)
+        # self.filter_slider = QComboBox(self)
+        # self.filter_slider.addItems(["0", "1", "2", "3"])
+        self.filter_slider = QSlider(Qt.Horizontal)
+        self.filter_slider.setRange(0, 3)
+        self.filter_slider.setTickPosition(QSlider.TicksBelow)
+        self.filter_slider.setTickInterval(1)
+        filterSliderLayout.addWidget(self.filter_slider)
 
         self.btn_toggle_widefield = QPushButton("Switch to Confocal")
 
@@ -2732,6 +3175,7 @@ class SpinningDiskConfocalWidget(QWidget):
         layout.setColumnStretch(3, 1)
         self.setLayout(layout)
 
+    @Slot(bool)
     def enable_all_buttons(self, enable: bool):
         self.dropdown_emission_filter.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
@@ -2741,7 +3185,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_illumination_iris.setEnabled(enable)
         self.slider_emission_iris.setEnabled(enable)
         self.spinbox_emission_iris.setEnabled(enable)
-        self.dropdown_filter_slider.setEnabled(enable)
+        if self.xlight.has_dichroic_filter_slider:
+            self.filter_slider.setEnabled(enable)
 
     def block_iris_control_signals(self, block: bool):
         self.slider_illumination_iris.blockSignals(block)
@@ -2751,22 +3196,33 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def toggle_disk_position(self):
         self.enable_all_buttons(False)
-        if self.disk_position_state == 1:
-            self.disk_position_state = self.xlight.set_disk_position(0)
-            self.btn_toggle_widefield.setText("Switch to Confocal")
-        else:
-            self.disk_position_state = self.xlight.set_disk_position(1)
+        target_position = 0 if self.disk_position_state == 1 else 1
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(
+                self, "_on_disk_position_toggled", Qt.QueuedConnection, Q_ARG(int, target_position)
+            )
+
+        utils.threaded_operation_helper(self.xlight.set_disk_position, on_finished, position=target_position)
+
+    @Slot(int)
+    def _on_disk_position_toggled(self, position):
+        self.disk_position_state = position
+        if position == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
+        else:
+            self.btn_toggle_widefield.setText("Switch to Confocal")
         self.enable_all_buttons(True)
         self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
 
     def toggle_motor(self):
         self.enable_all_buttons(False)
-        if self.btn_toggle_motor.isChecked():
-            self.xlight.set_disk_motor_state(True)
-        else:
-            self.xlight.set_disk_motor_state(False)
-        self.enable_all_buttons(True)
+        state = self.btn_toggle_motor.isChecked()
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_disk_motor_state, on_finished, state=state)
 
     def set_emission_filter(self, index):
         self.enable_all_buttons(False)
@@ -2806,9 +3262,12 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def set_filter_slider(self, index):
         self.enable_all_buttons(False)
-        position = str(self.dropdown_filter_slider.value())
-        self.xlight.set_filter_slider(position)
-        self.enable_all_buttons(True)
+        position = str(self.filter_slider.value())
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+
+        utils.threaded_operation_helper(self.xlight.set_filter_slider, on_finished, position=position)
 
     def get_confocal_mode(self) -> bool:
         """Get current confocal mode state.
@@ -4304,111 +4763,199 @@ class AutoFocusWidget(QFrame):
 
 
 class FilterControllerWidget(QFrame):
+    """Widget for controlling filter wheel(s).
+
+    Supports both single and multiple filter wheels. When multiple wheels are
+    available, displays a tabbed interface with one tab per wheel.
+    """
+
     def __init__(
         self,
         filterController: AbstractFilterWheelController,
         liveController: LiveController,
         main=None,
+        config_repo=None,
         *args,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.filterController: AbstractFilterWheelController = filterController
         self.liveController = liveController
-        self.wheel_index = 1  # Control the first filter wheel
+        self.config_repo = config_repo
+
+        # Get available wheel indices
+        self._wheel_indices = list(filterController.available_filter_wheels) or [1]
+
+        # Track combo boxes and buttons per wheel (wheel_id -> widget)
+        self._combo_boxes: Dict[int, QComboBox] = {}
+        self._home_buttons: Dict[int, QPushButton] = {}
+        self._get_pos_buttons: Dict[int, QPushButton] = {}
+        self._next_buttons: Dict[int, QPushButton] = {}
+        self._prev_buttons: Dict[int, QPushButton] = {}
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
+    def _get_wheel_name(self, wheel_id: int) -> str:
+        """Get display name for a wheel from config or generate default."""
+        if self.config_repo:
+            try:
+                registry = self.config_repo.get_filter_wheel_registry()
+                if registry and registry.filter_wheels:
+                    for wheel in registry.filter_wheels:
+                        if wheel.id == wheel_id and wheel.name:
+                            return wheel.name
+            except Exception as e:
+                self._log.warning(f"Failed to get filter wheel name for wheel_id={wheel_id}: {e}")
+        # Default name
+        return f"Wheel {wheel_id}"
+
     def add_components(self):
+        main_layout = QVBoxLayout()
+
+        # If multiple wheels, use tabs; otherwise use simple layout
+        use_tabs = len(self._wheel_indices) > 1
+
+        if use_tabs:
+            self.tab_widget = QTabWidget()
+            for wheel_id in self._wheel_indices:
+                tab = self._create_wheel_tab(wheel_id)
+                wheel_name = self._get_wheel_name(wheel_id)
+                self.tab_widget.addTab(tab, wheel_name)
+            main_layout.addWidget(self.tab_widget)
+        else:
+            # Single wheel - use simple layout
+            wheel_id = self._wheel_indices[0]
+            wheel_widget = self._create_wheel_tab(wheel_id)
+            main_layout.addWidget(wheel_widget)
+
+        # Shared checkbox for all wheels
+        self.checkBox = QCheckBox("Disable filter wheel movement on changing Microscope Configuration", self)
+        self.checkBox.stateChanged.connect(self.disable_movement_by_switching_channels)
+        main_layout.addWidget(self.checkBox)
+
+        # Info label
+        info_label = QLabel("For acquisition, filter wheel positions need to be set in channel configurations.")
+        main_layout.addWidget(info_label)
+
+        self.setLayout(main_layout)
+
+    def _create_wheel_tab(self, wheel_id: int) -> QWidget:
+        """Create a widget for controlling a single wheel."""
+        widget = QWidget()
+        layout = QGridLayout()
+
         # Get filter wheel info to populate combo box
         try:
-            wheel_info = self.filterController.get_filter_wheel_info(self.wheel_index)
+            wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
             num_positions = wheel_info.number_of_slots
-        except:
-            # Fallback to 7 positions if we can't get info
-            num_positions = 7
+        except Exception:
+            num_positions = 8  # Fallback
 
-        self.comboBox = QComboBox()
+        # Get position names from registry if available
+        position_names = {}
+        if self.config_repo:
+            try:
+                registry = self.config_repo.get_filter_wheel_registry()
+                if registry and registry.filter_wheels:
+                    for wheel in registry.filter_wheels:
+                        if wheel.id == wheel_id:
+                            position_names = wheel.positions
+                            break
+            except Exception as e:
+                self._log.warning(f"Failed to get filter position names for wheel {wheel_id}: {e}")
+
+        # Position combo box
+        combo_box = QComboBox()
         for i in range(1, num_positions + 1):
-            self.comboBox.addItem(f"Position {i}")
-
-        self.checkBox = QCheckBox("Disable filter wheel movement on changing Microscope Configuration", self)
+            # Try both int and string keys (YAML may load as strings)
+            filter_name = position_names.get(i) or position_names.get(str(i)) or f"Position {i}"
+            combo_box.addItem(f"{i}: {filter_name}")
+        self._combo_boxes[wheel_id] = combo_box
 
         # Create buttons
-        self.get_position_btn = QPushButton("Get Position")
-        self.home_btn = QPushButton("Home")
-        self.next_btn = QPushButton("Next")
-        self.previous_btn = QPushButton("Previous")
+        get_pos_btn = QPushButton("Get Position")
+        home_btn = QPushButton("Home")
+        next_btn = QPushButton("Next")
+        prev_btn = QPushButton("Previous")
 
-        layout = QGridLayout()
-        layout.addWidget(QLabel("Filter wheel position:"), 0, 0)
-        layout.addWidget(self.comboBox, 0, 1)
-        layout.addWidget(self.get_position_btn, 0, 2)
-        layout.addWidget(self.checkBox, 2, 0, 1, 3)  # Span across 3 columns
-        layout.addWidget(self.home_btn, 3, 0)
-        layout.addWidget(self.next_btn, 3, 1)
-        layout.addWidget(self.previous_btn, 3, 2)
-        layout.addWidget(
-            QLabel("For acquisition, filter wheel positions need to be set in channel configurations."), 4, 0, 1, 3
-        )
+        self._get_pos_buttons[wheel_id] = get_pos_btn
+        self._home_buttons[wheel_id] = home_btn
+        self._next_buttons[wheel_id] = next_btn
+        self._prev_buttons[wheel_id] = prev_btn
 
-        self.setLayout(layout)
+        # Layout
+        layout.addWidget(QLabel("Position:"), 0, 0)
+        layout.addWidget(combo_box, 0, 1)
+        layout.addWidget(get_pos_btn, 0, 2)
+        layout.addWidget(home_btn, 1, 0)
+        layout.addWidget(next_btn, 1, 1)
+        layout.addWidget(prev_btn, 1, 2)
 
-        # Connect signals
-        self.comboBox.currentIndexChanged.connect(self.on_selection_change)
-        self.checkBox.stateChanged.connect(self.disable_movement_by_switching_channels)
-        self.get_position_btn.clicked.connect(self.update_position_from_controller)
-        self.home_btn.clicked.connect(self.home)
-        self.next_btn.clicked.connect(self.go_to_next_position)
-        self.previous_btn.clicked.connect(self.go_to_previous_position)
+        widget.setLayout(layout)
 
-    def home(self):
-        """Home the filter wheel."""
-        self.filterController.home(self.wheel_index)
+        # Connect signals with wheel_id captured in closures
+        combo_box.currentIndexChanged.connect(lambda idx, wid=wheel_id: self._on_selection_change(wid, idx))
+        get_pos_btn.clicked.connect(lambda checked, wid=wheel_id: self._update_position_from_controller(wid))
+        home_btn.clicked.connect(lambda checked, wid=wheel_id: self._home(wid))
+        next_btn.clicked.connect(lambda checked, wid=wheel_id: self._go_to_next_position(wid))
+        prev_btn.clicked.connect(lambda checked, wid=wheel_id: self._go_to_previous_position(wid))
 
-    def update_position_from_controller(self):
+        return widget
+
+    def _home(self, wheel_id: int):
+        """Home a specific filter wheel."""
+        self.filterController.home(wheel_id)
+
+    def _update_position_from_controller(self, wheel_id: int):
         """Poll the current position from the controller and update the dropdown."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
-            # Block signals temporarily to avoid triggering position change
-            self.comboBox.blockSignals(True)
-            self.comboBox.setCurrentIndex(current_pos - 1)  # Convert 1-indexed to 0-indexed
-            self.comboBox.blockSignals(False)
-            print(f"Filter wheel position updated: {current_pos}")
+            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
+            combo_box = self._combo_boxes.get(wheel_id)
+            if combo_box:
+                combo_box.blockSignals(True)
+                combo_box.setCurrentIndex(current_pos - 1)
+                combo_box.blockSignals(False)
+            self._log.debug(f"Filter wheel {wheel_id} position updated: {current_pos}")
         except Exception as e:
-            print(f"Error getting filter wheel position: {e}")
+            self._log.error(f"Error getting filter wheel {wheel_id} position: {e}")
 
-    def on_selection_change(self, index):
+    def _on_selection_change(self, wheel_id: int, index: int):
         """Handle position selection from combo box."""
         if index >= 0:
-            position = index + 1  # Combo box is 0-indexed, positions are 1-indexed
-            self.filterController.set_filter_wheel_position({self.wheel_index: position})
+            position = index + 1
+            self.filterController.set_filter_wheel_position({wheel_id: position})
 
-    def go_to_next_position(self):
+    def _go_to_next_position(self, wheel_id: int):
         """Move to the next position."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
-            wheel_info = self.filterController.get_filter_wheel_info(self.wheel_index)
+            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
+            wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
             max_pos = wheel_info.number_of_slots
 
             if current_pos < max_pos:
                 new_pos = current_pos + 1
-                self.filterController.set_filter_wheel_position({self.wheel_index: new_pos})
-                self.comboBox.setCurrentIndex(new_pos - 1)  # Update combo box
+                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
+                combo_box = self._combo_boxes.get(wheel_id)
+                if combo_box:
+                    combo_box.setCurrentIndex(new_pos - 1)
         except Exception as e:
-            print(f"Error moving to next position: {e}")
+            self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
 
-    def go_to_previous_position(self):
+    def _go_to_previous_position(self, wheel_id: int):
         """Move to the previous position."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
+            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
 
             if current_pos > 1:
                 new_pos = current_pos - 1
-                self.filterController.set_filter_wheel_position({self.wheel_index: new_pos})
-                self.comboBox.setCurrentIndex(new_pos - 1)  # Update combo box
+                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
+                combo_box = self._combo_boxes.get(wheel_id)
+                if combo_box:
+                    combo_box.setCurrentIndex(new_pos - 1)
         except Exception as e:
-            print(f"Error moving to previous position: {e}")
+            self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
 
     def disable_movement_by_switching_channels(self, state):
         """Enable/disable automatic filter wheel movement when changing channels."""
@@ -4416,6 +4963,37 @@ class FilterControllerWidget(QFrame):
             self.liveController.enable_channel_auto_filter_switching = False
         else:
             self.liveController.enable_channel_auto_filter_switching = True
+
+    # Backward compatibility properties and methods
+    @property
+    def wheel_index(self):
+        """Get the first wheel index for backward compatibility."""
+        return self._wheel_indices[0] if self._wheel_indices else 1
+
+    @property
+    def comboBox(self):
+        """Get the first combo box for backward compatibility."""
+        return self._combo_boxes.get(self.wheel_index)
+
+    def home(self):
+        """Home the first filter wheel for backward compatibility."""
+        self._home(self.wheel_index)
+
+    def update_position_from_controller(self):
+        """Update position for first wheel for backward compatibility."""
+        self._update_position_from_controller(self.wheel_index)
+
+    def on_selection_change(self, index):
+        """Handle selection change for first wheel for backward compatibility."""
+        self._on_selection_change(self.wheel_index, index)
+
+    def go_to_next_position(self):
+        """Go to next position on first wheel for backward compatibility."""
+        self._go_to_next_position(self.wheel_index)
+
+    def go_to_previous_position(self):
+        """Go to previous position on first wheel for backward compatibility."""
+        self._go_to_previous_position(self.wheel_index)
 
 
 class StatsDisplayWidget(QFrame):
@@ -5389,6 +5967,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
+
+    def refresh_channel_list(self):
+        """Refresh the channel list after configuration changes."""
+        # Remember currently selected channels
+        selected_names = [item.text() for item in self.list_configurations.selectedItems()]
+
+        # Clear and repopulate
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        for config in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective):
+            self.list_configurations.addItem(config.name)
+
+        # Restore selection where possible
+        for i in range(self.list_configurations.count()):
+            item = self.list_configurations.item(i)
+            if item.text() in selected_names:
+                item.setSelected(True)
+        self.list_configurations.blockSignals(False)
 
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
@@ -7959,6 +8555,24 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
+
+    def refresh_channel_list(self):
+        """Refresh the channel list after configuration changes."""
+        # Remember currently selected channels
+        selected_names = [item.text() for item in self.list_configurations.selectedItems()]
+
+        # Clear and repopulate
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
+            self.list_configurations.addItem(config.name)
+
+        # Restore selection where possible
+        for i in range(self.list_configurations.count()):
+            item = self.list_configurations.item(i)
+            if item.text() in selected_names:
+                item.setSelected(True)
+        self.list_configurations.blockSignals(False)
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -11207,6 +11821,20 @@ class NapariMosaicDisplayWidget(QWidget):
     def activate(self):
         self.viewer.window.activate()
 
+    def get_screenshot(self) -> Optional[np.ndarray]:
+        """Capture the current mosaic view as a numpy array.
+
+        Returns:
+            RGB image array of the current view, or None if no layers exist.
+        """
+        if not self.layers_initialized:
+            return None
+        try:
+            # Use napari's screenshot functionality
+            return self.viewer.screenshot(canvas_only=True)
+        except Exception:
+            return None
+
 
 class NapariPlateViewWidget(QWidget):
     """Widget for displaying downsampled plate view with multi-channel support.
@@ -11742,219 +12370,6 @@ class TrackingControllerWidget(QFrame):
         pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
         self.trackingController.update_pixel_size(pixel_size_xy)
         print(f"pixel size is {pixel_size_xy:.2f} μm")
-
-
-class PlateReaderAcquisitionWidget(QFrame):
-    def __init__(
-        self, plateReadingController, configurationManager=None, show_configurations=True, main=None, *args, **kwargs
-    ):
-        super().__init__(*args, **kwargs)
-        self.plateReadingController = plateReadingController
-        self.configurationManager = configurationManager
-        self.base_path_is_set = False
-        self.add_components(show_configurations)
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-    def add_components(self, show_configurations):
-        self.btn_setSavingDir = QPushButton("Browse")
-        self.btn_setSavingDir.setDefault(False)
-        self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
-        self.lineEdit_savingDir = QLineEdit()
-        self.lineEdit_savingDir.setReadOnly(True)
-        self.lineEdit_savingDir.setText("Choose a base saving directory")
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.plateReadingController.set_base_path(DEFAULT_SAVING_PATH)
-        self.base_path_is_set = True
-
-        self.lineEdit_experimentID = QLineEdit()
-
-        self.list_columns = QListWidget()
-        for i in range(PLATE_READER.NUMBER_OF_COLUMNS):
-            self.list_columns.addItems([str(i + 1)])
-        self.list_columns.setSelectionMode(
-            QAbstractItemView.MultiSelection
-        )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
-
-        self.list_configurations = QListWidget()
-        for microscope_configuration in self.configurationManager.configurations:
-            self.list_configurations.addItems([microscope_configuration.name])
-        self.list_configurations.setSelectionMode(
-            QAbstractItemView.MultiSelection
-        )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
-
-        self.checkbox_withAutofocus = QCheckBox("With AF")
-        self.btn_startAcquisition = QPushButton("Start Acquisition")
-        self.btn_startAcquisition.setCheckable(True)
-        self.btn_startAcquisition.setChecked(False)
-
-        self.btn_startAcquisition.setEnabled(False)
-
-        # layout
-        grid_line0 = QGridLayout()
-        tmp = QLabel("Saving Path")
-        tmp.setFixedWidth(90)
-        grid_line0.addWidget(tmp)
-        grid_line0.addWidget(self.lineEdit_savingDir, 0, 1)
-        grid_line0.addWidget(self.btn_setSavingDir, 0, 2)
-
-        grid_line1 = QGridLayout()
-        tmp = QLabel("Sample ID")
-        tmp.setFixedWidth(90)
-        grid_line1.addWidget(tmp)
-        grid_line1.addWidget(self.lineEdit_experimentID, 0, 1)
-
-        grid_line2 = QGridLayout()
-        tmp = QLabel("Columns")
-        tmp.setFixedWidth(90)
-        grid_line2.addWidget(tmp)
-        grid_line2.addWidget(self.list_columns, 0, 1)
-
-        grid_line3 = QHBoxLayout()
-        tmp = QLabel("Configurations")
-        tmp.setFixedWidth(90)
-        grid_line3.addWidget(tmp)
-        grid_line3.addWidget(self.list_configurations)
-        # grid_line3.addWidget(self.checkbox_withAutofocus)
-
-        self.grid = QGridLayout()
-        self.grid.addLayout(grid_line0, 0, 0)
-        self.grid.addLayout(grid_line1, 1, 0)
-        self.grid.addLayout(grid_line2, 2, 0)
-        if show_configurations:
-            self.grid.addLayout(grid_line3, 3, 0)
-        else:
-            self.list_configurations.setCurrentRow(0)  # select the first configuration
-        self.grid.addWidget(self.btn_startAcquisition, 4, 0)
-        self.setLayout(self.grid)
-
-        # add and display a timer - to be implemented
-        # self.timer = QTimer()
-
-        # connections
-        self.checkbox_withAutofocus.stateChanged.connect(self.plateReadingController.set_af_flag)
-        self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
-        self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.plateReadingController.acquisitionFinished.connect(self.acquisition_is_finished)
-
-    def set_saving_dir(self):
-        dialog = QFileDialog()
-        save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.plateReadingController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
-
-    def toggle_acquisition(self, pressed):
-        if self.base_path_is_set == False:
-            self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please choose base saving directory first")
-            msg.exec_()
-            return
-        if pressed:
-            # @@@ to do: add a widgetManger to enable and disable widget
-            # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.setEnabled_all(False)
-            self.plateReadingController.start_new_experiment(self.lineEdit_experimentID.text())
-            self.plateReadingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
-            )
-            self.plateReadingController.set_selected_columns(
-                list(map(int, [item.text() for item in self.list_columns.selectedItems()]))
-            )
-            self.plateReadingController.run_acquisition()
-        else:
-            self.plateReadingController.stop_acquisition()  # to implement
-            pass
-
-    def acquisition_is_finished(self):
-        self.btn_startAcquisition.setChecked(False)
-        self.setEnabled_all(True)
-
-    def setEnabled_all(self, enabled, exclude_btn_startAcquisition=False):
-        self.btn_setSavingDir.setEnabled(enabled)
-        self.lineEdit_savingDir.setEnabled(enabled)
-        self.lineEdit_experimentID.setEnabled(enabled)
-        self.list_columns.setEnabled(enabled)
-        self.list_configurations.setEnabled(enabled)
-        self.checkbox_withAutofocus.setEnabled(enabled)
-        self.checkbox_withReflectionAutofocus.setEnabled(enabled)
-        if exclude_btn_startAcquisition is not True:
-            self.btn_startAcquisition.setEnabled(enabled)
-
-    def slot_homing_complete(self):
-        self.btn_startAcquisition.setEnabled(True)
-
-
-class PlateReaderNavigationWidget(QFrame):
-    def __init__(self, plateReaderNavigationController, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.add_components()
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.plateReaderNavigationController = plateReaderNavigationController
-
-    def add_components(self):
-        self.dropdown_column = QComboBox()
-        self.dropdown_column.addItems([""])
-        self.dropdown_column.addItems([str(i + 1) for i in range(PLATE_READER.NUMBER_OF_COLUMNS)])
-        self.dropdown_row = QComboBox()
-        self.dropdown_row.addItems([""])
-        self.dropdown_row.addItems([chr(i) for i in range(ord("A"), ord("A") + PLATE_READER.NUMBER_OF_ROWS)])
-        self.btn_moveto = QPushButton("Move To")
-        self.btn_home = QPushButton("Home")
-        self.label_current_location = QLabel()
-        self.label_current_location.setFrameStyle(QFrame.Panel | QFrame.Sunken)
-        self.label_current_location.setFixedWidth(50)
-
-        self.dropdown_column.setEnabled(False)
-        self.dropdown_row.setEnabled(False)
-        self.btn_moveto.setEnabled(False)
-
-        # layout
-        grid_line0 = QHBoxLayout()
-        # tmp = QLabel('Saving Path')
-        # tmp.setFixedWidth(90)
-        grid_line0.addWidget(self.btn_home)
-        grid_line0.addWidget(QLabel("Column"))
-        grid_line0.addWidget(self.dropdown_column)
-        grid_line0.addWidget(QLabel("Row"))
-        grid_line0.addWidget(self.dropdown_row)
-        grid_line0.addWidget(self.btn_moveto)
-        grid_line0.addStretch()
-        grid_line0.addWidget(self.label_current_location)
-
-        self.grid = QGridLayout()
-        self.grid.addLayout(grid_line0, 0, 0)
-        self.setLayout(self.grid)
-
-        self.btn_home.clicked.connect(self.home)
-        self.btn_moveto.clicked.connect(self.move)
-
-    def home(self):
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
-        msg.setText("Confirm your action")
-        msg.setInformativeText("Click OK to run homing")
-        msg.setWindowTitle("Confirmation")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
-            self.plateReaderNavigationController.home()
-
-    def move(self):
-        self.plateReaderNavigationController.moveto(self.dropdown_column.currentText(), self.dropdown_row.currentText())
-
-    def slot_homing_complete(self):
-        self.dropdown_column.setEnabled(True)
-        self.dropdown_row.setEnabled(True)
-        self.btn_moveto.setEnabled(True)
-
-    def update_current_location(self, location_str):
-        self.label_current_location.setText(location_str)
-        row = location_str[0]
-        column = location_str[1:]
-        self.dropdown_row.setCurrentText(row)
-        self.dropdown_column.setCurrentText(column)
 
 
 class TriggerControlWidget(QFrame):
@@ -14954,6 +15369,935 @@ class BackpressureMonitorWidget(QWidget):
             self._log.debug(f"Error stopping monitoring on close: {e}")
 
         super().closeEvent(event)
+
+
+def _is_filter_wheel_enabled() -> bool:
+    """Check if filter wheel is enabled in .ini configuration."""
+    return getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+
+
+def _populate_filter_positions_for_combo(
+    combo: QComboBox,
+    channel_wheel: Optional[str],
+    config_repo,
+    current_position: Optional[int] = None,
+) -> None:
+    """Populate filter position dropdown, auto-resolving wheel selection.
+
+    Args:
+        combo: The QComboBox to populate
+        channel_wheel: Raw filter_wheel value from channel (None, "auto", or wheel name)
+        config_repo: ConfigRepository instance
+        current_position: Position to select (None for first position)
+    """
+    combo.clear()
+
+    registry = config_repo.get_filter_wheel_registry()
+    has_registry = registry and registry.filter_wheels
+
+    # No filter wheel system at all
+    if not has_registry and not _is_filter_wheel_enabled():
+        combo.addItem("N/A", None)
+        combo.setEnabled(False)
+        return
+
+    # Resolve wheel: explicit name, or auto-select first wheel
+    wheel = None
+    if channel_wheel and channel_wheel not in ("(None)", "auto"):
+        # Explicit wheel name specified
+        wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
+        if not wheel and registry:
+            logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
+    elif has_registry:
+        # Auto-select first wheel (works for both single and multi-wheel systems)
+        wheel = registry.get_first_wheel()
+
+    if not wheel:
+        # No wheel resolved - check if we should show default positions or N/A
+        if has_registry or _is_filter_wheel_enabled():
+            # Filter wheel enabled but no registry - show default positions
+            combo.setEnabled(True)
+            for pos in range(1, 9):
+                combo.addItem(f"Position {pos}", pos)
+        else:
+            combo.addItem("N/A", None)
+            combo.setEnabled(False)
+            return
+    else:
+        # Populate from wheel's actual positions
+        combo.setEnabled(True)
+        for pos, filter_name in sorted(wheel.positions.items()):
+            combo.addItem(f"{pos}: {filter_name}", pos)
+
+    # Select current position, or default to first
+    if current_position is not None:
+        for i in range(combo.count()):
+            if combo.itemData(i) == current_position:
+                combo.setCurrentIndex(i)
+                return
+    combo.setCurrentIndex(0)
+
+
+class AcquisitionChannelConfiguratorDialog(QDialog):
+    """Dialog for editing acquisition channel configurations.
+
+    Edits user_profiles/{profile}/channel_configs/general.yaml.
+    Unlike IlluminationChannelConfiguratorDialog (hardware), this edits
+    user-facing channel settings like enabled state, display color, camera,
+    and filter wheel assignments.
+    """
+
+    signal_channels_updated = Signal()
+
+    # Column indices for the channels table
+    COL_ENABLED = 0
+    COL_NAME = 1
+    COL_ILLUMINATION = 2
+    COL_CAMERA = 3
+    COL_FILTER_WHEEL = 4
+    COL_FILTER_POSITION = 5
+    COL_DISPLAY_COLOR = 6
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.general_config = None
+        self.illumination_config = None
+        self.setWindowTitle("Acquisition Channel Configuration")
+        self.setMinimumSize(700, 400)
+        self._setup_ui()
+        self._load_channels()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Info label
+        info_label = QLabel(
+            "Configure acquisition channels for the current profile. "
+            "Changes affect how channels appear in the live view and acquisition panels."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # Table for acquisition channels
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(
+            ["Enabled", "Name", "Illumination", "Camera", "Filter Wheel", "Filter", "Color"]
+        )
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.COL_DISPLAY_COLOR, QHeaderView.Fixed)
+        self.table.setColumnWidth(self.COL_DISPLAY_COLOR, 60)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        layout.addWidget(self.table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        self.btn_add = QPushButton("Add Channel")
+        self.btn_add.setAutoDefault(False)
+        self.btn_add.setDefault(False)
+        self.btn_add.clicked.connect(self._add_channel)
+        button_layout.addWidget(self.btn_add)
+
+        self.btn_remove = QPushButton("Remove Channel")
+        self.btn_remove.setAutoDefault(False)
+        self.btn_remove.setDefault(False)
+        self.btn_remove.clicked.connect(self._remove_channel)
+        button_layout.addWidget(self.btn_remove)
+
+        self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.setAutoDefault(False)
+        self.btn_move_up.clicked.connect(self._move_up)
+        button_layout.addWidget(self.btn_move_up)
+
+        self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.setAutoDefault(False)
+        self.btn_move_down.clicked.connect(self._move_down)
+        button_layout.addWidget(self.btn_move_down)
+
+        button_layout.addSpacing(20)
+
+        self.btn_export = QPushButton("Export...")
+        self.btn_export.setAutoDefault(False)
+        self.btn_export.clicked.connect(self._export_config)
+        button_layout.addWidget(self.btn_export)
+
+        self.btn_import = QPushButton("Import...")
+        self.btn_import.setAutoDefault(False)
+        self.btn_import.clicked.connect(self._import_config)
+        button_layout.addWidget(self.btn_import)
+
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.setAutoDefault(False)
+        self.btn_save.clicked.connect(self._save_changes)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setAutoDefault(False)
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _set_buttons_enabled(self, enabled: bool):
+        """Enable or disable action buttons based on config availability."""
+        self.btn_add.setEnabled(enabled)
+        self.btn_remove.setEnabled(enabled)
+        self.btn_move_up.setEnabled(enabled)
+        self.btn_move_down.setEnabled(enabled)
+        self.btn_export.setEnabled(enabled)
+        self.btn_save.setEnabled(enabled)
+        # Import is always enabled since it can create a new config
+        # Cancel is always enabled
+
+    def _load_channels(self):
+        """Load acquisition channels from general.yaml into the table."""
+        self.general_config = self.config_repo.get_general_config()
+        self.illumination_config = self.config_repo.get_illumination_config()
+
+        if not self.general_config:
+            self._log.warning("No general config found for current profile")
+            QMessageBox.warning(
+                self,
+                "No Configuration",
+                "No channel configuration found for the current profile.\n"
+                "Please ensure a profile is selected and has been initialized.",
+            )
+            # Disable buttons when no config is loaded
+            self._set_buttons_enabled(False)
+            return
+
+        # Enable buttons when config is loaded
+        self._set_buttons_enabled(True)
+
+        # Determine column visibility
+        camera_names = self.config_repo.get_camera_names()
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        has_any_wheel = wheel_names or _is_filter_wheel_enabled()
+
+        # Hide Camera column if single camera (0 or 1)
+        if len(camera_names) <= 1:
+            self.table.setColumnHidden(self.COL_CAMERA, True)
+
+        # Hide Filter Wheel column if single wheel (auto-assigned)
+        if len(wheel_names) <= 1:
+            self.table.setColumnHidden(self.COL_FILTER_WHEEL, True)
+
+        # Hide Filter Position column only if NO wheels at all
+        if not has_any_wheel:
+            self.table.setColumnHidden(self.COL_FILTER_POSITION, True)
+
+        self.table.setRowCount(len(self.general_config.channels))
+
+        for row, channel in enumerate(self.general_config.channels):
+            self._populate_row(row, channel)
+
+    def _populate_row(self, row: int, channel):
+        """Populate a table row with channel data."""
+        from control.models import AcquisitionChannel
+
+        # Enabled checkbox
+        checkbox_widget = QWidget()
+        checkbox_layout = QHBoxLayout(checkbox_widget)
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        checkbox_layout.setAlignment(Qt.AlignCenter)
+        checkbox = QCheckBox()
+        enabled = channel.enabled if hasattr(channel, "enabled") else True
+        checkbox.setChecked(enabled)
+        checkbox_layout.addWidget(checkbox)
+        self.table.setCellWidget(row, self.COL_ENABLED, checkbox_widget)
+
+        # Name (editable text)
+        name_item = QTableWidgetItem(channel.name)
+        self.table.setItem(row, self.COL_NAME, name_item)
+
+        # Illumination dropdown
+        illum_combo = QComboBox()
+        if self.illumination_config:
+            illum_names = [ch.name for ch in self.illumination_config.channels]
+            illum_combo.addItems(illum_names)
+            # Set current illumination
+            current_illum = channel.illumination_settings.illumination_channel
+            if current_illum and current_illum in illum_names:
+                illum_combo.setCurrentText(current_illum)
+        self.table.setCellWidget(row, self.COL_ILLUMINATION, illum_combo)
+
+        # Camera dropdown
+        camera_combo = QComboBox()
+        camera_combo.addItem("(None)")
+        camera_names = self.config_repo.get_camera_names()
+        camera_combo.addItems(camera_names)
+        if channel.camera and channel.camera in camera_names:
+            camera_combo.setCurrentText(channel.camera)
+        self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
+
+        # Filter wheel dropdown
+        wheel_combo = QComboBox()
+        wheel_combo.addItem("(None)")
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        wheel_combo.addItems(wheel_names)
+        # Set selection if channel has explicit wheel name
+        if channel.filter_wheel and channel.filter_wheel in wheel_names:
+            wheel_combo.setCurrentText(channel.filter_wheel)
+        wheel_combo.currentTextChanged.connect(lambda text, r=row: self._on_wheel_changed(r, text))
+        self.table.setCellWidget(row, self.COL_FILTER_WHEEL, wheel_combo)
+
+        # Filter position dropdown - function auto-resolves single-wheel systems
+        position_combo = QComboBox()
+        _populate_filter_positions_for_combo(
+            position_combo, channel.filter_wheel, self.config_repo, channel.filter_position
+        )
+        self.table.setCellWidget(row, self.COL_FILTER_POSITION, position_combo)
+
+        # Display color (color picker button - fills cell width)
+        color = channel.display_color if hasattr(channel, "display_color") else "#FFFFFF"
+        color_btn = QPushButton()
+        color_btn.setStyleSheet(f"background-color: {color};")
+        color_btn.setProperty("color", color)
+        color_btn.clicked.connect(lambda _checked, r=row: self._pick_color(r))
+        self.table.setCellWidget(row, self.COL_DISPLAY_COLOR, color_btn)
+
+    def _on_wheel_changed(self, row: int, wheel_name: str):
+        """Update filter position options when wheel selection changes."""
+        position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+        if position_combo:
+            _populate_filter_positions_for_combo(position_combo, wheel_name, self.config_repo)
+
+    def _pick_color(self, row: int):
+        """Open color picker for a row."""
+        color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
+        current_color = QColor(color_btn.property("color") if color_btn else "#FFFFFF")
+        color = QColorDialog.getColor(current_color, self, "Select Display Color")
+        if color.isValid():
+            color_btn.setStyleSheet(f"background-color: {color.name()};")
+            color_btn.setProperty("color", color.name())
+
+    def _add_channel(self):
+        """Add a new acquisition channel."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot add channel.")
+            return
+
+        dialog = AddAcquisitionChannelDialog(self.config_repo, self)
+        if dialog.exec_() == QDialog.Accepted:
+            channel = dialog.get_channel()
+            if channel:
+                self.general_config.channels.append(channel)
+                # Reload table
+                self._load_channels()
+
+    def _remove_channel(self):
+        """Remove selected channel."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            return
+
+        name_item = self.table.item(current_row, self.COL_NAME)
+        if name_item:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                f"Remove channel '{name_item.text()}'?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes and current_row < len(self.general_config.channels):
+                del self.general_config.channels[current_row]
+                self._load_channels()
+
+    def _move_up(self):
+        """Move selected channel up."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row <= 0:
+            return
+
+        channels = self.general_config.channels
+        channels[current_row - 1], channels[current_row] = channels[current_row], channels[current_row - 1]
+        self._load_channels()
+        self.table.selectRow(current_row - 1)
+
+    def _move_down(self):
+        """Move selected channel down."""
+        if self.general_config is None:
+            return
+
+        current_row = self.table.currentRow()
+        if current_row < 0 or current_row >= len(self.general_config.channels) - 1:
+            return
+
+        channels = self.general_config.channels
+        channels[current_row], channels[current_row + 1] = channels[current_row + 1], channels[current_row]
+        self._load_channels()
+        self.table.selectRow(current_row + 1)
+
+    def _save_changes(self):
+        """Save changes to general.yaml."""
+        if self.general_config is None:
+            QMessageBox.warning(self, "Error", "No configuration loaded. Cannot save.")
+            return
+
+        # Sync table data to config object
+        self._sync_table_to_config()
+
+        # Validate filter wheel/position consistency
+        warnings = []
+        for channel in self.general_config.channels:
+            if channel.filter_wheel is not None and channel.filter_position is None:
+                warnings.append(f"Channel '{channel.name}' has filter wheel but no position selected")
+                self._log.warning(warnings[-1])
+
+        if warnings:
+            reply = QMessageBox.warning(
+                self,
+                "Configuration Warning",
+                "Some channels have incomplete filter settings:\n\n" + "\n".join(warnings) + "\n\nSave anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Save to YAML file
+        try:
+            self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
+            return
+        except Exception as e:
+            self._log.error(f"Unexpected error saving channel configuration: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Failed to save configuration:\n{e}")
+            return
+
+        self.signal_channels_updated.emit()
+        self.accept()
+
+    def _export_config(self):
+        """Export current channel configuration to a YAML file."""
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get save file path
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Channel Configuration",
+            "channel_config.yaml",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Build current config from table (same logic as _save_changes but without saving)
+        self._sync_table_to_config()
+
+        if not self.general_config:
+            QMessageBox.warning(self, "Export Failed", "No configuration loaded to export.")
+            return
+
+        # Export to YAML
+        try:
+            data = self.general_config.model_dump()
+            with open(file_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            QMessageBox.information(self, "Export Successful", f"Configuration exported to:\n{file_path}")
+        except (PermissionError, OSError) as e:
+            self._log.warning(f"Failed to write export file {file_path}: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Cannot write to file:\n{e}")
+        except Exception as e:
+            self._log.error(f"Unexpected error during export: {e}")
+            QMessageBox.critical(self, "Export Failed", f"Unexpected error:\n{e}")
+
+    def _import_config(self):
+        """Import channel configuration from a YAML file."""
+        from pydantic import ValidationError
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get file path
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Channel Configuration",
+            "",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Load and validate
+        try:
+            with open(file_path, "r") as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                raise ValueError("File is empty or contains no valid YAML content")
+            imported_config = GeneralChannelConfig.model_validate(data)
+        except (PermissionError, FileNotFoundError) as e:
+            self._log.warning(f"Cannot read import file {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Cannot read file:\n{e}")
+            return
+        except yaml.YAMLError as e:
+            self._log.warning(f"Invalid YAML in {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"File contains invalid YAML:\n{e}")
+            return
+        except (ValidationError, ValueError) as e:
+            self._log.warning(f"Config validation failed for {file_path}: {e}")
+            QMessageBox.critical(self, "Import Failed", f"Configuration format error:\n{e}")
+            return
+
+        # Replace current config
+        self.general_config = imported_config
+
+        # Refresh the table
+        self.table.setRowCount(0)
+        self._load_channels()
+
+        QMessageBox.information(
+            self, "Import Successful", f"Imported {len(imported_config.channels)} channels from:\n{file_path}"
+        )
+
+    def _sync_table_to_config(self):
+        """Sync table data back to self.general_config without saving to disk."""
+        if self.general_config is None:
+            return
+
+        # Use bounds checking to handle potential table/config mismatch
+        num_rows = min(self.table.rowCount(), len(self.general_config.channels))
+        for row in range(num_rows):
+            channel = self.general_config.channels[row]
+
+            # Enabled
+            checkbox_widget = self.table.cellWidget(row, self.COL_ENABLED)
+            if checkbox_widget:
+                checkbox = checkbox_widget.findChild(QCheckBox)
+                if checkbox:
+                    channel.enabled = checkbox.isChecked()
+
+            # Name
+            name_item = self.table.item(row, self.COL_NAME)
+            if name_item:
+                channel.name = name_item.text().strip()
+
+            # Illumination
+            illum_combo = self.table.cellWidget(row, self.COL_ILLUMINATION)
+            if illum_combo and isinstance(illum_combo, QComboBox):
+                channel.illumination_settings.illumination_channel = illum_combo.currentText()
+
+            # Camera
+            camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
+            if camera_combo and isinstance(camera_combo, QComboBox):
+                camera_text = camera_combo.currentText()
+                channel.camera = camera_text if camera_text != "(None)" else None
+
+            # Filter wheel: None = no selection, else explicit wheel name
+            wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
+            if wheel_combo and isinstance(wheel_combo, QComboBox):
+                wheel_text = wheel_combo.currentText()
+                channel.filter_wheel = wheel_text if wheel_text != "(None)" else None
+
+            # Filter position
+            position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+            if position_combo and isinstance(position_combo, QComboBox):
+                channel.filter_position = position_combo.currentData()
+
+            # Display color
+            color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
+            if color_btn:
+                channel.display_color = color_btn.property("color") or "#FFFFFF"
+
+
+class AddAcquisitionChannelDialog(QDialog):
+    """Dialog for adding a new acquisition channel."""
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self.config_repo = config_repo
+        self._display_color = "#FFFFFF"
+        self.setWindowTitle("Add Acquisition Channel")
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QFormLayout(self)
+
+        # Name
+        self.name_edit = QLineEdit()
+        layout.addRow("Name:", self.name_edit)
+
+        # Illumination source dropdown
+        self.illumination_combo = QComboBox()
+        illum_config = self.config_repo.get_illumination_config()
+        if illum_config:
+            self.illumination_combo.addItems([ch.name for ch in illum_config.channels])
+        layout.addRow("Illumination:", self.illumination_combo)
+
+        # Camera dropdown (hidden if single camera - 0 or 1 cameras)
+        camera_names = self.config_repo.get_camera_names()
+        if len(camera_names) > 1:
+            self.camera_combo = QComboBox()
+            self.camera_combo.addItem("(None)")
+            self.camera_combo.addItems(camera_names)
+            layout.addRow("Camera:", self.camera_combo)
+        else:
+            self.camera_combo = None
+
+        # Filter wheel dropdown (hidden if single wheel - 0 or 1 wheels)
+        wheel_names = self.config_repo.get_filter_wheel_names()
+        has_any_wheel = wheel_names or _is_filter_wheel_enabled()
+
+        # Show wheel dropdown only for multi-wheel systems
+        if len(wheel_names) > 1:
+            self.wheel_combo = QComboBox()
+            self.wheel_combo.addItem("(None)")
+            self.wheel_combo.addItems(wheel_names)
+            self.wheel_combo.currentTextChanged.connect(self._on_wheel_changed)
+            layout.addRow("Filter Wheel:", self.wheel_combo)
+        else:
+            self.wheel_combo = None
+
+        # Filter position dropdown (shown if any filter wheels exist)
+        if has_any_wheel:
+            self.position_combo = QComboBox()
+            # Populate positions - function auto-resolves single-wheel systems
+            _populate_filter_positions_for_combo(self.position_combo, None, self.config_repo)
+            layout.addRow("Filter Position:", self.position_combo)
+        else:
+            self.position_combo = None
+
+        # Display color
+        self.color_btn = QPushButton()
+        self.color_btn.setFixedSize(60, 25)
+        self.color_btn.setStyleSheet(f"background-color: {self._display_color}; border: 1px solid #888;")
+        self.color_btn.clicked.connect(self._pick_color)
+        layout.addRow("Display Color:", self.color_btn)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.btn_ok = QPushButton("Add")
+        self.btn_ok.clicked.connect(self._validate_and_accept)
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_ok)
+        button_layout.addWidget(self.btn_cancel)
+        layout.addRow(button_layout)
+
+    def _on_wheel_changed(self, wheel_name: str):
+        """Update filter position options when wheel selection changes."""
+        if self.position_combo is not None:
+            _populate_filter_positions_for_combo(self.position_combo, wheel_name, self.config_repo)
+
+    def _pick_color(self):
+        """Open color picker."""
+        color = QColorDialog.getColor(QColor(self._display_color), self, "Select Display Color")
+        if color.isValid():
+            self._display_color = color.name()
+            self.color_btn.setStyleSheet(f"background-color: {self._display_color}; border: 1px solid #888;")
+
+    def _validate_and_accept(self):
+        """Validate input before accepting."""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
+            return
+
+        # Check for duplicate names
+        general_config = self.config_repo.get_general_config()
+        if general_config:
+            existing_names = [ch.name for ch in general_config.channels]
+            if name in existing_names:
+                QMessageBox.warning(self, "Validation Error", f"Channel '{name}' already exists.")
+                return
+
+        self.accept()
+
+    def get_channel(self):
+        """Build AcquisitionChannel from dialog inputs."""
+        from control.models import (
+            AcquisitionChannel,
+            CameraSettings,
+            IlluminationSettings,
+        )
+
+        name = self.name_edit.text().strip()
+        illum_name = self.illumination_combo.currentText()
+
+        # Camera
+        camera = None
+        if self.camera_combo:
+            camera_text = self.camera_combo.currentText()
+            camera = camera_text if camera_text != "(None)" else None
+
+        # Filter wheel and position
+        filter_wheel = None
+        if self.wheel_combo:
+            wheel_text = self.wheel_combo.currentText()
+            filter_wheel = wheel_text if wheel_text != "(None)" else None
+        filter_position = self.position_combo.currentData() if self.position_combo else None
+
+        return AcquisitionChannel(
+            name=name,
+            enabled=True,
+            display_color=self._display_color,
+            camera=camera,
+            filter_wheel=filter_wheel,
+            filter_position=filter_position,
+            illumination_settings=IlluminationSettings(
+                illumination_channel=illum_name,
+                intensity=20.0,
+                z_offset_um=0.0,
+            ),
+            camera_settings=CameraSettings(
+                exposure_time_ms=20.0,
+                gain_mode=10.0,
+                pixel_format=None,
+            ),
+        )
+
+
+class FilterWheelConfiguratorDialog(QDialog):
+    """Dialog for configuring filter wheel position names.
+
+    Edits machine_configs/filter_wheels.yaml to define filter wheels
+    and their position-to-name mappings.
+    """
+
+    signal_config_updated = Signal()
+
+    def __init__(self, config_repo, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config_repo = config_repo
+        self.registry = None
+        self.setWindowTitle("Filter Wheel Configuration")
+        self.setMinimumSize(500, 400)
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instructions = QLabel(
+            "Configure filter wheel position names. Each position can have a descriptive name\n"
+            "(e.g., 'DAPI emission', 'GFP emission') that will appear in channel configuration."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Wheel selector (hidden for single-wheel systems)
+        self.wheel_layout = QHBoxLayout()
+        self.wheel_label = QLabel("Filter Wheel:")
+        self.wheel_layout.addWidget(self.wheel_label)
+        self.wheel_combo = QComboBox()
+        self.wheel_combo.currentIndexChanged.connect(self._on_wheel_selected)
+        self.wheel_layout.addWidget(self.wheel_combo, 1)
+        layout.addLayout(self.wheel_layout)
+
+        # Positions table
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Position", "Filter Name"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table)
+
+        # Save/Cancel buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_config)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _load_config(self):
+        """Load filter wheel registry from config."""
+        from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition, FilterWheelType
+
+        self.registry = self.config_repo.get_filter_wheel_registry()
+
+        # Check if filter wheel is enabled in .ini
+        filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+        configured_indices = getattr(control._def, "EMISSION_FILTER_WHEEL_INDICES", [1])
+
+        # If no registry exists but filter wheel is enabled, create one with wheels for all configured indices
+        if self.registry is None:
+            if filter_wheel_enabled:
+                default_positions = {i: f"Position {i}" for i in range(1, 9)}
+                wheels = []
+                for wheel_id in configured_indices:
+                    if len(configured_indices) == 1:
+                        # Single wheel: no name/id needed
+                        wheels.append(
+                            FilterWheelDefinition(type=FilterWheelType.EMISSION, positions=default_positions.copy())
+                        )
+                    else:
+                        # Multi-wheel: use id and name to distinguish
+                        wheels.append(
+                            FilterWheelDefinition(
+                                id=wheel_id,
+                                name=f"Wheel {wheel_id}",
+                                type=FilterWheelType.EMISSION,
+                                positions=default_positions.copy(),
+                            )
+                        )
+                self.registry = FilterWheelRegistryConfig(filter_wheels=wheels)
+            else:
+                self.registry = FilterWheelRegistryConfig(filter_wheels=[])
+
+        # Ensure registry has entries for all wheels configured in .ini
+        # This handles the case where user updated .ini but didn't update filter_wheels.yaml
+        if filter_wheel_enabled and len(configured_indices) > 1:
+            existing_ids = {w.id for w in self.registry.filter_wheels if w.id is not None}
+            default_positions = {i: f"Position {i}" for i in range(1, 9)}
+            for wheel_id in configured_indices:
+                if wheel_id not in existing_ids:
+                    self._log.info(
+                        f"Auto-creating filter wheel entry for wheel {wheel_id} (configured in .ini but missing in filter_wheels.yaml)"
+                    )
+                    self.registry.filter_wheels.append(
+                        FilterWheelDefinition(
+                            id=wheel_id,
+                            name=f"Wheel {wheel_id}",
+                            type=FilterWheelType.EMISSION,
+                            positions=default_positions.copy(),
+                        )
+                    )
+
+        # For single wheel systems: remove name if present (migrate from old "Emission" name)
+        is_single_wheel = len(self.registry.filter_wheels) == 1
+        if is_single_wheel:
+            wheel = self.registry.filter_wheels[0]
+            if wheel.name is not None or wheel.id is not None:
+                self.registry.filter_wheels[0] = FilterWheelDefinition(type=wheel.type, positions=wheel.positions)
+
+        # Hide wheel selector for single-wheel systems
+        self.wheel_label.setVisible(not is_single_wheel)
+        self.wheel_combo.setVisible(not is_single_wheel)
+
+        # Populate wheel combo (for multi-wheel systems)
+        self.wheel_combo.clear()
+        for wheel in self.registry.filter_wheels:
+            display_name = wheel.name or "(Unnamed)"
+            self.wheel_combo.addItem(display_name, wheel)
+
+        # Select first wheel and load its positions
+        if self.wheel_combo.count() > 0:
+            self.wheel_combo.setCurrentIndex(0)
+            self._on_wheel_selected(0)
+        else:
+            self.table.setRowCount(0)
+
+    def _on_wheel_selected(self, index):
+        """Load positions for selected wheel into table."""
+        self.table.setRowCount(0)
+
+        if index < 0:
+            return
+
+        wheel = self.wheel_combo.itemData(index)
+        if wheel is None:
+            return
+
+        # Populate table with positions
+        for pos in sorted(wheel.positions.keys()):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # Position number (read-only)
+            pos_item = QTableWidgetItem(str(pos))
+            pos_item.setFlags(pos_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, pos_item)
+
+            # Filter name (editable)
+            name_item = QTableWidgetItem(wheel.positions[pos])
+            self.table.setItem(row, 1, name_item)
+
+    def _save_config(self):
+        """Save filter wheel configuration to YAML file."""
+        import yaml
+
+        # Sync table data back to current wheel
+        index = self.wheel_combo.currentIndex()
+        if index >= 0:
+            wheel = self.wheel_combo.itemData(index)
+            if wheel:
+                wheel.positions.clear()
+                for row in range(self.table.rowCount()):
+                    pos_item = self.table.item(row, 0)
+                    name_item = self.table.item(row, 1)
+                    if pos_item and name_item:
+                        pos = int(pos_item.text())
+                        name = name_item.text().strip() or f"Position {pos}"
+                        wheel.positions[pos] = name
+
+        # Save to file using repository (ensures consistent serialization)
+        try:
+            self.config_repo.save_filter_wheel_registry(self.registry)
+            self.signal_config_updated.emit()
+            QMessageBox.information(self, "Saved", "Filter wheel configuration saved.")
+            self.accept()
+        except (PermissionError, OSError) as e:
+            self._log.error(f"Failed to save filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Cannot write configuration file:\n{e}")
+        except yaml.YAMLError as e:
+            self._log.error(f"Failed to serialize filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Configuration data could not be serialized:\n{e}")
+        except Exception as e:
+            self._log.exception(f"Unexpected error saving filter wheel config: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")
+
+
+class _QtLogSignalHolder(QObject):
+    """QObject that holds the signal for QtLoggingHandler.
+
+    Defined at module level to avoid dynamic class creation.
+    """
+
+    message_logged = Signal(int, str, str)  # level, logger_name, message
+
+
+class QtLoggingHandler(logging.Handler):
+    """Logging handler that emits Qt signals for WARNING+ messages.
+
+    Thread-safe: Qt signal system handles cross-thread delivery automatically.
+    Used by WarningErrorWidget to display warnings/errors in the status bar.
+    """
+
+    def __init__(self, min_level: int = logging.WARNING):
+        super().__init__()
+        self.setLevel(min_level)
+        self._signal_holder = _QtLogSignalHolder()
+        self.setFormatter(logging.Formatter(fmt=squid.logging.LOG_FORMAT, datefmt=squid.logging.LOG_DATEFORMAT))
+        # Intentionally reuse the private thread_id filter from squid.logging for consistent
+        # formatting across all log handlers. This creates a controlled dependency on
+        # squid.logging's internal API.
+        self.addFilter(squid.logging._thread_id_filter)
+
+    @property
+    def signal_message_logged(self):
+        return self._signal_holder.message_logged
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self._signal_holder.message_logged.emit(record.levelno, record.name, msg)
+        except Exception:
+            self.handleError(record)
 
 
 class WarningErrorWidget(QWidget):

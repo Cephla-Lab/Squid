@@ -246,7 +246,8 @@ class TestProtocolConsistency:
 
     def test_illumination_source_codes_match(self, firmware_constants):
         """Verify illumination source codes match."""
-        illumination_mapping = {
+        # LED matrix patterns
+        led_mapping = {
             "ILLUMINATION_SOURCE_LED_ARRAY_FULL": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_FULL,
             "ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF,
             "ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF,
@@ -257,12 +258,28 @@ class TestProtocolConsistency:
             "ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF,
             "ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF,
             "ILLUMINATION_SOURCE_LED_EXTERNAL_FET": ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_EXTERNAL_FET,
+        }
+
+        # Laser ports - new port-based names
+        laser_port_mapping = {
+            "ILLUMINATION_D1": ILLUMINATION_CODE.ILLUMINATION_D1,
+            "ILLUMINATION_D2": ILLUMINATION_CODE.ILLUMINATION_D2,
+            "ILLUMINATION_D3": ILLUMINATION_CODE.ILLUMINATION_D3,
+            "ILLUMINATION_D4": ILLUMINATION_CODE.ILLUMINATION_D4,
+            "ILLUMINATION_D5": ILLUMINATION_CODE.ILLUMINATION_D5,
+        }
+
+        # Laser ports - legacy wavelength-based names (deprecated but still supported)
+        laser_legacy_mapping = {
             "ILLUMINATION_SOURCE_405NM": ILLUMINATION_CODE.ILLUMINATION_SOURCE_405NM,
             "ILLUMINATION_SOURCE_488NM": ILLUMINATION_CODE.ILLUMINATION_SOURCE_488NM,
             "ILLUMINATION_SOURCE_638NM": ILLUMINATION_CODE.ILLUMINATION_SOURCE_638NM,
             "ILLUMINATION_SOURCE_561NM": ILLUMINATION_CODE.ILLUMINATION_SOURCE_561NM,
             "ILLUMINATION_SOURCE_730NM": ILLUMINATION_CODE.ILLUMINATION_SOURCE_730NM,
         }
+
+        # Combine all mappings
+        illumination_mapping = {**led_mapping, **laser_port_mapping, **laser_legacy_mapping}
 
         mismatches = []
         for fw_name, py_value in illumination_mapping.items():
@@ -275,18 +292,58 @@ class TestProtocolConsistency:
 
         assert len(mismatches) == 0, f"Illumination source code mismatches:\n" + "\n".join(mismatches)
 
+    def test_laser_port_aliases_match(self, firmware_constants):
+        """Verify that new port-based names and legacy wavelength names have same values."""
+        # These pairs should have identical values (they're aliases)
+        alias_pairs = [
+            ("ILLUMINATION_D1", "ILLUMINATION_SOURCE_405NM"),
+            ("ILLUMINATION_D2", "ILLUMINATION_SOURCE_488NM"),
+            ("ILLUMINATION_D3", "ILLUMINATION_SOURCE_561NM"),
+            ("ILLUMINATION_D4", "ILLUMINATION_SOURCE_638NM"),
+            ("ILLUMINATION_D5", "ILLUMINATION_SOURCE_730NM"),
+        ]
+
+        # Verify in firmware
+        mismatches = []
+        for port_name, legacy_name in alias_pairs:
+            if port_name in firmware_constants and legacy_name in firmware_constants:
+                if firmware_constants[port_name] != firmware_constants[legacy_name]:
+                    mismatches.append(
+                        f"Firmware: {port_name}={firmware_constants[port_name]} != "
+                        f"{legacy_name}={firmware_constants[legacy_name]}"
+                    )
+            elif port_name not in firmware_constants:
+                mismatches.append(f"Firmware missing: {port_name}")
+            elif legacy_name not in firmware_constants:
+                mismatches.append(f"Firmware missing: {legacy_name}")
+
+        # Verify in software
+        for port_name, legacy_name in alias_pairs:
+            port_value = getattr(ILLUMINATION_CODE, port_name, None)
+            legacy_value = getattr(ILLUMINATION_CODE, legacy_name, None)
+            if port_value is None:
+                mismatches.append(f"Software missing: {port_name}")
+            elif legacy_value is None:
+                mismatches.append(f"Software missing: {legacy_name}")
+            elif port_value != legacy_value:
+                mismatches.append(f"Software: {port_name}={port_value} != {legacy_name}={legacy_value}")
+
+        assert len(mismatches) == 0, f"Laser port alias mismatches:\n" + "\n".join(mismatches)
+
     def test_illumination_codes_consistency(self, firmware_constants):
         """Check bidirectional consistency of illumination codes between firmware and software."""
-        # Get all ILLUMINATION_SOURCE_* constants from firmware
+        # Get all ILLUMINATION_* constants from firmware (both old and new naming schemes)
         firmware_illumination = {
-            name: value for name, value in firmware_constants.items() if name.startswith("ILLUMINATION_SOURCE_")
+            name: value
+            for name, value in firmware_constants.items()
+            if name.startswith("ILLUMINATION_SOURCE_") or name.startswith("ILLUMINATION_D")
         }
 
         # Get all attributes from Python ILLUMINATION_CODE class
         python_illumination = {
             name: getattr(ILLUMINATION_CODE, name)
             for name in dir(ILLUMINATION_CODE)
-            if name.startswith("ILLUMINATION_SOURCE_")
+            if name.startswith("ILLUMINATION_SOURCE_") or name.startswith("ILLUMINATION_D")
         }
 
         # Find codes in firmware but not in software

@@ -1,6 +1,6 @@
 import enum
 import math
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import pydantic
 
@@ -32,7 +32,6 @@ class SquidFilterWheelConfig(pydantic.BaseModel):
     max_index: int
     min_index: int
     offset: float
-    homing_enabled: bool
     motor_slot_index: int
     transitions_per_revolution: int
 
@@ -65,8 +64,12 @@ class FilterWheelConfig(pydantic.BaseModel):
     # List of filter wheel indices to use (e.g., [1] for single wheel, [1, 2, 3, 4] for Optospin with 4 wheels)
     indices: list[int]
 
-    # Controller-specific configuration
+    # Controller-specific configuration (single config for backward compatibility)
     controller_config: Optional[Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]] = None
+
+    # Per-wheel configs for multi-wheel setups (wheel_id -> config)
+    # Used by SQUID multi-wheel support
+    squid_wheel_configs: Optional[Dict[int, SquidFilterWheelConfig]] = None
 
 
 def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
@@ -79,12 +82,29 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
         return None
 
     controller_config = None
+    squid_wheel_configs = None
+
     if controller_type == FilterWheelControllerVariant.SQUID:
+        # Build per-wheel configs from SQUID_FILTERWHEEL_CONFIGS if available
+        squid_configs_dict = getattr(_def, "SQUID_FILTERWHEEL_CONFIGS", None)
+        if squid_configs_dict:
+            squid_wheel_configs = {}
+            for wheel_id, wheel_cfg in squid_configs_dict.items():
+                # Only include wheels that are in EMISSION_FILTER_WHEEL_INDICES
+                if wheel_id in _def.EMISSION_FILTER_WHEEL_INDICES:
+                    squid_wheel_configs[wheel_id] = SquidFilterWheelConfig(
+                        max_index=wheel_cfg["max_index"],
+                        min_index=wheel_cfg["min_index"],
+                        offset=wheel_cfg["offset"],
+                        motor_slot_index=wheel_cfg["motor_slot_index"],
+                        transitions_per_revolution=wheel_cfg["transitions_per_revolution"],
+                    )
+
+        # Also create the legacy single config for backward compatibility (uses first wheel)
         controller_config = SquidFilterWheelConfig(
             max_index=_def.SQUID_FILTERWHEEL_MAX_INDEX,
             min_index=_def.SQUID_FILTERWHEEL_MIN_INDEX,
             offset=_def.SQUID_FILTERWHEEL_OFFSET,
-            homing_enabled=_def.SQUID_FILTERWHEEL_HOMING_ENABLED,
             motor_slot_index=_def.SQUID_FILTERWHEEL_MOTORSLOTINDEX,
             transitions_per_revolution=_def.SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION,
         )
@@ -106,6 +126,7 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
         controller_type=controller_type,
         indices=_def.EMISSION_FILTER_WHEEL_INDICES,
         controller_config=controller_config,
+        squid_wheel_configs=squid_wheel_configs,
     )
 
 

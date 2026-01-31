@@ -8,6 +8,7 @@ void init_callbacks()
     cmd_map[MOVE_Y] = &callback_move_y;
     cmd_map[MOVE_Z] = &callback_move_z;
     cmd_map[MOVE_W] = &callback_move_w;
+    cmd_map[MOVE_W2] = &callback_move_w2;
     cmd_map[MOVETO_X] = &callback_move_to_x;
     cmd_map[MOVETO_Y] = &callback_move_to_y;
     cmd_map[MOVETO_Z] = &callback_move_to_z;
@@ -25,6 +26,13 @@ void init_callbacks()
     cmd_map[TURN_OFF_ILLUMINATION] = &callback_turn_off_illumination;
     cmd_map[SET_ILLUMINATION] = &callback_set_illumination;
     cmd_map[SET_ILLUMINATION_LED_MATRIX] = &callback_set_illumination_led_matrix;
+    // Multi-port illumination commands (firmware v1.0+)
+    cmd_map[SET_PORT_INTENSITY] = &callback_set_port_intensity;
+    cmd_map[TURN_ON_PORT] = &callback_turn_on_port;
+    cmd_map[TURN_OFF_PORT] = &callback_turn_off_port;
+    cmd_map[SET_PORT_ILLUMINATION] = &callback_set_port_illumination;
+    cmd_map[SET_MULTI_PORT_MASK] = &callback_set_multi_port_mask;
+    cmd_map[TURN_OFF_ALL_PORTS] = &callback_turn_off_all_ports;
     cmd_map[ACK_JOYSTICK_BUTTON_PRESSED] = &callback_ack_joystick_button_pressed;
     cmd_map[ANALOG_WRITE_ONBOARD_DAC] = &callback_analog_write_onboard_dac;
     cmd_map[SET_DAC80508_REFDIV_GAIN] = &callback_set_dac80508_defdiv_gain;
@@ -36,6 +44,7 @@ void init_callbacks()
     cmd_map[ENABLE_STAGE_PID] = &callback_enable_stage_pid;
     cmd_map[DISABLE_STAGE_PID] = &callback_disable_stage_pid;
     cmd_map[INITFILTERWHEEL] = &callback_initfilterwheel;
+    cmd_map[INITFILTERWHEEL_W2] = &callback_initfilterwheel_w2;
     cmd_map[SET_AXIS_DISABLE_ENABLE] = &callback_set_axis_disable_enable;
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
@@ -97,7 +106,9 @@ void callback_set_pin_level()
 
 void callback_configure_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     int flip_direction = buffer_rx[3];
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
     // Init encoder. transitions per revolution, velocity filter wait time (# of clock cycles), IIR filter exponent, vmean update frequency, invert direction (must increase as microsteps increases)
@@ -111,52 +122,77 @@ void callback_configure_stage_pid()
         tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm), 4096, 2);
     else if (axis == w) {
         if (enable_filterwheel == true)
-        tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+    }
+    else if (axis == w2) {
+        if (enable_filterwheel_w2 == true)
+            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
     }
 }
 
 void callback_enable_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
 }
 
 void callback_disable_stage_pid()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
+}
+
+// Helper function for filter wheel initialization (shared by W and W2)
+static void init_filterwheel_axis(uint8_t axis)
+{
+    tmc4361A_init(&tmc4361[axis], pin_TMC4361_CS[axis], &tmc4361_configs[axis], tmc4361A_defaultRegisterResetState);
+    pinMode(pin_TMC4361_CS[axis], OUTPUT);
+    digitalWrite(pin_TMC4361_CS[axis], HIGH);
+
+    tmc4361A_tmc2660_config(&tmc4361[axis], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+    tmc4361A_tmc2660_init(&tmc4361[axis], clk_Hz_TMC4361);
+    tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
+
+    // Calculate velocity and acceleration (ensures values are set for both W and W2)
+    max_velocity_usteps[axis] = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
+    max_acceleration_usteps[axis] = tmc4361A_ammToMicrosteps(&tmc4361[axis], MAX_ACCELERATION_W_mm);
+
+    tmc4361A_setMaxSpeed(&tmc4361[axis], max_velocity_usteps[axis]);
+    tmc4361A_setMaxAcceleration(&tmc4361[axis], max_acceleration_usteps[axis]);
+    tmc4361[axis].rampParam[ASTART_IDX] = 0;
+    tmc4361[axis].rampParam[DFINAL_IDX] = 0;
+    tmc4361A_sRampInit(&tmc4361[axis]);
+
+    tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+
+    tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
+    tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], 1);
 }
 
 void callback_initfilterwheel()
 {
     enable_filterwheel = true;
+    init_filterwheel_axis(w);
+}
 
-    tmc4361A_init(&tmc4361[w], pin_TMC4361_CS[w], &tmc4361_configs[w], tmc4361A_defaultRegisterResetState);
-    pinMode(pin_TMC4361_CS[w], OUTPUT);
-    digitalWrite(pin_TMC4361_CS[w], HIGH);
-
-    tmc4361A_tmc2660_config(&tmc4361[w], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W); // need to make current scaling on TMC2660 is > 16 (out of 31)
-    tmc4361A_tmc2660_init(&tmc4361[w], clk_Hz_TMC4361);   // set up ICs with SPI control and other parameters
-        tmc4361A_enableLimitSwitch(&tmc4361[w], lft_sw_pol[w], LEFT_SW, false);
-
-    tmc4361A_setMaxSpeed(&tmc4361[w], max_velocity_usteps[w]);
-    tmc4361A_setMaxAcceleration(&tmc4361[w], max_acceleration_usteps[w]);
-    tmc4361[w].rampParam[ASTART_IDX] = 0;
-    tmc4361[w].rampParam[DFINAL_IDX] = 0;
-    tmc4361A_sRampInit(&tmc4361[w]);
-
-    tmc4361A_set_PID(&tmc4361[w], PID_DISABLE);
-
-    tmc4361A_enableHomingLimit(&tmc4361[w], rht_sw_pol[w], TMC4361_homing_sw[w], home_safety_margin[w]);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], -1);
-    tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], 1);
+void callback_initfilterwheel_w2()
+{
+    enable_filterwheel_w2 = true;
+    init_filterwheel_axis(w2);
 }
 
 void callback_set_axis_disable_enable()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     int status = buffer_rx[3];
     if (status == 0) {
         tmc4361A_tmc2660_disable_driver(&tmc4361[axis]);
@@ -229,19 +265,23 @@ void callback_reset()
     Y_commanded_movement_in_progress = false;
     Z_commanded_movement_in_progress = false;
     W_commanded_movement_in_progress = false;
+    W2_commanded_movement_in_progress = false;
     is_homing_X = false;
     is_homing_Y = false;
     is_homing_Z = false;
     is_homing_W = false;
+    is_homing_W2 = false;
     is_homing_XY = false;
     home_X_found = false;
     home_Y_found = false;
     home_Z_found = false;
     home_W_found = false;
+    home_W2_found = false;
     is_preparing_for_homing_X = false;
     is_preparing_for_homing_Y = false;
     is_preparing_for_homing_Z = false;
     is_preparing_for_homing_W = false;
+    is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
 }

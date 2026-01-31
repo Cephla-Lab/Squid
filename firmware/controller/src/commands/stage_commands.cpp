@@ -40,19 +40,30 @@ void callback_move_z()
     }
 }
 
+// Helper function for filter wheel movement (shared by W and W2)
+static void move_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
+{
+    if (!enabled) return;
+
+    long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
+    long current_position = tmc4361A_currentPosition(&tmc4361[axis]);
+    *direction = sgn(relative_position);
+    *target_position = current_position + relative_position;
+    if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
+    {
+        *movement_in_progress = true;
+        mcu_cmd_execution_in_progress = true;
+    }
+}
+
 void callback_move_w()
 {
-    if (enable_filterwheel == true) {
-        long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-        long current_position = tmc4361A_currentPosition(&tmc4361[w]);
-        W_direction = sgn(relative_position);
-        W_commanded_target_position = current_position + relative_position;
-        if ( tmc4361A_moveTo(&tmc4361[w], W_commanded_target_position) == 0)
-        {
-        W_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
-        }
-    }
+    move_filterwheel(w, enable_filterwheel, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
+}
+
+void callback_move_w2()
+{
+    move_filterwheel(w2, enable_filterwheel_w2, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
 }
 
 void callback_move_to_x()
@@ -222,17 +233,27 @@ void callback_set_home_safety_margin()
             tmc4361A_enableHomingLimit(&tmc4361[w], rht_sw_pol[w], TMC4361_homing_sw[w], home_safety_margin[w]);
             break;
         }
+        case AXIS_W2:
+        {
+            uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+            float home_safety_margin_mm = float(margin) / 1000.0;
+            home_safety_margin[w2] = tmc4361A_xmmToMicrosteps(&tmc4361[w2], home_safety_margin_mm);
+            tmc4361A_enableHomingLimit(&tmc4361[w2], rht_sw_pol[w2], TMC4361_homing_sw[w2], home_safety_margin[w2]);
+            break;
+        }
     }
 }
 
 void callback_set_pid_arguments()
 {
-    int axis = buffer_rx[2];
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;  // Invalid axis
+
     uint16_t p = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
     uint8_t  i = uint8_t(buffer_rx[5]);
     uint8_t  d = uint8_t(buffer_rx[6]);
 
-    axes_pid_arg[axis].p = p; 
+    axes_pid_arg[axis].p = p;
     axes_pid_arg[axis].i = i;
     axes_pid_arg[axis].d = d;
 }
@@ -295,6 +316,22 @@ void callback_configure_stepper_driver()
             }
             break;
         }
+        case AXIS_W2:
+        {
+            // W2 shares motor settings with W (identical hardware)
+            if (enable_filterwheel_w2 == true) {
+            int microstepping_setting = buffer_rx[3];
+            if (microstepping_setting > 128)
+                microstepping_setting = 256;
+            MICROSTEPPING_W = microstepping_setting == 0 ? 1 : microstepping_setting;
+            steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
+            W_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
+            W_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
+            tmc4361A_tmc2660_config(&tmc4361[w2], (W_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+            tmc4361A_tmc2660_update(&tmc4361[w2]);
+            }
+            break;
+        }
     }
 }
 
@@ -336,6 +373,19 @@ void callback_set_max_velocity_acceleration()
             }
             break;
         }
+        case AXIS_W2:
+        {
+            // W2 shares motor settings with W (identical hardware)
+            if (enable_filterwheel_w2 == true) {
+            MAX_VELOCITY_W_mm = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 100;
+            MAX_ACCELERATION_W_mm = float(uint16_t(buffer_rx[5]) * 256 + uint16_t(buffer_rx[6])) / 10;
+            max_velocity_usteps[w2] = tmc4361A_vmmToMicrosteps(&tmc4361[w2], MAX_VELOCITY_W_mm);
+            max_acceleration_usteps[w2] = tmc4361A_ammToMicrosteps(&tmc4361[w2], MAX_ACCELERATION_W_mm);
+            tmc4361A_setMaxSpeed(&tmc4361[w2], max_velocity_usteps[w2]);
+            tmc4361A_setMaxAcceleration(&tmc4361[w2], max_acceleration_usteps[w2]);
+            }
+            break;
+        }
     }
 }
 
@@ -369,6 +419,15 @@ void callback_set_lead_screw_pitch()
             }
             break;
         }
+        case AXIS_W2:
+        {
+            // W2 shares motor settings with W (identical hardware)
+            if (enable_filterwheel_w2 == true) {
+            SCREW_PITCH_W_MM = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 1000;
+            steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
+            }
+            break;
+        }
     }
 }
 
@@ -396,6 +455,12 @@ void callback_home_or_zero()
             if (enable_filterwheel == true) {
             tmc4361A_setCurrentPosition(&tmc4361[w], 0);
             W_pos = 0;
+            }
+            break;
+        case AXIS_W2:
+            if (enable_filterwheel_w2 == true) {
+            tmc4361A_setCurrentPosition(&tmc4361[w2], 0);
+            W2_pos = 0;
             }
             break;
         }
@@ -585,6 +650,50 @@ void callback_home_or_zero()
                 tmc4361A_readLimitSwitches(&tmc4361[w]);
                 tmc4361A_readInt(&tmc4361[w], TMC4361A_EVENTS);
                 tmc4361A_setSpeed(&tmc4361[w], tmc4361A_vmmToMicrosteps( &tmc4361[w], LEFT_DIR * HOMING_VELOCITY_W ));
+                }
+            }
+            }
+            break;
+        case AXIS_W2:
+            if (enable_filterwheel_w2 == true) {
+            if (stage_PID_enabled[w2] == 1)
+                tmc4361A_set_PID(&tmc4361[w2], PID_DISABLE);
+            tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], -1);
+            tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], 1);
+            homing_direction_W2 = buffer_rx[3];
+            home_W2_found = false;
+            if (homing_direction_W2 == HOME_NEGATIVE) // use the left limit switch for homing
+            {
+                if (tmc4361A_readLimitSwitches(&tmc4361[w2]) == 0x00)
+                {
+                // get out of the hysteresis zone
+                is_preparing_for_homing_W2 = true;
+                tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+                tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], LEFT_DIR * HOMING_VELOCITY_W ));
+                }
+                else
+                {
+                is_homing_W2 = true;
+                tmc4361A_readLimitSwitches(&tmc4361[w2]);
+                tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+                tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], RGHT_DIR * HOMING_VELOCITY_W ));
+                }
+            }
+            else // use the right limit switch for homing
+            {
+                if (tmc4361A_readLimitSwitches(&tmc4361[w2]) == 0x00)
+                {
+                // get out of the hysteresis zone
+                is_preparing_for_homing_W2 = true;
+                tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+                tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], RGHT_DIR * HOMING_VELOCITY_W ));
+                }
+                else
+                {
+                is_homing_W2 = true;
+                tmc4361A_readLimitSwitches(&tmc4361[w2]);
+                tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
+                tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], LEFT_DIR * HOMING_VELOCITY_W ));
                 }
             }
             }

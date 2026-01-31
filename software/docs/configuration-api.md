@@ -97,13 +97,31 @@ confocal_config = config_repo.get_confocal_config()
 if config_repo.has_confocal():
     ...
 
-# Camera mappings
+# Camera mappings (legacy)
 camera_config = config_repo.get_camera_mappings()
+
+# Camera registry (v1.0)
+camera_registry = config_repo.get_camera_registry()
+if camera_registry:
+    camera_names = camera_registry.get_camera_names()
+    serial = camera_registry.get_serial_number("Main Camera")
+
+# Filter wheel registry (v1.0)
+filter_wheel_registry = config_repo.get_filter_wheel_registry()
+if filter_wheel_registry:
+    wheel_names = filter_wheel_registry.get_wheel_names()
+    filter_name = filter_wheel_registry.get_filter_name("Emission Filter Wheel", position=2)
+
+# Convenience methods for UI dropdowns
+camera_names = config_repo.get_camera_names()      # Returns [] if no registry
+wheel_names = config_repo.get_filter_wheel_names() # Returns [] if no registry
 
 # Save machine configs (updates cache)
 config_repo.save_illumination_config(ill_config)
 config_repo.save_confocal_config(confocal_config)
 config_repo.save_camera_mappings(camera_config)
+config_repo.save_camera_registry(camera_registry)
+config_repo.save_filter_wheel_registry(filter_wheel_registry)
 ```
 
 ### Channel Configs
@@ -277,24 +295,53 @@ effective = channel.get_effective_settings(confocal_mode=True)
 # Returns new AcquisitionChannel with confocal_override applied
 ```
 
-**Nested structures:**
+**Nested structures (v1.0 schema):**
 ```python
-# Camera settings (by camera ID)
-for cam_id, cam_settings in channel.camera_settings.items():
-    print(f"Camera {cam_id}:")
-    print(f"  Exposure: {cam_settings.exposure_time_ms}")
-    print(f"  Gain: {cam_settings.gain_mode}")
-    print(f"  Color: {cam_settings.display_color}")
+# Camera settings (single object in v1.0)
+cam = channel.camera_settings
+print(f"Exposure: {cam.exposure_time_ms} ms")
+print(f"Gain: {cam.gain_mode}")
 
-# Illumination settings
+# Illumination settings (single channel, scalar intensity in v1.0)
 ill = channel.illumination_settings
-for ch_name, intensity in ill.intensity.items():
-    print(f"{ch_name}: {intensity}%")
+print(f"Channel: {ill.illumination_channel}")
+print(f"Intensity: {ill.intensity}%")
 
-# Confocal settings (if present)
-if channel.confocal_settings:
-    print(f"Filter wheel: {channel.confocal_settings.filter_wheel_id}")
-    print(f"Filter position: {channel.confocal_settings.emission_filter_wheel_position}")
+# Z offset is at channel level (not in illumination_settings)
+print(f"Z offset: {channel.z_offset_um} um")
+
+# Confocal override settings (objective-specific iris settings)
+if channel.confocal_override and channel.confocal_override.confocal_settings:
+    cs = channel.confocal_override.confocal_settings
+    print(f"Illumination iris: {cs.illumination_iris}%")
+    print(f"Emission iris: {cs.emission_iris}%")
+```
+
+**Field validation constraints:**
+```python
+# All models use Pydantic validation. Key constraints:
+#
+# CameraSettings:
+#   - exposure_time_ms: > 0
+#   - gain_mode: >= 0
+#
+# IlluminationSettings:
+#   - intensity: 0-100 (percentage)
+#
+# ConfocalSettings (used in confocal_override):
+#   - illumination_iris: 0-100 (percentage)
+#   - emission_iris: 0-100 (percentage)
+#
+# AcquisitionChannel:
+#   - name: min 1 character
+#   - display_color: hex format (#RRGGBB)
+#   - camera: >= 1 if provided (null for single-camera)
+#   - filter_position: >= 1 if provided
+#
+# IlluminationChannel:
+#   - name: min 1 character
+#   - controller_port: D1-D8 or USB1-USB8
+#   - wavelength_nm: > 0 if provided
 ```
 
 ### GeneralChannelConfig & ObjectiveChannelConfig
@@ -375,7 +422,9 @@ if config:
         ...
 ```
 
-### CameraMappingsConfig
+### CameraMappingsConfig (Legacy)
+
+> **Note**: Deprecated in v1.0. Use `CameraRegistryConfig` and `FilterWheelRegistryConfig` instead.
 
 ```python
 from control.models import CameraMappingsConfig
@@ -391,6 +440,108 @@ if config:
     # Check for confocal in light path
     if config.has_confocal_in_light_path("camera_1"):
         ...
+```
+
+### CameraRegistryConfig (v1.0)
+
+Maps user-friendly camera names to hardware serial numbers.
+
+```python
+from control.models import CameraRegistryConfig, CameraDefinition
+
+# Load from repository
+registry = config_repo.get_camera_registry()
+
+if registry:
+    # Get all camera names (for UI dropdowns)
+    names = registry.get_camera_names()
+    # Returns: ['Main Camera', 'Side Camera']
+
+    # Get camera by name
+    camera = registry.get_camera_by_name("Main Camera")
+    if camera:
+        print(f"Serial: {camera.serial_number}")
+        print(f"Model: {camera.model}")
+
+    # Get serial number for a camera name
+    serial = registry.get_serial_number("Main Camera")
+
+    # Get camera by serial number
+    camera = registry.get_camera_by_sn("ABC12345")
+
+# Create programmatically
+registry = CameraRegistryConfig(
+    version=1.0,
+    cameras=[
+        CameraDefinition(
+            id=1,
+            name="Main Camera",
+            serial_number="ABC12345",
+            model="Hamamatsu C15440"
+        ),
+        CameraDefinition(
+            id=2,
+            name="Side Camera",
+            serial_number="DEF67890"
+        ),
+    ]
+)
+config_repo.save_camera_registry(registry)
+```
+
+### FilterWheelRegistryConfig (v1.0)
+
+Defines filter wheels with positions and installed filters.
+
+```python
+from control.models import FilterWheelRegistryConfig, FilterWheelDefinition
+
+# Load from repository
+registry = config_repo.get_filter_wheel_registry()
+
+if registry:
+    # Get all wheel names (for UI dropdowns)
+    names = registry.get_wheel_names()
+    # Returns: ['Emission Filter Wheel', 'Excitation Filter Wheel']
+
+    # Get wheel by name
+    wheel = registry.get_wheel_by_name("Emission Filter Wheel")
+    if wheel:
+        print(f"ID: {wheel.id}")
+        print(f"Positions: {wheel.positions}")
+        # {1: 'Empty', 2: 'BP 525/50', ...}
+
+        # Get filter at position
+        filter_name = wheel.get_filter_name(2)  # 'BP 525/50'
+
+        # Get position for filter name
+        position = wheel.get_position_by_filter("BP 525/50")  # 2
+
+        # Get all filter names
+        filters = wheel.get_filter_names()
+
+    # Get hardware ID for wheel name
+    hw_id = registry.get_hardware_id("Emission Filter Wheel")
+
+    # Get filter name across wheels
+    filter_name = registry.get_filter_name("Emission Filter Wheel", position=2)
+
+# Create programmatically
+registry = FilterWheelRegistryConfig(
+    version=1.0,
+    filter_wheels=[
+        FilterWheelDefinition(
+            name="Emission Filter Wheel",
+            id=1,
+            positions={
+                1: "Empty",
+                2: "BP 525/50",
+                3: "BP 600/50",
+            }
+        ),
+    ]
+)
+config_repo.save_filter_wheel_registry(registry)
 ```
 
 ---

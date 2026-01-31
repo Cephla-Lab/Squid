@@ -21,6 +21,7 @@ void callback_configure_stage_pid();
 void callback_enable_stage_pid();
 void callback_disable_stage_pid();
 void callback_initfilterwheel();
+void callback_initfilterwheel_w2();
 void callback_set_axis_disable_enable();
 void callback_set_trigger_mode();
 void callback_initialize();

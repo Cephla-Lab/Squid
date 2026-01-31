@@ -130,6 +130,7 @@ def get_filter_wheel_controller(
     config: FilterWheelConfig,
     microcontroller=None,  # Type hint would create circular dependency
     simulated: bool = False,
+    skip_init: bool = False,
 ) -> AbstractFilterWheelController:
     """
     Factory function to create the appropriate filter wheel controller based on configuration.
@@ -138,6 +139,7 @@ def get_filter_wheel_controller(
         config: FilterWheelConfig containing controller type and settings
         microcontroller: Microcontroller instance (required for SQUID filter wheel)
         simulated: If True, return a simulated controller regardless of config
+        skip_init: If True, skip hardware initialization (for restart after settings change)
 
     Returns:
         AbstractFilterWheelController instance
@@ -146,7 +148,9 @@ def get_filter_wheel_controller(
         ValueError: If controller type is unknown or required dependencies are missing
     """
     if simulated:
-        return SimulatedFilterWheelController()
+        # Create simulated controller with correct number of wheels
+        num_wheels = len(config.indices) if config else 1
+        return SimulatedFilterWheelController(number_of_wheels=num_wheels)
 
     # Import here to avoid circular dependencies
     from squid.filter_wheel_controller.cephla import SquidFilterWheel
@@ -156,7 +160,9 @@ def get_filter_wheel_controller(
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:
             raise ValueError("SquidFilterWheel requires a microcontroller instance")
-        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config)
+        # Use multi-wheel configs if explicitly set, otherwise fall back to single config
+        configs = config.squid_wheel_configs if config.squid_wheel_configs is not None else config.controller_config
+        return SquidFilterWheel(microcontroller=microcontroller, configs=configs, skip_init=skip_init)
 
     elif config.controller_type == FilterWheelControllerVariant.ZABER:
         return ZaberFilterController(config=config.controller_config)

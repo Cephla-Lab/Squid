@@ -111,6 +111,13 @@ class FirmwareConstants:
             "INITFILTERWHEEL",
             "INITIALIZE",
             "RESET",
+            # Multi-port illumination commands (firmware v1.0+)
+            "SET_PORT_INTENSITY",
+            "TURN_ON_PORT",
+            "TURN_OFF_PORT",
+            "SET_PORT_ILLUMINATION",
+            "SET_MULTI_PORT_MASK",
+            "TURN_OFF_ALL_PORTS",
         ]
         return {name: self._constants[name] for name in command_names if name in self._constants}
 

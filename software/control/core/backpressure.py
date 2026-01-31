@@ -69,16 +69,24 @@ class BackpressureController:
         return self._capacity_event
 
     def get_pending_jobs(self) -> int:
+        if self._pending_jobs is None:
+            return 0
         with self._pending_jobs.get_lock():
             return self._pending_jobs.value
 
     def get_pending_mb(self) -> float:
+        if self._pending_bytes is None:
+            return 0.0
         with self._pending_bytes.get_lock():
             return self._pending_bytes.value / (1024 * 1024)
 
     def should_throttle(self) -> bool:
         """Check if acquisition should wait (either limit exceeded)."""
         if not self._enabled:
+            return False
+
+        # Guard against closed state (values set to None)
+        if self._pending_jobs is None or self._pending_bytes is None:
             return False
 
         with self._pending_jobs.get_lock():
@@ -115,6 +123,8 @@ class BackpressureController:
         """Manually increment counters. For testing only - production uses JobRunner."""
         if not self._enabled:
             return
+        if self._pending_jobs is None or self._pending_bytes is None:
+            return
         with self._pending_jobs.get_lock():
             self._pending_jobs.value += 1
         with self._pending_bytes.get_lock():
@@ -131,6 +141,8 @@ class BackpressureController:
 
     def reset(self) -> None:
         """Reset counters (call at acquisition start)."""
+        if self._pending_jobs is None or self._pending_bytes is None:
+            return
         with self._pending_jobs.get_lock():
             self._pending_jobs.value = 0
         with self._pending_bytes.get_lock():

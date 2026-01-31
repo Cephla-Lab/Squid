@@ -266,7 +266,7 @@ class TestMigrationIntegration:
 
         with open(target_dir / "20x.yaml") as f:
             loaded = yaml.safe_load(f)
-        assert loaded["version"] == 1
+        assert loaded["version"] == 1.0  # v1.0 schema
         assert len(loaded["channels"]) == 1
         assert loaded["channels"][0]["name"] == "BF LED matrix full"
 

@@ -3,6 +3,7 @@
 
 #include "constants.h"
 #include "globals.h"
+#include "utils/illumination_mapping.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -53,6 +54,16 @@ void turn_off_illumination();
 void set_illumination(int source, uint16_t intensity);
 void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b);
 void ISR_strobeTimer();
+
+// Multi-port illumination control
+// illumination_source_to_port_index() is provided by utils/illumination_mapping.h
+// Gets GPIO pin for port index, returns -1 for invalid port
+int port_index_to_pin(int port_index);
+// Per-port control functions (interlock checked for turn_on)
+void turn_on_port(int port_index);
+void turn_off_port(int port_index);
+void set_port_intensity(int port_index, uint16_t intensity);
+void turn_off_all_ports();
 
 /***************************************************************************************************/
 /******************************************* joystick **********************************************/

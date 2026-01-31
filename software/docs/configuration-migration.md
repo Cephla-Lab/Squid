@@ -129,7 +129,7 @@ The migration preserves your original channel names while linking them to illumi
 - XML has channel named `"488 nm"` with `IlluminationSource="12"`
 - Migration extracts wavelength `488` from name
 - Finds illumination channel with `wavelength_nm: 488` in machine config
-- Links to `"Fluorescence 488 nm Ex"` in `illumination_channels` field
+- Links to `"Fluorescence 488 nm Ex"` in `illumination_channel` field
 - Preserves `"488 nm"` as the acquisition channel `name`
 
 ### Field Mapping
@@ -279,9 +279,9 @@ cat software/user_profiles/default/channel_configs/general.yaml
 ```
 
 Verify:
-- `version: 1` is present
+- `version: 1.1` is present
 - Channel names match your expectations
-- `illumination_channels` references valid illumination channels
+- `illumination_channel` references a valid illumination channel
 
 ### Test in Application
 
@@ -332,7 +332,7 @@ Use the template from [Configuration System](configuration-system.md#channel_con
 ### 3. Create Objective Files
 
 Copy `general.yaml` as starting point, then:
-- Set `illumination_channels: null`
+- Set `illumination_channel: null`
 - Set `emission_filter_wheel_position: null`
 - Adjust `intensity`, `exposure_time_ms`, `gain_mode`
 

@@ -157,6 +157,9 @@ class LiveController:
         else:
             channels = list(general.channels)
 
+        # Filter to only enabled channels
+        channels = [ch for ch in channels if ch.enabled]
+
         # Apply confocal mode if active
         return apply_confocal_override(channels, self._confocal_mode)
 

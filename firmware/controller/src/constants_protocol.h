@@ -44,6 +44,7 @@ static const int ANALOG_WRITE_ONBOARD_DAC = 15;
 static const int SET_DAC80508_REFDIV_GAIN = 16;
 static const int SET_ILLUMINATION_INTENSITY_FACTOR = 17;
 static const int MOVETO_W = 18;
+static const int MOVE_W2 = 19;
 static const int SET_LIM_SWITCH_POLARITY = 20;
 static const int CONFIGURE_STEPPER_DRIVER = 21;
 static const int SET_MAX_VELOCITY_ACCELERATION = 22;
@@ -59,7 +60,20 @@ static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
 static const int SET_TRIGGER_MODE = 33;
+
+// Multi-port illumination commands (firmware v1.0+)
+// Separate commands (matches existing SET_ILLUMINATION pattern)
+static const int SET_PORT_INTENSITY = 34;      // Set DAC intensity for specific port only
+static const int TURN_ON_PORT = 35;            // Turn on GPIO for specific port
+static const int TURN_OFF_PORT = 36;           // Turn off GPIO for specific port
+// Combined command (convenience)
+static const int SET_PORT_ILLUMINATION = 37;   // Set intensity + on/off in one command
+// Multi-port commands
+static const int SET_MULTI_PORT_MASK = 38;     // Set on/off for multiple ports (partial update)
+static const int TURN_OFF_ALL_PORTS = 39;      // Turn off all illumination ports
+
 static const int SET_PIN_LEVEL = 41;
+static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
 static const int RESET = 255;
@@ -76,13 +90,19 @@ static const int HOME_NEGATIVE = 1;
 static const int HOME_POSITIVE = 0;
 static const int HOME_OR_ZERO_ZERO = 2;
 
-// Axis identifiers
+// Axis identifiers for protocol communication (sent from software to firmware).
+// IMPORTANT: These are PROTOCOL constants, NOT internal array indices!
+// The firmware uses different internal indices (see def/def_v1.h):
+//   Protocol: AXIS_X=0, AXIS_Y=1, AXIS_Z=2, AXIS_W=5, AXIS_W2=6
+//   Internal: x=1, y=0, z=2, w=3, w2=4
+// Use protocol_axis_to_internal() to convert when accessing arrays.
 static const int AXIS_X = 0;
 static const int AXIS_Y = 1;
 static const int AXIS_Z = 2;
 static const int AXIS_THETA = 3;
 static const int AXES_XY = 4;
 static const int AXIS_W = 5;
+static const int AXIS_W2 = 6;
 
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
@@ -103,6 +123,7 @@ static const int DISABLED = 2;
 /***************************************************************************************************/
 /***************************************** Illumination ********************************************/
 /***************************************************************************************************/
+// LED matrix patterns
 static const int ILLUMINATION_SOURCE_LED_ARRAY_FULL = 0;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF = 1;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF = 2;
@@ -113,10 +134,22 @@ static const int ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT = 6;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8;
 static const int ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20;
+
+// Illumination Control TTL Ports - port-based names (preferred)
+// These correspond to controller_port D1-D5 in software configuration
+// Note: D3/D4 source codes are non-sequential (14, 13) for historical API compatibility
+static const int ILLUMINATION_D1 = 11;
+static const int ILLUMINATION_D2 = 12;
+static const int ILLUMINATION_D3 = 14;
+static const int ILLUMINATION_D4 = 13;
+static const int ILLUMINATION_D5 = 15;
+
+// Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
+// Use ILLUMINATION_D1-D5 for new code; wavelength is configured in software YAML
 static const int ILLUMINATION_SOURCE_405NM = 11;
 static const int ILLUMINATION_SOURCE_488NM = 12;
-static const int ILLUMINATION_SOURCE_638NM = 13;
 static const int ILLUMINATION_SOURCE_561NM = 14;
+static const int ILLUMINATION_SOURCE_638NM = 13;
 static const int ILLUMINATION_SOURCE_730NM = 15;
 
 #endif // CONSTANTS_PROTOCOL_H
