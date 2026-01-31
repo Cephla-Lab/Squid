@@ -408,8 +408,18 @@ void turn_on_port(int port_index)
 
   if (INTERLOCK_OK())
   {
+    // Check if this is a LOW->HIGH transition (for timeout timer)
+    bool was_off = !illumination_port_is_on[port_index];
+
     digitalWrite(pin, HIGH);
     illumination_port_is_on[port_index] = true;
+
+    // Start timer only on LOW->HIGH transition for ports with timeout support
+    if (was_off && port_index < NUM_TIMEOUT_PORTS)
+    {
+      illumination_timer_start[port_index] = millis();
+      illumination_timer_active[port_index] = true;
+    }
   }
 }
 
