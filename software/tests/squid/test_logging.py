@@ -84,49 +84,43 @@ class TestBufferingHandler:
     def test_queue_overflow_drops_messages_and_tracks_count(self):
         """When queue is full, new messages are dropped (not blocking) and counted."""
         handler = BufferingHandler(min_level=logging.WARNING)
-        # Manually reduce max size for testing
-        original_max = BufferingHandler.MAX_BUFFERED_MESSAGES
+        # Create a handler with tiny queue for testing overflow
+        handler._queue = queue.Queue(maxsize=3)
+
+        logger = logging.getLogger("test.buffering.overflow")
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
 
         try:
-            # Create a handler with tiny queue for testing overflow
-            handler._queue = queue.Queue(maxsize=3)
+            # Initially no dropped messages
+            assert handler.dropped_count == 0
 
-            logger = logging.getLogger("test.buffering.overflow")
-            logger.setLevel(logging.DEBUG)
-            logger.addHandler(handler)
+            # Fill the queue
+            logger.warning("msg 1")
+            logger.warning("msg 2")
+            logger.warning("msg 3")
 
-            try:
-                # Initially no dropped messages
-                assert handler.dropped_count == 0
+            # Still no dropped messages
+            assert handler.dropped_count == 0
 
-                # Fill the queue
-                logger.warning("msg 1")
-                logger.warning("msg 2")
-                logger.warning("msg 3")
+            # This should be dropped (queue full), not block
+            logger.warning("msg 4 - should be dropped")
+            logger.warning("msg 5 - should be dropped")
 
-                # Still no dropped messages
-                assert handler.dropped_count == 0
+            # Dropped count should be 2
+            assert handler.dropped_count == 2
 
-                # This should be dropped (queue full), not block
-                logger.warning("msg 4 - should be dropped")
-                logger.warning("msg 5 - should be dropped")
+            pending = handler.get_pending()
+            # Only first 3 should be present
+            assert len(pending) == 3
+            assert "msg 1" in pending[0][2]
+            assert "msg 2" in pending[1][2]
+            assert "msg 3" in pending[2][2]
 
-                # Dropped count should be 2
-                assert handler.dropped_count == 2
-
-                pending = handler.get_pending()
-                # Only first 3 should be present
-                assert len(pending) == 3
-                assert "msg 1" in pending[0][2]
-                assert "msg 2" in pending[1][2]
-                assert "msg 3" in pending[2][2]
-
-                # Dropped count persists after get_pending
-                assert handler.dropped_count == 2
-            finally:
-                logger.removeHandler(handler)
+            # Dropped count persists after get_pending
+            assert handler.dropped_count == 2
         finally:
-            BufferingHandler.MAX_BUFFERED_MESSAGES = original_max
+            logger.removeHandler(handler)
 
     def test_empty_buffer_returns_empty_list(self):
         """get_pending() returns empty list when no messages buffered."""

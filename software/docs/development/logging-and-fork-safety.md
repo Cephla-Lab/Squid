@@ -95,6 +95,7 @@ class WarningErrorWidget(QWidget):
     POLL_INTERVAL_MS = 100
 
     def connect_handler(self, handler: BufferingHandler):
+        self.disconnect_handler()  # Clean up any existing timer
         self._handler = handler
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_messages)
@@ -121,7 +122,9 @@ def emit(self, record):
         msg = self.format(record)
         self._queue.put_nowait((record.levelno, record.name, msg))
     except queue.Full:
-        self._dropped_count += 1  # Track, don't block
+        # dropped_count is protected by a lock in the real implementation
+        with self._dropped_count_lock:
+            self._dropped_count += 1  # Track, don't block
     except Exception:
         self.handleError(record)
 ```
