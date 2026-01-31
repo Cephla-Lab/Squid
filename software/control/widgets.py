@@ -16365,8 +16365,6 @@ class WarningErrorWidget(QWidget):
         except Exception as e:
             # Log but don't crash the timer - allow recovery on next poll.
             # Qt silently swallows exceptions in timer callbacks, so we must log explicitly.
-            import squid.logging
-
             squid.logging.get_logger(__name__).error(f"Error polling warning/error messages: {e}", exc_info=True)
 
     def closeEvent(self, event):
