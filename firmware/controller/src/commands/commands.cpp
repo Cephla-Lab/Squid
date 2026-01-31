@@ -33,6 +33,7 @@ void init_callbacks()
     cmd_map[SET_PORT_ILLUMINATION] = &callback_set_port_illumination;
     cmd_map[SET_MULTI_PORT_MASK] = &callback_set_multi_port_mask;
     cmd_map[TURN_OFF_ALL_PORTS] = &callback_turn_off_all_ports;
+    cmd_map[SET_ILLUMINATION_TIMEOUT] = &callback_set_illumination_timeout;
     cmd_map[ACK_JOYSTICK_BUTTON_PRESSED] = &callback_ack_joystick_button_pressed;
     cmd_map[ANALOG_WRITE_ONBOARD_DAC] = &callback_analog_write_onboard_dac;
     cmd_map[SET_DAC80508_REFDIV_GAIN] = &callback_set_dac80508_defdiv_gain;

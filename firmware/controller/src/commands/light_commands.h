@@ -16,5 +16,6 @@ void callback_turn_off_port();
 void callback_set_port_illumination();
 void callback_set_multi_port_mask();
 void callback_turn_off_all_ports();
+void callback_set_illumination_timeout();
 
 #endif // LIGHT_COMMANDS_H
