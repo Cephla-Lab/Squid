@@ -215,6 +215,14 @@ class MultiPointController:
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._slack_notifier = None  # Optional SlackNotifier for notifications
 
+        # Pre-warm job runner subprocess at controller init (reduces acquisition start delay)
+        # Backpressure values (tuple) are created here and shared with both the pre-warmed runner
+        # and the BackpressureController in the worker, ensuring consistent tracking.
+        self._prewarmed_job_runner: Optional["JobRunner"] = None
+        self._prewarmed_bp_values: Optional["BackpressureValues"] = None
+        if control._def.Acquisition.USE_MULTIPROCESSING:
+            self._start_prewarmed_job_runner()
+
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
         self.NY = 1
@@ -224,9 +232,6 @@ class MultiPointController:
         self.deltaZ = control._def.Acquisition.DZ / 1000
         self.Nt = 1
         self.deltat = 0
-
-        self.deltaX = control._def.Acquisition.DX
-        self.deltaY = control._def.Acquisition.DY
 
         self.do_autofocus = False
         self.do_reflection_af = False
@@ -253,6 +258,76 @@ class MultiPointController:
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.abc.Pos] = None
+
+    def _start_prewarmed_job_runner(self):
+        """Start a job runner subprocess that warms up in the background.
+
+        This reduces acquisition start delay by having the subprocess already
+        running when the user clicks 'Start Acquisition'.
+
+        Also creates backpressure values that will be used by both the
+        pre-warmed runner and the BackpressureController in the worker.
+        """
+        from control.core.job_processing import JobRunner
+        from control.core.backpressure import create_backpressure_values
+
+        self._log.info("Pre-warming job runner subprocess...")
+        # Create shared backpressure values for cross-process tracking
+        self._prewarmed_bp_values = create_backpressure_values()
+
+        self._prewarmed_job_runner = JobRunner(
+            bp_pending_jobs=self._prewarmed_bp_values[0],
+            bp_pending_bytes=self._prewarmed_bp_values[1],
+            bp_capacity_event=self._prewarmed_bp_values[2],
+        )
+        self._prewarmed_job_runner.start()
+
+    def _cleanup_prewarmed_runner(
+        self,
+        runner: Optional["JobRunner"],
+        timeout_s: float = 1.0,
+        context: str = "",
+    ) -> None:
+        """Shutdown a pre-warmed job runner.
+
+        Args:
+            runner: JobRunner to shutdown, or None
+            timeout_s: Timeout for runner shutdown
+            context: Context string for error messages (e.g., "during close")
+        """
+        if runner is not None:
+            try:
+                runner.shutdown(timeout_s=timeout_s)
+            except Exception as e:
+                self._log.error(f"Error shutting down pre-warmed runner {context}: {e}")
+
+    def get_prewarmed_job_runner(self) -> Tuple[Optional["JobRunner"], Optional["BackpressureValues"]]:
+        """Get the pre-warmed job runner and its shared backpressure values.
+
+        Returns:
+            Tuple of (runner, bp_values) where:
+            - runner: JobRunner instance or None if not available
+            - bp_values: BackpressureValues tuple or None
+
+        The runner and values are cleared (so they're only used once).
+
+        Usage:
+            runner, bp_values = controller.get_prewarmed_job_runner()
+            worker = MultiPointWorker(..., prewarmed_job_runner=runner,
+                                      prewarmed_bp_values=bp_values)
+        """
+        runner = self._prewarmed_job_runner
+        bp_values = self._prewarmed_bp_values
+
+        # Clear references (so they're only used once)
+        self._prewarmed_job_runner = None
+        self._prewarmed_bp_values = None
+
+        # Start warming up a new one for the next acquisition
+        if control._def.Acquisition.USE_MULTIPROCESSING:
+            self._start_prewarmed_job_runner()
+
+        return runner, bp_values
 
     def set_alignment_widget(self, alignment_widget):
         """Set the alignment widget for coordinate offset during acquisitions."""
@@ -306,7 +381,7 @@ class MultiPointController:
     def set_z_stacking_config(self, z_stacking_config_index):
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
-        print(f"z-stacking configuration set to {self.z_stacking_config}")
+        self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
@@ -770,7 +845,7 @@ class MultiPointController:
             def finish_fn():
                 try:
                     self._on_acquisition_completed()
-                    self.callbacks.signal_acquisition_finished()
+                    # Note: signal_acquisition_finished is called inside _on_acquisition_completed()
                 finally:
                     self._stop_per_acquisition_log()
 
@@ -808,20 +883,37 @@ class MultiPointController:
                 self.overlap_percent,
             )
 
-            self.multiPointWorker = MultiPointWorker(
-                scope=self.microscope,
-                live_controller=self.liveController,
-                auto_focus_controller=self.autofocusController,
-                laser_auto_focus_controller=self.laserAutoFocusController,
-                objective_store=self.objectiveStore,
-                acquisition_parameters=acquisition_params,
-                callbacks=updated_callbacks,
-                abort_requested_fn=lambda: self.abort_acqusition_requested,
-                request_abort_fn=self.request_abort_aquisition,
-                extra_job_classes=[],
-                alignment_widget=self._alignment_widget,
-                slack_notifier=self._slack_notifier,
-            )
+            # Get pre-warmed job runner and its shared backpressure values
+            # (starts a new one warming for next acquisition)
+            prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
+
+            # Worker creation can fail - ensure runner is cleaned up on error
+            try:
+                self.multiPointWorker = MultiPointWorker(
+                    scope=self.microscope,
+                    live_controller=self.liveController,
+                    auto_focus_controller=self.autofocusController,
+                    laser_auto_focus_controller=self.laserAutoFocusController,
+                    objective_store=self.objectiveStore,
+                    acquisition_parameters=acquisition_params,
+                    callbacks=updated_callbacks,
+                    abort_requested_fn=lambda: self.abort_acqusition_requested,
+                    request_abort_fn=self.request_abort_aquisition,
+                    extra_job_classes=[],
+                    alignment_widget=self._alignment_widget,
+                    slack_notifier=self._slack_notifier,
+                    prewarmed_job_runner=prewarmed_runner,
+                    prewarmed_bp_values=prewarmed_bp_values,
+                )
+            except Exception:
+                # Clean up pre-warmed runner if worker creation failed.
+                # Note: get_prewarmed_job_runner() already started a NEW pre-warmed runner,
+                # so we're cleaning up the one that was handed off to us.
+                self._cleanup_prewarmed_runner(
+                    prewarmed_runner,
+                    context="after worker creation failure",
+                )
+                raise
 
             # Signal after worker creation so backpressure_controller is available
             self.callbacks.signal_acquisition_start(acquisition_params)
@@ -905,12 +997,17 @@ class MultiPointController:
         if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
 
-        # Stop memory monitoring and log final report
+        # Stop memory monitoring and log final report (in background to not delay acquisition finish)
         if self._memory_monitor is not None:
-            if control._def.ENABLE_MEMORY_PROFILING:
-                log_memory("ACQUISITION COMPLETE", include_children=True)
-            self._memory_monitor.stop()
+            monitor = self._memory_monitor
             self._memory_monitor = None
+
+            def _stop_monitor_background():
+                if control._def.ENABLE_MEMORY_PROFILING:
+                    log_memory("ACQUISITION COMPLETE", include_children=True)
+                monitor.stop()
+
+            Thread(target=_stop_monitor_background, daemon=True).start()
 
         # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
@@ -982,6 +1079,17 @@ class MultiPointController:
                       Job runner processes have a separate timeout defined by
                       _PROCESS_TERMINATE_TIMEOUT_S.
         """
+        # Clean up pre-warmed job runner if it exists
+        if self._prewarmed_job_runner is not None:
+            self._log.info("Shutting down pre-warmed job runner...")
+        self._cleanup_prewarmed_runner(
+            self._prewarmed_job_runner,
+            timeout_s=self._PROCESS_TERMINATE_TIMEOUT_S,
+            context="during close",
+        )
+        self._prewarmed_job_runner = None
+        self._prewarmed_bp_values = None
+
         # Abort any running acquisition
         try:
             if self.acquisition_in_progress():
