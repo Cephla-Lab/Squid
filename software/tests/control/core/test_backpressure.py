@@ -954,6 +954,8 @@ class TestMultiPointControllerCloseMethod:
         controller.multiPointWorker = None
         controller.thread = None
         controller._memory_monitor = None
+        controller._prewarmed_job_runner = None
+        controller._prewarmed_bp_values = None
         controller._log = MagicMock()
         controller._PROCESS_TERMINATE_TIMEOUT_S = 1.0
         return controller
