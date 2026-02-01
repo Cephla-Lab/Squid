@@ -341,8 +341,8 @@ class BackpressureController:
         if capacity_event is not None:
             try:
                 capacity_event.set()
-            except Exception:
-                pass  # Event may already be invalid
+            except Exception as e:
+                log.debug(f"Could not set capacity event during close (may be invalid): {e}")
 
         # Clear local references to allow GC
         self._pending_jobs = None

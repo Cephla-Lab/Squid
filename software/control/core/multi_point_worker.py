@@ -606,8 +606,13 @@ class MultiPointWorker:
         # 2. The subprocess termination is best-effort cleanup only
         # 3. If app exits before threads complete, OS will terminate subprocesses anyway
         # 4. This prevents slow subprocess termination from blocking acquisition completion
+        log = self._log  # Capture for closure
+
         def shutdown_runner(job_runner, timeout):
-            job_runner.shutdown(timeout)
+            try:
+                job_runner.shutdown(timeout)
+            except Exception as e:
+                log.error(f"Error shutting down job runner in background: {e}")
 
         self._log.info("Shutting down job runners (non-blocking)...")
         remaining_time = time_left()

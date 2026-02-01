@@ -490,15 +490,16 @@ class MultiPointController:
             for k in objective_info.keys():
                 acquisition_parameters["objective"][k] = objective_info[k]
             acquisition_parameters["objective"]["name"] = current_objective
-        except:
+        except (AttributeError, KeyError) as e:
+            self._log.debug(f"Could not get objective from objectiveStore: {e}, trying defaults")
             try:
                 objective_info = control._def.OBJECTIVES[control._def.DEFAULT_OBJECTIVE]
                 acquisition_parameters["objective"] = {}
                 for k in objective_info.keys():
                     acquisition_parameters["objective"][k] = objective_info[k]
                 acquisition_parameters["objective"]["name"] = control._def.DEFAULT_OBJECTIVE
-            except:
-                pass
+            except (AttributeError, KeyError) as e:
+                self._log.debug(f"Could not get default objective info: {e}")
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
@@ -1010,9 +1011,12 @@ class MultiPointController:
             self._memory_monitor = None
 
             def _stop_monitor_background():
-                if control._def.ENABLE_MEMORY_PROFILING:
-                    log_memory("ACQUISITION COMPLETE", include_children=True)
-                monitor.stop()
+                try:
+                    if control._def.ENABLE_MEMORY_PROFILING:
+                        log_memory("ACQUISITION COMPLETE", include_children=True)
+                    monitor.stop()
+                except Exception as e:
+                    self._log.error(f"Error stopping memory monitor in background: {e}")
 
             Thread(target=_stop_monitor_background, daemon=True).start()
 

@@ -1178,11 +1178,11 @@ class JobRunner(multiprocessing.Process):
         # Send sentinel to wake up worker blocked on queue.get()
         try:
             self._input_queue.put_nowait(None)
-        except (queue.Full, OSError, ValueError):
+        except (queue.Full, OSError, ValueError) as e:
             # queue.Full: Queue is at capacity (unlikely for sentinel)
             # OSError: Queue's underlying pipe/semaphore closed
             # ValueError: Queue has been closed
-            pass
+            self._log.debug(f"Could not send shutdown sentinel to worker: {e}")
         self.join(timeout=timeout_s)
         # If process is still alive after timeout, terminate it
         if self.is_alive():
