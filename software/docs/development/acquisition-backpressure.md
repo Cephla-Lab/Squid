@@ -150,14 +150,16 @@ To reduce acquisition start delay, the `MultiPointController` pre-warms a JobRun
 
 ```
 Timeline (with pre-warming):
-  [Acquisition completes] → [Pre-warm starts] → [~1.2s] → [Runner ready]
-                                                              ↓
-  [User clicks Start] ────────────────────────────────→ [Instant start]
+  [Acquisition N starts] → [Handoff pre-warmed runner] → [Start new pre-warm]
+                                    ↓                            ↓
+                           [Acquisition N runs]            [~1.2s warmup]
+                                    ↓                            ↓
+                           [Acquisition N+1 starts] ← [Runner ready for N+1]
 ```
 
-The pre-warmed runner and its backpressure values are handed off to the worker thread. A new pre-warming cycle starts immediately after handoff.
+The pre-warmed runner and its backpressure values are handed off to the worker thread. A new pre-warming cycle starts immediately after handoff (i.e., when the current acquisition begins, not when it completes).
 
-**Known limitation**: Pre-warming starts when the previous acquisition completes. If the next acquisition starts before pre-warming finishes (~1.2s), the worker waits for the subprocess. This only affects rapid-fire manual testing; real workloads (full plate scans, time-lapse with intervals >2s) start instantly.
+**Known limitation**: Pre-warming for acquisition N+1 starts when acquisition N begins (when `get_prewarmed_job_runner()` is called). If the user starts acquisition N+1 before pre-warming finishes (~1.2s after N started), the worker waits for the subprocess. This only affects rapid-fire manual testing; real workloads (full plate scans, time-lapse with intervals >2s) start instantly.
 
 ### Counter Lifecycle
 
