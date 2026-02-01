@@ -267,6 +267,13 @@ class MultiPointController:
 
         Also creates backpressure values that will be used by both the
         pre-warmed runner and the BackpressureController in the worker.
+
+        Known limitation: Pre-warming is started when the previous acquisition
+        completes. If the next acquisition starts before pre-warming finishes
+        (~1.2s), the worker will wait for the subprocess. This only affects
+        rapid-fire manual clicking; real workloads (full plate scans, time-lapse
+        with intervals >2s) are unaffected. Future optimization: start pre-warming
+        when the runner is handed off, not when acquisition completes.
         """
         from control.core.job_processing import JobRunner
         from control.core.backpressure import create_backpressure_values
