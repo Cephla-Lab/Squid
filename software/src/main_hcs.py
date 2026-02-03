@@ -144,9 +144,9 @@ if __name__ == "__main__":
     menu_bar.addMenu(file_menu)
     menu_bar.addMenu(microscope_utils_menu)
 
-    # Settings menu with MCP integration
-    settings_menu = QMenu("Settings", win)
-    menu_bar.addMenu(settings_menu)
+    # Add MCP actions to the existing Settings menu created by the main window
+    settings_menu = win.settings_menu
+    settings_menu.addSeparator()
 
     # MCP Control Server state (using dict for mutable state in closures)
     mcp_state = {"process": None, "python_exec_enabled": False}

@@ -91,6 +91,8 @@ from squid.core.events import (
     PlateViewUpdate,
 )
 
+from squid.backend.controllers.workflow_runner.state import WorkflowRunnerStateChanged
+
 log = squid.core.logging.get_logger(__name__)
 _FEATURE_FLAGS = get_feature_flags()
 
@@ -379,18 +381,26 @@ class HighContentScreeningGui(QMainWindow):
         # (native macOS menu bars can be unreliable with PyQt5)
         menubar = self.menuBar()
         menubar.setNativeMenuBar(False)
-        settings_menu = menubar.addMenu("Settings")
 
-        # Preferences action
+        # Tools menu (workflow automation, etc.)
+        tools_menu = menubar.addMenu("Tools")
+        workflow_action = QAction("Workflow Runner...", self)
+        workflow_action.setMenuRole(QAction.NoRole)
+        workflow_action.triggered.connect(self._open_workflow_runner)
+        tools_menu.addAction(workflow_action)
+
+        # Settings menu (exposed as self.settings_menu so entry-point scripts can add items)
+        self.settings_menu = menubar.addMenu("Settings")
+
         config_action = QAction("Preferences...", self)
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
-        settings_menu.addAction(config_action)
+        self.settings_menu.addAction(config_action)
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
-            settings_menu.addAction(led_matrix_action)
+            self.settings_menu.addAction(led_matrix_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1559,6 +1569,46 @@ class HighContentScreeningGui(QMainWindow):
                 self.warningErrorWidget.disconnect_handler()
             self._warning_handler = None
             self.log.debug("Warning/error widget: disconnected logging handler")
+
+    # ========================================================================
+    # Workflow Runner
+    # ========================================================================
+
+    def _open_workflow_runner(self) -> None:
+        """Open the Workflow Runner dialog (lazy creation)."""
+        if not hasattr(self, "_workflow_runner_dialog") or self._workflow_runner_dialog is None:
+            from squid.ui.widgets.workflow.workflow_runner_dialog import WorkflowRunnerDialog
+
+            self._workflow_runner_dialog = WorkflowRunnerDialog(
+                event_bus=self._ui_event_bus, parent=self
+            )
+        self._workflow_runner_dialog.show()
+        self._workflow_runner_dialog.raise_()
+        self._workflow_runner_dialog.activateWindow()
+
+    @handles(WorkflowRunnerStateChanged)
+    def _on_workflow_runner_state_changed(self, event: "WorkflowRunnerStateChanged") -> None:
+        """Enable/disable main window controls during workflow execution."""
+        new_state = event.new_state
+        if new_state in ("RUNNING_SCRIPT", "RUNNING_ACQUISITION"):
+            self._set_workflow_controls_enabled(False)
+        elif new_state == "PAUSED":
+            self._set_workflow_controls_enabled(True)
+        elif new_state in ("COMPLETED", "FAILED", "ABORTED", "IDLE"):
+            self._set_workflow_controls_enabled(True)
+
+    def _set_workflow_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable main window controls during workflow execution."""
+        for widget_name in (
+            "navigationWidget",
+            "liveControlWidget",
+            "autofocusWidget",
+            "objectivesWidget",
+            "recordTabWidget",
+        ):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setEnabled(enabled)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not getattr(self, "_skip_close_confirmation", False):
