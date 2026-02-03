@@ -25,6 +25,7 @@ class TestIsSimulationEnabled:
         """When SIMULATED_DISK_IO_ENABLED is True, returns True."""
         with patch.object(io_simulation, "_def") as mock_def:
             mock_def.SIMULATED_DISK_IO_ENABLED = True
+            mock_def.SIMULATION_FORCE_SAVE_IMAGES = False
             result = io_simulation.is_simulation_enabled()
         assert result is True
 

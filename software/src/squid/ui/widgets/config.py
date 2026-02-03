@@ -336,10 +336,60 @@ class PreferencesDialog(QDialog):
 
         # File Saving Format
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        try:
+            from _def import FileSavingOption
+            self.file_saving_combo.addItems([e.name for e in FileSavingOption])
+        except ImportError:
+            self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES", "ZARR_V3"])
         current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # Zarr Compression
+        self.zarr_compression_label = QLabel("Zarr Compression:")
+        self.zarr_compression_combo = QComboBox()
+        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.setCurrentText(
+            self._get_config_value("GENERAL", "zarr_compression", "fast")
+        )
+        self.zarr_compression_combo.setToolTip(
+            "none: No compression (fastest write, largest files)\n"
+            "fast: LZ4/Zstd level 1 (~1000 MB/s encode, ~2:1 ratio)\n"
+            "balanced: Zstd level 3 (~500 MB/s encode, ~3:1 ratio)\n"
+            "best: Zstd level 9 (~100 MB/s encode, ~4:1 ratio)"
+        )
+        layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
+
+        # Zarr Chunk Mode
+        self.zarr_chunk_mode_label = QLabel("Zarr Chunk Mode:")
+        self.zarr_chunk_mode_combo = QComboBox()
+        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.setCurrentText(
+            self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
+        )
+        self.zarr_chunk_mode_combo.setToolTip(
+            "full_frame: Each chunk is one full image frame (best for sequential access)\n"
+            "tiled_512: 512x512 tiles (best for random spatial access)\n"
+            "tiled_256: 256x256 tiles (smaller tiles, more overhead)"
+        )
+        layout.addRow(self.zarr_chunk_mode_label, self.zarr_chunk_mode_combo)
+
+        # Zarr 6D FOV Dimension
+        self.zarr_6d_fov_checkbox = QCheckBox()
+        self.zarr_6d_fov_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        )
+        self.zarr_6d_fov_checkbox.setToolTip(
+            "When enabled, non-HCS acquisitions store all FOVs in a single 6D zarr array\n"
+            "with shape (FOV, T, C, Z, Y, X) per region. This is non-standard but more compact.\n"
+            "When disabled, each FOV gets its own 5D OME-NGFF compliant zarr store."
+        )
+        self.zarr_6d_fov_label = QLabel("Zarr 6D FOV Dimension:")
+        layout.addRow(self.zarr_6d_fov_label, self.zarr_6d_fov_checkbox)
+
+        # Connect file saving combo to update zarr options visibility
+        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_options_visibility)
+        self._update_zarr_options_visibility()
 
         # Default Saving Path
         path_widget = QWidget()
@@ -962,6 +1012,16 @@ class PreferencesDialog(QDialog):
         if not self.config.has_section(section):
             self.config.add_section(section)
 
+    def _update_zarr_options_visibility(self) -> None:
+        """Show/hide zarr-specific options based on file saving format."""
+        is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
+        self.zarr_compression_label.setVisible(is_zarr)
+        self.zarr_compression_combo.setVisible(is_zarr)
+        self.zarr_chunk_mode_label.setVisible(is_zarr)
+        self.zarr_chunk_mode_combo.setVisible(is_zarr)
+        self.zarr_6d_fov_label.setVisible(is_zarr)
+        self.zarr_6d_fov_checkbox.setVisible(is_zarr)
+
     def _apply_settings(self) -> None:
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS", "DEVELOPMENT"]:
@@ -970,6 +1030,15 @@ class PreferencesDialog(QDialog):
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+
+        # Zarr settings
+        self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
+        self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
+        self.config.set(
+            "GENERAL",
+            "zarr_use_6d_fov_dimension",
+            "true" if self.zarr_6d_fov_checkbox.isChecked() else "false",
+        )
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1142,6 +1211,14 @@ class PreferencesDialog(QDialog):
         if hasattr(_def, "FileSavingOption") and hasattr(_def.FileSavingOption, "convert_to_enum"):
             _def.FILE_SAVING_OPTION = _def.FileSavingOption.convert_to_enum(self.file_saving_combo.currentText())
 
+        # Zarr settings (takes effect on next acquisition)
+        if hasattr(_def, "ZarrCompression") and hasattr(_def.ZarrCompression, "convert_to_enum"):
+            _def.ZARR_COMPRESSION = _def.ZarrCompression.convert_to_enum(self.zarr_compression_combo.currentText())
+        if hasattr(_def, "ZarrChunkMode") and hasattr(_def.ZarrChunkMode, "convert_to_enum"):
+            _def.ZARR_CHUNK_MODE = _def.ZarrChunkMode.convert_to_enum(self.zarr_chunk_mode_combo.currentText())
+        if hasattr(_def, "ZARR_USE_6D_FOV_DIMENSION"):
+            _def.ZARR_USE_6D_FOV_DIMENSION = self.zarr_6d_fov_checkbox.isChecked()
+
         # Default saving path
         if hasattr(_def, "DEFAULT_SAVING_PATH"):
             _def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
@@ -1250,6 +1327,22 @@ class PreferencesDialog(QDialog):
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
+
+        # Zarr settings (live update)
+        old_val = self._get_config_value("GENERAL", "zarr_compression", "fast")
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
+
+        old_val_bool = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        new_val_bool = self.zarr_6d_fov_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Zarr 6D FOV Dimension", str(old_val_bool), str(new_val_bool), False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")

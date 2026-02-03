@@ -27,6 +27,7 @@ from _def import (
     SEGMENTATION_CROP,
     SIMULATED_DISK_IO_ENABLED,
     TriggerMode,
+    ZARR_USE_6D_FOV_DIMENSION,
 )
 import squid.core.utils.hardware_utils as utils
 from squid.backend.controllers.autofocus import AutoFocusController
@@ -45,6 +46,9 @@ from squid.backend.controllers.multipoint.job_processing import (
     CaptureInfo,
     SaveImageJob,
     SaveOMETiffJob,
+    SaveZarrJob,
+    ZarrWriterInfo,
+    ZarrWriteResult,
     DownsampledViewJob,
     DownsampledViewResult,
     Job,
@@ -270,6 +274,14 @@ class MultiPointWorker:
         self.scan_region_names = (
             acquisition_parameters.scan_position_information.scan_region_names
         )
+
+        # Build cumulative FOV offsets per region for flat FOV index conversion (5D zarr mode)
+        self._region_fov_offsets: Dict[int, int] = {}
+        offset = 0
+        for region_idx, region_id in enumerate(self.scan_region_names):
+            self._region_fov_offsets[region_idx] = offset
+            offset += len(self.scan_region_fov_coords_mm.get(region_id, []))
+
         self.z_stacking_config = (
             acquisition_parameters.z_stacking_config
         )  # default 'from bottom'
@@ -336,9 +348,12 @@ class MultiPointWorker:
         # Determine job classes based on file saving option
         job_classes: List[Type[Job]] = []
         use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
+        use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
         if not self.skip_saving:
             if use_ome_tiff:
                 job_classes.append(SaveOMETiffJob)
+            elif use_zarr_v3:
+                job_classes.append(SaveZarrJob)
             else:
                 job_classes.append(SaveImageJob)
 
@@ -363,6 +378,50 @@ class MultiPointWorker:
                 f"max_mb={ACQUISITION_MAX_PENDING_MB}"
             )
 
+        # Build ZarrWriterInfo if using ZARR_V3 format
+        zarr_writer_info: Optional[ZarrWriterInfo] = None
+        if use_zarr_v3:
+            is_hcs = self._is_well_based_acquisition()
+
+            # Pre-compute FOV counts per region (needed for 6D shape calculation)
+            region_fov_counts = {}
+            for region_id, coords in self.scan_region_fov_coords_mm.items():
+                region_fov_counts[str(region_id)] = len(coords)
+
+            # Extract channel metadata for zarr output
+            channel_names = [cfg.name for cfg in self.selected_configurations]
+            channel_colors = [cfg.display_color for cfg in self.selected_configurations]
+
+            # Get wavelengths from illumination config
+            channel_wavelengths = []
+            illumination_config = self.channelConfigurationManager._illumination_config
+            for cfg in self.selected_configurations:
+                wavelength = cfg.get_illumination_wavelength(illumination_config) if illumination_config else None
+                channel_wavelengths.append(wavelength)
+
+            zarr_writer_info = ZarrWriterInfo(
+                base_path=self.experiment_path,
+                t_size=self.Nt,
+                c_size=len(self.selected_configurations),
+                z_size=self.NZ,
+                is_hcs=is_hcs,
+                use_6d_fov=ZARR_USE_6D_FOV_DIMENSION,
+                region_fov_counts=region_fov_counts,
+                pixel_size_um=self._pixel_size_um,
+                z_step_um=self._physical_size_z_um,
+                time_increment_s=self._time_increment_s,
+                channel_names=channel_names,
+                channel_colors=channel_colors,
+                channel_wavelengths=channel_wavelengths,
+            )
+            if is_hcs:
+                mode_str = "HCS plate hierarchy"
+            elif ZARR_USE_6D_FOV_DIMENSION:
+                mode_str = "per-region 6D (non-standard)"
+            else:
+                mode_str = "per-FOV 5D (OME-NGFF compliant)"
+            self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
+
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
@@ -379,6 +438,7 @@ class MultiPointWorker:
                     backpressure_jobs=self._backpressure_controller.pending_jobs_value if self._backpressure_controller else None,
                     backpressure_bytes=self._backpressure_controller.pending_bytes_value if self._backpressure_controller else None,
                     backpressure_event=self._backpressure_controller.capacity_event if self._backpressure_controller else None,
+                    zarr_writer_info=zarr_writer_info,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
@@ -388,6 +448,8 @@ class MultiPointWorker:
                 job_runner.start()
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
+        self._use_zarr_v3 = use_zarr_v3
+        self._zarr_writer_info = zarr_writer_info
 
         # =========================================================================
         # Initialize domain objects (Phase 4 integration)
@@ -1424,6 +1486,23 @@ class MultiPointWorker:
                     ):
                         self._log.info(f"Got DownsampledViewResult for well {job_result.result.well_id}")
                         self._process_downsampled_view_result(job_result.result)
+                    # Handle ZarrWriteResult - notify viewer that frame is written
+                    elif job_result.result is not None and isinstance(
+                        job_result.result, ZarrWriteResult
+                    ):
+                        r = job_result.result
+                        # For 5D mode, convert local FOV to flat index across regions
+                        if self._use_zarr_v3 and ZARR_USE_6D_FOV_DIMENSION:
+                            fov_idx = r.fov
+                        else:
+                            fov_idx = self._region_fov_offsets.get(r.region_idx, 0) + r.fov
+                        self._progress_tracker.notify_zarr_frame(
+                            t=r.time_point,
+                            fov_idx=fov_idx,
+                            z=r.z_index,
+                            channel=r.channel_name,
+                            region_idx=r.region_idx,
+                        )
                     elif job_result.result is not None:
                         self._log.debug(f"Got job result of type {type(job_result.result).__name__}")
 
@@ -1998,14 +2077,29 @@ class MultiPointWorker:
                                 "Failed to dispatch multiprocessing job!"
                             )
                     else:
-                        # Run synchronously - inject acquisition_info for jobs that need it
-                        # (mirrors JobRunner.dispatch() which injects for SaveOMETiffJob)
+                        # Run synchronously - inject info for jobs that need it
+                        # (mirrors JobRunner.dispatch() which injects before pickling)
                         if isinstance(job, SaveOMETiffJob):
                             job.acquisition_info = self.acquisition_info
+                        elif isinstance(job, SaveZarrJob) and self._zarr_writer_info is not None:
+                            job.zarr_writer_info = self._zarr_writer_info
                         result = job.run()
                         if result is not None and isinstance(result, DownsampledViewResult):
                             self._log.info(f"Synchronous job returned DownsampledViewResult for well {result.well_id}")
                             self._process_downsampled_view_result(result)
+                        elif result is not None and isinstance(result, ZarrWriteResult):
+                            # For 5D mode, convert local FOV to flat index across regions
+                            if self._use_zarr_v3 and ZARR_USE_6D_FOV_DIMENSION:
+                                fov_idx = result.fov
+                            else:
+                                fov_idx = self._region_fov_offsets.get(result.region_idx, 0) + result.fov
+                            self._progress_tracker.notify_zarr_frame(
+                                t=result.time_point,
+                                fov_idx=fov_idx,
+                                z=result.z_index,
+                                channel=result.channel_name,
+                                region_idx=result.region_idx,
+                            )
 
             # Register image with NDViewer for push-mode display
             # Only register when using individual image saving - OME-TIFF uses different paths

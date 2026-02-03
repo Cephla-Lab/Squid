@@ -12,7 +12,7 @@ previously embedded in MultiPointWorker.
 from dataclasses import dataclass
 from datetime import datetime
 import os
-from typing import Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import pandas as pd
 
@@ -266,6 +266,79 @@ class ProgressTracker:
                 channel=channel,
                 filepath=filepath,
                 experiment_id=self._experiment_id,
+            )
+        )
+
+    def start_zarr_acquisition(
+        self,
+        fov_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fov_labels: List[str],
+        height: int,
+        width: int,
+    ) -> None:
+        """Publish NDViewerStartZarrAcquisition event for zarr push-mode display.
+
+        Called at acquisition start when using ZARR_V3 format.
+
+        Args:
+            fov_paths: List of zarr paths per FOV
+            channels: Channel names
+            num_z: Number of z-levels
+            fov_labels: FOV labels
+            height: Image height in pixels
+            width: Image width in pixels
+        """
+        if self._event_bus is None:
+            return
+
+        from squid.core.events import NDViewerStartZarrAcquisition
+
+        self._event_bus.publish(
+            NDViewerStartZarrAcquisition(
+                fov_paths=fov_paths,
+                channels=channels,
+                num_z=num_z,
+                fov_labels=fov_labels,
+                height=height,
+                width=width,
+                experiment_id=self._experiment_id,
+            )
+        )
+
+    def notify_zarr_frame(
+        self,
+        t: int,
+        fov_idx: int,
+        z: int,
+        channel: str,
+        region_idx: int = 0,
+    ) -> None:
+        """Publish NDViewerZarrFrameWritten event for zarr push-mode display.
+
+        Called after each frame is written to the zarr store.
+
+        Args:
+            t: Time index
+            fov_idx: FOV index (flat for 5D, local for 6D)
+            z: Z-level index
+            channel: Channel name
+            region_idx: Region index (for 6D mode)
+        """
+        if self._event_bus is None:
+            return
+
+        from squid.core.events import NDViewerZarrFrameWritten
+
+        self._event_bus.publish(
+            NDViewerZarrFrameWritten(
+                t=t,
+                fov_idx=fov_idx,
+                z=z,
+                channel=channel,
+                experiment_id=self._experiment_id,
+                region_idx=region_idx,
             )
         )
 

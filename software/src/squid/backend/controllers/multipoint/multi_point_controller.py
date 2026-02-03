@@ -57,6 +57,8 @@ from squid.core.events import (
     AcquisitionPaused,
     AcquisitionResumed,
     NDViewerStartAcquisition,
+    NDViewerStartZarrAcquisition,
+    NDViewerStartZarrAcquisition6D,
     NDViewerAcquisitionEnded,
 )
 from squid.backend.controllers.multipoint.events import (
@@ -192,6 +194,10 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._config = AcquisitionConfig()
         self.experiment_ID: Optional[str] = None
         self.base_path: Optional[str] = None
+
+        # NDViewer mode tracking for zarr 5D/6D display
+        self._ndviewer_mode: str = "inactive"  # "inactive", "tiff", "zarr_5d", "zarr_6d"
+        self._ndviewer_region_idx_offset: List[int] = []  # cumulative FOV offsets per region
 
         self._focus_map: Optional[Any] = None
         self.focus_map_storage: List[Tuple[float, float, float]] = []
@@ -1514,6 +1520,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
         Builds FOV labels from scan position information and publishes
         the event to configure NDViewer for real-time image display.
+        For ZARR_V3 format, publishes NDViewerStartZarrAcquisition instead.
         """
         self._log.info("_publish_ndviewer_start called")
         if not self._event_bus:
@@ -1539,14 +1546,24 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.warning("_publish_ndviewer_start: Cannot get camera dimensions, skipping")
             return
 
-        # Build FOV labels: "region:fov_index" format
+        # Build FOV labels: "region:fov_index" format, and region offset list
         fov_labels = []
+        self._ndviewer_region_idx_offset = []
         scan_info = acquisition_params.scan_position_information
         for region_id in scan_info.scan_region_names:
+            self._ndviewer_region_idx_offset.append(len(fov_labels))
             fov_coords = scan_info.scan_region_fov_coords_mm.get(region_id, [])
             for fov_idx in range(len(fov_coords)):
                 fov_labels.append(f"{region_id}:{fov_idx}")
 
+        # For ZARR_V3 format, publish zarr-specific start event
+        if _def.FILE_SAVING_OPTION == _def.FileSavingOption.ZARR_V3:
+            self._publish_ndviewer_start_zarr(
+                acquisition_params, channels, fov_labels, height, width, experiment_id
+            )
+            return
+
+        self._ndviewer_mode = "tiff"
         self._event_bus.publish(
             NDViewerStartAcquisition(
                 channels=channels,
@@ -1562,13 +1579,115 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             f"{acquisition_params.NZ} z, {len(fov_labels)} FOVs"
         )
 
+    def _publish_ndviewer_start_zarr(
+        self,
+        acquisition_params: "AcquisitionParameters",
+        channels: List[str],
+        fov_labels: List[str],
+        height: int,
+        width: int,
+        experiment_id: str,
+    ) -> None:
+        """Publish NDViewerStartZarrAcquisition or NDViewerStartZarrAcquisition6D."""
+        from squid.backend.io.writers.zarr_writer import (
+            build_hcs_zarr_fov_path,
+            build_per_fov_zarr_path,
+            build_6d_zarr_path,
+        )
+
+        scan_info = acquisition_params.scan_position_information
+        base_path = os.path.join(self.base_path, self.experiment_ID) if self.base_path and self.experiment_ID else ""
+
+        # Detect HCS mode from region names
+        import re
+        well_pattern = re.compile(r"^[A-Z]+\d+$")
+        is_hcs = len(scan_info.scan_region_names) > 0 and all(
+            well_pattern.match(name) for name in scan_info.scan_region_names
+        )
+
+        use_6d = _def.ZARR_USE_6D_FOV_DIMENSION and not is_hcs
+
+        if use_6d:
+            # 6D mode: one zarr store per region with FOV dimension
+            self._ndviewer_mode = "zarr_6d"
+            region_paths, region_labels, fovs_per_region = self._build_6d_region_info(
+                scan_info, base_path, build_6d_zarr_path
+            )
+            self._event_bus.publish(
+                NDViewerStartZarrAcquisition6D(
+                    region_paths=region_paths,
+                    channels=channels,
+                    num_z=acquisition_params.NZ,
+                    fovs_per_region=fovs_per_region,
+                    height=height,
+                    width=width,
+                    region_labels=region_labels,
+                    experiment_id=experiment_id,
+                )
+            )
+            self._log.info(
+                f"Published NDViewerStartZarrAcquisition6D: {len(channels)} channels, "
+                f"{acquisition_params.NZ} z, {len(region_paths)} regions"
+            )
+        else:
+            # 5D mode: one zarr store per FOV
+            self._ndviewer_mode = "zarr_5d"
+            fov_paths = []
+            for region_id in scan_info.scan_region_names:
+                num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_id, []))
+                for fov_idx in range(num_fovs):
+                    if is_hcs:
+                        path = build_hcs_zarr_fov_path(base_path, region_id, fov_idx)
+                    else:
+                        path = build_per_fov_zarr_path(base_path, region_id, fov_idx)
+                    fov_paths.append(path)
+
+            self._event_bus.publish(
+                NDViewerStartZarrAcquisition(
+                    fov_paths=fov_paths,
+                    channels=channels,
+                    num_z=acquisition_params.NZ,
+                    fov_labels=fov_labels,
+                    height=height,
+                    width=width,
+                    experiment_id=experiment_id,
+                )
+            )
+            self._log.info(
+                f"Published NDViewerStartZarrAcquisition: {len(channels)} channels, "
+                f"{acquisition_params.NZ} z, {len(fov_paths)} FOV paths"
+            )
+
+    def _build_6d_region_info(
+        self,
+        scan_info: "ScanPositionInformation",
+        base_path: str,
+        build_6d_zarr_path,
+    ) -> tuple:
+        """Build region paths, labels, and FOV counts for 6D zarr mode.
+
+        Returns:
+            (region_paths, region_labels, fovs_per_region)
+        """
+        region_paths = []
+        region_labels = []
+        fovs_per_region = []
+        for region_id in scan_info.scan_region_names:
+            num_fovs = len(scan_info.scan_region_fov_coords_mm.get(region_id, []))
+            region_paths.append(build_6d_zarr_path(base_path, region_id))
+            region_labels.append(str(region_id))
+            fovs_per_region.append(num_fovs)
+        return region_paths, region_labels, fovs_per_region
+
     def _publish_ndviewer_end(self) -> None:
         """Publish NDViewerAcquisitionEnded event."""
         if not self._event_bus:
+            self._ndviewer_mode = "inactive"
             return
         try:
             experiment_id = self._require_experiment_id()
         except RuntimeError:
+            self._ndviewer_mode = "inactive"
             return
 
         # Build dataset path for file-based loading (used when push-mode isn't available)
@@ -1583,6 +1702,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             )
         )
         self._log.info(f"Published NDViewerAcquisitionEnded: experiment={experiment_id}, path={dataset_path}")
+        self._ndviewer_mode = "inactive"
 
     def set_current_round_index(self, round_index: int) -> None:
         """Set the current round index for downstream FOV events."""

@@ -10,9 +10,10 @@ Usage:
     performing real disk I/O.
 """
 
+import threading
 import time
 from io import BytesIO
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 import tifffile
@@ -25,7 +26,8 @@ _log = squid.core.logging.get_logger(__name__)
 # Track initialized OME-TIFF stacks (keyed by stack identifier)
 # Note: This runs in JobRunner subprocess, so state is process-local and
 # automatically reset when a new acquisition starts a fresh subprocess.
-_simulated_ome_stacks: Dict[str, Dict] = {}
+_simulated_ome_stacks: Dict[str, Dict[str, Any]] = {}
+_simulated_ome_lock = threading.Lock()
 
 
 def is_simulation_enabled() -> bool:
@@ -183,4 +185,108 @@ def reset_simulated_stacks() -> None:
     """
     global _simulated_ome_stacks
     _simulated_ome_stacks.clear()
-    _log.debug("Reset simulated OME stack tracking state")
+    _simulated_zarr_stacks.clear()
+    _log.debug("Reset simulated stack tracking state")
+
+
+# Track simulated zarr datasets (keyed by output path)
+_simulated_zarr_stacks: Dict[str, Dict[str, Any]] = {}
+_simulated_zarr_lock = threading.Lock()
+
+
+def simulated_zarr_write(
+    image: np.ndarray,
+    stack_key: str,
+    shape: tuple,
+    time_point: int,
+    z_index: int,
+    channel_index: int,
+) -> int:
+    """Simulate Zarr v3 write with compression simulation.
+
+    Tracks dataset state to simulate:
+    - Initialization overhead on first frame
+    - Per-frame blosc compression
+    - Finalization overhead when complete
+
+    Args:
+        image: Image array for this frame
+        stack_key: Unique identifier for this dataset (e.g., output_path)
+        shape: Dataset shape - 5D (T, C, Z, Y, X) or 6D (FOV, T, C, Z, Y, X)
+        time_point: Time point index
+        z_index: Z slice index
+        channel_index: Channel index
+
+    Returns:
+        Bytes "written" for this operation
+    """
+    speed_mb_s = get_simulated_speed_mb_s()
+
+    # First frame for this dataset - simulate initialization (with lock for shared state)
+    is_first_frame = False
+    with _simulated_zarr_lock:
+        if stack_key not in _simulated_zarr_stacks:
+            # Calculate expected frame count based on T * C * Z
+            if len(shape) == 5:
+                expected_count = shape[0] * shape[1] * shape[2]  # T * C * Z
+            elif len(shape) == 6:
+                expected_count = shape[1] * shape[2] * shape[3]  # T * C * Z (skip FOV dim)
+            else:
+                raise ValueError(f"Unexpected shape dimensionality: {len(shape)}")
+            _simulated_zarr_stacks[stack_key] = {
+                "shape": shape,
+                "written_frames": set(),
+                "expected_count": expected_count,
+            }
+            is_first_frame = True
+            _log.debug(f"Initialized simulated zarr dataset: {stack_key}, expected frames: {expected_count}")
+
+    # Simulate metadata/zarr.json write overhead outside lock (~2KB)
+    if is_first_frame:
+        throttle_for_speed(2048, speed_mb_s)
+
+    # Simulate frame write with blosc compression
+    # Blosc typically achieves 2-4x compression on microscopy data
+    raw_bytes = image.nbytes
+    if get_simulated_compression():
+        # Simulate blosc compression overhead
+        compression_ratio = 3.0  # Typical for blosc-lz4 on uint16 microscopy
+        compressed_bytes = int(raw_bytes / compression_ratio)
+        bytes_written = compressed_bytes
+    else:
+        bytes_written = raw_bytes
+
+    throttle_for_speed(bytes_written, speed_mb_s)
+
+    # Track this frame and check completion (with lock for shared state access)
+    frame_key = f"{time_point}-{channel_index}-{z_index}"
+    is_complete = False
+    with _simulated_zarr_lock:
+        stack_info = _simulated_zarr_stacks[stack_key]
+        stack_info["written_frames"].add(frame_key)
+        written_count = len(stack_info["written_frames"])
+        expected_count = stack_info["expected_count"]
+        is_complete = written_count >= expected_count
+
+        _log.debug(
+            f"Simulated zarr frame write: {bytes_written} bytes (raw: {raw_bytes}), "
+            f"frame={frame_key}, progress={written_count}/{expected_count}"
+        )
+
+        # Check completion and cleanup
+        if is_complete:
+            del _simulated_zarr_stacks[stack_key]
+
+    # Simulate finalization overhead outside lock (~4KB for zarr.json attributes update)
+    if is_complete:
+        throttle_for_speed(4096, speed_mb_s)
+        _log.debug(f"Completed simulated zarr dataset: {stack_key}")
+
+    return bytes_written
+
+
+def reset_simulated_zarr_stacks() -> None:
+    """Reset simulated zarr stack tracking state."""
+    global _simulated_zarr_stacks
+    _simulated_zarr_stacks.clear()
+    _log.debug("Reset simulated zarr stack tracking state")

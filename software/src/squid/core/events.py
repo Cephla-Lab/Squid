@@ -383,6 +383,57 @@ class NDViewerAcquisitionEnded(Event):
 
 
 @dataclass
+class NDViewerStartZarrAcquisition(Event):
+    """Configure NDViewer for zarr-based live acquisition.
+
+    Emitted at acquisition start when using ZARR_V3 format.
+    The viewer opens zarr stores for real-time display.
+    """
+
+    fov_paths: List[str]  # Zarr paths per FOV
+    channels: List[str]  # Channel names
+    num_z: int  # Number of z-levels
+    fov_labels: List[str]  # FOV labels (e.g., ["A1:0", "A1:1"])
+    height: int  # Image height in pixels
+    width: int  # Image width in pixels
+    experiment_id: str  # For correlation
+
+
+@dataclass
+class NDViewerStartZarrAcquisition6D(Event):
+    """Configure NDViewer for 6D multi-region zarr acquisition.
+
+    Emitted at acquisition start when using ZARR_V3 format with 6D FOV dimension.
+    Each region has a single zarr store with shape (FOV, T, C, Z, Y, X).
+    """
+
+    region_paths: List[str]  # Zarr paths per region
+    channels: List[str]  # Channel names
+    num_z: int  # Number of z-levels
+    fovs_per_region: List[int]  # FOV counts per region
+    height: int  # Image height in pixels
+    width: int  # Image width in pixels
+    region_labels: List[str]  # Region labels
+    experiment_id: str  # For correlation
+
+
+@dataclass
+class NDViewerZarrFrameWritten(Event):
+    """Notify NDViewer that a zarr frame was written to disk.
+
+    Emitted after each frame is written to the zarr store,
+    allowing the viewer to refresh from the zarr data.
+    """
+
+    t: int  # Timepoint index
+    fov_idx: int  # FOV index (flat for 5D, local for 6D)
+    z: int  # Z-level index
+    channel: str  # Channel name
+    experiment_id: str  # For filtering stale events
+    region_idx: int = 0  # Region index (for 6D mode)
+
+
+@dataclass
 class ImageCaptured(Event):
     """Emitted when an image is captured."""
 

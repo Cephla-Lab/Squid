@@ -39,6 +39,7 @@ dependencies = [
     "scikit-image",
     "dask_image",
     "ome_zarr",
+    "tensorstore>=0.1.45",
     "aicsimageio",
     "basicpy",
     "gitpython",

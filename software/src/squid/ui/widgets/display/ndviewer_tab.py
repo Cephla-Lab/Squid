@@ -20,6 +20,9 @@ from squid.core.events import (
     NDViewerAcquisitionEnded,
     NDViewerImageRegistered,
     NDViewerStartAcquisition,
+    NDViewerStartZarrAcquisition,
+    NDViewerStartZarrAcquisition6D,
+    NDViewerZarrFrameWritten,
     auto_subscribe,
     auto_unsubscribe,
     handles,
@@ -39,6 +42,10 @@ class NDViewerTab(QWidget):
     _sig_start_acquisition = Signal(list, int, int, int, list, str)  # channels, num_z, height, width, fov_labels, experiment_id
     _sig_register_image = Signal(int, int, int, str, str, str)  # t, fov_idx, z, channel, filepath, experiment_id
     _sig_end_acquisition = Signal(str, str)  # experiment_id, dataset_path (empty string if None)
+    # Zarr push-mode signals
+    _sig_start_zarr_acquisition = Signal(list, list, int, list, int, int, str)  # fov_paths, channels, num_z, fov_labels, height, width, experiment_id
+    _sig_start_zarr_acquisition_6d = Signal(list, list, int, list, int, int, list, str)  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels, experiment_id
+    _sig_notify_zarr_frame = Signal(int, int, int, str, str, int)  # t, fov_idx, z, channel, experiment_id, region_idx
 
     def __init__(
         self,
@@ -66,6 +73,9 @@ class NDViewerTab(QWidget):
         self._sig_start_acquisition.connect(self._handle_start_acquisition)
         self._sig_register_image.connect(self._handle_register_image)
         self._sig_end_acquisition.connect(self._handle_end_acquisition)
+        self._sig_start_zarr_acquisition.connect(self._handle_start_zarr_acquisition)
+        self._sig_start_zarr_acquisition_6d.connect(self._handle_start_zarr_acquisition_6d)
+        self._sig_notify_zarr_frame.connect(self._handle_notify_zarr_frame)
 
         # Subscribe to EventBus events if available
         if self._event_bus is not None:
@@ -430,6 +440,179 @@ class NDViewerTab(QWidget):
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Zarr push-based API for real-time zarr acquisition display
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def start_zarr_acquisition(
+        self,
+        fov_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fov_labels: List[str],
+        height: int,
+        width: int,
+        experiment_id: str,
+    ) -> bool:
+        """Configure NDViewer for zarr push-mode acquisition.
+
+        Called at acquisition start when using ZARR_V3 format.
+        The viewer opens zarr stores for live viewing as frames are written.
+
+        Args:
+            fov_paths: List of zarr paths per FOV
+            channels: Channel names
+            num_z: Number of z-levels
+            fov_labels: FOV labels (e.g., ["A1:0", "A1:1"])
+            height: Image height in pixels
+            width: Image width in pixels
+            experiment_id: Unique identifier for this acquisition
+
+        Returns:
+            True if zarr push mode started successfully
+        """
+        self._log.debug(
+            f"start_zarr_acquisition: {len(fov_paths)} FOV paths, {len(channels)} channels, "
+            f"{num_z} z, experiment={experiment_id}"
+        )
+
+        try:
+            from squid.ui.widgets.ndviewer_light import LightweightViewer
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for zarr push mode")
+                self._viewer = LightweightViewer("")
+                self._layout.addWidget(self._viewer, 1)
+
+            self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._experiment_id = experiment_id
+
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+
+            self._log.info(f"Zarr push mode acquisition started: {experiment_id}")
+            return True
+
+        except Exception as e:
+            self._log.exception("Failed to start zarr push mode acquisition")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start zarr acquisition:\n{error_msg}")
+            return False
+
+    def notify_zarr_frame(
+        self,
+        t: int,
+        fov_idx: int,
+        z: int,
+        channel: str,
+        experiment_id: str,
+        region_idx: int = 0,
+    ) -> None:
+        """Notify the viewer that a zarr frame has been written.
+
+        Called after each frame is written to the zarr store.
+
+        Args:
+            t: Time index
+            fov_idx: FOV index (flat for 5D, local for 6D)
+            z: Z-level index
+            channel: Channel name
+            experiment_id: Acquisition identifier
+            region_idx: Region index (for 6D mode)
+        """
+        if self._viewer is None:
+            return
+        if self._experiment_id != experiment_id:
+            return
+
+        try:
+            self._viewer.notify_zarr_frame(t, fov_idx, z, channel)
+        except Exception:
+            self._log.exception(
+                f"notify_zarr_frame failed: t={t}, fov={fov_idx}, z={z}, ch={channel}"
+            )
+
+    def start_zarr_acquisition_6d(
+        self,
+        region_paths: List[str],
+        channels: List[str],
+        num_z: int,
+        fovs_per_region: List[int],
+        height: int,
+        width: int,
+        region_labels: List[str],
+        experiment_id: str,
+    ) -> bool:
+        """Configure NDViewer for 6D multi-region zarr acquisition.
+
+        Each region has a single zarr store with shape (FOV, T, C, Z, Y, X).
+        Delegates to start_zarr_acquisition_6d() on the viewer if available,
+        otherwise falls back to start_zarr_acquisition() with flattened FOVs.
+
+        Args:
+            region_paths: Zarr paths per region
+            channels: Channel names
+            num_z: Number of z-levels
+            fovs_per_region: FOV counts per region
+            height: Image height in pixels
+            width: Image width in pixels
+            region_labels: Region labels
+            experiment_id: Unique identifier for this acquisition
+
+        Returns:
+            True if started successfully
+        """
+        self._log.debug(
+            f"start_zarr_acquisition_6d: {len(region_paths)} regions, "
+            f"{len(channels)} channels, {num_z} z, experiment={experiment_id}"
+        )
+
+        try:
+            from squid.ui.widgets.ndviewer_light import LightweightViewer
+        except ImportError as e:
+            self._log.error(f"Failed to import ndviewer_light: {e}")
+            self._show_placeholder(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            return False
+
+        try:
+            if self._viewer is None:
+                self._log.debug("Creating new LightweightViewer for 6D zarr push mode")
+                self._viewer = LightweightViewer("")
+                self._layout.addWidget(self._viewer, 1)
+
+            if hasattr(self._viewer, "start_zarr_acquisition_6d"):
+                self._viewer.start_zarr_acquisition_6d(
+                    region_paths, channels, num_z, fovs_per_region, height, width, region_labels
+                )
+            else:
+                # Fallback: flatten to 5D-compatible call
+                fov_paths = []
+                fov_labels = []
+                for i, (rpath, rlabel, nfov) in enumerate(zip(region_paths, region_labels, fovs_per_region)):
+                    for fov_idx in range(nfov):
+                        fov_paths.append(rpath)
+                        fov_labels.append(f"{rlabel}:{fov_idx}")
+                self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+
+            self._experiment_id = experiment_id
+
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+
+            self._log.info(f"6D zarr push mode acquisition started: {experiment_id}")
+            return True
+
+        except Exception as e:
+            self._log.exception("Failed to start 6D zarr push mode acquisition")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._show_placeholder(f"NDViewer: failed to start 6D zarr acquisition:\n{error_msg}")
+            return False
+
+    # ─────────────────────────────────────────────────────────────────────────
     # EventBus handlers (run on dispatch thread, emit signals to main thread)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -454,6 +637,30 @@ class NDViewerTab(QWidget):
         """Handle NDViewerAcquisitionEnded event."""
         self._sig_end_acquisition.emit(event.experiment_id, event.dataset_path or "")
 
+    @handles(NDViewerStartZarrAcquisition)
+    def _on_ndviewer_start_zarr_acquisition(self, event: NDViewerStartZarrAcquisition) -> None:
+        """Handle NDViewerStartZarrAcquisition event."""
+        self._sig_start_zarr_acquisition.emit(
+            event.fov_paths, event.channels, event.num_z, event.fov_labels,
+            event.height, event.width, event.experiment_id,
+        )
+
+    @handles(NDViewerStartZarrAcquisition6D)
+    def _on_ndviewer_start_zarr_acquisition_6d(self, event: NDViewerStartZarrAcquisition6D) -> None:
+        """Handle NDViewerStartZarrAcquisition6D event."""
+        self._sig_start_zarr_acquisition_6d.emit(
+            event.region_paths, event.channels, event.num_z, event.fovs_per_region,
+            event.height, event.width, event.region_labels, event.experiment_id,
+        )
+
+    @handles(NDViewerZarrFrameWritten)
+    def _on_ndviewer_zarr_frame_written(self, event: NDViewerZarrFrameWritten) -> None:
+        """Handle NDViewerZarrFrameWritten event."""
+        self._sig_notify_zarr_frame.emit(
+            event.t, event.fov_idx, event.z, event.channel,
+            event.experiment_id, event.region_idx,
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Signal slots (run on main Qt thread)
     # ─────────────────────────────────────────────────────────────────────────
@@ -474,3 +681,27 @@ class NDViewerTab(QWidget):
     def _handle_end_acquisition(self, experiment_id: str, dataset_path: str) -> None:
         """Slot for _sig_end_acquisition."""
         self.end_acquisition(experiment_id, dataset_path or None)
+
+    def _handle_start_zarr_acquisition(
+        self, fov_paths: List[str], channels: List[str], num_z: int,
+        fov_labels: List[str], height: int, width: int, experiment_id: str,
+    ) -> None:
+        """Slot for _sig_start_zarr_acquisition."""
+        self.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width, experiment_id)
+
+    def _handle_start_zarr_acquisition_6d(
+        self, region_paths: List[str], channels: List[str], num_z: int,
+        fovs_per_region: List[int], height: int, width: int,
+        region_labels: List[str], experiment_id: str,
+    ) -> None:
+        """Slot for _sig_start_zarr_acquisition_6d."""
+        self.start_zarr_acquisition_6d(
+            region_paths, channels, num_z, fovs_per_region,
+            height, width, region_labels, experiment_id,
+        )
+
+    def _handle_notify_zarr_frame(
+        self, t: int, fov_idx: int, z: int, channel: str, experiment_id: str, region_idx: int,
+    ) -> None:
+        """Slot for _sig_notify_zarr_frame."""
+        self.notify_zarr_frame(t, fov_idx, z, channel, experiment_id, region_idx)
