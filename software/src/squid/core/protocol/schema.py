@@ -156,10 +156,11 @@ class ExperimentProtocol(BaseModel):
                 step_loc = f"Round '{round_.name}' step {step_idx}"
 
                 if isinstance(step, FluidicsStep):
-                    if step.protocol not in self.fluidics_protocols:
-                        errors.append(
-                            f"{step_loc}: fluidics protocol '{step.protocol}' not found"
-                        )
+                    if self.fluidics_protocols:
+                        if step.protocol not in self.fluidics_protocols:
+                            errors.append(
+                                f"{step_loc}: fluidics protocol '{step.protocol}' not found"
+                            )
 
                 elif isinstance(step, ImagingStep):
                     if step.config not in self.imaging_configs:

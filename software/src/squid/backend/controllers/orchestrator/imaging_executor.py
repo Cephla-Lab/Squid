@@ -6,7 +6,7 @@ Bridges the orchestrator's round-based model with multipoint's acquisition model
 
 V2 Support:
     - execute_with_config() for ImagingConfig-based imaging
-    - Channel overrides via ChannelConfigurationManager
+    - Channel overrides via ChannelConfigService
     - Focus interval configuration via AutofocusExecutor
 """
 
@@ -24,7 +24,7 @@ from squid.core.protocol import ImagingConfig, ChannelConfigOverride
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint import MultiPointController
     from squid.backend.managers.scan_coordinates import ScanCoordinates
-    from squid.backend.managers.channel_config_manager import ChannelConfigurationManager
+    from squid.backend.managers.channel_config_service import ChannelConfigService
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -37,7 +37,7 @@ class ImagingExecutor:
 
     V2 Protocol Support:
         - execute_with_config(): Execute imaging using ImagingConfig
-        - Channel overrides applied via ChannelConfigurationManager
+        - Channel overrides applied via ChannelConfigService
         - Focus interval configuration via AutofocusExecutor
 
     Usage:
@@ -61,7 +61,7 @@ class ImagingExecutor:
         event_bus: EventBus,
         multipoint_controller: "MultiPointController",
         scan_coordinates: Optional["ScanCoordinates"] = None,
-        channel_config_manager: Optional["ChannelConfigurationManager"] = None,
+        channel_config_manager: Optional["ChannelConfigService"] = None,
     ):
         """Initialize the imaging executor.
 
@@ -69,7 +69,7 @@ class ImagingExecutor:
             event_bus: EventBus for event communication
             multipoint_controller: MultiPointController for acquisitions
             scan_coordinates: ScanCoordinates with FOV positions
-            channel_config_manager: ChannelConfigurationManager for channel overrides
+            channel_config_manager: ChannelConfigService for channel overrides
         """
         self._event_bus = event_bus
         self._multipoint = multipoint_controller
@@ -144,6 +144,9 @@ class ImagingExecutor:
             # Get channel names
             channel_names = imaging_config.get_channel_names()
 
+            override_snapshot = None
+            override_objective = None
+
             # Configure multipoint base path and experiment ID
             self._multipoint.base_path = output_path
             self._multipoint.experiment_ID = experiment_id
@@ -194,11 +197,16 @@ class ImagingExecutor:
             if hasattr(self._multipoint, "set_selected_configurations"):
                 self._multipoint.set_selected_configurations(channel_names)
 
-            # Apply channel overrides
+            # Apply channel overrides (snapshot for restore)
+            override_objective, override_snapshot = self._snapshot_channel_overrides(
+                imaging_config.channels
+            )
             self._apply_channel_overrides(imaging_config.channels)
 
-            # Create output directory
-            os.makedirs(os.path.join(output_path, experiment_id), exist_ok=True)
+            # Create output directory and write acquisition config
+            output_dir = os.path.join(output_path, experiment_id)
+            os.makedirs(output_dir, exist_ok=True)
+            self._write_acquisition_output(output_dir, channel_names)
 
             # Start the acquisition
             _log.info(
@@ -231,6 +239,8 @@ class ImagingExecutor:
             return False
 
         finally:
+            if override_snapshot and override_objective:
+                self._restore_channel_overrides(override_objective, override_snapshot)
             self._current_experiment_id = None
 
     def _apply_channel_overrides(
@@ -240,7 +250,7 @@ class ImagingExecutor:
         """Apply channel configuration overrides.
 
         For channels that are ChannelConfigOverride objects, apply the
-        specified overrides to the ChannelConfigurationManager.
+        specified overrides to the ChannelConfigService.
 
         Args:
             channels: List of channel names or ChannelConfigOverride objects
@@ -278,6 +288,98 @@ class ImagingExecutor:
                 _log.debug(f"Applied {len(overrides)} channel override(s) for objective '{current_objective}'")
             except Exception as e:
                 _log.warning(f"Failed to apply channel overrides: {e}")
+
+    def _write_acquisition_output(self, output_dir: str, channel_names: List[str]) -> None:
+        """Write acquisition channel configuration to the round output folder."""
+        if self._channel_config_manager is None:
+            return
+        if not hasattr(self._channel_config_manager, "save_acquisition_output"):
+            return
+
+        current_objective = None
+        if hasattr(self._multipoint, "objectiveStore") and self._multipoint.objectiveStore:
+            current_objective = self._multipoint.objectiveStore.current_objective
+        if current_objective is None:
+            _log.warning("Cannot write acquisition output: no current objective available")
+            return
+
+        configs = []
+        for name in channel_names:
+            config = self._channel_config_manager.get_channel_configuration_by_name(
+                current_objective, name
+            )
+            if config is not None:
+                configs.append(config)
+
+        if not configs:
+            _log.warning("No channel configurations found for acquisition output")
+            return
+
+        try:
+            from pathlib import Path
+
+            self._channel_config_manager.save_acquisition_output(
+                Path(output_dir), current_objective, configs
+            )
+        except Exception as e:
+            _log.warning(f"Failed to write acquisition output: {e}")
+
+    def _snapshot_channel_overrides(
+        self,
+        channels: List[Union[str, ChannelConfigOverride]],
+    ) -> tuple[Optional[str], List[tuple[str, str, float]]]:
+        """Capture original channel settings so overrides can be restored."""
+        if self._channel_config_manager is None:
+            return None, []
+
+        current_objective = None
+        if hasattr(self._multipoint, "objectiveStore") and self._multipoint.objectiveStore:
+            current_objective = self._multipoint.objectiveStore.current_objective
+
+        if current_objective is None:
+            _log.warning("Cannot snapshot channel overrides: no current objective available")
+            return None, []
+
+        snapshots: List[tuple[str, str, float]] = []
+        for ch in channels:
+            if not isinstance(ch, ChannelConfigOverride):
+                continue
+            config = self._channel_config_manager.get_channel_configuration_by_name(
+                current_objective, ch.name
+            )
+            if config is None:
+                continue
+            if ch.exposure_time_ms is not None:
+                snapshots.append((ch.name, "ExposureTime", float(config.exposure_time)))
+            if ch.analog_gain is not None:
+                snapshots.append((ch.name, "AnalogGain", float(config.analog_gain)))
+            if ch.illumination_intensity is not None:
+                snapshots.append((ch.name, "IlluminationIntensity", float(config.illumination_intensity)))
+            if "z_offset_um" in ch.model_fields_set:
+                snapshots.append((ch.name, "ZOffset", float(config.z_offset)))
+
+        return current_objective, snapshots
+
+    def _restore_channel_overrides(
+        self,
+        objective: str,
+        snapshots: List[tuple[str, str, float]],
+    ) -> None:
+        """Restore original channel settings after overrides."""
+        if self._channel_config_manager is None:
+            return
+        for channel_name, attr_name, value in snapshots:
+            try:
+                self._channel_config_manager.update_configuration(
+                    objective, channel_name, attr_name, value
+                )
+            except Exception as e:
+                _log.warning(
+                    "Failed to restore override for '%s' (%s): %s",
+                    channel_name,
+                    attr_name,
+                    e,
+                )
 
     @handles(AcquisitionFinished)
     def _on_acquisition_finished(self, event: AcquisitionFinished) -> None:

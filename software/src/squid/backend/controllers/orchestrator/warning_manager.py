@@ -71,6 +71,7 @@ class WarningManager:
 
         self._lock = threading.RLock()
         self._warnings: List[AcquisitionWarning] = []
+        self._total_warning_count: int = 0
         self._category_counts: Dict[WarningCategory, int] = defaultdict(int)
         self._severity_counts: Dict[WarningSeverity, int] = defaultdict(int)
         self._fov_counts: Dict[str, int] = defaultdict(int)
@@ -147,6 +148,7 @@ class WarningManager:
         with self._lock:
             # Add warning
             self._warnings.append(warning)
+            self._total_warning_count += 1
             self._category_counts[category] += 1
             self._severity_counts[severity] += 1
             if fov_id:
@@ -157,7 +159,7 @@ class WarningManager:
                 removed = self._warnings.pop(0)
                 # Note: counts remain accumulated even when warnings are removed
 
-            total_count = len(self._warnings)
+            total_count = self._total_warning_count
             category_count = self._category_counts[category]
 
             # Check if should pause
@@ -219,7 +221,7 @@ class WarningManager:
         # Check total count threshold
         if (
             self._thresholds.pause_after_count is not None
-            and len(self._warnings) >= self._thresholds.pause_after_count
+            and self._total_warning_count >= self._thresholds.pause_after_count
         ):
             return True
 
@@ -255,7 +257,7 @@ class WarningManager:
         # Check total count
         if (
             self._thresholds.pause_after_count is not None
-            and len(self._warnings) >= self._thresholds.pause_after_count
+            and self._total_warning_count >= self._thresholds.pause_after_count
         ):
             return ("total", self._thresholds.pause_after_count)
 
@@ -314,7 +316,7 @@ class WarningManager:
         """
         with self._lock:
             return WarningStats(
-                total_count=len(self._warnings),
+                total_count=self._total_warning_count,
                 by_category=dict(self._category_counts),
                 by_severity=dict(self._severity_counts),
                 by_fov=dict(self._fov_counts),
@@ -339,6 +341,7 @@ class WarningManager:
                 # Clear all
                 cleared_count = len(self._warnings)
                 self._warnings.clear()
+                self._total_warning_count = 0
                 self._category_counts.clear()
                 self._severity_counts.clear()
                 self._fov_counts.clear()
@@ -363,6 +366,7 @@ class WarningManager:
                     self._severity_counts[w.severity] += 1
                     if w.fov_id:
                         self._fov_counts[w.fov_id] += 1
+                self._total_warning_count = sum(self._category_counts.values())
 
         # Publish event outside lock
         if self._event_bus and cleared_count > 0:

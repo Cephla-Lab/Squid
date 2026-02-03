@@ -85,6 +85,7 @@ def mock_fluidics_controller():
     mock = MagicMock()
     mock.run_protocol.return_value = True
     mock.is_available = True
+    mock.list_protocols.return_value = []
     return mock
 
 

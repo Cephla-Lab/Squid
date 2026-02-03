@@ -10,52 +10,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fluidics_protocols:
-  probe_1_hybridization:
-    description: "Deliver probe set 1 for hybridization"
-    steps:
-      - operation: flow
-        solution: probe_1
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 2
-
-  probe_2_hybridization:
-    description: "Deliver probe set 2 for hybridization"
-    steps:
-      - operation: flow
-        solution: probe_2
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 2
-
-  strip_fluorophores:
-    description: "Strip fluorophores between rounds"
-    steps:
-      - operation: flow
-        solution: strip_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-      - operation: incubate
-        duration_s: 1
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-        repeats: 2
-
-  final_wash:
-    description: "Final wash and storage"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 300
-        flow_rate_ul_per_min: 100
-        repeats: 3
-      - operation: aspirate
-
 imaging_configs:
   fish_405:
     description: "FISH imaging with 405nm channel"

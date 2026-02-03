@@ -208,13 +208,6 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Multi Round",
         "version": "2.0",
         "description": "Multi-round experiment",
-        "fluidics_protocols": {
-            "test_incubate": {
-                "steps": [
-                    {"operation": "incubate", "duration_s": 1.0},
-                ],
-            },
-        },
         "imaging_configs": {
             "standard": {
                 "channels": [channel],
@@ -301,18 +294,6 @@ def fluidics_heavy_protocol(tmp_path) -> str:
         "name": "Fluidics Heavy",
         "version": "2.0",
         "description": "Multiple fluidics",
-        "fluidics_protocols": {
-            "test_prime": {
-                "steps": [
-                    {"operation": "prime", "solution": "buffer", "volume_ul": 50},
-                ],
-            },
-            "test_stain": {
-                "steps": [
-                    {"operation": "flow", "solution": "stain", "volume_ul": 50},
-                ],
-            },
-        },
         "rounds": [
             {
                 "name": "Prime",
@@ -354,6 +335,7 @@ def mock_fluidics_controller():
     """Create a mock fluidics controller that completes immediately."""
     mock = MagicMock(spec=FluidicsController)
     mock.run_protocol.return_value = True
+    mock.list_protocols.return_value = []
     from squid.backend.controllers.fluidics_controller import FluidicsControllerState
 
     mock.state = FluidicsControllerState.COMPLETED
@@ -1240,15 +1222,11 @@ class TestV2ProtocolIntegration:
         orchestrator_with_mocks: OrchestratorController,
         tmp_path,
     ):
-        """Verify imaging and fluidics file references resolve in loader."""
+        """Verify imaging config file references resolve in loader."""
         imaging_config_path = tmp_path / "imaging_config.yaml"
-        fluidics_path = tmp_path / "fluidics_protocol.yaml"
 
         imaging_config_path.write_text(
             "channels:\n  - BF\nz_stack:\n  planes: 1\nfocus:\n  enabled: false\n"
-        )
-        fluidics_path.write_text(
-            "steps:\n  - operation: incubate\n    duration_s: 1\n"
         )
 
         protocol_dict = {
@@ -1257,14 +1235,7 @@ class TestV2ProtocolIntegration:
             "imaging_configs": {
                 "standard": {"file": imaging_config_path.name},
             },
-            "fluidics_protocols": {
-                "incubate": {"file": fluidics_path.name},
-            },
             "rounds": [
-                {
-                    "name": "Fluidics",
-                    "steps": [{"step_type": "fluidics", "protocol": "incubate"}],
-                },
                 {
                     "name": "Imaging",
                     "steps": [{"step_type": "imaging", "config": "standard"}],
@@ -1285,7 +1256,6 @@ class TestV2ProtocolIntegration:
         assert result is True
         assert orchestrator_with_mocks.protocol is not None
         assert "standard" in orchestrator_with_mocks.protocol.imaging_configs
-        assert "incubate" in orchestrator_with_mocks.protocol.fluidics_protocols
 
         timeout = 5.0
         start = time.time()
@@ -2350,8 +2320,8 @@ class TestProgressCalculation:
             ),
         )
         # Base: 0/2 = 0%
-        # Round contribution: 5/10 * (1/2) * 0.8 = 0.2 = 20%
-        expected = 20.0
+        # Round contribution: 5/10 * (1/2) = 0.25 = 25%
+        expected = 25.0
         assert abs(progress.progress_percent - expected) < 0.1
 
     def test_progress_with_fluidics_steps(self):
@@ -2367,8 +2337,8 @@ class TestProgressCalculation:
             ),
         )
         # Base: 0/2 = 0%
-        # Round contribution: 2/4 * (1/2) * 0.2 = 0.05 = 5%
-        expected = 5.0
+        # Round contribution: 2/4 * (1/2) = 0.25 = 25%
+        expected = 25.0
         assert abs(progress.progress_percent - expected) < 0.1
 
 

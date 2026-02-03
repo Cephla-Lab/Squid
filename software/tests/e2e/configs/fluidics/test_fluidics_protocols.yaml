@@ -159,3 +159,113 @@ protocols:
         volume_ul: 200
         flow_rate_ul_per_min: 100
         repeats: 2
+
+  # For v2_repeated.yaml
+  probe_1:
+    description: "Probe set 1"
+    steps:
+      - operation: flow
+        solution: probe_1
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_2:
+    description: "Probe set 2"
+    steps:
+      - operation: flow
+        solution: probe_2
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_3:
+    description: "Probe set 3"
+    steps:
+      - operation: flow
+        solution: probe_3
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_4:
+    description: "Probe set 4"
+    steps:
+      - operation: flow
+        solution: probe_4
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_5:
+    description: "Probe set 5"
+    steps:
+      - operation: flow
+        solution: probe_5
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  wash:
+    description: "Standard wash"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 500
+
+  # For v2_full.yaml
+  initial_wash:
+    description: "Initial chamber wash"
+    steps:
+      - operation: wash
+        solution: pbs
+        volume_ul: 1000
+        flow_rate_ul_per_min: 200
+      - operation: aspirate
+
+  probe_hybridize_1:
+    description: "Probe set 1 hybridization"
+    steps:
+      - operation: flow
+        solution: probe_mix_1
+        volume_ul: 150
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_hybridize_2:
+    description: "Probe set 2 hybridization"
+    steps:
+      - operation: flow
+        solution: probe_mix_2
+        volume_ul: 150
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  stringent_wash:
+    description: "Stringent wash to remove unbound probes"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+        repeats: 3
+
+  strip:
+    description: "Strip probes for next round"
+    steps:
+      - operation: flow
+        solution: strip_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+      - operation: incubate
+        duration_s: 1
+      - operation: wash
+        solution: pbs
+        volume_ul: 500

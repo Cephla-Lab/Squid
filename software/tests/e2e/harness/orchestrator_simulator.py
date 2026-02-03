@@ -34,9 +34,12 @@ from squid.backend.controllers.multipoint.experiment_manager import ExperimentMa
 from squid.backend.controllers.multipoint.acquisition_planner import AcquisitionPlanner
 
 from tests.harness.simulators.base import BaseSimulator
+import squid.core.logging
 
 if TYPE_CHECKING:
     from tests.harness.core.backend_context import BackendContext
+
+_log = squid.core.logging.get_logger(__name__)
 
 
 @dataclass
@@ -148,6 +151,16 @@ class OrchestratorSimulator(BaseSimulator):
 
         # Create fluidics controller (simulated - no fluidics_service)
         fluidics_controller = FluidicsController(event_bus=ctx.event_bus)
+        fluidics_protocols_path = (
+            Path(__file__).resolve().parent.parent / "configs/fluidics/test_fluidics_protocols.yaml"
+        )
+        if fluidics_protocols_path.exists():
+            fluidics_controller.load_protocols(str(fluidics_protocols_path))
+        else:
+            _log.warning(
+                "Fluidics protocols file not found for E2E simulator: %s",
+                fluidics_protocols_path,
+            )
 
         # Create orchestrator
         self._orchestrator = OrchestratorController(

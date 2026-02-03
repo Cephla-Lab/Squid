@@ -5,15 +5,6 @@ name: "V2 Fluidics-Imaging Test"
 version: "2.0"
 description: "Tests fluidics followed by imaging step sequence"
 
-fluidics_protocols:
-  wash:
-    description: "Simple wash step"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 500
-        flow_rate_ul_per_min: 100
-
 imaging_configs:
   standard:
     description: "Standard imaging after wash"

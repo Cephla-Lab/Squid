@@ -8,8 +8,8 @@
 
 - `test_fluidics_protocols.yaml` - Named fluidics protocols for E2E testing
 
-Protocols are organized by name and can be referenced from experiment protocol YAMLs
-using the `fluidics_protocol` field in rounds.
+Protocols are organized by name and referenced from experiment protocol YAMLs
+via fluidics steps. Experiment protocols should not inline fluidics protocols.
 
 ## Usage
 
@@ -26,17 +26,14 @@ Reference protocols by name in experiment YAML files:
 ```yaml
 rounds:
   - name: "Hybridization 1"
-    type: imaging
-    fluidics_protocol: probe_1_hybridization
-    imaging:
-      channels: ["DAPI", "Cy3"]
+    steps:
+      - step_type: fluidics
+        protocol: probe_1_hybridization
+      - step_type: imaging
+        config: fish_standard
 ```
 
-The orchestrator loads the fluidics protocols file specified in the experiment:
-
-```yaml
-fluidics_protocols_file: tests/e2e/configs/fluidics/test_fluidics_protocols.yaml
-```
+Load fluidics protocols into the FluidicsController separately (UI or test harness).
 
 ## YAML Protocol Format
 

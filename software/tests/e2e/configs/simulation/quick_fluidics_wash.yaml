@@ -10,33 +10,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fluidics_protocols:
-  initial_rinse:
-    description: "Initial rinse"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 100
-        flow_rate_ul_per_min: 100
-
-  main_wash:
-    description: "Main wash cycle"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-        repeats: 2
-
-  final_rinse:
-    description: "Final rinse"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-        repeats: 2
-
 rounds:
   - name: "Initial Rinse"
     steps:

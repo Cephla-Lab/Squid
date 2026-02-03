@@ -5,64 +5,6 @@ name: "V2 Repeated Rounds Test"
 version: "2.0"
 description: "Tests round expansion with {i} substitution"
 
-fluidics_protocols:
-  probe_1:
-    description: "Probe set 1"
-    steps:
-      - operation: flow
-        solution: probe_1
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 300
-
-  probe_2:
-    description: "Probe set 2"
-    steps:
-      - operation: flow
-        solution: probe_2
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 300
-
-  probe_3:
-    description: "Probe set 3"
-    steps:
-      - operation: flow
-        solution: probe_3
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 300
-
-  probe_4:
-    description: "Probe set 4"
-    steps:
-      - operation: flow
-        solution: probe_4
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 300
-
-  probe_5:
-    description: "Probe set 5"
-    steps:
-      - operation: flow
-        solution: probe_5
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-      - operation: incubate
-        duration_s: 300
-
-  wash:
-    description: "Standard wash"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 500
-
 imaging_configs:
   fish_standard:
     description: "FISH imaging"

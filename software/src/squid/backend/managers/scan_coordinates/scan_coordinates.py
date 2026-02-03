@@ -260,17 +260,38 @@ class ScanCoordinates:
     @handles(LoadScanCoordinatesCommand)
     def _on_load_scan_coordinates(self, cmd: Event) -> None:
         assert isinstance(cmd, LoadScanCoordinatesCommand)
+        if not cmd.apply:
+            return
+        self._apply_loaded_coordinates(
+            cmd.region_fov_coordinates,
+            cmd.region_centers,
+        )
+
+    def load_coordinates(
+        self,
+        region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]],
+        region_centers: Optional[Dict[str, Tuple[float, ...]]] = None,
+    ) -> None:
+        """Synchronously load scan coordinates without relying on EventBus."""
+        self._apply_loaded_coordinates(region_fov_coordinates, region_centers)
+
+    def _apply_loaded_coordinates(
+        self,
+        region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]],
+        region_centers: Optional[Dict[str, Tuple[float, ...]]] = None,
+    ) -> None:
+        """Apply loaded scan coordinates and publish updates."""
         self.clear_regions()
 
-        for region_id, coords_tuple in cmd.region_fov_coordinates.items():
+        for region_id, coords_tuple in region_fov_coordinates.items():
             coords: List[Tuple[float, ...]] = []
             for c in coords_tuple:
                 coords.append(tuple(float(v) for v in c))
             if not coords:
                 continue
             self.region_fov_coordinates[str(region_id)] = coords
-            if cmd.region_centers and region_id in cmd.region_centers:
-                center_raw = cmd.region_centers[region_id]
+            if region_centers and region_id in region_centers:
+                center_raw = region_centers[region_id]
                 center = [float(center_raw[0]), float(center_raw[1])]
                 if len(center_raw) > 2:
                     center.append(float(center_raw[2]))

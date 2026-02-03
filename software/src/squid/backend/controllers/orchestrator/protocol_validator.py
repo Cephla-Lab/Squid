@@ -24,7 +24,7 @@ from squid.backend.controllers.orchestrator.validation import (
 )
 
 if TYPE_CHECKING:
-    from squid.backend.managers import ChannelConfigurationManager
+    from squid.backend.managers import ChannelConfigService
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -68,10 +68,10 @@ class ProtocolValidator:
     @classmethod
     def from_channel_manager(
         cls,
-        channel_manager: "ChannelConfigurationManager",
+        channel_manager: "ChannelConfigService",
         **kwargs,
     ) -> "ProtocolValidator":
-        """Create a validator using channels from a ChannelConfigurationManager.
+        """Create a validator using channels from a ChannelConfigService.
 
         Args:
             channel_manager: The channel configuration manager.
@@ -108,6 +108,13 @@ class ProtocolValidator:
         # Validate named resources exist
         ref_errors = protocol.validate_references()
         errors.extend(ref_errors)
+
+        # Inline fluidics protocols are not allowed
+        if protocol.fluidics_protocols:
+            errors.append(
+                "Inline fluidics_protocols are not allowed. "
+                "Load protocols into FluidicsController separately and reference by name."
+            )
 
         # Validate channels in imaging_configs
         if self._available_channels:
@@ -238,15 +245,15 @@ class ProtocolValidator:
 
         protocol_name = step.protocol
 
-        # Validate protocol exists in loaded protocols (inline definitions not allowed)
-        available = self._available_fluidics_protocols or set()
-
-        if protocol_name not in available:
-            errors.append(
-                f"Round '{round_name}': Fluidics protocol '{protocol_name}' not loaded. "
-                f"Load protocols via FluidicsController before validation. "
-                f"Available: {', '.join(sorted(available)) or 'none'}"
-            )
+        # Validate protocol exists in loaded protocols (skip if availability unknown)
+        if self._available_fluidics_protocols is not None:
+            available = self._available_fluidics_protocols
+            if protocol_name not in available:
+                errors.append(
+                    f"Round '{round_name}': Fluidics protocol '{protocol_name}' not loaded. "
+                    f"Load protocols via FluidicsController before validation. "
+                    f"Available: {', '.join(sorted(available)) or 'none'}"
+                )
 
         # Estimate time - use protocol estimate if defined, otherwise default
         estimated_seconds = self._timing.get("fluidics_protocol_default_seconds", 60.0)

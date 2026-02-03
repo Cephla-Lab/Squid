@@ -12,30 +12,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fluidics_protocols:
-  sample_preparation:
-    description: "Prepare sample with initial wash"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 100
-        flow_rate_ul_per_min: 50
-        repeats: 2
-
-  sample_cleanup:
-    description: "Clean up sample after imaging"
-    steps:
-      - operation: flow
-        solution: wash_buffer
-        volume_ul: 200
-        flow_rate_ul_per_min: 100
-        repeats: 2
-      - operation: aspirate
-
 imaging_configs:
   main_acquisition:
     description: "Main acquisition configuration"

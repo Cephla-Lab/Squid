@@ -2437,6 +2437,7 @@ class LoadScanCoordinatesCommand(Event):
 
     region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]]
     region_centers: Optional[Dict[str, Tuple[float, ...]]] = None
+    apply: bool = True
 
 
 @dataclass

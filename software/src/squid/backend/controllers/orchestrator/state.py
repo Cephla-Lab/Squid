@@ -139,19 +139,29 @@ class ExperimentProgress:
         # Add progress within current round
         if self.current_round is not None:
             round_frac = 1.0 / self.total_rounds
-            # Weight imaging more heavily (80% of round time typically)
-            if self.current_round.total_imaging_fovs > 0:
-                imaging_progress = (
-                    self.current_round.imaging_fov_index
-                    / self.current_round.total_imaging_fovs
-                )
+            imaging_fovs = self.current_round.total_imaging_fovs
+            fluidics_steps = self.current_round.total_fluidics_steps
+
+            if imaging_fovs > 0 and fluidics_steps == 0:
+                imaging_progress = self.current_round.imaging_fov_index / imaging_fovs
+                imaging_progress = min(imaging_progress, 1.0)
+                round_progress += imaging_progress * round_frac
+            elif fluidics_steps > 0 and imaging_fovs == 0:
+                fluidics_progress = self.current_round.fluidics_step_index / fluidics_steps
+                fluidics_progress = min(fluidics_progress, 1.0)
+                round_progress += fluidics_progress * round_frac
+            elif imaging_fovs > 0 and fluidics_steps > 0:
+                imaging_progress = self.current_round.imaging_fov_index / imaging_fovs
+                imaging_progress = min(imaging_progress, 1.0)
+                fluidics_progress = self.current_round.fluidics_step_index / fluidics_steps
+                fluidics_progress = min(fluidics_progress, 1.0)
                 round_progress += imaging_progress * round_frac * 0.8
-            if self.current_round.total_fluidics_steps > 0:
-                fluidics_progress = (
-                    self.current_round.fluidics_step_index
-                    / self.current_round.total_fluidics_steps
-                )
                 round_progress += fluidics_progress * round_frac * 0.2
+            elif self.current_round.total_steps > 0:
+                step_progress = min(
+                    self.current_round.current_step_index + 1, self.current_round.total_steps
+                ) / self.current_round.total_steps
+                round_progress += step_progress * round_frac
 
         return round_progress * 100.0
 
@@ -172,7 +182,7 @@ class Checkpoint:
     # Position in protocol
     round_index: int
     step_index: int = 0  # V2: position within round's steps list
-    imaging_fov_index: int = 0
+    imaging_fov_index: int = 0  # 0-based index for resume
 
     # Imaging state
     imaging_z_index: int = 0

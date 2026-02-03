@@ -428,22 +428,10 @@ class TestOperationEstimates:
 
     def test_wait_operation_estimate(self, backend_ctx: BackendContext):
         """Verify wait operation estimates are generated."""
-        validator = ProtocolValidator()
-
         protocol_dict = {
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "fluidics_protocols": {
-                "incubate_300": {
-                    "steps": [
-                        {
-                            "operation": "incubate",
-                            "duration_s": 300,
-                        }
-                    ]
-                }
-            },
             "rounds": [
                 {
                     "name": "Wait Round",
@@ -453,6 +441,10 @@ class TestOperationEstimates:
         }
 
         protocol = build_protocol(protocol_dict)
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"incubate_300"},
+            timing_estimates={"fluidics_protocol_default_seconds": 300},
+        )
         summary = validator.validate(protocol, fov_count=1)
 
         # Find fluidics operation estimate

@@ -10,15 +10,12 @@ from squid.core.protocol import (
     FluidicsStep,
     ImagingStep,
     InterventionStep,
-    FluidicsCommand,
     ProtocolLoader,
     ProtocolValidationError,
     ImagingConfig,
     ZStackConfig,
     FocusConfig,
     ChannelConfigOverride,
-    FluidicsProtocol,
-    FluidicsProtocolStep,
     ErrorHandlingConfig,
     FailureAction,
 )
@@ -115,11 +112,6 @@ class TestV2ProtocolSchema:
         """Test getting all imaging steps across rounds."""
         protocol = ExperimentProtocol(
             name="Test",
-            fluidics_protocols={
-                "wash": FluidicsProtocol(
-                    steps=[FluidicsProtocolStep(operation=FluidicsCommand.WASH)]
-                ),
-            },
             imaging_configs={
                 "standard": ImagingConfig(channels=["A"]),
             },
@@ -317,18 +309,6 @@ rounds:
 name: Test Repeat
 version: "2.0"
 
-fluidics_protocols:
-  probe_1:
-    steps:
-      - operation: flow
-        solution: p1
-        volume_ul: 100
-  probe_2:
-    steps:
-      - operation: flow
-        solution: p2
-        volume_ul: 100
-
 imaging_configs:
   standard:
     channels: [DAPI]
@@ -363,17 +343,6 @@ rounds:
         protocol = ExperimentProtocol(
             name="Round Trip Test",
             version="2.0",
-            fluidics_protocols={
-                "wash": FluidicsProtocol(
-                    steps=[
-                        FluidicsProtocolStep(
-                            operation=FluidicsCommand.FLOW,
-                            solution="test",
-                            volume_ul=100,
-                        )
-                    ],
-                ),
-            },
             imaging_configs={
                 "standard": ImagingConfig(channels=["DAPI"]),
             },
@@ -406,13 +375,6 @@ rounds:
         yaml_content = """
 name: Mixed Steps Test
 version: "2.0"
-
-fluidics_protocols:
-  wash:
-    steps:
-      - operation: flow
-        solution: buffer
-        volume_ul: 500
 
 imaging_configs:
   standard:
