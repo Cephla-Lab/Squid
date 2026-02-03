@@ -5,7 +5,7 @@ Displays warnings accumulated during experiment execution with
 filtering, navigation, and threshold status.
 """
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt5.QtWidgets import (
@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QColor, QBrush, QFont
 
-from squid.core.events import handles, auto_subscribe, auto_unsubscribe
+from squid.core.events import handles
 from squid.backend.controllers.orchestrator import (
     WarningCategory,
     WarningSeverity,
@@ -32,6 +32,7 @@ from squid.backend.controllers.orchestrator import (
     WarningsCleared,
     ClearWarningsCommand,
 )
+from squid.ui.widgets.base import EventBusWidget
 
 if TYPE_CHECKING:
     from squid.core.events import EventBus
@@ -60,7 +61,7 @@ SEVERITY_BG_COLORS = {
 }
 
 
-class WarningPanel(QWidget):
+class WarningPanel(EventBusWidget):
     """Panel displaying acquisition warnings with filtering and navigation.
 
     Features:
@@ -85,16 +86,13 @@ class WarningPanel(QWidget):
         warning_manager: Optional["WarningManager"] = None,
         parent: Optional[QWidget] = None,
     ):
-        super().__init__(parent)
-        self._event_bus = event_bus
+        super().__init__(event_bus, parent)
         self._warning_manager = warning_manager
-        self._subscriptions: List = []
         self._current_filter: Optional[WarningCategory] = None
         self._experiment_id: str = ""
 
         self._setup_ui()
         self._connect_signals()
-        self._subscribe_events()
 
     def _setup_ui(self) -> None:
         """Setup the UI layout."""
@@ -168,15 +166,6 @@ class WarningPanel(QWidget):
         self.warning_added.connect(self._handle_warning_added)
         self.warnings_cleared.connect(self._handle_warnings_cleared)
         self.threshold_reached.connect(self._handle_threshold_reached)
-
-    def _subscribe_events(self) -> None:
-        """Subscribe to event bus events."""
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-
-    def cleanup(self) -> None:
-        """Cleanup resources."""
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
 
     # ========================================================================
     # Event Handlers
@@ -293,7 +282,7 @@ class WarningPanel(QWidget):
         categories = None
         if self._current_filter is not None:
             categories = (self._current_filter,)
-        self._event_bus.publish(
+        self._publish(
             ClearWarningsCommand(
                 experiment_id=self._experiment_id,
                 categories=categories,

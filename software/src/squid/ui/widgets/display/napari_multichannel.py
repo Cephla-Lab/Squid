@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import DTypeLike
-from typing import List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Optional, Set, Tuple, TYPE_CHECKING
 
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
@@ -17,8 +17,6 @@ from squid.core.config.feature_flags import get_feature_flags
 
 from squid.backend.managers import ContrastManager
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     EventBus,
     BinningChanged,
@@ -26,6 +24,7 @@ from squid.core.events import (
     SetAcquisitionChannelsCommand,
     SetAcquisitionParametersCommand,
 )
+from squid.ui.widgets.base import EventBusWidget
 
 if TYPE_CHECKING:
     pass
@@ -34,7 +33,7 @@ if TYPE_CHECKING:
 _FEATURE_FLAGS = get_feature_flags()
 
 
-class NapariMultiChannelWidget(QWidget):
+class NapariMultiChannelWidget(EventBusWidget):
     """Multi-channel Z-stack viewer using napari.
 
     Subscribes to BinningChanged and ObjectiveChanged events to update pixel size.
@@ -67,9 +66,7 @@ class NapariMultiChannelWidget(QWidget):
         grid_enabled: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self._event_bus = event_bus
-        self._subscriptions: List[Tuple[type, object]] = []
+        super().__init__(event_bus, parent)
 
         # Cached values from events (initialized with provided initial values)
         self._pixel_size_factor = initial_pixel_size_factor
@@ -89,9 +86,6 @@ class NapariMultiChannelWidget(QWidget):
         self.viewer_scale_initialized = False
         self.update_layer_count = 0
         self.grid_enabled = grid_enabled
-
-        # Subscribe to events for dynamic values
-        self._subscriptions = auto_subscribe(self, self._event_bus)
 
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
@@ -279,9 +273,3 @@ class NapariMultiChannelWidget(QWidget):
 
     def activate(self) -> None:
         self.viewer.window.activate()
-
-    def closeEvent(self, event) -> None:
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-            self._subscriptions.clear()
-        super().closeEvent(event)

@@ -34,8 +34,8 @@ from squid.core.events import (
     ChannelConfigurationsChanged,
     FocusLockModeChanged,
     handles,
-    auto_subscribe,
 )
+from squid.ui.widgets.base import EventBusFrame
 
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
@@ -89,7 +89,7 @@ _FEATURE_FLAGS = get_feature_flags()
 from squid.ui.widgets.base import error_dialog, check_space_available_with_error_dialog
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     def __init__(
         self,
         focusMapWidget,
@@ -97,16 +97,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         initial_channel_configs: List[str],
         z_ustep_per_mm: Optional[float] = None,
         initial_z_mm: float = 0.0,
-        *args,
-        **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(event_bus)
         self.setAcceptDrops(True)  # Enable drag-and-drop for YAML loading
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.acquisition_start_time = None
         self.last_used_locations = None
         self.last_used_location_ids = None
-        self._event_bus = event_bus
         self._z_ustep_per_mm = z_ustep_per_mm
         # Cache current position (updated via StagePositionChanged events)
         self._cached_x_mm = 0.0
@@ -132,9 +129,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
         self._is_active_tab = False
-
-        # Subscribe to EventBus using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     @handles(ActiveAcquisitionTabChanged)
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
@@ -207,7 +201,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Load last used saving path from cache, or fall back to default
         last_path = get_last_used_saving_path(DEFAULT_SAVING_PATH)
         self.lineEdit_savingDir.setText(last_path)
-        self._event_bus.publish(SetAcquisitionPathCommand(base_path=last_path))
+        self._publish(SetAcquisitionPathCommand(base_path=last_path))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -355,7 +349,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
         # Set initial autofocus flag via event
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             use_autofocus=MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         ))
 
@@ -364,7 +358,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
         # Set initial reflection AF flag via event
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         ))
 
@@ -753,7 +747,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.toggle_z_range_controls(False)
         # Set initial piezo flag via event
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             use_piezo=self.checkbox_usePiezo.isChecked()
         ))
 
@@ -853,13 +847,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         if self.checkbox_withReflectionAutofocus.isChecked():
             # Publish command - the result will come back via LaserAFReferenceSet event
             # For now we just publish and let the controller handle errors
-            self._event_bus.publish(SetLaserAFReferenceCommand())
+            self._publish(SetLaserAFReferenceCommand())
 
     def update_z(self):
         z_mm = self._cached_z_mm
         index = self.dropdown_location_list.currentIndex()
         self.location_list[index, 2] = z_mm
-        self._event_bus.publish(
+        self._publish(
             UpdateScanCoordinateRegionZCommand(region_id=str(self.location_ids[index]), z_mm=z_mm)
         )
         location_str = f"x:{round(self.location_list[index, 0], 3)} mm  y:{round(self.location_list[index, 1], 3)} mm  z:{round(z_mm * 1000.0, 3)} μm"
@@ -964,12 +958,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         if not self.isVisible():
             return
 
-        self._event_bus.publish(ClearScanCoordinatesCommand())
+        self._publish(ClearScanCoordinatesCommand())
 
         for i, (x, y, z) in enumerate(self.location_list):
             region_id = self.location_ids[i]
             if self.use_overlap:
-                self._event_bus.publish(
+                self._publish(
                     AddFlexibleRegionCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -981,7 +975,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
                 )
             else:
-                self._event_bus.publish(
+                self._publish(
                     AddFlexibleRegionWithStepSizeCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -1005,13 +999,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # No Z config available, use value as-is
             deltaZ = value
         self.entry_deltaZ.setValue(deltaZ)
-        self._event_bus.publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
+        self._publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
 
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         if save_dir_base:  # Only update if user didn't cancel
-            self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
+            self._publish(SetAcquisitionPathCommand(base_path=save_dir_base))
             self.lineEdit_savingDir.setText(save_dir_base)
             self.base_path_is_set = True
             save_last_used_saving_path(save_dir_base)
@@ -1020,7 +1014,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         selected_channels = [
             item.text() for item in self.list_configurations.selectedItems()
         ]
-        self._event_bus.publish(
+        self._publish(
             SetAcquisitionChannelsCommand(channel_names=list(selected_channels))
         )
 
@@ -1067,7 +1061,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             # Publish acquisition parameters via events
             overlap_pct = self.entry_overlap.value() if self.use_overlap else 0.0
-            self._event_bus.publish(SetAcquisitionParametersCommand(
+            self._publish(SetAcquisitionParametersCommand(
                 delta_z_um=self.entry_deltaZ.value(),
                 n_z=self.entry_NZ.value(),
                 delta_t_s=self.entry_dt.value(),
@@ -1083,13 +1077,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 widget_type="flexible",
                 overlap_percent=overlap_pct,
             ))
-            self._event_bus.publish(SetAcquisitionPathCommand(
+            self._publish(SetAcquisitionPathCommand(
                 base_path=self.lineEdit_savingDir.text()
             ))
-            self._event_bus.publish(SetAcquisitionChannelsCommand(
+            self._publish(SetAcquisitionChannelsCommand(
                 channel_names=[item.text() for item in self.list_configurations.selectedItems()]
             ))
-            self._event_bus.publish(StartNewExperimentCommand(
+            self._publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
             requested_id = self.lineEdit_experimentID.text().strip()
@@ -1107,10 +1101,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.setEnabled_all(False)
 
             # Start coordinate-based acquisition via event
-            self._event_bus.publish(StartAcquisitionCommand(xy_mode="Current Position"))
+            self._publish(StartAcquisitionCommand(xy_mode="Current Position"))
         else:
             # This must eventually propagate through and call out acquisition_finished.
-            self._event_bus.publish(StopAcquisitionCommand())
+            self._publish(StopAcquisitionCommand())
 
     def load_last_used_locations(self):
         if self.last_used_locations is None or len(self.last_used_locations) == 0:
@@ -1196,7 +1190,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             # Store actual values in region coordinates
             if self.use_overlap:
-                self._event_bus.publish(
+                self._publish(
                     AddFlexibleRegionCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -1208,7 +1202,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
                 )
             else:
-                self._event_bus.publish(
+                self._publish(
                     AddFlexibleRegionWithStepSizeCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -1251,7 +1245,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.dropdown_location_list.removeItem(index)
             self.table_location_list.removeRow(index)
 
-            self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
+            self._publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
 
             # Note: region reindexing must be done via RenameScanCoordinateRegionCommand.
 
@@ -1291,7 +1285,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype="<U20")
-        self._event_bus.publish(ClearScanCoordinatesCommand())
+        self._publish(ClearScanCoordinatesCommand())
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
 
@@ -1316,7 +1310,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _move_stage_to(self, x: float, y: float, z: float) -> None:
         """Move stage to position via EventBus."""
-        self._event_bus.publish(MoveStageCommand(x_mm=x, y_mm=y, z_mm=z))
+        self._publish(MoveStageCommand(x_mm=x, y_mm=y, z_mm=z))
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -1334,8 +1328,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             # Update region coordinates and FOVs for new position
             if self.use_overlap:
-                self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
-                self._event_bus.publish(
+                self._publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
+                self._publish(
                     AddFlexibleRegionCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -1347,8 +1341,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
                 )
             else:
-                self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
-                self._event_bus.publish(
+                self._publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
+                self._publish(
                     AddFlexibleRegionWithStepSizeCommand(
                         region_id=str(region_id),
                         center_x_mm=float(x),
@@ -1364,11 +1358,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         elif column == 2:  # Z coordinate changed
             z = float(val_edit) / 1000
             self.location_list[row, 2] = z
-            self._event_bus.publish(UpdateScanCoordinateRegionZCommand(region_id=str(region_id), z_mm=float(z)))
+            self._publish(UpdateScanCoordinateRegionZCommand(region_id=str(region_id), z_mm=float(z)))
         else:  # ID changed
             new_id = val_edit
             self.location_ids[row] = new_id
-            self._event_bus.publish(
+            self._publish(
                 RenameScanCoordinateRegionCommand(old_region_id=str(region_id), new_region_id=str(new_id))
             )
 
@@ -1486,7 +1480,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                         QTableWidgetItem(region_id),
                     )
                     if self.use_overlap:
-                        self._event_bus.publish(
+                        self._publish(
                             AddFlexibleRegionCommand(
                                 region_id=str(region_id),
                                 center_x_mm=float(x),
@@ -1498,7 +1492,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                             )
                         )
                     else:
-                        self._event_bus.publish(
+                        self._publish(
                             AddFlexibleRegionWithStepSizeCommand(
                                 region_id=str(region_id),
                                 center_x_mm=float(x),
@@ -1524,12 +1518,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return
 
         # Set the selected channels and acquisition parameters via events
-        self._event_bus.publish(SetAcquisitionChannelsCommand(
+        self._publish(SetAcquisitionChannelsCommand(
             channel_names=[item.text() for item in self.list_configurations.selectedItems()]
         ))
 
         z = self._cached_z_mm
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             delta_z_um=0,
             n_z=1,
             delta_t_s=0,
@@ -1544,8 +1538,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Start the acquisition process for the single FOV
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
         self._active_experiment_id = experiment_id.strip() or None
-        self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
+        self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
+        self._publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -1677,43 +1671,43 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _on_dt_changed(self, value: float) -> None:
         """Handle dt spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(delta_t_s=value))
+        self._publish(SetAcquisitionParametersCommand(delta_t_s=value))
 
     def _on_nx_changed(self, value: int) -> None:
         """Handle NX spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_x=value))
+        self._publish(SetAcquisitionParametersCommand(n_x=value))
 
     def _on_ny_changed(self, value: int) -> None:
         """Handle NY spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_y=value))
+        self._publish(SetAcquisitionParametersCommand(n_y=value))
 
     def _on_nz_changed(self, value: int) -> None:
         """Handle NZ spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_z=value))
+        self._publish(SetAcquisitionParametersCommand(n_z=value))
 
     def _on_nt_changed(self, value: int) -> None:
         """Handle Nt spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_t=value))
+        self._publish(SetAcquisitionParametersCommand(n_t=value))
 
     def _on_gen_af_map_toggled(self, checked: bool) -> None:
         """Handle generate AF map checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(gen_focus_map=checked))
+        self._publish(SetAcquisitionParametersCommand(gen_focus_map=checked))
 
     def _on_autofocus_toggled(self, checked: bool) -> None:
         """Handle autofocus checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_autofocus=checked))
+        self._publish(SetAcquisitionParametersCommand(use_autofocus=checked))
 
     def _on_reflection_af_toggled(self, checked: bool) -> None:
         """Handle reflection AF checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+        self._publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
 
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))
+        self._publish(SetAcquisitionParametersCommand(use_piezo=checked))
 
     def _on_skip_saving_toggled(self, checked: bool) -> None:
         """Handle skip saving checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))
+        self._publish(SetAcquisitionParametersCommand(skip_saving=checked))
 
     def _on_focus_lock_toggled(self, checked: bool) -> None:
         """Handle focus lock checkbox toggle - show/hide parameters frame."""
@@ -1963,7 +1957,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.location_ids = np.empty((0,), dtype="<U20")
 
         # Clear the scan coordinates
-        self._event_bus.publish(ClearScanCoordinatesCommand())
+        self._publish(ClearScanCoordinatesCommand())
 
         for pos in positions:
             name = pos.get("name", f"P{len(self.location_ids) + 1}")
@@ -1981,7 +1975,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.location_ids = np.append(self.location_ids, name)
 
             # Add to scan coordinates via event
-            self._event_bus.publish(
+            self._publish(
                 AddFlexibleRegionCommand(
                     region_id=name,
                     center_x=x,

@@ -31,7 +31,6 @@ from squid.ui.widgets.wellplate._common import (
     Tuple,
     Union,
     WELLPLATE_FORMAT_SETTINGS,
-    auto_subscribe,
     handles,
     math,
     np,
@@ -86,9 +85,6 @@ class WellplateCalibration(EventBusDialog):
         self.was_live: bool = was_live
         self.corners: List[Optional[Tuple[float, float]]] = [None, None, None]
         self.show_virtual_joystick: bool = True  # FLAG
-
-        # Subscribe to state events using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         # Cache current position for setCorner
         self._current_position: Optional[Tuple[float, float]] = None

@@ -1,0 +1,12 @@
+version: 1.0
+
+# Default single emission filter wheel configuration.
+# Customize positions for your specific filter wheel.
+filter_wheels:
+  - type: emission
+    positions:
+      1: "Empty"
+      2: "DAPI"
+      3: "GFP"
+      4: "Cy3"
+      5: "Cy5"

@@ -24,7 +24,7 @@ from squid.backend.microscope import Microscope
 from squid.backend.controllers.live_controller import LiveController
 from squid.backend.io.stream_handler import StreamHandler
 from squid.backend.controllers.multipoint import MultiPointController
-from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 from squid.backend.managers import ObjectiveStore
 from squid.backend.managers.scan_coordinates import ScanCoordinates
 from squid.backend.managers.navigation_state_service import NavigationViewerStateService
@@ -70,7 +70,7 @@ class Controllers:
     laser_autofocus: Optional["LaserAutofocusController"] = None
     continuous_focus_lock: "ContinuousFocusLockController | FocusLockSimulator | None" = None
     live_focus: Optional["LiveController"] = None
-    channel_config_manager: Optional["ChannelConfigurationManager"] = None
+    channel_config_service: Optional["ChannelConfigService"] = None
     objective_store: Optional["ObjectiveStore"] = None
     scan_coordinates: Optional["ScanCoordinates"] = None
     image_click: Optional["ImageClickController"] = None
@@ -431,7 +431,7 @@ class ApplicationContext:
             live_focus=live_controller_focus if self._microscope.addons.camera_focus else None,
             microscope_mode=microscope_mode_controller,
             peripherals=peripherals_controller,
-            channel_config_manager=self._microscope.channel_configuration_manager,
+            channel_config_service=self._microscope.channel_config_service,
             objective_store=self._microscope.objective_store,
         )
         self._controllers.autofocus = self._build_autofocus_controller()
@@ -487,7 +487,7 @@ class ApplicationContext:
             stage_service=stage_service,
             live_controller=self._microscope.live_controller,
             peripheral_service=self._services.get("peripheral"),
-            channel_config_manager=self._microscope.channel_configuration_manager,
+            channel_config_manager=self._microscope.channel_config_service,
             objective_store=self._microscope.objective_store,
             mode_gate=self.mode_gate,
         )
@@ -520,12 +520,12 @@ class ApplicationContext:
         # Create shared utilities
         experiment_manager = ExperimentManager(
             objective_store=self._microscope.objective_store,
-            channel_config_manager=self._microscope.channel_configuration_manager,
+            channel_config_manager=self._microscope.channel_config_service,
             camera_service=camera_service,
         )
         acquisition_planner = AcquisitionPlanner(
             objective_store=self._microscope.objective_store,
-            channel_config_manager=self._microscope.channel_configuration_manager,
+            channel_config_manager=self._microscope.channel_config_service,
             camera_service=camera_service,
         )
 
@@ -749,7 +749,7 @@ class ApplicationContext:
             self._microscope.live_controller,
             autofocus,
             self._microscope.objective_store,
-            self._microscope.channel_configuration_manager,
+            self._microscope.channel_config_service,
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus,
             focus_lock_controller=focus_lock_controller,
@@ -769,7 +769,7 @@ class ApplicationContext:
     def _get_channel_configs_for_current_objective(self) -> dict:
         """Return channel config mapping for the current objective."""
         assert self._microscope is not None
-        manager = self._microscope.channel_configuration_manager
+        manager = self._microscope.channel_config_service
         objective_store = self._microscope.objective_store
         if manager is None or objective_store is None:
             return {}

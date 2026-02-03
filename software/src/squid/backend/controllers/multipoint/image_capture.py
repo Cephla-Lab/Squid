@@ -17,7 +17,7 @@ import squid.core.abc
 import squid.core.logging
 
 if TYPE_CHECKING:
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.core.config.models import AcquisitionChannel
     from squid.backend.controllers.multipoint.job_processing import CaptureInfo
     from squid.backend.services import CameraService, IlluminationService, FilterWheelService
 
@@ -37,7 +37,7 @@ class CaptureContext:
     while the int form is used in CaptureInfo.
     """
 
-    config: "ChannelMode"
+    config: "AcquisitionChannel"
     file_id: str
     save_directory: str
     z_index: int
@@ -142,7 +142,7 @@ class ImageCaptureExecutor:
         self._filter_wheel = filter_wheel_service
         self._auto_filter = enable_auto_filter_switching
 
-    def apply_configuration(self, config: "ChannelMode") -> None:
+    def apply_configuration(self, config: "AcquisitionChannel") -> None:
         """
         Apply a channel configuration (illumination, filters).
 
@@ -184,7 +184,7 @@ class ImageCaptureExecutor:
 
     def capture_single_image(
         self,
-        configuration: Optional["ChannelMode"] = None,
+        configuration: Optional["AcquisitionChannel"] = None,
     ) -> Optional[squid.core.abc.CameraFrame]:
         """
         Capture a single image.
@@ -252,7 +252,7 @@ class ImageCaptureExecutor:
 
     def capture_z_stack(
         self,
-        configuration: "ChannelMode",
+        configuration: "AcquisitionChannel",
         z_positions_mm: List[float],
         move_z_callback: Callable[[float], None],
     ) -> List[Optional[squid.core.abc.CameraFrame]]:

@@ -1,26 +1,22 @@
 from squid.ui.widgets.tracking._common import (
-    Any,
     List,
-    Optional,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QLabel,
     QSpinBox,
-    Tuple,
-    auto_subscribe,
-    auto_unsubscribe,
-    handles,
 )
 from squid.core.events import (
+    handles,
     EventBus,
     SetDisplacementMeasurementSettingsCommand,
     SetWaveformDisplayNCommand,
     DisplacementReadingsChanged,
 )
+from squid.ui.widgets.base import EventBusFrame
 
 
-class DisplacementMeasurementWidget(QFrame):
+class DisplacementMeasurementWidget(EventBusFrame):
     entry_x_offset: QDoubleSpinBox
     entry_y_offset: QDoubleSpinBox
     entry_x_scaling: QDoubleSpinBox
@@ -34,20 +30,10 @@ class DisplacementMeasurementWidget(QFrame):
     def __init__(
         self,
         event_bus: EventBus,
-        main: Optional[Any] = None,
-        *args: Any,
-        **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._event_bus = event_bus
-        self._subscriptions: List[Tuple[type, object]] = []
+        super().__init__(event_bus)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-        # Subscribe to displacement readings events
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self) -> None:
         self.entry_x_offset = QDoubleSpinBox()
@@ -142,7 +128,7 @@ class DisplacementMeasurementWidget(QFrame):
     def _on_settings_changed(self, new_value: float) -> None:
         """Publish settings change via event."""
         print("update settings")
-        self._event_bus.publish(SetDisplacementMeasurementSettingsCommand(
+        self._publish(SetDisplacementMeasurementSettingsCommand(
             x_offset=self.entry_x_offset.value(),
             y_offset=self.entry_y_offset.value(),
             x_scaling=self.entry_x_scaling.value(),
@@ -153,27 +139,13 @@ class DisplacementMeasurementWidget(QFrame):
 
     def _on_n_changed(self, n: int) -> None:
         """Publish N value change for waveform display."""
-        self._event_bus.publish(SetWaveformDisplayNCommand(n=n))
+        self._publish(SetWaveformDisplayNCommand(n=n))
 
     @handles(DisplacementReadingsChanged)
     def _on_readings_changed(self, event: DisplacementReadingsChanged) -> None:
         """Handle displacement readings changed event."""
         self.reading_x.setText("{:.2f}".format(event.readings[0]))
         self.reading_y.setText("{:.2f}".format(event.readings[1]))
-
-    def closeEvent(self, event) -> None:
-        self._cleanup_subscriptions()
-        super().closeEvent(event)
-
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-            self._subscriptions.clear()
 
     # Keep legacy method for backwards compatibility during transition
     def display_readings(self, readings: List[float]) -> None:

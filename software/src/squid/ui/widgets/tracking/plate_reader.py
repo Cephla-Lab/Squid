@@ -1,7 +1,5 @@
 from squid.ui.widgets.tracking._common import (
-    Any,
     DEFAULT_SAVING_PATH,
-    Optional,
     PLATE_READER,
     QCheckBox,
     QComboBox,
@@ -12,15 +10,12 @@ from squid.ui.widgets.tracking._common import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QWidget,
     Qt,
 )
 from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
-from typing import TYPE_CHECKING, List
+from typing import List
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     EventBus,
     SetPlateReaderParametersCommand,
@@ -36,9 +31,10 @@ from squid.core.events import (
     PlateReaderHomingComplete,
     PlateReaderLocationChanged,
 )
+from squid.ui.widgets.base import EventBusFrame
 
 
-class PlateReaderAcquisitionWidget(QFrame):
+class PlateReaderAcquisitionWidget(EventBusFrame):
     base_path_is_set: bool
     btn_setSavingDir: QPushButton
     lineEdit_savingDir: QLineEdit
@@ -55,22 +51,12 @@ class PlateReaderAcquisitionWidget(QFrame):
         event_bus: EventBus,
         initial_channel_configs: List[str],
         show_configurations: bool = True,
-        main: Optional[QWidget] = None,
-        *args: Any,
-        **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._event_bus = event_bus
-        self._subscriptions = []
+        super().__init__(event_bus)
         self._channel_configs = list(initial_channel_configs)
         self.base_path_is_set = False
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-        # Subscribe to acquisition state events
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
@@ -81,7 +67,7 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.lineEdit_savingDir.setText("Choose a base saving directory")
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
         # Publish default path via event
-        self._event_bus.publish(SetPlateReaderPathCommand(base_path=DEFAULT_SAVING_PATH))
+        self._publish(SetPlateReaderPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -156,7 +142,7 @@ class PlateReaderAcquisitionWidget(QFrame):
     def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self._event_bus.publish(SetPlateReaderPathCommand(base_path=save_dir_base))
+        self._publish(SetPlateReaderPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -171,26 +157,26 @@ class PlateReaderAcquisitionWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self._event_bus.publish(StartPlateReaderExperimentCommand(
+            self._publish(StartPlateReaderExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
-            self._event_bus.publish(SetPlateReaderChannelsCommand(
+            self._publish(SetPlateReaderChannelsCommand(
                 channel_names=list(item.text() for item in self.list_configurations.selectedItems())
             ))
-            self._event_bus.publish(SetPlateReaderColumnsCommand(
+            self._publish(SetPlateReaderColumnsCommand(
                 columns=list(
                     map(
                         int, [item.text() for item in self.list_columns.selectedItems()]
                     )
                 )
             ))
-            self._event_bus.publish(StartPlateReaderCommand())
+            self._publish(StartPlateReaderCommand())
         else:
-            self._event_bus.publish(StopPlateReaderCommand())
+            self._publish(StopPlateReaderCommand())
 
     def _on_autofocus_changed(self, state: int) -> None:
         """Handle autofocus checkbox change."""
-        self._event_bus.publish(SetPlateReaderParametersCommand(
+        self._publish(SetPlateReaderParametersCommand(
             use_autofocus=state == Qt.Checked
         ))
 
@@ -199,20 +185,6 @@ class PlateReaderAcquisitionWidget(QFrame):
         """Handle acquisition finished event from controller."""
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
-
-    def closeEvent(self, event) -> None:
-        self._cleanup_subscriptions()
-        super().closeEvent(event)
-
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-            self._subscriptions.clear()
 
     def setEnabled_all(
         self, enabled: bool, exclude_btn_startAcquisition: bool = False
@@ -231,7 +203,7 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.btn_startAcquisition.setEnabled(True)
 
 
-class PlateReaderNavigationWidget(QFrame):
+class PlateReaderNavigationWidget(EventBusFrame):
     dropdown_column: QComboBox
     dropdown_row: QComboBox
     btn_moveto: QPushButton
@@ -242,19 +214,10 @@ class PlateReaderNavigationWidget(QFrame):
     def __init__(
         self,
         event_bus: EventBus,
-        *args: Any,
-        **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._event_bus = event_bus
-        self._subscriptions = []
+        super().__init__(event_bus)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-        # Subscribe to events
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
 
     def add_components(self) -> None:
         self.dropdown_column = QComboBox()
@@ -307,10 +270,10 @@ class PlateReaderNavigationWidget(QFrame):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self._event_bus.publish(PlateReaderHomeCommand())
+            self._publish(PlateReaderHomeCommand())
 
     def move(self) -> None:  # type: ignore[override]
-        self._event_bus.publish(PlateReaderMoveToCommand(
+        self._publish(PlateReaderMoveToCommand(
             column=self.dropdown_column.currentText(),
             row=self.dropdown_row.currentText()
         ))
@@ -330,20 +293,6 @@ class PlateReaderNavigationWidget(QFrame):
         column = event.location_str[1:]
         self.dropdown_row.setCurrentText(row)
         self.dropdown_column.setCurrentText(column)
-
-    def closeEvent(self, event) -> None:
-        self._cleanup_subscriptions()
-        super().closeEvent(event)
-
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-            self._subscriptions.clear()
 
     # Keep legacy slot for backwards compatibility during transition
     def slot_homing_complete(self) -> None:

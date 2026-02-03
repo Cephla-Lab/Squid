@@ -18,7 +18,7 @@ from squid.backend.io import utils_acquisition
 from squid.backend.io.acquisition_yaml import save_acquisition_yaml
 import _def
 from squid.backend.controllers.autofocus import AutoFocusController
-from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 from squid.backend.controllers.multipoint.multi_point_utils import (
     ScanPositionInformation,
     AcquisitionParameters,
@@ -100,7 +100,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
+        channel_configuration_manager: ChannelConfigService,
         camera_service: "CameraService",
         stage_service: "StageService",
         peripheral_service: "PeripheralService",
@@ -162,7 +162,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             laser_autofocus_controller
         )
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = (
+        self.channelConfigurationManager: ChannelConfigService = (
             channel_configuration_manager
         )
         self.multiPointWorker: Optional[MultiPointWorker] = None
@@ -517,10 +517,10 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.recording_start_time = time.time()
         # create a new folder
         utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-        self.channelConfigurationManager.write_configuration_selected(
+        self.channelConfigurationManager.save_acquisition_output(
+            pathlib.Path(os.path.join(self.base_path, self.experiment_ID)),
             self.objectiveStore.current_objective,
             self.selected_configurations,
-            os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
         acquisition_parameters = {
@@ -1059,10 +1059,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.thread: Thread = Thread(
                 target=self.multiPointWorker.run, name="Acquisition thread", daemon=True
             )
+            # Transition to RUNNING BEFORE starting worker to avoid race condition
+            # where worker finishes immediately (e.g., zero FOVs) and publishes
+            # AcquisitionWorkerFinished before we've transitioned to RUNNING state.
+            # The _on_worker_finished handler filters events if not in RUNNING state.
+            self._transition_to(AcquisitionControllerState.RUNNING)
             self._log.info(f"run_acquisition: starting worker thread ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
             self.thread.start()
-            # Transition to RUNNING now that worker is started
-            self._transition_to(AcquisitionControllerState.RUNNING)
             # Publish NDViewer start event for push-mode display
             self._publish_ndviewer_start(acquisition_params)
             self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
@@ -1275,6 +1278,22 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         except ValueError as exc:
             self._log.error("Invalid acquisition configuration: %s", exc)
             return False
+
+        # Check for zero FOVs - must have at least one FOV to acquire
+        if self.scanCoordinates is None or not self.scanCoordinates.region_fov_coordinates:
+            self._log.error(
+                "No FOVs defined - please add scan positions before starting acquisition"
+            )
+            return False
+        total_fovs = sum(
+            len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values()
+        )
+        if total_fovs == 0:
+            self._log.error(
+                "No FOVs defined - please add scan positions before starting acquisition"
+            )
+            return False
+
         if self._config.focus.do_reflection_af:
             if self.laserAutoFocusController is None:
                 self._log.error(

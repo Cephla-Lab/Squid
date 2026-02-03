@@ -10,7 +10,7 @@ import cv2
 import imageio
 
 import _def
-from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.models import AcquisitionChannel
 
 
 def get_image_filepath(save_directory: str, file_id: str, config_name: str, dtype) -> str:
@@ -40,7 +40,7 @@ def save_image(
     image: np.ndarray,
     file_id: str,
     save_directory: str,
-    config: ChannelMode,
+    config: AcquisitionChannel,
     is_color: bool,
 ) -> np.ndarray:
     saving_path = get_image_filepath(save_directory, file_id, config.name, image.dtype)
@@ -69,7 +69,7 @@ def grayscale_to_rgb(image: np.ndarray, hex_color: int) -> np.ndarray:
     return rgb.astype(image.dtype)
 
 
-def return_pseudo_colored_image(image: np.ndarray, config: ChannelMode) -> np.ndarray:
+def return_pseudo_colored_image(image: np.ndarray, config: AcquisitionChannel) -> np.ndarray:
     if "405 nm" in config.name:
         image = grayscale_to_rgb(image, _def.CHANNEL_COLORS_MAP["405"]["hex"])
     elif "488 nm" in config.name:

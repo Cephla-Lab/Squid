@@ -15,7 +15,7 @@ from _def import Acquisition, MULTIPOINT_AUTOFOCUS_CHANNEL
 
 if TYPE_CHECKING:
     from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
-    from squid.backend.managers import ChannelConfigurationManager, ObjectiveStore
+    from squid.backend.managers import ChannelConfigService, ObjectiveStore
 
 
 _log = squid.core.logging.get_logger(__name__)
@@ -53,7 +53,7 @@ class AutofocusExecutor:
         autofocus_controller: Optional["AutoFocusController"] = None,
         laser_af_controller: Optional["LaserAutofocusController"] = None,
         focus_lock_controller: Optional[Any] = None,
-        channel_config_manager: Optional["ChannelConfigurationManager"] = None,
+        channel_config_manager: Optional["ChannelConfigService"] = None,
         objective_store: Optional["ObjectiveStore"] = None,
     ):
         """
@@ -121,7 +121,7 @@ class AutofocusExecutor:
         """
         Set callback for applying channel configuration.
 
-        The callback should take a ChannelMode as argument.
+        The callback should take an AcquisitionChannel as argument.
         """
         self._apply_config_callback = callback
 

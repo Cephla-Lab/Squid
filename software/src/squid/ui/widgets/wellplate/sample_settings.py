@@ -2,7 +2,6 @@ from squid.ui.widgets.wellplate._common import (
     CACHE_DIR,
     QGridLayout,
     WELLPLATE_FORMAT,
-    auto_subscribe,
     handles,
     json,
 )
@@ -32,9 +31,6 @@ class SampleSettingsWidget(EventBusWidget):
         top_row_layout.addWidget(self.objectivesWidget, 0, 0)
         top_row_layout.addWidget(self.wellplateFormatWidget, 0, 1)
         self.setLayout(top_row_layout)
-
-        # Subscribe to event-driven updates.
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.save_settings()
 

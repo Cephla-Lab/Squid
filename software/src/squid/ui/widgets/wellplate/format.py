@@ -14,7 +14,6 @@ from squid.ui.widgets.wellplate._common import (
     Union,
     WELLPLATE_FORMAT,
     WELLPLATE_FORMAT_SETTINGS,
-    auto_subscribe,
     handles,
 )
 from squid.ui.widgets.base import EventBusWidget
@@ -49,9 +48,6 @@ class WellplateFormatWidget(EventBusWidget):
         self.csv_path: str = SAMPLE_FORMATS_CSV_PATH  # 'sample_formats.csv'
         self.label: QLabel
         self.comboBox: QComboBox
-
-        # Subscribe to live state events
-        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.initUI()
 

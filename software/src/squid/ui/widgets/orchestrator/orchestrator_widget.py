@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QFont, QColor, QBrush
 
-from squid.core.events import handles, auto_subscribe, auto_unsubscribe, LoadScanCoordinatesCommand
+from squid.core.events import handles, LoadScanCoordinatesCommand
+from squid.ui.widgets.base import EventBusWidget
 from squid.backend.controllers.orchestrator import (
     OrchestratorState,
     OrchestratorStateChanged,
@@ -68,7 +69,7 @@ STATUS_COLORS = {
 }
 
 
-class OrchestratorControlPanel(QWidget):
+class OrchestratorControlPanel(EventBusWidget):
     """Control panel for experiment orchestration.
 
     Contains:
@@ -93,10 +94,8 @@ class OrchestratorControlPanel(QWidget):
         orchestrator: Optional["OrchestratorController"] = None,
         parent: Optional[QWidget] = None,
     ):
-        super().__init__(parent)
-        self._event_bus = event_bus
+        super().__init__(event_bus, parent)
         self._orchestrator = orchestrator
-        self._subscriptions: List = []
         self._protocol_data: Optional[Dict[str, Any]] = None
         self._protocol_path: Optional[str] = None
         self._base_path: Optional[str] = None
@@ -105,7 +104,6 @@ class OrchestratorControlPanel(QWidget):
 
         self._setup_ui()
         self._connect_signals()
-        self._subscribe_events()
         self._update_button_states(OrchestratorState.IDLE)
 
     def _setup_ui(self) -> None:
@@ -277,10 +275,6 @@ class OrchestratorControlPanel(QWidget):
         self.error_occurred.connect(self._on_error_occurred_ui)
         self.validation_complete.connect(self._on_validation_complete_ui)
 
-    def _subscribe_events(self) -> None:
-        """Subscribe to orchestrator events."""
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-
     # ========================================================================
     # Event Handlers
     # ========================================================================
@@ -451,7 +445,7 @@ class OrchestratorControlPanel(QWidget):
             for region_id, coords in self._fov_positions.items():
                 region_fov_coords[region_id] = tuple(tuple(c) for c in coords)
 
-            self._event_bus.publish(
+            self._publish(
                 LoadScanCoordinatesCommand(
                     region_fov_coordinates=region_fov_coords,
                 )
@@ -473,7 +467,7 @@ class OrchestratorControlPanel(QWidget):
             return
         # Calculate FOV count from loaded positions
         fov_count = sum(len(coords) for coords in self._fov_positions.values())
-        self._event_bus.publish(
+        self._publish(
             ValidateProtocolCommand(
                 protocol_path=self._protocol_path,
                 base_path=self._base_path,
@@ -543,11 +537,10 @@ class OrchestratorControlPanel(QWidget):
         self._status_label.setStyleSheet(f"color: {color};")
 
     def shutdown(self) -> None:
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
+        self._cleanup_subscriptions()
 
 
-class OrchestratorWorkflowTree(QWidget):
+class OrchestratorWorkflowTree(EventBusWidget):
     """Hierarchical workflow display for experiment orchestration.
 
     Shows rounds, operations, and FOVs in a collapsible tree structure.
@@ -572,9 +565,7 @@ class OrchestratorWorkflowTree(QWidget):
         event_bus: "EventBus",
         parent: Optional[QWidget] = None,
     ):
-        super().__init__(parent)
-        self._event_bus = event_bus
-        self._subscriptions: List = []
+        super().__init__(event_bus, parent)
         self._tree_items: Dict[tuple, QTreeWidgetItem] = {}
         self._fov_items: Dict[str, QTreeWidgetItem] = {}  # fov_id -> item
         self._current_highlight: Optional[str] = None  # Currently highlighted fov_id
@@ -584,7 +575,6 @@ class OrchestratorWorkflowTree(QWidget):
 
         self._setup_ui()
         self._connect_signals()
-        self._subscribe_events()
 
     def set_fov_positions(self, positions: Dict[str, List[Tuple[float, float, float]]]) -> None:
         """Set FOV positions to display in the workflow tree.
@@ -647,10 +637,6 @@ class OrchestratorWorkflowTree(QWidget):
     def tree(self) -> QTreeWidget:
         """Get the internal tree widget for external connections."""
         return self._tree
-
-    def _subscribe_events(self) -> None:
-        """Subscribe to event bus events."""
-        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     @pyqtSlot(dict)
     def populate_from_protocol(self, protocol: Dict[str, Any]) -> None:
@@ -1145,7 +1131,7 @@ class OrchestratorWorkflowTree(QWidget):
     def _emit_jump(self, fov_id: str) -> None:
         """Emit jump command."""
         self.jump_to_fov.emit(fov_id, self._current_round_index, self._current_time_point)
-        self._event_bus.publish(JumpToFovCommand(
+        self._publish(JumpToFovCommand(
             fov_id=fov_id,
             round_index=self._current_round_index,
             time_point=self._current_time_point,
@@ -1154,7 +1140,7 @@ class OrchestratorWorkflowTree(QWidget):
     def _emit_skip(self, fov_id: str) -> None:
         """Emit skip command."""
         self.skip_fov.emit(fov_id, self._current_round_index, self._current_time_point)
-        self._event_bus.publish(SkipFovCommand(
+        self._publish(SkipFovCommand(
             fov_id=fov_id,
             round_index=self._current_round_index,
             time_point=self._current_time_point,
@@ -1163,7 +1149,7 @@ class OrchestratorWorkflowTree(QWidget):
     def _emit_requeue(self, fov_id: str, before_current: bool) -> None:
         """Emit requeue command."""
         self.requeue_fov.emit(fov_id, self._current_round_index, self._current_time_point, before_current)
-        self._event_bus.publish(RequeueFovCommand(
+        self._publish(RequeueFovCommand(
             fov_id=fov_id,
             round_index=self._current_round_index,
             time_point=self._current_time_point,
@@ -1191,8 +1177,7 @@ class OrchestratorWorkflowTree(QWidget):
 
     def cleanup(self) -> None:
         """Cleanup resources."""
-        auto_unsubscribe(self._subscriptions, self._event_bus)
-        self._subscriptions = []
+        self._cleanup_subscriptions()
 
 
 # Backwards compatibility alias

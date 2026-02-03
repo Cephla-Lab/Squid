@@ -6,6 +6,7 @@ from squid.backend.managers.base import BaseManager
 # Configuration managers
 from squid.backend.managers.configuration_manager import ConfigurationManager
 from squid.backend.managers.channel_configuration_manager import ChannelConfigurationManager
+from squid.backend.managers.channel_config_service import ChannelConfigService
 from squid.backend.managers.contrast_manager import ContrastManager
 
 # Navigation managers
@@ -20,6 +21,7 @@ __all__ = [
     # Configuration
     "ConfigurationManager",
     "ChannelConfigurationManager",
+    "ChannelConfigService",
     "ContrastManager",
     # Navigation
     "ObjectiveStore",

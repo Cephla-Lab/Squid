@@ -1,8 +1,6 @@
 import re
 
 from squid.ui.widgets.wellplate._common import (
-    Any,
-    List,
     QColor,
     QGridLayout,
     QHBoxLayout,
@@ -19,26 +17,23 @@ from qtpy.QtWidgets import QApplication
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
     SelectedWellsChanged,
     WellplateFormatChanged,
 )
+from squid.ui.widgets.base import EventBusWidget
 
 from typing import Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
 
 
-class Well1536SelectionWidget(QWidget):
+class Well1536SelectionWidget(EventBusWidget):
     def __init__(self, event_bus: "UIEventBus"):
-        super().__init__()
-        self._bus = event_bus
+        super().__init__(event_bus)
         self._click_to_move_enabled: bool = True
-        self._subscriptions: List[Tuple[type, Any]] = []
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
@@ -54,9 +49,6 @@ class Well1536SelectionWidget(QWidget):
         self.a1_x_pixel = 144  # coordinate on the png - to update
         self.a1_y_pixel = 108  # coordinate on the png - to update
 
-        self._subscriptions = auto_subscribe(self, self._bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
         self.initUI()
 
     @handles(ClickToMoveEnabledChanged)
@@ -64,7 +56,7 @@ class Well1536SelectionWidget(QWidget):
         self._click_to_move_enabled = event.enabled
 
     def _publish_selection(self) -> None:
-        self._bus.publish(
+        self._publish(
             SelectedWellsChanged(
                 format_name=self.format,
                 selected_cells=tuple(self.get_selected_cells()),
@@ -453,7 +445,7 @@ class Well1536SelectionWidget(QWidget):
         x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
         y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
         if self._click_to_move_enabled:
-            self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+            self._publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
     def redraw_wells(self):
         self.image.fill(QColor("white"))  # Clear the pixmap first
@@ -524,17 +516,3 @@ class Well1536SelectionWidget(QWidget):
     def get_selected_cells(self):
         list_of_selected_cells = list(self.selected_cells.keys())
         return list_of_selected_cells
-
-    def closeEvent(self, event: Any) -> None:
-        self._cleanup_subscriptions()
-        super().closeEvent(event)
-
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._bus)
-            self._subscriptions.clear()

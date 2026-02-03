@@ -22,7 +22,7 @@ from squid.backend.io import utils_acquisition
 import squid.core.abc
 import squid.core.logging
 from squid.core.config.feature_flags import get_feature_flags
-from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.models import AcquisitionChannel
 from squid.backend.io.writers import utils_ome_tiff_writer as ome_tiff_writer
 from squid.backend.controllers.multipoint.downsampled_views import (
     crop_overlap,
@@ -80,7 +80,7 @@ class CaptureInfo:
     position: squid.core.abc.Pos
     z_index: int
     capture_time: float
-    configuration: ChannelMode
+    configuration: AcquisitionChannel
     save_directory: str
     file_id: str
     region_id: int

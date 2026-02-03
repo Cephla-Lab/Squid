@@ -19,7 +19,7 @@ import squid.core.utils.hardware_utils as utils
 from squid.backend.io import utils_acquisition
 
 if TYPE_CHECKING:
-    from squid.backend.managers import ObjectiveStore, ChannelConfigurationManager, ScanCoordinates
+    from squid.backend.managers import ObjectiveStore, ChannelConfigService, ScanCoordinates
     from squid.backend.services import CameraService
 
 _log = squid.core.logging.get_logger(__name__)
@@ -102,7 +102,7 @@ class AcquisitionPlanner:
     def __init__(
         self,
         objective_store: "ObjectiveStore",
-        channel_config_manager: "ChannelConfigurationManager",
+        channel_config_manager: "ChannelConfigService",
         camera_service: "CameraService",
         *,
         merge_channels_enabled: bool = False,
@@ -113,7 +113,7 @@ class AcquisitionPlanner:
 
         Args:
             objective_store: ObjectiveStore for magnification info
-            channel_config_manager: ChannelConfigurationManager for config access
+            channel_config_manager: ChannelConfigService for config access
             camera_service: CameraService for camera info
             merge_channels_enabled: Whether merged channel images are saved
             mosaic_display_enabled: Whether mosaic display is enabled

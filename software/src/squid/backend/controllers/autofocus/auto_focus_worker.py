@@ -12,7 +12,7 @@ import _def
 from squid.core.config.feature_flags import get_feature_flags
 
 if TYPE_CHECKING:
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.core.config.models import AcquisitionChannel
     from squid.backend.services import (
         CameraService,
         StageService,
@@ -32,7 +32,7 @@ class AutofocusWorker:
         nl5_service: Optional["NL5Service"],
         illumination_service: Optional["IlluminationService"],
         trigger_mode: Optional[object],
-        configuration: Optional["ChannelMode"],
+        configuration: Optional["AcquisitionChannel"],
         keep_running: threading.Event,
         event_bus: "EventBus",
         stream_handler: Optional[object] = None,

@@ -50,8 +50,8 @@ from squid.core.events import (
     ScanCoordinatesSnapshot,
     FocusLockModeChanged,
     handles,
-    auto_subscribe,
 )
+from squid.ui.widgets.base import EventBusFrame
 
 if TYPE_CHECKING:
     from squid.backend.services import StageService
@@ -104,7 +104,7 @@ from squid.ui.widgets.base import error_dialog, check_space_available_with_error
 from squid.ui.widgets.wellplate import WellSelectionWidget
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     def __init__(
         self,
         event_bus: EventBus,
@@ -116,13 +116,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         well_selection_widget: Optional[WellSelectionWidget] = None,
         z_ustep_per_mm: Optional[float] = None,
         initial_z_mm: float = 0.0,
-        *args,
-        **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(event_bus)
         self.setAcceptDrops(True)  # Enable drag-and-drop for YAML loading
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._event_bus = event_bus
         self._z_ustep_per_mm = z_ustep_per_mm
         # Cache current position (updated via StagePositionChanged events)
         self._cached_x_mm = 0.0
@@ -214,9 +211,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
 
-        # Subscribe to EventBus using @handles decorators
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-
     @handles(MosaicLayersInitialized)
     def _on_mosaic_layers_initialized(self, _event: MosaicLayersInitialized) -> None:
         self.enable_manual_ROI()
@@ -254,7 +248,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
-        self._event_bus.publish(
+        self._publish(
             SetWellSelectionScanCoordinatesCommand(
                 scan_size_mm=scan_size_mm,
                 overlap_percent=overlap_percent,
@@ -284,14 +278,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         if not self._is_active_tab:
             if was_active:
-                self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
+                self._publish(ManualShapeDrawingEnabledChanged(enabled=False))
             return
 
         self.emit_selected_channels()
 
         xy_mode = self.combobox_xy_mode.currentText()
         manual_enabled = self.checkbox_xy.isChecked() and xy_mode == "Manual"
-        self._event_bus.publish(
+        self._publish(
             ManualShapeDrawingEnabledChanged(enabled=manual_enabled)
         )
         if self.checkbox_xy.isChecked() and xy_mode == "Load Coordinates":
@@ -384,7 +378,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Load last used saving path from cache, or fall back to default
         last_path = get_last_used_saving_path(DEFAULT_SAVING_PATH)
         self.lineEdit_savingDir.setText(last_path)
-        self._event_bus.publish(SetAcquisitionPathCommand(base_path=last_path))
+        self._publish(SetAcquisitionPathCommand(base_path=last_path))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -516,7 +510,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
         # Set initial autofocus flag via event
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             use_autofocus=MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         ))
 
@@ -525,7 +519,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
         # Set initial reflection AF flag via event
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         ))
 
@@ -1335,7 +1329,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         if checked:
             self.update_coordinates()  # to-do: what does this do? is it needed?
         else:
-            self._event_bus.publish(ClearScanCoordinatesCommand())
+            self._publish(ClearScanCoordinatesCommand())
 
         self._log.debug(f"XY acquisition {'enabled' if checked else 'disabled'}")
 
@@ -1375,22 +1369,22 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 hasattr(self, "_previous_xy_mode")
                 and self._previous_xy_mode == "Load Coordinates"
             ):
-                self._event_bus.publish(ClearScanCoordinatesCommand())
+                self._publish(ClearScanCoordinatesCommand())
 
         # Store the current mode as previous for next time
         self._previous_xy_mode = mode
 
         if mode == "Manual":
-            self._event_bus.publish(
+            self._publish(
                 ManualShapeDrawingEnabledChanged(
                     enabled=self._is_active_tab and self.checkbox_xy.isChecked()
                 )
             )
         elif mode == "Load Coordinates":
             # Don't update coordinates or emit signals for Load Coordinates mode
-            self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
+            self._publish(ManualShapeDrawingEnabledChanged(enabled=False))
         else:
-            self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
+            self._publish(ManualShapeDrawingEnabledChanged(enabled=False))
             self.update_coordinates()  # to-do: what does this do? is it needed?
 
         # Live scan grid updates are driven by StageMovementStopped subscriptions.
@@ -1471,12 +1465,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         y = self._cached_y_mm
 
         # Clear existing regions and add current position as a single FOV with minimal scan size.
-        self._event_bus.publish(ClearScanCoordinatesCommand())
+        self._publish(ClearScanCoordinatesCommand())
         scan_size_mm = 0.01  # Very small scan size for single FOV
         overlap_percent = 0  # No overlap needed for single FOV
         shape = "Square"  # Default shape
 
-        self._event_bus.publish(
+        self._publish(
             SetLiveScanCoordinatesCommand(
                 x_mm=x,
                 y_mm=y,
@@ -1979,7 +1973,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._snapshot_loop = loop
         self._snapshot_result = None
 
-        self._event_bus.publish(
+        self._publish(
             RequestScanCoordinatesSnapshotCommand(request_id=request_id)
         )
         timer.timeout.connect(loop.quit)
@@ -2036,7 +2030,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _move_z_to(self, z_mm: float) -> None:
         """Move Z axis via EventBus."""
-        self._event_bus.publish(MoveStageCommand(z_mm=z_mm))
+        self._publish(MoveStageCommand(z_mm=z_mm))
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -2051,11 +2045,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         if self.checkbox_withReflectionAutofocus.isChecked():
             was_live = self._is_live
             if was_live:
-                self._event_bus.publish(StopLiveCommand())
+                self._publish(StopLiveCommand())
             # Publish command - controller handles the operation and errors
-            self._event_bus.publish(SetLaserAFReferenceCommand())
+            self._publish(SetLaserAFReferenceCommand())
             if was_live:
-                self._event_bus.publish(StartLiveCommand())
+                self._publish(StartLiveCommand())
 
     def init_z(self, z_pos_mm=None):
         # sets initial z range form the current z position used after startup of the GUI
@@ -2096,7 +2090,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             manual_shapes_mm = None
             if self.shapes_mm is not None:
                 manual_shapes_mm = tuple(tuple(tuple(map(float, xy)) for xy in shape_coords) for shape_coords in self.shapes_mm)
-            self._event_bus.publish(
+            self._publish(
                 SetManualScanCoordinatesCommand(
                     manual_shapes_mm=manual_shapes_mm,
                     overlap_percent=overlap_percent,
@@ -2104,7 +2098,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             )
 
         elif self.combobox_xy_mode.currentText() == "Current Position":
-            self._event_bus.publish(
+            self._publish(
                 SetLiveScanCoordinatesCommand(
                     x_mm=self._cached_x_mm,
                     y_mm=self._cached_y_mm,
@@ -2114,7 +2108,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 )
             )
         else:
-            self._event_bus.publish(
+            self._publish(
                 SetWellSelectionScanCoordinatesCommand(
                     scan_size_mm=scan_size_mm,
                     overlap_percent=overlap_percent,
@@ -2146,7 +2140,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
-        self._event_bus.publish(
+        self._publish(
             SetLiveScanCoordinatesCommand(
                 x_mm=x_mm,
                 y_mm=y_mm,
@@ -2191,7 +2185,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 # This handles cases where coordinates weren't updated after selecting wells
                 self.update_coordinates(force=True)
 
-            self._event_bus.publish(SortScanCoordinatesCommand())
+            self._publish(SortScanCoordinatesCommand())
 
             # Calculate z_range
             if self.combobox_z_mode.currentText() == "Set Range":
@@ -2219,7 +2213,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     return
 
             # Publish acquisition parameters via events
-            self._event_bus.publish(SetAcquisitionParametersCommand(
+            self._publish(SetAcquisitionParametersCommand(
                 delta_z_um=self.entry_deltaZ.value(),
                 n_z=self.entry_NZ.value(),
                 delta_t_s=self.entry_dt.value(),
@@ -2236,10 +2230,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 scan_size_mm=self.entry_scan_size.value(),
                 overlap_percent=self.entry_overlap.value(),
             ))
-            self._event_bus.publish(SetAcquisitionChannelsCommand(
+            self._publish(SetAcquisitionChannelsCommand(
                 channel_names=[item.text() for item in self.list_configurations.selectedItems()]
             ))
-            self._event_bus.publish(StartNewExperimentCommand(
+            self._publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
             requested_id = self.lineEdit_experimentID.text().strip()
@@ -2255,13 +2249,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Start acquisition via event
             xy_mode = self.combobox_xy_mode.currentText()
             self._log.info(f"toggle_acquisition: about to publish StartAcquisitionCommand with xy_mode={xy_mode}")
-            self._event_bus.publish(StartAcquisitionCommand(xy_mode=xy_mode))
+            self._publish(StartAcquisitionCommand(xy_mode=xy_mode))
             self._log.info("toggle_acquisition: published StartAcquisitionCommand, returning")
 
         else:
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
             # in an odd state.
-            self._event_bus.publish(StopAcquisitionCommand())
+            self._publish(StopAcquisitionCommand())
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -2340,7 +2334,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         if save_dir_base:  # Only update if user didn't cancel
-            self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
+            self._publish(SetAcquisitionPathCommand(base_path=save_dir_base))
             self.lineEdit_savingDir.setText(save_dir_base)
             self.base_path_is_set = True
             save_last_used_saving_path(save_dir_base)
@@ -2481,12 +2475,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return
 
         # Set the selected channels and acquisition parameters via events
-        self._event_bus.publish(SetAcquisitionChannelsCommand(
+        self._publish(SetAcquisitionChannelsCommand(
             channel_names=[item.text() for item in self.list_configurations.selectedItems()]
         ))
 
         z = self._cached_z_mm
-        self._event_bus.publish(SetAcquisitionParametersCommand(
+        self._publish(SetAcquisitionParametersCommand(
             delta_z_um=0,
             n_z=1,
             delta_t_s=0,
@@ -2501,8 +2495,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Start the acquisition process for the single FOV
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
         self._active_experiment_id = experiment_id.strip() or None
-        self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
+        self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
+        self._publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
@@ -2515,13 +2509,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # No Z config available, use value as-is
             deltaZ = value
         self.entry_deltaZ.setValue(deltaZ)
-        self._event_bus.publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
+        self._publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
 
     def emit_selected_channels(self):
         selected_channels = [
             item.text() for item in self.list_configurations.selectedItems()
         ]
-        self._event_bus.publish(
+        self._publish(
             SetAcquisitionChannelsCommand(channel_names=list(selected_channels))
         )
 
@@ -2548,7 +2542,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """Handle save/clear coordinates button click"""
         if self.has_loaded_coordinates:
             # Clear coordinates
-            self._event_bus.publish(ClearScanCoordinatesCommand())
+            self._publish(ClearScanCoordinatesCommand())
             self.toggle_coordinate_controls(has_coordinates=False)
             # Update display/coordinates as needed
             self.update_coordinates()
@@ -2591,7 +2585,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             center_y = region_points["y (mm)"].mean()
             region_centers[str(region_id)] = (float(center_x), float(center_y))
 
-        self._event_bus.publish(
+        self._publish(
             LoadScanCoordinatesCommand(
                 region_fov_coordinates=region_fov_coordinates,
                 region_centers=region_centers,
@@ -2640,7 +2634,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 center_y = region_points["y (mm)"].mean()
                 region_centers[str(region_id)] = (float(center_x), float(center_y))
 
-            self._event_bus.publish(
+            self._publish(
                 LoadScanCoordinatesCommand(
                     region_fov_coordinates=region_fov_coordinates,
                     region_centers=region_centers,
@@ -2795,39 +2789,39 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _on_nz_changed(self, value: int) -> None:
         """Handle NZ spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_z=value))
+        self._publish(SetAcquisitionParametersCommand(n_z=value))
 
     def _on_dt_changed(self, value: float) -> None:
         """Handle dt spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(delta_t_s=value))
+        self._publish(SetAcquisitionParametersCommand(delta_t_s=value))
 
     def _on_nt_changed(self, value: int) -> None:
         """Handle Nt spinbox change - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(n_t=value))
+        self._publish(SetAcquisitionParametersCommand(n_t=value))
 
     def _on_autofocus_toggled(self, checked: bool) -> None:
         """Handle autofocus checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_autofocus=checked))
+        self._publish(SetAcquisitionParametersCommand(use_autofocus=checked))
 
     def _on_reflection_af_toggled(self, checked: bool) -> None:
         """Handle reflection AF checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+        self._publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
 
     def _on_gen_af_map_toggled(self, checked: bool) -> None:
         """Handle generate AF map checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(gen_focus_map=checked))
+        self._publish(SetAcquisitionParametersCommand(gen_focus_map=checked))
 
     def _on_use_focus_map_toggled(self, checked: bool) -> None:
         """Handle use focus map checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_manual_focus_map=checked))
+        self._publish(SetAcquisitionParametersCommand(use_manual_focus_map=checked))
 
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))
+        self._publish(SetAcquisitionParametersCommand(use_piezo=checked))
 
     def _on_skip_saving_toggled(self, checked: bool) -> None:
         """Handle skip saving checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))
+        self._publish(SetAcquisitionParametersCommand(skip_saving=checked))
 
     # =========================================================================
     # YAML Drag-and-Drop Support (AcquisitionYAMLDropMixin implementation)

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
         FilterWheelService,
         PeripheralService,
     )
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.core.config.models import AcquisitionChannel
 
 
 _log = squid.core.logging.get_logger(__name__)
@@ -67,7 +67,7 @@ class AcquisitionService:
 
     def apply_configuration(
         self,
-        config: "ChannelMode",
+        config: "AcquisitionChannel",
         trigger_mode: str,
         enable_filter_switching: bool = True,
     ) -> None:
@@ -111,7 +111,7 @@ class AcquisitionService:
         if enable_filter_switching:
             self._set_filter_position(config, trigger_mode)
 
-    def turn_on_illumination(self, config: "ChannelMode") -> bool:
+    def turn_on_illumination(self, config: "AcquisitionChannel") -> bool:
         """
         Turn on illumination for the given configuration.
 
@@ -146,7 +146,7 @@ class AcquisitionService:
             _log.exception("Failed to turn on illumination")
             return False
 
-    def turn_off_illumination(self, config: "ChannelMode") -> bool:
+    def turn_off_illumination(self, config: "AcquisitionChannel") -> bool:
         """
         Turn off illumination for the given configuration.
 
@@ -176,7 +176,7 @@ class AcquisitionService:
             return False
 
     @contextmanager
-    def illumination_context(self, config: "ChannelMode", trigger_mode: str):
+    def illumination_context(self, config: "AcquisitionChannel", trigger_mode: str):
         """
         Context manager for illumination during software trigger capture.
 
@@ -238,7 +238,7 @@ class AcquisitionService:
 
     # === Private Helper Methods ===
 
-    def _set_illumination_power(self, config: "ChannelMode") -> None:
+    def _set_illumination_power(self, config: "AcquisitionChannel") -> None:
         """Set illumination power without turning on the channel."""
         if self._illumination is None:
             return
@@ -254,7 +254,7 @@ class AcquisitionService:
         except Exception:
             _log.debug("Failed to set illumination power")
 
-    def _set_filter_position(self, config: "ChannelMode", trigger_mode: str) -> None:
+    def _set_filter_position(self, config: "AcquisitionChannel", trigger_mode: str) -> None:
         """Set emission filter position with appropriate delay offset."""
         if self._filter_wheel is None:
             return

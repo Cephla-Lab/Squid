@@ -1,4 +1,5 @@
 from squid.ui.widgets.camera._common import (
+    AcquisitionChannel,
     Any,
     AutoLevelCommand,
     ChannelConfigurationsChanged,
@@ -46,7 +47,7 @@ class LiveControlWidget(EventBusFrame):
         self,
         event_bus: "UIEventBus",
         streamHandler: StreamHandler,
-        initial_configuration: "ChannelMode",
+        initial_configuration: "AcquisitionChannel",
         initial_objective: str,
         initial_channel_configs: List[str],
         # Camera limits passed as params instead of direct camera access
@@ -377,7 +378,7 @@ class LiveControlWidget(EventBusFrame):
         # UI will be updated via _on_microscope_mode_changed event handler
         self.is_switching_mode = False
 
-    def update_ui_for_mode(self, configuration: "ChannelMode") -> None:
+    def update_ui_for_mode(self, configuration: "AcquisitionChannel") -> None:
         self.entry_exposureTime.blockSignals(True)
         self.entry_exposureTime.setValue(configuration.exposure_time)
         self.entry_exposureTime.blockSignals(False)
@@ -450,7 +451,7 @@ class LiveControlWidget(EventBusFrame):
                 )
             )
 
-    def set_live_configuration(self, configuration: Optional["ChannelMode"]) -> None:
+    def set_live_configuration(self, configuration: Optional["AcquisitionChannel"]) -> None:
         if configuration is None:
             return
         self.dropdown_modeSelection.setCurrentText(configuration.name)

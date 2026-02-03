@@ -1,5 +1,4 @@
 from squid.ui.widgets.tracking._common import (
-    Any,
     DEFAULT_SAVING_PATH,
     DEFAULT_TRACKER,
     List,
@@ -18,15 +17,13 @@ from squid.ui.widgets.tracking._common import (
     TRACKERS,
 )
 from squid.backend.services import PeripheralService
-from typing import Callable, Tuple
+from typing import Callable
 import numpy as np
-from qtpy.QtWidgets import QListWidget, QAbstractItemView
+from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
 from qtpy.QtCore import QMetaObject
 from squid.ui.widgets.hardware.objectives import ObjectivesWidget
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     EventBus,
     ObjectiveChanged,
@@ -38,9 +35,10 @@ from squid.core.events import (
     StopTrackingCommand,
     TrackingStateChanged,
 )
+from squid.ui.widgets.base import EventBusFrame
 
 
-class TrackingControllerWidget(QFrame):
+class TrackingControllerWidget(EventBusFrame):
     base_path_is_set: bool
     btn_setSavingDir: QPushButton
     lineEdit_savingDir: QLineEdit
@@ -65,12 +63,8 @@ class TrackingControllerWidget(QFrame):
         initial_pixel_size_um: float,
         roi_bbox_provider: Callable[[], object],
         show_configurations: bool = True,
-        *args: Any,
-        **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._event_bus = event_bus
-        self._subscriptions = []
+        super().__init__(event_bus)
         self._channel_configs = list(initial_channel_configs)
         self.peripheral_service = peripheral_service
         self.objectivesWidget = objectivesWidget
@@ -85,11 +79,6 @@ class TrackingControllerWidget(QFrame):
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-        # Subscribe to tracking state events
-        self._subscriptions = auto_subscribe(self, self._event_bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
-
         self.peripheral_service.add_joystick_button_listener(
             lambda button_pressed: self.handle_button_pressed(button_pressed)
         )
@@ -103,7 +92,7 @@ class TrackingControllerWidget(QFrame):
         self.lineEdit_savingDir.setText("Choose a base saving directory")
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
         # Publish default path via event
-        self._event_bus.publish(SetTrackingPathCommand(base_path=DEFAULT_SAVING_PATH))
+        self._publish(SetTrackingPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -206,7 +195,7 @@ class TrackingControllerWidget(QFrame):
 
         # run initialization functions
         self.update_pixel_size()
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             image_resizing_factor=1
         ))  # to add: image resizing slider
 
@@ -229,21 +218,21 @@ class TrackingControllerWidget(QFrame):
                 msg.exec_()
                 return
             self.setEnabled_all(False)
-            self._event_bus.publish(StartTrackingExperimentCommand(
+            self._publish(StartTrackingExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
-            self._event_bus.publish(SetTrackingChannelsCommand(
+            self._publish(SetTrackingChannelsCommand(
                 channel_names=list(item.text() for item in self.list_configurations.selectedItems())
             ))
             bbox = tuple(int(x) for x in np.array(self._roi_bbox_provider()).tolist())
-            self._event_bus.publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
+            self._publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
         else:
-            self._event_bus.publish(StopTrackingCommand())
+            self._publish(StopTrackingCommand())
 
     def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self._event_bus.publish(SetTrackingPathCommand(base_path=save_dir_base))
+        self._publish(SetTrackingPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -258,16 +247,16 @@ class TrackingControllerWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self._event_bus.publish(StartTrackingExperimentCommand(
+            self._publish(StartTrackingExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
-            self._event_bus.publish(SetTrackingChannelsCommand(
+            self._publish(SetTrackingChannelsCommand(
                 channel_names=list(item.text() for item in self.list_configurations.selectedItems())
             ))
             bbox = tuple(int(x) for x in np.array(self._roi_bbox_provider()).tolist())
-            self._event_bus.publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
+            self._publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
         else:
-            self._event_bus.publish(StopTrackingCommand())
+            self._publish(StopTrackingCommand())
 
     def setEnabled_all(self, enabled: bool) -> None:
         self.btn_setSavingDir.setEnabled(enabled)
@@ -279,7 +268,7 @@ class TrackingControllerWidget(QFrame):
 
     def update_tracker(self, index: int) -> None:
         """Publish tracker type change via event."""
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             tracker_type=self.dropdown_tracker.currentText()
         ))
 
@@ -288,7 +277,7 @@ class TrackingControllerWidget(QFrame):
         pixel_size_xy = self._pixel_size_um
         objective = self._current_objective
         # Publish via event instead of direct controller call
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             pixel_size_um=pixel_size_xy,
             objective=objective
         ))
@@ -297,19 +286,19 @@ class TrackingControllerWidget(QFrame):
     # Event handlers for checkbox/spinbox changes
     def _on_enable_stage_tracking_changed(self, state: int) -> None:
         """Handle stage tracking checkbox change."""
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             enable_stage_tracking=state == Qt.Checked
         ))
 
     def _on_save_images_changed(self, state: int) -> None:
         """Handle save images checkbox change."""
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             save_images=state == Qt.Checked
         ))
 
     def _on_tracking_interval_changed(self, value: float) -> None:
         """Handle tracking interval spinbox change."""
-        self._event_bus.publish(SetTrackingParametersCommand(
+        self._publish(SetTrackingParametersCommand(
             time_interval_s=value
         ))
 
@@ -330,17 +319,3 @@ class TrackingControllerWidget(QFrame):
             self._current_objective = event.objective_name
         if event.pixel_size_um is not None:
             self._pixel_size_um = event.pixel_size_um
-
-    def closeEvent(self, event) -> None:
-        self._cleanup_subscriptions()
-        super().closeEvent(event)
-
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._event_bus)
-            self._subscriptions.clear()

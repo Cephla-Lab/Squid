@@ -19,7 +19,7 @@ import squid.core.logging
 import squid.core.utils.hardware_utils as utils
 
 if TYPE_CHECKING:
-    from squid.backend.managers import ObjectiveStore, ChannelConfigurationManager
+    from squid.backend.managers import ObjectiveStore, ChannelConfigService
     from squid.backend.services import CameraService
 
 _log = squid.core.logging.get_logger(__name__)
@@ -94,7 +94,7 @@ class ExperimentManager:
     def __init__(
         self,
         objective_store: "ObjectiveStore",
-        channel_config_manager: "ChannelConfigurationManager",
+        channel_config_manager: "ChannelConfigService",
         camera_service: "CameraService",
         *,
         tube_lens_mm: float = 50.0,  # Default from _def.TUBE_LENS_MM
@@ -104,7 +104,7 @@ class ExperimentManager:
 
         Args:
             objective_store: ObjectiveStore for objective metadata
-            channel_config_manager: ChannelConfigurationManager for config writing
+            channel_config_manager: ChannelConfigService for config writing
             camera_service: CameraService for pixel size info
             tube_lens_mm: Tube lens focal length in mm
         """
@@ -220,10 +220,10 @@ class ExperimentManager:
         """Write channel configurations XML file."""
         try:
             current_objective = self._objective_store.current_objective
-            self._channel_config_manager.write_configuration_selected(
+            self._channel_config_manager.save_acquisition_output(
+                Path(context.experiment_path),
                 current_objective,
                 configurations,
-                context.config_path,
             )
             _log.debug(f"Wrote configurations to {context.config_path}")
         except Exception as e:

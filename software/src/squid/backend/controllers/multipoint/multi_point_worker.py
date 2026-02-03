@@ -30,12 +30,12 @@ from _def import (
 )
 import squid.core.utils.hardware_utils as utils
 from squid.backend.controllers.autofocus import AutoFocusController
-from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters
 from squid.backend.controllers.multipoint.dependencies import AcquisitionDependencies
 from squid.backend.managers import ObjectiveStore
-from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.models import AcquisitionChannel
 from squid.core.abc import CameraFrame
 import squid.core.logging
 import squid.backend.controllers.multipoint.job_processing
@@ -128,7 +128,7 @@ class MultiPointWorker:
         auto_focus_controller: Optional[AutoFocusController],
         laser_auto_focus_controller: Optional[LaserAutofocusController],
         objective_store: ObjectiveStore,
-        channel_configuration_mananger: ChannelConfigurationManager,
+        channel_configuration_mananger: ChannelConfigService,
         acquisition_parameters: AcquisitionParameters,
         camera_service: "CameraService",
         stage_service: "StageService",
@@ -199,7 +199,7 @@ class MultiPointWorker:
             laser_auto_focus_controller
         )
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = (
+        self.channelConfigurationManager: ChannelConfigService = (
             channel_configuration_mananger
         )
         self.use_fluidics = acquisition_parameters.use_fluidics
@@ -1813,14 +1813,14 @@ class MultiPointWorker:
             if focus_lock_paused:
                 self._autofocus_executor.resume_focus_lock()
 
-    def _select_config(self, config: ChannelMode) -> None:
+    def _select_config(self, config: AcquisitionChannel) -> None:
         self._apply_channel_mode(config)
         self.wait_till_operation_is_completed()
 
-    def _is_rgb_config(self, config: ChannelMode) -> bool:
+    def _is_rgb_config(self, config: AcquisitionChannel) -> bool:
         return bool(getattr(config, "is_rgb", False))
 
-    def _apply_channel_mode(self, config: ChannelMode) -> None:
+    def _apply_channel_mode(self, config: AcquisitionChannel) -> None:
         exposure = getattr(config, "exposure_time", None)
         if exposure is not None:
             self._camera_service.set_exposure_time(exposure)
@@ -1859,7 +1859,7 @@ class MultiPointWorker:
                 except Exception:
                     pass
 
-    def _turn_on_illumination(self, config: ChannelMode) -> None:
+    def _turn_on_illumination(self, config: AcquisitionChannel) -> None:
         if self._illumination_service is None:
             return
         source = getattr(config, "illumination_source", None)
@@ -1870,7 +1870,7 @@ class MultiPointWorker:
         except Exception:
             pass
 
-    def _turn_off_illumination(self, config: ChannelMode) -> None:
+    def _turn_off_illumination(self, config: AcquisitionChannel) -> None:
         if self._illumination_service is None:
             return
         source = getattr(config, "illumination_source", None)
@@ -1928,7 +1928,7 @@ class MultiPointWorker:
             z_delta_mm = -(self.deltaZ / 1000.0) * round((self.NZ - 1) / 2.0)
             self._position_controller.move_z_relative(z_delta_mm)
 
-    def handle_z_offset(self, config: ChannelMode, not_offset: bool) -> None:
+    def handle_z_offset(self, config: AcquisitionChannel, not_offset: bool) -> None:
         if (
             config.z_offset is not None
         ):  # perform z offset for config, assume z_offset is in um
@@ -2141,7 +2141,7 @@ class MultiPointWorker:
 
     def acquire_camera_image(
         self,
-        config: ChannelMode,
+        config: AcquisitionChannel,
         file_ID: str,
         current_path: str,
         k: int,
@@ -2255,7 +2255,7 @@ class MultiPointWorker:
 
     def acquire_rgb_image(
         self,
-        config: ChannelMode,
+        config: AcquisitionChannel,
         file_ID: str,
         current_path: str,
         k: int,

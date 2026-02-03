@@ -40,7 +40,7 @@ from _def import (
 from squid.core.utils import utils_channel
 
 if TYPE_CHECKING:
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.core.config.models import AcquisitionChannel
 
 
 class LiveControllerState(Enum):
@@ -104,7 +104,7 @@ class LiveController(StateMachine[LiveControllerState]):
         self._nl5_service = nl5_service
         self._mode_gate = mode_gate
         self._acquisition_service = acquisition_service
-        self.currentConfiguration: Optional["ChannelMode"] = None
+        self.currentConfiguration: Optional["AcquisitionChannel"] = None
         self.trigger_mode: Optional[TriggerMode] = (
             TriggerMode.SOFTWARE
         )  # @@@ change to None
@@ -553,7 +553,10 @@ class LiveController(StateMachine[LiveControllerState]):
 
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
-    def set_microscope_mode(self, configuration: "ChannelMode") -> None:
+    def set_microscope_mode(self, configuration: "AcquisitionChannel") -> None:
+        if configuration is None:
+            self._log.error("set_microscope_mode() called with None configuration - this is a bug in the caller")
+            return
         with self._lock:
             self._log.info("setting microscope mode to " + configuration.name)
 

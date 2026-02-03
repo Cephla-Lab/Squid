@@ -20,7 +20,7 @@ from squid.backend.processing.laser_spot import (
     normalize_crop_for_reference,
 )
 from squid.core.config.feature_flags import get_feature_flags
-from squid.core.utils.config_utils import LaserAFConfig
+from squid.core.config.models import LaserAFConfig
 import squid.core.logging
 from squid.backend.controllers.base import BaseController
 from squid.core.events import (
@@ -237,10 +237,10 @@ class LaserAutofocusController(BaseController):
 
     def initialize_manual(self, config: LaserAFConfig) -> None:
         """Initialize laser autofocus with manual parameters."""
+        x_ref_adjusted = config.x_reference - config.x_offset if config.x_reference is not None else None
         adjusted_config = config.model_copy(
             update={
-                "x_reference": config.x_reference
-                - config.x_offset,  # self.x_reference is relative to the cropped region
+                "x_reference": x_ref_adjusted,  # x_reference is relative to the cropped region
                 "x_offset": int((config.x_offset // 8) * 8),
                 "y_offset": int((config.y_offset // 2) * 2),
                 "width": int((config.width // 8) * 8),
@@ -523,6 +523,10 @@ class LaserAutofocusController(BaseController):
                     "Failed to detect laser spot during displacement measurement"
                 )
                 return finish_with(float("nan"))  # Signal invalid measurement
+
+            if self.laser_af_properties.x_reference is None:
+                self._log.warning("Cannot calculate displacement - reference position not set")
+                return finish_with(float("nan"))
 
             # calculate displacement
             displacement_um = compute_displacement(
@@ -953,7 +957,7 @@ class LaserAutofocusController(BaseController):
         spot = detect_spot(
             frame,
             params=spot_detection_params,
-            mode=self.laser_af_properties.spot_detection_mode,
+            mode=self.laser_af_properties.get_spot_detection_mode(),
             filter_sigma=self.laser_af_properties.filter_sigma,
             remove_bg=remove_background,
             center_crop=use_center_crop,

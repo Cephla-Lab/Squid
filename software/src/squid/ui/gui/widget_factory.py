@@ -16,7 +16,7 @@ from _def import (
     DEFAULT_OBJECTIVE,
 )
 import squid.ui.widgets as widgets
-from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 from squid.core.config.feature_flags import get_feature_flags
 
 
@@ -138,16 +138,10 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         initial_channel_names.append(initial_configuration.name)
     # Last resort fallback to a minimal configuration to avoid crashes if configs are missing
     if initial_configuration is None:
-        initial_configuration = ChannelMode(
-            id="default",
+        initial_configuration = AcquisitionChannel(
             name="Default",
-            exposure_time=10.0,
-            analog_gain=0.0,
-            illumination_source=0,
-            illumination_intensity=0.0,
-            camera_sn="",
-            z_offset=0.0,
-            emission_filter_position=1,
+            camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
+            illumination_settings=IlluminationSettings(intensity=0.0),
         )
         if not initial_channel_names:
             initial_channel_names = [initial_configuration.name]

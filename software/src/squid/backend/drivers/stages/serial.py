@@ -21,6 +21,10 @@ from _def import (
     BIT_POS_SWITCH,
     CMD_EXECUTION_STATUS,
     CMD_SET,
+    DEFAULT_ILLUMINATION_TIMEOUT_MS,
+    MAX_ILLUMINATION_TIMEOUT_MS,
+    NUM_TIMEOUT_PORTS,
+    source_code_to_port_index,
 )
 
 _log = squid.core.logging.get_logger("microcontroller.serial")
@@ -102,27 +106,42 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 
 class SimSerial(AbstractCephlaMicroSerial):
+    # Number of illumination ports for simulation
+    NUM_ILLUMINATION_PORTS = 16
+    # Simulated firmware version
+    # v1.0: multi-port illumination support
+    # v1.1: illumination timeout (auto-shutoff) and port status reporting
+    FIRMWARE_VERSION_MAJOR = 1
+    FIRMWARE_VERSION_MINOR = 1
+
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch
+        command_id, execution_status, x, y, z, theta, joystick_button, switch,
+        firmware_version=(1, 1), port_status=0,
     ) -> bytes:
         """
-        - command ID (1 byte)
-        - execution status (1 byte)
-        - X pos (4 bytes)
-        - Y pos (4 bytes)
-        - Z pos (4 bytes)
-        - Theta (4 bytes)
-        - buttons and switches (1 byte)
-        - reserved (4 bytes)
-        - CRC (1 byte)
+        - byte 0: command ID (1 byte)
+        - byte 1: execution status (1 byte)
+        - bytes 2-5: X pos (4 bytes)
+        - bytes 6-9: Y pos (4 bytes)
+        - bytes 10-13: Z pos (4 bytes)
+        - bytes 14-17: Theta (4 bytes)
+        - byte 18: buttons and switches (1 byte)
+        - byte 19: illumination port status, bits 0-4 = D1-D5 (firmware v1.1+)
+        - bytes 20-21: reserved (2 bytes)
+        - byte 22: firmware version (1 byte)
+        - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = (
             joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
         )
-        reserved_state = 0  # This is just filler for the 4 reserved bytes.
+        # Firmware version is nibble-encoded in byte 22
+        # High nibble = major version, low nibble = minor version
+        version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
+        # Pack reserved bytes 19-22: port_status in byte 19, version in byte 22
+        reserved_state = (port_status << 24) | version_byte
         response = bytearray(
             struct.pack(
                 ">BBiiiiBi",
@@ -151,8 +170,21 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.y = 0
         self.z = 0
         self.theta = 0
+        self.w = 0
+        self.w2 = 0
         self.joystick_button = False
         self.switch = False
+
+        # Multi-port illumination state for simulation
+        self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
+        self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Illumination timeout (firmware v1.1+)
+        self.illumination_timeout_ms = DEFAULT_ILLUMINATION_TIMEOUT_MS
+
+        # Legacy illumination state tracking (for backward compatibility)
+        self._illumination_source = None  # Currently selected legacy source
+        self._illumination_is_on = False  # Legacy global on/off state
 
         self._closed = False
 
@@ -175,6 +207,10 @@ class SimSerial(AbstractCephlaMicroSerial):
             self.z += self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVE_THETA:
             self.theta += self.unpack_position(position_bytes)
+        elif command_byte == CMD_SET.MOVE_W:
+            self.w += self.unpack_position(position_bytes)
+        elif command_byte == CMD_SET.MOVE_W2:
+            self.w2 += self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVETO_X:
             self.x = self.unpack_position(position_bytes)
         elif command_byte == CMD_SET.MOVETO_Y:
@@ -198,6 +234,72 @@ class SimSerial(AbstractCephlaMicroSerial):
             elif axis == AXIS.XY:
                 self.x = 0
                 self.y = 0
+            elif axis == AXIS.W:
+                self.w = 0
+            elif axis == AXIS.W2:
+                self.w2 = 0
+
+        # Multi-port illumination commands
+        elif command_byte == CMD_SET.SET_PORT_INTENSITY:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_PORT:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_is_on[port_index] = False
+        elif command_byte == CMD_SET.SET_PORT_ILLUMINATION:
+            port_index = write_bytes[2]
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                intensity = (write_bytes[3] << 8) | write_bytes[4]
+                turn_on = write_bytes[5] != 0
+                self.port_intensity[port_index] = intensity
+                self.port_is_on[port_index] = turn_on
+        elif command_byte == CMD_SET.SET_MULTI_PORT_MASK:
+            port_mask = (write_bytes[2] << 8) | write_bytes[3]
+            on_mask = (write_bytes[4] << 8) | write_bytes[5]
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                if port_mask & (1 << i):
+                    self.port_is_on[i] = bool(on_mask & (1 << i))
+        elif command_byte == CMD_SET.TURN_OFF_ALL_PORTS:
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
+        elif command_byte == CMD_SET.SET_ILLUMINATION_TIMEOUT:
+            requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
+            if requested_timeout > MAX_ILLUMINATION_TIMEOUT_MS:
+                requested_timeout = MAX_ILLUMINATION_TIMEOUT_MS
+            if requested_timeout == 0:
+                requested_timeout = DEFAULT_ILLUMINATION_TIMEOUT_MS
+            self.illumination_timeout_ms = requested_timeout
+        # Legacy illumination commands - sync with multi-port state
+        elif command_byte == CMD_SET.SET_ILLUMINATION:
+            source = write_bytes[2]
+            intensity = (write_bytes[3] << 8) | write_bytes[4]
+            self._illumination_source = source
+            port_index = source_code_to_port_index(source)
+            if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                self.port_intensity[port_index] = intensity
+        elif command_byte == CMD_SET.TURN_ON_ILLUMINATION:
+            self._illumination_is_on = True
+            if self._illumination_source is not None:
+                port_index = source_code_to_port_index(self._illumination_source)
+                if 0 <= port_index < SimSerial.NUM_ILLUMINATION_PORTS:
+                    self.port_is_on[port_index] = True
+        elif command_byte == CMD_SET.TURN_OFF_ILLUMINATION:
+            self._illumination_is_on = False
+            for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
+                self.port_is_on[i] = False
+
+        # Calculate port status for response (bits 0-4 = D1-D5)
+        port_status = 0
+        for i in range(min(NUM_TIMEOUT_PORTS, len(self.port_is_on))):
+            if self.port_is_on[i]:
+                port_status |= 1 << i
 
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
@@ -209,6 +311,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.theta,
                 self.joystick_button,
                 self.switch,
+                port_status=port_status,
             )
         )
 

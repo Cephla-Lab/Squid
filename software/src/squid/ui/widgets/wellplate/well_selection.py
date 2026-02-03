@@ -11,8 +11,8 @@ from squid.ui.widgets.wellplate._common import (
     QTableWidgetItem,
     QWheelEvent,
     Qt,
-    TYPE_CHECKING,
     Tuple,
+    TYPE_CHECKING,
 )
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
@@ -20,17 +20,16 @@ if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
 
 from squid.core.events import (
-    auto_subscribe,
-    auto_unsubscribe,
     handles,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
     SelectedWellsChanged,
     WellplateFormatChanged,
 )
+from squid.ui.widgets.base import EventBusSubscriptionMixin
 
 
-class WellSelectionWidget(QTableWidget):
+class WellSelectionWidget(EventBusSubscriptionMixin, QTableWidget):
     def __init__(
         self,
         event_bus: "UIEventBus",
@@ -44,13 +43,10 @@ class WellSelectionWidget(QTableWidget):
         a1_x_pixel: int = 0,
         a1_y_pixel: int = 0,
         number_of_skip: int = 0,
-        *args: Any,
-        **kwargs: Any,
     ) -> None:
-        super(WellSelectionWidget, self).__init__(*args, **kwargs)
-        self._bus = event_bus
+        QTableWidget.__init__(self)
+        self._init_subscriptions(event_bus)
         self._click_to_move_enabled: bool = True
-        self._subscriptions: List[Tuple[type, Any]] = []
         self.cellDoubleClicked.connect(self.onDoubleClick)
         self.itemSelectionChanged.connect(self.onSelectionChanged)
         self.fixed_height: int = 400
@@ -65,16 +61,13 @@ class WellSelectionWidget(QTableWidget):
         self.a1_y_pixel: int = int(a1_y_pixel)
         self.well_size_mm: float = float(well_size_mm)
         self._apply_format()
-        self._subscriptions = auto_subscribe(self, self._bus)
-        # Clean up subscriptions when widget is destroyed (handles deleteLater())
-        self.destroyed.connect(self._on_destroyed)
 
     @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
         self._click_to_move_enabled = event.enabled
 
     def _publish_selection(self) -> None:
-        self._bus.publish(
+        self._publish(
             SelectedWellsChanged(
                 format_name=self.format,
                 selected_cells=tuple(self.get_selected_cells()),
@@ -225,16 +218,6 @@ class WellSelectionWidget(QTableWidget):
         self._cleanup_subscriptions()
         super().closeEvent(event)
 
-    def _on_destroyed(self) -> None:
-        """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
-        self._cleanup_subscriptions()
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe from all events."""
-        if self._subscriptions:
-            auto_unsubscribe(self._subscriptions, self._bus)
-            self._subscriptions.clear()
-
     def _update_row_headers(self) -> None:
         # Update row headers
         row_headers = []
@@ -266,7 +249,7 @@ class WellSelectionWidget(QTableWidget):
             y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
             print("well location:", (x_mm, y_mm))
             if self._click_to_move_enabled:
-                self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+                self._publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
             self._publish_selection()
         else:
             self._publish_selection()

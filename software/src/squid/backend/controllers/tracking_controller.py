@@ -30,12 +30,10 @@ from squid.backend.processing.tracking_dasiamrpn import Tracker_Image
 from squid.backend.io.utils_acquisition import save_image
 
 if TYPE_CHECKING:
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.core.config.models import AcquisitionChannel
     from squid.backend.controllers.live_controller import LiveController
     from squid.backend.services import CameraService, StageService, PeripheralService
-    from squid.backend.managers.channel_configuration_manager import (
-        ChannelConfigurationManager,
-    )
+    from squid.backend.managers.channel_config_service import ChannelConfigService
     from squid.backend.managers.objective_store import ObjectiveStore
 
 
@@ -43,7 +41,7 @@ if TYPE_CHECKING:
 class _TrackingRunConfig:
     experiment_id: str
     base_path: str
-    configuration: "ChannelMode"
+    configuration: "AcquisitionChannel"
     roi_bbox: Tuple[int, int, int, int]
     time_interval_s: float
     enable_stage_tracking: bool
@@ -63,7 +61,7 @@ class TrackingControllerCore(BaseController):
         camera_service: "CameraService",
         stage_service: "StageService",
         live_controller: "LiveController",
-        channel_config_manager: "ChannelConfigurationManager",
+        channel_config_manager: "ChannelConfigService",
         objective_store: "ObjectiveStore",
         peripheral_service: Optional["PeripheralService"] = None,
         mode_gate: Optional[GlobalModeGate] = None,
@@ -210,10 +208,9 @@ class TrackingControllerCore(BaseController):
                 self._objective_store, "current_objective", None
             )
             if objective:
-                self._configs.save_current_configuration_to_path(
-                    objective,
-                    Path(os.path.join(run_cfg.base_path, run_cfg.experiment_id, "configurations.xml")),
-                )
+                experiment_dir = Path(os.path.join(run_cfg.base_path, run_cfg.experiment_id))
+                channels = self._configs.get_enabled_configurations(objective)
+                self._configs.save_acquisition_output(experiment_dir, objective, channels)
             if was_live:
                 self._live.stop_live()
             self._live.set_microscope_mode(run_cfg.configuration)
@@ -282,7 +279,7 @@ class _TrackingWorker(threading.Thread):
         keep_running: threading.Event,
         run_cfg: _TrackingRunConfig,
         previous_live_state: bool,
-        previous_configuration: Optional["ChannelMode"],
+        previous_configuration: Optional["AcquisitionChannel"],
         previous_mode: Optional[GlobalMode],
         mode_gate: Optional[GlobalModeGate],
     ) -> None:

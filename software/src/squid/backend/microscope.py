@@ -4,7 +4,9 @@ import numpy as np
 
 import _def
 from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 from squid.backend.managers import ConfigurationManager
+from squid.core.config.repository import ConfigRepository
 from squid.backend.managers import ContrastManager
 from squid.backend.controllers.autofocus import LaserAFSettingManager
 from squid.backend.controllers.live_controller import LiveController
@@ -173,9 +175,38 @@ class Microscope:
         self.channel_configuration_manager: ChannelConfigurationManager = (
             ChannelConfigurationManager(configurations_path=_def.PROJECT_ROOT / "configurations")
         )
+
+        # New YAML-based config system
+        software_dir = _def.PROJECT_ROOT
+        self.config_repo: ConfigRepository = ConfigRepository(base_path=software_dir)
+
+        # Auto-migrate from JSON/XML configs if no YAML profile exists yet
+        _default_profile = "default_profile"
+        default_profile_path = self.config_repo.user_profiles_path / _default_profile
+        if not default_profile_path.exists():
+            try:
+                import importlib.util
+                _spec = importlib.util.spec_from_file_location(
+                    "migrate_to_yaml_configs",
+                    software_dir / "tools" / "migrate_to_yaml_configs.py",
+                )
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.migrate(software_dir)
+            except Exception:
+                pass  # Migration may fail if no JSON configs exist
+        # If migration didn't create the profile, create a minimal one
+        if not default_profile_path.exists():
+            self.config_repo.create_profile(_default_profile)
+        self.config_repo.set_profile(_default_profile)
+
+        self.channel_config_service: ChannelConfigService = ChannelConfigService(
+            self.config_repo, event_bus
+        )
+
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if _def.SUPPORT_LASER_AUTOFOCUS:
-            self.laser_af_settings_manager = LaserAFSettingManager()
+            self.laser_af_settings_manager = LaserAFSettingManager(config_repo=self.config_repo)
 
         self.configuration_manager: ConfigurationManager = ConfigurationManager(
             self.channel_configuration_manager, self.laser_af_settings_manager

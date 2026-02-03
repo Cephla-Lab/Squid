@@ -1,0 +1,69 @@
+version: 1.0
+
+controller_port_mapping:
+  USB1: 0    # LED array full
+  USB2: 1    # LED array left half
+  USB3: 2    # LED array right half
+  USB4: 3    # LED array dark field
+  USB5: 4    # LED array low NA
+  USB7: 7    # LED array top half
+  USB8: 8    # LED array bottom half
+  D1: 11     # 405nm laser
+  D2: 12     # 488nm laser
+  D3: 13     # 638nm laser
+  D4: 14     # 561nm laser
+  D5: 15     # 730nm laser
+
+channels:
+  - name: "BF LED matrix full"
+    type: transillumination
+    controller_port: USB1
+
+  - name: "DF LED matrix"
+    type: transillumination
+    controller_port: USB4
+
+  - name: "Fluorescence 405 nm Ex"
+    type: epi_illumination
+    controller_port: D1
+    wavelength_nm: 405
+
+  - name: "Fluorescence 488 nm Ex"
+    type: epi_illumination
+    controller_port: D2
+    wavelength_nm: 488
+
+  - name: "Fluorescence 561 nm Ex"
+    type: epi_illumination
+    controller_port: D4
+    wavelength_nm: 561
+
+  - name: "Fluorescence 638 nm Ex"
+    type: epi_illumination
+    controller_port: D3
+    wavelength_nm: 638
+
+  - name: "Fluorescence 730 nm Ex"
+    type: epi_illumination
+    controller_port: D5
+    wavelength_nm: 730
+
+  - name: "BF LED matrix low NA"
+    type: transillumination
+    controller_port: USB5
+
+  - name: "BF LED matrix left half"
+    type: transillumination
+    controller_port: USB2
+
+  - name: "BF LED matrix right half"
+    type: transillumination
+    controller_port: USB3
+
+  - name: "BF LED matrix top half"
+    type: transillumination
+    controller_port: USB7
+
+  - name: "BF LED matrix bottom half"
+    type: transillumination
+    controller_port: USB8

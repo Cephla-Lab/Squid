@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-02-02T18:51:32'
+  last_verified: '2026-02-02T19:30:00'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -605,10 +605,17 @@ commits:
       QtLoggingHandler preserved for backward compat. 5 unit tests.'
   34920a51:
     title: 'feat: Add illumination timeout (auto-shutoff) safety feature (#486)'
-    status: pending
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'SET_ILLUMINATION_TIMEOUT cmd 40, auto-config at MCU startup (v1.1+),
+      SimSerial timeout tracking. 3s default safety shutoff for lasers.'
   ef375f28:
     title: 'feat: Multi-port illumination control + laser port naming refactor (#481)'
-    status: pending
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'CMD_SET 34-39 for multi-port control. SimSerial firmware version/port status.
+      MCU: 7 new methods + firmware version detection. IlluminationController multi-port API.
+      19 unit tests.'
   7fc1ce34:
     title: 'refactor: Remove dead code ImageArrayDisplayWindow (#482)'
     status: skipped
@@ -618,7 +625,10 @@ commits:
     skip_date: '2026-02-02'
   064ee07d:
     title: 'refactor: Rename laser constants from wavelength-based to port-based names (#479)'
-    status: pending
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'ILLUMINATION_D1-D5 port aliases, ILLUMINATION_PORT class, mapping functions.
+      Legacy wavelength names kept as aliases. D3/D4 non-sequential mapping documented.'
   da8f193a:
     title: 'feat: Add Workflow Runner for automating scripts with acquisitions (#480)'
     status: skipped
@@ -628,7 +638,12 @@ commits:
     skip_date: '2026-02-02'
   9a74aea7:
     title: 'feat: Add second filter wheel (W2) support (#478)'
-    status: pending
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'AXIS.W2, MOVE_W2, INITFILTERWHEEL_W2 constants. MCU: move_w2_usteps, home_w2,
+      zero_w2, axis param for init_filter_wheel/configure_squidfilter. SimSerial W2 handling.
+      SquidFilterWheel driver extended for multi-wheel via _WHEEL_AXIS routing.
+      SQUID_FILTERWHEEL_CONFIGS dict for per-wheel config.'
   171aed9b:
     title: 'feat: Multi-camera support foundation - schema, hardware bindings, channel config UI (#450)'
     status: ported

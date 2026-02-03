@@ -207,6 +207,7 @@ class CMD_SET:
     MOVE_Z = 2
     MOVE_THETA = 3
     MOVE_W = 4
+    MOVE_W2 = 19
     HOME_OR_ZERO = 5
     TURN_ON_ILLUMINATION = 10
     TURN_OFF_ILLUMINATION = 11
@@ -235,7 +236,16 @@ class CMD_SET:
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
     SET_TRIGGER_MODE = 33
+    # Multi-port illumination commands (firmware v1.0+)
+    SET_PORT_INTENSITY = 34  # Set DAC intensity for specific port only
+    TURN_ON_PORT = 35  # Turn on GPIO for specific port
+    TURN_OFF_PORT = 36  # Turn off GPIO for specific port
+    SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
+    SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
+    TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
+    SET_ILLUMINATION_TIMEOUT = 40  # Set auto-shutoff timeout for illumination
     SET_PIN_LEVEL = 41
+    INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
     RESET = 255
@@ -265,6 +275,7 @@ class AXIS:
     THETA = 3
     XY = 4
     W = 5
+    W2 = 6
 
 
 class LIMIT_CODE:
@@ -286,6 +297,19 @@ class LIMIT_SWITCH_POLARITY:
 
 
 class ILLUMINATION_CODE:
+    """Illumination source codes for MCU communication.
+
+    LED Matrix Patterns (USB ports):
+        USB1-USB8 map to pattern codes 0-8+.
+
+    Illumination Control TTL Ports (D1-D5):
+        Port-based names (ILLUMINATION_D1-D5) are preferred for new code.
+        Wavelength-based names (ILLUMINATION_SOURCE_405NM, etc.) are kept as
+        aliases for backward compatibility. The actual wavelength is configured
+        in the illumination_channel_config.yaml file, not hardcoded here.
+    """
+
+    # LED matrix patterns (USB ports)
     ILLUMINATION_SOURCE_LED_ARRAY_FULL = 0
     ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF = 1
     ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF = 2
@@ -296,11 +320,94 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7
     ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
-    ILLUMINATION_SOURCE_405NM = 11
-    ILLUMINATION_SOURCE_488NM = 12
-    ILLUMINATION_SOURCE_638NM = 13
-    ILLUMINATION_SOURCE_561NM = 14
-    ILLUMINATION_SOURCE_730NM = 15
+
+    # Illumination Control TTL Ports - port-based names (preferred)
+    # Note: D3/D4 source codes are non-sequential (14, 13) for historical API compatibility
+    ILLUMINATION_D1 = 11
+    ILLUMINATION_D2 = 12
+    ILLUMINATION_D3 = 14
+    ILLUMINATION_D4 = 13
+    ILLUMINATION_D5 = 15
+
+    # Illumination Control TTL Ports - legacy wavelength-based names (deprecated, kept for compatibility)
+    ILLUMINATION_SOURCE_405NM = ILLUMINATION_D1
+    ILLUMINATION_SOURCE_488NM = ILLUMINATION_D2
+    ILLUMINATION_SOURCE_638NM = ILLUMINATION_D4
+    ILLUMINATION_SOURCE_561NM = ILLUMINATION_D3
+    ILLUMINATION_SOURCE_730NM = ILLUMINATION_D5
+
+
+class ILLUMINATION_PORT:
+    """Port indices for multi-port illumination control (firmware v1.0+).
+
+    Port indices (0-15) for up to 16 illumination ports.
+    These are used with the new multi-port illumination commands
+    (SET_PORT_INTENSITY, TURN_ON_PORT, etc.).
+
+    Note: These are port indices, NOT the legacy source codes (11-15).
+    For legacy source codes, use ILLUMINATION_CODE.ILLUMINATION_D1, etc.
+    """
+
+    D1 = 0
+    D2 = 1
+    D3 = 2
+    D4 = 3
+    D5 = 4
+
+
+def source_code_to_port_index(source_code: int) -> int:
+    """Map legacy illumination source code to port index.
+
+    Legacy source codes are non-sequential for historical API compatibility:
+        D1 = 11, D2 = 12, D3 = 14, D4 = 13, D5 = 15
+    Note: D3 and D4 are swapped!
+
+    Args:
+        source_code: Legacy source code (11-15 for D1-D5)
+
+    Returns:
+        Port index (0-4), or -1 for unknown source codes
+    """
+    mapping = {
+        ILLUMINATION_CODE.ILLUMINATION_D1: 0,  # 11 -> 0
+        ILLUMINATION_CODE.ILLUMINATION_D2: 1,  # 12 -> 1
+        ILLUMINATION_CODE.ILLUMINATION_D3: 2,  # 14 -> 2 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D4: 3,  # 13 -> 3 (non-sequential!)
+        ILLUMINATION_CODE.ILLUMINATION_D5: 4,  # 15 -> 4
+    }
+    return mapping.get(source_code, -1)
+
+
+def port_index_to_source_code(port_index: int) -> int:
+    """Map port index to legacy illumination source code.
+
+    Args:
+        port_index: Port index (0-4 for D1-D5)
+
+    Returns:
+        Legacy source code (11-15), or -1 for invalid port index
+    """
+    mapping = {
+        0: ILLUMINATION_CODE.ILLUMINATION_D1,  # 0 -> 11
+        1: ILLUMINATION_CODE.ILLUMINATION_D2,  # 1 -> 12
+        2: ILLUMINATION_CODE.ILLUMINATION_D3,  # 2 -> 14
+        3: ILLUMINATION_CODE.ILLUMINATION_D4,  # 3 -> 13
+        4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
+    }
+    return mapping.get(port_index, -1)
+
+
+# Response byte indices for microcontroller packet parsing
+RESPONSE_BYTE_PORT_STATUS = 19  # Illumination port on/off status (firmware v1.1+)
+RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Firmware version nibble-encoded
+
+# Illumination safety timeout (firmware auto-shutoff)
+NUM_TIMEOUT_PORTS = 5  # D1-D5 (ports 0-4) have timeout protection
+DEFAULT_ILLUMINATION_TIMEOUT_MS = 3000  # 3 seconds (matches firmware)
+MAX_ILLUMINATION_TIMEOUT_MS = 3600000  # 1 hour (matches firmware)
+
+# Configurable timeout in seconds (0 = use firmware default of 3s)
+ILLUMINATION_TIMEOUT_S = DEFAULT_ILLUMINATION_TIMEOUT_MS / 1000.0
 
 
 class VOLUMETRIC_IMAGING:
@@ -483,6 +590,7 @@ STAGE_MOVEMENT_SIGN_Y = 1
 STAGE_MOVEMENT_SIGN_Z = -1
 STAGE_MOVEMENT_SIGN_THETA = 1
 STAGE_MOVEMENT_SIGN_W = 1
+STAGE_MOVEMENT_SIGN_W2 = 1
 
 STAGE_POS_SIGN_X = STAGE_MOVEMENT_SIGN_X
 STAGE_POS_SIGN_Y = STAGE_MOVEMENT_SIGN_Y
@@ -830,6 +938,11 @@ SORT_DURING_MULTIPOINT = False
 
 INVERTED_OBJECTIVE = False
 
+# Illumination intensity scaling factor - scales DAC output for different hardware:
+#   0.6 = Squid LEDs (0-1.5V output range)
+#   0.8 = Squid laser engine (0-2V output range)
+#   1.0 = Full range (0-2.5V output, when DAC gain is 1 instead of 2)
+# This factor is applied to ALL illumination commands (legacy and multi-port).
 ILLUMINATION_INTENSITY_FACTOR = 0.6
 
 CAMERA_TYPE = "Default"
@@ -1000,7 +1113,6 @@ OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
 SQUID_FILTERWHEEL_MAX_INDEX = 8
 SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
-SQUID_FILTERWHEEL_HOMING_ENABLED = True
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
 

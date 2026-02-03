@@ -35,7 +35,7 @@ from _def import (
     PLATE_READER,
 )
 from squid.backend.managers import ObjectiveStore
-from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 
 if TYPE_CHECKING:
     pass

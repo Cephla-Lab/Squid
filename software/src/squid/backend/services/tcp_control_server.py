@@ -110,7 +110,7 @@ class TCPControlServer:
             objective_store: ObjectiveStore for hardware validation
             camera: Camera instance for FOV calculations
             stage: Stage instance for current position
-            channel_config_manager: ChannelConfigurationManager for channel validation
+            channel_config_manager: ChannelConfigService for channel validation
             host: Server host address
             port: Server port
         """
@@ -412,7 +412,7 @@ class TCPControlServer:
 
         # Validate channels exist
         try:
-            channel_configs = self._channel_config_manager.get_channel_configurations_for_objective(
+            channel_configs = self._channel_config_manager.get_configurations(
                 self._objective_store.current_objective
             )
             available_channels = [ch.name for ch in channel_configs] if channel_configs else []

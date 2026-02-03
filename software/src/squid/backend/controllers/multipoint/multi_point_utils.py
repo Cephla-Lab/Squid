@@ -4,7 +4,7 @@ import time
 
 from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.backend.managers import ScanCoordinates
-from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.models import AcquisitionChannel
 from squid.core.abc import CameraFrame
 from _def import ZProjectionMode, DownsamplingMethod
 
@@ -29,7 +29,7 @@ class ScanPositionInformation:
 class AcquisitionParameters:
     experiment_ID: Optional[str]
     base_path: Optional[str]
-    selected_configurations: List[ChannelMode]
+    selected_configurations: List[AcquisitionChannel]
     acquisition_start_time: float
     scan_position_information: ScanPositionInformation
 
