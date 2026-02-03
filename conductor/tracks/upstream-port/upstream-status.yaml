@@ -598,9 +598,11 @@ commits:
     notes: Fixed write_and_check retry logic, set_filter_slider expected response (V->P), added get_filter_slider method
   5a9d3c12:
     title: 'fix: Replace Qt-based logging handler with fork-safe BufferingHandler (#487)'
-    status: in-progress
-    notes: 'BufferingHandler added to core/logging.py. Widget polling via QTimer.
-      main_window switched to new API. 5 unit tests pass.'
+    status: ported
+    ported_in: b5d60c76
+    ported_date: '2026-02-02'
+    notes: 'BufferingHandler in core/logging.py with queue.Queue + QTimer polling.
+      QtLoggingHandler preserved for backward compat. 5 unit tests.'
   34920a51:
     title: 'feat: Add illumination timeout (auto-shutoff) safety feature (#486)'
     status: pending
@@ -635,9 +637,11 @@ commits:
       multi-camera ConfigRepository extensions. UI dialogs for channel config editing not yet ported.'
   1221c7e6:
     title: 'feat: Add X-Light V1/V2 protocol support with auto-detection (#477)'
-    status: in-progress
-    notes: 'Protocol auto-detection implemented in xlight.py. Filter slider guards
-      added to confocal.py.'
+    status: ported
+    ported_in: b5d60c76
+    ported_date: '2026-02-02'
+    notes: 'Protocol auto-detection: try V3 115200 first, fall back to V1/V2 9600.
+      Filter slider guards added to confocal widget.'
   996d53b3:
     title: 'feat: Add zarr v3 saving with OME-NGFF compliant output (#474)'
     status: skipped
@@ -647,10 +651,11 @@ commits:
     skip_date: '2026-02-02'
   5708299d:
     title: 'feat: Display stage position on laser-based focus tab (#476)'
-    status: in-progress
+    status: ported
+    ported_in: b5d60c76
+    ported_date: '2026-02-02'
     notes: 'One-line fix: pass event_bus to imageDisplayWindow_focus constructor.
-      ImageDisplayWindow already handles StagePositionChanged events when event_bus
-      is provided.'
+      ImageDisplayWindow already handles StagePositionChanged events.'
   c99140b7:
     title: 'fix: Use threaded operations for XLight controls to prevent UI freeze (#475)'
     status: skipped
