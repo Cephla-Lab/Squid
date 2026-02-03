@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime
 
-from qtpy.QtCore import QObject, QPoint, Qt, Signal
+from qtpy.QtCore import QObject, QPoint, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QApplication,
     QFrame,
@@ -89,10 +89,45 @@ class WarningErrorWidget(QWidget):
         self._rate_limit_timestamps: list[float] = []  # For rate limiting
         self._dropped_count = 0  # Track rate-limited messages
         self._popup = None
+        self._handler = None
+        self._poll_timer = None
         self._setup_ui()
 
+    def connect_handler(self, handler) -> None:
+        """Connect a BufferingHandler and start polling it via QTimer.
+
+        Args:
+            handler: A squid.core.logging.BufferingHandler instance.
+        """
+        self.disconnect_handler()
+        self._handler = handler
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_messages)
+        self._poll_timer.start(100)  # 100ms polling interval
+
+    def disconnect_handler(self) -> None:
+        """Stop polling and disconnect the handler."""
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer = None
+        self._handler = None
+
+    def _poll_messages(self) -> None:
+        """Poll the handler for pending messages."""
+        if self._handler is None:
+            return
+        try:
+            for level, logger_name, message in self._handler.get_pending():
+                self.add_message(level, logger_name, message)
+        except Exception:
+            # Qt silently swallows exceptions in timer callbacks.
+            # Log to stderr as a last resort.
+            import traceback
+            traceback.print_exc()
+
     def closeEvent(self, event):
-        """Clean up popup when widget is closed."""
+        """Clean up popup and handler when widget is closed."""
+        self.disconnect_handler()
         self._cleanup_popup()
         super().closeEvent(event)
 

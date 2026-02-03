@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-01-24T22:39:10'
+  last_verified: '2026-02-02T18:51:32'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -29,16 +29,10 @@ commits:
     - 6bffd2d3
   98c50432:
     title: 'fix: Update stale channel_configuration_manager references after PR #441 (#449)'
-    status: skipped
-    skip_reason: superseded
-    skip_justification: 'This commit fixes stale references after PR #441 which removed ChannelConfigurationManager.
-
-      arch_v2 keeps its own ChannelConfigurationManager which works differently, so this fix
-
-      doesn''t apply. Part of Config Refactor suite marked superseded.
-
-      '
-    skip_date: '2026-01-12'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: Absorbed into YAML config migration (Phase 3). All consumer references updated from ChannelConfigurationManager
+      to ChannelConfigService.
   '57378358':
     title: 'feat: Add acquisition throttling settings in Preferences (#444)'
     status: ported
@@ -78,20 +72,11 @@ commits:
       '
   3866b183:
     title: 'refactor: Remove legacy config managers, centralize in ConfigRepository (#441)'
-    status: skipped
-    skip_reason: superseded
-    skip_justification: 'arch_v2 has its own config management architecture using ChannelConfigurationManager
-
-      with JSON format and Pydantic models in core/config/channel_definitions.py. The
-
-      upstream ConfigRepository approach (YAML format, user_profiles/ structure) provides
-
-      similar functionality but with different design choices. Porting would require
-
-      significant refactoring with minimal functional benefit.
-
-      '
-    skip_date: '2026-01-12'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: Absorbed into YAML config migration (Phases 0-3). ConfigRepository ported, ChannelConfigService created as EventBus
+      wrapper. All 20+ consumer files migrated from ChannelMode to AcquisitionChannel and ChannelConfigurationManager to ChannelConfigService.
+      Old managers retained for ConfigurationManager legacy compat (Phase 4 cleanup pending).
   e9c6249b:
     title: 'fix: Backpressure byte tracking and multiprocessing resource cleanup (#442)'
     status: ported
@@ -116,22 +101,10 @@ commits:
     - e9c6249b
   13eff115:
     title: 'refactor: New design for illumination channel configs and acquisition configs (#417)'
-    status: skipped
-    skip_reason: superseded
-    skip_justification: 'arch_v2 already has equivalent Pydantic models in core/config/channel_definitions.py
-
-      (ChannelDefinition, ObjectiveChannelSettings, ChannelDefinitionsConfig) with similar
-
-      two-tier architecture. The upstream approach uses YAML and machine_configs/user_profiles/
-
-      structure while arch_v2 uses JSON with configurations/ structure. Both provide
-
-      type-safe config management; porting would be significant refactor for organizational
-
-      differences rather than new functionality.
-
-      '
-    skip_date: '2026-01-12'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: Absorbed into YAML config migration (Phase 0). Models ported to squid/core/config/models/ (AcquisitionChannel,
+      IlluminationChannelConfig, ConfocalConfig, etc.) with ConfigRepository in squid/core/config/repository.py.
   97f85d1b:
     title: 'feat: Add backpressure status bar widget for acquisition monitoring (#438)'
     status: ported
@@ -596,10 +569,10 @@ commits:
     notes: Reduced log noise in simulation mode
   cf4f1784:
     title: 'fix: User profile migration and spot detection mode fixes (#455)'
-    status: skipped
-    skip_reason: superseded
-    skip_justification: arch_v2 uses JSON/Pydantic config, not YAML/ConfigRepository user profiles
-    skip_date: '2026-01-24'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: Absorbed into YAML config migration (Phase 2). Migration script at tools/migrate_to_yaml_configs.py handles JSON-to-YAML
+      profile migration. SpotDetectionMode included in new LaserAFConfig model.
   e5cd025c:
     title: 'fix: Sync contrast limits and add user feedback for alignment errors (#454)'
     status: ported
@@ -608,19 +581,81 @@ commits:
     notes: Improved contrast sync and alignment error feedback
   82dafa6f:
     title: 'fix: Laser AF spot detection mode and None safety checks (#453)'
-    status: skipped
-    skip_reason: superseded
-    skip_justification: arch_v2 uses Pydantic with field validators for type-safe SpotDetectionMode enum, compute_displacement() pure function handles edge cases, and EventBus pattern prevents None configuration issues
-    skip_date: '2026-01-24'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'Absorbed into YAML config migration. New LaserAFConfig model in squid/core/config/models/laser_af_config.py includes
+      spot_detection_mode field with SpotDetectionMode enum and reference image serialization. All None-safety fixes ported:
+      x_reference guard in initialize_manual() and measure_displacement(), None configuration guard in set_microscope_mode(),
+      get_spot_detection_mode() accessor used in _detect_spot_in_frame().'
   fe927b0f:
     title: 'docs: Add comprehensive documentation for configuration system (#447)'
-    status: skipped
-    skip_reason: not-applicable
-    skip_justification: Documents upstream YAML config system, not arch_v2 JSON/Pydantic config
-    skip_date: '2026-01-24'
+    status: ported
   bf30b5c9:
     title: 'fix: XLight filter slider serial communication and add getter method (#472)'
     status: ported
     ported_in: 6eda4bdc
     ported_date: '2026-01-24'
     notes: Fixed write_and_check retry logic, set_filter_slider expected response (V->P), added get_filter_slider method
+  5a9d3c12:
+    title: 'fix: Replace Qt-based logging handler with fork-safe BufferingHandler (#487)'
+    status: in-progress
+    notes: 'BufferingHandler added to core/logging.py. Widget polling via QTimer.
+      main_window switched to new API. 5 unit tests pass.'
+  34920a51:
+    title: 'feat: Add illumination timeout (auto-shutoff) safety feature (#486)'
+    status: pending
+  ef375f28:
+    title: 'feat: Multi-port illumination control + laser port naming refactor (#481)'
+    status: pending
+  7fc1ce34:
+    title: 'refactor: Remove dead code ImageArrayDisplayWindow (#482)'
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: arch_v2 still actively uses ImageArrayDisplayWindow, PlateReader widgets, SINGLE_WINDOW, and USE_NAPARI_FOR_MULTIPOINT.
+      These are not dead code in the 3-layer architecture. Upstream removal reflects different usage patterns.
+    skip_date: '2026-02-02'
+  064ee07d:
+    title: 'refactor: Rename laser constants from wavelength-based to port-based names (#479)'
+    status: pending
+  da8f193a:
+    title: 'feat: Add Workflow Runner for automating scripts with acquisitions (#480)'
+    status: skipped
+    skip_reason: deferred
+    skip_justification: Large new feature (1952 lines). arch_v2 has OrchestratorController for protocol-based multi-round
+      fluidics-imaging workflows. Generic script runner is useful but not urgent. Should be its own focused effort.
+    skip_date: '2026-02-02'
+  9a74aea7:
+    title: 'feat: Add second filter wheel (W2) support (#478)'
+    status: pending
+  171aed9b:
+    title: 'feat: Multi-camera support foundation - schema, hardware bindings, channel config UI (#450)'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'Models absorbed into YAML config migration (Phase 0): CameraRegistryConfig, FilterWheelRegistryConfig, HardwareBindingsConfig,
+      multi-camera ConfigRepository extensions. UI dialogs for channel config editing not yet ported.'
+  1221c7e6:
+    title: 'feat: Add X-Light V1/V2 protocol support with auto-detection (#477)'
+    status: in-progress
+    notes: 'Protocol auto-detection implemented in xlight.py. Filter slider guards
+      added to confocal.py.'
+  996d53b3:
+    title: 'feat: Add zarr v3 saving with OME-NGFF compliant output (#474)'
+    status: skipped
+    skip_reason: deferred
+    skip_justification: Very large feature (5000+ lines). Adds Zarr v3 + TensorStore + OME-NGFF. Valuable but needs careful
+      architecture work to fit arch_v2 IO pipeline (StreamHandler, writers). Should be its own project.
+    skip_date: '2026-02-02'
+  5708299d:
+    title: 'feat: Display stage position on laser-based focus tab (#476)'
+    status: in-progress
+    notes: 'One-line fix: pass event_bus to imageDisplayWindow_focus constructor.
+      ImageDisplayWindow already handles StagePositionChanged events when event_bus
+      is provided.'
+  c99140b7:
+    title: 'fix: Use threaded operations for XLight controls to prevent UI freeze (#475)'
+    status: skipped
+    skip_reason: superseded
+    skip_justification: arch_v2 uses service layer pattern where threading is handled by the service (RLock-based), not the
+      driver or UI widget. XLight operations should go through SpinningDiskService which handles thread safety. If blocking
+      is still an issue, fix belongs in the service layer, not the widget.
+    skip_date: '2026-02-02'

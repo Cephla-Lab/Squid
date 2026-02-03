@@ -50,7 +50,7 @@ from squid.core.config.feature_flags import get_feature_flags
 
 # app specific libraries
 from squid.ui.widgets.nl5 import NL5Widget
-from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ChannelConfigService
 from squid.backend.managers import ConfigurationManager
 from squid.backend.managers import ContrastManager
 from squid.backend.controllers.autofocus import LaserAFSettingManager
@@ -209,8 +209,8 @@ class HighContentScreeningGui(QMainWindow):
         # Legacy self.fluidics removed - FluidicsService now accessed via self._services.get("fluidics")
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
-        self.channelConfigurationManager: ChannelConfigurationManager = (
-            microscope.channel_configuration_manager
+        self.channelConfigurationManager: ChannelConfigService = (
+            microscope.channel_config_service
         )
         self.laserAFSettingManager: LaserAFSettingManager = (
             microscope.laser_af_settings_manager
@@ -227,8 +227,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.liveController = self._controllers.live
             if self._controllers.objective_store:
                 self.objectiveStore = self._controllers.objective_store
-            if self._controllers.channel_config_manager:
-                self.channelConfigurationManager = self._controllers.channel_config_manager
+            if self._controllers.channel_config_service:
+                self.channelConfigurationManager = self._controllers.channel_config_service
 
         self.liveController_focus_camera: Optional[LiveController] = None
         self.streamHandler_focus_camera: Optional[StreamHandler] = None
@@ -254,7 +254,7 @@ class HighContentScreeningGui(QMainWindow):
                 handler=core_focus_stream,
             )
             self.imageDisplayWindow_focus = ImageDisplayWindow(
-                show_LUT=False, autoLevels=False
+                event_bus=self._ui_event_bus, show_LUT=False, autoLevels=False
             )
             self.displacementMeasurementController = (
                 core_displacement_measurement.DisplacementMeasurementController()
@@ -1539,10 +1539,9 @@ class HighContentScreeningGui(QMainWindow):
         if self.warningErrorWidget is None:
             return
 
-        from squid.ui.widgets.warning_error_widget import QtLoggingHandler
-        self._warning_handler = QtLoggingHandler()
-        self._warning_handler.signal_message_logged.connect(self.warningErrorWidget.add_message)
+        self._warning_handler = squid.core.logging.BufferingHandler()
         squid.core.logging.get_logger().addHandler(self._warning_handler)
+        self.warningErrorWidget.connect_handler(self._warning_handler)
         self.log.debug("Warning/error widget: connected logging handler")
 
     def _disconnect_warning_handler(self) -> None:
@@ -1556,11 +1555,8 @@ class HighContentScreeningGui(QMainWindow):
                 squid.core.logging.get_logger().removeHandler(self._warning_handler)
             except Exception:
                 pass
-            try:
-                if self.warningErrorWidget is not None:
-                    self._warning_handler.signal_message_logged.disconnect(self.warningErrorWidget.add_message)
-            except Exception:
-                pass
+            if self.warningErrorWidget is not None:
+                self.warningErrorWidget.disconnect_handler()
             self._warning_handler = None
             self.log.debug("Warning/error widget: disconnected logging handler")
 

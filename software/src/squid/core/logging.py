@@ -290,6 +290,62 @@ def remove_handler(handler: py_logging.Handler) -> None:
             pass
 
 
+class BufferingHandler(py_logging.Handler):
+    """Fork-compatible, thread-safe logging handler using queue.Queue.
+
+    Unlike QtLoggingHandler which uses Qt signals (not fork-safe), this handler
+    stores formatted log messages in a bounded queue that can be polled by any
+    consumer (GUI, headless, or forked subprocess).
+
+    Usage:
+        handler = BufferingHandler()
+        get_logger().addHandler(handler)
+
+        # In GUI: poll with QTimer
+        messages = handler.get_pending()
+        for level, logger_name, message in messages:
+            widget.add_message(level, logger_name, message)
+    """
+
+    def __init__(self, min_level: int = py_logging.WARNING, maxsize: int = 1000):
+        super().__init__()
+        import queue
+
+        self.setLevel(min_level)
+        self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._dropped_count = 0
+        self.setFormatter(
+            py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
+        )
+        self.addFilter(_thread_id_filter)
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of messages dropped due to queue overflow."""
+        return self._dropped_count
+
+    def emit(self, record: py_logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self._queue.put_nowait((record.levelno, record.name, msg))
+        except Exception:
+            # Queue full — drop the message
+            self._dropped_count += 1
+
+    def get_pending(self) -> list:
+        """Return all pending messages as list of (level, logger_name, message) tuples.
+
+        Thread-safe and non-blocking.
+        """
+        messages = []
+        while True:
+            try:
+                messages.append(self._queue.get_nowait())
+            except Exception:
+                break
+        return messages
+
+
 def get_current_log_file_path() -> Optional[str]:
     """
     Get the path to the current log file, if any file logging is configured.

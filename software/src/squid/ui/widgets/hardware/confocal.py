@@ -69,7 +69,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
-        self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
+        if self.xlight.has_dichroic_filter_slider:
+            self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self._event_bus is not None:
             self._subscriptions = auto_subscribe(self, self._event_bus)
@@ -193,7 +194,8 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_illumination_iris.setEnabled(enable)
         self.slider_emission_iris.setEnabled(enable)
         self.spinbox_emission_iris.setEnabled(enable)
-        self.dropdown_filter_slider.setEnabled(enable)
+        if self.xlight.has_dichroic_filter_slider:
+            self.dropdown_filter_slider.setEnabled(enable)
 
     def block_iris_control_signals(self, block: bool) -> None:
         self.slider_illumination_iris.blockSignals(block)
