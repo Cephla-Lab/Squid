@@ -114,34 +114,17 @@ if __name__ == "__main__":
         live_only_mode=args.live_only,
     )
 
-    file_menu = QMenu("File", win)
-
     microscope_utils_menu = QMenu("Utils", win)
 
     stage_utils_action = QAction("Stage Utils", win)
     stage_utils_action.triggered.connect(win.stageUtils.show)
     microscope_utils_menu.addAction(stage_utils_action)
 
-    try:
-        csw = win.cswWindow
-        if csw is not None:
-            csw_action = QAction("Camera Settings", win)
-            csw_action.triggered.connect(csw.show)
-            file_menu.addAction(csw_action)
-    except AttributeError:
-        pass
-
-    try:
-        csw_fc = win.cswfcWindow
-        if csw_fc is not None:
-            csw_fc_action = QAction("Camera Settings (Focus Camera)", win)
-            csw_fc_action.triggered.connect(csw_fc.show)
-            file_menu.addAction(csw_fc_action)
-    except AttributeError:
-        pass
+    workflow_runner_action = QAction("Workflow Runner...", win)
+    workflow_runner_action.triggered.connect(win._open_workflow_runner)
+    microscope_utils_menu.addAction(workflow_runner_action)
 
     menu_bar = win.menuBar()
-    menu_bar.addMenu(file_menu)
     menu_bar.addMenu(microscope_utils_menu)
 
     # Add MCP actions to the existing Settings menu created by the main window

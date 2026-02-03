@@ -382,13 +382,6 @@ class HighContentScreeningGui(QMainWindow):
         menubar = self.menuBar()
         menubar.setNativeMenuBar(False)
 
-        # Tools menu (workflow automation, etc.)
-        tools_menu = menubar.addMenu("Tools")
-        workflow_action = QAction("Workflow Runner...", self)
-        workflow_action.setMenuRole(QAction.NoRole)
-        workflow_action.triggered.connect(self._open_workflow_runner)
-        tools_menu.addAction(workflow_action)
-
         # Settings menu (exposed as self.settings_menu so entry-point scripts can add items)
         self.settings_menu = menubar.addMenu("Settings")
 
@@ -1660,15 +1653,6 @@ class HighContentScreeningGui(QMainWindow):
             self.tabbedImageDisplayWindow.close()
 
         self.microcontroller.close()
-        try:
-            self.cswWindow.closeForReal(event)
-        except AttributeError:
-            pass
-
-        try:
-            self.cswfcWindow.closeForReal(event)
-        except AttributeError:
-            pass
 
         # Save camera settings for next session
         try:

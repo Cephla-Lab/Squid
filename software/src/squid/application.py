@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
     from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
     from squid.backend.controllers.orchestrator import OrchestratorController
+    from squid.backend.controllers.workflow_runner import WorkflowRunnerController
     from squid.core.abc import AbstractFluidicsController
 
 
@@ -76,6 +77,7 @@ class Controllers:
     image_click: Optional["ImageClickController"] = None
     tracking: Optional["TrackingControllerCore"] = None
     orchestrator: Optional["OrchestratorController"] = None
+    workflow_runner: Optional["WorkflowRunnerController"] = None
 
 
 class ApplicationContext:
@@ -454,6 +456,10 @@ class ApplicationContext:
             multipoint=self._controllers.multipoint,
             scan_coordinates=self._controllers.scan_coordinates,
         )
+        # Workflow runner for script+acquisition automation
+        self._controllers.workflow_runner = self._build_workflow_runner_controller(
+            multipoint=self._controllers.multipoint,
+        )
 
         # Backend navigation state publisher (UI can subscribe via UIEventBus).
         try:
@@ -576,6 +582,22 @@ class ApplicationContext:
             imaging_executor=imaging_executor,
             fluidics_controller=fluidics_controller,
             scan_coordinates=scan_coordinates,
+        )
+
+    def _build_workflow_runner_controller(
+        self,
+        multipoint: Optional[MultiPointController],
+    ) -> Optional["WorkflowRunnerController"]:
+        """Create WorkflowRunnerController for script+acquisition automation."""
+        if multipoint is None:
+            self._log.info("WorkflowRunnerController requires MultiPointController - skipping")
+            return None
+
+        from squid.backend.controllers.workflow_runner import WorkflowRunnerController
+
+        return WorkflowRunnerController(
+            event_bus=event_bus,
+            multipoint_controller=multipoint,
         )
 
     def _create_microscope_mode_controller(self) -> MicroscopeModeController:
