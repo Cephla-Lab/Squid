@@ -661,11 +661,11 @@ commits:
       Filter slider guards added to confocal widget.'
   996d53b3:
     title: 'feat: Add zarr v3 saving with OME-NGFF compliant output (#474)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: Very large feature (5000+ lines). Adds Zarr v3 + TensorStore + OME-NGFF. Valuable but needs careful
-      architecture work to fit arch_v2 IO pipeline (StreamHandler, writers). Should be its own project.
-    skip_date: '2026-02-02'
+    status: ported
+    ported_date: '2026-02-02'
+    notes: 'Zarr v3 saving with TensorStore + OME-NGFF compliant output. Adapted from
+      Qt signals to EventBus. ZarrWriter in backend/io/writers/, SaveZarrJob in job_processing,
+      NDViewer zarr push-mode via events. 79 unit tests ported.'
   5708299d:
     title: 'feat: Display stage position on laser-based focus tab (#476)'
     status: ported

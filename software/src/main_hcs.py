@@ -87,7 +87,7 @@ if __name__ == "__main__":
         f"Squid Repository State: {squid.core.utils.hardware_utils.get_squid_repo_state_description()}"
     )
 
-    app = QApplication([])
+    app = QApplication(["Squid"])
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
     # This allows shutdown via ctrl+C even after the gui has popped up.

@@ -43,7 +43,6 @@ from _def import (
     USE_NAPARI_WELL_SELECTION,
     USE_PRIOR_STAGE,
     USE_TEMPLATE_MULTIPOINT,
-    USE_XERYON,
     WELLPLATE_FORMAT,
 )
 from squid.core.config.feature_flags import get_feature_flags
@@ -53,20 +52,15 @@ from squid.ui.widgets.nl5 import NL5Widget
 from squid.backend.managers import ChannelConfigService
 from squid.backend.managers import ConfigurationManager
 from squid.backend.managers import ContrastManager
-from squid.backend.controllers.autofocus import LaserAFSettingManager
 from squid.backend.controllers.live_controller import LiveController
 from squid.backend.managers import ObjectiveStore
 from squid.backend.io.stream_handler import StreamHandler
 from squid.backend.microcontroller import Microcontroller
-from squid.core.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
+from squid.core.abc import AbstractCamera, AbstractFilterWheelController
 import squid.backend.microscope
 import squid.ui.widgets as widgets
 import pyqtgraph.dockarea as dock
-import squid.core.abc
-import squid.backend.drivers.cameras.camera_utils
-import squid.core.config
 import squid.core.logging
-import squid.backend.drivers.stages.stage_utils
 from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
@@ -74,9 +68,7 @@ from squid.core.events import (
     event_bus,
     AcquisitionCoordinates,
     AcquisitionStarted,
-    MoveStageCommand,
     MoveStageToCommand,
-    HomeStageCommand,
     StopLiveCommand,
     ImageCoordinateClickedCommand,
     ClickToMoveEnabledChanged,
@@ -102,14 +94,10 @@ else:
     import squid.backend.drivers.stages.cephla
 from squid.backend.drivers.peripherals.piezo import PiezoStage
 
-if USE_XERYON:
-    pass
-
 # control.core.core was a shim - import classes directly
 from squid.ui.qt_stream_handler import QtStreamHandler
 from squid.ui.image_saver import ImageSaver
 from squid.ui.widgets.display.image_display import ImageDisplay, ImageDisplayWindow, ImageArrayDisplayWindow
-from squid.backend.managers.focus_map import FocusMap
 from squid.ui.widgets.display.navigation_viewer import NavigationViewer
 from typing import TYPE_CHECKING
 
@@ -134,8 +122,6 @@ from squid.ui.widgets.custom_multipoint import TemplateMultiPointWidget
 
 # Import helper modules for widget creation, layout, and signal connections
 from squid.ui.gui import widget_factory, layout_builder
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from squid.application import Controllers
@@ -187,7 +173,6 @@ class HighContentScreeningGui(QMainWindow):
         self._subscriptions = []
 
         self.microscope: squid.backend.microscope.Microscope = microscope
-        self.stage: AbstractStage = microscope.stage
         self.camera: AbstractCamera = microscope.camera
 
         # Restore cached camera settings from previous session
@@ -202,20 +187,15 @@ class HighContentScreeningGui(QMainWindow):
             microscope.addons.dragonfly
         )
         self.nl5: Optional[Any] = microscope.addons.nl5
-        self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
         self.emission_filter_wheel: Optional[AbstractFilterWheelController] = (
             microscope.addons.emission_filter_wheel
         )
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
-        self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
         # Legacy self.fluidics removed - FluidicsService now accessed via self._services.get("fluidics")
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
         self.channelConfigurationManager: ChannelConfigService = (
             microscope.channel_config_service
-        )
-        self.laserAFSettingManager: LaserAFSettingManager = (
-            microscope.laser_af_settings_manager
         )
         self.configurationManager: ConfigurationManager = (
             microscope.configuration_manager
@@ -395,6 +375,21 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             self.settings_menu.addAction(led_matrix_action)
 
+        # Channel configuration editors
+        self.settings_menu.addSeparator()
+
+        illum_action = QAction("Illumination Channels...", self)
+        illum_action.triggered.connect(self._open_illumination_config)
+        self.settings_menu.addAction(illum_action)
+
+        acq_action = QAction("Acquisition Channels...", self)
+        acq_action.triggered.connect(self._open_acquisition_config)
+        self.settings_menu.addAction(acq_action)
+
+        filter_action = QAction("Filter Wheels...", self)
+        filter_action.triggered.connect(self._open_filter_wheel_config)
+        self.settings_menu.addAction(filter_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -410,6 +405,9 @@ class HighContentScreeningGui(QMainWindow):
         # Add warning/error widget to status bar
         if self.warningErrorWidget is not None:
             self.statusBar().addWidget(self.warningErrorWidget)
+
+        # Capture stage service reference for alignment widget before dropping registries.
+        self._stage_service = self._services.get("stage") if self._services else None
 
         # Main window should act as a UI container: widgets talk via UIEventBus.
         # Drop direct access to the controllers/services registries after initialization.
@@ -449,15 +447,6 @@ class HighContentScreeningGui(QMainWindow):
                 event_bus=self._ui_event_bus,
             )
         # Acquisition display frames are routed through StreamHandler.capture (no separate acquisition stream).
-
-    def waitForMicrocontroller(
-        self, timeout: float = 5.0, error_message: Optional[str] = None
-    ) -> None:
-        try:
-            self.microcontroller.wait_till_operation_is_completed(timeout)
-        except TimeoutError as e:
-            self.log.error(error_message or "Microcontroller operation timed out!")
-            raise e
 
     def load_widgets(self) -> None:
         # Initialize all GUI widgets using helper functions
@@ -895,8 +884,6 @@ class HighContentScreeningGui(QMainWindow):
         # Napari connections (complex, kept as method)
         self.makeNapariConnections()
         self._connect_tab_signals()
-        self._connect_plot_signals()
-        self._connect_plate_view_signals()
         self._connect_well_selector_button()
         self._connect_laser_autofocus_signals()
         # Confocal widgets publish commands/events directly.
@@ -905,15 +892,6 @@ class HighContentScreeningGui(QMainWindow):
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
-
-    def _connect_plot_signals(self) -> None:
-        # EventBus subscriptions handled via @handles methods.
-        return
-
-    def _connect_plate_view_signals(self) -> None:
-        """Connect PlateViewInit and PlateViewUpdate events to the plate view widget."""
-        # EventBus subscriptions handled via @handles methods.
-        return
 
     def _connect_well_selector_button(self) -> None:
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):
@@ -1101,20 +1079,6 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleNapariTabs()
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
-    def setAcquisitionDisplayTabs(self, selected_configurations: list, Nz: int) -> None:
-        if self.performance_mode:
-            self.imageDisplayTabs.setCurrentIndex(0)
-        elif not self.live_only_mode:
-            configs = [config.name for config in selected_configurations]
-            print(configs)
-            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MOSAIC_DISPLAY") and Nz == 1:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-
-            elif self._feature_flags.is_enabled("USE_NAPARI_FOR_MULTIPOINT"):
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
-            else:
-                self.imageDisplayTabs.setCurrentIndex(0)
-
     def openLedMatrixSettings(self) -> None:
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
@@ -1132,6 +1096,44 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
+
+    def _open_illumination_config(self) -> None:
+        from squid.ui.widgets.channel_config_dialogs import IlluminationChannelConfiguratorDialog
+
+        config_repo = self.channelConfigurationManager.config_repo
+        dialog = IlluminationChannelConfiguratorDialog(config_repo, self)
+        dialog.signal_channels_updated.connect(self._on_channel_config_changed)
+        dialog.exec_()
+
+    def _open_acquisition_config(self) -> None:
+        from squid.ui.widgets.channel_config_dialogs import AcquisitionChannelConfiguratorDialog
+
+        config_repo = self.channelConfigurationManager.config_repo
+        dialog = AcquisitionChannelConfiguratorDialog(config_repo, self)
+        dialog.signal_channels_updated.connect(self._on_channel_config_changed)
+        dialog.exec_()
+
+    def _open_filter_wheel_config(self) -> None:
+        from squid.ui.widgets.channel_config_dialogs import FilterWheelConfiguratorDialog
+
+        config_repo = self.channelConfigurationManager.config_repo
+        dialog = FilterWheelConfiguratorDialog(config_repo, self)
+        dialog.signal_config_updated.connect(self._on_channel_config_changed)
+        dialog.exec_()
+
+    def _on_channel_config_changed(self) -> None:
+        """Refresh channel configs after dialog save."""
+        from squid.core.events import ChannelConfigurationsChanged
+
+        self.channelConfigurationManager.config_repo.clear_all_cache()
+        objective = getattr(self.objectiveStore, "current_objective", None) or ""
+        configs = self.channelConfigurationManager.get_configurations(objective)
+        self._ui_event_bus.publish(
+            ChannelConfigurationsChanged(
+                objective_name=objective,
+                configuration_names=[ch.name for ch in configs],
+            )
+        )
 
     def onTabChanged(self, index: int) -> None:
         is_flexible_acquisition = (
@@ -1256,10 +1258,6 @@ class HighContentScreeningGui(QMainWindow):
             self.napariLiveWidget.replace_well_selector(self.wellSelectionWidget)
         else:
             self.dock_wellSelection.addWidget(self.wellSelectionWidget)
-
-    def connectWellSelectionWidget(self):
-        # Legacy hook retained for older call sites; well selection is now event-driven.
-        return
 
     def toggleWellSelector(self, show: bool, remember_state: bool = True) -> None:
         if (
@@ -1468,7 +1466,7 @@ class HighContentScreeningGui(QMainWindow):
         try:
             napari_viewer = self.napariLiveWidget.viewer
             if napari_viewer is None:
-                self._log.warning("Napari viewer not available for alignment widget")
+                self.log.warning("Napari viewer not available for alignment widget")
                 return
 
             self.alignmentWidget = widgets.AlignmentWidget(napari_viewer)
@@ -1479,10 +1477,10 @@ class HighContentScreeningGui(QMainWindow):
                 self._alignment_provide_position
             )
             self.alignmentWidget.signal_offset_set.connect(
-                lambda x, y: self._log.info(f"Alignment offset set: ({x:.4f}, {y:.4f}) mm")
+                lambda x, y: self.log.info(f"Alignment offset set: ({x:.4f}, {y:.4f}) mm")
             )
             self.alignmentWidget.signal_offset_cleared.connect(
-                lambda: self._log.info("Alignment offset cleared")
+                lambda: self.log.info("Alignment offset cleared")
             )
 
             # Add alignment widget to napari viewer as a dock widget
@@ -1497,40 +1495,30 @@ class HighContentScreeningGui(QMainWindow):
             if multipoint is not None:
                 multipoint.set_alignment_widget(self.alignmentWidget)
             else:
-                self._log.debug("MultiPoint controller not available for alignment widget")
+                self.log.debug("MultiPoint controller not available for alignment widget")
 
-            self._log.info("Alignment widget created and connected")
+            self.log.info("Alignment widget created and connected")
         except Exception:
-            self._log.exception("Failed to setup alignment widget")
+            self.log.exception("Failed to setup alignment widget")
             self.alignmentWidget = None
 
     def _alignment_move_to(self, x_mm: float, y_mm: float) -> None:
         """Handle alignment widget request to move stage to position."""
-        try:
-            stage_service = self._services.get("stage") if self._services else None
-            if stage_service is not None:
-                stage_service.move_x_to(x_mm)
-                stage_service.move_y_to(y_mm)
-                stage_service.wait_for_idle()
-                self._log.debug(f"Alignment: moved to ({x_mm:.4f}, {y_mm:.4f})")
-            else:
-                self._log.warning("Stage service not available for alignment move")
-        except Exception:
-            self._log.exception("Error during alignment move")
+        self._ui_event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+        self.log.debug(f"Alignment: published move to ({x_mm:.4f}, {y_mm:.4f})")
 
     def _alignment_provide_position(self) -> None:
         """Provide current stage position to alignment widget."""
         try:
-            stage_service = self._services.get("stage") if self._services else None
-            if stage_service is not None and self.alignmentWidget is not None:
-                x_mm = stage_service.x_mm
-                y_mm = stage_service.y_mm
+            if self._stage_service is not None and self.alignmentWidget is not None:
+                x_mm = self._stage_service.x_mm
+                y_mm = self._stage_service.y_mm
                 self.alignmentWidget.set_current_position(x_mm, y_mm)
-                self._log.debug(f"Alignment: provided position ({x_mm:.4f}, {y_mm:.4f})")
+                self.log.debug(f"Alignment: provided position ({x_mm:.4f}, {y_mm:.4f})")
             else:
-                self._log.warning("Stage service or alignment widget not available")
+                self.log.warning("Stage service or alignment widget not available")
         except Exception:
-            self._log.exception("Error providing alignment position")
+            self.log.exception("Error providing alignment position")
 
     def showEvent(self, event) -> None:
         """Connect warning/error handler when window is shown."""
@@ -1639,6 +1627,16 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception("Error closing NDViewer tab during shutdown")
 
+        # Close napari viewers to prevent vispy/OpenGL thread hangs on exit
+        for attr in ("napariLiveWidget", "napariMultiChannelWidget",
+                     "napariMosaicDisplayWidget", "napariPlateViewWidget"):
+            widget = getattr(self, attr, None)
+            if widget is not None and hasattr(widget, "viewer"):
+                try:
+                    widget.viewer.close()
+                except Exception:
+                    pass
+
         try:
             self.imageSaver.close()
         except Exception:
@@ -1647,17 +1645,11 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplay.close()
         except Exception:
             pass
-        if not SINGLE_WINDOW:
-            self.imageDisplayWindow.close()
-            self.imageArrayDisplayWindow.close()
-            self.tabbedImageDisplayWindow.close()
-
-        self.microcontroller.close()
 
         # Save camera settings for next session
         try:
             save_camera_settings(self.camera)
         except Exception as e:
-            self._log.warning(f"Could not save camera settings: {e}")
+            self.log.warning(f"Could not save camera settings: {e}")
 
         event.accept()

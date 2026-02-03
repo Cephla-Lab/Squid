@@ -1035,9 +1035,9 @@ class TucsenCamera(AbstractCamera):
                 raise CameraError("Failed to set auto exposure")
 
         if enable:
-            self.log.info("Auto exposure enabled")
+            self._log.info("Auto exposure enabled")
         else:
-            self.log.info("Auto exposure disabled")
+            self._log.info("Auto exposure disabled")
 
     def _raw_set_analog_gain_fl26bw(self, gain: float):
         # For FL26BW model

@@ -1,178 +1,179 @@
 version: 1.0
 channels:
 - name: BF LED matrix full
-  enabled: true
+  enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 12.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix full
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
 - name: DF LED matrix
-  enabled: true
+  enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 22.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: DF LED matrix
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: DF LED matrix
+    intensity: 5.0
 - name: Fluorescence 405 nm Ex
   enabled: true
+  display_color: '#20ADF8'
   camera_settings:
     exposure_time_ms: 25.0
     gain_mode: 10.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: Fluorescence 405 nm Ex
-  z_offset_um: 0.0
-  display_color: '#20ADF8'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 405 nm Ex
+    intensity: 20.0
 - name: Fluorescence 488 nm Ex
   enabled: true
+  display_color: '#1FFF00'
   camera_settings:
     exposure_time_ms: 25.0
     gain_mode: 10.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: Fluorescence 488 nm Ex
-  z_offset_um: 0.0
-  display_color: '#1FFF00'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 488 nm Ex
+    intensity: 20.0
 - name: Fluorescence 638 nm Ex
   enabled: true
+  display_color: '#FF0000'
   camera_settings:
     exposure_time_ms: 25.0
     gain_mode: 10.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: Fluorescence 638 nm Ex
-  z_offset_um: 0.0
-  display_color: '#FF0000'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 638 nm Ex
+    intensity: 20.0
 - name: Fluorescence 561 nm Ex
   enabled: true
+  display_color: '#FFCF00'
   camera_settings:
     exposure_time_ms: 25.0
     gain_mode: 10.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: Fluorescence 561 nm Ex
-  z_offset_um: 0.0
-  display_color: '#FFCF00'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 561 nm Ex
+    intensity: 20.0
 - name: Fluorescence 730 nm Ex
   enabled: true
+  display_color: '#770000'
   camera_settings:
     exposure_time_ms: 25.0
     gain_mode: 10.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: Fluorescence 730 nm Ex
-  z_offset_um: 0.0
-  display_color: '#770000'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 730 nm Ex
+    intensity: 20.0
 - name: BF LED matrix low NA
-  enabled: true
+  enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 20.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: BF LED matrix low NA
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix low NA
+    intensity: 20.0
 - name: BF LED matrix left half
   enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 16.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix left half
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix left half
+    intensity: 5.0
 - name: BF LED matrix right half
   enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 16.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix right half
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix right half
+    intensity: 5.0
 - name: BF LED matrix top half
   enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 20.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: BF LED matrix top half
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix top half
+    intensity: 20.0
 - name: BF LED matrix bottom half
   enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 20.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 20.0
-    illumination_channel: BF LED matrix bottom half
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix bottom half
+    intensity: 20.0
 - name: BF LED matrix full_R
   enabled: false
+  display_color: '#FF0000'
   camera_settings:
     exposure_time_ms: 12.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix full_R
-  z_offset_um: 0.0
-  display_color: '#FF0000'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
 - name: BF LED matrix full_G
   enabled: false
+  display_color: '#00FF00'
   camera_settings:
     exposure_time_ms: 12.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix full_G
-  z_offset_um: 0.0
-  display_color: '#00FF00'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
 - name: BF LED matrix full_B
   enabled: false
+  display_color: '#0000FF'
   camera_settings:
     exposure_time_ms: 12.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix full_B
-  z_offset_um: 0.0
-  display_color: '#0000FF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
 - name: BF LED matrix full_RGB
   enabled: false
+  display_color: '#FFFFFF'
   camera_settings:
     exposure_time_ms: 12.0
     gain_mode: 0.0
-  illumination_settings:
-    intensity: 5.0
-    illumination_channel: BF LED matrix full_RGB
-  z_offset_um: 0.0
-  display_color: '#FFFFFF'
   filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
+channel_groups: []
