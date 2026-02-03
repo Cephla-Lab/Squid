@@ -497,10 +497,8 @@ class OrchestratorControlPanel(EventBusWidget):
 
     def _update_button_states(self, state: OrchestratorState) -> None:
         is_idle = state == OrchestratorState.IDLE
-        is_validating = state == OrchestratorState.VALIDATING
         is_running = state in (
-            OrchestratorState.RUNNING_FLUIDICS,
-            OrchestratorState.RUNNING_IMAGING,
+            OrchestratorState.RUNNING,
             OrchestratorState.WAITING_INTERVENTION,
         )
         is_paused = state == OrchestratorState.PAUSED
@@ -510,7 +508,7 @@ class OrchestratorControlPanel(EventBusWidget):
             OrchestratorState.ABORTED,
         )
 
-        self._load_btn.setEnabled(bool((is_idle or is_terminal) and not is_validating))
+        self._load_btn.setEnabled(bool(is_idle or is_terminal))
         can_start = (is_idle or is_terminal) and self._protocol_data is not None
         self._start_btn.setEnabled(bool(can_start))
         # Allow validation from idle or terminal states (after abort/complete/fail)
@@ -522,13 +520,9 @@ class OrchestratorControlPanel(EventBusWidget):
     def _update_status_style(self, state: str) -> None:
         colors = {
             "IDLE": "#666",
-            "VALIDATING": "#607D8B",
-            "INITIALIZING": "#2196F3",
-            "RUNNING_FLUIDICS": "#4CAF50",
-            "RUNNING_IMAGING": "#4CAF50",
+            "RUNNING": "#4CAF50",
             "WAITING_INTERVENTION": "#FF9800",
             "PAUSED": "#FF9800",
-            "RECOVERING": "#2196F3",
             "COMPLETED": "#4CAF50",
             "FAILED": "#f44336",
             "ABORTED": "#f44336",

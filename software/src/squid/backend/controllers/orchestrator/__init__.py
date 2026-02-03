@@ -9,6 +9,8 @@ from squid.backend.controllers.orchestrator.state import (
     RoundProgress,
     ExperimentProgress,
     Checkpoint,
+    StepResult,
+    StepOutcome,
     # Events
     OrchestratorStateChanged,
     OrchestratorProgress,
@@ -48,6 +50,10 @@ from squid.backend.controllers.orchestrator.warning_manager import (
 )
 from squid.backend.controllers.orchestrator.checkpoint import (
     CheckpointManager,
+    save_checkpoint,
+    load_checkpoint,
+    clear_checkpoint,
+    create_checkpoint,
 )
 from squid.backend.controllers.orchestrator.validation import (
     OperationEstimate,

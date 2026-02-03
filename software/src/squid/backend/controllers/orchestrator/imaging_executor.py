@@ -12,12 +12,12 @@ V2 Support:
 
 import os
 import threading
-from typing import Optional, TYPE_CHECKING, List, Union
+from typing import Callable, Optional, TYPE_CHECKING, List, Union
 
 import squid.core.logging
 from squid.core.config.test_timing import scale_duration
 from squid.core.events import EventBus, handles, auto_subscribe, auto_unsubscribe
-from squid.core.events import AcquisitionFinished
+from squid.core.events import AcquisitionFinished, AcquisitionProgress
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import ImagingConfig, ChannelConfigOverride
 
@@ -87,6 +87,10 @@ class ImagingExecutor:
         self._acquisition_error: Optional[str] = None
         self._current_experiment_id: Optional[str] = None
 
+        # FOV progress tracking
+        self._images_per_fov: int = 1
+        self._progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None
+
         # Event subscriptions
         self._subscriptions = auto_subscribe(self, event_bus)
 
@@ -115,6 +119,7 @@ class ImagingExecutor:
         round_index: int,
         resume_fov_index: int = 0,
         experiment_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None,
     ) -> bool:
         """Execute imaging using a V2 ImagingConfig.
 
@@ -129,6 +134,8 @@ class ImagingExecutor:
             resume_fov_index: FOV index to resume from (0 = start from beginning)
             experiment_id: Optional experiment ID override. If not provided,
                           auto-generates as "round_{round_index:03d}"
+            progress_callback: Optional callback ``(fov_index, total_fovs, eta_seconds)``
+                invoked when FOV progress changes during imaging.
 
         Returns:
             True if imaging completed successfully, False otherwise
@@ -139,6 +146,11 @@ class ImagingExecutor:
         self._acquisition_complete.clear()
         self._acquisition_success = False
         self._acquisition_error = None
+        self._images_per_fov = max(
+            1,
+            imaging_config.z_stack.planes * len(imaging_config.get_channel_names()),
+        )
+        self._progress_callback = progress_callback
 
         try:
             # Get channel names
@@ -380,6 +392,28 @@ class ImagingExecutor:
                     attr_name,
                     e,
                 )
+
+    @handles(AcquisitionProgress)
+    def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
+        """Convert image-level progress to FOV-level and invoke callback."""
+        if self._current_experiment_id is None:
+            return
+        if event.experiment_id != self._current_experiment_id:
+            return
+        if self._progress_callback is None:
+            return
+
+        images_per_fov = max(self._images_per_fov, 1)
+        current_image = max(event.current_fov, 1)
+        fov_index = (current_image - 1) // images_per_fov
+        total_images = max(event.total_fovs, 0)
+        total_fovs = (
+            (total_images + images_per_fov - 1) // images_per_fov
+            if total_images > 0
+            else 0
+        )
+
+        self._progress_callback(fov_index, total_fovs, event.eta_seconds)
 
     @handles(AcquisitionFinished)
     def _on_acquisition_finished(self, event: AcquisitionFinished) -> None:

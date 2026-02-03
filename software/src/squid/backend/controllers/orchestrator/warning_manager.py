@@ -354,19 +354,16 @@ class WarningManager:
                 ]
                 cleared_count = original_count - len(self._warnings)
 
-                # Update counts
-                for cat in categories:
-                    if cat in self._category_counts:
-                        del self._category_counts[cat]
-
-                # Recalculate severity and FOV counts
+                # Recompute ALL counts from remaining stored warnings
+                self._category_counts.clear()
                 self._severity_counts.clear()
                 self._fov_counts.clear()
                 for w in self._warnings:
+                    self._category_counts[w.category] += 1
                     self._severity_counts[w.severity] += 1
                     if w.fov_id:
                         self._fov_counts[w.fov_id] += 1
-                self._total_warning_count = sum(self._category_counts.values())
+                self._total_warning_count = len(self._warnings)
 
         # Publish event outside lock
         if self._event_bus and cleared_count > 0:

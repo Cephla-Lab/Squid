@@ -17,31 +17,27 @@ import threading
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
-from squid.core.config.test_timing import scale_duration
-from squid.core.events import EventBus, handles, AcquisitionProgress, LoadScanCoordinatesCommand
+from squid.core.events import EventBus, handles
 from squid.core.state_machine import StateMachine
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
     ExperimentProtocol,
     ProtocolLoader,
-    Round,
-    FluidicsStep,
-    ImagingStep,
-    InterventionStep,
     FailureAction,
 )
 
+from squid.backend.controllers.orchestrator import protocol_helpers
+from squid.backend.controllers.orchestrator.experiment_runner import ExperimentRunner
 from squid.backend.controllers.orchestrator.state import (
     OrchestratorState,
     ORCHESTRATOR_TRANSITIONS,
     ExperimentProgress,
-    RoundProgress,
     Checkpoint,
+    StepOutcome,
     OrchestratorStateChanged,
     OrchestratorProgress,
     OrchestratorRoundStarted,
     OrchestratorRoundCompleted,
-    OrchestratorInterventionRequired,
     OrchestratorError,
     StartOrchestratorCommand,
     StopOrchestratorCommand,
@@ -56,8 +52,8 @@ from squid.backend.controllers.orchestrator.state import (
     ValidateProtocolCommand,
     ProtocolValidationStarted,
     ProtocolValidationComplete,
-)
-from squid.backend.controllers.orchestrator.checkpoint import CheckpointManager
+)  # fmt: skip
+from squid.backend.controllers.orchestrator import checkpoint as ckpt
 from squid.backend.controllers.orchestrator.warnings import (
     WarningCategory,
     WarningSeverity,
@@ -85,20 +81,17 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         - Named resources (fluidics_protocols, imaging_configs, fov_sets)
         - Configurable error handling per failure type
 
-    State Machine:
-        IDLE -> INITIALIZING -> RUNNING_FLUIDICS <-> RUNNING_IMAGING
-                                    |                    |
-                                    v                    v
-                         WAITING_INTERVENTION <---+------+
-                                    |
-                                    v
-                                 PAUSED
-                                    |
-                                    v
-                               RECOVERING
-                                    |
-                                    v
-                    COMPLETED / FAILED / ABORTED
+    State Machine (7 states):
+        IDLE -> RUNNING <-> WAITING_INTERVENTION
+                  |                 |
+                  v                 v
+               PAUSED          PAUSED
+                  |
+                  v
+        COMPLETED / FAILED / ABORTED
+
+    Current activity (fluidics/imaging) tracked via _current_operation field
+    and published in OrchestratorProgress.current_operation.
 
     Usage:
         orchestrator = OrchestratorController(
@@ -162,10 +155,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._imaging_executor = imaging_executor
         self._fluidics_controller = fluidics_controller
         self._scan_coordinates = scan_coordinates
-        self._checkpoint_manager = CheckpointManager()
         self._protocol_loader = ProtocolLoader()
         self._resume_checkpoint: Optional[Checkpoint] = None
         self._warning_manager = WarningManager(event_bus=event_bus)
+
+        # Lock protecting shared mutable fields accessed from both
+        # the worker thread and EventBus thread (progress, skip flags,
+        # acquisition tracking, ETA).
+        self._progress_lock = threading.RLock()
 
         # Current experiment state
         self._protocol: Optional[ExperimentProtocol] = None
@@ -176,16 +173,12 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._progress = ExperimentProgress()
         self._cancel_token: Optional[CancelToken] = None
         self._resume_state: Optional[OrchestratorState] = None
-        self._current_acquisition_id: Optional[str] = None
-        self._latest_eta_seconds: Optional[float] = None
-        self._skip_to_round_index: Optional[int] = None
-        self._skip_current_round_now = False
-        self._last_checkpoint_fov: Optional[int] = None
-        self._current_images_per_fov: Optional[int] = None
+        self._current_operation: str = ""  # "initializing", "fluidics", "imaging", "intervention"
         self._protocol_path: Optional[str] = None
 
-        # Worker thread
+        # Worker thread and runner
         self._worker_thread: Optional[threading.Thread] = None
+        self._runner: Optional[ExperimentRunner] = None
         self._intervention_acknowledged = threading.Event()
 
     # ========================================================================
@@ -307,28 +300,28 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         if category == WarningCategory.FOCUS and self._protocol is not None:
             focus_action = self._protocol.error_handling.focus_failure
             if focus_action == FailureAction.PAUSE:
-                if self._is_in_state(OrchestratorState.RUNNING_IMAGING):
+                if self._is_in_state(OrchestratorState.RUNNING):
                     _log.warning(f"Focus failure (action=pause): {cmd.message}")
                     self.pause()
                     return
             elif focus_action == FailureAction.ABORT:
-                if self._is_in_state(OrchestratorState.RUNNING_IMAGING):
+                if self._is_in_state(OrchestratorState.RUNNING):
                     _log.error(f"Focus failure (action=abort): {cmd.message}")
                     self.abort()
                     return
             # For SKIP and WARN, just continue (warning already logged)
 
-        if should_pause and self._is_in_state(
-            OrchestratorState.RUNNING_IMAGING,
-            OrchestratorState.RUNNING_FLUIDICS,
-        ):
+        if should_pause and self._is_in_state(OrchestratorState.RUNNING):
             _log.warning(f"Warning threshold reached, pausing: {cmd.message}")
             self.pause()
 
     @handles(ValidateProtocolCommand)
     def _on_validate_protocol(self, cmd: ValidateProtocolCommand) -> None:
-        """Handle validate protocol command."""
-        # Allow validation from IDLE or terminal states (COMPLETED/FAILED/ABORTED)
+        """Handle validate protocol command.
+
+        Validation runs synchronously without changing orchestrator state.
+        """
+        # Allow validation from IDLE or terminal states
         if not self._is_in_state(
             OrchestratorState.IDLE,
             OrchestratorState.COMPLETED,
@@ -338,7 +331,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             _log.warning(f"Cannot validate protocol: orchestrator in state {self.state}")
             return
 
-        self._transition_to(OrchestratorState.VALIDATING)
         self._event_bus.publish(ProtocolValidationStarted(protocol_path=cmd.protocol_path))
 
         try:
@@ -400,40 +392,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                     warnings=(),
                 )
             )
-        finally:
-            if self.state == OrchestratorState.VALIDATING:
-                self._transition_to(OrchestratorState.IDLE)
-
-    @handles(AcquisitionProgress)
-    def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
-        """Track imaging progress for the active round."""
-        if self._current_acquisition_id is None:
-            return
-        if event.experiment_id != self._current_acquisition_id:
-            return
-        if self._progress.current_round is None:
-            return
-
-        images_per_fov = self._current_images_per_fov or 1
-        if images_per_fov <= 0:
-            images_per_fov = 1
-
-        current_image = max(event.current_fov, 1)
-        fov_index = (current_image - 1) // images_per_fov
-        total_images = max(event.total_fovs, 0)
-        total_fovs = (
-            (total_images + images_per_fov - 1) // images_per_fov
-            if total_images > 0
-            else 0
-        )
-
-        self._progress.current_round.imaging_fov_index = fov_index
-        self._progress.current_round.total_imaging_fovs = total_fovs
-        self._latest_eta_seconds = event.eta_seconds
-        if self._last_checkpoint_fov != fov_index:
-            self._save_checkpoint()
-            self._last_checkpoint_fov = fov_index
-        self._publish_progress()
 
     # ========================================================================
     # Public Control Methods
@@ -468,10 +426,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 _log.warning("Cannot start: orchestrator not idle")
                 return False
 
-        if not self._is_in_state(OrchestratorState.IDLE):
-            _log.warning("Cannot start: orchestrator not idle")
-            return False
-
         try:
             # Load protocol
             self._protocol = self._protocol_loader.load(protocol_path)
@@ -489,9 +443,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Load checkpoint if resuming (base_path should be experiment folder)
             self._resume_checkpoint = None
-            self._skip_to_round_index = None
             if resume_from_checkpoint:
-                self._resume_checkpoint = self._checkpoint_manager.load(base_path)
+                self._resume_checkpoint = ckpt.load_checkpoint(base_path)
                 if self._resume_checkpoint is None:
                     raise RuntimeError(f"No checkpoint found in {base_path}")
                 if (
@@ -507,8 +460,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Create cancel token
             self._cancel_token = CancelToken()
 
-            # Transition to initializing
-            self._transition_to(OrchestratorState.INITIALIZING)
+            # Transition to running
+            self._current_operation = "initializing"
+            self._transition_to(OrchestratorState.RUNNING)
 
             # Initialize progress
             self._progress = ExperimentProgress(
@@ -534,81 +488,86 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             return False
 
     def pause(self) -> bool:
-        """Pause the experiment."""
+        """Pause the experiment.
+
+        Uses _try_transition_to for atomic check-and-transition to avoid
+        race conditions between _is_in_state() and _transition_to().
+        """
+        if self._cancel_token is None:
+            return False
+
+        # Capture pre-pause state for resume, then attempt atomic transition
+        with self._lock:
+            pre_pause_state = self._state
+            if pre_pause_state not in (
+                OrchestratorState.RUNNING,
+                OrchestratorState.WAITING_INTERVENTION,
+            ):
+                return False
+
+        # Pause both executors (idempotent)
+        if self._imaging_executor is not None:
+            self._imaging_executor.pause()
+        if self._fluidics_controller is not None:
+            self._fluidics_controller.pause()
+        self._cancel_token.pause()
+
+        if not self._try_transition_to(OrchestratorState.PAUSED):
+            return False
+
+        self._resume_state = pre_pause_state
+        self._save_checkpoint()
+        return True
+
+    def resume(self) -> bool:
+        """Resume from pause.
+
+        Uses _try_transition_to for atomic check-and-transition.
+        """
+        if self._cancel_token is None:
+            return False
+
+        if not self._is_in_state(OrchestratorState.PAUSED):
+            return False
+
+        if self._imaging_executor is not None:
+            self._imaging_executor.resume()
+        if self._fluidics_controller is not None:
+            self._fluidics_controller.resume()
+        self._cancel_token.resume()
+
+        # Resume to previous state (RUNNING or WAITING_INTERVENTION)
+        resume_target = self._resume_state or OrchestratorState.RUNNING
+        if not self._try_transition_to(resume_target):
+            # Fallback: go to RUNNING
+            self._transition_to(OrchestratorState.RUNNING)
+        self._resume_state = None
+        return True
+
+    def abort(self) -> bool:
+        """Abort the experiment.
+
+        Signals cancellation; actual state transition happens in worker thread.
+        """
         if self._cancel_token is None:
             return False
 
         if self._is_in_state(
-            OrchestratorState.RUNNING_FLUIDICS,
-            OrchestratorState.RUNNING_IMAGING,
-            OrchestratorState.WAITING_INTERVENTION,
-        ):
-            self._resume_state = self.state
-            if (
-                self._is_in_state(OrchestratorState.RUNNING_IMAGING)
-                and self._imaging_executor is not None
-            ):
-                self._imaging_executor.pause()
-            if (
-                self._is_in_state(OrchestratorState.RUNNING_FLUIDICS)
-                and self._fluidics_controller is not None
-            ):
-                self._fluidics_controller.pause()
-            self._cancel_token.pause()
-            self._transition_to(OrchestratorState.PAUSED)
-            self._save_checkpoint()
-            return True
-
-        return False
-
-    def resume(self) -> bool:
-        """Resume from pause."""
-        if self._cancel_token is None:
-            return False
-
-        if self._is_in_state(OrchestratorState.PAUSED):
-            if self._imaging_executor is not None:
-                self._imaging_executor.resume()
-            if self._fluidics_controller is not None:
-                self._fluidics_controller.resume()
-            self._cancel_token.resume()
-
-            # FluidicsController will reset abort state when next protocol is run
-
-            if self._resume_state in (
-                OrchestratorState.RUNNING_FLUIDICS,
-                OrchestratorState.RUNNING_IMAGING,
-                OrchestratorState.WAITING_INTERVENTION,
-            ):
-                self._transition_to(self._resume_state)
-            else:
-                self._transition_to(OrchestratorState.RECOVERING)
-            self._resume_state = None
-            return True
-
-        return False
-
-    def abort(self) -> bool:
-        """Abort the experiment."""
-        if self._cancel_token is None:
-            return False
-
-        if not self._is_in_state(
             OrchestratorState.IDLE,
             OrchestratorState.COMPLETED,
             OrchestratorState.FAILED,
             OrchestratorState.ABORTED,
         ):
-            self._cancel_token.cancel("User abort")
+            return False
 
-            # Stop fluidics controller to interrupt any running protocol
-            if self._fluidics_controller is not None:
-                self._fluidics_controller.stop()
+        self._cancel_token.cancel("User abort")
 
-            # State transition happens in worker thread
-            return True
+        # Stop fluidics controller to interrupt any running protocol
+        if self._fluidics_controller is not None:
+            self._fluidics_controller.stop()
 
-        return False
+        # State transition happens in worker thread
+        return True
 
     @property
     def warning_manager(self) -> WarningManager:
@@ -638,15 +597,13 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         Returns:
             True if a warning threshold was reached (should pause)
         """
-        round_index = self._progress.current_round_index
-        round_name = ""
-        operation_type = ""
-        if self._progress.current_round:
-            round_name = self._progress.current_round.round_name
-            if self._is_in_state(OrchestratorState.RUNNING_IMAGING):
-                operation_type = "imaging"
-            elif self._is_in_state(OrchestratorState.RUNNING_FLUIDICS):
-                operation_type = "fluidics"
+        with self._progress_lock:
+            round_index = self._progress.current_round_index
+            round_name = ""
+            operation_type = ""
+            if self._progress.current_round:
+                round_name = self._progress.current_round.round_name
+                operation_type = self._current_operation
 
         should_pause = self._warning_manager.add_warning(
             category=category,
@@ -662,10 +619,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         )
 
         # If threshold reached, transition to PAUSED
-        if should_pause and self._is_in_state(
-            OrchestratorState.RUNNING_IMAGING,
-            OrchestratorState.RUNNING_FLUIDICS,
-        ):
+        if should_pause and self._is_in_state(OrchestratorState.RUNNING):
             _log.warning(f"Warning threshold reached, pausing: {message}")
             self.pause()
 
@@ -680,18 +634,26 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     def skip_current_round(self) -> bool:
         """Skip to the next round (takes effect after current round finishes)."""
-        if self._progress.current_round is None:
-            return False
-        self._skip_current_round_now = True
-        self._skip_to_round_index = self._progress.current_round_index + 1
+        with self._progress_lock:
+            if self._progress.current_round is None:
+                return False
+            if self._runner is not None:
+                self._runner._skip_current_round_now = True
+                self._runner._skip_to_round_index = self._progress.current_round_index + 1
         return True
 
     def skip_to_round(self, round_index: int) -> bool:
         """Skip ahead to a specific round index (0-based)."""
         if round_index < 0:
             return False
-        self._skip_to_round_index = round_index
+        with self._progress_lock:
+            if self._runner is not None:
+                self._runner._skip_to_round_index = round_index
         return True
+
+    def _set_operation(self, operation: str) -> None:
+        """Set current operation (called by ExperimentRunner)."""
+        self._current_operation = operation
 
     # ========================================================================
     # Protocol Initialization
@@ -706,147 +668,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 "Inline fluidics_protocols are not allowed. "
                 "Load protocols into FluidicsController separately and reference by name."
             )
-
-    def _load_fov_set(self, csv_path: str) -> None:
-        """Load FOV positions from CSV.
-
-        Expected columns: region, x (mm), y (mm) (optional: z (mm))
-
-        Args:
-            csv_path: Path to CSV file with FOV positions
-        """
-        import pandas as pd
-        from pathlib import Path
-
-        if not Path(csv_path).exists():
-            raise FileNotFoundError(f"FOV CSV file not found: {csv_path}")
-
-        df = pd.read_csv(csv_path)
-
-        # Normalize column names (handle variations)
-        col_map = {}
-        for col in df.columns:
-            col_lower = col.lower().strip()
-            if "region" in col_lower:
-                col_map["region"] = col
-            elif col_lower in ("x", "x_mm", "x (mm)") or ("x" in col_lower and "mm" in col_lower):
-                col_map["x"] = col
-            elif col_lower in ("y", "y_mm", "y (mm)") or ("y" in col_lower and "mm" in col_lower):
-                col_map["y"] = col
-
-        if not all(k in col_map for k in ["region", "x", "y"]):
-            raise ValueError(
-                f"CSV must have region, x (mm), y (mm) columns. Found: {list(df.columns)}"
-            )
-
-        region_fov_coordinates = {}
-        region_centers = {}
-
-        for region_id in df[col_map["region"]].unique():
-            region_points = df[df[col_map["region"]] == region_id]
-            coords = tuple(
-                (float(x), float(y))
-                for x, y in zip(region_points[col_map["x"]], region_points[col_map["y"]])
-            )
-            region_fov_coordinates[str(region_id)] = coords
-            region_centers[str(region_id)] = (
-                float(region_points[col_map["x"]].mean()),
-                float(region_points[col_map["y"]].mean()),
-            )
-
-        if self._scan_coordinates is not None and hasattr(self._scan_coordinates, "load_coordinates"):
-            self._scan_coordinates.load_coordinates(
-                region_fov_coordinates=region_fov_coordinates,
-                region_centers=region_centers,
-            )
-            self._event_bus.publish(
-                LoadScanCoordinatesCommand(
-                    region_fov_coordinates=region_fov_coordinates,
-                    region_centers=region_centers,
-                    apply=False,
-                )
-            )
-        else:
-            self._event_bus.publish(
-                LoadScanCoordinatesCommand(
-                    region_fov_coordinates=region_fov_coordinates,
-                    region_centers=region_centers,
-                )
-            )
-
-        _log.info(
-            f"Loaded {sum(len(c) for c in region_fov_coordinates.values())} FOVs "
-            f"from {len(region_fov_coordinates)} regions"
-        )
-
-    def _collect_experiment_configurations(self) -> list:
-        """Collect channel configurations referenced by protocol imaging configs."""
-        if self._protocol is None:
-            return []
-        if self._multipoint is None or not hasattr(self._multipoint, "channelConfigurationManager"):
-            return []
-        channel_manager = self._multipoint.channelConfigurationManager
-
-        current_objective = None
-        if hasattr(self._multipoint, "objectiveStore") and self._multipoint.objectiveStore:
-            current_objective = self._multipoint.objectiveStore.current_objective
-        if current_objective is None:
-            _log.warning("Cannot collect configurations: no current objective available")
-            return []
-
-        channel_names = []
-        seen = set()
-        for config in self._protocol.imaging_configs.values():
-            for name in config.get_channel_names():
-                if name not in seen:
-                    seen.add(name)
-                    channel_names.append(name)
-
-        configurations = []
-        for name in channel_names:
-            config = channel_manager.get_channel_configuration_by_name(current_objective, name)
-            if config is not None:
-                configurations.append(config)
-
-        if not configurations and channel_names:
-            _log.warning("Protocol channels did not match any configured channels")
-
-        return configurations
-
-    def _build_experiment_metadata(self) -> dict:
-        """Build protocol metadata for experiment folder."""
-        if self._protocol is None:
-            return {}
-
-        rounds_meta = []
-        for idx, round_ in enumerate(self._protocol.rounds):
-            step_types = []
-            for step in round_.steps:
-                if isinstance(step, FluidicsStep):
-                    step_types.append("fluidics")
-                elif isinstance(step, ImagingStep):
-                    step_types.append("imaging")
-                elif isinstance(step, InterventionStep):
-                    step_types.append("intervention")
-                else:
-                    step_types.append("unknown")
-            rounds_meta.append(
-                {
-                    "index": idx,
-                    "name": round_.name,
-                    "steps": step_types,
-                }
-            )
-
-        return {
-            "protocol": {
-                "name": self._protocol.name,
-                "version": self._protocol.version,
-                "path": self._protocol_path,
-            },
-            "rounds": rounds_meta,
-            "created_at": datetime.now().isoformat(),
-        }
 
     # ========================================================================
     # Worker Thread
@@ -872,7 +693,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 )
             else:
                 # Create experiment folder
-                configurations = self._collect_experiment_configurations()
+                configurations = protocol_helpers.collect_experiment_configurations(
+                    self._protocol, self._multipoint,
+                )
                 self._context = self._experiment_manager.start_experiment(
                     base_path=base_path,
                     experiment_id=self._experiment_label,
@@ -886,69 +709,47 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._warning_manager.experiment_id = self._experiment_id
                 self._experiment_path = self._context.experiment_path
                 if hasattr(self._experiment_manager, "write_experiment_metadata"):
-                    metadata = self._build_experiment_metadata()
+                    metadata = protocol_helpers.build_experiment_metadata(
+                        self._protocol, self._protocol_path,
+                    )
                     if metadata:
                         self._experiment_manager.write_experiment_metadata(
                             self._context,
                             metadata,
                         )
 
-            # Execute rounds
-            start_round = 0
-            resume_step_index = 0
-            resume_imaging_fov = 0
-            if self._resume_checkpoint is not None:
-                start_round = self._resume_checkpoint.round_index
-                resume_step_index = self._resume_checkpoint.step_index
-                resume_imaging_fov = self._resume_checkpoint.imaging_fov_index
+            # Create runner and execute
+            runner = ExperimentRunner(
+                protocol=self._protocol,
+                experiment_path=self._experiment_path,
+                experiment_id=self._experiment_id,
+                cancel_token=self._cancel_token,
+                event_bus=self._event_bus,
+                progress=self._progress,
+                progress_lock=self._progress_lock,
+                imaging_executor=self._imaging_executor,
+                fluidics_controller=self._fluidics_controller,
+                scan_coordinates=self._scan_coordinates,
+                experiment_manager=self._experiment_manager,
+                experiment_context=self._context,
+                protocol_path=self._protocol_path,
+                on_operation_change=self._set_operation,
+                on_progress=self._publish_progress,
+                on_checkpoint=self._save_checkpoint,
+                on_round_started=self._publish_round_started,
+                on_round_completed=self._publish_round_completed,
+                on_transition=self._transition_to,
+                on_pause=self.pause,
+                on_add_warning=self.add_warning,
+                intervention_acknowledged=self._intervention_acknowledged,
+            )
+            self._runner = runner
+            result = runner.run(resume_checkpoint=self._resume_checkpoint)
 
-            for round_idx in range(start_round, len(self._protocol.rounds)):
-                round_ = self._protocol.rounds[round_idx]
-                if self._cancel_token is not None:
-                    self._cancel_token.check_point()
-
-                # Update progress
-                self._progress.current_round_index = round_idx
-                self._progress.current_round = RoundProgress(
-                    round_index=round_idx,
-                    round_name=round_.name,
-                    started_at=datetime.now(),
-                )
-                self._progress.current_step_index = 0
-                self._latest_eta_seconds = None
-                self._last_checkpoint_fov = None
-
-                if (
-                    self._skip_to_round_index is not None
-                    and round_idx < self._skip_to_round_index
-                ):
-                    _log.info(f"Skipping round {round_idx} ({round_.name})")
-                    self._publish_round_completed(round_idx, round_.name, success=True, error="skipped")
-                    continue
-                if self._skip_to_round_index is not None and round_idx == self._skip_to_round_index:
-                    self._skip_to_round_index = None
-
-                # Execute round
-                skipped = self._execute_round(
-                    round_idx,
-                    round_,
-                    resume_step_index=resume_step_index if round_idx == start_round else 0,
-                    resume_imaging_fov=resume_imaging_fov if round_idx == start_round else 0,
-                )
-
-                # Mark round complete
-                self._progress.current_round.completed_at = datetime.now()
-                if skipped:
-                    self._publish_round_completed(
-                        round_idx, round_.name, success=True, error="skipped"
-                    )
-                else:
-                    self._publish_round_completed(round_idx, round_.name, success=True)
-
-            # Success
-            self._transition_to(OrchestratorState.COMPLETED)
-            self._experiment_manager.finalize_experiment(self._context, success=True)
-            self._checkpoint_manager.clear(self._experiment_path)
+            if result.outcome == StepOutcome.SUCCESS:
+                self._transition_to(OrchestratorState.COMPLETED)
+                self._experiment_manager.finalize_experiment(self._context, success=True)
+                ckpt.clear_checkpoint(self._experiment_path)
 
         except CancellationError:
             _log.info("Experiment aborted by user")
@@ -964,292 +765,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._experiment_manager.finalize_experiment(self._context, success=False)
 
         finally:
+            self._runner = None
             self._cancel_token = None
             self._context = None
             self._worker_thread = None
             self._resume_checkpoint = None
-
-    def _execute_round(
-        self,
-        round_idx: int,
-        round_: Round,
-        *,
-        resume_step_index: int = 0,
-        resume_imaging_fov: int = 0,
-    ) -> bool:
-        """Execute a single round using step-based execution."""
-        _log.info(f"Executing round {round_idx}: name={round_.name}, steps={len(round_.steps)}")
-        self._publish_round_started(round_idx, round_.name)
-
-        skipped = False
-        for step_idx, step in enumerate(round_.steps):
-            if step_idx < resume_step_index:
-                continue
-
-            if self._cancel_token is not None:
-                self._cancel_token.check_point()
-
-            # Update step progress in both ExperimentProgress and RoundProgress
-            self._progress.current_step_index = step_idx
-            if self._progress.current_round is not None:
-                self._progress.current_round.current_step_index = step_idx
-                self._progress.current_round.total_steps = len(round_.steps)
-            self._save_checkpoint()
-
-            try:
-                if isinstance(step, FluidicsStep):
-                    self._transition_to(OrchestratorState.RUNNING_FLUIDICS)
-                    self._execute_fluidics_step(round_idx, step)
-
-                elif isinstance(step, ImagingStep):
-                    self._transition_to(OrchestratorState.RUNNING_IMAGING)
-                    fov_resume = resume_imaging_fov if step_idx == resume_step_index else 0
-                    self._execute_imaging_step(round_idx, step, resume_fov=fov_resume)
-
-                elif isinstance(step, InterventionStep):
-                    self._wait_for_intervention(round_idx, step.message)
-
-            except CancellationError:
-                raise
-            except Exception as e:
-                self._handle_step_failure(step, e)
-
-            if self._skip_current_round_now:
-                self._skip_current_round_now = False
-                skipped = True
-                _log.info(f"Skipping remainder of round {round_idx} ({round_.name})")
-                break
-
-        # Update progress
-        self._publish_progress()
-        return skipped
-
-    def _execute_fluidics_step(self, round_idx: int, step: FluidicsStep) -> None:
-        """Execute a fluidics step.
-
-        Args:
-            round_idx: Index of the current round
-            step: FluidicsStep to execute
-        """
-        if self._progress.current_round is None or self._cancel_token is None:
-            return
-
-        protocol_name = step.protocol
-        _log.info(f"Round {round_idx}: Running fluidics protocol '{protocol_name}'")
-
-        if self._fluidics_controller is None:
-            # No fluidics controller - simulate
-            _log.debug(f"[SIMULATED] Fluidics protocol: {protocol_name}")
-            return
-
-        # Check for cancellation before starting
-        self._cancel_token.check_point()
-
-        # Start the protocol
-        success = self._fluidics_controller.run_protocol(protocol_name)
-        if not success:
-            raise RuntimeError(f"Failed to start fluidics protocol: {protocol_name}")
-
-        # Wait for protocol completion by polling controller state
-        import time
-        from squid.backend.controllers.fluidics_controller import FluidicsControllerState
-
-        poll_interval_s = scale_duration(0.1, min_seconds=0.01)
-        while True:
-            if self._cancel_token is not None:
-                self._cancel_token.check_point()
-
-            # Check controller state
-            state = self._fluidics_controller.state
-            if state in (
-                FluidicsControllerState.IDLE,
-                FluidicsControllerState.COMPLETED,
-                FluidicsControllerState.FAILED,
-                FluidicsControllerState.STOPPED,
-            ):
-                break
-
-            # Update progress based on controller's step tracking
-            if self._progress.current_round is not None:
-                self._progress.current_round.fluidics_step_index = self._fluidics_controller.current_step_index
-                self._progress.current_round.total_fluidics_steps = self._fluidics_controller.total_steps
-                self._publish_progress()
-
-            time.sleep(poll_interval_s)
-
-        terminal_state = self._fluidics_controller.last_terminal_state
-        last_result = self._fluidics_controller.last_result
-        if terminal_state == FluidicsControllerState.FAILED or (
-            last_result is not None and not last_result.success
-        ):
-            raise RuntimeError(f"Fluidics protocol '{protocol_name}' failed")
-        if terminal_state == FluidicsControllerState.STOPPED:
-            raise CancellationError(f"Fluidics protocol '{protocol_name}' was stopped")
-        if terminal_state is None:
-            _log.warning(
-                "Fluidics protocol '%s' finished without terminal state",
-                protocol_name,
-            )
-
-        _log.info(f"Round {round_idx}: Fluidics protocol '{protocol_name}' completed")
-
-    def _execute_imaging_step(
-        self,
-        round_idx: int,
-        step: ImagingStep,
-        *,
-        resume_fov: int = 0,
-    ) -> None:
-        """Execute an imaging step.
-
-        Args:
-            round_idx: Index of the current round
-            step: ImagingStep to execute
-            resume_fov: FOV index to resume from (for checkpoint recovery)
-        """
-        if self._progress.current_round is None or self._cancel_token is None:
-            return
-        if self._protocol is None:
-            return
-
-        # Get imaging config
-        config_name = step.config
-        if config_name not in self._protocol.imaging_configs:
-            raise RuntimeError(f"Imaging config '{config_name}' not found in protocol")
-        imaging_config = self._protocol.imaging_configs[config_name]
-        images_per_fov = max(
-            1,
-            imaging_config.z_stack.planes * len(imaging_config.get_channel_names()),
-        )
-        self._current_images_per_fov = images_per_fov
-
-        # Load FOV set if specified
-        if step.fovs != "default":
-            if step.fovs not in self._protocol.fov_sets:
-                raise RuntimeError(f"FOV set '{step.fovs}' not found in protocol")
-            csv_path = self._protocol.fov_sets[step.fovs]
-            self._load_fov_set(csv_path)
-
-        self._progress.current_round.imaging_fov_index = 0
-        self._progress.current_round.total_imaging_fovs = 0
-        self._progress.current_round.imaging_started = True
-        self._progress.current_round.imaging_completed = False
-        self._last_checkpoint_fov = None
-
-        # Create round subfolder for images
-        if hasattr(self._experiment_manager, "create_round_subfolder"):
-            round_path = self._experiment_manager.create_round_subfolder(
-                context=self._context,
-                round_name=f"round_{round_idx:03d}_{step.config}",
-            )
-        else:
-            round_path = self._experiment_path
-
-        round_dir_name = os.path.basename(round_path)
-        round_base_path = os.path.dirname(round_path)
-
-        # Calculate total FOVs
-        if self._scan_coordinates is not None:
-            total_fovs = sum(
-                len(coords)
-                for coords in self._scan_coordinates.region_fov_coordinates.values()
-            )
-            self._progress.current_round.total_imaging_fovs = total_fovs
-
-        _log.info(
-            f"Round {round_idx}: Imaging with config='{config_name}', "
-            f"channels={imaging_config.get_channel_names()}"
-        )
-
-        # Execute imaging via executor
-        if self._imaging_executor is not None:
-            self._current_acquisition_id = round_dir_name
-            try:
-                success = self._imaging_executor.execute_with_config(
-                    imaging_config=imaging_config,
-                    output_path=round_base_path,
-                    cancel_token=self._cancel_token,
-                    round_index=round_idx,
-                    resume_fov_index=resume_fov,
-                    experiment_id=round_dir_name,  # Match orchestrator's expected ID
-                )
-                if not success:
-                    raise RuntimeError(f"Imaging failed for round {round_idx}")
-            finally:
-                self._current_acquisition_id = None
-        else:
-            # No imaging executor - log and continue (for testing)
-            _log.debug(f"[SIMULATED] Imaging: config={config_name}")
-
-        self._progress.current_round.imaging_completed = True
-        self._publish_progress()
-
-    def _wait_for_intervention(self, round_idx: int, message: str) -> None:
-        """Wait for operator intervention."""
-        self._transition_to(OrchestratorState.WAITING_INTERVENTION)
-        self._intervention_acknowledged.clear()
-
-        self._event_bus.publish(
-            OrchestratorInterventionRequired(
-                experiment_id=self._experiment_id,
-                round_index=round_idx,
-                round_name=self._progress.current_round.round_name if self._progress.current_round else "",
-                message=message,
-            )
-        )
-
-        # Wait for acknowledgment
-        while not self._intervention_acknowledged.is_set():
-            if self._cancel_token is not None:
-                self._cancel_token.check_point()
-            self._intervention_acknowledged.wait(timeout=scale_duration(0.5, min_seconds=0.05))
-
-    def _handle_step_failure(self, step, error: Exception) -> None:
-        """Handle step failure according to error_handling config.
-
-        Args:
-            step: The step that failed
-            error: The exception that was raised
-        """
-        if self._protocol is None:
-            raise error
-
-        error_handling = self._protocol.error_handling
-
-        # Determine which failure action to use
-        if isinstance(step, FluidicsStep):
-            action = error_handling.fluidics_failure
-            failure_type = "fluidics"
-        elif isinstance(step, ImagingStep):
-            action = error_handling.imaging_failure
-            failure_type = "imaging"
-        else:
-            # Intervention steps don't have configurable failure handling
-            raise error
-
-        _log.warning(f"{failure_type.capitalize()} step failed: {error}")
-
-        if action == FailureAction.ABORT:
-            raise error
-        elif action == FailureAction.PAUSE:
-            _log.info(f"Pausing after {failure_type} step failure (error_handling={action.value})")
-            self.pause()
-            # Wait for user to resume or cancel
-            # check_point() will block until resumed, or raise CancellationError if cancelled
-            if self._cancel_token is not None:
-                self._cancel_token.check_point()
-            # If we get here, user resumed - continue to next step
-            _log.info(f"Resumed after {failure_type} step failure, continuing to next step")
-        elif action == FailureAction.SKIP:
-            _log.info(f"Skipping failed {failure_type} step (error_handling={action.value})")
-            # Don't raise - continue to next step
-        elif action == FailureAction.WARN:
-            self.add_warning(
-                category=WarningCategory.EXECUTION,
-                severity=WarningSeverity.MEDIUM,
-                message=f"{failure_type.capitalize()} step failed: {error}",
-            )
-            # Don't raise - continue to next step
 
     # ========================================================================
     # Progress and Checkpoint
@@ -1260,38 +780,42 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         if not self._experiment_path or self._protocol is None:
             return
 
-        if self._progress.current_round is None:
-            return
+        with self._progress_lock:
+            if self._progress.current_round is None:
+                return
 
-        checkpoint = self._checkpoint_manager.create_checkpoint(
-            protocol_name=self._protocol.name,
-            protocol_version=self._protocol.version,
-            experiment_id=self._experiment_id,
-            experiment_path=self._experiment_path,
-            round_index=self._progress.current_round_index,
-            step_index=self._progress.current_step_index,
-            imaging_fov_index=max(self._progress.current_round.imaging_fov_index, 0),
-        )
+            checkpoint = ckpt.create_checkpoint(
+                protocol_name=self._protocol.name,
+                protocol_version=self._protocol.version,
+                experiment_id=self._experiment_id,
+                experiment_path=self._experiment_path,
+                round_index=self._progress.current_round_index,
+                step_index=self._progress.current_step_index,
+                imaging_fov_index=max(self._progress.current_round.imaging_fov_index, 0),
+            )
 
-        self._checkpoint_manager.save(checkpoint, self._experiment_path)
+        ckpt.save_checkpoint(checkpoint, self._experiment_path)
 
     def _publish_progress(self) -> None:
         """Publish progress event."""
-        current_round_name = ""
-        if self._progress.current_round is not None:
-            current_round_name = self._progress.current_round.round_name
+        with self._progress_lock:
+            current_round_name = ""
+            if self._progress.current_round is not None:
+                current_round_name = self._progress.current_round.round_name
 
-        self._event_bus.publish(
-            OrchestratorProgress(
+            eta = self._runner._latest_eta_seconds if self._runner is not None else None
+
+            event = OrchestratorProgress(
                 experiment_id=self._experiment_id,
                 current_round=self._progress.current_round_index + 1,
                 total_rounds=self._progress.total_rounds,
                 current_round_name=current_round_name,
                 progress_percent=self._progress.progress_percent,
-                eta_seconds=self._latest_eta_seconds,
-                current_operation=self.state.name.lower(),
+                eta_seconds=eta,
+                current_operation=self._current_operation,
             )
-        )
+
+        self._event_bus.publish(event)
 
     def _publish_round_started(self, round_idx: int, name: str) -> None:
         """Publish round started event."""

@@ -256,6 +256,29 @@ class StateMachine(ABC, Generic[S]):
         """
         pass
 
+    def _try_transition_to(self, new_state: S) -> bool:
+        """Attempt transition, return False on invalid (instead of raising).
+
+        Atomically checks validity and performs the transition if valid.
+        This avoids the race condition of separate _is_in_state() + _transition_to() calls.
+
+        Args:
+            new_state: The target state
+
+        Returns:
+            True if transition was performed, False if invalid
+        """
+        with self._lock:
+            valid_targets = self._transitions.get(self._state, frozenset())
+            if new_state not in valid_targets:
+                return False
+            old_state = self._state
+            self._state = new_state
+            _log.debug(f"[{self._name}] {old_state.name} -> {new_state.name}")
+
+        self._fire_state_change(old_state, new_state)
+        return True
+
     def _can_transition_to(self, target_state: S) -> bool:
         """Check if transition to target state is valid from current state.
 

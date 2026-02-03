@@ -28,9 +28,10 @@ from __future__ import annotations
 import threading
 import time
 from enum import Enum, auto
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 import squid.core.logging
+from squid.core.config.test_timing import scale_duration
 from squid.core.events import (
     EventBus,
     handles,
@@ -57,6 +58,7 @@ from squid.core.protocol.fluidics_protocol import (
     FluidicsProtocolFile,
 )
 from squid.core.state_machine import StateMachine
+from squid.core.utils.cancel_token import CancelToken
 
 if TYPE_CHECKING:
     from squid.backend.services import FluidicsService, ServiceRegistry
@@ -381,6 +383,57 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
         self._worker_thread.start()
 
         return True
+
+    def run_protocol_blocking(
+        self,
+        name: str,
+        cancel_token: Optional[CancelToken] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[FluidicsProtocolCompleted]:
+        """Run a protocol and block until completion.
+
+        Wraps the async ``run_protocol()`` with a polling loop that waits for
+        the controller to reach a terminal state.  Supports cooperative
+        cancellation via *cancel_token* and periodic progress reporting via
+        *progress_callback(current_step, total_steps)*.
+
+        Args:
+            name: Name of the protocol to run.
+            cancel_token: Optional CancelToken for cooperative cancellation.
+            progress_callback: Optional callback ``(current_step, total_steps)``
+                invoked each poll cycle while the protocol is running.
+
+        Returns:
+            The ``FluidicsProtocolCompleted`` event produced by the worker
+            thread, or ``None`` if the protocol could not be started.
+        """
+        if not self.run_protocol(name):
+            return None
+
+        poll_interval_s = scale_duration(0.1, min_seconds=0.01)
+        terminal_states = frozenset(
+            {
+                FluidicsControllerState.IDLE,
+                FluidicsControllerState.COMPLETED,
+                FluidicsControllerState.FAILED,
+                FluidicsControllerState.STOPPED,
+            }
+        )
+
+        while True:
+            if cancel_token is not None:
+                cancel_token.check_point()
+
+            state = self.state
+            if state in terminal_states:
+                break
+
+            if progress_callback is not None:
+                progress_callback(self.current_step_index, self.total_steps)
+
+            time.sleep(poll_interval_s)
+
+        return self._last_result
 
     def pause(self) -> bool:
         """Pause protocol execution at the next checkpoint.

@@ -12,55 +12,72 @@ from typing import Any, Dict, Optional, Set
 from squid.core.events import Event
 
 
-class OrchestratorState(Enum):
-    """State machine states for the experiment orchestrator."""
+class StepOutcome(Enum):
+    """Outcome of a step execution."""
 
-    # Initial/terminal states
+    SUCCESS = auto()
+    SKIPPED = auto()
+    FAILED = auto()
+    CANCELLED = auto()
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """Uniform result from executing any step (fluidics, imaging, intervention).
+
+    Replaces the mixed pattern of exceptions + booleans + side effects with
+    a single return type that callers can inspect.
+    """
+
+    outcome: StepOutcome
+    step_type: str  # "fluidics", "imaging", "intervention"
+    error_message: Optional[str] = None
+
+    @property
+    def success(self) -> bool:
+        """True if the step completed normally or was skipped."""
+        return self.outcome in (StepOutcome.SUCCESS, StepOutcome.SKIPPED)
+
+    @staticmethod
+    def ok(step_type: str) -> "StepResult":
+        return StepResult(outcome=StepOutcome.SUCCESS, step_type=step_type)
+
+    @staticmethod
+    def skipped(step_type: str, reason: str = "") -> "StepResult":
+        return StepResult(outcome=StepOutcome.SKIPPED, step_type=step_type, error_message=reason)
+
+    @staticmethod
+    def failed(step_type: str, message: str) -> "StepResult":
+        return StepResult(outcome=StepOutcome.FAILED, step_type=step_type, error_message=message)
+
+    @staticmethod
+    def cancelled(step_type: str, message: str = "") -> "StepResult":
+        return StepResult(outcome=StepOutcome.CANCELLED, step_type=step_type, error_message=message)
+
+
+class OrchestratorState(Enum):
+    """State machine states for the experiment orchestrator.
+
+    Simplified 7-state model. The current activity (fluidics, imaging, etc.)
+    is tracked via OrchestratorProgress.current_operation rather than
+    separate states.
+    """
+
     IDLE = auto()  # Not running, ready to start
-    VALIDATING = auto()  # Validating protocol before start
+    RUNNING = auto()  # Actively executing (fluidics, imaging, etc.)
+    WAITING_INTERVENTION = auto()  # Paused for operator intervention
+    PAUSED = auto()  # User-requested pause
     COMPLETED = auto()  # Experiment finished successfully
     FAILED = auto()  # Experiment finished with error
     ABORTED = auto()  # Experiment was aborted by user
-
-    # Active states
-    INITIALIZING = auto()  # Setting up experiment
-    RUNNING_FLUIDICS = auto()  # Executing fluidics step
-    RUNNING_IMAGING = auto()  # Executing imaging acquisition
-    WAITING_INTERVENTION = auto()  # Paused for operator intervention
-    PAUSED = auto()  # User-requested pause
-    RECOVERING = auto()  # Recovering from pause or error
 
 
 # Valid state transitions
 ORCHESTRATOR_TRANSITIONS: Dict[OrchestratorState, Set[OrchestratorState]] = {
     OrchestratorState.IDLE: {
-        OrchestratorState.INITIALIZING,
-        OrchestratorState.VALIDATING,
+        OrchestratorState.RUNNING,
     },
-    OrchestratorState.VALIDATING: {
-        OrchestratorState.IDLE,
-        OrchestratorState.FAILED,
-    },
-    OrchestratorState.INITIALIZING: {
-        OrchestratorState.RUNNING_FLUIDICS,
-        OrchestratorState.RUNNING_IMAGING,
-        OrchestratorState.WAITING_INTERVENTION,
-        OrchestratorState.COMPLETED,  # Allow completion if protocol has no actionable operations
-        OrchestratorState.FAILED,
-        OrchestratorState.ABORTED,
-    },
-    OrchestratorState.RUNNING_FLUIDICS: {
-        OrchestratorState.RUNNING_IMAGING,
-        OrchestratorState.RUNNING_FLUIDICS,  # Next fluidics step
-        OrchestratorState.WAITING_INTERVENTION,
-        OrchestratorState.PAUSED,
-        OrchestratorState.COMPLETED,
-        OrchestratorState.FAILED,
-        OrchestratorState.ABORTED,
-    },
-    OrchestratorState.RUNNING_IMAGING: {
-        OrchestratorState.RUNNING_FLUIDICS,
-        OrchestratorState.RUNNING_IMAGING,  # Next imaging round
+    OrchestratorState.RUNNING: {
         OrchestratorState.WAITING_INTERVENTION,
         OrchestratorState.PAUSED,
         OrchestratorState.COMPLETED,
@@ -68,24 +85,16 @@ ORCHESTRATOR_TRANSITIONS: Dict[OrchestratorState, Set[OrchestratorState]] = {
         OrchestratorState.ABORTED,
     },
     OrchestratorState.WAITING_INTERVENTION: {
-        OrchestratorState.RUNNING_FLUIDICS,
-        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.RUNNING,
         OrchestratorState.PAUSED,
+        OrchestratorState.COMPLETED,
+        OrchestratorState.FAILED,
         OrchestratorState.ABORTED,
     },
     OrchestratorState.PAUSED: {
-        OrchestratorState.RECOVERING,
-        OrchestratorState.RUNNING_FLUIDICS,
-        OrchestratorState.RUNNING_IMAGING,
+        OrchestratorState.RUNNING,
         OrchestratorState.WAITING_INTERVENTION,
-        OrchestratorState.COMPLETED,  # Allow completion if last operation finishes while paused
-        OrchestratorState.FAILED,  # Allow failure if error occurs while paused
-        OrchestratorState.ABORTED,
-    },
-    OrchestratorState.RECOVERING: {
-        OrchestratorState.RUNNING_FLUIDICS,
-        OrchestratorState.RUNNING_IMAGING,
-        OrchestratorState.WAITING_INTERVENTION,
+        OrchestratorState.COMPLETED,
         OrchestratorState.FAILED,
         OrchestratorState.ABORTED,
     },

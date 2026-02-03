@@ -31,6 +31,7 @@ from squid.core.events import (
     EventBus,
     event_bus,
     AcquisitionFinished,
+    FluidicsProtocolCompleted,
     LoadScanCoordinatesCommand,
 )
 from squid.core.utils.cancel_token import CancelToken
@@ -344,6 +345,14 @@ def mock_fluidics_controller():
     mock.current_step_index = 0
     mock.total_steps = 0
     mock.is_available = True
+    # Default: blocking call returns a successful completion event
+    mock.run_protocol_blocking.return_value = FluidicsProtocolCompleted(
+        protocol_name="mock",
+        success=True,
+        steps_completed=0,
+        total_steps=0,
+        error_message=None,
+    )
     return mock
 
 
@@ -525,7 +534,7 @@ class TestFullExperimentExecution:
         state_changes = [
             e for e in event_collector if isinstance(e, OrchestratorStateChanged)
         ]
-        assert len(state_changes) >= 2  # At least INITIALIZING and COMPLETED
+        assert len(state_changes) >= 2  # At least RUNNING and COMPLETED
 
         round_started = [
             e for e in event_collector if isinstance(e, OrchestratorRoundStarted)
@@ -848,7 +857,7 @@ class TestControlFlow:
         timeout = 2.0
         start = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start < timeout
         ):
             time.sleep(0.05)
@@ -864,10 +873,7 @@ class TestControlFlow:
         # Resume
         result = orchestrator.resume()
         assert result is True
-        assert orchestrator.state in (
-            OrchestratorState.RUNNING_IMAGING,
-            OrchestratorState.RECOVERING,
-        )
+        assert orchestrator.state == OrchestratorState.RUNNING
 
         # Let imaging complete
         imaging_event.set()
@@ -907,7 +913,6 @@ class TestControlFlow:
         start = time.time()
         while (
             orchestrator.state == OrchestratorState.IDLE
-            or orchestrator.state == OrchestratorState.INITIALIZING
         ) and time.time() - start < timeout:
             time.sleep(0.05)
 
@@ -1436,7 +1441,7 @@ class TestCheckpointAndRecovery:
         timeout = 2.0
         start_time = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start_time < timeout
         ):
             time.sleep(0.05)
@@ -1681,7 +1686,7 @@ class TestWarningSystem:
         timeout = 2.0
         start = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start < timeout
         ):
             time.sleep(0.05)
@@ -1745,7 +1750,7 @@ class TestWarningSystem:
         timeout = 2.0
         start = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start < timeout
         ):
             time.sleep(0.05)
@@ -1793,7 +1798,7 @@ class TestWarningSystem:
         timeout = 2.0
         start = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start < timeout
         ):
             time.sleep(0.05)
@@ -1953,9 +1958,9 @@ class TestEventVerification:
             e for e in event_collector if isinstance(e, OrchestratorStateChanged)
         ]
 
-        # Should have: IDLE -> INITIALIZING -> RUNNING_IMAGING -> COMPLETED
+        # Should have: IDLE -> RUNNING -> COMPLETED
         states = [e.new_state for e in state_changes]
-        assert "INITIALIZING" in states
+        assert "RUNNING" in states
         assert "COMPLETED" in states
 
         # COMPLETED should be last
@@ -2116,8 +2121,7 @@ class TestCommandHandlers:
         orchestrator.abort = mock_abort
 
         # Set state to running so abort can be called
-        orchestrator._transition_to(OrchestratorState.INITIALIZING)
-        orchestrator._transition_to(OrchestratorState.RUNNING_IMAGING)
+        orchestrator._transition_to(OrchestratorState.RUNNING)
 
         # Publish stop command
         backend_ctx.event_bus.publish(StopOrchestratorCommand())
@@ -2151,7 +2155,7 @@ class TestCommandHandlers:
         timeout = 2.0
         start = time.time()
         while (
-            orchestrator.state != OrchestratorState.RUNNING_IMAGING
+            orchestrator.state != OrchestratorState.RUNNING
             and time.time() - start < timeout
         ):
             time.sleep(0.05)
@@ -2269,7 +2273,7 @@ class TestErrorHandling:
     ):
         """Test handling of fluidics controller failure."""
         orchestrator = orchestrator_with_mocks
-        mock_fluidics_controller.run_protocol.return_value = False
+        mock_fluidics_controller.run_protocol_blocking.return_value = None
 
         orchestrator.start_experiment(
             protocol_path=fluidics_heavy_protocol,
@@ -2522,15 +2526,11 @@ class TestStateMachine:
         """Test that only valid state transitions are allowed."""
         orchestrator = orchestrator_with_mocks
 
-        # IDLE -> INITIALIZING is valid
-        orchestrator._transition_to(OrchestratorState.INITIALIZING)
-        assert orchestrator.state == OrchestratorState.INITIALIZING
+        # IDLE -> RUNNING is valid
+        orchestrator._transition_to(OrchestratorState.RUNNING)
+        assert orchestrator.state == OrchestratorState.RUNNING
 
-        # INITIALIZING -> RUNNING_IMAGING is valid
-        orchestrator._transition_to(OrchestratorState.RUNNING_IMAGING)
-        assert orchestrator.state == OrchestratorState.RUNNING_IMAGING
-
-        # RUNNING_IMAGING -> PAUSED is valid
+        # RUNNING -> PAUSED is valid
         orchestrator._transition_to(OrchestratorState.PAUSED)
         assert orchestrator.state == OrchestratorState.PAUSED
 
@@ -2544,12 +2544,11 @@ class TestStateMachine:
         # IDLE is not running
         assert orchestrator.is_running is False
 
-        # INITIALIZING is running
-        orchestrator._transition_to(OrchestratorState.INITIALIZING)
+        # RUNNING is running
+        orchestrator._transition_to(OrchestratorState.RUNNING)
         assert orchestrator.is_running is True
 
-        # PAUSED is running
-        orchestrator._transition_to(OrchestratorState.RUNNING_IMAGING)
+        # PAUSED is running (still active experiment)
         orchestrator._transition_to(OrchestratorState.PAUSED)
         assert orchestrator.is_running is True
 

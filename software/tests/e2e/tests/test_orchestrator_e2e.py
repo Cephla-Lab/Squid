@@ -401,7 +401,7 @@ class TestEventVerification:
 
         # Check state transitions include expected states
         states = [e.new_state for e in result.state_changes]
-        assert "INITIALIZING" in states
+        assert "RUNNING" in states
         assert "COMPLETED" in states
 
     def test_round_events_published(

@@ -84,16 +84,12 @@ class TestWarningHandling:
         # Wait until the orchestrator starts running
         deadline = time.time() + 30
         while time.time() < deadline:
-            if sim.orchestrator.state in (
-                OrchestratorState.RUNNING_IMAGING,
-                OrchestratorState.RUNNING_FLUIDICS,
-            ):
+            if sim.orchestrator.state == OrchestratorState.RUNNING:
                 break
             time.sleep(0.1)
-        assert sim.orchestrator.state in (
-            OrchestratorState.RUNNING_IMAGING,
-            OrchestratorState.RUNNING_FLUIDICS,
-        ), "Orchestrator did not enter a running state"
+        assert sim.orchestrator.state == OrchestratorState.RUNNING, (
+            "Orchestrator did not enter a running state"
+        )
 
         sim.publish(
             SetWarningThresholdsCommand(
