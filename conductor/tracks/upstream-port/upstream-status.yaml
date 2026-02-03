@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-02-02T19:30:00'
+  last_verified: '2026-02-02T23:00:00'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -631,11 +631,13 @@ commits:
       Legacy wavelength names kept as aliases. D3/D4 non-sequential mapping documented.'
   da8f193a:
     title: 'feat: Add Workflow Runner for automating scripts with acquisitions (#480)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: Large new feature (1952 lines). arch_v2 has OrchestratorController for protocol-based multi-round
-      fluidics-imaging workflows. Generic script runner is useful but not urgent. Should be its own focused effort.
-    skip_date: '2026-02-02'
+    status: ported
+    ported_in: d96b9034
+    ported_date: '2026-02-02'
+    notes: 'Ported to 3-layer architecture as WorkflowRunnerController (StateMachine + EventBus + CancelToken).
+      Models in backend/controllers/workflow_runner/models.py, state machine in state.py, controller in
+      workflow_runner_controller.py. UI dialog in ui/widgets/workflow/workflow_runner_dialog.py. DI wired in
+      application.py. 46 unit tests. experiment_id filtering prevents cross-talk with OrchestratorController.'
   9a74aea7:
     title: 'feat: Add second filter wheel (W2) support (#478)'
     status: ported
