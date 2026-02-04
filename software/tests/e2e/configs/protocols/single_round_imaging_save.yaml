@@ -10,7 +10,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   bf_single_save:
     description: "Single plane brightfield with saving"
     channels:
@@ -29,5 +29,5 @@ rounds:
   - name: "Imaging"
     steps:
       - step_type: imaging
-        config: bf_single_save
+        protocol: bf_single_save
         fovs: main

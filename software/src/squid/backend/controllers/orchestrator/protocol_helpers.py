@@ -128,7 +128,7 @@ def collect_experiment_configurations(
 
     channel_names: List[str] = []
     seen: set = set()
-    for config in protocol.imaging_configs.values():
+    for config in protocol.imaging_protocols.values():
         for name in config.get_channel_names():
             if name not in seen:
                 seen.add(name)

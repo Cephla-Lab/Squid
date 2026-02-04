@@ -11,9 +11,9 @@ from squid.core.protocol.step import (
     InterventionStep,
 )
 
-# Imaging configuration
-from squid.core.protocol.imaging_config import (
-    ImagingConfig,
+# Imaging protocol (canonical module)
+from squid.core.protocol.imaging_protocol import (
+    ImagingProtocol,
     ChannelConfigOverride,
     ZStackConfig,
     FocusConfig,
@@ -51,8 +51,8 @@ __all__ = [
     "FluidicsStep",
     "ImagingStep",
     "InterventionStep",
-    # Imaging config
-    "ImagingConfig",
+    # Imaging protocol
+    "ImagingProtocol",
     "ChannelConfigOverride",
     "ZStackConfig",
     "FocusConfig",

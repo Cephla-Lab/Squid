@@ -5,7 +5,7 @@ name: "V2 Minimal Test"
 version: "2.0"
 description: "Minimal V2 protocol for basic testing"
 
-imaging_configs:
+imaging_protocols:
   standard:
     description: "Single channel imaging"
     channels:
@@ -19,4 +19,4 @@ rounds:
   - name: "Round 1"
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard

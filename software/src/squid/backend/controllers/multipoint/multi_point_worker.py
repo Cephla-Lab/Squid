@@ -244,6 +244,7 @@ class MultiPointWorker:
             self.base_path or "", self.experiment_ID or ""
         )
         self.selected_configurations = acquisition_parameters.selected_configurations
+        self.acquisition_order = getattr(acquisition_parameters, "acquisition_order", "channel_first")
         self._acquisition_parameters = acquisition_parameters  # Store for start callback
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
@@ -1795,94 +1796,10 @@ class MultiPointWorker:
             focus_lock_paused = self._autofocus_executor.pause_focus_lock()
 
         try:
-            for z_level in range(self.NZ):
-                # Use fov_id if provided (new system), otherwise fall back to legacy format
-                if fov_id is not None:
-                    if attempt == 1:
-                        file_ID = f"{fov_id}_{z_level:0{FILE_ID_PADDING}}"
-                    else:
-                        file_ID = f"{fov_id}_attempt{attempt:02d}_{z_level:0{FILE_ID_PADDING}}"
-                else:
-                    file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
-
-                acquire_pos: squid.core.abc.Pos = self._stage_service.get_position()
-                metadata: Dict[str, float] = {
-                    "x": acquire_pos.x_mm,
-                    "y": acquire_pos.y_mm,
-                    "z": acquire_pos.z_mm,
-                }
-                self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
-
-                if (
-                    z_level == 0
-                    and (self.do_reflection_af or self.do_autofocus)
-                    and self.Nt > 1
-                ):
-                    self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
-
-                # laser af characterization mode
-                if (
-                    self.laser_auto_focus_controller
-                    and self.laser_auto_focus_controller.characterization_mode
-                ):
-                    image: np.ndarray = self.laser_auto_focus_controller.get_image()
-                    saving_path: str = os.path.join(
-                        current_path, file_ID + "_laser af camera" + ".bmp"
-                    )
-                    iio.imwrite(saving_path, image)
-
-                # iterate through selected modes
-                for config_idx, config in enumerate(self.selected_configurations):
-                    self.handle_z_offset(config, True)
-
-                    # acquire image
-                    with self._timing.get_timer("acquire_camera_image"):
-                        if self._is_rgb_config(config):
-                            self.acquire_rgb_image(
-                                config, file_ID, current_path, z_level, region_id, fov,
-                                fov_id=fov_id,
-                            )
-                        else:
-                            self.acquire_camera_image(
-                                config,
-                                file_ID,
-                                current_path,
-                                z_level,
-                                region_id=region_id,
-                                fov=fov,
-                                config_idx=config_idx,
-                                fov_id=fov_id,
-                            )
-
-                    self.handle_z_offset(config, False)
-
-                    current_image: int = (
-                        fov * self.NZ * len(self.selected_configurations)
-                        + z_level * len(self.selected_configurations)
-                        + config_idx
-                        + 1
-                    )
-                    # Publish progress events via ProgressTracker
-                    self._progress_tracker.update(
-                        current_fov=current_image,
-                        total_fovs=self.total_scans,
-                        current_region=getattr(self, "_current_region", 1),
-                        total_regions=getattr(self, "_total_regions", 1),
-                        current_timepoint=self.time_point + 1,
-                        total_timepoints=self.Nt,
-                        current_channel=config.name,
-                    )
-
-                # updates coordinates df
-                self.update_coordinates_dataframe(
-                    region_id, z_level, acquire_pos, fov, fov_id=fov_id
-                )
-                # check if the acquisition should be aborted
-                if self._abort_requested.is_set():
-                    self.handle_acquisition_abort(current_path)
-
-                if z_level < self.NZ - 1:
-                    self.move_z_for_stack()
+            if self.acquisition_order == "z_first":
+                self._acquire_z_first(region_id, current_path, fov, fov_id, attempt)
+            else:
+                self._acquire_channel_first(region_id, current_path, fov, fov_id, attempt)
             # update FOV counter after completing all z-levels for this FOV
             self.af_fov_count += 1
             self._progress_tracker.af_fov_count = self.af_fov_count
@@ -1891,6 +1808,182 @@ class MultiPointWorker:
                 self.move_z_back_after_stack()
             if focus_lock_paused:
                 self._autofocus_executor.resume_focus_lock()
+
+    def _acquire_channel_first(
+        self,
+        region_id: str,
+        current_path: str,
+        fov: int,
+        fov_id: Optional[str],
+        attempt: int,
+    ) -> None:
+        """Acquire all channels at each z-level before moving to the next z-level."""
+        for z_level in range(self.NZ):
+            file_ID = self._make_file_id(region_id, fov, z_level, fov_id, attempt)
+
+            acquire_pos: squid.core.abc.Pos = self._stage_service.get_position()
+            self._log.info(
+                f"Acquiring image: ID={file_ID}, "
+                f"Metadata={{x: {acquire_pos.x_mm}, y: {acquire_pos.y_mm}, z: {acquire_pos.z_mm}}}"
+            )
+
+            if (
+                z_level == 0
+                and (self.do_reflection_af or self.do_autofocus)
+                and self.Nt > 1
+            ):
+                self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
+
+            self._save_laser_af_characterization(current_path, file_ID)
+
+            for config_idx, config in enumerate(self.selected_configurations):
+                self.handle_z_offset(config, True)
+
+                with self._timing.get_timer("acquire_camera_image"):
+                    if self._is_rgb_config(config):
+                        self.acquire_rgb_image(
+                            config, file_ID, current_path, z_level, region_id, fov,
+                            fov_id=fov_id,
+                        )
+                    else:
+                        self.acquire_camera_image(
+                            config, file_ID, current_path, z_level,
+                            region_id=region_id, fov=fov,
+                            config_idx=config_idx, fov_id=fov_id,
+                        )
+
+                self.handle_z_offset(config, False)
+
+                current_image = (
+                    fov * self.NZ * len(self.selected_configurations)
+                    + z_level * len(self.selected_configurations)
+                    + config_idx
+                    + 1
+                )
+                self._progress_tracker.update(
+                    current_fov=current_image,
+                    total_fovs=self.total_scans,
+                    current_region=getattr(self, "_current_region", 1),
+                    total_regions=getattr(self, "_total_regions", 1),
+                    current_timepoint=self.time_point + 1,
+                    total_timepoints=self.Nt,
+                    current_channel=config.name,
+                )
+
+            self.update_coordinates_dataframe(
+                region_id, z_level, acquire_pos, fov, fov_id=fov_id
+            )
+
+            if self._abort_requested.is_set():
+                self.handle_acquisition_abort(current_path)
+
+            if z_level < self.NZ - 1:
+                self.move_z_for_stack()
+
+    def _acquire_z_first(
+        self,
+        region_id: str,
+        current_path: str,
+        fov: int,
+        fov_id: Optional[str],
+        attempt: int,
+    ) -> None:
+        """Acquire all z-levels for each channel before moving to the next channel."""
+        num_configs = len(self.selected_configurations)
+
+        for config_idx, config in enumerate(self.selected_configurations):
+            # Prepare z-stack position at the start of each channel
+            if self.NZ > 1 and config_idx > 0:
+                # Return to starting z for this channel's z-stack
+                self.move_z_back_after_stack()
+                self.prepare_z_stack()
+
+            for z_level in range(self.NZ):
+                file_ID = self._make_file_id(region_id, fov, z_level, fov_id, attempt)
+
+                acquire_pos: squid.core.abc.Pos = self._stage_service.get_position()
+                self._log.info(
+                    f"Acquiring image: ID={file_ID}, "
+                    f"Metadata={{x: {acquire_pos.x_mm}, y: {acquire_pos.y_mm}, z: {acquire_pos.z_mm}}}"
+                )
+
+                if (
+                    z_level == 0
+                    and config_idx == 0
+                    and (self.do_reflection_af or self.do_autofocus)
+                    and self.Nt > 1
+                ):
+                    self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
+
+                self._save_laser_af_characterization(current_path, file_ID)
+                self.handle_z_offset(config, True)
+
+                with self._timing.get_timer("acquire_camera_image"):
+                    if self._is_rgb_config(config):
+                        self.acquire_rgb_image(
+                            config, file_ID, current_path, z_level, region_id, fov,
+                            fov_id=fov_id,
+                        )
+                    else:
+                        self.acquire_camera_image(
+                            config, file_ID, current_path, z_level,
+                            region_id=region_id, fov=fov,
+                            config_idx=config_idx, fov_id=fov_id,
+                        )
+
+                self.handle_z_offset(config, False)
+
+                current_image = (
+                    fov * self.NZ * num_configs
+                    + config_idx * self.NZ
+                    + z_level
+                    + 1
+                )
+                self._progress_tracker.update(
+                    current_fov=current_image,
+                    total_fovs=self.total_scans,
+                    current_region=getattr(self, "_current_region", 1),
+                    total_regions=getattr(self, "_total_regions", 1),
+                    current_timepoint=self.time_point + 1,
+                    total_timepoints=self.Nt,
+                    current_channel=config.name,
+                )
+
+                self.update_coordinates_dataframe(
+                    region_id, z_level, acquire_pos, fov, fov_id=fov_id
+                )
+
+                if self._abort_requested.is_set():
+                    self.handle_acquisition_abort(current_path)
+
+                if z_level < self.NZ - 1:
+                    self.move_z_for_stack()
+
+    def _make_file_id(
+        self,
+        region_id: str,
+        fov: int,
+        z_level: int,
+        fov_id: Optional[str],
+        attempt: int,
+    ) -> str:
+        """Generate file ID string for an acquisition frame."""
+        if fov_id is not None:
+            if attempt == 1:
+                return f"{fov_id}_{z_level:0{FILE_ID_PADDING}}"
+            else:
+                return f"{fov_id}_attempt{attempt:02d}_{z_level:0{FILE_ID_PADDING}}"
+        return f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+
+    def _save_laser_af_characterization(self, current_path: str, file_ID: str) -> None:
+        """Save laser AF characterization image if in characterization mode."""
+        if (
+            self.laser_auto_focus_controller
+            and self.laser_auto_focus_controller.characterization_mode
+        ):
+            image = self.laser_auto_focus_controller.get_image()
+            saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
+            iio.imwrite(saving_path, image)
 
     def _select_config(self, config: AcquisitionChannel) -> None:
         self._apply_channel_mode(config)

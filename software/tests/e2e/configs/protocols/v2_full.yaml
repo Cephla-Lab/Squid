@@ -10,7 +10,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   dapi_only:
     description: "DAPI reference imaging"
     channels:
@@ -62,7 +62,7 @@ rounds:
       - step_type: intervention
         message: "Verify sample is properly mounted and in focus"
       - step_type: imaging
-        config: dapi_only
+        protocol: dapi_only
 
   # Hybridization rounds with repeat
   - name: "Hybridization Round {i}"
@@ -73,7 +73,7 @@ rounds:
       - step_type: fluidics
         protocol: stringent_wash
       - step_type: imaging
-        config: fish_multichannel
+        protocol: fish_multichannel
       - step_type: fluidics
         protocol: strip
 
@@ -81,6 +81,6 @@ rounds:
   - name: "Final QC"
     steps:
       - step_type: imaging
-        config: quick_check
+        protocol: quick_check
       - step_type: intervention
         message: "Review acquisition quality before completing experiment"

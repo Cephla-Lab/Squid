@@ -15,7 +15,7 @@ error_handling:
 
 # NOTE: Fluidics protocols are loaded separately into the FluidicsController.
 # This protocol references named fluidics protocols by name only.
-imaging_configs:
+imaging_protocols:
   fish_standard:
     description: "Standard FISH imaging"
     channels:
@@ -39,7 +39,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 2
   - name: "Round 2"
@@ -49,7 +49,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 3
   - name: "Round 3"
@@ -59,7 +59,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 4
   - name: "Round 4"
@@ -69,7 +69,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 5
   - name: "Round 5"
@@ -79,7 +79,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 6 - with operator intervention
   - name: "Round 6"
@@ -91,7 +91,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 7
   - name: "Round 7"
@@ -101,7 +101,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 8
   - name: "Round 8"
@@ -111,7 +111,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 9
   - name: "Round 9"
@@ -121,7 +121,7 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 
   # Round 10 - final round
   - name: "Round 10"
@@ -131,4 +131,4 @@ rounds:
       - step_type: fluidics
         protocol: final_wash
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard

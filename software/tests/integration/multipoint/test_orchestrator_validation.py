@@ -48,7 +48,7 @@ version: "2.0"
 name: "Test Protocol"
 description: "A simple test protocol"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: ["BF"]
     z_stack:
@@ -61,7 +61,7 @@ rounds:
   - name: "Round 1"
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
     protocol_path = tmp_path / "test_protocol.yaml"
     protocol_path.write_text(protocol_content)
@@ -76,7 +76,7 @@ version: "2.0"
 name: "Invalid Channel Protocol"
 description: "Protocol with invalid channels"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: ["NONEXISTENT_CHANNEL_XYZ"]
     z_stack:
@@ -86,7 +86,7 @@ rounds:
   - name: "Round 1"
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
     protocol_path = tmp_path / "invalid_channel_protocol.yaml"
     protocol_path.write_text(protocol_content)
@@ -130,7 +130,7 @@ class TestProtocolValidatorIntegration:
                 "name": "Test",
                 "version": "2.0",
                 "description": "",
-                "imaging_configs": {
+                "imaging_protocols": {
                     "standard": {
                         "channels": [valid_channel],
                         "z_stack": {"planes": 1},
@@ -140,7 +140,7 @@ class TestProtocolValidatorIntegration:
                 "rounds": [
                     {
                         "name": "Round 1",
-                        "steps": [{"step_type": "imaging", "config": "standard"}],
+                        "steps": [{"step_type": "imaging", "protocol": "standard"}],
                     }
                 ],
             }
@@ -164,7 +164,7 @@ class TestProtocolValidatorIntegration:
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["THIS_CHANNEL_DOES_NOT_EXIST"],
                     "z_stack": {"planes": 1},
@@ -174,7 +174,7 @@ class TestProtocolValidatorIntegration:
             "rounds": [
                 {
                     "name": "Round 1",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 }
             ],
         }
@@ -207,7 +207,7 @@ class TestValidationEstimates:
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 5},
@@ -217,7 +217,7 @@ class TestValidationEstimates:
             "rounds": [
                 {
                     "name": "Round 1",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 }
             ],
         }
@@ -241,7 +241,7 @@ class TestValidationEstimates:
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 1},
@@ -251,7 +251,7 @@ class TestValidationEstimates:
             "rounds": [
                 {
                     "name": "Round 1",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 }
             ],
         }
@@ -275,7 +275,7 @@ class TestValidationEstimates:
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "bf": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 3},
@@ -295,15 +295,15 @@ class TestValidationEstimates:
             "rounds": [
                 {
                     "name": "Round 1",
-                    "steps": [{"step_type": "imaging", "config": "bf"}],
+                    "steps": [{"step_type": "imaging", "protocol": "bf"}],
                 },
                 {
                     "name": "Round 2",
-                    "steps": [{"step_type": "imaging", "config": "dapi"}],
+                    "steps": [{"step_type": "imaging", "protocol": "dapi"}],
                 },
                 {
                     "name": "Round 3",
-                    "steps": [{"step_type": "imaging", "config": "gfp"}],
+                    "steps": [{"step_type": "imaging", "protocol": "gfp"}],
                 },
             ],
         }
@@ -396,7 +396,7 @@ class TestOperationEstimates:
             "name": "Test",
             "version": "2.0",
             "description": "",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF", "DAPI"],
                     "z_stack": {"planes": 5},
@@ -406,7 +406,7 @@ class TestOperationEstimates:
             "rounds": [
                 {
                     "name": "Imaging Round",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 }
             ],
         }

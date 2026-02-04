@@ -12,7 +12,7 @@ from squid.core.protocol import (
     InterventionStep,
     ProtocolLoader,
     ProtocolValidationError,
-    ImagingConfig,
+    ImagingProtocol,
     ZStackConfig,
     FocusConfig,
     ChannelConfigOverride,
@@ -28,13 +28,13 @@ class TestV2ProtocolSchema:
         """Test creating a minimal valid V2 protocol."""
         protocol = ExperimentProtocol(
             name="Test Protocol",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
-                    steps=[ImagingStep(config="standard")],
+                    steps=[ImagingStep(protocol="standard")],
                 )
             ],
         )
@@ -55,9 +55,9 @@ class TestV2ProtocolSchema:
 
     def test_imaging_step(self):
         """Test V2 imaging step creation (references named config)."""
-        step = ImagingStep(config="fish_standard", fovs="main_grid")
+        step = ImagingStep(protocol="fish_standard", fovs="main_grid")
         assert step.step_type == "imaging"
-        assert step.config == "fish_standard"
+        assert step.protocol == "fish_standard"
         assert step.fovs == "main_grid"
 
     def test_intervention_step(self):
@@ -69,7 +69,7 @@ class TestV2ProtocolSchema:
     def test_imaging_config_z_planes_validation(self):
         """Test imaging config z_stack planes must be >= 1."""
         with pytest.raises(ValueError, match="planes must be >= 1"):
-            ImagingConfig(
+            ImagingProtocol(
                 channels=["DAPI"],
                 z_stack=ZStackConfig(planes=0),
             )
@@ -77,7 +77,7 @@ class TestV2ProtocolSchema:
     def test_imaging_config_step_um_validation(self):
         """Test imaging config z_stack step_um must be > 0."""
         with pytest.raises(ValueError, match="step_um must be > 0"):
-            ImagingConfig(
+            ImagingProtocol(
                 channels=["DAPI"],
                 z_stack=ZStackConfig(step_um=0),
             )
@@ -85,19 +85,19 @@ class TestV2ProtocolSchema:
     def test_imaging_config_channels_required(self):
         """Test imaging config requires at least one channel."""
         with pytest.raises(ValueError, match="channels must not be empty"):
-            ImagingConfig(channels=[])
+            ImagingProtocol(channels=[])
 
     def test_get_round_by_name(self):
         """Test finding a round by name."""
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "a": ImagingConfig(channels=["A"]),
-                "b": ImagingConfig(channels=["B"]),
+            imaging_protocols={
+                "a": ImagingProtocol(channels=["A"]),
+                "b": ImagingProtocol(channels=["B"]),
             },
             rounds=[
-                Round(name="First", steps=[ImagingStep(config="a")]),
-                Round(name="Second", steps=[ImagingStep(config="b")]),
+                Round(name="First", steps=[ImagingStep(protocol="a")]),
+                Round(name="Second", steps=[ImagingStep(protocol="b")]),
             ],
         )
 
@@ -112,14 +112,14 @@ class TestV2ProtocolSchema:
         """Test getting all imaging steps across rounds."""
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["A"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["A"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
                         FluidicsStep(protocol="wash"),
                     ],
                 ),
@@ -127,8 +127,8 @@ class TestV2ProtocolSchema:
                     name="Round 2",
                     steps=[
                         FluidicsStep(protocol="wash"),
-                        ImagingStep(config="standard"),
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
+                        ImagingStep(protocol="standard"),
                     ],
                 ),
             ],
@@ -142,8 +142,8 @@ class TestV2ProtocolSchema:
         """Test reference validation catches missing resources."""
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "existing": ImagingConfig(channels=["A"]),
+            imaging_protocols={
+                "existing": ImagingProtocol(channels=["A"]),
             },
             fov_sets={
                 "grid_a": "/path/to/grid_a.csv",
@@ -152,8 +152,8 @@ class TestV2ProtocolSchema:
                 Round(
                     name="Round 1",
                     steps=[
-                        ImagingStep(config="missing_config"),  # Missing
-                        ImagingStep(config="existing", fovs="missing_fovs"),  # Missing
+                        ImagingStep(protocol="missing_config"),  # Missing
+                        ImagingStep(protocol="existing", fovs="missing_fovs"),  # Missing
                         FluidicsStep(protocol="missing_protocol"),  # Missing
                     ],
                 ),
@@ -161,14 +161,16 @@ class TestV2ProtocolSchema:
         )
 
         errors = protocol.validate_references()
-        assert len(errors) == 3
+        # FluidicsStep references are only validated when fluidics_protocols
+        # dict is non-empty (they may be resolved externally), so we only
+        # expect the imaging protocol + FOV set errors here.
+        assert len(errors) == 2
         assert any("missing_config" in e for e in errors)
         assert any("missing_fovs" in e for e in errors)
-        assert any("missing_protocol" in e for e in errors)
 
     def test_channel_config_override(self):
         """Test channel configuration overrides."""
-        config = ImagingConfig(
+        config = ImagingProtocol(
             channels=[
                 "DAPI",
                 ChannelConfigOverride(
@@ -244,7 +246,7 @@ name: Test Protocol
 version: "2.0"
 description: A test protocol
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels:
       - DAPI
@@ -255,7 +257,7 @@ rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
         loader = ProtocolLoader()
         protocol = loader.load_from_string(yaml_content)
@@ -265,7 +267,7 @@ rounds:
         assert len(protocol.rounds) == 1
         assert len(protocol.rounds[0].steps) == 1
         assert isinstance(protocol.rounds[0].steps[0], ImagingStep)
-        assert protocol.rounds[0].steps[0].config == "standard"
+        assert protocol.rounds[0].steps[0].protocol == "standard"
 
     def test_load_invalid_yaml(self):
         """Test loading invalid YAML raises error."""
@@ -286,13 +288,13 @@ rounds:
         """Test channel validation against available channels."""
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI", "GFP", "Unknown"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI", "GFP", "Unknown"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
-                    steps=[ImagingStep(config="standard")],
+                    steps=[ImagingStep(protocol="standard")],
                 )
             ],
         )
@@ -309,7 +311,7 @@ rounds:
 name: Test Repeat
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: [DAPI]
 
@@ -320,7 +322,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_{i}
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
         loader = ProtocolLoader()
         protocol = loader.load_from_string(yaml_content)
@@ -343,15 +345,15 @@ rounds:
         protocol = ExperimentProtocol(
             name="Round Trip Test",
             version="2.0",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
                         FluidicsStep(protocol="wash"),
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
                     ],
                 )
             ],
@@ -376,7 +378,7 @@ rounds:
 name: Mixed Steps Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: [DAPI]
 
@@ -386,11 +388,11 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: standard
+        protocol: standard
       - step_type: intervention
         message: "Check focus"
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
         loader = ProtocolLoader()
         protocol = loader.load_from_string(yaml_content)
@@ -408,7 +410,7 @@ rounds:
 name: Focus Methods Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   laser_af:
     channels: [DAPI]
     focus:
@@ -433,23 +435,23 @@ rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        config: laser_af
+        protocol: laser_af
 """
         loader = ProtocolLoader()
         protocol = loader.load_from_string(yaml_content)
 
-        laser_config = protocol.imaging_configs["laser_af"]
+        laser_config = protocol.imaging_protocols["laser_af"]
         assert laser_config.focus.enabled is True
         assert laser_config.focus.method == "laser"
         assert laser_config.focus.interval_fovs == 1
 
-        contrast_config = protocol.imaging_configs["contrast_af"]
+        contrast_config = protocol.imaging_protocols["contrast_af"]
         assert contrast_config.focus.enabled is True
         assert contrast_config.focus.method == "contrast"
         assert contrast_config.focus.channel == "DAPI"
         assert contrast_config.focus.interval_fovs == 5
 
-        no_af_config = protocol.imaging_configs["no_af"]
+        no_af_config = protocol.imaging_protocols["no_af"]
         assert no_af_config.focus.enabled is False
 
     def test_invalid_step_type_raises_error(self):
@@ -458,7 +460,7 @@ rounds:
 name: Invalid Step Type Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: [DAPI]
 
@@ -495,7 +497,7 @@ focus:
 name: File Reference Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   fish_standard:
     file: fish_config.yaml
 
@@ -503,7 +505,7 @@ rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -511,8 +513,8 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            assert "fish_standard" in protocol.imaging_configs
-            config = protocol.imaging_configs["fish_standard"]
+            assert "fish_standard" in protocol.imaging_protocols
+            config = protocol.imaging_protocols["fish_standard"]
             assert config.description == "External FISH config"
             assert config.z_stack.planes == 5
             assert config.focus.method == "laser"
@@ -524,7 +526,7 @@ rounds:
 name: Missing File Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     file: nonexistent.yaml
 
@@ -532,7 +534,7 @@ rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -553,7 +555,7 @@ rounds:
 name: FOV Path Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: [DAPI]
 
@@ -564,7 +566,7 @@ rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
         fovs: main_grid
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
@@ -583,7 +585,7 @@ rounds:
 name: Repeat Metadata Test
 version: "2.0"
 
-imaging_configs:
+imaging_protocols:
   standard:
     channels: [DAPI]
 
@@ -595,7 +597,7 @@ rounds:
       temperature: 37
     steps:
       - step_type: imaging
-        config: standard
+        protocol: standard
 """
         loader = ProtocolLoader()
         protocol = loader.load_from_string(yaml_content)
@@ -607,3 +609,193 @@ rounds:
         assert protocol.rounds[2].metadata["probe_set"] == "set_3"
         # Non-string values preserved
         assert protocol.rounds[0].metadata["temperature"] == 37
+
+    def test_acquisition_order_default(self):
+        """Test that acquisition_order defaults to channel_first."""
+        config = ImagingProtocol(channels=["DAPI"])
+        assert config.acquisition_order == "channel_first"
+
+    def test_acquisition_order_z_first(self):
+        """Test setting acquisition_order to z_first."""
+        config = ImagingProtocol(
+            channels=["DAPI", "Cy5"],
+            acquisition_order="z_first",
+        )
+        assert config.acquisition_order == "z_first"
+
+    def test_acquisition_order_roundtrips_through_yaml(self):
+        """Test that acquisition_order survives save/load cycle."""
+        yaml_content = """
+name: Acquisition Order Test
+version: "2.0"
+
+imaging_protocols:
+  z_first_protocol:
+    channels: [DAPI, Cy5]
+    acquisition_order: z_first
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: z_first_protocol
+"""
+        loader = ProtocolLoader()
+        protocol = loader.load_from_string(yaml_content)
+
+        assert protocol.imaging_protocols["z_first_protocol"].acquisition_order == "z_first"
+
+    def test_profile_protocol_resolution(self):
+        """Test that imaging protocol names are resolved from ConfigRepository."""
+        from unittest.mock import MagicMock
+
+        # Create a mock ConfigRepository
+        mock_repo = MagicMock()
+        profile_protocol = ImagingProtocol(
+            channels=["DAPI", "Cy5"],
+            acquisition_order="z_first",
+        )
+        mock_repo.get_imaging_protocol.return_value = profile_protocol
+
+        yaml_content = """
+name: Profile Resolution Test
+version: "2.0"
+
+imaging_protocols: {}
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: from_profile
+"""
+        loader = ProtocolLoader(config_repo=mock_repo)
+        protocol = loader.load_from_string(yaml_content)
+
+        # Protocol should have been resolved from profile
+        assert "from_profile" in protocol.imaging_protocols
+        assert protocol.imaging_protocols["from_profile"].acquisition_order == "z_first"
+        mock_repo.get_imaging_protocol.assert_called_with("from_profile")
+
+    def test_profile_resolution_not_found_raises_error(self):
+        """Test that unresolvable protocol names cause validation error."""
+        from unittest.mock import MagicMock
+
+        mock_repo = MagicMock()
+        mock_repo.get_imaging_protocol.return_value = None
+
+        yaml_content = """
+name: Missing Profile Test
+version: "2.0"
+
+imaging_protocols: {}
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: nonexistent
+"""
+        loader = ProtocolLoader(config_repo=mock_repo)
+        with pytest.raises(ProtocolValidationError, match="Invalid resource references"):
+            loader.load_from_string(yaml_content)
+
+    def test_substitution_in_non_repeated_round_raises_error(self):
+        """Test that {i} substitution in a non-repeated round raises error."""
+        yaml_content = """
+name: Bad Substitution Test
+version: "2.0"
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: "Round {i}"
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+        loader = ProtocolLoader()
+        with pytest.raises(ProtocolValidationError, match="has no 'repeat' field"):
+            loader.load_from_string(yaml_content)
+
+
+class TestResolveProtocolChannels:
+    """Tests for resolve_protocol_channels function."""
+
+    def test_resolves_channels_by_name(self):
+        """Test that channel names are resolved to AcquisitionChannel objects."""
+        from unittest.mock import MagicMock
+        from squid.backend.controllers.orchestrator.imaging_executor import (
+            resolve_protocol_channels,
+        )
+
+        protocol = ImagingProtocol(channels=["DAPI", "Cy5"])
+
+        mock_service = MagicMock()
+        dapi_config = MagicMock()
+        dapi_config.name = "DAPI"
+        cy5_config = MagicMock()
+        cy5_config.name = "Cy5"
+        mock_service.get_channel_configuration_by_name.side_effect = (
+            lambda obj, name: {"DAPI": dapi_config, "Cy5": cy5_config}.get(name)
+        )
+
+        result = resolve_protocol_channels(protocol, mock_service, "10X")
+        assert len(result) == 2
+        assert result[0].name == "DAPI"
+        assert result[1].name == "Cy5"
+
+    def test_raises_on_missing_channel(self):
+        """Test that ValueError is raised when a channel is not found."""
+        from unittest.mock import MagicMock
+        from squid.backend.controllers.orchestrator.imaging_executor import (
+            resolve_protocol_channels,
+        )
+
+        protocol = ImagingProtocol(channels=["DAPI", "NonExistent"])
+
+        mock_service = MagicMock()
+        dapi_config = MagicMock()
+        dapi_config.name = "DAPI"
+        mock_service.get_channel_configuration_by_name.side_effect = (
+            lambda obj, name: {"DAPI": dapi_config}.get(name)
+        )
+
+        with pytest.raises(ValueError, match="NonExistent"):
+            resolve_protocol_channels(protocol, mock_service, "10X")
+
+    def test_applies_channel_override(self):
+        """Test that ChannelConfigOverride values are applied to resolved channels."""
+        from unittest.mock import MagicMock
+        from squid.backend.controllers.orchestrator.imaging_executor import (
+            resolve_protocol_channels,
+        )
+        from squid.core.config.models import AcquisitionChannel, CameraSettings, IlluminationSettings
+
+        protocol = ImagingProtocol(
+            channels=[
+                ChannelConfigOverride(
+                    name="Cy5",
+                    exposure_time_ms=200,
+                    illumination_intensity=80,
+                ),
+            ],
+        )
+
+        mock_service = MagicMock()
+        channel = AcquisitionChannel(
+            name="Cy5",
+            camera_settings=CameraSettings(exposure_time_ms=100, gain_mode=1.0),
+            illumination_settings=IlluminationSettings(intensity=50),
+        )
+        mock_service.get_channel_configuration_by_name.return_value = channel
+
+        result = resolve_protocol_channels(protocol, mock_service, "10X")
+        assert len(result) == 1
+        assert result[0].camera_settings.exposure_time_ms == 200
+        assert result[0].illumination_settings.intensity == 80
+        # Original channel should not be mutated
+        assert channel.camera_settings.exposure_time_ms == 100
+        assert channel.illumination_settings.intensity == 50

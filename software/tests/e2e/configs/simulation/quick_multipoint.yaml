@@ -12,7 +12,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   multipoint_scan:
     description: "Multipoint scan configuration"
     channels:
@@ -31,5 +31,5 @@ rounds:
   - name: "Multipoint Scan"
     steps:
       - step_type: imaging
-        config: multipoint_scan
+        protocol: multipoint_scan
         fovs: main

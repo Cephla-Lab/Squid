@@ -7,13 +7,16 @@ Handles repeat expansion and resource resolution.
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 import yaml
 from pydantic import ValidationError
 
 import squid.core.logging
 from squid.core.protocol.schema import ExperimentProtocol
+
+if TYPE_CHECKING:
+    from squid.core.config.repository import ConfigRepository
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -30,10 +33,11 @@ class ProtocolLoader:
     """Loads and validates V2 experiment protocols from YAML files.
 
     V2 protocols support:
-    - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+    - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
     - Step-based rounds with discriminated union step types
     - Repeat expansion with {i} substitution
     - External file references for resources
+    - Profile-based imaging protocol resolution via ConfigRepository
 
     Usage:
         loader = ProtocolLoader()
@@ -48,9 +52,14 @@ class ProtocolLoader:
         loader.save(protocol, "path/to/output.yaml")
     """
 
-    def __init__(self):
-        """Initialize the protocol loader."""
-        pass
+    def __init__(self, config_repo: Optional["ConfigRepository"] = None):
+        """Initialize the protocol loader.
+
+        Args:
+            config_repo: Optional ConfigRepository for resolving imaging protocols
+                from user profiles. If not provided, only inline definitions are used.
+        """
+        self._config_repo = config_repo
 
     def load(self, path: Union[str, Path]) -> ExperimentProtocol:
         """Load a V2 protocol from a YAML file.
@@ -140,6 +149,10 @@ class ProtocolLoader:
             # Parse with Pydantic
             protocol = ExperimentProtocol.model_validate(data)
 
+            # Resolve imaging protocol names from profile if not found inline
+            if self._config_repo is not None:
+                self._resolve_profile_protocols(protocol)
+
             # Validate references
             ref_errors = protocol.validate_references()
             if ref_errors:
@@ -158,11 +171,39 @@ class ProtocolLoader:
                 errors=errors,
             )
 
+    def _resolve_profile_protocols(self, protocol: ExperimentProtocol) -> None:
+        """Resolve imaging protocol names from user profile.
+
+        For each ImagingStep whose protocol name is not found in the
+        experiment's imaging_protocols dict, attempt to load it from
+        the user profile via ConfigRepository.
+
+        Args:
+            protocol: The parsed protocol to augment with profile protocols
+        """
+        if self._config_repo is None:
+            return
+
+        from squid.core.protocol.step import ImagingStep
+
+        for round_ in protocol.rounds:
+            for step in round_.steps:
+                if not isinstance(step, ImagingStep):
+                    continue
+                name = step.protocol
+                if name in protocol.imaging_protocols:
+                    continue
+                # Try loading from profile
+                profile_protocol = self._config_repo.get_imaging_protocol(name)
+                if profile_protocol is not None:
+                    protocol.imaging_protocols[name] = profile_protocol
+                    _log.info(f"Resolved imaging protocol '{name}' from user profile")
+
     def _resolve_resources(self, data: Dict[str, Any], protocol_dir: Path) -> Dict[str, Any]:
         """Resolve file: references and make FOV paths absolute.
 
         Handles patterns like:
-            imaging_configs:
+            imaging_protocols:
               fish_standard:
                 file: configs/fish.yaml
 
@@ -178,16 +219,16 @@ class ProtocolLoader:
         """
         data = copy.deepcopy(data)
 
-        # Resolve imaging_configs with file: references
-        for name, config in data.get("imaging_configs", {}).items():
+        # Resolve imaging protocols with file: references
+        for name, config in data.get("imaging_protocols", {}).items():
             if isinstance(config, dict) and "file" in config:
                 file_path = protocol_dir / config["file"]
                 if not file_path.exists():
                     raise ProtocolValidationError(
-                        f"Imaging config file not found: {file_path}"
+                        f"Imaging protocol file not found: {file_path}"
                     )
                 with open(file_path, "r") as f:
-                    data["imaging_configs"][name] = yaml.safe_load(f)
+                    data["imaging_protocols"][name] = yaml.safe_load(f)
 
         # Resolve fluidics_protocols with file: references
         for name, proto in data.get("fluidics_protocols", {}).items():
@@ -215,7 +256,7 @@ class ProtocolLoader:
         Substitution applies to:
         - Round name field
         - Step protocol references (FluidicsStep)
-        - Step config and fovs references (ImagingStep)
+        - Step protocol and fovs references (ImagingStep)
 
         Args:
             data: Protocol data with potential repeat fields
@@ -344,13 +385,13 @@ class ProtocolLoader:
         errors: List[str] = []
         available_set = set(available_channels)
 
-        # Check channels in each imaging config
-        for config_name, config in protocol.imaging_configs.items():
-            for ch in config.channels:
+        # Check channels in each imaging protocol
+        for protocol_name, imaging_proto in protocol.imaging_protocols.items():
+            for ch in imaging_proto.channels:
                 ch_name = ch if isinstance(ch, str) else ch.name
                 if ch_name not in available_set:
                     errors.append(
-                        f"Imaging config '{config_name}' channel '{ch_name}' not found"
+                        f"Imaging protocol '{protocol_name}' channel '{ch_name}' not found"
                     )
 
         return errors

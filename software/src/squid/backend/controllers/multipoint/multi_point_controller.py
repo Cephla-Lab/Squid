@@ -523,11 +523,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.recording_start_time = time.time()
         # create a new folder
         utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-        self.channelConfigurationManager.save_acquisition_output(
-            pathlib.Path(os.path.join(self.base_path, self.experiment_ID)),
-            self.objectiveStore.current_objective,
-            self.selected_configurations,
-        )  # save the configuration for the experiment
+        if hasattr(self.channelConfigurationManager, "save_acquisition_output"):
+            self.channelConfigurationManager.save_acquisition_output(
+                pathlib.Path(os.path.join(self.base_path, self.experiment_ID)),
+                self.objectiveStore.current_objective,
+                self.selected_configurations,
+            )  # save the configuration for the experiment
         # Prepare acquisition parameters
         acquisition_parameters = {
             "dx(mm)": self._config.grid.dx_mm,
@@ -572,6 +573,19 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             if config:
                 self.selected_configurations.append(config)
         self.update_config(selected_channels=tuple(selected_configurations_name))
+
+    def set_resolved_configurations(self, configurations) -> None:
+        """Set pre-resolved AcquisitionChannel objects directly.
+
+        Use this instead of set_selected_configurations() when channels
+        have already been resolved (e.g., by resolve_protocol_channels).
+        This avoids mutating global channel config state.
+
+        Args:
+            configurations: List of AcquisitionChannel objects
+        """
+        self.selected_configurations = list(configurations)
+        self.update_config(selected_channels=tuple(c.name for c in configurations))
 
     def get_acquisition_image_count(self) -> int:
         """
@@ -1148,6 +1162,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             z_range=self._config.zstack.z_range,
             use_fluidics=self._config.use_fluidics,
             skip_saving=self._config.skip_saving,
+            acquisition_order=self._config.acquisition_order,
             # Downsampled view generation parameters
             generate_downsampled_views=(
                 self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES")

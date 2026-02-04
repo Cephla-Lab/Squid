@@ -10,7 +10,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   bf_quick:
     description: "Quick brightfield imaging"
     channels:
@@ -40,7 +40,7 @@ rounds:
   - name: "Pre-Intervention Imaging"
     steps:
       - step_type: imaging
-        config: bf_quick
+        protocol: bf_quick
         fovs: main
 
   # Operator intervention required
@@ -53,7 +53,7 @@ rounds:
   - name: "Post-Intervention Imaging"
     steps:
       - step_type: imaging
-        config: bf_quick
+        protocol: bf_quick
         fovs: main
 
   # Another intervention for demonstration
@@ -66,5 +66,5 @@ rounds:
   - name: "Final Imaging"
     steps:
       - step_type: imaging
-        config: multichannel_quick
+        protocol: multichannel_quick
         fovs: main

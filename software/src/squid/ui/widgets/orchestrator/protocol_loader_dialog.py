@@ -398,7 +398,7 @@ class ProtocolLoaderDialog(QDialog):
             from squid.core.protocol import ImagingStep
 
             fov_required = any(
-                isinstance(step, ImagingStep) and step.fovs == "default"
+                isinstance(step, ImagingStep) and step.fovs in ("current", "default")
                 for round_ in self._current_protocol.rounds
                 for step in round_.steps
             )

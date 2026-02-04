@@ -14,7 +14,7 @@ from squid.core.protocol import (
     FluidicsStep,
     ImagingStep as ImagingStepV2,
     InterventionStep,
-    ImagingConfig,
+    ImagingProtocol,
 )
 from squid.backend.controllers.orchestrator.validation import (
     DEFAULT_DISK_ESTIMATES,
@@ -33,7 +33,7 @@ class ProtocolValidator:
     """Validates V2 experiment protocols before execution.
 
     Performs pre-flight validation including:
-    - Channel availability checks (via imaging_configs)
+    - Channel availability checks (via imaging_protocols)
     - Fluidics protocol availability checks
     - Time estimation per round and total
     - Disk space estimation
@@ -116,9 +116,9 @@ class ProtocolValidator:
                 "Load protocols into FluidicsController separately and reference by name."
             )
 
-        # Validate channels in imaging_configs
+        # Validate channels in imaging_protocols
         if self._available_channels:
-            for config_name, config in protocol.imaging_configs.items():
+            for config_name, config in protocol.imaging_protocols.items():
                 channel_names = config.get_channel_names()
                 missing = set(channel_names) - self._available_channels
                 if missing:
@@ -298,18 +298,18 @@ class ProtocolValidator:
         errors: List[str] = []
         warnings: List[str] = []
 
-        config_name = step.config
+        config_name = step.protocol
 
-        # Validate imaging config exists
-        if config_name not in protocol.imaging_configs:
+        # Validate imaging protocol exists
+        if config_name not in protocol.imaging_protocols:
             errors.append(
-                f"Round '{round_name}': Imaging config '{config_name}' not found"
+                f"Round '{round_name}': Imaging protocol '{config_name}' not found"
             )
             return OperationEstimate(
                 operation_type="imaging",
                 round_index=round_idx,
                 round_name=round_name,
-                description=f"Unknown imaging config: {config_name}",
+                description=f"Unknown imaging protocol: {config_name}",
                 estimated_seconds=0,
                 estimated_disk_bytes=0,
                 valid=False,
@@ -317,10 +317,10 @@ class ProtocolValidator:
                 validation_warnings=tuple(warnings),
             )
 
-        imaging_config = protocol.imaging_configs[config_name]
+        imaging_config = protocol.imaging_protocols[config_name]
 
         # Validate FOV set if specified
-        if step.fovs != "default" and step.fovs not in protocol.fov_sets:
+        if step.fovs not in ("current", "default") and step.fovs not in protocol.fov_sets:
             errors.append(
                 f"Round '{round_name}': FOV set '{step.fovs}' not found"
             )
@@ -368,7 +368,7 @@ class ProtocolValidator:
 
     def _estimate_imaging_time(
         self,
-        imaging_config: ImagingConfig,
+        imaging_config: ImagingProtocol,
         fov_count: int,
     ) -> float:
         """Estimate imaging time for an imaging config.
@@ -407,7 +407,7 @@ class ProtocolValidator:
 
     def _estimate_imaging_disk(
         self,
-        imaging_config: ImagingConfig,
+        imaging_config: ImagingProtocol,
         fov_count: int,
     ) -> int:
         """Estimate disk usage for imaging.

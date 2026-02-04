@@ -222,6 +222,7 @@ class ConfigRepository:
 
         (profile_path / "channel_configs").mkdir(parents=True)
         (profile_path / "laser_af_configs").mkdir(parents=True)
+        (profile_path / "imaging_protocols").mkdir(parents=True)
         logger.info(f"Created profile: {name}")
 
     def copy_profile(self, source: str, dest: str) -> None:
@@ -238,8 +239,9 @@ class ConfigRepository:
 
         (dest_path / "channel_configs").mkdir(parents=True)
         (dest_path / "laser_af_configs").mkdir(parents=True)
+        (dest_path / "imaging_protocols").mkdir(parents=True)
 
-        for subdir in ["channel_configs", "laser_af_configs"]:
+        for subdir in ["channel_configs", "laser_af_configs", "imaging_protocols"]:
             source_dir = source_path / subdir
             dest_dir = dest_path / subdir
             if source_dir.exists():
@@ -263,6 +265,7 @@ class ConfigRepository:
         profile_path = self._get_profile_path(profile)
         (profile_path / "channel_configs").mkdir(parents=True, exist_ok=True)
         (profile_path / "laser_af_configs").mkdir(parents=True, exist_ok=True)
+        (profile_path / "imaging_protocols").mkdir(parents=True, exist_ok=True)
 
     def get_profile_path(self, profile: Optional[str] = None) -> Path:
         """Get the path for a user profile (public API)."""
@@ -621,6 +624,74 @@ class ConfigRepository:
             self._profile_cache[f"objective:{objective}"] = obj_config
 
         return True
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # IMAGING PROTOCOLS (per-profile)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_imaging_protocol(self, name: str, profile: Optional[str] = None) -> Optional["ImagingProtocol"]:
+        """Load a stored imaging protocol by name.
+
+        Storage: user_profiles/{profile}/imaging_protocols/{name}.yaml
+
+        Args:
+            name: Protocol name (filename without extension)
+            profile: Profile to load from (defaults to current profile)
+
+        Returns:
+            ImagingProtocol if found, None otherwise
+        """
+        from squid.core.protocol.imaging_protocol import ImagingProtocol
+
+        profile_path = self._get_profile_path(profile)
+        path = profile_path / "imaging_protocols" / f"{name}.yaml"
+        return self._load_yaml(path, ImagingProtocol)
+
+    def save_imaging_protocol(self, profile: str, name: str, protocol: "ImagingProtocol") -> None:
+        """Save an imaging protocol to a user profile.
+
+        Storage: user_profiles/{profile}/imaging_protocols/{name}.yaml
+
+        Args:
+            profile: Profile to save to
+            name: Protocol name (used as filename)
+            protocol: ImagingProtocol to save
+        """
+        profile_path = self.user_profiles_path / profile
+        path = profile_path / "imaging_protocols" / f"{name}.yaml"
+        self._save_yaml(path, protocol)
+
+    def get_available_imaging_protocols(self, profile: Optional[str] = None) -> List[str]:
+        """Get list of available imaging protocol names for a profile.
+
+        Args:
+            profile: Profile to list from (defaults to current profile)
+
+        Returns:
+            Sorted list of protocol names (filenames without .yaml extension)
+        """
+        profile_path = self._get_profile_path(profile)
+        protocols_dir = profile_path / "imaging_protocols"
+        if not protocols_dir.exists():
+            return []
+        return sorted(f.stem for f in protocols_dir.iterdir() if f.suffix == ".yaml" and not f.name.startswith("."))
+
+    def delete_imaging_protocol(self, profile: str, name: str) -> None:
+        """Delete an imaging protocol from a user profile.
+
+        Args:
+            profile: Profile to delete from
+            name: Protocol name to delete
+
+        Raises:
+            FileNotFoundError: If the protocol file does not exist
+        """
+        profile_path = self.user_profiles_path / profile
+        path = profile_path / "imaging_protocols" / f"{name}.yaml"
+        if not path.exists():
+            raise FileNotFoundError(f"Imaging protocol '{name}' not found in profile '{profile}'")
+        path.unlink()
+        logger.info(f"Deleted imaging protocol '{name}' from profile '{profile}'")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # LASER AF CONFIGS (per-profile)

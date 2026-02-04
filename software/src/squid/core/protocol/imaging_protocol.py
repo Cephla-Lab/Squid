@@ -1,8 +1,10 @@
 """
-Imaging configuration for V2 protocol schema.
+Imaging protocol for V2 protocol schema.
 
-Defines reusable imaging configurations that can be referenced by name
-from ImagingStep in rounds.
+Defines reusable imaging protocols that can be referenced by name
+from ImagingStep in rounds. An imaging protocol specifies the per-tile
+acquisition procedure: which channels to use and in what order, z-stack
+parameters, z/channel interleaving, and autofocus strategy.
 """
 
 from typing import List, Literal, Optional, Union
@@ -11,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ChannelConfigOverride(BaseModel):
-    """Per-channel overrides for an imaging config.
+    """Per-channel overrides for an imaging protocol.
 
     Allows overriding exposure, gain, intensity, and z-offset for specific channels.
 
@@ -98,23 +100,39 @@ class FocusConfig(BaseModel):
         return v
 
 
-class ImagingConfig(BaseModel):
-    """Named imaging configuration.
+class ImagingProtocol(BaseModel):
+    """Named imaging protocol.
 
-    Defines all imaging parameters for a step, including channels, z-stack,
-    and focus settings. Channels can be simple names (use defaults) or
-    ChannelConfigOverride objects for per-step customization.
+    Defines the per-tile acquisition procedure for a step, including which
+    channels to use and in what order, z-stack parameters, z/channel
+    interleaving, and autofocus strategy.
+
+    The channels list order defines the acquisition sequence (e.g.,
+    730->638->561->405 for photobleaching reasons).
+
+    Attributes:
+        description: Human-readable description
+        channels: Ordered list of channel names or ChannelConfigOverride objects.
+            Order IS acquisition order.
+        z_stack: Z-stack configuration
+        acquisition_order: Channel/z interleaving mode.
+            "channel_first" = all channels per z-plane (default).
+            "z_first" = all z-planes per channel.
+        focus: Autofocus configuration
+        skip_saving: Whether to skip saving images to disk
 
     Example:
         fish_standard:
           description: "Standard FISH imaging"
           channels:
-            - DAPI
+            - "Fluorescence 730 nm Ex"
+            - "Fluorescence 638 nm Ex"
             - name: Cy5
               exposure_time_ms: 200
           z_stack:
             planes: 5
             step_um: 0.5
+          acquisition_order: channel_first
           focus:
             enabled: true
             method: laser
@@ -123,6 +141,7 @@ class ImagingConfig(BaseModel):
     description: str = ""
     channels: List[Union[str, ChannelConfigOverride]] = Field(default_factory=list)
     z_stack: ZStackConfig = Field(default_factory=ZStackConfig)
+    acquisition_order: Literal["channel_first", "z_first"] = "channel_first"
     focus: FocusConfig = Field(default_factory=FocusConfig)
     skip_saving: bool = False
 

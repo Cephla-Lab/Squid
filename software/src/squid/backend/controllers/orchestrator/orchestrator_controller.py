@@ -7,7 +7,7 @@ and operator interventions.
 
 V2 Protocol Support:
     - Step-based rounds (FluidicsStep, ImagingStep, InterventionStep)
-    - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+    - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
     - Configurable error handling per failure type
 """
 
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from squid.backend.managers.scan_coordinates import ScanCoordinates
     from squid.backend.controllers.orchestrator.imaging_executor import ImagingExecutor
     from squid.backend.controllers.fluidics_controller import FluidicsController
+    from squid.core.config.repository import ConfigRepository
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -78,7 +79,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     V2 Protocol Model:
         - Rounds contain ordered steps (fluidics, imaging, intervention)
-        - Named resources (fluidics_protocols, imaging_configs, fov_sets)
+        - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
         - Configurable error handling per failure type
 
     State Machine (7 states):
@@ -129,6 +130,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         imaging_executor: Optional["ImagingExecutor"] = None,
         fluidics_controller: Optional["FluidicsController"] = None,
         scan_coordinates: Optional["ScanCoordinates"] = None,
+        config_repo: Optional["ConfigRepository"] = None,
     ):
         """Initialize the orchestrator.
 
@@ -140,6 +142,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             imaging_executor: Optional ImagingExecutor for imaging rounds
             fluidics_controller: Optional FluidicsController for fluidics protocols
             scan_coordinates: ScanCoordinates for imaging positions
+            config_repo: Optional ConfigRepository for resolving stored imaging protocols
         """
         super().__init__(
             initial_state=OrchestratorState.IDLE,
@@ -155,7 +158,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._imaging_executor = imaging_executor
         self._fluidics_controller = fluidics_controller
         self._scan_coordinates = scan_coordinates
-        self._protocol_loader = ProtocolLoader()
+        self._protocol_loader = ProtocolLoader(config_repo=config_repo)
         self._resume_checkpoint: Optional[Checkpoint] = None
         self._warning_manager = WarningManager(event_bus=event_bus)
 

@@ -393,7 +393,7 @@ class OrchestratorControlPanel(EventBusWidget):
                     if step.get("step_type") != "imaging":
                         continue
                     has_imaging = True
-                    if step.get("fovs", "default") == "default":
+                    if step.get("fovs", "current") in ("current", "default"):
                         default_fovs_required = True
 
             # Update status label
@@ -926,11 +926,11 @@ class OrchestratorWorkflowTree(EventBusWidget):
         """
         op_type = operation.get("type", "")
         if op_type == "imaging":
-            # V2 format: config reference
-            config = operation.get("config")
+            # V2 format: protocol reference
+            config = operation.get("protocol") or operation.get("config")
             if config:
-                fovs = operation.get("fovs", "default")
-                return f"Config: {config}" + (f", FOVs: {fovs}" if fovs != "default" else "")
+                fovs = operation.get("fovs", "current")
+                return f"Protocol: {config}" + (f", FOVs: {fovs}" if fovs not in ("current", "default") else "")
             # Legacy format: inline channels
             channels = operation.get("channels", [])
             return f"Channels: {', '.join(channels)}" if channels else ""

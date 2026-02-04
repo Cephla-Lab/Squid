@@ -20,7 +20,7 @@ Example V2 protocol:
             solution: wash_buffer
             volume_ul: 500
 
-    imaging_configs:
+    imaging_protocols:
       fish_standard:
         channels: [DAPI, Cy5]
         z_stack:
@@ -38,7 +38,7 @@ Example V2 protocol:
           - step_type: fluidics
             protocol: wash
           - step_type: imaging
-            config: fish_standard
+            protocol: fish_standard
             fovs: main_grid
 """
 
@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from squid.core.protocol.step import Step, FluidicsStep, ImagingStep, InterventionStep
-from squid.core.protocol.imaging_config import ImagingConfig
+from squid.core.protocol.imaging_protocol import ImagingProtocol
 from squid.core.protocol.error_handling import ErrorHandlingConfig, FailureAction
 from squid.core.protocol.fluidics_protocol import FluidicsProtocol, FluidicsCommand
 
@@ -81,7 +81,7 @@ class Round(BaseModel):
 class ExperimentProtocol(BaseModel):
     """Complete V2 experiment protocol definition.
 
-    V2 protocols use named resources (fluidics_protocols, imaging_configs, fov_sets)
+    V2 protocols use named resources (fluidics_protocols, imaging_protocols, fov_sets)
     that are referenced by steps within rounds. This enables reuse and flexible
     step ordering.
 
@@ -94,7 +94,7 @@ class ExperimentProtocol(BaseModel):
 
         error_handling: Protocol-level error handling configuration
         fluidics_protocols: Named fluidics protocols (inline or file: reference)
-        imaging_configs: Named imaging configurations (inline or file: reference)
+        imaging_protocols: Named imaging protocols (inline or file: reference)
         fov_sets: Named FOV sets mapping to CSV file paths
         rounds: List of experimental rounds
     """
@@ -110,7 +110,7 @@ class ExperimentProtocol(BaseModel):
 
     # Named resources
     fluidics_protocols: Dict[str, FluidicsProtocol] = Field(default_factory=dict)
-    imaging_configs: Dict[str, ImagingConfig] = Field(default_factory=dict)
+    imaging_protocols: Dict[str, ImagingProtocol] = Field(default_factory=dict)
     fov_sets: Dict[str, str] = Field(default_factory=dict)  # name -> CSV path
 
     # Rounds
@@ -163,11 +163,11 @@ class ExperimentProtocol(BaseModel):
                             )
 
                 elif isinstance(step, ImagingStep):
-                    if step.config not in self.imaging_configs:
+                    if step.protocol not in self.imaging_protocols:
                         errors.append(
-                            f"{step_loc}: imaging config '{step.config}' not found"
+                            f"{step_loc}: imaging protocol '{step.protocol}' not found"
                         )
-                    if step.fovs != "default" and step.fovs not in self.fov_sets:
+                    if step.fovs != "current" and step.fovs not in self.fov_sets:
                         errors.append(
                             f"{step_loc}: FOV set '{step.fovs}' not found"
                         )

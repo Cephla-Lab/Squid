@@ -25,7 +25,7 @@ from squid.core.protocol import (
     ExperimentProtocol,
     Round,
     ImagingStep,
-    ImagingConfig,
+    ImagingProtocol,
 )
 
 
@@ -95,13 +95,13 @@ def simple_protocol():
     return ExperimentProtocol(
         name="test_protocol",
         version="2.0",
-        imaging_configs={
-            "standard": ImagingConfig(channels=["DAPI"]),
+        imaging_protocols={
+            "standard": ImagingProtocol(channels=["DAPI"]),
         },
         rounds=[
             Round(
                 name="round_1",
-                steps=[ImagingStep(config="standard")],
+                steps=[ImagingStep(protocol="standard")],
             ),
         ],
     )

@@ -11,7 +11,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   tiled_zstack:
     description: "Tiled z-stack configuration"
     channels:
@@ -31,5 +31,5 @@ rounds:
   - name: "Tiled Acquisition"
     steps:
       - step_type: imaging
-        config: tiled_zstack
+        protocol: tiled_zstack
         fovs: main

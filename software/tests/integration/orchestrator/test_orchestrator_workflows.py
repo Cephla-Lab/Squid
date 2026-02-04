@@ -35,7 +35,7 @@ from squid.core.events import (
     LoadScanCoordinatesCommand,
 )
 from squid.core.utils.cancel_token import CancelToken
-from squid.core.protocol import ImagingConfig
+from squid.core.protocol import ImagingProtocol
 from squid.backend.controllers.orchestrator import (
     OrchestratorController,
     OrchestratorState,
@@ -140,7 +140,7 @@ def single_imaging_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Single Imaging",
         "version": "2.0",
         "description": "Single imaging round",
-        "imaging_configs": {
+        "imaging_protocols": {
             "standard": {
                 "channels": [channel],
                 "z_stack": {"planes": 1, "step_um": 1.0},
@@ -150,7 +150,7 @@ def single_imaging_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             }
         ],
     }
@@ -175,7 +175,7 @@ def single_imaging_protocol_abort(tmp_path, backend_ctx: BackendContext) -> str:
         "version": "2.0",
         "description": "Single imaging round (abort on imaging failure)",
         "error_handling": {"imaging_failure": "abort"},
-        "imaging_configs": {
+        "imaging_protocols": {
             "standard": {
                 "channels": [channel],
                 "z_stack": {"planes": 1, "step_um": 1.0},
@@ -185,7 +185,7 @@ def single_imaging_protocol_abort(tmp_path, backend_ctx: BackendContext) -> str:
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             }
         ],
     }
@@ -209,7 +209,7 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Multi Round",
         "version": "2.0",
         "description": "Multi-round experiment",
-        "imaging_configs": {
+        "imaging_protocols": {
             "standard": {
                 "channels": [channel],
                 "z_stack": {"planes": 1, "step_um": 1.0},
@@ -219,7 +219,7 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             },
             {
                 "name": "Fluidics Round",
@@ -227,7 +227,7 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
             },
             {
                 "name": "Imaging Round 2",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             },
         ],
     }
@@ -251,7 +251,7 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Intervention Protocol",
         "version": "2.0",
         "description": "Protocol with intervention",
-        "imaging_configs": {
+        "imaging_protocols": {
             "standard": {
                 "channels": [channel],
                 "z_stack": {"planes": 1, "step_um": 1.0},
@@ -261,7 +261,7 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "rounds": [
             {
                 "name": "Pre-intervention Imaging",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             },
             {
                 "name": "Intervention Round",
@@ -274,7 +274,7 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
             },
             {
                 "name": "Post-intervention Imaging",
-                "steps": [{"step_type": "imaging", "config": "standard"}],
+                "steps": [{"step_type": "imaging", "protocol": "standard"}],
             },
         ],
     }
@@ -434,7 +434,7 @@ def imaging_protocol_skip_saving(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Fast Imaging",
         "version": "2.0",
         "description": "Single imaging round (skip saving)",
-        "imaging_configs": {
+        "imaging_protocols": {
             "fast": {
                 "channels": [channel],
                 "z_stack": {"planes": 1, "step_um": 1.0},
@@ -445,7 +445,7 @@ def imaging_protocol_skip_saving(tmp_path, backend_ctx: BackendContext) -> str:
         "rounds": [
             {
                 "name": "Imaging Round 1",
-                "steps": [{"step_type": "imaging", "config": "fast"}],
+                "steps": [{"step_type": "imaging", "protocol": "fast"}],
             }
         ],
     }
@@ -1178,7 +1178,7 @@ class TestV2ProtocolIntegration:
         protocol_dict = {
             "name": "Repeat Protocol",
             "version": "2.0",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 1},
@@ -1190,7 +1190,7 @@ class TestV2ProtocolIntegration:
                     "name": "Round {i}",
                     "repeat": 2,
                     "steps": [
-                        {"step_type": "imaging", "config": "standard"},
+                        {"step_type": "imaging", "protocol": "standard"},
                     ],
                 }
             ],
@@ -1237,13 +1237,13 @@ class TestV2ProtocolIntegration:
         protocol_dict = {
             "name": "File Reference Protocol",
             "version": "2.0",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {"file": imaging_config_path.name},
             },
             "rounds": [
                 {
                     "name": "Imaging",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 },
             ],
         }
@@ -1260,7 +1260,7 @@ class TestV2ProtocolIntegration:
         )
         assert result is True
         assert orchestrator_with_mocks.protocol is not None
-        assert "standard" in orchestrator_with_mocks.protocol.imaging_configs
+        assert "standard" in orchestrator_with_mocks.protocol.imaging_protocols
 
         timeout = 5.0
         start = time.time()
@@ -1282,7 +1282,7 @@ class TestV2ProtocolIntegration:
         protocol_dict = {
             "name": "FOV Set Protocol",
             "version": "2.0",
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 1},
@@ -1296,7 +1296,7 @@ class TestV2ProtocolIntegration:
                     "steps": [
                         {
                             "step_type": "imaging",
-                            "config": "standard",
+                            "protocol": "standard",
                             "fovs": "grid",
                         }
                     ],
@@ -1341,7 +1341,7 @@ class TestV2ProtocolIntegration:
             "name": "Warn Imaging Failure",
             "version": "2.0",
             "error_handling": {"imaging_failure": "warn"},
-            "imaging_configs": {
+            "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
                     "z_stack": {"planes": 1},
@@ -1351,7 +1351,7 @@ class TestV2ProtocolIntegration:
             "rounds": [
                 {
                     "name": "Imaging",
-                    "steps": [{"step_type": "imaging", "config": "standard"}],
+                    "steps": [{"step_type": "imaging", "protocol": "standard"}],
                 }
             ],
         }
@@ -2453,7 +2453,7 @@ class TestImagingExecutor:
 
         multipoint.run_acquisition.side_effect = complete_acquisition
 
-        imaging_config = ImagingConfig(channels=["BF"])
+        imaging_config = ImagingProtocol(channels=["BF"])
         cancel_token = CancelToken()
 
         result = executor.execute_with_config(

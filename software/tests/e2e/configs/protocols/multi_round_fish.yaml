@@ -10,7 +10,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   fish_405:
     description: "FISH imaging with 405nm channel"
     channels:
@@ -43,7 +43,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_1_hybridization
       - step_type: imaging
-        config: fish_405
+        protocol: fish_405
         fovs: main
 
   # Round 1: Strip fluorophores
@@ -58,7 +58,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_2_hybridization
       - step_type: imaging
-        config: fish_488
+        protocol: fish_488
         fovs: main
 
   # Final wash and storage

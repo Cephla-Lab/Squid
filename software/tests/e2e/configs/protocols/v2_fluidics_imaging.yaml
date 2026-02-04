@@ -5,7 +5,7 @@ name: "V2 Fluidics-Imaging Test"
 version: "2.0"
 description: "Tests fluidics followed by imaging step sequence"
 
-imaging_configs:
+imaging_protocols:
   standard:
     description: "Standard imaging after wash"
     channels:
@@ -24,4 +24,4 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        config: standard
+        protocol: standard

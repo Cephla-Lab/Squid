@@ -8,7 +8,7 @@ from squid.core.protocol import (
     ImagingStep,
     InterventionStep,
     Round,
-    ImagingConfig,
+    ImagingProtocol,
     ZStackConfig,
     FocusConfig,
 )
@@ -180,8 +180,8 @@ class TestProtocolValidator:
         return ExperimentProtocol(
             name="Test Protocol",
             version="2.0",
-            imaging_configs={
-                "standard": ImagingConfig(
+            imaging_protocols={
+                "standard": ImagingProtocol(
                     channels=["DAPI", "FITC"],
                     z_stack=ZStackConfig(planes=5),
                 ),
@@ -190,7 +190,7 @@ class TestProtocolValidator:
                 Round(
                     name="Round 1",
                     steps=[
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
                     ],
                 ),
                 Round(
@@ -208,12 +208,12 @@ class TestProtocolValidator:
         return ExperimentProtocol(
             name="Complex Protocol",
             version="2.0",
-            imaging_configs={
-                "default_imaging": ImagingConfig(
+            imaging_protocols={
+                "default_imaging": ImagingProtocol(
                     channels=["DAPI", "Cy3", "Cy5"],
                     z_stack=ZStackConfig(planes=3),
                 ),
-                "reduced_imaging": ImagingConfig(
+                "reduced_imaging": ImagingProtocol(
                     channels=["DAPI", "Cy3"],
                     z_stack=ZStackConfig(planes=3),
                 ),
@@ -223,7 +223,7 @@ class TestProtocolValidator:
                     name="Round 1",
                     steps=[
                         FluidicsStep(protocol="probe_1"),
-                        ImagingStep(config="default_imaging"),
+                        ImagingStep(protocol="default_imaging"),
                         FluidicsStep(protocol="wash"),
                     ],
                 ),
@@ -232,7 +232,7 @@ class TestProtocolValidator:
                     steps=[
                         InterventionStep(message="Change slide"),
                         FluidicsStep(protocol="probe_2"),
-                        ImagingStep(config="reduced_imaging"),
+                        ImagingStep(protocol="reduced_imaging"),
                         FluidicsStep(protocol="wash"),
                     ],
                 ),
@@ -318,8 +318,8 @@ class TestProtocolValidator:
         """Test that skip_saving=True excludes disk estimation."""
         protocol = ExperimentProtocol(
             name="Preview Protocol",
-            imaging_configs={
-                "preview": ImagingConfig(
+            imaging_protocols={
+                "preview": ImagingProtocol(
                     channels=["DAPI"],
                     skip_saving=True,
                 ),
@@ -327,7 +327,7 @@ class TestProtocolValidator:
             rounds=[
                 Round(
                     name="Preview",
-                    steps=[ImagingStep(config="preview")],
+                    steps=[ImagingStep(protocol="preview")],
                 ),
             ],
         )
@@ -344,15 +344,15 @@ class TestProtocolValidator:
         """Test fluidics time estimated from default timing when no inline protocol is provided."""
         protocol = ExperimentProtocol(
             name="Fluidics Time Test",
-            imaging_configs={
-                "minimal": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "minimal": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
                         FluidicsStep(protocol="incubate"),
-                        ImagingStep(config="minimal"),
+                        ImagingStep(protocol="minimal"),
                     ],
                 ),
             ],
@@ -373,15 +373,15 @@ class TestProtocolValidator:
         """Test validation error for missing fluidics protocol reference."""
         protocol = ExperimentProtocol(
             name="Missing Fluidics",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
                         FluidicsStep(protocol="nonexistent_protocol"),
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
                     ],
                 ),
             ],
@@ -394,17 +394,17 @@ class TestProtocolValidator:
         assert any("nonexistent_protocol" in err for err in summary.errors)
 
     def test_validate_missing_imaging_config(self):
-        """Test validation error for missing imaging config reference."""
+        """Test validation error for missing imaging protocol reference."""
         protocol = ExperimentProtocol(
             name="Missing Config",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
-                        ImagingStep(config="nonexistent_config"),
+                        ImagingStep(protocol="nonexistent_config"),
                     ],
                 ),
             ],
@@ -423,8 +423,8 @@ class TestProtocolValidator:
             fluidics_protocols={
                 "wash": {"steps": [{"operation": "wash"}]},
             },
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
@@ -445,8 +445,8 @@ class TestProtocolValidator:
         # Create a protocol with long incubation to exceed 24h
         protocol = ExperimentProtocol(
             name="Long Protocol",
-            imaging_configs={
-                "standard": ImagingConfig(
+            imaging_protocols={
+                "standard": ImagingProtocol(
                     channels=["DAPI", "Cy3", "Cy5"],
                     z_stack=ZStackConfig(planes=5),
                 ),
@@ -456,7 +456,7 @@ class TestProtocolValidator:
                     name=f"Round {i}",
                     steps=[
                         FluidicsStep(protocol="long_incubate"),
-                        ImagingStep(config="standard"),
+                        ImagingStep(protocol="standard"),
                     ],
                 )
                 for i in range(3)  # 3 rounds x 12h = 36 hours
@@ -482,8 +482,8 @@ class TestProtocolValidator:
 
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "with_af": ImagingConfig(
+            imaging_protocols={
+                "with_af": ImagingProtocol(
                     channels=["DAPI"],
                     focus=FocusConfig(enabled=True, method="contrast"),
                 ),
@@ -491,7 +491,7 @@ class TestProtocolValidator:
             rounds=[
                 Round(
                     name="Round 1",
-                    steps=[ImagingStep(config="with_af")],
+                    steps=[ImagingStep(protocol="with_af")],
                 ),
             ],
         )
@@ -509,13 +509,13 @@ class TestProtocolValidator:
         """Test disk estimation with custom camera resolution."""
         protocol = ExperimentProtocol(
             name="Test",
-            imaging_configs={
-                "standard": ImagingConfig(channels=["DAPI"]),
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
             },
             rounds=[
                 Round(
                     name="Round 1",
-                    steps=[ImagingStep(config="standard")],
+                    steps=[ImagingStep(protocol="standard")],
                 ),
             ],
         )

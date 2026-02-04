@@ -3,7 +3,7 @@ Step types for V2 protocol schema.
 
 Defines the discriminated union of step types that can appear in a round:
 - FluidicsStep: Execute a named fluidics protocol
-- ImagingStep: Execute imaging with a named config
+- ImagingStep: Execute imaging with a named protocol
 - InterventionStep: Pause for operator intervention
 """
 
@@ -29,17 +29,17 @@ class FluidicsStep(BaseModel):
 class ImagingStep(BaseModel):
     """Imaging step referencing named resources.
 
-    References an imaging config and optional FOV set defined in the protocol.
+    References an imaging protocol and optional FOV set defined in the protocol.
 
     Example:
         step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
         fovs: main_grid
     """
 
     step_type: Literal["imaging"] = "imaging"
-    config: str  # Name from imaging_configs
-    fovs: str = "default"  # Name from fov_sets, or "default" for current
+    protocol: str = ""  # Name from imaging_protocols dict or stored profile protocol
+    fovs: str = "current"  # Name from fov_sets, or "current" for loaded FOVs
 
 
 class InterventionStep(BaseModel):

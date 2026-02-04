@@ -11,7 +11,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   fish_imaging:
     description: "FISH imaging configuration"
     channels:
@@ -33,7 +33,7 @@ rounds:
       - step_type: fluidics
         protocol: hybridization_1
       - step_type: imaging
-        config: fish_imaging
+        protocol: fish_imaging
         fovs: main
 
   # Round 2: Hybridization 2
@@ -42,5 +42,5 @@ rounds:
       - step_type: fluidics
         protocol: hybridization_2
       - step_type: imaging
-        config: fish_imaging
+        protocol: fish_imaging
         fovs: main

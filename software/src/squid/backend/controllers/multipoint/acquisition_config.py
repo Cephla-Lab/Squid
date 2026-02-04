@@ -189,6 +189,7 @@ class AcquisitionConfig:
     skip_saving: bool = False
     use_fluidics: bool = False
     xy_mode: str = "Current Position"
+    acquisition_order: str = "channel_first"  # "channel_first" or "z_first"
 
     def __post_init__(self) -> None:
         """Initialize default sub-configs if not provided."""

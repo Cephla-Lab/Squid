@@ -12,7 +12,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_configs:
+imaging_protocols:
   main_acquisition:
     description: "Main acquisition configuration"
     channels:
@@ -39,7 +39,7 @@ rounds:
   - name: "Main Acquisition"
     steps:
       - step_type: imaging
-        config: main_acquisition
+        protocol: main_acquisition
         fovs: main
 
   # Cleanup

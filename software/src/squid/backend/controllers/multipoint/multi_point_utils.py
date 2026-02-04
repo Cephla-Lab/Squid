@@ -55,6 +55,7 @@ class AcquisitionParameters:
 
     use_fluidics: bool
     skip_saving: bool = False
+    acquisition_order: str = "channel_first"  # "channel_first" or "z_first"
 
     # Downsampled view generation parameters
     generate_downsampled_views: bool = False

@@ -319,15 +319,15 @@ class ExperimentRunner:
             return StepResult.skipped("imaging", "No progress tracking")
 
         try:
-            config_name = step.config
-            if config_name not in self._protocol.imaging_configs:
+            config_name = step.protocol
+            if config_name not in self._protocol.imaging_protocols:
                 return StepResult.failed(
-                    "imaging", f"Imaging config '{config_name}' not found in protocol"
+                    "imaging", f"Imaging protocol '{config_name}' not found in protocol"
                 )
-            imaging_config = self._protocol.imaging_configs[config_name]
+            imaging_config = self._protocol.imaging_protocols[config_name]
 
             # Load FOV set if specified
-            if step.fovs != "default":
+            if step.fovs not in ("current", "default"):
                 if step.fovs not in self._protocol.fov_sets:
                     return StepResult.failed(
                         "imaging", f"FOV set '{step.fovs}' not found in protocol"
@@ -346,7 +346,7 @@ class ExperimentRunner:
             if hasattr(self._experiment_manager, "create_round_subfolder"):
                 round_path = self._experiment_manager.create_round_subfolder(
                     context=self._context,
-                    round_name=f"round_{round_idx:03d}_{step.config}",
+                    round_name=f"round_{round_idx:03d}_{step.protocol}",
                 )
             else:
                 round_path = self._experiment_path
