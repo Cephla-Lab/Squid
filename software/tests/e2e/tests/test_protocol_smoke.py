@@ -41,7 +41,7 @@ def test_protocol_smoke(
 
     protocol = ProtocolLoader().load(str(protocol_path))
     expected_rounds = len(protocol.rounds)
-    expected_round_dirs = protocol.total_imaging_rounds()
+    expected_round_dirs = protocol.total_imaging_steps()
 
     result = sim.run_and_wait(timeout_s=180)
 

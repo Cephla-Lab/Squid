@@ -30,7 +30,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_1_hybridization
       - step_type: imaging
-        config: fish_standard
+        protocol: fish_standard
 ```
 
 Load fluidics protocols into the FluidicsController separately (UI or test harness).

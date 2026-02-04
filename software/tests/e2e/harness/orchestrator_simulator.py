@@ -411,7 +411,7 @@ class OrchestratorSimulator(BaseSimulator):
 
         return OrchestratorResult(
             success=success,
-            error=error_events[0].error_message if error_events else None,
+            error=error_events[0].message if error_events else None,
             total_rounds=len(self.orchestrator.protocol.rounds) if self.orchestrator.protocol else 0,
             completed_rounds=len([e for e in round_completed if e.success]),
             elapsed_time_s=elapsed,

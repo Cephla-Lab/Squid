@@ -1,5 +1,5 @@
 xy_enabled: true
-xy_mode: Select Wells
+xy_mode: Load Coordinates
 z_enabled: false
 z_mode: From Bottom
 time_enabled: false

@@ -433,6 +433,15 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
 
             time.sleep(poll_interval_s)
 
+        # Wait for the worker thread's _reset_to_idle() to finish so the
+        # controller is ready for the next run_protocol() call immediately.
+        idle_deadline = time.monotonic() + scale_duration(2.0, min_seconds=0.5)
+        while self.state != FluidicsControllerState.IDLE:
+            if time.monotonic() > idle_deadline:
+                _log.warning("Timed out waiting for controller to return to IDLE")
+                break
+            time.sleep(poll_interval_s)
+
         return self._last_result
 
     def pause(self) -> bool:

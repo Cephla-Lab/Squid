@@ -276,7 +276,7 @@ def main():
                 print()
                 print("Errors:")
                 for e in errors:
-                    print(f"  {e.error_message}")
+                    print(f"  {e.message}")
 
         print()
         success = final_state == OrchestratorState.COMPLETED

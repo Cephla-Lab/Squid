@@ -169,8 +169,8 @@ def assert_output_structure_valid(
             assert_coordinates_csv_valid(str(coordinates_path))
 
         if check_images:
-            # Check for at least one image file
-            image_files = list(round_dir.glob("*.tiff")) + list(round_dir.glob("*.bmp"))
+            # Check for at least one image file (may be in region subdirectories)
+            image_files = list(round_dir.rglob("*.tiff")) + list(round_dir.rglob("*.bmp"))
             assert len(image_files) > 0, (
                 f"No image files found in {round_dir}"
             )
@@ -203,7 +203,7 @@ def assert_coordinates_csv_valid(
         fieldnames = reader.fieldnames or []
 
     # Validate required columns
-    required_columns = ["x (mm)", "y (mm)", "z (um)", "region"]
+    required_columns = ["x (mm)", "y (mm)", "z (mm)", "region"]
     if rows:
         for col in required_columns:
             assert col in fieldnames, (
@@ -235,7 +235,7 @@ def assert_no_errors(monitor: "EventMonitor") -> None:
 
     assert len(errors) == 0, (
         f"Expected no errors, but got {len(errors)}: "
-        f"{[e.error_message for e in errors]}"
+        f"{[e.message for e in errors]}"
     )
 
 
