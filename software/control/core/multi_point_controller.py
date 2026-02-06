@@ -306,7 +306,13 @@ class MultiPointController:
     def set_z_stacking_config(self, z_stacking_config_index):
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
-        print(f"z-stacking configuration set to {self.z_stacking_config}")
+            self._log.debug(f"z-stacking configuration set to {self.z_stacking_config}")
+        else:
+            self._log.warning(
+                f"Invalid z_stacking_config_index: {z_stacking_config_index}. "
+                f"Valid indices: {list(control._def.Z_STACKING_CONFIG_MAP.keys())}. "
+                f"Keeping current config: {self.z_stacking_config}"
+            )
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
