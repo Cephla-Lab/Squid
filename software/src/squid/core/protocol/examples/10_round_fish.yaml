@@ -19,8 +19,8 @@ imaging_protocols:
   fish_standard:
     description: "Standard FISH imaging"
     channels:
-      - DAPI
-      - Cy5
+      - "Fluorescence 405 nm Ex"
+      - "Fluorescence 638 nm Ex"
     z_stack:
       planes: 5
       step_um: 0.5

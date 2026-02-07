@@ -115,6 +115,7 @@ class RoundProgress:
     round_name: str
     current_step_index: int = 0  # V2: position within round's steps list
     total_steps: int = 0  # V2: total steps in this round
+    current_step_type: str = ""  # "fluidics", "imaging", "intervention", ""
     fluidics_step_index: int = 0
     total_fluidics_steps: int = 0
     imaging_fov_index: int = 0
@@ -138,7 +139,12 @@ class ExperimentProgress:
 
     @property
     def progress_percent(self) -> float:
-        """Calculate overall progress percentage."""
+        """Calculate overall progress percentage.
+
+        Uses step-based progress: each step in the round contributes equally,
+        with sub-progress from the active subsystem (fluidics FOV tracking or
+        imaging FOV tracking) within the current step.
+        """
         if self.total_rounds == 0:
             return 0.0
 
@@ -148,29 +154,43 @@ class ExperimentProgress:
         # Add progress within current round
         if self.current_round is not None:
             round_frac = 1.0 / self.total_rounds
-            imaging_fovs = self.current_round.total_imaging_fovs
-            fluidics_steps = self.current_round.total_fluidics_steps
+            total_steps = self.current_round.total_steps
 
-            if imaging_fovs > 0 and fluidics_steps == 0:
-                imaging_progress = self.current_round.imaging_fov_index / imaging_fovs
-                imaging_progress = min(imaging_progress, 1.0)
-                round_progress += imaging_progress * round_frac
-            elif fluidics_steps > 0 and imaging_fovs == 0:
-                fluidics_progress = self.current_round.fluidics_step_index / fluidics_steps
-                fluidics_progress = min(fluidics_progress, 1.0)
-                round_progress += fluidics_progress * round_frac
-            elif imaging_fovs > 0 and fluidics_steps > 0:
-                imaging_progress = self.current_round.imaging_fov_index / imaging_fovs
-                imaging_progress = min(imaging_progress, 1.0)
-                fluidics_progress = self.current_round.fluidics_step_index / fluidics_steps
-                fluidics_progress = min(fluidics_progress, 1.0)
-                round_progress += imaging_progress * round_frac * 0.8
-                round_progress += fluidics_progress * round_frac * 0.2
-            elif self.current_round.total_steps > 0:
-                step_progress = min(
-                    self.current_round.current_step_index + 1, self.current_round.total_steps
-                ) / self.current_round.total_steps
-                round_progress += step_progress * round_frac
+            if total_steps > 0:
+                step_frac = round_frac / total_steps
+                # Progress from completed steps
+                round_progress += self.current_round.current_step_index * step_frac
+
+                # Sub-progress within current step based on active operation
+                sub = 0.0
+                step_type = self.current_round.current_step_type
+                if step_type == "imaging" and self.current_round.total_imaging_fovs > 0:
+                    sub = min(
+                        self.current_round.imaging_fov_index
+                        / self.current_round.total_imaging_fovs,
+                        1.0,
+                    )
+                elif step_type == "fluidics" and self.current_round.total_fluidics_steps > 0:
+                    sub = min(
+                        self.current_round.fluidics_step_index
+                        / self.current_round.total_fluidics_steps,
+                        1.0,
+                    )
+                # intervention and unknown step types: sub = 0 (no sub-progress)
+
+                round_progress += sub * step_frac
+            else:
+                # Fallback for rounds without known step count
+                imaging_fovs = self.current_round.total_imaging_fovs
+                fluidics_steps = self.current_round.total_fluidics_steps
+                if imaging_fovs > 0:
+                    round_progress += min(
+                        self.current_round.imaging_fov_index / imaging_fovs, 1.0
+                    ) * round_frac
+                elif fluidics_steps > 0:
+                    round_progress += min(
+                        self.current_round.fluidics_step_index / fluidics_steps, 1.0
+                    ) * round_frac
 
         return round_progress * 100.0
 

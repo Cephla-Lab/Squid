@@ -466,14 +466,21 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
     def resume(self) -> bool:
         """Resume paused protocol execution.
 
+        Always clears the pause event to prevent the worker thread from
+        entering PAUSED after the caller has already decided to resume.
+        This handles the race where resume() is called before the worker
+        thread reaches its pause checkpoint.
+
         Returns:
             True if resume was successful, False if not in PAUSED state
         """
+        # Always clear pause event first to prevent late-arriving pause
+        self._pause_event.clear()
+
         if not self._is_in_state(FluidicsControllerState.PAUSED):
             return False
 
         _log.info("Resuming protocol execution")
-        self._pause_event.clear()
 
         # Reset abort flag
         service = self._get_fluidics_service()

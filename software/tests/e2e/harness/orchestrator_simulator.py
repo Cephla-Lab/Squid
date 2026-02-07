@@ -357,7 +357,7 @@ class OrchestratorSimulator(BaseSimulator):
             return OrchestratorResult(
                 success=False,
                 error="Failed to start experiment",
-                final_state=self.orchestrator.state.value,
+                final_state=self.orchestrator.state.name,
             )
 
         # Wait for completion with auto-acknowledgment
@@ -368,7 +368,7 @@ class OrchestratorSimulator(BaseSimulator):
                     success=False,
                     error=f"Timeout after {timeout_s}s",
                     elapsed_time_s=elapsed,
-                    final_state=self.orchestrator.state.value,
+                    final_state=self.orchestrator.state.name,
                     state_changes=self.monitor.get_events(OrchestratorStateChanged),
                     round_started_events=self.monitor.get_events(OrchestratorRoundStarted),
                     round_completed_events=self.monitor.get_events(OrchestratorRoundCompleted),
@@ -422,7 +422,7 @@ class OrchestratorSimulator(BaseSimulator):
             warnings=warnings,
             intervention_events=intervention_events,
             error_events=error_events,
-            final_state=final_state.value,
+            final_state=final_state.name,
             experiment_path=experiment_path,
         )
 

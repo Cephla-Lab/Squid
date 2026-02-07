@@ -201,13 +201,22 @@ class ExperimentRunner:
 
             # Execute the step
             if isinstance(step, FluidicsStep):
+                with self._progress_lock:
+                    if self._progress.current_round is not None:
+                        self._progress.current_round.current_step_type = "fluidics"
                 self._on_operation_change("fluidics")
                 result = self._execute_fluidics_step(round_idx, step)
             elif isinstance(step, ImagingStep):
+                with self._progress_lock:
+                    if self._progress.current_round is not None:
+                        self._progress.current_round.current_step_type = "imaging"
                 self._on_operation_change("imaging")
                 fov_resume = resume_imaging_fov if step_idx == resume_step_index else 0
                 result = self._execute_imaging_step(round_idx, step, resume_fov=fov_resume)
             elif isinstance(step, InterventionStep):
+                with self._progress_lock:
+                    if self._progress.current_round is not None:
+                        self._progress.current_round.current_step_type = "intervention"
                 self._on_operation_change("intervention")
                 result = self._execute_intervention_step(round_idx, step)
             else:

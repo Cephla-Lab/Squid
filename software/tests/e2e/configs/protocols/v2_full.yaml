@@ -14,7 +14,7 @@ imaging_protocols:
   dapi_only:
     description: "DAPI reference imaging"
     channels:
-      - DAPI
+      - "Fluorescence 405 nm Ex"
     z_stack:
       planes: 1
     focus:
@@ -24,14 +24,14 @@ imaging_protocols:
   fish_multichannel:
     description: "Multi-channel FISH imaging with overrides"
     channels:
-      - DAPI
-      - name: Cy3
+      - "Fluorescence 405 nm Ex"
+      - name: "Fluorescence 561 nm Ex"
         exposure_time_ms: 150
         illumination_intensity: 60
-      - name: Cy5
+      - name: "Fluorescence 638 nm Ex"
         exposure_time_ms: 200
         illumination_intensity: 80
-      - name: Cy7
+      - name: "Fluorescence 730 nm Ex"
         exposure_time_ms: 300
         illumination_intensity: 90
     z_stack:
@@ -46,12 +46,15 @@ imaging_protocols:
   quick_check:
     description: "Quick QC imaging without saving"
     channels:
-      - DAPI
+      - "Fluorescence 405 nm Ex"
     z_stack:
       planes: 1
     focus:
       enabled: false
     skip_saving: true
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   # Initial setup
@@ -63,6 +66,7 @@ rounds:
         message: "Verify sample is properly mounted and in focus"
       - step_type: imaging
         protocol: dapi_only
+        fovs: main
 
   # Hybridization rounds with repeat
   - name: "Hybridization Round {i}"
@@ -74,6 +78,7 @@ rounds:
         protocol: stringent_wash
       - step_type: imaging
         protocol: fish_multichannel
+        fovs: main
       - step_type: fluidics
         protocol: strip
 
@@ -82,5 +87,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: quick_check
+        fovs: main
       - step_type: intervention
         message: "Review acquisition quality before completing experiment"

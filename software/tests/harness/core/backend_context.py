@@ -372,10 +372,19 @@ class BackendContext:
         return self._multipoint_controller
 
     def _get_fake_laser_af_controller(self):
-        """Get a fake laser AF controller for testing."""
-        # Import the fake from test_stubs
+        """Get a fake laser AF controller for testing.
+
+        Sets a dummy reference so protocols with laser AF enabled can run
+        without the 'Laser Autofocus Not Ready' validation error.
+        """
         from tests.unit.control.test_stubs import FakeLaserAutofocusController
-        return FakeLaserAutofocusController()
+        import numpy as np
+
+        controller = FakeLaserAutofocusController()
+        controller.laser_af_properties.set_reference_image(
+            np.zeros((10, 10), dtype=np.uint8)
+        )
+        return controller
 
     # =========================================================================
     # Convenience Methods

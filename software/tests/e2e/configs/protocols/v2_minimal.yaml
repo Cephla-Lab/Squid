@@ -9,14 +9,18 @@ imaging_protocols:
   standard:
     description: "Single channel imaging"
     channels:
-      - DAPI
+      - "Fluorescence 405 nm Ex"
     z_stack:
       planes: 1
     focus:
       enabled: false
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   - name: "Round 1"
     steps:
       - step_type: imaging
         protocol: standard
+        fovs: main

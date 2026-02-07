@@ -9,8 +9,8 @@ imaging_protocols:
   fish_standard:
     description: "FISH imaging"
     channels:
-      - DAPI
-      - Cy5
+      - "Fluorescence 405 nm Ex"
+      - "Fluorescence 638 nm Ex"
     z_stack:
       planes: 5
       step_um: 0.5
@@ -18,6 +18,9 @@ imaging_protocols:
       enabled: true
       method: laser
       interval_fovs: 1
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   - name: "Round {i}"
@@ -27,5 +30,6 @@ rounds:
         protocol: probe_{i}
       - step_type: imaging
         protocol: fish_standard
+        fovs: main
       - step_type: fluidics
         protocol: wash

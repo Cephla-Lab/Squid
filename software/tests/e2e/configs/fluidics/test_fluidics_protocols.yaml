@@ -211,6 +211,56 @@ protocols:
       - operation: incubate
         duration_s: 1
 
+  probe_6:
+    description: "Probe set 6"
+    steps:
+      - operation: flow
+        solution: probe_6
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_7:
+    description: "Probe set 7"
+    steps:
+      - operation: flow
+        solution: probe_7
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_8:
+    description: "Probe set 8"
+    steps:
+      - operation: flow
+        solution: probe_8
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_9:
+    description: "Probe set 9"
+    steps:
+      - operation: flow
+        solution: probe_9
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
+  probe_10:
+    description: "Probe set 10"
+    steps:
+      - operation: flow
+        solution: probe_10
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1
+
   wash:
     description: "Standard wash"
     steps:

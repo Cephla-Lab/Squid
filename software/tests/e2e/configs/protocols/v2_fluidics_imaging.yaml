@@ -9,14 +9,17 @@ imaging_protocols:
   standard:
     description: "Standard imaging after wash"
     channels:
-      - DAPI
-      - GFP
+      - "Fluorescence 405 nm Ex"
+      - "Fluorescence 488 nm Ex"
     z_stack:
       planes: 3
       step_um: 1.0
     focus:
       enabled: true
       method: laser
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   - name: "Round 1"
@@ -25,3 +28,4 @@ rounds:
         protocol: wash
       - step_type: imaging
         protocol: standard
+        fovs: main
