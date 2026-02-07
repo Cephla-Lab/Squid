@@ -381,6 +381,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         initial_channel_configs=initial_channel_names,
         z_ustep_per_mm=z_ustep_per_mm,
         initial_z_mm=initial_z_mm,
+        config_repo=channel_manager.config_repo,
     )
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
         gui._ui_event_bus,
