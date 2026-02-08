@@ -1,13 +1,17 @@
 """Unified Acquisition Setup tab.
 
 Compact vertically-stacked panel: colored-border tab row, XY controls,
-Z/Focus compact rows, channel list, options row.
+Z/Focus compact rows, channel list, options row, acquisition controls.
 """
 
+import csv
+import os
+import tempfile
 from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import numpy as np
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QEventLoop, QTimer
 from qtpy.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -19,6 +23,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -36,6 +41,8 @@ from _def import (
 )
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.events import (
+    AcquisitionProgress,
+    AcquisitionStateChanged,
     ActiveAcquisitionTabChanged,
     AddFlexibleRegionCommand,
     BinningChanged,
@@ -45,18 +52,27 @@ from squid.core.events import (
     LoadScanCoordinatesCommand,
     ManualShapeDrawingEnabledChanged,
     ManualShapesChanged,
+    MosaicLayersCleared,
     MosaicLayersInitialized,
     ObjectiveChanged,
+    RequestScanCoordinatesSnapshotCommand,
+    ScanCoordinatesSnapshot,
     ScanCoordinatesUpdated,
+    SetAcquisitionChannelsCommand,
+    SetAcquisitionParametersCommand,
+    SetAcquisitionPathCommand,
     SetManualScanCoordinatesCommand,
     SetWellSelectionScanCoordinatesCommand,
     StagePositionChanged,
+    StartAcquisitionCommand,
+    StartNewExperimentCommand,
+    StopAcquisitionCommand,
     handles,
 )
 from squid.core.protocol.imaging_protocol import FocusConfig, ImagingProtocol, ZStackConfig
 from squid.core.utils.geometry_utils import calculate_scan_size_from_coverage, calculate_well_coverage
 from squid.ui.widgets.acquisition.channel_order_widget import ChannelOrderWidget
-from squid.ui.widgets.base import EventBusWidget
+from squid.ui.widgets.base import CollapsibleGroupBox, EventBusWidget
 
 _FEATURE_FLAGS = get_feature_flags()
 _log = squid.core.logging.get_logger(__name__)
@@ -118,6 +134,12 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._next_region_id = 1
         self._manual_shapes_mm = None
 
+        self._is_acquiring = False
+        self._active_experiment_id: Optional[str] = None
+        self._snapshot_request_id: Optional[str] = None
+        self._snapshot_loop = None
+        self._snapshot_result = None
+
         self._setup_ui()
         self._connect_signals()
         self._update_tab_styles()
@@ -155,10 +177,8 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._build_z_range_row(vbox)
         # 6. Focus controls row (hidden by default)
         self._build_focus_controls(vbox)
-        # 7. Channel list
-        self._build_channel_list(vbox)
-        # 8. Options row
-        self._build_options_row(vbox)
+        # 7. Channel list + Acquisition controls (side by side)
+        self._build_channel_and_acquisition(vbox)
 
         vbox.addStretch()
 
@@ -370,6 +390,8 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._fov_count_label.setStyleSheet("font-weight: bold;")
         h.addWidget(self._fov_count_label)
         h.addStretch()
+        self._btn_clear_fovs = QPushButton("Clear FOVs")
+        h.addWidget(self._btn_clear_fovs)
         self._btn_save_coords = QPushButton("Save Coordinates CSV")
         h.addWidget(self._btn_save_coords)
         vbox.addLayout(h)
@@ -506,30 +528,129 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._focus_controls_frame.setVisible(False)
         vbox.addWidget(self._focus_controls_frame)
 
-    def _build_channel_list(self, vbox: QVBoxLayout) -> None:
-        self._channel_order_widget = ChannelOrderWidget(initial_channels=self._channel_configs)
-        self._channel_order_widget.list_channels.setMaximumHeight(140)
-        vbox.addWidget(self._channel_order_widget)
+    def _build_channel_and_acquisition(self, vbox: QVBoxLayout) -> None:
+        # --- Horizontal split: channels (left) | acquisition (right) ---
+        hbox = QHBoxLayout()
+        hbox.setSpacing(8)
 
-    def _build_options_row(self, vbox: QVBoxLayout) -> None:
+        # Left column: channel list
+        left = QVBoxLayout()
+        left.setSpacing(4)
+        self._channel_order_widget = ChannelOrderWidget(initial_channels=self._channel_configs)
+        left.addWidget(self._channel_order_widget)
+        hbox.addLayout(left, 1)
+
+        # Right column: acquisition controls
+        right = QVBoxLayout()
+        right.setSpacing(4)
+
+        # Quick Scan collapsible section
+        self._quick_scan_group = CollapsibleGroupBox("Quick Scan", collapsed=True)
+        qs = self._quick_scan_group.content
+
+        grid_row = QHBoxLayout()
+        grid_row.setContentsMargins(0, 4, 0, 4)
+        grid_row.addWidget(QLabel("Nx"))
+        self._qs_nx = QSpinBox()
+        self._qs_nx.setRange(1, 50)
+        self._qs_nx.setValue(1)
+        self._qs_nx.setKeyboardTracking(False)
+        grid_row.addWidget(self._qs_nx)
+        grid_row.addWidget(QLabel("Ny"))
+        self._qs_ny = QSpinBox()
+        self._qs_ny.setRange(1, 50)
+        self._qs_ny.setValue(1)
+        self._qs_ny.setKeyboardTracking(False)
+        grid_row.addWidget(self._qs_ny)
+        grid_row.addWidget(QLabel("Overlap"))
+        self._qs_overlap = QDoubleSpinBox()
+        self._qs_overlap.setRange(0, 99)
+        self._qs_overlap.setDecimals(1)
+        self._qs_overlap.setSingleStep(5.0)
+        self._qs_overlap.setValue(10.0)
+        self._qs_overlap.setSuffix(" %")
+        self._qs_overlap.setKeyboardTracking(False)
+        grid_row.addWidget(self._qs_overlap)
+        qs.addLayout(grid_row)
+
+        self._btn_quick_scan = QPushButton("Quick Scan")
+        self._btn_quick_scan.setMinimumHeight(28)
+        self._btn_quick_scan.setStyleSheet(
+            "QPushButton { background-color: #2e7d32; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #388e3c; }"
+            "QPushButton:disabled { background-color: #a5d6a7; color: #e0e0e0; }"
+        )
+        self._btn_quick_scan.setToolTip(
+            "Scan Nx\u00d7Ny grid at current position with selected channels. Single z plane. No files saved."
+        )
+        qs.addWidget(self._btn_quick_scan)
+        right.addWidget(self._quick_scan_group)
+
+        # Save path row
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
-        h.addWidget(QLabel("Format:"))
+        self._save_path_edit = QLineEdit()
+        self._save_path_edit.setPlaceholderText("Experiment folder...")
+        h.addWidget(self._save_path_edit, 1)
+        self._btn_browse_path = QPushButton("Browse")
+        h.addWidget(self._btn_browse_path)
+        right.addLayout(h)
+
+        # Experiment ID
+        from datetime import datetime
+
+        self._experiment_id_edit = QLineEdit()
+        self._experiment_id_edit.setPlaceholderText("Experiment ID")
+        self._experiment_id_edit.setText(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+        right.addWidget(self._experiment_id_edit)
+
+        # Options row: format, skip saving
+        opts = QHBoxLayout()
+        opts.setContentsMargins(0, 0, 0, 0)
+        opts.addWidget(QLabel("Format:"))
         self._save_format = QComboBox()
         self._save_format.addItems(["OME-TIFF", "TIFF", "Zarr V3"])
-        h.addWidget(self._save_format)
+        opts.addWidget(self._save_format)
         self._skip_saving = QCheckBox("Skip Saving")
-        h.addWidget(self._skip_saving)
-        h.addStretch()
+        opts.addWidget(self._skip_saving)
+        opts.addStretch()
+        right.addLayout(opts)
+
+        # Start/Stop button
+        self._btn_start_stop = QPushButton("Start Acquisition")
+        self._btn_start_stop.setCheckable(True)
+        self._btn_start_stop.setMinimumHeight(32)
+        right.addWidget(self._btn_start_stop)
+
+        # Progress bar
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFormat("")
+        self._progress_bar.setTextVisible(True)
+        right.addWidget(self._progress_bar)
+
+        # Progress label
+        self._progress_label = QLabel("Ready")
+        self._progress_label.setStyleSheet("color: gray; font-size: 11px;")
+        right.addWidget(self._progress_label)
+
+        right.addStretch()
+        hbox.addLayout(right, 1)
+        vbox.addLayout(hbox)
+
+        # Protocol save/load row (full width below)
+        proto = QHBoxLayout()
+        proto.setContentsMargins(0, 0, 0, 0)
         self._protocol_name = QLineEdit()
         self._protocol_name.setPlaceholderText("Protocol name")
-        self._protocol_name.setMaximumWidth(150)
-        h.addWidget(self._protocol_name)
+        proto.addWidget(self._protocol_name, 1)
         self._btn_save_protocol = QPushButton("Save Proto")
-        h.addWidget(self._btn_save_protocol)
+        proto.addWidget(self._btn_save_protocol)
         self._btn_load_protocol = QPushButton("Load Proto")
-        h.addWidget(self._btn_load_protocol)
-        vbox.addLayout(h)
+        proto.addWidget(self._btn_load_protocol)
+        vbox.addLayout(proto)
+
 
     # =========================================================================
     # Styles
@@ -581,6 +702,10 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._skip_saving.toggled.connect(self._on_skip_saving_toggled)
         self._btn_save_protocol.clicked.connect(self._on_save_protocol)
         self._btn_load_protocol.clicked.connect(self._on_load_protocol)
+        self._btn_clear_fovs.clicked.connect(self._on_clear_fovs)
+        self._btn_browse_path.clicked.connect(self._on_browse_save_path)
+        self._btn_start_stop.clicked.connect(self._on_start_stop_acquisition)
+        self._btn_quick_scan.clicked.connect(self._quick_scan)
 
     # =========================================================================
     # Tab toggles
@@ -687,10 +812,18 @@ class AcquisitionSetupWidget(EventBusWidget):
 
     def _on_generate_fovs(self) -> None:
         if self._manual_shapes_mm is None:
+            _log.warning("Generate FOVs: no shapes stored (_manual_shapes_mm is None)")
+            return
+        if len(self._manual_shapes_mm) == 0:
+            _log.warning("Generate FOVs: shapes list is empty")
             return
         shapes_tuples = tuple(
             tuple(tuple(map(float, xy)) for xy in shape)
             for shape in self._manual_shapes_mm
+        )
+        _log.info(
+            f"Generate FOVs: publishing {len(shapes_tuples)} shapes, "
+            f"overlap={self._roi_overlap.value()}%"
         )
         self._publish(SetManualScanCoordinatesCommand(
             manual_shapes_mm=shapes_tuples,
@@ -744,8 +877,6 @@ class AcquisitionSetupWidget(EventBusWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Load Coordinates CSV", "", "CSV files (*.csv);;All files (*)")
         if not path:
             return
-        import csv
-        import os
         self._csv_filename_label.setText(os.path.basename(path))
         region_fov_coordinates: Dict[str, list] = {}
         try:
@@ -771,7 +902,230 @@ class AcquisitionSetupWidget(EventBusWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Save Coordinates CSV", "", "CSV files (*.csv)")
         if not path:
             return
-        QMessageBox.information(self, "Not Implemented", "Coordinate export will be available in a future update.")
+        snapshot = self._request_scan_coordinates_snapshot()
+        if snapshot is None:
+            QMessageBox.warning(self, "Snapshot Failed", "Could not retrieve scan coordinates. Is a scan configured?")
+            return
+        try:
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["region", "x_mm", "y_mm", "z_mm"])
+                for region_id, fovs in snapshot.region_fov_coordinates.items():
+                    for fov in fovs:
+                        x, y = fov[0], fov[1]
+                        z = fov[2] if len(fov) > 2 else self._cached_z_mm
+                        writer.writerow([region_id, f"{x:.6f}", f"{y:.6f}", f"{z:.6f}"])
+            _log.info(f"Saved coordinates to {path}")
+        except Exception as e:
+            _log.exception("Failed to save coordinates CSV")
+            QMessageBox.warning(self, "Save Error", f"Failed to save CSV: {e}")
+
+    # =========================================================================
+    # Acquisition controls
+    # =========================================================================
+
+    def _on_browse_save_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Experiment Folder")
+        if path:
+            self._save_path_edit.setText(path)
+
+    def _on_start_stop_acquisition(self) -> None:
+        if not self._is_acquiring:
+            self._start_acquisition()
+        else:
+            self._publish(StopAcquisitionCommand())
+
+    def _start_acquisition(self) -> None:
+        # Validate
+        selected = self._channel_order_widget.get_selected_channels_ordered()
+        if not selected:
+            QMessageBox.warning(self, "No Channels", "Select at least one channel.")
+            self._btn_start_stop.setChecked(False)
+            return
+        save_path = self._save_path_edit.text().strip()
+        if not save_path and not self._skip_saving.isChecked():
+            QMessageBox.warning(self, "No Save Path", "Set a save path or enable 'Skip Saving'.")
+            self._btn_start_stop.setChecked(False)
+            return
+
+        experiment_id = self._experiment_id_edit.text().strip()
+        if not experiment_id:
+            from datetime import datetime
+
+            experiment_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self._experiment_id_edit.setText(experiment_id)
+
+        # Map XY mode to MultiPointController's expected string
+        mode_map = {
+            _MODE_MULTIWELL: "Select Wells",
+            _MODE_ROI_TILING: "Manual",
+            _MODE_MULTIPOINT: "Manual",
+            _MODE_LOAD_CSV: "Load Coordinates",
+        }
+        xy_mode = mode_map.get(self._xy_mode_combo.currentIndex(), "Manual")
+
+        # Z-stacking config
+        z_stacking_config = self._z_direction.currentIndex() if self._z_checkbox.isChecked() else 1
+
+        # Focus settings
+        use_af = self._focus_checkbox.isChecked() and self._focus_method.currentIndex() == 0
+        use_reflection_af = self._focus_checkbox.isChecked() and self._focus_method.currentIndex() >= 1
+
+        # Publish command sequence
+        self._publish(SetAcquisitionParametersCommand(
+            delta_z_um=self._z_delta.value(),
+            n_z=self._z_nz.value() if self._z_checkbox.isChecked() else 1,
+            use_autofocus=use_af,
+            use_reflection_af=use_reflection_af,
+            skip_saving=self._skip_saving.isChecked(),
+            z_stacking_config=z_stacking_config,
+            widget_type="setup",
+        ))
+        self._publish(SetAcquisitionChannelsCommand(channel_names=selected))
+        if save_path:
+            self._publish(SetAcquisitionPathCommand(base_path=save_path))
+        self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
+
+        self._active_experiment_id = experiment_id
+        self._set_controls_enabled(False)
+        self._publish(StartAcquisitionCommand(xy_mode=xy_mode))
+        _log.info(f"Started acquisition: id={experiment_id}, xy_mode={xy_mode}")
+
+    def _quick_scan(self) -> None:
+        """One-click tiled scan at current stage position, no saving."""
+        selected = self._channel_order_widget.get_selected_channels_ordered()
+        if not selected:
+            QMessageBox.warning(self, "No Channels", "Select at least one channel.")
+            return
+
+        from datetime import datetime
+
+        experiment_id = f"quick_scan_{datetime.now().strftime('%H-%M-%S')}"
+        nx = self._qs_nx.value()
+        ny = self._qs_ny.value()
+        overlap = self._qs_overlap.value()
+
+        self._publish(SetAcquisitionParametersCommand(
+            skip_saving=True, n_z=1,
+            use_autofocus=False, use_reflection_af=False,
+            widget_type="setup",
+        ))
+        self._publish(SetAcquisitionChannelsCommand(channel_names=selected))
+        self._publish(SetAcquisitionPathCommand(base_path=tempfile.gettempdir()))
+        self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
+        self._active_experiment_id = experiment_id
+        self._set_controls_enabled(False)
+        # Pass grid params directly to controller — bypasses global ScanCoordinates
+        # so no FOVs appear in NavigationViewer
+        self._publish(StartAcquisitionCommand(
+            xy_mode="Manual",
+            quick_scan_center=(self._cached_x_mm, self._cached_y_mm, self._cached_z_mm),
+            quick_scan_nx=nx,
+            quick_scan_ny=ny,
+            quick_scan_overlap=overlap,
+        ))
+        _log.info(
+            f"Quick scan started: id={experiment_id}, {nx}x{ny} grid at "
+            f"({self._cached_x_mm:.3f}, {self._cached_y_mm:.3f}), channels={selected}"
+        )
+
+    def _on_clear_fovs(self) -> None:
+        self._publish(ClearScanCoordinatesCommand())
+        self._multipoint_positions.clear()
+        self._update_mp_table()
+
+    # =========================================================================
+    # Scan coordinate snapshot
+    # =========================================================================
+
+    def _request_scan_coordinates_snapshot(self, timeout_ms: int = 2000) -> Optional[ScanCoordinatesSnapshot]:
+        request_id = uuid4().hex
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+
+        self._snapshot_request_id = request_id
+        self._snapshot_loop = loop
+        self._snapshot_result = None
+
+        self._publish(RequestScanCoordinatesSnapshotCommand(request_id=request_id))
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec_()
+
+        if self._snapshot_request_id == request_id:
+            self._snapshot_request_id = None
+        self._snapshot_loop = None
+        result = self._snapshot_result
+        self._snapshot_result = None
+        return result
+
+    @handles(ScanCoordinatesSnapshot)
+    def _on_scan_coordinates_snapshot(self, event: ScanCoordinatesSnapshot) -> None:
+        if self._snapshot_request_id is None:
+            return
+        if event.request_id != self._snapshot_request_id:
+            return
+        self._snapshot_result = event
+        if self._snapshot_loop is not None:
+            self._snapshot_loop.quit()
+
+    # =========================================================================
+    # Acquisition state / progress
+    # =========================================================================
+
+    @handles(AcquisitionStateChanged)
+    def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
+        self._is_acquiring = event.in_progress
+        if event.in_progress:
+            self._btn_start_stop.setText("Stop Acquisition")
+            self._progress_bar.setFormat("Starting...")
+            self._progress_label.setStyleSheet("font-size: 11px;")
+            self._progress_label.setText("")
+            self._set_controls_enabled(False)
+        else:
+            self._btn_start_stop.setText("Start Acquisition")
+            self._btn_start_stop.setChecked(False)
+            self._progress_bar.setValue(0)
+            self._progress_bar.setFormat("")
+            self._progress_label.setStyleSheet("color: gray; font-size: 11px;")
+            self._progress_label.setText("Ready")
+            self._active_experiment_id = None
+            self._set_controls_enabled(True)
+            # Generate fresh experiment ID for next run
+            from datetime import datetime
+
+            self._experiment_id_edit.setText(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+
+    @handles(AcquisitionProgress)
+    def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
+        self._progress_bar.setValue(int(event.progress_percent))
+        self._progress_bar.setFormat(f"FOV {event.current_fov}/{event.total_fovs}")
+        eta = f"ETA: {int(event.eta_seconds)}s" if event.eta_seconds else ""
+        self._progress_label.setStyleSheet("font-size: 11px;")
+        self._progress_label.setText(
+            f"{event.current_channel} | {event.progress_percent:.0f}%"
+            + (f" | {eta}" if eta else "")
+        )
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        self._xy_checkbox.setEnabled(enabled)
+        self._xy_mode_combo.setEnabled(enabled and self._xy_checkbox.isChecked())
+        self._z_checkbox.setEnabled(enabled)
+        self._focus_checkbox.setEnabled(enabled)
+        self._channel_order_widget.setEnabled(enabled)
+        self._save_path_edit.setEnabled(enabled)
+        self._btn_browse_path.setEnabled(enabled)
+        self._experiment_id_edit.setEnabled(enabled)
+        self._btn_save_coords.setEnabled(enabled)
+        self._btn_clear_fovs.setEnabled(enabled)
+        self._btn_save_protocol.setEnabled(enabled)
+        self._btn_load_protocol.setEnabled(enabled)
+        self._skip_saving.setEnabled(enabled)
+        self._save_format.setEnabled(enabled)
+        self._btn_quick_scan.setEnabled(enabled)
+        for panel in self._xy_panels:
+            panel.setEnabled(enabled)
 
     # =========================================================================
     # Z handlers
@@ -948,6 +1302,17 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._mosaic_initialized = True
         self._xy_mode_combo.model().item(_MODE_ROI_TILING).setEnabled(True)
         self._xy_mode_combo.setItemData(_MODE_ROI_TILING, "", Qt.ToolTipRole)
+
+    @handles(MosaicLayersCleared)
+    def _on_mosaic_cleared(self, event: MosaicLayersCleared) -> None:
+        self._mosaic_initialized = False
+        self._xy_mode_combo.model().item(_MODE_ROI_TILING).setEnabled(False)
+        self._xy_mode_combo.setItemData(
+            _MODE_ROI_TILING, "Requires tile scan for coordinate reference", Qt.ToolTipRole
+        )
+        # If user was in ROI mode, switch to multiwell (the default)
+        if self._xy_mode_combo.currentIndex() == _MODE_ROI_TILING:
+            self._xy_mode_combo.setCurrentIndex(_MODE_MULTIWELL)
 
     @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:

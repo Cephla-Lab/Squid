@@ -700,7 +700,11 @@ class ScanCoordinates:
             if len(y_positions) > 1:
                 y_spacing = y_positions[1] - y_positions[0]
                 self._log.info(f"  Y positions: {[f'{y:.3f}' for y in y_positions[:4]]}{'...' if len(y_positions)>4 else ''} (spacing={y_spacing:.3f}mm)")
-        self._log.info(f"Added Region: {well_id} with {len(scan_coordinates)} FOV positions")
+        self._log.info(
+            f"Region '{well_id}': {len(scan_coordinates)} FOVs "
+            f"(scan={scan_size_mm:.3f}mm, fov={fov_width_mm:.3f}x{fov_height_mm:.3f}mm, "
+            f"step={step_x_mm:.3f}x{step_y_mm:.3f}mm, overlap={overlap_percent}%)"
+        )
 
     def remove_region(self, well_id: str) -> None:
         if well_id in self.region_centers:

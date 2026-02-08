@@ -655,6 +655,12 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         if self.is_current_acquisition_widget:
             self.display_progress_bar(event.in_progress)
+            if event.in_progress and not event.is_aborting:
+                # Reset progress state for new acquisition
+                self.progress_bar.setValue(0)
+                self.eta_seconds = 0
+                self.eta_label.setText("--:--")
+                self.acquisition_start_time = None
 
         if not event.in_progress:
             # Acquisition finished

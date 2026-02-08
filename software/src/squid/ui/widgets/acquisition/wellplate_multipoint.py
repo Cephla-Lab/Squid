@@ -1918,13 +1918,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         effective well size (for Circle shapes) and the coverage calculation.
         Scan_size stays constant; coverage is recalculated and coordinates are
         updated to reflect the new tile positions.
+
+        This must run regardless of which tab is active because scan coordinates
+        are shared global state that depends on the objective's pixel_size_factor.
         """
-        if not self._is_active_tab:
-            return
         if self.combobox_xy_mode.currentText() == "Select Wells":
             # Coverage is read-only, derived from scan_size and FOV
             self.update_coverage_from_scan_size()
-        self.update_coordinates()
+        self.update_coordinates(force=True)
 
     def update_manual_shape(self, shapes_data_mm):
         if shapes_data_mm and len(shapes_data_mm) > 0:
@@ -2267,7 +2268,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
-        self.reset_coordinates()
+        # Don't call reset_coordinates() here - completed (blue) FOVs should remain
+        # visible after acquisition. The user can trigger a recalculation by changing
+        # scan parameters or switching objectives.
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()

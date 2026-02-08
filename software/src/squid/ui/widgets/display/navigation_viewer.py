@@ -34,6 +34,7 @@ from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
     handles,
+    AcquisitionStateChanged,
     BinningChanged,
     ClearScanCoordinatesCommand,
     ClickToMoveEnabledChanged,
@@ -239,23 +240,54 @@ class NavigationViewer(QFrame):
 
     @handles(ObjectiveChanged, BinningChanged)
     def _on_redraw_trigger(self, _event: object) -> None:
+        self._log.info(
+            f"ObjectiveChanged/BinningChanged: redrawing. "
+            f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
+        )
         self.update_display_properties(self.sample)
+        self._log.info(
+            f"After redraw: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
+        )
+
+    @handles(AcquisitionStateChanged)
+    def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
+        """Clear completed FOVs when a new acquisition starts."""
+        if event.in_progress and not event.is_aborting:
+            self._log.info(
+                f"Acquisition started: clearing {len(self._completed_fovs)} completed FOVs"
+            )
+            self._completed_fovs.clear()
+            self._redraw_scan_overlay()
 
     @handles(CurrentFOVRegistered)
     def _on_current_fov_registered(self, event: CurrentFOVRegistered) -> None:
         """Mark an FOV as completed (moves from red to blue)."""
         pos = (event.x_mm, event.y_mm)
         self._log.info(
-            f"CurrentFOVRegistered received: {pos}, "
+            f"CurrentFOVRegistered received: ({pos[0]:.6f}, {pos[1]:.6f}), "
             f"size=({event.fov_width_mm}, {event.fov_height_mm}), "
             f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
         )
-        # Remove from pending if present (use tolerance for floating point comparison)
-        tolerance = 1e-6
-        self._pending_fovs = [
+        # Remove from pending if present - use 1e-3 (1 micron) tolerance for float comparison.
+        # Stage controllers and float arithmetic can introduce drift > 1e-6 easily.
+        tolerance = 1e-3
+        prev_pending_count = len(self._pending_fovs)
+        new_pending = [
             f for f in self._pending_fovs
             if abs(f.x_mm - pos[0]) > tolerance or abs(f.y_mm - pos[1]) > tolerance
         ]
+        matched = prev_pending_count - len(new_pending)
+        self._pending_fovs = new_pending
+        if matched == 0 and prev_pending_count > 0:
+            # Find the nearest pending FOV for diagnostic purposes
+            nearest_dist = min(
+                (abs(f.x_mm - pos[0]) + abs(f.y_mm - pos[1]))
+                for f in self._pending_fovs
+            ) if self._pending_fovs else float("inf")
+            self._log.warning(
+                f"CurrentFOVRegistered at ({pos[0]:.6f}, {pos[1]:.6f}) did not match "
+                f"any of {prev_pending_count} pending FOVs (nearest_dist={nearest_dist:.6f}mm)"
+            )
         # Add to completed with FOV dimensions from the event
         completed_fov = FovCenter(
             x_mm=event.x_mm,
@@ -270,21 +302,36 @@ class NavigationViewer(QFrame):
         )
         if not already_completed:
             self._completed_fovs.append(completed_fov)
-        self._log.info(f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
+        self._log.info(
+            f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}, "
+            f"matched={matched}"
+        )
         self._redraw_scan_overlay()
 
     @handles(AddScanCoordinateRegion)
     def _on_add_scan_coordinate_region(self, update: AddScanCoordinateRegion) -> None:
+        self._log.info(
+            f"AddScanCoordinateRegion: +{len(update.fov_centers)} FOVs, "
+            f"pending before={len(self._pending_fovs)}"
+        )
         self.register_fovs_to_image(update.fov_centers)
 
     @handles(RemovedScanCoordinateRegion)
     def _on_removed_scan_coordinate_region(
         self, update: RemovedScanCoordinateRegion
     ) -> None:
+        self._log.info(
+            f"RemovedScanCoordinateRegion: -{len(update.fov_centers)} FOVs, "
+            f"pending before={len(self._pending_fovs)}"
+        )
         self.deregister_fovs_from_image(update.fov_centers)
 
     @handles(ClearedScanCoordinates)
     def _on_cleared_scan_coordinates(self, _event: ClearedScanCoordinates) -> None:
+        self._log.info(
+            f"ClearedScanCoordinates: clearing {len(self._pending_fovs)} pending "
+            f"(keeping {len(self._completed_fovs)} completed)"
+        )
         self._clear_pending_fovs()
 
     def clear_slide(self) -> None:
