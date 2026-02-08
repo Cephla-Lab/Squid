@@ -151,34 +151,34 @@ class ExperimentProgress:
         # Base progress from completed rounds
         round_progress = self.current_round_index / self.total_rounds
 
-        # Add progress within current round
-        if self.current_round is not None:
+        # Add progress within current round (only if round is still active)
+        if self.current_round is not None and self.current_round_index < self.total_rounds:
             round_frac = 1.0 / self.total_rounds
             total_steps = self.current_round.total_steps
 
             if total_steps > 0:
                 step_frac = round_frac / total_steps
+                completed_steps = min(self.current_round.current_step_index, total_steps)
                 # Progress from completed steps
-                round_progress += self.current_round.current_step_index * step_frac
+                round_progress += completed_steps * step_frac
 
-                # Sub-progress within current step based on active operation
-                sub = 0.0
-                step_type = self.current_round.current_step_type
-                if step_type == "imaging" and self.current_round.total_imaging_fovs > 0:
-                    sub = min(
-                        self.current_round.imaging_fov_index
-                        / self.current_round.total_imaging_fovs,
-                        1.0,
-                    )
-                elif step_type == "fluidics" and self.current_round.total_fluidics_steps > 0:
-                    sub = min(
-                        self.current_round.fluidics_step_index
-                        / self.current_round.total_fluidics_steps,
-                        1.0,
-                    )
-                # intervention and unknown step types: sub = 0 (no sub-progress)
-
-                round_progress += sub * step_frac
+                # Sub-progress within current step (only if a step is still active)
+                if completed_steps < total_steps:
+                    sub = 0.0
+                    step_type = self.current_round.current_step_type
+                    if step_type == "imaging" and self.current_round.total_imaging_fovs > 0:
+                        sub = min(
+                            self.current_round.imaging_fov_index
+                            / self.current_round.total_imaging_fovs,
+                            1.0,
+                        )
+                    elif step_type == "fluidics" and self.current_round.total_fluidics_steps > 0:
+                        sub = min(
+                            self.current_round.fluidics_step_index
+                            / self.current_round.total_fluidics_steps,
+                            1.0,
+                        )
+                    round_progress += sub * step_frac
             else:
                 # Fallback for rounds without known step count
                 imaging_fovs = self.current_round.total_imaging_fovs
@@ -275,6 +275,30 @@ class OrchestratorRoundCompleted(Event):
 
 
 @dataclass
+class OrchestratorStepStarted(Event):
+    """Emitted when a step within a round begins."""
+
+    experiment_id: str
+    round_index: int
+    step_index: int
+    step_type: str  # "fluidics", "imaging", "intervention"
+    estimated_seconds: float = 0.0  # Estimated duration from validation
+
+
+@dataclass
+class OrchestratorStepCompleted(Event):
+    """Emitted when a step within a round completes."""
+
+    experiment_id: str
+    round_index: int
+    step_index: int
+    step_type: str
+    success: bool
+    error: Optional[str] = None
+    duration_seconds: float = 0.0  # Actual duration in seconds
+
+
+@dataclass
 class OrchestratorInterventionRequired(Event):
     """Emitted when operator intervention is needed."""
 
@@ -307,6 +331,9 @@ class StartOrchestratorCommand(Event):
     base_path: str
     experiment_id: Optional[str] = None
     resume_from_checkpoint: bool = False
+    start_from_round: int = 0
+    start_from_step: int = 0
+    run_single_round: bool = False
 
 
 @dataclass

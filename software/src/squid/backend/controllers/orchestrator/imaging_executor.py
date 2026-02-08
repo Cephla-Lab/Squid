@@ -173,6 +173,11 @@ class ImagingExecutor:
             return bool(self._multipoint.resume_acquisition())
         return False
 
+    def abort(self) -> None:
+        """Abort a running acquisition immediately."""
+        if hasattr(self._multipoint, "request_abort_aquisition"):
+            self._multipoint.request_abort_aquisition()
+
     def execute_with_config(
         self,
         imaging_config: ImagingProtocol,
@@ -287,7 +292,10 @@ class ImagingExecutor:
                 f"acquisition_order={acquisition_order}, "
                 f"focus={imaging_config.focus.method if imaging_config.focus.enabled else 'disabled'}"
             )
-            self._multipoint.run_acquisition(acquire_current_fov=False)
+            started = self._multipoint.run_acquisition(acquire_current_fov=False)
+            if not started:
+                _log.error("run_acquisition() returned False — acquisition did not start")
+                return False
 
             # Wait for acquisition to complete, checking cancel token
             wait_timeout_s = scale_duration(0.5, min_seconds=0.01)

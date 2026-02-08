@@ -5,7 +5,7 @@ Validates protocols before execution and provides time/disk estimates.
 Supports V2 step-based protocol format.
 """
 
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.protocol import (
@@ -44,6 +44,7 @@ class ProtocolValidator:
         self,
         available_channels: Optional[Set[str]] = None,
         available_fluidics_protocols: Optional[Set[str]] = None,
+        fluidics_duration_lookup: Optional[Callable[[str], Optional[float]]] = None,
         timing_estimates: Optional[Dict[str, float]] = None,
         disk_estimates: Optional[Dict[str, Any]] = None,
         camera_resolution: Tuple[int, int] = (2048, 2048),
@@ -55,12 +56,16 @@ class ProtocolValidator:
                 If None, channel validation is skipped.
             available_fluidics_protocols: Set of fluidics protocol names that have
                 been loaded. If None, fluidics protocol validation is skipped.
+            fluidics_duration_lookup: Callable that takes a protocol name and returns
+                estimated duration in seconds, or None if unknown. Typically
+                FluidicsController.estimate_protocol_duration.
             timing_estimates: Custom timing estimates (overrides defaults).
             disk_estimates: Custom disk usage estimates (overrides defaults).
             camera_resolution: Camera resolution (width, height) for disk estimation.
         """
         self._available_channels = available_channels
         self._available_fluidics_protocols = available_fluidics_protocols
+        self._fluidics_duration_lookup = fluidics_duration_lookup
         self._timing = {**DEFAULT_TIMING_ESTIMATES, **(timing_estimates or {})}
         self._disk = {**DEFAULT_DISK_ESTIMATES, **(disk_estimates or {})}
         self._camera_resolution = camera_resolution
@@ -199,13 +204,13 @@ class ProtocolValidator:
         for step_idx, step in enumerate(round_.steps):
             if isinstance(step, FluidicsStep):
                 fluidics_estimate = self._validate_fluidics_step(
-                    protocol, step, round_idx, round_.name
+                    step, round_idx, step_idx, round_.name
                 )
                 estimates.append(fluidics_estimate)
 
             elif isinstance(step, ImagingStepV2):
                 imaging_estimate = self._validate_imaging_step(
-                    protocol, step, round_idx, round_.name, fov_count
+                    protocol, step, round_idx, step_idx, round_.name, fov_count
                 )
                 estimates.append(imaging_estimate)
 
@@ -217,6 +222,7 @@ class ProtocolValidator:
                         round_name=round_.name,
                         description=step.message or "Operator intervention",
                         estimated_seconds=self._timing["intervention_wait_seconds"],
+                        step_index=step_idx,
                     )
                 )
 
@@ -224,17 +230,17 @@ class ProtocolValidator:
 
     def _validate_fluidics_step(
         self,
-        protocol: ExperimentProtocol,
         step: FluidicsStep,
         round_idx: int,
+        step_idx: int,
         round_name: str,
     ) -> OperationEstimate:
         """Validate a V2 fluidics step and estimate time.
 
         Args:
-            protocol: The full protocol (for accessing named resources).
             step: The FluidicsStep to validate.
             round_idx: Index of the round.
+            step_idx: Index of the step within the round.
             round_name: Name of the round.
 
         Returns:
@@ -255,11 +261,12 @@ class ProtocolValidator:
                     f"Available: {', '.join(sorted(available)) or 'none'}"
                 )
 
-        # Estimate time - use protocol estimate if defined, otherwise default
-        estimated_seconds = self._timing.get("fluidics_protocol_default_seconds", 60.0)
-        if protocol_name in protocol.fluidics_protocols:
-            fluidics_protocol = protocol.fluidics_protocols[protocol_name]
-            estimated_seconds = fluidics_protocol.estimated_duration_s()
+        # Estimate time from loaded fluidics protocols, fall back to default
+        estimated_seconds = self._timing.get("fluidics_per_step_seconds", 60.0)
+        if self._fluidics_duration_lookup is not None:
+            duration = self._fluidics_duration_lookup(protocol_name)
+            if duration is not None:
+                estimated_seconds = duration
 
         description = f"Fluidics protocol: {protocol_name}"
 
@@ -270,6 +277,7 @@ class ProtocolValidator:
             description=description,
             estimated_seconds=estimated_seconds,
             estimated_disk_bytes=0,
+            step_index=step_idx,
             valid=len(errors) == 0,
             validation_errors=tuple(errors),
             validation_warnings=tuple(warnings),
@@ -280,6 +288,7 @@ class ProtocolValidator:
         protocol: ExperimentProtocol,
         step: ImagingStepV2,
         round_idx: int,
+        step_idx: int,
         round_name: str,
         fov_count: int,
     ) -> OperationEstimate:
@@ -289,6 +298,7 @@ class ProtocolValidator:
             protocol: The full protocol (for accessing named resources).
             step: The ImagingStep to validate.
             round_idx: Index of the round.
+            step_idx: Index of the step within the round.
             round_name: Name of the round.
             fov_count: Number of FOVs to image.
 
@@ -312,6 +322,7 @@ class ProtocolValidator:
                 description=f"Unknown imaging protocol: {config_name}",
                 estimated_seconds=0,
                 estimated_disk_bytes=0,
+                step_index=step_idx,
                 valid=False,
                 validation_errors=tuple(errors),
                 validation_warnings=tuple(warnings),
@@ -361,6 +372,7 @@ class ProtocolValidator:
             description=description,
             estimated_seconds=time_seconds,
             estimated_disk_bytes=disk_bytes,
+            step_index=step_idx,
             valid=len(errors) == 0,
             validation_errors=tuple(errors),
             validation_warnings=tuple(warnings),

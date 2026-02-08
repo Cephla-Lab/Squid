@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from datetime import datetime
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.config.test_timing import scale_duration
@@ -34,6 +35,8 @@ from squid.backend.controllers.orchestrator.state import (
     StepOutcome,
     Checkpoint,
     OrchestratorInterventionRequired,
+    OrchestratorStepStarted,
+    OrchestratorStepCompleted,
 )
 from squid.backend.controllers.orchestrator.warnings import (
     WarningCategory,
@@ -80,6 +83,13 @@ class ExperimentRunner:
         on_pause: Callable[[], bool],
         on_add_warning: Callable[..., bool],
         intervention_acknowledged: threading.Event,
+        # Start-from parameters
+        start_from_round: int = 0,
+        start_from_step: int = 0,
+        run_single_round: bool = False,
+        # Time estimation
+        step_time_estimates: Optional[Dict[Tuple[int, int], float]] = None,
+        total_estimated_seconds: float = 0.0,
     ):
         self._protocol = protocol
         self._experiment_path = experiment_path
@@ -105,11 +115,67 @@ class ExperimentRunner:
         self._on_add_warning = on_add_warning
         self._intervention_acknowledged = intervention_acknowledged
 
+        # Start-from parameters
+        self._start_from_round = start_from_round
+        self._start_from_step = start_from_step
+        self._run_single_round = run_single_round
+
+        # Time estimation: per-step estimates from validation
+        self._step_time_estimates: Dict[Tuple[int, int], float] = step_time_estimates or {}
+        self._total_estimated_seconds = total_estimated_seconds
+
+        # Time tracking (populated during execution)
+        self._run_start_time: float = 0.0
+        self._step_start_time: float = 0.0
+        self._completed_estimated_total: float = 0.0
+        self._completed_actual_total: float = 0.0
+
         # Shared skip flags (written by controller, read by runner)
         self._skip_to_round_index: Optional[int] = None
         self._skip_current_round_now = False
         self._latest_eta_seconds: Optional[float] = None
         self._last_checkpoint_fov: Optional[int] = None
+
+    def compute_eta(self) -> Optional[float]:
+        """Compute estimated time remaining based on estimates and actuals.
+
+        Uses a scaling approach: for completed steps, we know the actual time.
+        For remaining steps, we apply a scaling factor derived from
+        actual/estimated ratio of completed steps.
+
+        Thread-safe: acquires _progress_lock internally. Do NOT call while
+        already holding _progress_lock.
+
+        Returns:
+            Estimated seconds remaining, or None if no estimate available.
+        """
+        if not self._step_time_estimates and self._total_estimated_seconds <= 0:
+            return None
+
+        with self._progress_lock:
+            current_round = self._progress.current_round_index
+            current_step = self._progress.current_step_index
+
+        # Sum estimates for steps not yet completed
+        remaining_estimated = 0.0
+        for (round_idx, step_idx), est in self._step_time_estimates.items():
+            if round_idx > current_round or (
+                round_idx == current_round and step_idx > current_step
+            ):
+                remaining_estimated += est
+
+        # Estimate for current step: estimate minus elapsed in current step
+        current_key = (current_round, current_step)
+        current_est = self._step_time_estimates.get(current_key, 0.0)
+        elapsed_in_step = time.monotonic() - self._step_start_time if self._step_start_time > 0 else 0.0
+        current_remaining = max(0.0, current_est - elapsed_in_step)
+
+        # Scaling factor from completed steps
+        scale = 1.0
+        if self._completed_estimated_total > 0 and self._completed_actual_total > 0:
+            scale = self._completed_actual_total / self._completed_estimated_total
+
+        return (remaining_estimated + current_remaining) * scale
 
     def run(self, resume_checkpoint: Optional[Checkpoint] = None) -> StepResult:
         """Execute all rounds. Called from the worker thread.
@@ -120,15 +186,23 @@ class ExperimentRunner:
         Returns:
             StepResult summarizing the experiment outcome
         """
-        start_round = 0
-        resume_step_index = 0
+        self._run_start_time = time.monotonic()
+        # Initialize ETA from total estimate
+        self._latest_eta_seconds = self._total_estimated_seconds if self._total_estimated_seconds > 0 else None
+        start_round = self._start_from_round
+        resume_step_index = self._start_from_step
         resume_imaging_fov = 0
         if resume_checkpoint is not None:
             start_round = resume_checkpoint.round_index
             resume_step_index = resume_checkpoint.step_index
             resume_imaging_fov = resume_checkpoint.imaging_fov_index
 
-        for round_idx in range(start_round, len(self._protocol.rounds)):
+        # Determine end round for run_single_round mode
+        end_round = len(self._protocol.rounds)
+        if self._run_single_round:
+            end_round = min(start_round + 1, len(self._protocol.rounds))
+
+        for round_idx in range(start_round, end_round):
             round_ = self._protocol.rounds[round_idx]
             self._cancel_token.check_point()
 
@@ -164,7 +238,12 @@ class ExperimentRunner:
             )
 
             # Mark round complete
-            self._progress.current_round.completed_at = datetime.now()
+            with self._progress_lock:
+                if self._progress.current_round is not None:
+                    self._progress.current_round.completed_at = datetime.now()
+            # Advance round index past completed round so progress reflects completion
+            with self._progress_lock:
+                self._progress.current_round_index = round_idx + 1
             if skipped:
                 self._on_round_completed(round_idx, round_.name, True, "skipped")
             else:
@@ -199,6 +278,37 @@ class ExperimentRunner:
                     self._progress.current_round.total_steps = len(round_.steps)
             self._on_checkpoint()
 
+            # Determine step type
+            if isinstance(step, FluidicsStep):
+                step_type = "fluidics"
+            elif isinstance(step, ImagingStep):
+                step_type = "imaging"
+            elif isinstance(step, InterventionStep):
+                step_type = "intervention"
+            else:
+                step_type = "unknown"
+
+            # Record step start time for ETA computation
+            self._step_start_time = time.monotonic()
+
+            # Publish step started event
+            step_estimate = self._step_time_estimates.get((round_idx, step_idx), 0.0)
+            self._event_bus.publish(
+                OrchestratorStepStarted(
+                    experiment_id=self._experiment_id,
+                    round_index=round_idx,
+                    step_index=step_idx,
+                    step_type=step_type,
+                    estimated_seconds=step_estimate,
+                )
+            )
+
+            # Update ETA before step executes
+            eta = self.compute_eta()
+            if eta is not None:
+                self._latest_eta_seconds = eta
+            self._on_progress()
+
             # Execute the step
             if isinstance(step, FluidicsStep):
                 with self._progress_lock:
@@ -221,6 +331,36 @@ class ExperimentRunner:
                 result = self._execute_intervention_step(round_idx, step)
             else:
                 result = StepResult.skipped("unknown", f"Unknown step type: {type(step)}")
+
+            # Record actual step duration and update ETA
+            step_duration = time.monotonic() - self._step_start_time
+            step_key = (round_idx, step_idx)
+            step_estimate = self._step_time_estimates.get(step_key, 0.0)
+            self._completed_actual_total += step_duration
+            self._completed_estimated_total += step_estimate
+
+            eta = self.compute_eta()
+            if eta is not None:
+                self._latest_eta_seconds = eta
+
+            # Publish step completed event
+            self._event_bus.publish(
+                OrchestratorStepCompleted(
+                    experiment_id=self._experiment_id,
+                    round_index=round_idx,
+                    step_index=step_idx,
+                    step_type=step_type,
+                    success=result.success,
+                    error=result.error_message,
+                    duration_seconds=step_duration,
+                )
+            )
+
+            # Advance step index past the completed step so progress reflects completion
+            with self._progress_lock:
+                self._progress.current_step_index = step_idx + 1
+                if self._progress.current_round is not None:
+                    self._progress.current_round.current_step_index = step_idx + 1
 
             # Handle result
             if result.outcome == StepOutcome.CANCELLED:
@@ -273,8 +413,8 @@ class ExperimentRunner:
         _log.info(f"Round {round_idx}: Running fluidics protocol '{protocol_name}'")
 
         if self._fluidics_controller is None:
-            _log.debug(f"[SIMULATED] Fluidics protocol: {protocol_name}")
-            return StepResult.ok("fluidics")
+            _log.warning(f"No fluidics controller configured — skipping protocol: {protocol_name}")
+            return StepResult.skipped("fluidics", "No fluidics controller configured")
 
         try:
             self._cancel_token.check_point()
@@ -407,7 +547,8 @@ class ExperimentRunner:
                 if not success:
                     return StepResult.failed("imaging", f"Imaging failed for round {round_idx}")
             else:
-                _log.debug(f"[SIMULATED] Imaging: config={config_name}")
+                _log.warning(f"No imaging executor configured — skipping imaging: config={config_name}")
+                return StepResult.skipped("imaging", "No imaging executor configured")
 
             with self._progress_lock:
                 self._progress.current_round.imaging_completed = True

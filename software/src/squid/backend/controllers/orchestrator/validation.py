@@ -37,6 +37,7 @@ class OperationEstimate:
     description: str
     estimated_seconds: float = 0.0
     estimated_disk_bytes: int = 0
+    step_index: int = -1  # Step index within round (-1 for setup overhead)
     valid: bool = True
     validation_errors: Tuple[str, ...] = ()
     validation_warnings: Tuple[str, ...] = ()

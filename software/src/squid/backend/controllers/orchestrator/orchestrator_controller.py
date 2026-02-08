@@ -14,7 +14,7 @@ V2 Protocol Support:
 from datetime import datetime
 import os
 import threading
-from typing import Optional, TYPE_CHECKING
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.events import EventBus, handles
@@ -38,6 +38,8 @@ from squid.backend.controllers.orchestrator.state import (
     OrchestratorProgress,
     OrchestratorRoundStarted,
     OrchestratorRoundCompleted,
+    OrchestratorStepStarted,
+    OrchestratorStepCompleted,
     OrchestratorError,
     StartOrchestratorCommand,
     StopOrchestratorCommand,
@@ -179,6 +181,15 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._current_operation: str = ""  # "initializing", "fluidics", "imaging", "intervention"
         self._protocol_path: Optional[str] = None
 
+        # Start-from parameters (set before starting experiment)
+        self._start_from_round: int = 0
+        self._start_from_step: int = 0
+        self._run_single_round: bool = False
+
+        # Step time estimates from validation (populated by _on_validate_protocol)
+        self._step_time_estimates: Dict[Tuple[int, int], float] = {}
+        self._total_estimated_seconds: float = 0.0
+
         # Worker thread and runner
         self._worker_thread: Optional[threading.Thread] = None
         self._runner: Optional[ExperimentRunner] = None
@@ -214,6 +225,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             base_path=cmd.base_path,
             experiment_id=cmd.experiment_id,
             resume_from_checkpoint=cmd.resume_from_checkpoint,
+            start_from_round=cmd.start_from_round,
+            start_from_step=cmd.start_from_step,
+            run_single_round=cmd.run_single_round,
         )
 
     @handles(StopOrchestratorCommand)
@@ -349,9 +363,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Get available channels from planner
             available_channels = self._planner.get_available_channel_names()
 
+            fluidics_duration_lookup = None
+            if self._fluidics_controller is not None:
+                fluidics_duration_lookup = self._fluidics_controller.estimate_protocol_duration
+
             validator = ProtocolValidator(
                 available_fluidics_protocols=available_fluidics,
                 available_channels=available_channels,
+                fluidics_duration_lookup=fluidics_duration_lookup,
             )
 
             # Get FOV count: prefer command parameter, then scan_coordinates, then default
@@ -366,6 +385,16 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Validate
             summary = validator.validate(protocol, fov_count=fov_count)
+
+            # Store step-level time estimates for ETA computation during execution
+            if summary.valid:
+                self._step_time_estimates = {}
+                self._total_estimated_seconds = summary.total_estimated_seconds
+                for op in summary.operation_estimates:
+                    if op.step_index >= 0:
+                        self._step_time_estimates[(op.round_index, op.step_index)] = (
+                            op.estimated_seconds
+                        )
 
             # Publish result
             self._event_bus.publish(
@@ -406,6 +435,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         base_path: str,
         experiment_id: Optional[str] = None,
         resume_from_checkpoint: bool = False,
+        start_from_round: int = 0,
+        start_from_step: int = 0,
+        run_single_round: bool = False,
     ) -> bool:
         """Start a new orchestrated experiment.
 
@@ -413,10 +445,17 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             protocol_path: Path to protocol YAML file
             base_path: Base directory for experiment data
             experiment_id: Optional experiment identifier
+            resume_from_checkpoint: Resume from saved checkpoint
+            start_from_round: 0-based round index to start from
+            start_from_step: 0-based step index within first round
+            run_single_round: If True, execute only the start round
 
         Returns:
             True if started successfully
         """
+        self._start_from_round = start_from_round
+        self._start_from_step = start_from_step
+        self._run_single_round = run_single_round
         if not self._is_in_state(OrchestratorState.IDLE):
             if self._is_in_state(
                 OrchestratorState.COMPLETED,
@@ -493,13 +532,21 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     def pause(self) -> bool:
         """Pause the experiment.
 
-        Uses _try_transition_to for atomic check-and-transition to avoid
-        race conditions between _is_in_state() and _transition_to().
+        Pauses executors first (idempotent), then atomically captures
+        pre-pause state and transitions to PAUSED under a single lock hold
+        to avoid race conditions.
         """
         if self._cancel_token is None:
             return False
 
-        # Capture pre-pause state for resume, then attempt atomic transition
+        # Pause executors first (idempotent — safe even if state check fails)
+        if self._imaging_executor is not None:
+            self._imaging_executor.pause()
+        if self._fluidics_controller is not None:
+            self._fluidics_controller.pause()
+        self._cancel_token.pause()
+
+        # Atomic: capture pre-state + transition under single lock hold
         with self._lock:
             pre_pause_state = self._state
             if pre_pause_state not in (
@@ -507,18 +554,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 OrchestratorState.WAITING_INTERVENTION,
             ):
                 return False
+            valid_targets = self._transitions.get(pre_pause_state, frozenset())
+            if OrchestratorState.PAUSED not in valid_targets:
+                return False
+            self._resume_state = pre_pause_state
+            old_state = self._state
+            self._state = OrchestratorState.PAUSED
 
-        # Pause both executors (idempotent)
-        if self._imaging_executor is not None:
-            self._imaging_executor.pause()
-        if self._fluidics_controller is not None:
-            self._fluidics_controller.pause()
-        self._cancel_token.pause()
-
-        if not self._try_transition_to(OrchestratorState.PAUSED):
-            return False
-
-        self._resume_state = pre_pause_state
+        self._fire_state_change(old_state, OrchestratorState.PAUSED)
         self._save_checkpoint()
         return True
 
@@ -564,6 +607,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             return False
 
         self._cancel_token.cancel("User abort")
+
+        # Stop imaging executor to interrupt any running acquisition
+        if self._imaging_executor is not None:
+            self._imaging_executor.abort()
 
         # Stop fluidics controller to interrupt any running protocol
         if self._fluidics_controller is not None:
@@ -745,6 +792,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 on_pause=self.pause,
                 on_add_warning=self.add_warning,
                 intervention_acknowledged=self._intervention_acknowledged,
+                start_from_round=self._start_from_round,
+                start_from_step=self._start_from_step,
+                run_single_round=self._run_single_round,
+                step_time_estimates=self._step_time_estimates,
+                total_estimated_seconds=self._total_estimated_seconds,
             )
             self._runner = runner
             result = runner.run(resume_checkpoint=self._resume_checkpoint)
@@ -801,12 +853,14 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     def _publish_progress(self) -> None:
         """Publish progress event."""
+        # Compute ETA outside progress_lock (compute_eta acquires it internally)
+        runner = self._runner
+        eta = runner.compute_eta() if runner is not None else None
+
         with self._progress_lock:
             current_round_name = ""
             if self._progress.current_round is not None:
                 current_round_name = self._progress.current_round.round_name
-
-            eta = self._runner._latest_eta_seconds if self._runner is not None else None
 
             event = OrchestratorProgress(
                 experiment_id=self._experiment_id,
