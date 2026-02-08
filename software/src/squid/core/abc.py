@@ -1196,15 +1196,13 @@ class AbstractFluidicsController(ABC):
         wash_port: int,
         volume_ul: float,
         flow_rate_ul_per_min: float,
-        repeats: int = 1,
     ) -> bool:
-        """Wash with solution from specified port.
+        """Wash with solution from specified port (flow + empty to waste).
 
         Args:
             wash_port: Port number for wash solution
-            volume_ul: Volume per wash cycle in microliters
+            volume_ul: Volume in microliters
             flow_rate_ul_per_min: Flow rate in microliters per minute
-            repeats: Number of wash cycles
 
         Returns:
             True if successful, False otherwise.
@@ -1290,6 +1288,17 @@ class AbstractFluidicsController(ABC):
             True if hardware is busy, False otherwise.
         """
         pass
+
+    def get_syringe_capacity_ul(self) -> float:
+        """Get the syringe capacity in microliters.
+
+        Default implementation returns 5000.0. Override in subclasses
+        that know the actual hardware capacity.
+
+        Returns:
+            Syringe capacity in microliters.
+        """
+        return 5000.0
 
     # Callback methods (optional, non-abstract for backwards compatibility)
     def set_phase_callback(self, callback: Optional["FluidicsPhaseCallback"]) -> None:

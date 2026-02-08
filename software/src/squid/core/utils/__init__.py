@@ -6,6 +6,7 @@ from squid.core.utils.geometry_utils import (
     get_effective_well_size,
     get_tile_positions,
     calculate_well_coverage,
+    calculate_scan_size_from_coverage,
 )
 from squid.core.utils.cache import (
     get_last_used_saving_path,
@@ -27,6 +28,7 @@ __all__ = [
     "get_effective_well_size",
     "get_tile_positions",
     "calculate_well_coverage",
+    "calculate_scan_size_from_coverage",
     "get_last_used_saving_path",
     "save_last_used_saving_path",
     "get_cached_value",

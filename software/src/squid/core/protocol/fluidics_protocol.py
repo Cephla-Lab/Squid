@@ -15,10 +15,17 @@ Example YAML (fluidics_protocols.yaml):
             solution: wash_buffer
             volume_ul: 500
             flow_rate_ul_per_min: 100
-            repeats: 3
+          - operation: wash
+            solution: wash_buffer
+            volume_ul: 500
+            flow_rate_ul_per_min: 100
+          - operation: wash
+            solution: wash_buffer
+            volume_ul: 500
+            flow_rate_ul_per_min: 100
           - operation: incubate
             duration_s: 30
-          - operation: aspirate
+          - operation: empty
 
       Probe_Delivery:
         description: "Deliver probe mix to chamber"
@@ -48,22 +55,21 @@ class FluidicsCommand(str, Enum):
     """Fluidics operation commands."""
 
     FLOW = "flow"  # Flow solution through chamber
-    ASPIRATE = "aspirate"  # Remove solution
+    EMPTY = "empty"  # Empty syringe to waste
     INCUBATE = "incubate"  # Wait with solution in place
     PRIME = "prime"  # Prime tubing
-    WASH = "wash"  # Wash step (flow + aspirate)
+    WASH = "wash"  # Wash step (flow + empty)
 
 
 class FluidicsProtocolStep(BaseModel):
     """A single step in a fluidics protocol.
 
     Attributes:
-        operation: The fluidics operation to execute (flow, wash, incubate, prime, aspirate)
+        operation: The fluidics operation to execute (flow, wash, incubate, prime, empty)
         solution: Name/ID of the solution (for flow/wash/prime)
         volume_ul: Volume in microliters
         flow_rate_ul_per_min: Flow rate in microliters per minute
         duration_s: Duration in seconds (for incubate)
-        repeats: Number of times to repeat this step
         description: Human-readable description of what this step does
     """
 
@@ -72,25 +78,17 @@ class FluidicsProtocolStep(BaseModel):
     volume_ul: Optional[float] = None
     flow_rate_ul_per_min: Optional[float] = None
     duration_s: Optional[float] = None
-    repeats: int = 1
     description: str = ""
-
-    @field_validator("repeats")
-    @classmethod
-    def validate_repeats(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("repeats must be >= 1")
-        return v
 
     def estimated_duration_s(self) -> float:
         """Estimate duration of this step in seconds."""
         if self.duration_s is not None:
-            return self.duration_s * self.repeats
+            return self.duration_s
         if self.volume_ul and self.flow_rate_ul_per_min:
             # Time = volume / rate, converted to seconds
-            return (self.volume_ul / self.flow_rate_ul_per_min) * 60.0 * self.repeats
+            return (self.volume_ul / self.flow_rate_ul_per_min) * 60.0
         # Default estimate for operations without timing info
-        return 10.0 * self.repeats
+        return 10.0
 
     def get_description(self) -> str:
         """Get human-readable description of this step."""
@@ -111,9 +109,6 @@ class FluidicsProtocolStep(BaseModel):
             desc += ")"
         elif self.duration_s:
             desc += f" ({self.duration_s}s)"
-
-        if self.repeats > 1:
-            desc += f" x{self.repeats}"
 
         return desc
 
@@ -141,8 +136,8 @@ class FluidicsProtocol(BaseModel):
         return sum(step.estimated_duration_s() for step in self.steps)
 
     def total_steps(self) -> int:
-        """Count total steps including repeats."""
-        return sum(step.repeats for step in self.steps)
+        """Count total steps."""
+        return len(self.steps)
 
 
 class FluidicsProtocolFile(BaseModel):

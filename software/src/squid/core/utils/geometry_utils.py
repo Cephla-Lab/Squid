@@ -147,3 +147,51 @@ def calculate_well_coverage(scan_size_mm, fov_size_mm, overlap_percent, shape, w
                     break
 
     return round((covered / total) * 100, 2) if total > 0 else 0
+
+
+def calculate_scan_size_from_coverage(
+    target_coverage_percent,
+    fov_size_mm,
+    overlap_percent,
+    shape,
+    well_size_mm,
+    is_round_well=True,
+):
+    """Calculate scan size needed to achieve a target coverage percentage.
+
+    This is the inverse of calculate_well_coverage(): given a desired coverage %,
+    find the scan_size_mm that achieves it.
+
+    Uses binary search since the relationship between scan_size and coverage
+    is monotonically increasing.
+
+    Args:
+        target_coverage_percent: Desired coverage (0-100)
+        fov_size_mm: Field of view size in mm
+        overlap_percent: Overlap between adjacent tiles (%)
+        shape: Scan shape ("Circle", "Square", or "Rectangle")
+        well_size_mm: Well diameter (round) or side length (square)
+        is_round_well: True for round wells, False for square wells
+
+    Returns:
+        scan_size_mm that achieves the target coverage, or 0 if impossible.
+    """
+    if target_coverage_percent <= 0 or well_size_mm <= 0 or fov_size_mm <= 0:
+        return 0.0
+
+    # Upper bound: effective well size covers ~100%
+    max_scan = get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well) * 1.5
+    min_scan = fov_size_mm * 0.1  # Lower bound: tiny scan
+
+    # Binary search for scan_size that gives target coverage
+    for _ in range(50):
+        mid = (min_scan + max_scan) / 2
+        cov = calculate_well_coverage(mid, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well)
+        if abs(cov - target_coverage_percent) < 0.5:
+            return round(mid, 4)
+        if cov < target_coverage_percent:
+            min_scan = mid
+        else:
+            max_scan = mid
+
+    return round((min_scan + max_scan) / 2, 4)

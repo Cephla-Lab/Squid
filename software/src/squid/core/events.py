@@ -1346,8 +1346,8 @@ class FluidicsProtocolStepStarted(Event):
     """
 
     protocol_name: str
-    step_index: int  # 0-based, incremented for each repeat
-    total_steps: int  # Total steps including repeats
+    step_index: int  # 0-based
+    total_steps: int  # Total steps in protocol
     step_description: str
     next_step_description: Optional[str] = None
     estimated_remaining_s: Optional[float] = None
@@ -1378,6 +1378,7 @@ class FluidicsProtocolsLoaded(Event):
 
     path: str
     protocols: Dict[str, Any]
+    validation_warnings: Optional[Dict[str, list]] = None
 
 
 @dataclass
@@ -2456,6 +2457,13 @@ class ManualShapesChanged(Event):
     """UI state event: manual ROI shapes (in mm) changed in mosaic view."""
 
     shapes_mm: Optional[Tuple[Tuple[Tuple[float, float], ...], ...]]
+
+
+@dataclass
+class ClearManualShapesCommand(Event):
+    """UI command: clear all manual ROI shapes from the mosaic view."""
+
+    pass
 
 
 @dataclass

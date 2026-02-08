@@ -760,7 +760,7 @@ LED_MATRIX_R_FACTOR = 0
 LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
-DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
+DEFAULT_SAVING_PATH = str(Path.home() / "Downloads")
 FILE_ID_PADDING = 0
 
 
@@ -1452,7 +1452,7 @@ DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
-    DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
+    DEFAULT_SAVING_PATH = str(Path.home() / DEFAULT_SAVING_PATH.strip("/").strip("\\"))
 
 # Load Views settings from config file at startup
 # These values override the defaults above and are accessed via _def.XXX

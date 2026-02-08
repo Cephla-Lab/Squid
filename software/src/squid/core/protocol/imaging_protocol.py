@@ -144,6 +144,7 @@ class ImagingProtocol(BaseModel):
     acquisition_order: Literal["channel_first", "z_first"] = "channel_first"
     focus: FocusConfig = Field(default_factory=FocusConfig)
     skip_saving: bool = False
+    save_format: Optional[str] = None
 
     @field_validator("channels")
     @classmethod
