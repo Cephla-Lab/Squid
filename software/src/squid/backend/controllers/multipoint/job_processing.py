@@ -600,16 +600,20 @@ class SaveZarrJob(Job):
         """Clear all zarr writers, aborting any that are still active.
 
         Call at start of new acquisition to ensure clean state.
+        Uses try-finally to guarantee dictionaries are cleared even if abort fails.
         """
-        for writer in list(cls._zarr_writers.values()):
-            if writer.is_initialized and not writer.is_finalized:
-                try:
-                    writer.abort()
-                except Exception as e:
-                    cls._log.warning(f"Error aborting writer during clear: {e}")
-        cls._zarr_writers.clear()
-        cls._hcs_plate_written.clear()
-        cls._hcs_wells_written.clear()
+        try:
+            for writer in list(cls._zarr_writers.values()):
+                if writer.is_initialized and not writer.is_finalized:
+                    try:
+                        writer.abort()
+                    except Exception as e:
+                        cls._log.warning(f"Error aborting writer during clear: {e}")
+        finally:
+            # Always clear dictionaries, even if abort loop fails
+            cls._zarr_writers.clear()
+            cls._hcs_plate_written.clear()
+            cls._hcs_wells_written.clear()
 
     @classmethod
     def finalize_all_writers(cls) -> bool:
@@ -1086,6 +1090,7 @@ class JobRunner(multiprocessing.Process):
         self._input_timeout: float = 1.0
         self._output_queue: Optional[multiprocessing.Queue] = multiprocessing.Queue()
         self._shutdown_event: Optional[multiprocessing.Event] = multiprocessing.Event()
+        self._ready_event: multiprocessing.Event = multiprocessing.Event()  # Signals subprocess is ready
         self._pending_count: Optional[multiprocessing.Value] = multiprocessing.Value("i", 0)
         self._shutdown_called: bool = False
 
@@ -1178,6 +1183,41 @@ class JobRunner(multiprocessing.Process):
         with self._pending_count.get_lock():
             return self._pending_count.value > 0
 
+    def wait_ready(self, timeout_s: float = 5.0) -> bool:
+        """Wait for the subprocess to signal it's ready to process jobs.
+
+        Args:
+            timeout_s: Maximum time to wait in seconds.
+
+        Returns:
+            True if subprocess is ready, False if timed out.
+        """
+        return self._ready_event.wait(timeout=timeout_s)
+
+    def is_ready(self) -> bool:
+        """Check if the subprocess is ready without blocking."""
+        return self._ready_event.is_set()
+
+    def set_acquisition_info(self, acquisition_info: AcquisitionInfo) -> None:
+        """Set acquisition info for OME-TIFF saving.
+
+        Thread safety: This method and dispatch() are NOT synchronized. The caller
+        must ensure this method completes BEFORE any dispatch() calls that need
+        the acquisition_info. In practice, this is called during worker init
+        before the acquisition loop starts, so no synchronization is needed.
+        """
+        self._acquisition_info = acquisition_info
+
+    def set_zarr_writer_info(self, zarr_writer_info: ZarrWriterInfo) -> None:
+        """Set zarr writer info for ZARR_V3 saving.
+
+        Thread safety: This method and dispatch() are NOT synchronized. The caller
+        must ensure this method completes BEFORE any dispatch() calls that need
+        the zarr_writer_info. In practice, this is called during worker init
+        before the acquisition loop starts, so no synchronization is needed.
+        """
+        self._zarr_writer_info = zarr_writer_info
+
     def shutdown(self, timeout_s: float = 1.0) -> None:
         """Shutdown the job runner and release multiprocessing resources.
 
@@ -1190,6 +1230,14 @@ class JobRunner(multiprocessing.Process):
 
         if self._shutdown_event is not None:
             self._shutdown_event.set()
+        # Send sentinel to wake up worker blocked on queue.get()
+        try:
+            self._input_queue.put_nowait(None)
+        except (queue.Full, OSError, ValueError) as e:
+            # queue.Full: Queue is at capacity (unlikely for sentinel)
+            # OSError: Queue's underlying pipe/semaphore closed
+            # ValueError: Queue has been closed
+            self._log.debug(f"Could not send shutdown sentinel to worker: {e}")
         self.join(timeout=timeout_s)
 
         # Terminate if still alive after timeout
@@ -1213,11 +1261,19 @@ class JobRunner(multiprocessing.Process):
         self._pending_count = None
 
     def run(self) -> None:
+        # Signal to main process that we're ready to receive jobs
+        self._ready_event.set()
+
         while not self._shutdown_event.is_set():
             job: Optional[Job] = None
             image_bytes: int = 0
             try:
                 job = self._input_queue.get(timeout=self._input_timeout)
+
+                # None is a shutdown sentinel - skip processing and check shutdown flag
+                if job is None:
+                    continue
+
                 # Track image bytes for backpressure release
                 if job.capture_image.image_array is not None:
                     image_bytes = job.capture_image.image_array.nbytes

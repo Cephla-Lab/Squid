@@ -417,7 +417,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     ]
                 }
             )
-        print(f"z-stacking configuration set to {self._config.zstack.stacking_direction}")
+        self._log.info(f"z-stacking configuration set to {self._config.zstack.stacking_direction}")
 
     def set_z_range(self, minZ: float, maxZ: float) -> None:
         self.update_config(**{"zstack.z_range": (minZ, maxZ)})
@@ -792,7 +792,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
-    def run_acquisition(self, acquire_current_fov: bool = False) -> None:
+    def run_acquisition(self, acquire_current_fov: bool = False) -> bool:
         import time as _time
         self._log.info("run_acquisition: ENTER")
         _t0 = _time.perf_counter()
@@ -800,7 +800,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         # Check if in IDLE state
         if not self._is_in_state(AcquisitionControllerState.IDLE):
             self._log.warning(f"Cannot start acquisition - state is {self.state.name}")
-            return
+            return False
 
         try:
             # Transition to PREPARING
@@ -823,7 +823,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
                 self._transition_to(AcquisitionControllerState.FAILED)
                 self._transition_to(AcquisitionControllerState.IDLE)
-                return
+                return False
 
             self._log.info(f"run_acquisition: passed validate_acquisition_settings ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
@@ -961,7 +961,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                         self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
                     self._transition_to(AcquisitionControllerState.FAILED)
                     self._transition_to(AcquisitionControllerState.IDLE)
-                    return
+                    return False
                 try:
                     # Store existing AF map if any
                     self.focus_map_storage = []
@@ -1089,6 +1089,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Publish NDViewer start event for push-mode display
             self._publish_ndviewer_start(acquisition_params)
             self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
+            return True
         except Exception:
             self._log.exception("Failed to start acquisition")
             # Stop per-acquisition logging if it was started
@@ -1117,6 +1118,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     self._force_state(AcquisitionControllerState.IDLE, reason="cleanup after failed start")
             elif self._is_in_state(AcquisitionControllerState.PREPARING):
                 self._force_state(AcquisitionControllerState.IDLE, reason="cleanup after failed start")
+            return False
 
     def build_params(
         self, scan_position_information: ScanPositionInformation
@@ -1264,6 +1266,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self.multiPointWorker.request_abort()
             except Exception:  # pragma: no cover - defensive
                 self._log.exception("Failed to signal worker abort")
+        # Also stop fluidics operations
+        if self._fluidics_service is not None:
+            self._fluidics_service.abort()
         if self._mode_gate:
             self._mode_gate.set_mode(GlobalMode.ABORTING, reason="acquisition abort requested")
         # Transition to ABORTING state

@@ -118,6 +118,9 @@ if TYPE_CHECKING:
 
 from squid.core.events import PlateViewInit, PlateViewUpdate
 
+# Module-level logger for static methods
+_log = squid.core.logging.get_logger(__name__)
+
 
 class SummarizeResult(NamedTuple):
     """Result from processing job output queues."""
@@ -2476,7 +2479,7 @@ class MultiPointWorker:
                 self._camera_service.send_trigger(illumination_time=exposure_time)
                 image: Optional[np.ndarray] = self._camera_service.read_frame()
                 if image is None:
-                    print("camera.read_frame() returned None")
+                    self._log.warning("camera.read_frame() returned None")
                     continue
 
                 # turn off the illumination if using software trigger
@@ -2508,7 +2511,7 @@ class MultiPointWorker:
 
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
-            print("writing R, G, B channels")
+            self._log.debug("writing R, G, B channels")
             self.handle_rgb_channels(images, current_capture_info)
             rgb_image = None
             try:
@@ -2526,7 +2529,7 @@ class MultiPointWorker:
                 rgb_image = None
         else:
             # If monochrome, reconstruct RGB image
-            print("constructing RGB image")
+            self._log.debug("constructing RGB image")
             rgb_image = self.construct_rgb_image(images, current_capture_info)
 
         # Emit a single composite RGB frame onto the data-plane so the mosaic updates.
@@ -2553,13 +2556,12 @@ class MultiPointWorker:
             "BF LED matrix full_B",
         ]
         if all(key in current_round_images for key in keys_to_check):
-            print("constructing RGB image")
-            print(current_round_images["BF LED matrix full_R"].dtype)
+            _log.debug(f"constructing RGB image: dtype={current_round_images['BF LED matrix full_R'].dtype}")
             size: Tuple[int, ...] = current_round_images["BF LED matrix full_R"].shape
             rgb_image: np.ndarray = np.zeros(
                 (*size, 3), dtype=current_round_images["BF LED matrix full_R"].dtype
             )
-            print(rgb_image.shape)
+            _log.debug(f"RGB image shape: {rgb_image.shape}")
             rgb_image[:, :, 0] = current_round_images["BF LED matrix full_R"]
             rgb_image[:, :, 1] = current_round_images["BF LED matrix full_G"]
             rgb_image[:, :, 2] = current_round_images["BF LED matrix full_B"]
@@ -2568,7 +2570,7 @@ class MultiPointWorker:
 
             # write the image
             if len(rgb_image.shape) == 3:
-                print("writing RGB image")
+                _log.debug("writing RGB image")
                 if rgb_image.dtype == np.uint16:
                     iio.imwrite(
                         os.path.join(
@@ -2629,7 +2631,7 @@ class MultiPointWorker:
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
 
         # write the RGB image
-        print("writing RGB image")
+        self._log.debug("writing RGB image")
         file_name: str = (
             capture_info.file_id
             + "_BF_LED_matrix_full_RGB"
