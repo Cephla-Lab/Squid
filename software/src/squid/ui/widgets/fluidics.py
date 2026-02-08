@@ -1,6 +1,7 @@
 # Fluidics control widgets
 from __future__ import annotations
 
+import html
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -35,7 +36,6 @@ from qtpy.QtWidgets import (
     QSpacerItem,
     QSplitter,
 )
-
 from squid.core.events import (
     RunFluidicsProtocolCommand,
     LoadFluidicsProtocolsCommand,
@@ -169,6 +169,8 @@ class FluidicsWidget(QWidget):
         """Set up the widget UI."""
         # Main layout
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
         self.setLayout(main_layout)
 
         # Configuration panel at top (always visible)
@@ -195,61 +197,76 @@ class FluidicsWidget(QWidget):
         content_layout.addLayout(right_panel, 1)
 
     def _setup_config_panel(self, parent_layout: QVBoxLayout) -> None:
-        """Set up the configuration panel."""
+        """Set up the configuration panel with hardware config and protocol loading."""
         config_group = QGroupBox("Configuration")
-        config_layout = QHBoxLayout()
+        config_outer = QVBoxLayout()
+        config_outer.setContentsMargins(4, 4, 4, 4)
+        config_outer.setSpacing(4)
 
-        # Status label
+        # Row 1: Hardware config
+        hw_row = QHBoxLayout()
+        hw_row.setSpacing(8)
+
         self.lbl_status = QLabel("Status: Not configured")
         self.lbl_status.setStyleSheet("font-weight: bold;")
-        config_layout.addWidget(self.lbl_status)
+        hw_row.addWidget(self.lbl_status)
 
-        config_layout.addStretch()
+        hw_row.addStretch()
 
-        # Config file path display
-        config_layout.addWidget(QLabel("Config:"))
+        hw_row.addWidget(QLabel("Config:"))
         self.txt_config_path = QLineEdit()
         self.txt_config_path.setReadOnly(True)
-        self.txt_config_path.setMinimumWidth(300)
+        self.txt_config_path.setMinimumWidth(250)
         self.txt_config_path.setPlaceholderText("No config file selected")
-        config_layout.addWidget(self.txt_config_path)
+        hw_row.addWidget(self.txt_config_path)
 
-        # Browse button
         self.btn_browse_config = QPushButton("Browse...")
         self.btn_browse_config.clicked.connect(self._browse_config)
-        config_layout.addWidget(self.btn_browse_config)
+        hw_row.addWidget(self.btn_browse_config)
 
-        # Initialize button
         self.btn_initialize = QPushButton("Initialize")
         self.btn_initialize.clicked.connect(self._initialize_fluidics)
-        config_layout.addWidget(self.btn_initialize)
+        hw_row.addWidget(self.btn_initialize)
 
-        config_group.setLayout(config_layout)
+        config_outer.addLayout(hw_row)
+
+        # Row 2: Protocol loading
+        proto_row = QHBoxLayout()
+        proto_row.setSpacing(8)
+
+        proto_row.addWidget(QLabel("Protocols:"))
+        self.lbl_protocols_path = QLabel("No protocols loaded")
+        self.lbl_protocols_path.setStyleSheet("color: #888;")
+        proto_row.addWidget(self.lbl_protocols_path)
+
+        proto_row.addStretch()
+
+        self.btn_load_sequences = QPushButton("Load Protocols...")
+        self.btn_load_sequences.setMinimumWidth(120)
+        self.btn_load_sequences.clicked.connect(self._load_protocols)
+        proto_row.addWidget(self.btn_load_sequences)
+
+        config_outer.addLayout(proto_row)
+
+        config_group.setLayout(config_outer)
         parent_layout.addWidget(config_group)
 
     def _setup_status_dashboard(self, parent_layout: QVBoxLayout) -> None:
         """Set up the real-time status dashboard panel."""
         self.status_dashboard_group = QGroupBox("System Status")
         dashboard_layout = QHBoxLayout()
-        dashboard_layout.setContentsMargins(12, 8, 12, 8)
-        dashboard_layout.setSpacing(16)
+        dashboard_layout.setContentsMargins(6, 2, 6, 2)
+        dashboard_layout.setSpacing(8)
 
-        # State indicator group (LED + label)
-        state_widget = QWidget()
-        state_layout = QHBoxLayout(state_widget)
-        state_layout.setContentsMargins(0, 0, 0, 0)
-        state_layout.setSpacing(6)
-
+        # State indicator (LED + label)
         self.status_led = QLabel("●")
-        self.status_led.setStyleSheet("color: gray; font-size: 24px;")
-        state_layout.addWidget(self.status_led)
+        self.status_led.setStyleSheet("color: gray; font-size: 18px;")
+        dashboard_layout.addWidget(self.status_led)
 
         self.lbl_state = QLabel("IDLE")
         self.lbl_state.setStyleSheet("font-weight: bold; font-size: 13px;")
-        self.lbl_state.setMinimumWidth(90)
-        state_layout.addWidget(self.lbl_state)
-
-        dashboard_layout.addWidget(state_widget)
+        self.lbl_state.setMinimumWidth(80)
+        dashboard_layout.addWidget(self.lbl_state)
 
         # Vertical separator
         sep1 = QFrame()
@@ -258,24 +275,17 @@ class FluidicsWidget(QWidget):
         dashboard_layout.addWidget(sep1)
 
         # Port/Solution display
-        port_widget = QWidget()
-        port_layout = QHBoxLayout(port_widget)
-        port_layout.setContentsMargins(0, 0, 0, 0)
-        port_layout.setSpacing(4)
-
         port_label = QLabel("Port:")
         port_label.setStyleSheet("color: #888;")
-        port_layout.addWidget(port_label)
+        dashboard_layout.addWidget(port_label)
 
         self.lbl_current_port = QLabel("--")
         self.lbl_current_port.setStyleSheet("font-weight: bold; font-size: 13px;")
-        port_layout.addWidget(self.lbl_current_port)
+        dashboard_layout.addWidget(self.lbl_current_port)
 
         self.lbl_current_solution = QLabel("(none)")
         self.lbl_current_solution.setStyleSheet("color: #888;")
-        port_layout.addWidget(self.lbl_current_solution)
-
-        dashboard_layout.addWidget(port_widget)
+        dashboard_layout.addWidget(self.lbl_current_solution)
 
         # Vertical separator
         sep2 = QFrame()
@@ -283,27 +293,24 @@ class FluidicsWidget(QWidget):
         sep2.setFrameShadow(QFrame.Sunken)
         dashboard_layout.addWidget(sep2)
 
-        # Syringe volume gauge
-        syringe_widget = QWidget()
-        syringe_layout = QHBoxLayout(syringe_widget)
-        syringe_layout.setContentsMargins(0, 0, 0, 0)
-        syringe_layout.setSpacing(8)
-
+        # Syringe volume gauge - prominent, stretches to fill
         syringe_label = QLabel("Syringe:")
         syringe_label.setStyleSheet("color: #888;")
-        syringe_layout.addWidget(syringe_label)
+        dashboard_layout.addWidget(syringe_label)
 
         self.syringe_gauge = QProgressBar()
         self.syringe_gauge.setMinimum(0)
         self.syringe_gauge.setMaximum(5000)
         self.syringe_gauge.setValue(0)
         self.syringe_gauge.setFormat("%v / %m uL")
-        self.syringe_gauge.setFixedWidth(180)
-        self.syringe_gauge.setFixedHeight(20)
-        syringe_layout.addWidget(self.syringe_gauge)
-
-        dashboard_layout.addWidget(syringe_widget)
-        dashboard_layout.addStretch()
+        self.syringe_gauge.setMinimumWidth(200)
+        self.syringe_gauge.setFixedHeight(22)
+        self.syringe_gauge.setStyleSheet(
+            "QProgressBar { border: 1px solid #555; border-radius: 3px; text-align: center; "
+            "font-weight: bold; font-size: 12px; background-color: #2a2a2a; }"
+            "QProgressBar::chunk { background-color: #3498db; border-radius: 2px; }"
+        )
+        dashboard_layout.addWidget(self.syringe_gauge, 1)  # stretch factor
 
         self.status_dashboard_group.setLayout(dashboard_layout)
         parent_layout.addWidget(self.status_dashboard_group)
@@ -326,34 +333,34 @@ class FluidicsWidget(QWidget):
         """Set up the operation progress panel (always visible)."""
         self.progress_group = QGroupBox("Operation Progress")
         progress_layout = QVBoxLayout()
+        progress_layout.setContentsMargins(6, 4, 6, 4)
+        progress_layout.setSpacing(2)
 
         # Operation description row
         op_row = QHBoxLayout()
-        op_row.addWidget(QLabel("Operation:"))
+        op_row.setSpacing(4)
         self.lbl_operation = QLabel("Idle")
         self.lbl_operation.setStyleSheet("font-weight: bold;")
         op_row.addWidget(self.lbl_operation)
         op_row.addStretch()
-
-        # Flow details
-        op_row.addWidget(QLabel("Flow:"))
         self.lbl_flow_details = QLabel("--")
+        self.lbl_flow_details.setStyleSheet("color: #aaa;")
         op_row.addWidget(self.lbl_flow_details)
         progress_layout.addLayout(op_row)
 
         # Progress bar row
         bar_row = QHBoxLayout()
-        bar_row.addWidget(QLabel("Progress:"))
+        bar_row.setSpacing(4)
         self.operation_progress_bar = QProgressBar()
         self.operation_progress_bar.setMinimum(0)
         self.operation_progress_bar.setMaximum(100)
         self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFixedHeight(18)
         bar_row.addWidget(self.operation_progress_bar, 1)
 
-        # Time remaining
         self.lbl_time_remaining = QLabel("--:--")
-        self.lbl_time_remaining.setStyleSheet("font-weight: bold; font-size: 14px;")
-        self.lbl_time_remaining.setMinimumWidth(60)
+        self.lbl_time_remaining.setStyleSheet("font-weight: bold;")
+        self.lbl_time_remaining.setMinimumWidth(50)
         bar_row.addWidget(self.lbl_time_remaining)
         progress_layout.addLayout(bar_row)
 
@@ -364,47 +371,38 @@ class FluidicsWidget(QWidget):
         """Set up the protocol progress tracking panel (always visible)."""
         self.sequence_progress_group = QGroupBox("Protocol Progress")
         seq_layout = QVBoxLayout()
-        seq_layout.setContentsMargins(10, 10, 10, 10)
-        seq_layout.setSpacing(8)
+        seq_layout.setContentsMargins(6, 4, 6, 4)
+        seq_layout.setSpacing(2)
 
-        # Sequence name and step counter row
+        # Header: protocol name + step counter
         header_row = QHBoxLayout()
-        seq_label = QLabel("Protocol:")
-        seq_label.setStyleSheet("color: #888;")
-        header_row.addWidget(seq_label)
-
+        header_row.setSpacing(4)
         self.lbl_sequence_name = QLabel("--")
-        self.lbl_sequence_name.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self.lbl_sequence_name.setStyleSheet("font-weight: bold;")
         header_row.addWidget(self.lbl_sequence_name)
         header_row.addStretch()
-
-        # Step counter
-        step_label = QLabel("Step:")
-        step_label.setStyleSheet("color: #888;")
-        header_row.addWidget(step_label)
-
         self.lbl_step_counter = QLabel("0 of 0")
-        self.lbl_step_counter.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self.lbl_step_counter.setStyleSheet("font-weight: bold;")
         header_row.addWidget(self.lbl_step_counter)
         seq_layout.addLayout(header_row)
 
-        # Sequence progress bar
+        # Progress bar
         self.sequence_progress_bar = QProgressBar()
         self.sequence_progress_bar.setMinimum(0)
         self.sequence_progress_bar.setMaximum(100)
         self.sequence_progress_bar.setValue(0)
         self.sequence_progress_bar.setFormat("%p%")
-        self.sequence_progress_bar.setFixedHeight(20)
+        self.sequence_progress_bar.setFixedHeight(18)
         seq_layout.addWidget(self.sequence_progress_bar)
 
-        # Current and next step descriptions (grid layout)
+        # Current/next step in compact form
         steps_grid = QGridLayout()
-        steps_grid.setHorizontalSpacing(8)
+        steps_grid.setHorizontalSpacing(4)
+        steps_grid.setVerticalSpacing(0)
 
         curr_label = QLabel("Current:")
         curr_label.setStyleSheet("color: #888;")
         steps_grid.addWidget(curr_label, 0, 0)
-
         self.lbl_current_step = QLabel("--")
         self.lbl_current_step.setStyleSheet("font-weight: bold;")
         steps_grid.addWidget(self.lbl_current_step, 0, 1)
@@ -412,7 +410,6 @@ class FluidicsWidget(QWidget):
         next_label = QLabel("Next:")
         next_label.setStyleSheet("color: #888;")
         steps_grid.addWidget(next_label, 1, 0)
-
         self.lbl_next_step = QLabel("--")
         self.lbl_next_step.setStyleSheet("color: #666;")
         steps_grid.addWidget(self.lbl_next_step, 1, 1)
@@ -444,25 +441,25 @@ class FluidicsWidget(QWidget):
         FIELD_WIDTH = 100
         COMBO_MIN_WIDTH = 150
 
-        # Prime Ports panel
+        # Prime Ports panel (flat group box)
         prime_group = QGroupBox("Prime Ports")
         prime_layout = QGridLayout()
-        prime_layout.setHorizontalSpacing(12)
-        prime_layout.setVerticalSpacing(8)
+        prime_layout.setHorizontalSpacing(8)
+        prime_layout.setVerticalSpacing(4)
 
-        # Row 0: Ports and Fill solution
+        # Row 0: Ports
         prime_layout.addWidget(QLabel("Ports:"), 0, 0)
         self.txt_prime_ports = QLineEdit()
-        self.txt_prime_ports.setPlaceholderText("e.g., 1-5 or all")
+        self.txt_prime_ports.setPlaceholderText("e.g., 1-5, 23-24 or all")
         self.txt_prime_ports.setFixedWidth(FIELD_WIDTH)
+        self.txt_prime_ports.textChanged.connect(self._on_prime_ports_changed)
         prime_layout.addWidget(self.txt_prime_ports, 0, 1)
 
-        prime_layout.addWidget(QLabel("Fill with:"), 0, 2)
-        self.prime_fill_combo = QComboBox()
-        self.prime_fill_combo.setMinimumWidth(COMBO_MIN_WIDTH)
-        self.prime_fill_combo.addItems(self._available_solutions)
-        self._set_default_wash_buffer(self.prime_fill_combo)
-        prime_layout.addWidget(self.prime_fill_combo, 0, 3)
+        # Port info label (shows parsed ports with solution names)
+        self.lbl_prime_port_info = QLabel("")
+        self.lbl_prime_port_info.setStyleSheet("color: #888; font-size: 11px;")
+        self.lbl_prime_port_info.setWordWrap(True)
+        prime_layout.addWidget(self.lbl_prime_port_info, 0, 2, 1, 3)
 
         # Row 1: Volume, Flow rate, Start button
         prime_layout.addWidget(QLabel("Volume (uL):"), 1, 0)
@@ -471,7 +468,7 @@ class FluidicsWidget(QWidget):
         self.txt_prime_volume.setFixedWidth(FIELD_WIDTH)
         prime_layout.addWidget(self.txt_prime_volume, 1, 1)
 
-        prime_layout.addWidget(QLabel("Flow rate:"), 1, 2)
+        prime_layout.addWidget(QLabel("Flow rate (uL/min):"), 1, 2)
         self.txt_prime_flow_rate = QLineEdit()
         self.txt_prime_flow_rate.setText("5000")
         self.txt_prime_flow_rate.setFixedWidth(FIELD_WIDTH)
@@ -485,120 +482,87 @@ class FluidicsWidget(QWidget):
         prime_group.setLayout(prime_layout)
         parent_layout.addWidget(prime_group)
 
-        # Wash panel
-        wash_group = QGroupBox("Wash")
-        wash_layout = QGridLayout()
-        wash_layout.setHorizontalSpacing(12)
-        wash_layout.setVerticalSpacing(8)
-
-        # Row 0: Solution and Repeats
-        wash_layout.addWidget(QLabel("Solution:"), 0, 0)
-        self.cleanup_solution_combo = QComboBox()
-        self.cleanup_solution_combo.setMinimumWidth(COMBO_MIN_WIDTH)
-        self.cleanup_solution_combo.addItems(self._available_solutions)
-        self._set_default_wash_buffer(self.cleanup_solution_combo)
-        wash_layout.addWidget(self.cleanup_solution_combo, 0, 1)
-
-        wash_layout.addWidget(QLabel("Repeat:"), 0, 2)
-        self.txt_cleanup_repeat = QLineEdit()
-        self.txt_cleanup_repeat.setText("3")
-        self.txt_cleanup_repeat.setFixedWidth(60)
-        wash_layout.addWidget(self.txt_cleanup_repeat, 0, 3)
-
-        # Row 1: Volume, Flow rate, Start button
-        wash_layout.addWidget(QLabel("Volume (uL):"), 1, 0)
-        self.txt_cleanup_volume = QLineEdit()
-        self.txt_cleanup_volume.setText("2000")
-        self.txt_cleanup_volume.setFixedWidth(FIELD_WIDTH)
-        wash_layout.addWidget(self.txt_cleanup_volume, 1, 1)
-
-        wash_layout.addWidget(QLabel("Flow rate:"), 1, 2)
-        self.txt_cleanup_flow_rate = QLineEdit()
-        self.txt_cleanup_flow_rate.setText("5000")
-        self.txt_cleanup_flow_rate.setFixedWidth(FIELD_WIDTH)
-        wash_layout.addWidget(self.txt_cleanup_flow_rate, 1, 3)
-
-        self.btn_cleanup_start = QPushButton("Wash")
-        self.btn_cleanup_start.setFixedWidth(80)
-        wash_layout.addWidget(self.btn_cleanup_start, 1, 4)
-
-        wash_layout.setColumnStretch(5, 1)
-        wash_group.setLayout(wash_layout)
-        parent_layout.addWidget(wash_group)
-
-        # Manual Flow panel
+        # Manual Flow panel (flat group box)
         manual_group = QGroupBox("Manual Flow")
         manual_layout = QGridLayout()
-        manual_layout.setHorizontalSpacing(12)
-        manual_layout.setVerticalSpacing(8)
+        manual_layout.setHorizontalSpacing(8)
+        manual_layout.setVerticalSpacing(4)
 
-        # Row 0: Solution and Volume
+        # Row 0: Solution, Port info, Volume
         manual_layout.addWidget(QLabel("Solution:"), 0, 0)
         self.manual_solution_combo = QComboBox()
         self.manual_solution_combo.setMinimumWidth(COMBO_MIN_WIDTH)
         self.manual_solution_combo.addItems(self._available_solutions)
+        self.manual_solution_combo.currentTextChanged.connect(self._on_manual_solution_changed)
         manual_layout.addWidget(self.manual_solution_combo, 0, 1)
 
-        manual_layout.addWidget(QLabel("Volume (uL):"), 0, 2)
+        self.lbl_manual_port = QLabel("")
+        self.lbl_manual_port.setStyleSheet("color: #888;")
+        manual_layout.addWidget(self.lbl_manual_port, 0, 2)
+
+        manual_layout.addWidget(QLabel("Volume (uL):"), 0, 3)
         self.txt_manual_volume = QLineEdit()
         self.txt_manual_volume.setPlaceholderText("e.g., 500")
         self.txt_manual_volume.setFixedWidth(FIELD_WIDTH)
-        manual_layout.addWidget(self.txt_manual_volume, 0, 3)
+        manual_layout.addWidget(self.txt_manual_volume, 0, 4)
 
-        # Row 1: Flow rate and buttons
-        manual_layout.addWidget(QLabel("Flow rate:"), 1, 0)
+        # Row 1: Flow rate, Buttons
+        manual_layout.addWidget(QLabel("Flow rate (uL/min):"), 1, 0)
         self.txt_manual_flow_rate = QLineEdit()
         self.txt_manual_flow_rate.setText("500")
         self.txt_manual_flow_rate.setFixedWidth(FIELD_WIDTH)
         manual_layout.addWidget(self.txt_manual_flow_rate, 1, 1)
 
         # Buttons
+        btn_row = QHBoxLayout()
         self.btn_manual_flow = QPushButton("Flow")
         self.btn_manual_flow.setFixedWidth(80)
-        manual_layout.addWidget(self.btn_manual_flow, 1, 2)
+        btn_row.addWidget(self.btn_manual_flow)
 
         self.btn_empty_syringe_pump = QPushButton("Empty Syringe")
         self.btn_empty_syringe_pump.setFixedWidth(110)
-        manual_layout.addWidget(self.btn_empty_syringe_pump, 1, 3)
+        btn_row.addWidget(self.btn_empty_syringe_pump)
+        btn_row.addStretch()
+        manual_layout.addLayout(btn_row, 1, 2, 1, 3)
 
         manual_layout.setColumnStretch(5, 1)
         manual_group.setLayout(manual_layout)
         parent_layout.addWidget(manual_group)
 
-        # Status log panel (compact)
+        # Status log panel
         status_group = QGroupBox("Log")
         status_layout = QVBoxLayout()
         status_layout.setContentsMargins(4, 4, 4, 4)
 
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
-        self.status_text.setMaximumHeight(80)
-        self.status_text.setStyleSheet("font-size: 11px;")
+        self.status_text.setMinimumHeight(150)
+        self.status_text.setStyleSheet(
+            "font-family: 'Consolas', 'Courier New', monospace; font-size: 13px;"
+        )
         status_layout.addWidget(self.status_text)
+
+        self.btn_save_log = QPushButton("Save Log")
+        status_layout.addWidget(self.btn_save_log)
 
         status_group.setLayout(status_layout)
         parent_layout.addWidget(status_group)
 
-        # Load Protocols button at bottom of left panel
-        self.btn_load_sequences = QPushButton("Load Protocols (YAML)...")
-        parent_layout.addWidget(self.btn_load_sequences)
-
-        # Add stretch to push controls to top
-        parent_layout.addStretch()
-
         # Connect signals
-        self.btn_load_sequences.clicked.connect(self._load_protocols)
         self.btn_prime_start.clicked.connect(self._start_prime)
-        self.btn_cleanup_start.clicked.connect(self._start_wash)
         self.btn_manual_flow.clicked.connect(self._start_manual_flow)
         self.btn_empty_syringe_pump.clicked.connect(self._empty_syringe_pump)
+        self.btn_save_log.clicked.connect(self._save_log)
+
+        # Initialize port info display
+        self._on_manual_solution_changed(self.manual_solution_combo.currentText())
 
     def _setup_sequences_panel(self, parent_layout: QVBoxLayout) -> None:
         """Set up the sequences panel with protocols list and steps view."""
         sequences_group = QGroupBox("Protocols")
         sequences_layout = QVBoxLayout()
-        sequences_layout.setContentsMargins(8, 8, 8, 8)
-        sequences_layout.setSpacing(8)
+        sequences_layout.setContentsMargins(4, 4, 4, 4)
+        sequences_layout.setSpacing(4)
 
         # Two-panel layout: protocols on left, steps on right
         splitter = QSplitter(Qt.Horizontal)
@@ -610,11 +574,12 @@ class FluidicsWidget(QWidget):
         protocols_layout.setSpacing(4)
 
         protocols_label = QLabel("Protocols")
-        protocols_label.setStyleSheet("font-weight: bold;")
+        protocols_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         protocols_layout.addWidget(protocols_label)
 
         self.protocols_list = QListWidget()
         self.protocols_list.setAlternatingRowColors(True)
+        self.protocols_list.setStyleSheet("font-size: 13px;")
         self.protocols_list.currentItemChanged.connect(self._on_protocol_selected)
         protocols_layout.addWidget(self.protocols_list)
 
@@ -626,13 +591,23 @@ class FluidicsWidget(QWidget):
         steps_layout.setContentsMargins(0, 0, 0, 0)
         steps_layout.setSpacing(4)
 
+        steps_header_layout = QHBoxLayout()
         steps_label = QLabel("Steps")
-        steps_label.setStyleSheet("font-weight: bold;")
-        steps_layout.addWidget(steps_label)
+        steps_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        steps_header_layout.addWidget(steps_label)
+
+        self.lbl_estimated_duration = QLabel("")
+        self.lbl_estimated_duration.setStyleSheet("color: #888; font-style: italic;")
+        steps_header_layout.addWidget(self.lbl_estimated_duration)
+        steps_header_layout.addStretch()
+        steps_layout.addLayout(steps_header_layout)
 
         self.steps_table = QTableWidget()
-        self.steps_table.setColumnCount(5)
-        self.steps_table.setHorizontalHeaderLabels(["#", "Operation", "Solution", "Volume", "Incubation"])
+        self.steps_table.setStyleSheet("font-size: 13px;")
+        self.steps_table.setColumnCount(6)
+        self.steps_table.setHorizontalHeaderLabels(
+            ["#", "Operation", "Solution", "Volume", "Rate", "Incubation"]
+        )
         self.steps_table.setAlternatingRowColors(True)
         self.steps_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.steps_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -646,6 +621,7 @@ class FluidicsWidget(QWidget):
             header.setSectionResizeMode(2, QHeaderView.Stretch)
             header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
 
         steps_layout.addWidget(self.steps_table)
 
@@ -658,27 +634,34 @@ class FluidicsWidget(QWidget):
 
         # Execution buttons row
         exec_row = QHBoxLayout()
-        exec_row.setSpacing(8)
+        exec_row.setSpacing(12)
 
-        self.btn_execute_selected = QPushButton("Run Protocol")
-        self.btn_execute_selected.setMinimumWidth(100)
+        self.btn_execute_selected = QPushButton("Start Protocol")
+        self.btn_execute_selected.setMinimumWidth(140)
+        self.btn_execute_selected.setMinimumHeight(36)
+        self.btn_execute_selected.setStyleSheet(
+            "QPushButton { background-color: #27ae60; color: white; font-weight: bold; "
+            "font-size: 13px; border-radius: 4px; padding: 6px 16px; }"
+            "QPushButton:hover { background-color: #2ecc71; }"
+            "QPushButton:pressed { background-color: #1e8449; }"
+            "QPushButton:disabled { background-color: #555; color: #999; }"
+        )
         self.btn_execute_selected.clicked.connect(self._run_selected_protocol)
         exec_row.addWidget(self.btn_execute_selected)
 
-        exec_row.addStretch()
-
-        # Emergency Stop button - prominent
+        # Emergency Stop button - prominent (adjacent to Start)
         self.btn_emergency_stop = QPushButton("STOP")
         self.btn_emergency_stop.setMinimumWidth(80)
-        self.btn_emergency_stop.setMinimumHeight(32)
+        self.btn_emergency_stop.setMinimumHeight(36)
         self.btn_emergency_stop.setStyleSheet(
             "QPushButton { background-color: #c0392b; color: white; font-weight: bold; "
-            "border-radius: 4px; padding: 4px 12px; }"
+            "font-size: 13px; border-radius: 4px; padding: 6px 16px; }"
             "QPushButton:hover { background-color: #e74c3c; }"
             "QPushButton:pressed { background-color: #a93226; }"
         )
         self.btn_emergency_stop.clicked.connect(self._emergency_stop)
         exec_row.addWidget(self.btn_emergency_stop)
+        exec_row.addStretch()
         sequences_layout.addLayout(exec_row)
 
         sequences_group.setLayout(sequences_layout)
@@ -692,6 +675,11 @@ class FluidicsWidget(QWidget):
             self.btn_initialize.setEnabled(False)
             self._enable_controls(True)
 
+            # Update syringe gauge max from actual hardware capacity
+            assert self._service is not None
+            capacity = self._service.get_syringe_capacity_ul()
+            self.syringe_gauge.setMaximum(int(capacity))
+
             # Update config path display if we have a service
             # (config was loaded at startup)
             if not self.txt_config_path.text():
@@ -702,13 +690,6 @@ class FluidicsWidget(QWidget):
             self.btn_initialize.setEnabled(True)
             self._enable_controls(False)
             self._log_status("Fluidics not initialized. Select a config file and click Initialize.")
-
-    def _set_default_wash_buffer(self, combo: QComboBox) -> None:
-        """Set combo box to wash_buffer if available."""
-        for i, name in enumerate(self._available_solutions):
-            if name.lower() == "wash_buffer":
-                combo.setCurrentIndex(i)
-                return
 
     # ─────────────────────────────────────────────────────────────────────────
     # Configuration
@@ -726,6 +707,7 @@ class FluidicsWidget(QWidget):
         if file_path:
             self._config_path = file_path
             self.txt_config_path.setText(file_path)
+            self.btn_initialize.setEnabled(True)
             self._log_status(f"Config file selected: {file_path}")
 
     def _initialize_fluidics(self) -> None:
@@ -809,16 +791,8 @@ class FluidicsWidget(QWidget):
 
     def _update_combo_boxes(self) -> None:
         """Update combo boxes with available solutions."""
-        for combo in [
-            self.prime_fill_combo,
-            self.cleanup_solution_combo,
-            self.manual_solution_combo,
-        ]:
-            combo.clear()
-            combo.addItems(self._available_solutions)
-
-        self._set_default_wash_buffer(self.prime_fill_combo)
-        self._set_default_wash_buffer(self.cleanup_solution_combo)
+        self.manual_solution_combo.clear()
+        self.manual_solution_combo.addItems(self._available_solutions)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Event Handlers
@@ -1044,6 +1018,14 @@ class FluidicsWidget(QWidget):
         self.lbl_current_step.setText("Starting...")
         self.lbl_next_step.setText("--")
 
+        # Auto-select protocol in list so steps table shows its steps
+        # (handles protocols started from orchestrator, not just GUI)
+        for i in range(self.protocols_list.count()):
+            item = self.protocols_list.item(i)
+            if item and item.data(Qt.UserRole) == event.protocol_name:
+                self.protocols_list.setCurrentItem(item)
+                break
+
         # Enable skip button during protocol execution
         self.btn_skip_step.setEnabled(True)
         self._enable_controls(False)
@@ -1085,9 +1067,9 @@ class FluidicsWidget(QWidget):
         # Clear step highlighting
         self._clear_step_highlights()
 
-        # Update progress to 100% if successful
+        # Reset progress bar (protocol is done, not "in progress")
         if event.success:
-            self.sequence_progress_bar.setValue(100)
+            self.sequence_progress_bar.setValue(0)
             self.lbl_step_counter.setText(f"{event.steps_completed} of {event.total_steps}")
             self.lbl_current_step.setText("Protocol completed")
             self.log_message_signal.emit(
@@ -1095,9 +1077,10 @@ class FluidicsWidget(QWidget):
             )
         else:
             self.lbl_current_step.setText("Protocol aborted")
-            self.log_message_signal.emit(
-                f"Protocol '{event.protocol_name}' aborted at step {event.steps_completed}/{event.total_steps}"
-            )
+            msg = f"Protocol '{event.protocol_name}' aborted at step {event.steps_completed}/{event.total_steps}"
+            if event.error_message:
+                msg += f": {event.error_message}"
+            self.log_message_signal.emit(msg)
 
         self.lbl_next_step.setText("--")
 
@@ -1119,9 +1102,20 @@ class FluidicsWidget(QWidget):
         self._protocols_path = event.path
         self._populate_protocols_list()
         self._enable_controls(True)
+        self.lbl_protocols_path.setText(
+            f"{len(event.protocols)} protocols from {Path(event.path).name}"
+        )
+        self.lbl_protocols_path.setStyleSheet("color: #27ae60; font-weight: bold;")
         self._log_status(
             f"Loaded {len(event.protocols)} protocols from {event.path}"
         )
+
+        # Display solution validation warnings
+        if event.validation_warnings:
+            for proto_name, missing in event.validation_warnings.items():
+                self._log_status(
+                    f"Warning: '{proto_name}' uses unknown solutions: {', '.join(missing)}"
+                )
 
     def _on_protocols_load_failed(self, event: FluidicsProtocolsLoadFailed) -> None:
         """Handle protocol load failures."""
@@ -1189,6 +1183,10 @@ class FluidicsWidget(QWidget):
         self._protocols = protocol_file.protocols
         self._populate_protocols_list()
         self._enable_controls(True)
+        self.lbl_protocols_path.setText(
+            f"{len(self._protocols)} protocols from {Path(path).name}"
+        )
+        self.lbl_protocols_path.setStyleSheet("color: #27ae60; font-weight: bold;")
         self._log_status(f"Loaded {len(self._protocols)} protocols")
 
         if publish and self._event_bus is not None:
@@ -1215,6 +1213,7 @@ class FluidicsWidget(QWidget):
         """Handle protocol selection - show steps for selected protocol."""
         if current is None:
             self.steps_table.setRowCount(0)
+            self.lbl_estimated_duration.setText("")
             return
 
         protocol_name = current.data(Qt.UserRole)
@@ -1223,6 +1222,19 @@ class FluidicsWidget(QWidget):
 
         protocol = self._protocols[protocol_name]
         self._populate_steps_table(protocol)
+
+        # Show estimated duration
+        duration_s = protocol.estimated_duration_s()
+        if duration_s >= 3600:
+            hours = int(duration_s // 3600)
+            mins = int((duration_s % 3600) // 60)
+            self.lbl_estimated_duration.setText(f"~{hours}h {mins}m")
+        elif duration_s >= 60:
+            mins = int(duration_s // 60)
+            secs = int(duration_s % 60)
+            self.lbl_estimated_duration.setText(f"~{mins}m {secs}s")
+        else:
+            self.lbl_estimated_duration.setText(f"~{duration_s:.0f}s")
 
     def _populate_steps_table(self, protocol: FluidicsProtocol) -> None:
         """Populate the steps table with steps from a protocol."""
@@ -1238,17 +1250,22 @@ class FluidicsWidget(QWidget):
             self.steps_table.setItem(row_num, 0, step_item)
 
             # Column 1: Operation
-            operation = step.operation.value
-            if step.repeats > 1:
-                operation = f"{operation} x{step.repeats}"
-            op_item = QTableWidgetItem(operation)
+            op_item = QTableWidgetItem(step.operation.value)
             op_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 1, op_item)
 
-            # Column 2: Solution
+            # Column 2: Solution (with availability warning)
             solution = step.solution or ""
             sol_item = QTableWidgetItem(solution)
-            sol_item.setForeground(default_text_color)
+            if solution and self._available_solutions and solution not in self._available_solutions:
+                # Case-insensitive check
+                if not any(s.lower() == solution.lower() for s in self._available_solutions):
+                    sol_item.setForeground(QColor("#e67e22"))
+                    sol_item.setToolTip(f"Solution '{solution}' not found in available solutions")
+                else:
+                    sol_item.setForeground(default_text_color)
+            else:
+                sol_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 2, sol_item)
 
             # Column 3: Volume
@@ -1259,7 +1276,15 @@ class FluidicsWidget(QWidget):
             vol_item.setForeground(default_text_color)
             self.steps_table.setItem(row_num, 3, vol_item)
 
-            # Column 4: Incubation
+            # Column 4: Flow Rate
+            flow_rate = ""
+            if step.flow_rate_ul_per_min is not None:
+                flow_rate = f"{step.flow_rate_ul_per_min:.0f} uL/min"
+            fr_item = QTableWidgetItem(flow_rate)
+            fr_item.setForeground(default_text_color)
+            self.steps_table.setItem(row_num, 4, fr_item)
+
+            # Column 5: Incubation
             incubation = ""
             if step.duration_s is not None and step.duration_s > 0:
                 if step.duration_s >= 60:
@@ -1268,7 +1293,7 @@ class FluidicsWidget(QWidget):
                     incubation = f"{step.duration_s} s"
             inc_item = QTableWidgetItem(incubation)
             inc_item.setForeground(default_text_color)
-            self.steps_table.setItem(row_num, 4, inc_item)
+            self.steps_table.setItem(row_num, 5, inc_item)
 
     def _highlight_current_step(self, step_index: int) -> None:
         """Highlight the currently executing step in the steps table."""
@@ -1315,7 +1340,6 @@ class FluidicsWidget(QWidget):
             return
 
         ports = self._get_port_list(self.txt_prime_ports.text())
-        fill_solution = self.prime_fill_combo.currentText()
 
         try:
             volume = float(self.txt_prime_volume.text())
@@ -1327,16 +1351,10 @@ class FluidicsWidget(QWidget):
         if not ports:
             return
 
-        # Get final port (port to fill tubing with)
-        # Note: _is_available guarantees _service is not None
-        assert self._service is not None
-        final_port = self._service.get_port_for_solution(fill_solution)
-        if final_port is None:
-            QMessageBox.warning(self, "Invalid Input", f"Solution '{fill_solution}' not found")
-            return
+        final_port = ports[0]
 
         self._log_status(
-            f"Starting prime: Ports {ports}, Fill with {fill_solution}, "
+            f"Starting prime: Ports {ports}, "
             f"Volume {volume} uL, Flow rate {flow_rate} uL/min"
         )
 
@@ -1346,6 +1364,7 @@ class FluidicsWidget(QWidget):
                 # Re-check since we're in a different thread
                 if self._service is None:
                     return
+                self._service.reset_abort()
                 self._service.prime(
                     ports=ports,
                     volume_ul=volume,
@@ -1356,43 +1375,6 @@ class FluidicsWidget(QWidget):
                 self.log_message_signal.emit(f"Prime error: {e}")
 
         threading.Thread(target=do_prime, daemon=True).start()
-
-    def _start_wash(self) -> None:
-        """Start wash operation."""
-        if not self._is_available:
-            QMessageBox.warning(self, "Not Available", "Fluidics not initialized")
-            return
-
-        wash_solution = self.cleanup_solution_combo.currentText()
-
-        try:
-            volume = float(self.txt_cleanup_volume.text())
-            flow_rate = float(self.txt_cleanup_flow_rate.text())
-            repeats = int(self.txt_cleanup_repeat.text())
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Volume, flow rate, and repeats must be numbers")
-            return
-
-        self._log_status(
-            f"Starting wash: Solution {wash_solution}, Volume {volume} uL, "
-            f"Flow rate {flow_rate} uL/min, Repeat {repeats}x"
-        )
-
-        # Run in thread to avoid blocking UI
-        def do_wash():
-            try:
-                if self._service is None:
-                    return
-                self._service.wash(
-                    wash_solution=wash_solution,
-                    volume_ul=volume,
-                    flow_rate_ul_per_min=flow_rate,
-                    repeats=repeats,
-                )
-            except Exception as e:
-                self.log_message_signal.emit(f"Wash error: {e}")
-
-        threading.Thread(target=do_wash, daemon=True).start()
 
     def _start_manual_flow(self) -> None:
         """Start manual flow operation."""
@@ -1413,15 +1395,14 @@ class FluidicsWidget(QWidget):
             QMessageBox.warning(self, "Invalid Input", "Please select a solution")
             return
 
-        self._log_status(
-            f"Flow solution: {solution}, Flow rate {flow_rate} uL/min, Volume {volume} uL"
-        )
+        self._log_status(f"Flow {solution}: {volume} uL @ {flow_rate} uL/min")
 
         # Run in thread to avoid blocking UI
         def do_flow():
             try:
                 if self._service is None:
                     return
+                self._service.reset_abort()
                 self._service.flow_solution_by_name(
                     solution_name=solution,
                     volume_ul=volume,
@@ -1438,19 +1419,14 @@ class FluidicsWidget(QWidget):
             QMessageBox.warning(self, "Not Available", "Fluidics not initialized")
             return
 
-        # Check if syringe has any volume to empty
-        current_vol = self.syringe_gauge.value()
-        if current_vol <= 0:
-            self._log_status("Syringe already empty (0 µL)")
-            return
-
-        self._log_status(f"Emptying syringe pump ({current_vol} µL) to waste")
+        self._log_status("Emptying syringe pump to waste")
 
         # Run in thread to avoid blocking UI
         def do_empty():
             try:
                 if self._service is None:
                     return
+                self._service.reset_abort()
                 self._service.empty_syringe()
             except Exception as e:
                 self.log_message_signal.emit(f"Empty syringe error: {e}")
@@ -1462,6 +1438,7 @@ class FluidicsWidget(QWidget):
         self._log_status("EMERGENCY STOP")
         if self._service is not None:
             self._service.abort()
+            self._service.reset_abort()
         if self._event_bus is not None:
             self._event_bus.publish(StopFluidicsCommand())
         self._is_protocol_running = False
@@ -1550,6 +1527,62 @@ class FluidicsWidget(QWidget):
 
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Port Info Slots
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_prime_ports_changed(self, text: str) -> None:
+        """Update port info label when prime ports text changes."""
+        if not self._is_available or not self._service:
+            self.lbl_prime_port_info.setText("")
+            return
+
+        ports_str = text.strip()
+        if not ports_str or ports_str.lower() == "all":
+            ports = self._service.get_available_ports()
+        else:
+            # Parse without showing error dialogs (just for preview)
+            try:
+                ports = []
+                for part in ports_str.split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if "-" in part:
+                        start, end = map(int, part.split("-"))
+                        ports.extend(range(start, end + 1))
+                    else:
+                        ports.append(int(part))
+            except (ValueError, TypeError):
+                self.lbl_prime_port_info.setText("")
+                return
+
+        if not ports:
+            self.lbl_prime_port_info.setText("")
+            return
+
+        # Build display with solution names
+        parts = []
+        for p in ports:
+            name = self._service.get_port_name(p)
+            if name:
+                parts.append(f"{p}: {name}")
+            else:
+                parts.append(str(p))
+        self.lbl_prime_port_info.setText(", ".join(parts))
+
+    def _on_manual_solution_changed(self, solution: str) -> None:
+        """Update port info label when manual solution changes."""
+        if not self._is_available or not self._service or not solution:
+            self.lbl_manual_port.setText("")
+            return
+
+        port = self._service.get_port_for_solution(solution)
+        if port is not None:
+            self.lbl_manual_port.setText(f"Port: {port}")
+        else:
+            self.lbl_manual_port.setText("")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1572,7 +1605,7 @@ class FluidicsWidget(QWidget):
 
         try:
             ports_str = text.strip()
-            if not ports_str:
+            if not ports_str or ports_str.lower() == "all":
                 # Return all available ports
                 return self._service.get_available_ports()
 
@@ -1622,18 +1655,40 @@ class FluidicsWidget(QWidget):
 
         self.btn_load_sequences.setEnabled(enabled)  # Always allow loading protocols
         self.btn_prime_start.setEnabled(actually_enabled)
-        self.btn_cleanup_start.setEnabled(actually_enabled)
         self.btn_manual_flow.setEnabled(actually_enabled)
         self.btn_empty_syringe_pump.setEnabled(actually_enabled)
         self.btn_execute_selected.setEnabled(actually_enabled and has_protocols)
 
     def _log_status(self, message: str) -> None:
-        """Log a status message to the status text area."""
+        """Log a status message to the status text area with color coding."""
         current_time = QDateTime.currentDateTime().toString("hh:mm:ss")
-        self.status_text.append(f"[{current_time}] {message}")
+        escaped = html.escape(message)
+        msg_lower = message.lower()
+        if "error" in msg_lower or "failed" in msg_lower:
+            color = "#e74c3c"
+        elif "warning" in msg_lower:
+            color = "#e67e22"
+        else:
+            color = "#e0e0e0"
+        self.status_text.append(
+            f'<span style="color:{color}">[{current_time}] {escaped}</span>'
+        )
         # Scroll to bottom
         scrollbar = self.status_text.verticalScrollBar()
         if scrollbar:
             scrollbar.setValue(scrollbar.maximum())
         # Also log to console
         self._log.info(message)
+
+    def _save_log(self) -> None:
+        """Save the log content to a file."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Fluidics Log", "", "Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "w") as f:
+                    f.write(self.status_text.toPlainText())
+                self._log_status(f"Log saved to {file_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save log: {str(e)}")

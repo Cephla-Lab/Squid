@@ -311,6 +311,7 @@ class HighContentScreeningGui(QMainWindow):
         self.multiPointWithFluidicsWidget: Optional[
             widgets.MultiPointWithFluidicsWidget
         ] = None
+        self.acquisitionSetupWidget: Optional[widgets.AcquisitionSetupWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
@@ -724,6 +725,17 @@ class HighContentScreeningGui(QMainWindow):
             self.orchestratorWorkflowTree.populate_from_protocol
         )
 
+        # Connect workflow tree start position to control panel
+        self.orchestratorWorkflowTree.start_position_changed.connect(
+            self.orchestratorControlPanel.set_start_position
+        )
+        self.orchestratorWorkflowTree.start_from_requested.connect(
+            self.orchestratorControlPanel.start_from_round
+        )
+        self.orchestratorWorkflowTree.run_single_round_requested.connect(
+            self.orchestratorControlPanel.run_single_round
+        )
+
         # Connect workflow tree selection to parameter panel
         self.orchestratorWorkflowTree.tree.itemClicked.connect(
             self._on_workflow_item_clicked
@@ -821,6 +833,10 @@ class HighContentScreeningGui(QMainWindow):
                             return
 
     def setupRecordTabWidget(self) -> None:
+        # Unified acquisition setup tab (always available)
+        self.recordTabWidget.addTab(
+            self.acquisitionSetupWidget, "Acquisition Setup"
+        )
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(
                 self.wellplateMultiPointWidget, "Wellplate Multipoint"
@@ -892,6 +908,8 @@ class HighContentScreeningGui(QMainWindow):
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
+        # Fire for the initial tab so _is_active_tab is set correctly from startup
+        self.onTabChanged(self.recordTabWidget.currentIndex())
 
     def _connect_well_selector_button(self) -> None:
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):
@@ -1136,6 +1154,11 @@ class HighContentScreeningGui(QMainWindow):
         )
 
     def onTabChanged(self, index: int) -> None:
+        is_setup = (
+            index == self.recordTabWidget.indexOf(self.acquisitionSetupWidget)
+            if self.acquisitionSetupWidget is not None
+            else False
+        )
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
             if self._feature_flags.is_enabled("ENABLE_FLEXIBLE_MULTIPOINT")
@@ -1158,7 +1181,9 @@ class HighContentScreeningGui(QMainWindow):
             and self.wellSelectionWidget.format != "glass slide"
         )
         active_tab = (
-            "wellplate"
+            "setup"
+            if is_setup
+            else "wellplate"
             if is_wellplate_acquisition
             else "flexible"
             if is_flexible_acquisition

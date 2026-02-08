@@ -14,6 +14,7 @@ from squid.ui.widgets.wellplate._common import (
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,6 +38,8 @@ from squid.ui.widgets.wellplate._common import (
     os,
     pg,
 )
+import squid.core.logging
+
 from squid.core.events import (
     MoveStageRelativeCommand,
     StartLiveCommand,
@@ -50,6 +53,8 @@ if TYPE_CHECKING:
     from squid.backend.io.stream_handler import StreamHandler
     from squid.ui.widgets.wellplate.format import WellplateFormatWidget
     from squid.ui.widgets.tracking.joystick import Joystick
+
+_log = squid.core.logging.get_logger(__name__)
 
 
 class WellplateCalibration(EventBusDialog):
@@ -84,6 +89,7 @@ class WellplateCalibration(EventBusDialog):
         self._is_live: bool = False
         self.was_live: bool = was_live
         self.corners: List[Optional[Tuple[float, float]]] = [None, None, None]
+        self.center_point: Optional[Tuple[float, float]] = None  # For center point calibration method
         self.show_virtual_joystick: bool = True  # FLAG
 
         # Cache current position for setCorner
@@ -94,6 +100,7 @@ class WellplateCalibration(EventBusDialog):
         self.new_format_radio: QRadioButton
         self.calibrate_format_radio: QRadioButton
         self.existing_format_combo: QComboBox
+        self.new_format_widget: QWidget
         self.form_layout: QFormLayout
         self.nameInput: QLineEdit
         self.rowsInput: QSpinBox
@@ -101,8 +108,23 @@ class WellplateCalibration(EventBusDialog):
         self.plateWidthInput: QDoubleSpinBox
         self.plateHeightInput: QDoubleSpinBox
         self.wellSpacingInput: QDoubleSpinBox
+        self.existing_params_group: QGroupBox
+        self.existing_spacing_input: QDoubleSpinBox
+        self.existing_well_size_input: QDoubleSpinBox
+        self.update_params_button: QPushButton
+        self.calibration_method_group: QGroupBox
+        self.method_button_group: QButtonGroup
+        self.edge_points_radio: QRadioButton
+        self.center_point_radio: QRadioButton
+        self.points_widget: QWidget
+        self.edge_points_label: QLabel
         self.cornerLabels: List[QLabel] = []
         self.setPointButtons: List[QPushButton] = []
+        self.center_point_widget: QWidget
+        self.center_point_status_label: QLabel
+        self.set_center_button: QPushButton
+        self.center_well_size_label: QLabel
+        self.center_well_size_input: QDoubleSpinBox
         self.clickToMoveCheckbox: QCheckBox
         self.showJoystickCheckbox: QCheckBox
         self.calibrateButton: QPushButton
@@ -115,6 +137,8 @@ class WellplateCalibration(EventBusDialog):
         # Initially allow click-to-move and hide the joystick controls
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)
+        # Set minimum height to accommodate all UI configurations
+        self.setMinimumHeight(580)
 
     def initUI(self) -> None:
         layout = QHBoxLayout(self)  # Change to QHBoxLayout to have two columns
@@ -137,13 +161,17 @@ class WellplateCalibration(EventBusDialog):
         self.existing_format_combo = QComboBox(self)
         self.populate_existing_formats()
         self.existing_format_combo.hide()
+        self.existing_format_combo.currentIndexChanged.connect(self.on_existing_format_changed)
         left_layout.addWidget(self.existing_format_combo)
 
         # Connect radio buttons to toggle visibility
         self.new_format_radio.toggled.connect(self.toggle_input_mode)
         self.calibrate_format_radio.toggled.connect(self.toggle_input_mode)
 
-        self.form_layout = QFormLayout()
+        # New format inputs container (hidden when calibrating existing format)
+        self.new_format_widget = QWidget()
+        self.form_layout = QFormLayout(self.new_format_widget)
+        self.form_layout.setContentsMargins(0, 0, 0, 0)
 
         self.nameInput = QLineEdit(self)
         self.nameInput.setPlaceholderText("custom well plate")
@@ -164,19 +192,15 @@ class WellplateCalibration(EventBusDialog):
         # Add new inputs for plate dimensions
         self.plateWidthInput = QDoubleSpinBox(self)
         self.plateWidthInput.setKeyboardTracking(False)
-        self.plateWidthInput.setRange(10, 500)  # Adjust range as needed
-        self.plateWidthInput.setValue(
-            127.76
-        )  # Default value for a standard 96-well plate
+        self.plateWidthInput.setRange(10, 500)
+        self.plateWidthInput.setValue(127.76)  # Default for standard 96-well plate
         self.plateWidthInput.setSuffix(" mm")
         self.form_layout.addRow("Plate Width:", self.plateWidthInput)
 
         self.plateHeightInput = QDoubleSpinBox(self)
         self.plateHeightInput.setKeyboardTracking(False)
-        self.plateHeightInput.setRange(10, 500)  # Adjust range as needed
-        self.plateHeightInput.setValue(
-            85.48
-        )  # Default value for a standard 96-well plate
+        self.plateHeightInput.setRange(10, 500)
+        self.plateHeightInput.setValue(85.48)  # Default for standard 96-well plate
         self.plateHeightInput.setSuffix(" mm")
         self.form_layout.addRow("Plate Height:", self.plateHeightInput)
 
@@ -189,17 +213,66 @@ class WellplateCalibration(EventBusDialog):
         self.wellSpacingInput.setSuffix(" mm")
         self.form_layout.addRow("Well Spacing:", self.wellSpacingInput)
 
-        left_layout.addLayout(self.form_layout)
+        left_layout.addWidget(self.new_format_widget)
 
-        points_layout = QGridLayout()
+        # Existing format parameters section (initially hidden)
+        self.existing_params_group = QGroupBox("Format Parameters")
+        existing_params_layout = QFormLayout()
+
+        self.existing_spacing_input = QDoubleSpinBox(self)
+        self.existing_spacing_input.setKeyboardTracking(False)
+        self.existing_spacing_input.setRange(0.1, 100)
+        self.existing_spacing_input.setSingleStep(0.1)
+        self.existing_spacing_input.setDecimals(3)
+        self.existing_spacing_input.setSuffix(" mm")
+        existing_params_layout.addRow("Well Spacing:", self.existing_spacing_input)
+
+        self.existing_well_size_input = QDoubleSpinBox(self)
+        self.existing_well_size_input.setKeyboardTracking(False)
+        self.existing_well_size_input.setRange(0.1, 50)
+        self.existing_well_size_input.setSingleStep(0.1)
+        self.existing_well_size_input.setDecimals(3)
+        self.existing_well_size_input.setSuffix(" mm")
+        existing_params_layout.addRow("Well Size:", self.existing_well_size_input)
+
+        self.existing_params_group.setLayout(existing_params_layout)
+
+        self.update_params_button = QPushButton("Update Parameters")
+        self.update_params_button.clicked.connect(self.update_existing_parameters)
+
+        self.existing_params_group.hide()
+        self.update_params_button.hide()
+        left_layout.addWidget(self.existing_params_group)
+        left_layout.addWidget(self.update_params_button)
+
+        # Calibration method selection
+        self.calibration_method_group = QGroupBox("Calibration Method")
+        calibration_method_layout = QVBoxLayout()
+
+        self.method_button_group = QButtonGroup(self)
+        self.edge_points_radio = QRadioButton("3 Edge Points (recommended for large wells)")
+        self.center_point_radio = QRadioButton("Center Point (recommended for small wells)")
+        self.method_button_group.addButton(self.edge_points_radio)
+        self.method_button_group.addButton(self.center_point_radio)
+        self.edge_points_radio.setChecked(True)
+
+        calibration_method_layout.addWidget(self.edge_points_radio)
+        calibration_method_layout.addWidget(self.center_point_radio)
+        self.calibration_method_group.setLayout(calibration_method_layout)
+        left_layout.addWidget(self.calibration_method_group)
+
+        # Only connect one radio button to avoid double-calls (both emit toggled when selection changes)
+        self.edge_points_radio.toggled.connect(self.toggle_calibration_method)
+
+        # 3 Edge Points UI
+        self.points_widget = QWidget()
+        points_layout = QGridLayout(self.points_widget)
+        points_layout.setContentsMargins(0, 0, 0, 0)
         self.cornerLabels = []
         self.setPointButtons = []
-        navigate_label = QLabel(
-            "Navigate to and Select\n3 Points on the Edge of Well A1"
-        )
-        navigate_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # navigate_label.setStyleSheet("font-weight: bold;")
-        points_layout.addWidget(navigate_label, 0, 0, 1, 2)
+        self.edge_points_label = QLabel("Navigate to and Select\n3 Points on the Edge of Well A1")
+        self.edge_points_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        points_layout.addWidget(self.edge_points_label, 0, 0, 1, 2)
         for i in range(1, 4):
             label = QLabel(f"Point {i}: N/A")
             button = QPushButton("Set Point")
@@ -211,7 +284,40 @@ class WellplateCalibration(EventBusDialog):
             self.setPointButtons.append(button)
 
         points_layout.setColumnStretch(0, 1)
-        left_layout.addLayout(points_layout)
+        left_layout.addWidget(self.points_widget)
+
+        # Center Point UI
+        self.center_point_widget = QWidget()
+        center_point_layout = QGridLayout(self.center_point_widget)
+        center_point_layout.setContentsMargins(0, 0, 0, 0)
+
+        center_point_label = QLabel("Navigate to the Center of Well A1")
+        center_point_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center_point_layout.addWidget(center_point_label, 0, 0, 1, 2)
+
+        self.center_point_status_label = QLabel("Center: Not set")
+        self.set_center_button = QPushButton("Set Center")
+        self.set_center_button.setFixedWidth(self.set_center_button.sizeHint().width())
+        self.set_center_button.clicked.connect(self.setCenterPoint)
+        center_point_layout.addWidget(self.center_point_status_label, 1, 0)
+        center_point_layout.addWidget(self.set_center_button, 1, 1)
+
+        # Well size input for center point method (since we can't calculate it)
+        # Hidden when calibrating existing formats (Format Parameters section has well size)
+        self.center_well_size_label = QLabel("Well Size:")
+        self.center_well_size_input = QDoubleSpinBox(self)
+        self.center_well_size_input.setKeyboardTracking(False)
+        self.center_well_size_input.setRange(0.1, 50)
+        self.center_well_size_input.setSingleStep(0.1)
+        self.center_well_size_input.setDecimals(3)
+        self.center_well_size_input.setValue(3.0)  # Default for small wells
+        self.center_well_size_input.setSuffix(" mm")
+        center_point_layout.addWidget(self.center_well_size_label, 2, 0)
+        center_point_layout.addWidget(self.center_well_size_input, 2, 1)
+
+        center_point_layout.setColumnStretch(0, 1)
+        self.center_point_widget.hide()  # Initially hidden
+        left_layout.addWidget(self.center_point_widget)
 
         # Add 'Click to Move' checkbox
         self.clickToMoveCheckbox = QCheckBox("Click to Move")
@@ -396,149 +502,329 @@ class WellplateCalibration(EventBusDialog):
                 return
 
             self.corners[index] = (x, y)
-            self.cornerLabels[index].setText(f"Point {index + 1}: ({x:.2f}, {y:.2f})")
+            self.cornerLabels[index].setText(f"Point {index + 1}: ({x:.3f}, {y:.3f})")
             self.setPointButtons[index].setText("Clear Point")
         else:
             self.corners[index] = None
             self.cornerLabels[index].setText(f"Point {index + 1}: Not set")
             self.setPointButtons[index].setText("Set Point")
 
-        self.calibrateButton.setEnabled(
-            all(corner is not None for corner in self.corners)
-        )
+        self.update_calibrate_button_state()
+
+    def _format_display_name(self, format_id) -> str:
+        """Return a display name for a wellplate format, adding 'well plate' suffix if not present."""
+        name = str(format_id)
+        if "well plate" not in name.lower():
+            return f"{format_id} well plate"
+        return name
 
     def populate_existing_formats(self) -> None:
         self.existing_format_combo.clear()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
-            self.existing_format_combo.addItem(f"{format_} well plate", format_)
+            self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self) -> None:
-        if self.new_format_radio.isChecked():
-            self.existing_format_combo.hide()
-            for i in range(self.form_layout.rowCount()):
-                self.form_layout.itemAt(i, QFormLayout.FieldRole).widget().show()
-                self.form_layout.itemAt(i, QFormLayout.LabelRole).widget().show()
+        is_new_format = self.new_format_radio.isChecked()
+
+        self.new_format_widget.setVisible(is_new_format)
+        self.center_well_size_label.setVisible(is_new_format)
+        self.center_well_size_input.setVisible(is_new_format)
+
+        self.existing_format_combo.setVisible(not is_new_format)
+        self.existing_params_group.setVisible(not is_new_format)
+        self.update_params_button.setVisible(not is_new_format)
+
+        if not is_new_format:
+            self.load_existing_format_values()
+
+    def load_existing_format_values(self) -> None:
+        """Load current values from selected existing format into the parameter inputs."""
+        selected_format = self.existing_format_combo.currentData()
+        if selected_format is None:
+            return
+
+        settings = WELLPLATE_FORMAT_SETTINGS.get(selected_format, {})
+        self.existing_spacing_input.setValue(settings.get("well_spacing_mm", 9.0))
+
+        # Use consistent well size for both inputs
+        well_size = settings.get("well_size_mm", 6.0)
+        self.existing_well_size_input.setValue(well_size)
+        self.center_well_size_input.setValue(well_size)
+
+        # Auto-select center point method for 384 and 1536 well plates because their
+        # small well diameters make it difficult to reliably set 3 distinct points
+        # on the well edge under a microscope
+        if selected_format in ("384 well plate", "1536 well plate"):
+            self.center_point_radio.setChecked(True)
         else:
-            self.existing_format_combo.show()
-            for i in range(self.form_layout.rowCount()):
-                self.form_layout.itemAt(i, QFormLayout.FieldRole).widget().hide()
-                self.form_layout.itemAt(i, QFormLayout.LabelRole).widget().hide()
+            self.edge_points_radio.setChecked(True)
 
-    def calibrate(self) -> None:
-        try:
-            if self.new_format_radio.isChecked():
-                if not self.nameInput.text() or not all(self.corners):
-                    QMessageBox.warning(
-                        self,
-                        "Incomplete Information",
-                        "Please fill in all fields and set 3 corner points before calibrating.",
-                    )
-                    return
+    def on_existing_format_changed(self) -> None:
+        """Handle existing format combo box selection change."""
+        if self.calibrate_format_radio.isChecked():
+            self.load_existing_format_values()
+            # Reset calibration points when format changes
+            self.reset_calibration_points()
 
-                name = self.nameInput.text()
-                rows = self.rowsInput.value()
-                cols = self.colsInput.value()
-                well_spacing_mm = self.wellSpacingInput.value()
-                plate_width_mm = self.plateWidthInput.value()
-                plate_height_mm = self.plateHeightInput.value()
+    def reset_calibration_points(self) -> None:
+        """Reset all calibration points to unset state."""
+        # Reset edge points
+        for i in range(3):
+            self.corners[i] = None
+            self.cornerLabels[i].setText(f"Point {i + 1}: Not set")
+            self.setPointButtons[i].setText("Set Point")
 
-                center, radius = self.calculate_circle(self.corners)
-                well_size_mm = radius * 2
-                a1_x_mm, a1_y_mm = center
-                scale = 1 / 0.084665
-                a1_x_pixel = round(a1_x_mm * scale)
-                a1_y_pixel = round(a1_y_mm * scale)
+        # Reset center point
+        self.center_point = None
+        self.center_point_status_label.setText("Center: Not set")
+        self.set_center_button.setText("Set Center")
 
-                new_format = {
-                    "a1_x_mm": a1_x_mm,
-                    "a1_y_mm": a1_y_mm,
-                    "a1_x_pixel": a1_x_pixel,
-                    "a1_y_pixel": a1_y_pixel,
-                    "well_size_mm": well_size_mm,
-                    "well_spacing_mm": well_spacing_mm,
-                    "number_of_skip": 0,
-                    "rows": rows,
-                    "cols": cols,
-                }
+        self.update_calibrate_button_state()
 
-                self._publish(
-                    SaveWellplateCalibrationCommand(
-                        calibration=new_format,
-                        name=name,
-                        metadata={
-                            "plate_width_mm": plate_width_mm,
-                            "plate_height_mm": plate_height_mm,
-                        },
-                    )
+    def toggle_calibration_method(self) -> None:
+        """Toggle between 3 edge points and center point calibration methods."""
+        if self.edge_points_radio.isChecked():
+            self.points_widget.show()
+            self.center_point_widget.hide()
+        else:
+            self.points_widget.hide()
+            self.center_point_widget.show()
+        self.update_calibrate_button_state()
+
+    def setCenterPoint(self) -> None:
+        """Set or clear the center point for center point calibration method."""
+        if self.center_point is None:
+            if self._current_position is None:
+                QMessageBox.warning(
+                    self,
+                    "Position Unknown",
+                    "Stage position not available. Please wait for the stage to report its position.",
                 )
-                self.create_wellplate_image(
-                    name, new_format, plate_width_mm, plate_height_mm
-                )
-                self.wellplateFormatWidget.setWellplateSettings(name)
-                success_message = (
-                    f"New format '{name}' has been successfully created and calibrated."
-                )
-                selected_format = name
+                return
+            x, y = self._current_position
+            self.center_point = (x, y)
+            self.center_point_status_label.setText(f"Center: ({x:.3f}, {y:.3f})")
+            self.set_center_button.setText("Clear Center")
+        else:
+            self.center_point = None
+            self.center_point_status_label.setText("Center: Not set")
+            self.set_center_button.setText("Set Center")
+        self.update_calibrate_button_state()
 
+    def update_calibrate_button_state(self) -> None:
+        """Update the calibrate button enabled state based on current calibration method."""
+        if self.center_point_radio.isChecked():
+            self.calibrateButton.setEnabled(self.center_point is not None)
+        else:
+            self.calibrateButton.setEnabled(all(corner is not None for corner in self.corners))
+
+    def _get_calibration_data(self) -> Optional[Tuple[float, float, float]]:
+        """Extract calibration data based on current calibration method.
+
+        Returns:
+            tuple: (a1_x_mm, a1_y_mm, well_size_mm) or None if validation fails.
+            Displays appropriate warning message if validation fails.
+        """
+        if self.center_point_radio.isChecked():
+            if self.center_point is None:
+                QMessageBox.warning(self, "Incomplete Information", "Please set the center point before calibrating.")
+                return None
+            a1_x_mm, a1_y_mm = self.center_point
+            # Use appropriate well size input based on mode
+            if self.calibrate_format_radio.isChecked():
+                well_size_mm = self.existing_well_size_input.value()
             else:
-                selected_format = self.existing_format_combo.currentData()
-                if not all(self.corners):
-                    QMessageBox.warning(
-                        self,
-                        "Incomplete Information",
-                        "Please set 3 corner points before calibrating.",
-                    )
-                    return
+                well_size_mm = self.center_well_size_input.value()
+        else:
+            if not all(self.corners):
+                QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
+                return None
+            center, radius = self.calculate_circle(self.corners)
+            well_size_mm = radius * 2
+            a1_x_mm, a1_y_mm = center
+        return a1_x_mm, a1_y_mm, well_size_mm
 
-                center, radius = self.calculate_circle(self.corners)
-                well_size_mm = radius * 2
-                a1_x_mm, a1_y_mm = center
+    def update_existing_parameters(self) -> None:
+        """Update parameters for an existing format without recalibrating the position."""
+        selected_format = self.existing_format_combo.currentData()
+        if selected_format is None:
+            QMessageBox.warning(self, "No Format Selected", "Please select a format to update.")
+            return
 
-                # Get the existing format settings
-                existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        try:
+            # Get the new values
+            new_spacing = self.existing_spacing_input.value()
+            new_well_size = self.existing_well_size_input.value()
 
-                print(f"Updating existing format {selected_format} well plate")
-                print(
-                    f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, 'well_size_mm': {existing_settings['well_size_mm']}"
-                )
-                print(
-                    f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}"
-                )
+            # Get existing settings
+            existing_settings = WELLPLATE_FORMAT_SETTINGS.get(selected_format)
+            if existing_settings is None:
+                QMessageBox.critical(self, "Update Failed", f"Format '{selected_format}' not found in settings.")
+                return
 
-                updated_settings = {
-                    "a1_x_mm": a1_x_mm,
-                    "a1_y_mm": a1_y_mm,
-                    "well_size_mm": well_size_mm,
+            display_name = self._format_display_name(selected_format)
+            _log.info(f"Updating parameters for {display_name}")
+            _log.info(
+                f"OLD: spacing={existing_settings.get('well_spacing_mm')}, "
+                f"well_size={existing_settings.get('well_size_mm')}"
+            )
+            _log.info(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
+
+            # Update the settings
+            WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+                {
+                    "well_spacing_mm": new_spacing,
+                    "well_size_mm": new_well_size,
                 }
+            )
 
-                self._publish(
-                    SaveWellplateCalibrationCommand(
-                        calibration={
-                            **WELLPLATE_FORMAT_SETTINGS[selected_format],
-                            **updated_settings,
-                        },
-                        name=selected_format,
-                    )
+            # Save and refresh via event
+            self._publish(
+                SaveWellplateCalibrationCommand(
+                    calibration={**WELLPLATE_FORMAT_SETTINGS[selected_format]},
+                    name=selected_format,
                 )
-                self.wellplateFormatWidget.setWellplateSettings(selected_format)
-                success_message = f"Format '{selected_format} well plate' has been successfully recalibrated."
+            )
 
-            # Update the WellplateFormatWidget's combo box to reflect the newly calibrated format
+            # Re-select the format
             self.wellplateFormatWidget.populate_combo_box()
             index = self.wellplateFormatWidget.comboBox.findData(selected_format)
             if index >= 0:
                 self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
 
-            # Display success message
-            QMessageBox.information(self, "Calibration Successful", success_message)
-            self.accept()
+            QMessageBox.information(
+                self,
+                "Parameters Updated",
+                f"Parameters for '{display_name}' have been updated successfully.",
+            )
 
         except Exception as e:
+            _log.exception("Failed to update existing format parameters")
+            QMessageBox.critical(self, "Update Failed", f"An error occurred while updating parameters: {str(e)}")
+
+    def calibrate(self) -> None:
+        """Execute wellplate calibration based on current settings.
+
+        Supports two modes:
+        - New format: Creates a new custom wellplate format with all parameters
+        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_mm
+
+        Supports two calibration methods:
+        - 3 Edge Points: Calculates well center and diameter from 3 points on well edge
+        - Center Point: Uses directly-specified center position with manual well size
+        """
+        try:
+            if self.new_format_radio.isChecked():
+                self._calibrate_new_format()
+            else:
+                self._calibrate_existing_format()
+        except np.linalg.LinAlgError:
+            _log.exception("Linear algebra error during calibration")
+            QMessageBox.critical(
+                self,
+                "Calibration Error",
+                "Unable to calculate well center from the provided points.\n"
+                "The 3 points may be nearly collinear (in a straight line).\n"
+                "Please choose points that are more spread out around the well edge.",
+            )
+        except Exception as e:
+            _log.exception("Unexpected error during calibration")
             QMessageBox.critical(
                 self,
                 "Calibration Error",
                 f"An error occurred during calibration: {str(e)}",
             )
+
+    def _calibrate_new_format(self) -> None:
+        """Create and calibrate a new wellplate format."""
+        if not self.nameInput.text():
+            QMessageBox.warning(self, "Incomplete Information", "Please enter a name for the format.")
+            return
+
+        calibration_data = self._get_calibration_data()
+        if calibration_data is None:
+            return
+        a1_x_mm, a1_y_mm, well_size_mm = calibration_data
+
+        name = self.nameInput.text()
+        plate_width_mm = self.plateWidthInput.value()
+        plate_height_mm = self.plateHeightInput.value()
+
+        scale = 1 / 0.084665
+        new_format = {
+            "a1_x_mm": a1_x_mm,
+            "a1_y_mm": a1_y_mm,
+            "a1_x_pixel": round(a1_x_mm * scale),
+            "a1_y_pixel": round(a1_y_mm * scale),
+            "well_size_mm": well_size_mm,
+            "well_spacing_mm": self.wellSpacingInput.value(),
+            "number_of_skip": 0,
+            "rows": self.rowsInput.value(),
+            "cols": self.colsInput.value(),
+        }
+
+        self._publish(
+            SaveWellplateCalibrationCommand(
+                calibration=new_format,
+                name=name,
+                metadata={
+                    "plate_width_mm": plate_width_mm,
+                    "plate_height_mm": plate_height_mm,
+                },
+            )
+        )
+        self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
+
+        self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
+
+    def _calibrate_existing_format(self) -> None:
+        """Recalibrate an existing wellplate format."""
+        selected_format = self.existing_format_combo.currentData()
+
+        calibration_data = self._get_calibration_data()
+        if calibration_data is None:
+            return
+        a1_x_mm, a1_y_mm, well_size_mm = calibration_data
+
+        existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        display_name = self._format_display_name(selected_format)
+
+        _log.info(f"Updating existing format {display_name}")
+        _log.info(
+            f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, "
+            f"'well_size_mm': {existing_settings['well_size_mm']}"
+        )
+        _log.info(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
+
+        updated_settings = {
+            "a1_x_mm": a1_x_mm,
+            "a1_y_mm": a1_y_mm,
+            "well_size_mm": well_size_mm,
+        }
+
+        self._publish(
+            SaveWellplateCalibrationCommand(
+                calibration={
+                    **WELLPLATE_FORMAT_SETTINGS[selected_format],
+                    **updated_settings,
+                },
+                name=selected_format,
+            )
+        )
+
+        self._finish_calibration(
+            selected_format, f"Format '{display_name}' has been successfully recalibrated."
+        )
+
+    def _finish_calibration(self, format_id: str, success_message: str) -> None:
+        """Complete calibration by updating UI and showing success message."""
+        self.wellplateFormatWidget.populate_combo_box()
+        index = self.wellplateFormatWidget.comboBox.findData(format_id)
+        if index >= 0:
+            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+
+        QMessageBox.information(self, "Calibration Successful", success_message)
+        self.accept()
 
     def create_wellplate_image(
         self, name: str, format_data: dict, plate_width_mm: float, plate_height_mm: float

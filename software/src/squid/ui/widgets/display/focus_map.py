@@ -128,7 +128,7 @@ class FocusMapWidget(EventBusFrame):
             return
         self._scan_snapshot_request_id = None
         self._scan_region_centers = {
-            str(k): (float(v[0]), float(v[1]), float(v[2]))
+            str(k): (float(v[0]), float(v[1]), float(v[2]) if len(v) > 2 else 0.0)
             for k, v in event.region_centers.items()
         }
         self._scan_region_fov_coordinates = {

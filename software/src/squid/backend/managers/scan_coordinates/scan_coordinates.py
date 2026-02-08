@@ -656,13 +656,23 @@ class ScanCoordinates:
         x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
         y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
         y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        pre_filter_count = len(scan_coordinates)
         scan_coordinates = filter_coordinates_in_bounds(
             scan_coordinates, x_min, x_max, y_min, y_max
         )
 
-        if not scan_coordinates and shape == "Circle":
-            if self.validate_coordinates(center_x, center_y):
-                scan_coordinates.append((center_x, center_y))
+        if not scan_coordinates:
+            if pre_filter_count > 0:
+                self._log.warning(
+                    f"All {pre_filter_count} grid positions for region '{well_id}' are outside "
+                    f"software position limits (X=[{x_min}, {x_max}], Y=[{y_min}, {y_max}]). "
+                    f"Center=({center_x:.3f}, {center_y:.3f}). "
+                    f"Clamping center to bounds as fallback."
+                )
+            # Clamp center to bounds (matching add_single_fov_region behavior)
+            clamped_x = min(max(center_x, x_min), x_max)
+            clamped_y = min(max(center_y, y_min), y_max)
+            scan_coordinates = [(clamped_x, clamped_y)]
 
         self.region_shapes[well_id] = shape
         self.region_centers[well_id] = [
@@ -752,9 +762,20 @@ class ScanCoordinates:
         x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
         y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
         y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        pre_filter_count = len(scan_coordinates)
         scan_coordinates = filter_coordinates_in_bounds(
             scan_coordinates, x_min, x_max, y_min, y_max
         )
+
+        if not scan_coordinates and pre_filter_count > 0:
+            self._log.warning(
+                f"All {pre_filter_count} grid positions for flexible region '{region_id}' are "
+                f"outside software position limits (X=[{x_min}, {x_max}], Y=[{y_min}, {y_max}]). "
+                f"Center=({center_x:.3f}, {center_y:.3f}). Clamping center to bounds."
+            )
+            clamped_x = min(max(center_x, x_min), x_max)
+            clamped_y = min(max(center_y, y_min), y_max)
+            scan_coordinates = [(clamped_x, clamped_y, center_z)]
 
         # Region coordinates are already centered since center_x, center_y is grid center
         if scan_coordinates:  # Only add region if there are valid coordinates

@@ -581,22 +581,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.spinbox_maintain_threshold.setFixedWidth(spinbox_width + 20)  # Wider for suffix
         self.spinbox_maintain_threshold.setToolTip("Looser threshold once lock is acquired")
 
-        # Two-row grid layout for focus lock controls - compact
-        focus_lock_layout = QGridLayout(self.focus_lock_controls_frame)
+        # Horizontal layout for focus lock controls - matches Z/Time controls style
+        focus_lock_layout = QHBoxLayout(self.focus_lock_controls_frame)
         focus_lock_layout.setContentsMargins(4, 2, 4, 2)
-        focus_lock_layout.setSpacing(2)
-        # Row 0: Buffer, Retries, Min SNR
-        focus_lock_layout.addWidget(QLabel("Buf:"), 0, 0)
-        focus_lock_layout.addWidget(self.spinbox_buffer_length, 0, 1)
-        focus_lock_layout.addWidget(QLabel("Retry:"), 0, 2)
-        focus_lock_layout.addWidget(self.spinbox_recovery_attempts, 0, 3)
-        focus_lock_layout.addWidget(QLabel("SNR:"), 0, 4)
-        focus_lock_layout.addWidget(self.spinbox_min_snr, 0, 5)
-        # Row 1: Acquire threshold, Maintain threshold
-        focus_lock_layout.addWidget(QLabel("Acq:"), 1, 0)
-        focus_lock_layout.addWidget(self.spinbox_acquire_threshold, 1, 1)
-        focus_lock_layout.addWidget(QLabel("Maint:"), 1, 2)
-        focus_lock_layout.addWidget(self.spinbox_maintain_threshold, 1, 3)
+        focus_lock_layout.addWidget(QLabel("Buffer"))
+        focus_lock_layout.addWidget(self.spinbox_buffer_length)
+        focus_lock_layout.addWidget(QLabel("Retry"))
+        focus_lock_layout.addWidget(self.spinbox_recovery_attempts)
+        focus_lock_layout.addWidget(QLabel("SNR"))
+        focus_lock_layout.addWidget(self.spinbox_min_snr)
+        focus_lock_layout.addWidget(QLabel("Acquire"))
+        focus_lock_layout.addWidget(self.spinbox_acquire_threshold)
+        focus_lock_layout.addWidget(QLabel("Maintain"))
+        focus_lock_layout.addWidget(self.spinbox_maintain_threshold)
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -629,6 +626,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.combobox_xy_mode.addItems(
             ["Current Position", "Select Wells", "Manual", "Load Coordinates"]
         )
+        self.combobox_xy_mode.setCurrentIndex(1)  # Default to "Select Wells" for wellplate widget
         self.combobox_xy_mode.setEnabled(True)  # Initially enabled since XY is checked
         # disable manual mode on init (before mosaic is loaded) - identify the index of the manual mode by name
         _manual_index = self.combobox_xy_mode.findText("Manual")
@@ -832,8 +830,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             self.z_controls_range_frame, 1, 0, 1, 3
         )  # Span full row (columns 0, 1, 2)
 
+        # Focus Lock controls row (full width, like Z range controls)
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
+            grid.addWidget(self.focus_lock_controls_frame, 2, 0, 1, 3)
+
         # Configuration list
-        grid.addWidget(self.list_configurations, 2, 0)
+        config_row = 3 if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS") else 2
+        grid.addWidget(self.list_configurations, config_row, 0)
 
         # Options and Start button
         options_layout = QVBoxLayout()
@@ -855,7 +858,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         bottom_right.addSpacing(2)
         bottom_right.addLayout(button_layout)
 
-        grid.addLayout(bottom_right, 2, 2)
+        grid.addLayout(bottom_right, config_row, 2)
         spacer_widget = QWidget()
         spacer_widget.setFixedWidth(2)
         grid.addWidget(spacer_widget, 0, 1)
@@ -870,13 +873,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         grid.setColumnStretch(2, 1)  # Middle spacer
 
         main_layout.addLayout(grid)
-
-        # Focus Lock controls frame (shown when Focus Lock is checked)
-        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
-            focus_lock_wrapper = QHBoxLayout()
-            focus_lock_wrapper.addWidget(self.focus_lock_controls_frame)
-            focus_lock_wrapper.addStretch(1)
-            main_layout.addLayout(focus_lock_wrapper)
 
         # Row 5: Progress Bar
         row_progress_layout = QHBoxLayout()
@@ -1140,6 +1136,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             self._log.warning(f"Failed to load acquisition settings from cache: {e}")
             # Clear the flag even on error
             self._loading_from_cache = False
+            # Still initialize UI for the default mode (e.g. "Select Wells")
+            self.update_scan_control_ui()
+            self.update_control_visibility()
+            self.update_tab_styles()
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
@@ -1457,9 +1457,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
     def set_coordinates_to_current_position(self):
         """Set scan coordinates to current stage position (single FOV)"""
-        if not self._is_active_tab:
-            return
-
         # Get current position from cached values (updated via StagePositionChanged events)
         x = self._cached_x_mm
         y = self._cached_y_mm

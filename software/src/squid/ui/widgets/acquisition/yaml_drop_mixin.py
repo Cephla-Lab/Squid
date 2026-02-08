@@ -164,8 +164,12 @@ class AcquisitionYAMLDropMixin:
                 pass
         return (1, 1)
 
-    def _load_acquisition_yaml(self, file_path: str) -> None:
-        """Load acquisition settings from YAML file."""
+    def _load_acquisition_yaml(self, file_path: str) -> bool:
+        """Load acquisition settings from YAML file.
+
+        Returns:
+            True if settings were loaded successfully, False otherwise.
+        """
         log = getattr(self, "_log", _log)
 
         try:
@@ -173,7 +177,7 @@ class AcquisitionYAMLDropMixin:
         except Exception as e:
             log.error(f"Failed to parse YAML file: {e}")
             QMessageBox.warning(self, "Load Error", f"Failed to parse YAML file:\n{e}")
-            return
+            return False
 
         # Check widget type
         expected_type = self._get_expected_widget_type()
@@ -184,7 +188,7 @@ class AcquisitionYAMLDropMixin:
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
                 f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
             )
-            return
+            return False
 
         # Validate hardware
         current_objective = self._get_current_objective()
@@ -195,11 +199,12 @@ class AcquisitionYAMLDropMixin:
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
             dialog.exec_()
-            return
+            return False
 
         # Apply settings with signal blocking
         self._apply_yaml_settings(yaml_data)
         log.info(f"Loaded acquisition settings from: {file_path}")
+        return True
 
     def _apply_yaml_settings(self, yaml_data: AcquisitionYAMLData) -> None:
         """Apply parsed YAML settings to widget controls. Override in subclass."""

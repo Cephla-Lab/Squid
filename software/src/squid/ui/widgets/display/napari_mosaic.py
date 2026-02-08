@@ -25,6 +25,7 @@ from squid.core.events import (
     EventBus,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
+    ClearManualShapesCommand,
     ManualShapeDrawingEnabledChanged,
     ManualShapesChanged,
     MosaicLayersInitialized,
@@ -406,6 +407,14 @@ class NapariMosaicDisplayWidget(QWidget):
         self, event: ManualShapeDrawingEnabledChanged
     ) -> None:
         self.enable_shape_drawing(event.enabled)
+
+    @handles(ClearManualShapesCommand)
+    def _on_clear_manual_shapes(self, event: ClearManualShapesCommand) -> None:
+        """Clear all shapes from the manual ROI layer."""
+        if self.shape_layer is not None:
+            self.shape_layer.data = []
+            self.shapes_mm = []
+            self.on_shape_change()
 
     @handles(SetAcquisitionChannelsCommand)
     def _on_set_acquisition_channels(

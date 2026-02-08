@@ -77,13 +77,11 @@ from _def import (
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
 from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
-from squid.ui.widgets.acquisition.channel_order_widget import ChannelOrderWidget
 from squid.backend.io.acquisition_yaml import (
     AcquisitionYAMLData,
     save_acquisition_preset,
     parse_acquisition_yaml,
 )
-from squid.core.protocol.imaging_protocol import ImagingProtocol, ZStackConfig, FocusConfig
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -98,12 +96,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         initial_channel_configs: List[str],
         z_ustep_per_mm: Optional[float] = None,
         initial_z_mm: float = 0.0,
-        config_repo=None,
     ):
         super().__init__(event_bus)
         self.setAcceptDrops(True)  # Enable drag-and-drop for YAML loading
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self._config_repo = config_repo
         self.acquisition_start_time = None
         self.last_used_locations = None
         self.last_used_location_ids = None
@@ -387,77 +383,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.spinbox_af_interval.setSuffix(" FOVs")
         self.spinbox_af_interval.setToolTip("Run autofocus every N FOVs")
 
-        # Protocol save/load buttons
-        self.btn_save_protocol = QPushButton("Save Protocol")
-        self.btn_save_protocol.setToolTip("Save current imaging settings as a named protocol")
-        self.btn_load_protocol = QPushButton("Load Protocol")
-        self.btn_load_protocol.setToolTip("Load imaging settings from a saved protocol")
-
-        # Focus Lock checkbox and parameters
+        # Focus Lock checkbox
         self.checkbox_focus_lock = QCheckBox("Focus Lock")
         self.checkbox_focus_lock.setChecked(False)
         self.checkbox_focus_lock.setToolTip(
             "Enable continuous focus lock during acquisition.\n"
             "Uses laser autofocus to maintain focus between FOVs."
         )
-
-        # Focus Lock parameter controls (initially hidden) - horizontal layout for full-width display
-        self.focus_lock_frame = QFrame()
-        self.focus_lock_frame.setVisible(False)
-        self.focus_lock_frame.setStyleSheet(
-            "QFrame { background-color: rgba(160, 32, 240, 0.12); border-radius: 4px; }"
-        )
-        focus_lock_layout = QHBoxLayout(self.focus_lock_frame)
-        focus_lock_layout.setContentsMargins(8, 4, 8, 4)
-        focus_lock_layout.setSpacing(8)
-
-        self.spinbox_buffer_length = QSpinBox()
-        self.spinbox_buffer_length.setRange(1, 20)
-        self.spinbox_buffer_length.setValue(5)
-        self.spinbox_buffer_length.setToolTip("Sequential good readings to acquire lock")
-        self.spinbox_buffer_length.setFixedWidth(60)
-
-        self.spinbox_recovery_attempts = QSpinBox()
-        self.spinbox_recovery_attempts.setRange(1, 10)
-        self.spinbox_recovery_attempts.setValue(3)
-        self.spinbox_recovery_attempts.setToolTip("Retry cycles before declaring lock lost")
-        self.spinbox_recovery_attempts.setFixedWidth(60)
-
-        self.spinbox_min_snr = QDoubleSpinBox()
-        self.spinbox_min_snr.setRange(1.0, 100.0)
-        self.spinbox_min_snr.setValue(10.0)
-        self.spinbox_min_snr.setDecimals(1)
-        self.spinbox_min_snr.setToolTip("Minimum spot signal-to-noise ratio")
-        self.spinbox_min_snr.setFixedWidth(70)
-
-        self.spinbox_acquire_threshold = QDoubleSpinBox()
-        self.spinbox_acquire_threshold.setRange(0.01, 5.0)
-        self.spinbox_acquire_threshold.setValue(0.25)
-        self.spinbox_acquire_threshold.setDecimals(2)
-        self.spinbox_acquire_threshold.setSuffix(" μm")
-        self.spinbox_acquire_threshold.setToolTip("Max displacement to count as 'good' reading")
-        self.spinbox_acquire_threshold.setFixedWidth(80)
-
-        self.spinbox_maintain_threshold = QDoubleSpinBox()
-        self.spinbox_maintain_threshold.setRange(0.01, 5.0)
-        self.spinbox_maintain_threshold.setValue(0.5)
-        self.spinbox_maintain_threshold.setDecimals(2)
-        self.spinbox_maintain_threshold.setSuffix(" μm")
-        self.spinbox_maintain_threshold.setToolTip("Looser threshold once lock is acquired")
-        self.spinbox_maintain_threshold.setFixedWidth(80)
-
-        # Add all focus lock controls in horizontal layout
-        focus_lock_layout.addWidget(QLabel("Buffer:"))
-        focus_lock_layout.addWidget(self.spinbox_buffer_length)
-        focus_lock_layout.addWidget(QLabel("Retries:"))
-        focus_lock_layout.addWidget(self.spinbox_recovery_attempts)
-        focus_lock_layout.addWidget(QLabel("SNR:"))
-        focus_lock_layout.addWidget(self.spinbox_min_snr)
-        focus_lock_layout.addWidget(QLabel("Acquire:"))
-        focus_lock_layout.addWidget(self.spinbox_acquire_threshold)
-        focus_lock_layout.addWidget(QLabel("Maintain:"))
-        focus_lock_layout.addWidget(self.spinbox_maintain_threshold)
-        focus_lock_layout.addStretch()
 
         self.checkbox_set_z_range = QCheckBox("Set Z-range")
         self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
@@ -659,13 +591,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         grid_af.addWidget(self.checkbox_skipSaving)
         grid_af.addWidget(self.checkbox_set_z_range)
 
-        protocol_btn_layout = QHBoxLayout()
-        protocol_btn_layout.addWidget(self.btn_save_protocol)
-        protocol_btn_layout.addWidget(self.btn_load_protocol)
-
         config_col = QVBoxLayout()
         config_col.addWidget(self.list_configurations)
-        config_col.addLayout(protocol_btn_layout)
 
         grid_config = QHBoxLayout()
         grid_config.addLayout(config_col)
@@ -682,9 +609,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
         self.grid_acquisition.addLayout(grid_config, 6, 0, 3, 4)
         self.grid_acquisition.addLayout(grid_acquisition, 6, 4, 3, 4)
-
-        # Focus Lock parameters frame - full width row below config/AF
-        self.grid_acquisition.addWidget(self.focus_lock_frame, 9, 0, 1, 8)
 
         # Columns 0-3: Combined stretch factor = 4
         # Columns 4-7: Combined stretch factor = 4
@@ -746,8 +670,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_save_preset.clicked.connect(self.save_acquisition_preset)
         self.btn_load_preset.clicked.connect(self.load_acquisition_preset)
-        self.btn_save_protocol.clicked.connect(self._on_save_protocol)
-        self.btn_load_protocol.clicked.connect(self._on_load_protocol)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
         # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
@@ -1626,179 +1548,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
-    # =========================================================================
-    # ImagingProtocol Build / Apply
-    # =========================================================================
-
-    _Z_DIRECTION_MAP = {0: "from_bottom", 1: "from_center", 2: "from_top"}
-    _Z_DIRECTION_REVERSE = {"from_bottom": 0, "from_center": 1, "from_top": 2}
-
-    def build_imaging_protocol(self) -> ImagingProtocol:
-        """Build an ImagingProtocol from current widget state.
-
-        Raises:
-            ValueError: If no channels are selected.
-        """
-        selected = [
-            item.text() for item in self.list_configurations.selectedItems()
-        ]
-        if not selected:
-            raise ValueError("Select at least one channel")
-
-        # Z-stack direction
-        z_dir = self._Z_DIRECTION_MAP.get(
-            self.combobox_z_stack.currentIndex(), "from_center"
-        )
-
-        # Focus method
-        laser_af = self.checkbox_withReflectionAutofocus.isChecked()
-        contrast_af = self.checkbox_withAutofocus.isChecked()
-        if laser_af:
-            focus_enabled, focus_method = True, "laser"
-        elif contrast_af:
-            focus_enabled, focus_method = True, "contrast"
-        else:
-            focus_enabled, focus_method = False, "none"
-
-        return ImagingProtocol(
-            channels=selected,
-            z_stack=ZStackConfig(
-                planes=self.entry_NZ.value(),
-                step_um=self.entry_deltaZ.value(),
-                direction=z_dir,
-            ),
-            acquisition_order="channel_first",
-            focus=FocusConfig(
-                enabled=focus_enabled,
-                method=focus_method,
-                interval_fovs=self.spinbox_af_interval.value(),
-            ),
-            skip_saving=self.checkbox_skipSaving.isChecked(),
-        )
-
-    def apply_imaging_protocol(self, protocol: ImagingProtocol) -> None:
-        """Apply an ImagingProtocol to widget controls.
-
-        Blocks signals during update to prevent cascading events.
-        """
-        widgets_to_block = [
-            self.entry_NZ,
-            self.entry_deltaZ,
-            self.checkbox_withAutofocus,
-            self.checkbox_withReflectionAutofocus,
-            self.checkbox_skipSaving,
-            self.list_configurations,
-            self.spinbox_af_interval,
-            self.combobox_z_stack,
-        ]
-        for w in widgets_to_block:
-            w.blockSignals(True)
-
-        try:
-            # Channels — select matching, skip unknown
-            channel_names = set(protocol.get_channel_names())
-            self.list_configurations.clearSelection()
-            for i in range(self.list_configurations.count()):
-                item = self.list_configurations.item(i)
-                if item and item.text() in channel_names:
-                    item.setSelected(True)
-
-            # Z-stack
-            self.entry_NZ.setValue(protocol.z_stack.planes)
-            self.entry_deltaZ.setValue(protocol.z_stack.step_um)
-            z_idx = self._Z_DIRECTION_REVERSE.get(protocol.z_stack.direction, 1)
-            self.combobox_z_stack.setCurrentIndex(z_idx)
-
-            # Focus
-            self.checkbox_withReflectionAutofocus.setChecked(
-                protocol.focus.enabled and protocol.focus.method == "laser"
-            )
-            self.checkbox_withAutofocus.setChecked(
-                protocol.focus.enabled and protocol.focus.method == "contrast"
-            )
-            self.spinbox_af_interval.setValue(protocol.focus.interval_fovs)
-
-            # Skip saving
-            self.checkbox_skipSaving.setChecked(protocol.skip_saving)
-        finally:
-            for w in widgets_to_block:
-                w.blockSignals(False)
-
-        # Emit channel change so backend picks up
-        self.emit_selected_channels()
-
-    def _on_save_protocol(self) -> None:
-        """Save current imaging settings as a named protocol."""
-        if self._config_repo is None:
-            QMessageBox.warning(self, "No Profile", "No configuration profile is set.")
-            return
-
-        try:
-            protocol = self.build_imaging_protocol()
-        except ValueError as e:
-            QMessageBox.warning(self, "Validation Error", str(e))
-            return
-
-        from qtpy.QtWidgets import QInputDialog
-
-        name, ok = QInputDialog.getText(self, "Save Protocol", "Protocol name:")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-
-        profile = self._config_repo.current_profile
-        if not profile:
-            QMessageBox.warning(self, "No Profile", "No active profile.")
-            return
-
-        # Check for overwrite
-        existing = self._config_repo.get_available_imaging_protocols(profile)
-        if name in existing:
-            reply = QMessageBox.question(
-                self,
-                "Overwrite?",
-                f"Protocol '{name}' already exists. Overwrite?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-        self._config_repo.save_imaging_protocol(profile, name, protocol)
-        self._log.info(f"Saved imaging protocol '{name}' to profile '{profile}'")
-        QMessageBox.information(self, "Saved", f"Protocol '{name}' saved.")
-
-    def _on_load_protocol(self) -> None:
-        """Load imaging settings from a saved protocol."""
-        if self._config_repo is None:
-            QMessageBox.warning(self, "No Profile", "No configuration profile is set.")
-            return
-
-        profile = self._config_repo.current_profile
-        if not profile:
-            QMessageBox.warning(self, "No Profile", "No active profile.")
-            return
-
-        available = self._config_repo.get_available_imaging_protocols(profile)
-        if not available:
-            QMessageBox.information(self, "Load Protocol", "No saved protocols found.")
-            return
-
-        from qtpy.QtWidgets import QInputDialog
-
-        name, ok = QInputDialog.getItem(
-            self, "Load Protocol", "Select protocol:", available, 0, False
-        )
-        if not ok or not name:
-            return
-
-        protocol = self._config_repo.get_imaging_protocol(name, profile)
-        if protocol is None:
-            QMessageBox.warning(self, "Load Failed", f"Failed to load protocol '{name}'.")
-            return
-
-        self.apply_imaging_protocol(protocol)
-        self._log.info(f"Loaded imaging protocol '{name}' from profile '{profile}'")
 
     # =========================================================================
     # EventBus Handlers
@@ -1915,8 +1664,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self._publish(SetAcquisitionParametersCommand(skip_saving=checked))
 
     def _on_focus_lock_toggled(self, checked: bool) -> None:
-        """Handle focus lock checkbox toggle - show/hide parameters frame."""
-        self.focus_lock_frame.setVisible(checked)
+        """Handle focus lock checkbox toggle."""
         # When focus lock is enabled, disable the single-shot AF checkboxes
         if checked:
             self.checkbox_withAutofocus.setChecked(False)
@@ -1931,21 +1679,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         """Get current focus lock settings for saving."""
         return {
             "enabled": self.checkbox_focus_lock.isChecked(),
-            "buffer_length": self.spinbox_buffer_length.value(),
-            "recovery_attempts": self.spinbox_recovery_attempts.value(),
-            "min_spot_snr": self.spinbox_min_snr.value(),
-            "acquire_threshold_um": self.spinbox_acquire_threshold.value(),
-            "maintain_threshold_um": self.spinbox_maintain_threshold.value(),
         }
 
     def set_focus_lock_settings(self, settings: dict) -> None:
         """Restore focus lock settings from saved data."""
         self.checkbox_focus_lock.setChecked(settings.get("enabled", False))
-        self.spinbox_buffer_length.setValue(settings.get("buffer_length", 5))
-        self.spinbox_recovery_attempts.setValue(settings.get("recovery_attempts", 3))
-        self.spinbox_min_snr.setValue(settings.get("min_spot_snr", 10.0))
-        self.spinbox_acquire_threshold.setValue(settings.get("acquire_threshold_um", 0.25))
-        self.spinbox_maintain_threshold.setValue(settings.get("maintain_threshold_um", 0.5))
 
     # =========================================================================
     # Preset Save/Load

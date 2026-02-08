@@ -297,8 +297,6 @@ class ParameterInspectionPanel(QWidget):
             self._add_row("Flow Rate (µL/min)", str(data.get("flow_rate_ul_per_min")))
         if data.get("duration_s"):
             self._add_row("Duration (s)", str(data.get("duration_s")))
-        if "repeats" in data:
-            self._add_row("Repeats", str(data.get("repeats", 1)))
 
     def _show_wait_params(self, data: Dict[str, Any]) -> None:
         """Show wait operation parameters."""

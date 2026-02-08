@@ -381,7 +381,6 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         initial_channel_configs=initial_channel_names,
         z_ustep_per_mm=z_ustep_per_mm,
         initial_z_mm=initial_z_mm,
-        config_repo=channel_manager.config_repo,
     )
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
         gui._ui_event_bus,
@@ -406,6 +405,16 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
         z_ustep_per_mm=z_ustep_per_mm,
+    )
+    gui.acquisitionSetupWidget = widgets.AcquisitionSetupWidget(
+        event_bus=gui._ui_event_bus,
+        initial_channel_configs=initial_channel_names,
+        well_selection_widget=None,  # Separate from wellplate tab's widget
+        config_repo=channel_manager.config_repo,
+        initial_z_mm=initial_z_mm,
+        z_ustep_per_mm=z_ustep_per_mm,
+        camera_fov_size_mm=camera_fov_size_mm,
+        objective_pixel_size_factors=objective_pixel_size_factors,
     )
     gui.sampleSettingsWidget = widgets.SampleSettingsWidget(
         gui.objectivesWidget, gui.wellplateFormatWidget, event_bus=gui._ui_event_bus

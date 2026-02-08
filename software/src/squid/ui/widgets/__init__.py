@@ -37,6 +37,7 @@ __all__ = [
     "FlexibleMultiPointWidget",
     "WellplateMultiPointWidget",
     "MultiPointWithFluidicsWidget",
+    "AcquisitionSetupWidget",
     # display
     "StatsDisplayWidget",
     "FocusMapWidget",
@@ -111,6 +112,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     "FlexibleMultiPointWidget": ("squid.ui.widgets.acquisition", "FlexibleMultiPointWidget"),
     "WellplateMultiPointWidget": ("squid.ui.widgets.acquisition", "WellplateMultiPointWidget"),
     "MultiPointWithFluidicsWidget": ("squid.ui.widgets.acquisition", "MultiPointWithFluidicsWidget"),
+    "AcquisitionSetupWidget": ("squid.ui.widgets.acquisition", "AcquisitionSetupWidget"),
     # display
     "StatsDisplayWidget": ("squid.ui.widgets.display", "StatsDisplayWidget"),
     "FocusMapWidget": ("squid.ui.widgets.display", "FocusMapWidget"),
