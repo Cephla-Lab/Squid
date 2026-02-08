@@ -22,6 +22,7 @@ from squid.core.events import (
     FocusLockFrameUpdated,
     FocusLockMetricsUpdated,
     FocusLockModeChanged,
+    FocusLockPiezoLimitCritical,
     FocusLockSearchProgress,
     FocusLockStatusChanged,
     FocusLockWarning,
@@ -30,6 +31,7 @@ from squid.core.events import (
     ResumeFocusLockCommand,
     SetFocusLockAutoSearchCommand,
     SetFocusLockModeCommand,
+    SetFocusLockParamsCommand,
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
@@ -88,6 +90,14 @@ class ContinuousFocusLockController(BaseController):
         # Reference piezo position when lock was set (for search recovery)
         self._locked_piezo_um: float = 0.0
 
+        # PI controller state
+        self._integral_accumulator: float = 0.0
+
+        # NaN holdover state
+        self._last_good_error_um: float = 0.0
+        self._consecutive_nan_count: int = 0
+        self._latest_valid_displacement_um: float = float("nan")
+
     @property
     def mode(self) -> FocusLockMode:
         with self._lock:
@@ -122,6 +132,12 @@ class ContinuousFocusLockController(BaseController):
             self.stop()
 
     def start(self, target_um: float = 0.0) -> None:
+        if not self._laser_af.is_initialized:
+            self._log.error("Cannot start: laser AF not initialized")
+            return
+        if not self._laser_af.laser_af_properties.has_reference:
+            self._log.error("Cannot start: no reference set")
+            return
         with self._lock:
             if self._running:
                 return
@@ -130,7 +146,6 @@ class ContinuousFocusLockController(BaseController):
             self._should_run = True
             self._stop_event.clear()
             self._reset_lock_state()
-            self._status = "ready"
             self._running = True
             self._thread = threading.Thread(
                 target=self._control_loop,
@@ -139,6 +154,7 @@ class ContinuousFocusLockController(BaseController):
             )
             self._turn_on_laser()
             self._thread.start()
+        self._event_bus.publish(FocusLockModeChanged(mode="on"))
         self._set_status("ready")
 
     def stop(self) -> None:
@@ -156,6 +172,7 @@ class ContinuousFocusLockController(BaseController):
             thread.join(timeout=2.0)
         self._cleanup()
         self._set_status("disabled")
+        self._event_bus.publish(FocusLockModeChanged(mode="off"))
 
     def pause(self) -> None:
         """Pause focus corrections without stopping the control loop.
@@ -255,15 +272,49 @@ class ContinuousFocusLockController(BaseController):
             self._auto_search_enabled = cmd.enabled
         self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
 
+    @handles(SetFocusLockParamsCommand)
+    def _on_set_params(self, cmd: SetFocusLockParamsCommand) -> None:
+        updates = {}
+        if cmd.buffer_length is not None:
+            updates["buffer_length"] = cmd.buffer_length
+        if cmd.recovery_attempts is not None:
+            updates["recovery_attempts"] = cmd.recovery_attempts
+        if cmd.min_spot_snr is not None:
+            updates["min_spot_snr"] = cmd.min_spot_snr
+        if cmd.acquire_threshold_um is not None:
+            updates["acquire_threshold_um"] = cmd.acquire_threshold_um
+        if cmd.maintain_threshold_um is not None:
+            updates["maintain_threshold_um"] = cmd.maintain_threshold_um
+        if updates:
+            with self._lock:
+                self._config = self._config.model_copy(update=updates)
+            self._log.info(f"Focus lock params updated: {updates}")
+
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""
+        result = self._laser_af.measure_displacement_continuous()
+        target_um = result.displacement_um
+        if math.isnan(target_um):
+            target_um = self._latest_valid_displacement_um
+            if not math.isnan(target_um):
+                self._log.debug(
+                    "Focus lock reference used cached displacement due to invalid immediate measurement"
+                )
+        if math.isnan(target_um):
+            self._log.warning("Cannot set focus lock reference: no valid displacement reading")
+            return
         with self._lock:
             if not self._running:
                 return
             self._locked_piezo_um = self._piezo_service.get_position()
-            self._status = "locked"
             self._lock_buffer_fill = self._config.buffer_length
-            self._log.info(f"Focus lock set at piezo={self._locked_piezo_um:.1f} um")
+            self._target_um = target_um
+            self._latest_valid_displacement_um = target_um
+            self._integral_accumulator = 0.0  # Reset integral for new reference
+            self._log.info(
+                f"Focus lock set at piezo={self._locked_piezo_um:.1f} um, "
+                f"target={self._target_um:.3f} um"
+            )
         self._set_status("locked")
 
     def _release_lock_reference(self) -> None:
@@ -274,12 +325,48 @@ class ContinuousFocusLockController(BaseController):
             self._lock_buffer_fill = 0
         self._set_status("ready")
 
-    def _control_fn(self, error_um: float) -> float:
-        sigma = 0.5
-        dx = (error_um ** 2) / sigma
+    def _p_gain(self, error_um: float) -> float:
+        """Proportional gain that is highest at small errors and decays at large errors.
+
+        Returns gain_max at error=0, decaying towards gain at large errors.
+        This provides precise tracking near the setpoint and avoids
+        oscillation at the extremes of the working range.
+        """
+        dx = (error_um ** 2) / self._config.gain_sigma
         scale = self._config.gain_max - self._config.gain
-        p_term = self._config.gain_max - scale * math.exp(-dx)
-        return -p_term * error_um
+        return self._config.gain + scale * math.exp(-dx)
+
+    def _control_fn(self, error_um: float, dt: float) -> float:
+        """PI controller with anti-windup.
+
+        Args:
+            error_um: Current tracking error in microns (positive = above target).
+            dt: Time step in seconds since last control cycle.
+
+        Returns:
+            Correction in microns to apply to the piezo.
+        """
+        # Proportional term
+        p_correction = -self._p_gain(error_um) * error_um
+
+        # Integral term (only when ki > 0)
+        i_correction = 0.0
+        if self._config.ki > 0:
+            # Conditional anti-windup: don't accumulate near piezo limits
+            piezo_pos = self._piezo_service.get_position()
+            min_um, max_um = self._piezo_service.get_range()
+            near_limit = (
+                piezo_pos <= min_um + 5.0 or piezo_pos >= max_um - 5.0
+            )
+            if not near_limit:
+                self._integral_accumulator += error_um * dt
+                # Clamp (anti-windup)
+                limit = self._config.integral_limit_um
+                self._integral_accumulator = max(-limit, min(limit, self._integral_accumulator))
+
+            i_correction = -self._config.ki * self._integral_accumulator
+
+        return p_correction + i_correction
 
     def _control_loop(self) -> None:
         period = 1.0 / self._config.loop_rate_hz
@@ -298,6 +385,8 @@ class ContinuousFocusLockController(BaseController):
                     # When paused: still measure and publish metrics for monitoring,
                     # but don't apply corrections or update lock state
                     result = self._laser_af.measure_displacement_continuous()
+                    if not math.isnan(result.displacement_um):
+                        self._latest_valid_displacement_um = result.displacement_um
                     error_um = self._compute_error(result)
                     is_good = self._is_good_reading(result, error_um)
 
@@ -311,19 +400,38 @@ class ContinuousFocusLockController(BaseController):
                 else:
                     # Normal operation
                     result = self._laser_af.measure_displacement_continuous()
+                    if not math.isnan(result.displacement_um):
+                        self._latest_valid_displacement_um = result.displacement_um
 
                     error_um = self._compute_error(result)
                     is_good = self._is_good_reading(result, error_um)
 
                     self._update_lock_state(is_good, error_um)
 
-                    # Apply correction when locked or recovering - even if error is large
-                    # This allows the piezo to catch up during rapid movements
-                    if self._status in ("locked", "recovering") and not math.isnan(error_um):
-                        correction = self._control_fn(error_um)
-                        current_pos = self._piezo_service.get_position()
-                        new_pos = self._clamp_to_range(current_pos + correction)
-                        self._piezo_service.move_to_fast(new_pos)
+                    # Apply correction when locked or recovering
+                    if self._status in ("locked", "recovering"):
+                        if not math.isnan(error_um):
+                            # Good reading — update holdover state and apply correction
+                            self._last_good_error_um = error_um
+                            self._consecutive_nan_count = 0
+                            correction = self._control_fn(error_um, period)
+                            current_pos = self._piezo_service.get_position()
+                            new_pos = self._clamp_to_range(current_pos + correction)
+                            self._piezo_service.move_to_fast(new_pos)
+                        elif self._consecutive_nan_count < self._config.max_nan_holdover_cycles:
+                            # NaN holdover: use last-known-good with decaying gain
+                            self._consecutive_nan_count += 1
+                            decay = self._config.nan_holdover_decay ** self._consecutive_nan_count
+                            # Don't update integral during holdover — save and restore
+                            saved_integral = self._integral_accumulator
+                            correction = self._control_fn(self._last_good_error_um, period) * decay
+                            self._integral_accumulator = saved_integral
+                            current_pos = self._piezo_service.get_position()
+                            new_pos = self._clamp_to_range(current_pos + correction)
+                            self._piezo_service.move_to_fast(new_pos)
+                        else:
+                            # Holdover expired — stop correcting, let recovery handle it
+                            pass
 
                     now = time.monotonic()
                     if now - last_metrics_time >= metrics_period:
@@ -335,9 +443,13 @@ class ContinuousFocusLockController(BaseController):
                 elapsed = time.monotonic() - start
                 time.sleep(max(0.0, period - elapsed))
         except Exception:
-            self._log.exception("Control loop crashed")
+            self._log.exception("Control loop crashed — failing safe to disabled")
         finally:
+            with self._lock:
+                self._running = False
+                self._should_run = False
             self._cleanup()
+            self._set_status("disabled")
 
     def _compute_error(self, result: LaserAFResult) -> float:
         if math.isnan(result.displacement_um):
@@ -347,13 +459,18 @@ class ContinuousFocusLockController(BaseController):
     def _is_good_reading(self, result: LaserAFResult, error_um: float) -> bool:
         if math.isnan(result.displacement_um):
             return False
+        # Use hysteresis: looser criteria to maintain lock, tighter to acquire it.
+        if self._status in ("locked", "recovering"):
+            # During maintenance/recovery, prioritize displacement consistency.
+            # SNR/correlation are still published as warnings but should not by
+            # themselves force an immediate lock break when error is stable.
+            threshold_um = self._config.maintain_threshold_um
+            return not math.isnan(error_um) and abs(error_um) <= threshold_um
+
+        # Acquisition path (ready/lost/search setup): require stronger quality.
         if math.isnan(result.spot_snr) or result.spot_snr < self._config.min_spot_snr:
             return False
-        # Use hysteresis: tighter threshold to acquire lock, looser to maintain
-        if self._status in ("locked", "recovering"):
-            threshold_um = self._config.maintain_threshold_um
-        else:
-            threshold_um = self._config.acquire_threshold_um
+        threshold_um = self._config.acquire_threshold_um
         if math.isnan(error_um) or abs(error_um) > threshold_um:
             return False
         if result.correlation is not None:
@@ -380,6 +497,7 @@ class ContinuousFocusLockController(BaseController):
                 self._recovery_attempts_remaining = self._config.recovery_attempts
                 self._recovery_start_time = time.monotonic()
                 self._recovery_good_count = 0
+                self._integral_accumulator = 0.0  # Reset integral (error direction may flip)
                 self._log.info(
                     f"Entering recovery mode: {self._recovery_attempts_remaining} attempts, "
                     f"error={error_um:.3f}um"
@@ -448,7 +566,6 @@ class ContinuousFocusLockController(BaseController):
 
     def _start_search(self) -> None:
         """Start the piezo sweep search to re-find focus."""
-        self._status = "searching"
         self._search_phase = "last_position"
         self._search_position = self._locked_piezo_um
         self._log.info(f"Starting search at last position: {self._search_position:.1f} um")
@@ -483,7 +600,6 @@ class ContinuousFocusLockController(BaseController):
             self._log.info(f"Focus found at {self._search_position:.1f} um")
             self._locked_piezo_um = self._search_position
             self._target_um = result.displacement_um
-            self._status = "locked"
             self._lock_buffer_fill = self._config.buffer_length
             self._set_status("locked")
             return
@@ -511,7 +627,6 @@ class ContinuousFocusLockController(BaseController):
             self._search_position += self._config.search_step_um
             if self._search_position > search_max:
                 # Search failed
-                self._status = "lost"
                 self._lock_buffer_fill = 0
                 self._log.warning("Focus lock lost - search sweep completed without finding lock")
                 self._set_status("lost")
@@ -520,19 +635,13 @@ class ContinuousFocusLockController(BaseController):
         """Check if a laser AF result is good enough to establish lock during search.
 
         During search, we just need a valid spot with good SNR - we don't check against
-        the old target since we're trying to find a new lock position.
+        the old target or reference correlation since we're trying to find a new lock
+        position around the last known good piezo position.
         """
         if math.isnan(result.displacement_um):
             return False
         if math.isnan(result.spot_snr) or result.spot_snr < self._config.min_spot_snr:
             return False
-        # Check correlation if available
-        if result.correlation is not None:
-            if math.isnan(result.correlation):
-                return False
-            threshold = self._laser_af.laser_af_properties.correlation_threshold
-            if result.correlation < threshold:
-                return False
         return True
 
     def _publish_metrics(self, result: LaserAFResult, error_um: float, is_good: bool) -> None:
@@ -660,11 +769,19 @@ class ContinuousFocusLockController(BaseController):
     def _check_warnings(self, result: LaserAFResult, error_um: float) -> None:
         min_um, max_um = self._piezo_service.get_range()
         position = self._piezo_service.get_position()
-        margin = self._config.piezo_warning_margin_um
+        critical_margin = self._config.piezo_critical_margin_um
+        warning_margin = self._config.piezo_warning_margin_um
 
-        if position <= min_um + margin:
+        # Two-tier piezo limit warnings: critical (inner) fires before warning (outer)
+        if position <= min_um + critical_margin:
+            self._publish_critical_warning("low", position, min_um, critical_margin)
             self._publish_warning("piezo_low", "Piezo approaching lower limit")
-        elif position >= max_um - margin:
+        elif position >= max_um - critical_margin:
+            self._publish_critical_warning("high", position, max_um, critical_margin)
+            self._publish_warning("piezo_high", "Piezo approaching upper limit")
+        elif position <= min_um + warning_margin:
+            self._publish_warning("piezo_low", "Piezo approaching lower limit")
+        elif position >= max_um - warning_margin:
             self._publish_warning("piezo_high", "Piezo approaching upper limit")
 
         if self._status == "lost":
@@ -680,6 +797,24 @@ class ContinuousFocusLockController(BaseController):
         self._warning_last_time[warning_type] = now
         self._event_bus.publish(FocusLockWarning(warning_type=warning_type, message=message))
 
+    def _publish_critical_warning(
+        self, direction: str, position_um: float, limit_um: float, margin_um: float
+    ) -> None:
+        key = f"piezo_critical_{direction}"
+        now = time.monotonic()
+        last_time = self._warning_last_time.get(key)
+        if last_time is not None and now - last_time < self._warning_debounce_s:
+            return
+        self._warning_last_time[key] = now
+        self._event_bus.publish(
+            FocusLockPiezoLimitCritical(
+                direction=direction,
+                position_um=position_um,
+                limit_um=limit_um,
+                margin_um=margin_um,
+            )
+        )
+
     def _clamp_to_range(self, position_um: float) -> float:
         min_um, max_um = self._piezo_service.get_range()
         return max(min_um, min(max_um, position_um))
@@ -688,6 +823,8 @@ class ContinuousFocusLockController(BaseController):
         self._lock_buffer_fill = 0
         self._error_history.clear()
         self._drift_history.clear()
+        self._smoothed_quality = 1.0
+        self._warning_last_time.clear()
         # Reset recovery state
         self._recovery_attempts_remaining = 0
         self._recovery_start_time = None
@@ -695,11 +832,15 @@ class ContinuousFocusLockController(BaseController):
         # Reset search state
         self._search_phase = ""
         self._search_position = 0.0
+        # Reset PI controller state
+        self._integral_accumulator = 0.0
+        # Reset NaN holdover state
+        self._last_good_error_um = 0.0
+        self._consecutive_nan_count = 0
+        self._latest_valid_displacement_um = float("nan")
 
     def _set_status(self, status: str) -> None:
         with self._lock:
-            if status == self._status:
-                return
             self._status = status
             buffer_fill = self._lock_buffer_fill
             buffer_length = self._config.buffer_length

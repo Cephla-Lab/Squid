@@ -15,7 +15,7 @@ Usage:
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 import _def
 
@@ -60,13 +60,23 @@ class FocusLockConfig(BaseModel):
     # Core parameters
     gain: float = _def.FOCUS_LOCK_GAIN
     gain_max: float = _def.FOCUS_LOCK_GAIN_MAX
+    gain_sigma: float = _def.FOCUS_LOCK_GAIN_SIGMA
     buffer_length: int = _def.FOCUS_LOCK_BUFFER_LENGTH
     offset_threshold_um: float = _def.FOCUS_LOCK_OFFSET_THRESHOLD_UM
     min_spot_snr: float = _def.FOCUS_LOCK_MIN_SPOT_SNR
     loop_rate_hz: float = _def.FOCUS_LOCK_LOOP_RATE_HZ
     metrics_rate_hz: float = _def.FOCUS_LOCK_METRICS_RATE_HZ
     piezo_warning_margin_um: float = _def.FOCUS_LOCK_PIEZO_WARNING_MARGIN_UM
+    piezo_critical_margin_um: float = _def.FOCUS_LOCK_PIEZO_CRITICAL_MARGIN_UM
     default_mode: FocusLockMode = _def.FOCUS_LOCK_DEFAULT_MODE
+
+    # PI controller parameters
+    ki: float = _def.FOCUS_LOCK_KI
+    integral_limit_um: float = _def.FOCUS_LOCK_INTEGRAL_LIMIT_UM
+
+    # NaN holdover parameters
+    max_nan_holdover_cycles: int = _def.FOCUS_LOCK_MAX_NAN_HOLDOVER_CYCLES
+    nan_holdover_decay: float = _def.FOCUS_LOCK_NAN_HOLDOVER_DECAY
 
     # Recovery parameters
     recovery_attempts: int = _def.FOCUS_LOCK_RECOVERY_ATTEMPTS
@@ -93,7 +103,7 @@ class FocusLockConfig(BaseModel):
             raise ValueError(f"Invalid mode: {v}. Must be 'off' or 'on'")
         return v
 
-    @field_validator("gain", "gain_max")
+    @field_validator("gain", "gain_max", "gain_sigma")
     @classmethod
     def validate_gain(cls, v: float) -> float:
         """Validate gain is positive."""
@@ -148,3 +158,42 @@ class FocusLockConfig(BaseModel):
         if v < 0 or v > 100:
             raise ValueError(f"search percent must be between 0 and 100, got {v}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_cross_fields(self) -> "FocusLockConfig":
+        if self.gain > self.gain_max:
+            raise ValueError(f"gain ({self.gain}) must be <= gain_max ({self.gain_max})")
+        if self.acquire_threshold_um <= 0:
+            raise ValueError(f"acquire_threshold_um must be positive, got {self.acquire_threshold_um}")
+        if self.acquire_threshold_um > self.maintain_threshold_um:
+            raise ValueError(
+                f"acquire_threshold_um ({self.acquire_threshold_um}) must be <= "
+                f"maintain_threshold_um ({self.maintain_threshold_um})"
+            )
+        if self.search_min_percent >= self.search_max_percent:
+            raise ValueError(
+                f"search_min_percent ({self.search_min_percent}) must be < "
+                f"search_max_percent ({self.search_max_percent})"
+            )
+        if self.recovery_delay_s < 0:
+            raise ValueError(f"recovery_delay_s must be non-negative, got {self.recovery_delay_s}")
+        if self.piezo_critical_margin_um <= 0:
+            raise ValueError(
+                f"piezo_critical_margin_um must be positive, got {self.piezo_critical_margin_um}"
+            )
+        if self.piezo_critical_margin_um >= self.piezo_warning_margin_um:
+            raise ValueError(
+                f"piezo_critical_margin_um ({self.piezo_critical_margin_um}) must be < "
+                f"piezo_warning_margin_um ({self.piezo_warning_margin_um})"
+            )
+        if self.ki < 0:
+            raise ValueError(f"ki must be non-negative, got {self.ki}")
+        if self.integral_limit_um <= 0:
+            raise ValueError(f"integral_limit_um must be positive, got {self.integral_limit_um}")
+        if self.nan_holdover_decay < 0 or self.nan_holdover_decay > 1:
+            raise ValueError(f"nan_holdover_decay must be in [0, 1], got {self.nan_holdover_decay}")
+        if self.max_nan_holdover_cycles < 0:
+            raise ValueError(
+                f"max_nan_holdover_cycles must be non-negative, got {self.max_nan_holdover_cycles}"
+            )
+        return self

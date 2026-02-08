@@ -811,10 +811,10 @@ class LaserAutofocusControlWidget(QFrame):
     def _on_focus_lock_status_changed(self, event: FocusLockStatusChanged) -> None:
         """Disable laser AF controls while focus lock is active.
 
-        When focus lock is engaged (ready/locked/lost), we disable Set Reference,
+        When focus lock is in any non-disabled state, we disable Set Reference,
         Measure Displacement, and Move to Target to prevent conflicts.
         """
-        self._focus_lock_active = event.status in ("ready", "locked", "lost")
+        self._focus_lock_active = event.status != "disabled"
         self._update_conflict_state()
 
     def add_components(self) -> None:

@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
 from _def import SOFTWARE_POS_LIMIT
 from squid.core.events import (
     handles,
+    ObjectiveChanged,
     StagePositionChanged,
     MoveStageToCommand,
     ScanCoordinatesUpdated,
@@ -35,6 +36,7 @@ from squid.core.events import (
     ScanCoordinatesSnapshot,
     FocusPointOverlaySet,
     FocusPointOverlayVisibilityChanged,
+    WellplateFormatChanged,
 )
 from squid.ui.widgets.base import EventBusFrame
 
@@ -138,6 +140,24 @@ class FocusMapWidget(EventBusFrame):
         if self._refresh_on_snapshot:
             self._refresh_on_snapshot = False
             self.on_regions_updated()
+
+    @handles(ObjectiveChanged)
+    def _on_objective_changed(self, _event: ObjectiveChanged) -> None:
+        """Invalidate focus points when objective changes — Z values are no longer valid."""
+        if self.focus_points:
+            self.focus_points.clear()
+            self.update_point_list()
+            self.update_focus_point_display()
+            self.status_label.setText("Focus points cleared (objective changed)")
+
+    @handles(WellplateFormatChanged)
+    def _on_wellplate_format_changed(self, _event: WellplateFormatChanged) -> None:
+        """Clear focus points when wellplate format changes — regions are invalidated."""
+        if self.focus_points:
+            self.focus_points.clear()
+            self.update_point_list()
+            self.update_focus_point_display()
+            self.status_label.setText("Focus points cleared (format changed)")
 
     @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:

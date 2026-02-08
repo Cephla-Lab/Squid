@@ -697,13 +697,15 @@ class FocusLockStatusWidget(EventBusFrame):
         self._collapsed_lock_btn.setText(lock_label)
 
     def _on_start_stop(self) -> None:
-        if self._is_running:
+        if self._status == "paused":
+            self._publish(ResumeFocusLockCommand())
+        elif self._is_running:
             self._publish(StopFocusLockCommand())
         else:
             self._publish(StartFocusLockCommand())
 
     def _on_lock_release(self) -> None:
-        if self._status == "locked":
+        if self._status in ("locked", "recovering"):
             self._publish(ReleaseFocusLockReferenceCommand())
         else:
             self._publish(SetFocusLockReferenceCommand())
@@ -721,7 +723,7 @@ class FocusLockStatusWidget(EventBusFrame):
     @handles(FocusLockStatusChanged)
     def _on_status_changed(self, event: FocusLockStatusChanged) -> None:
         self._status = event.status
-        self._is_running = event.status in ("ready", "locked", "recovering", "searching", "lost")
+        self._is_running = event.status in ("ready", "locked", "recovering", "searching", "lost", "paused")
         self._lock_buffer_fill = event.lock_buffer_fill
         self._lock_buffer_length = event.lock_buffer_length
         self._sync_status_ui()
@@ -896,12 +898,11 @@ class FocusLockStatusWidget(EventBusFrame):
         """Handle search progress events."""
         # Update status label to show search progress
         if event.phase == "last_position":
-            self._status_label.setText(f"SEARCH: last pos")
+            self._status_label.setText("SEARCH: last pos")
         else:
             # Show progress through sweep
-            progress = (event.current_position_um - event.search_min_um) / (
-                event.search_max_um - event.search_min_um
-            )
+            span = event.search_max_um - event.search_min_um
+            progress = (event.current_position_um - event.search_min_um) / span if span > 0 else 0.0
             self._status_label.setText(f"SEARCH: {progress * 100:.0f}%")
 
     def pause(self) -> None:
