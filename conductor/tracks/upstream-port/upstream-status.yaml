@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-02-02T23:00:00'
+  last_verified: '2026-02-07T15:55:46'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -601,21 +601,20 @@ commits:
     status: ported
     ported_in: b5d60c76
     ported_date: '2026-02-02'
-    notes: 'BufferingHandler in core/logging.py with queue.Queue + QTimer polling.
-      QtLoggingHandler preserved for backward compat. 5 unit tests.'
+    notes: BufferingHandler in core/logging.py with queue.Queue + QTimer polling. QtLoggingHandler preserved for backward
+      compat. 5 unit tests.
   34920a51:
     title: 'feat: Add illumination timeout (auto-shutoff) safety feature (#486)'
     status: ported
     ported_date: '2026-02-02'
-    notes: 'SET_ILLUMINATION_TIMEOUT cmd 40, auto-config at MCU startup (v1.1+),
-      SimSerial timeout tracking. 3s default safety shutoff for lasers.'
+    notes: SET_ILLUMINATION_TIMEOUT cmd 40, auto-config at MCU startup (v1.1+), SimSerial timeout tracking. 3s default safety
+      shutoff for lasers.
   ef375f28:
     title: 'feat: Multi-port illumination control + laser port naming refactor (#481)'
     status: ported
     ported_date: '2026-02-02'
-    notes: 'CMD_SET 34-39 for multi-port control. SimSerial firmware version/port status.
-      MCU: 7 new methods + firmware version detection. IlluminationController multi-port API.
-      19 unit tests.'
+    notes: 'CMD_SET 34-39 for multi-port control. SimSerial firmware version/port status. MCU: 7 new methods + firmware version
+      detection. IlluminationController multi-port API. 19 unit tests.'
   7fc1ce34:
     title: 'refactor: Remove dead code ImageArrayDisplayWindow (#482)'
     status: skipped
@@ -627,25 +626,23 @@ commits:
     title: 'refactor: Rename laser constants from wavelength-based to port-based names (#479)'
     status: ported
     ported_date: '2026-02-02'
-    notes: 'ILLUMINATION_D1-D5 port aliases, ILLUMINATION_PORT class, mapping functions.
-      Legacy wavelength names kept as aliases. D3/D4 non-sequential mapping documented.'
+    notes: ILLUMINATION_D1-D5 port aliases, ILLUMINATION_PORT class, mapping functions. Legacy wavelength names kept as aliases.
+      D3/D4 non-sequential mapping documented.
   da8f193a:
     title: 'feat: Add Workflow Runner for automating scripts with acquisitions (#480)'
     status: ported
     ported_in: d96b9034
     ported_date: '2026-02-02'
-    notes: 'Ported to 3-layer architecture as WorkflowRunnerController (StateMachine + EventBus + CancelToken).
-      Models in backend/controllers/workflow_runner/models.py, state machine in state.py, controller in
-      workflow_runner_controller.py. UI dialog in ui/widgets/workflow/workflow_runner_dialog.py. DI wired in
-      application.py. 46 unit tests. experiment_id filtering prevents cross-talk with OrchestratorController.'
+    notes: Ported to 3-layer architecture as WorkflowRunnerController (StateMachine + EventBus + CancelToken). Models in backend/controllers/workflow_runner/models.py,
+      state machine in state.py, controller in workflow_runner_controller.py. UI dialog in ui/widgets/workflow/workflow_runner_dialog.py.
+      DI wired in application.py. 46 unit tests. experiment_id filtering prevents cross-talk with OrchestratorController.
   9a74aea7:
     title: 'feat: Add second filter wheel (W2) support (#478)'
     status: ported
     ported_date: '2026-02-02'
-    notes: 'AXIS.W2, MOVE_W2, INITFILTERWHEEL_W2 constants. MCU: move_w2_usteps, home_w2,
-      zero_w2, axis param for init_filter_wheel/configure_squidfilter. SimSerial W2 handling.
-      SquidFilterWheel driver extended for multi-wheel via _WHEEL_AXIS routing.
-      SQUID_FILTERWHEEL_CONFIGS dict for per-wheel config.'
+    notes: 'AXIS.W2, MOVE_W2, INITFILTERWHEEL_W2 constants. MCU: move_w2_usteps, home_w2, zero_w2, axis param for init_filter_wheel/configure_squidfilter.
+      SimSerial W2 handling. SquidFilterWheel driver extended for multi-wheel via _WHEEL_AXIS routing. SQUID_FILTERWHEEL_CONFIGS
+      dict for per-wheel config.'
   171aed9b:
     title: 'feat: Multi-camera support foundation - schema, hardware bindings, channel config UI (#450)'
     status: ported
@@ -657,22 +654,21 @@ commits:
     status: ported
     ported_in: b5d60c76
     ported_date: '2026-02-02'
-    notes: 'Protocol auto-detection: try V3 115200 first, fall back to V1/V2 9600.
-      Filter slider guards added to confocal widget.'
+    notes: 'Protocol auto-detection: try V3 115200 first, fall back to V1/V2 9600. Filter slider guards added to confocal
+      widget.'
   996d53b3:
     title: 'feat: Add zarr v3 saving with OME-NGFF compliant output (#474)'
     status: ported
     ported_date: '2026-02-02'
-    notes: 'Zarr v3 saving with TensorStore + OME-NGFF compliant output. Adapted from
-      Qt signals to EventBus. ZarrWriter in backend/io/writers/, SaveZarrJob in job_processing,
-      NDViewer zarr push-mode via events. 79 unit tests ported.'
+    notes: Zarr v3 saving with TensorStore + OME-NGFF compliant output. Adapted from Qt signals to EventBus. ZarrWriter in
+      backend/io/writers/, SaveZarrJob in job_processing, NDViewer zarr push-mode via events. 79 unit tests ported.
   5708299d:
     title: 'feat: Display stage position on laser-based focus tab (#476)'
     status: ported
     ported_in: b5d60c76
     ported_date: '2026-02-02'
-    notes: 'One-line fix: pass event_bus to imageDisplayWindow_focus constructor.
-      ImageDisplayWindow already handles StagePositionChanged events.'
+    notes: 'One-line fix: pass event_bus to imageDisplayWindow_focus constructor. ImageDisplayWindow already handles StagePositionChanged
+      events.'
   c99140b7:
     title: 'fix: Use threaded operations for XLight controls to prevent UI freeze (#475)'
     status: skipped
@@ -681,3 +677,25 @@ commits:
       driver or UI widget. XLight operations should go through SpinningDiskService which handles thread safety. If blocking
       is still an issue, fix belongs in the service layer, not the widget.
     skip_date: '2026-02-02'
+  be019383:
+    title: 'refactor: Backpressure system lifecycle enforcement and test coverage (#488)'
+    status: in-progress
+  2cbf3fa8:
+    title: 'fix: minor UI and path fixes (#494)'
+    status: ported
+    ported_date: '2026-02-07'
+    notes: Path separator fix (Path / operator) in _def.py, text selectability in warning_error_widget.py. Test dir rename skipped (different structure).
+  833ae523:
+    title: 'feat: Workflow Runner - Edit button and multiple Acquisition sequences with config paths (#493)'
+    status: in-progress
+  a3962c55:
+    title: 'fix: organize files and fix install script (#491)'
+    status: ported
+    ported_date: '2026-02-07'
+    notes: Added ndv, filelock, lxml_html_clean, psutil to setup script. benchmark_plate_view move skipped (file not in arch_v2).
+  644ac383:
+    title: 'feat: Open Chamber fluidics support and FluidicsWidget enhancements (#489)'
+    status: in-progress
+  88c0065c:
+    title: 'feat: Wellplate calibration improvements - center point method and parameter editing (#490)'
+    status: in-progress
