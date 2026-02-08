@@ -360,13 +360,13 @@ class TestProtocolValidator:
 
         validator = ProtocolValidator(
             available_fluidics_protocols={"incubate"},
-            timing_estimates={"fluidics_protocol_default_seconds": 600.0},
+            timing_estimates={"fluidics_per_step_seconds": 600.0},
         )
         summary = validator.validate(protocol, fov_count=1)
 
         fluidics_ops = [op for op in summary.operation_estimates if op.operation_type == "fluidics"]
         assert len(fluidics_ops) == 1
-        # Should estimate ~600s for the default fluidics protocol duration
+        # Should estimate ~600s for the configured fluidics timing
         assert fluidics_ops[0].estimated_seconds >= 600
 
     def test_validate_missing_fluidics_protocol(self):
@@ -465,7 +465,7 @@ class TestProtocolValidator:
 
         validator = ProtocolValidator(
             available_fluidics_protocols={"long_incubate"},
-            timing_estimates={"fluidics_protocol_default_seconds": 43200},
+            timing_estimates={"fluidics_per_step_seconds": 43200},
         )
         summary = validator.validate(protocol, fov_count=10)
 
@@ -546,6 +546,364 @@ class TestProtocolValidator:
         assert validator.estimate_disk_formatted(1024 * 500) == "500.0 KB"
         assert validator.estimate_disk_formatted(1024**2 * 500) == "500.0 MB"
         assert validator.estimate_disk_formatted(1024**3 * 2) == "2.0 GB"
+
+
+class TestStepIndex:
+    """Tests for step_index field on OperationEstimate."""
+
+    def test_step_index_defaults_to_minus_one(self):
+        """Test that step_index defaults to -1 (setup overhead)."""
+        estimate = OperationEstimate(
+            operation_type="setup",
+            round_index=0,
+            round_name="Round 1",
+            description="Round setup",
+        )
+        assert estimate.step_index == -1
+
+    def test_step_index_set_on_creation(self):
+        """Test that step_index can be set explicitly."""
+        estimate = OperationEstimate(
+            operation_type="fluidics",
+            round_index=0,
+            round_name="Round 1",
+            description="Fluidics step",
+            step_index=2,
+        )
+        assert estimate.step_index == 2
+
+    def test_validator_populates_step_index_on_fluidics(self):
+        """Test that validator sets step_index on fluidics estimates."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="wash"),
+                        ImagingStep(protocol="standard"),
+                        FluidicsStep(protocol="strip"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"wash", "strip"}
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 2
+        assert fluidics_ops[0].step_index == 0  # First step in round
+        assert fluidics_ops[1].step_index == 2  # Third step in round
+
+    def test_validator_populates_step_index_on_imaging(self):
+        """Test that validator sets step_index on imaging estimates."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="wash"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"wash"}
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        imaging_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "imaging"
+        ]
+        assert len(imaging_ops) == 1
+        assert imaging_ops[0].step_index == 1  # Second step in round
+
+    def test_validator_populates_step_index_on_intervention(self):
+        """Test that validator sets step_index on intervention estimates."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        InterventionStep(message="Insert slide"),
+                        FluidicsStep(protocol="wash"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"wash"}
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        intervention_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "intervention"
+        ]
+        assert len(intervention_ops) == 1
+        assert intervention_ops[0].step_index == 0
+
+    def test_setup_estimates_have_negative_step_index(self):
+        """Test that per-round setup estimates have step_index=-1."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[ImagingStep(protocol="standard")],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator()
+        summary = validator.validate(protocol, fov_count=1)
+
+        setup_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "setup"
+        ]
+        assert len(setup_ops) == 1
+        assert setup_ops[0].step_index == -1
+
+    def test_step_index_across_multiple_rounds(self):
+        """Test step_index is per-round, not global."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="wash"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                ),
+                Round(
+                    name="Round 2",
+                    steps=[
+                        FluidicsStep(protocol="strip"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"wash", "strip"}
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        # Round 0: fluidics at step 0, imaging at step 1
+        r0_ops = [
+            op for op in summary.operation_estimates
+            if op.round_index == 0 and op.step_index >= 0
+        ]
+        assert len(r0_ops) == 2
+        assert r0_ops[0].step_index == 0
+        assert r0_ops[1].step_index == 1
+
+        # Round 1: fluidics at step 0, imaging at step 1 (resets per round)
+        r1_ops = [
+            op for op in summary.operation_estimates
+            if op.round_index == 1 and op.step_index >= 0
+        ]
+        assert len(r1_ops) == 2
+        assert r1_ops[0].step_index == 0
+        assert r1_ops[1].step_index == 1
+
+
+class TestFluidicsDurationLookup:
+    """Tests for fluidics_duration_lookup callable in ProtocolValidator."""
+
+    def test_lookup_overrides_default_estimate(self):
+        """Test that fluidics_duration_lookup overrides the default timing."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="slow_wash"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                ),
+            ],
+        )
+
+        def lookup(name: str):
+            if name == "slow_wash":
+                return 300.0  # 5 minutes
+            return None
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"slow_wash"},
+            fluidics_duration_lookup=lookup,
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 1
+        assert fluidics_ops[0].estimated_seconds == 300.0
+
+    def test_lookup_returning_none_uses_default(self):
+        """Test that returning None from lookup falls back to default timing."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[FluidicsStep(protocol="unknown_proto")],
+                ),
+            ],
+        )
+
+        def lookup(name: str):
+            return None  # Unknown protocol
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"unknown_proto"},
+            fluidics_duration_lookup=lookup,
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 1
+        # Should use default fluidics_per_step_seconds
+        assert fluidics_ops[0].estimated_seconds == DEFAULT_TIMING_ESTIMATES["fluidics_per_step_seconds"]
+
+    def test_no_lookup_uses_default(self):
+        """Test that without a lookup, default timing is used."""
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[FluidicsStep(protocol="wash")],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"wash"},
+            fluidics_duration_lookup=None,
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 1
+        assert fluidics_ops[0].estimated_seconds == DEFAULT_TIMING_ESTIMATES["fluidics_per_step_seconds"]
+
+    def test_lookup_called_with_protocol_name(self):
+        """Test that the lookup is called with the correct protocol name."""
+        called_with = []
+
+        def lookup(name: str):
+            called_with.append(name)
+            return 100.0
+
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="probe_hyb"),
+                        ImagingStep(protocol="standard"),
+                        FluidicsStep(protocol="strip_wash"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"probe_hyb", "strip_wash"},
+            fluidics_duration_lookup=lookup,
+        )
+        validator.validate(protocol, fov_count=1)
+
+        assert "probe_hyb" in called_with
+        assert "strip_wash" in called_with
+
+    def test_different_protocols_get_different_estimates(self):
+        """Test that different protocol names get different duration estimates."""
+        durations = {
+            "fast_wash": 30.0,
+            "slow_incubate": 600.0,
+        }
+
+        def lookup(name: str):
+            return durations.get(name)
+
+        protocol = ExperimentProtocol(
+            name="Test",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[
+                        FluidicsStep(protocol="fast_wash"),
+                        ImagingStep(protocol="standard"),
+                        FluidicsStep(protocol="slow_incubate"),
+                    ],
+                ),
+            ],
+        )
+
+        validator = ProtocolValidator(
+            available_fluidics_protocols={"fast_wash", "slow_incubate"},
+            fluidics_duration_lookup=lookup,
+        )
+        summary = validator.validate(protocol, fov_count=1)
+
+        fluidics_ops = [
+            op for op in summary.operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 2
+        assert fluidics_ops[0].estimated_seconds == 30.0   # fast_wash
+        assert fluidics_ops[1].estimated_seconds == 600.0   # slow_incubate
 
 
 class TestDefaultEstimates:

@@ -161,7 +161,6 @@ class TestFluidicsServiceOperations:
             wash_solution="wash_buffer",
             volume_ul=500,
             flow_rate_ul_per_min=5000,
-            repeats=3,
         )
 
         assert result is True

@@ -96,7 +96,7 @@ class TestSimulatedFluidicsController:
     def test_wash(self, controller):
         """Test wash operation."""
         result = controller.wash(
-            wash_port=1, volume_ul=100, flow_rate_ul_per_min=50, repeats=2
+            wash_port=1, volume_ul=100, flow_rate_ul_per_min=50
         )
         assert result is True
         assert controller.get_status().status == FluidicsOperationStatus.COMPLETED

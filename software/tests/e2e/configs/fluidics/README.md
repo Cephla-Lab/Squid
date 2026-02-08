@@ -54,19 +54,18 @@ protocols:
         solution: wash_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 500
-        repeats: 3
-        description: "Wash cycles"
+        description: "Wash cycle"
 ```
 
 ### Operations
 
 | Operation | Required Fields | Optional Fields | Description |
 |-----------|-----------------|-----------------|-------------|
-| `flow` | `solution`, `volume_ul` | `flow_rate_ul_per_min` | Dispense solution at specified rate |
-| `wash` | `solution`, `volume_ul` | `flow_rate_ul_per_min`, `repeats` | Wash with solution (repeatable) |
+| `flow` | `solution`, `volume_ul` | `flow_rate_ul_per_min` | Flow solution through chamber |
+| `wash` | `solution`, `volume_ul` | `flow_rate_ul_per_min` | Flow solution + empty to waste |
 | `incubate` | `duration_s` | - | Wait for specified duration |
 | `prime` | `solution`, `volume_ul` | `flow_rate_ul_per_min` | Prime lines with solution |
-| `aspirate` | - | - | Remove liquid from chamber |
+| `empty` | - | - | Empty syringe to waste |
 
 ### Field Descriptions
 
@@ -74,7 +73,6 @@ protocols:
 - **volume_ul**: Volume in microliters
 - **flow_rate_ul_per_min**: Flow rate (default varies by hardware, max typically 1000 uL/min)
 - **duration_s**: Duration in seconds for incubation
-- **repeats**: Number of times to repeat the operation (default: 1)
 - **description**: Human-readable step description (optional)
 
 ## Flow Rate Limits

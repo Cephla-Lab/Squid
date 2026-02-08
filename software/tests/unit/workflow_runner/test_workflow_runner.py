@@ -29,6 +29,8 @@ from squid.backend.controllers.workflow_runner.state import (
     WorkflowSequenceFinished,
     WorkflowScriptOutput,
     WorkflowError,
+    WorkflowLoadConfigRequest,
+    WorkflowLoadConfigResponse,
 )
 from squid.backend.controllers.workflow_runner.workflow_runner_controller import (
     WorkflowRunnerController,
@@ -295,6 +297,7 @@ class TestWorkflow:
             assert rest_seq.arguments == orig_seq.arguments
             assert rest_seq.python_path == orig_seq.python_path
             assert rest_seq.conda_env == orig_seq.conda_env
+            assert rest_seq.config_path == orig_seq.config_path
             assert rest_seq.cycle_arg_name == orig_seq.cycle_arg_name
             assert rest_seq.cycle_arg_values == orig_seq.cycle_arg_values
 
@@ -331,7 +334,8 @@ class TestWorkflow:
         finally:
             os.unlink(temp_path)
 
-    def test_load_file_ensures_acquisition(self):
+    def test_load_file_without_acquisition(self):
+        """Test loading file without Acquisition preserves original sequences (no auto-add)."""
         import yaml
 
         data = {
@@ -357,9 +361,110 @@ class TestWorkflow:
 
         try:
             loaded = Workflow.load_from_file(temp_path)
-            assert loaded.has_acquisition()
+            # Workflows can now have zero acquisition sequences
+            assert not loaded.has_acquisition()
+            assert len(loaded.sequences) == 1
+            assert loaded.sequences[0].name == "Script Only"
         finally:
             os.unlink(temp_path)
+
+    def test_acquisition_with_config_path(self):
+        """Test acquisition sequence with config_path."""
+        workflow = Workflow(
+            num_cycles=1,
+            sequences=[
+                SequenceItem(
+                    name="Pre-scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path="/path/to/prescan.yaml",
+                    included=True,
+                ),
+                SequenceItem(
+                    name="Main Acquisition",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path=None,  # Uses current settings
+                    included=True,
+                ),
+            ],
+        )
+
+        # Test serialization roundtrip
+        data = workflow.to_dict()
+        assert data["sequences"][0]["config_path"] == "/path/to/prescan.yaml"
+        # Second sequence has no config_path (key not present since value is None)
+        assert data["sequences"][1].get("config_path") is None
+
+        restored = Workflow.from_dict(data, ensure_acquisition=False)
+        assert restored.sequences[0].config_path == "/path/to/prescan.yaml"
+        assert restored.sequences[1].config_path is None
+
+    def test_multiple_acquisitions_save_load(self):
+        """Test saving and loading a workflow with multiple acquisition sequences."""
+        original = Workflow(
+            num_cycles=2,
+            sequences=[
+                SequenceItem(
+                    name="Pre-scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path="/path/to/prescan.yaml",
+                    included=True,
+                ),
+                SequenceItem(
+                    name="Fluidics",
+                    sequence_type=SequenceType.SCRIPT,
+                    script_path="/path/to/fluidics.py",
+                    arguments="--wash",
+                    included=True,
+                ),
+                SequenceItem(
+                    name="Main Scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path=None,
+                    included=True,
+                ),
+            ],
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            temp_path = f.name
+
+        try:
+            original.save_to_file(temp_path)
+            loaded = Workflow.load_from_file(temp_path)
+
+            assert loaded.num_cycles == 2
+            assert len(loaded.sequences) == 3
+            assert loaded.sequences[0].name == "Pre-scan"
+            assert loaded.sequences[0].is_acquisition()
+            assert loaded.sequences[0].config_path == "/path/to/prescan.yaml"
+            assert loaded.sequences[1].name == "Fluidics"
+            assert not loaded.sequences[1].is_acquisition()
+            assert loaded.sequences[2].name == "Main Scan"
+            assert loaded.sequences[2].is_acquisition()
+            assert loaded.sequences[2].config_path is None
+        finally:
+            os.unlink(temp_path)
+
+    def test_to_dict_only_includes_set_optional_fields(self):
+        """Test that to_dict only includes optional fields that have values."""
+        workflow = Workflow(
+            sequences=[
+                SequenceItem(
+                    name="Acquisition",
+                    sequence_type=SequenceType.ACQUISITION,
+                    included=True,
+                ),
+            ],
+        )
+        data = workflow.to_dict()
+        seq_dict = data["sequences"][0]
+        # Only required fields should be present, not optional None fields
+        assert "name" in seq_dict
+        assert "type" in seq_dict
+        assert "included" in seq_dict
+        assert "script_path" not in seq_dict
+        assert "arguments" not in seq_dict
+        assert "config_path" not in seq_dict
 
 
 # ============================================================================
@@ -908,3 +1013,100 @@ class TestWorkflowRunnerController:
             assert finished_events[0].success is True
         finally:
             os.unlink(temp_script)
+
+    def test_acquisition_with_config_path(self, controller, event_bus, multipoint):
+        """Test acquisition with config_path publishes WorkflowLoadConfigRequest."""
+        config_requests = self._collect_events(event_bus, WorkflowLoadConfigRequest)
+
+        # Subscribe to config requests and auto-respond with success
+        def auto_respond(event):
+            event_bus.publish(WorkflowLoadConfigResponse(success=True))
+
+        event_bus.subscribe(WorkflowLoadConfigRequest, auto_respond)
+
+        workflow = Workflow(
+            sequences=[
+                SequenceItem(
+                    name="Pre-scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path="/path/to/config.yaml",
+                    included=True,
+                ),
+            ],
+        )
+
+        controller.start_workflow(workflow.to_dict())
+        assert self._wait_for_state(controller, WorkflowRunnerState.RUNNING_ACQUISITION)
+
+        # Config request should have been published
+        time.sleep(0.5)
+        assert len(config_requests) >= 1
+        assert config_requests[0].config_path == "/path/to/config.yaml"
+
+        # Verify multipoint.run_acquisition was called (config loaded successfully)
+        multipoint.run_acquisition.assert_called_with(acquire_current_fov=False)
+
+        # Complete the acquisition
+        experiment_id = multipoint.experiment_ID
+        event_bus.publish(AcquisitionFinished(success=True, experiment_id=experiment_id))
+        assert self._wait_for_state(controller, WorkflowRunnerState.COMPLETED)
+
+    def test_acquisition_config_load_failure(self, controller, event_bus, multipoint):
+        """Test acquisition fails when config loading fails."""
+        # Subscribe to config requests and auto-respond with failure
+        def auto_respond_failure(event):
+            event_bus.publish(
+                WorkflowLoadConfigResponse(success=False, error_message="File not found")
+            )
+
+        event_bus.subscribe(WorkflowLoadConfigRequest, auto_respond_failure)
+
+        error_events = self._collect_events(event_bus, WorkflowError)
+
+        workflow = Workflow(
+            sequences=[
+                SequenceItem(
+                    name="Pre-scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path="/nonexistent/config.yaml",
+                    included=True,
+                ),
+            ],
+        )
+
+        controller.start_workflow(workflow.to_dict())
+        assert self._wait_for_state(controller, WorkflowRunnerState.FAILED)
+
+        # Verify multipoint.run_acquisition was NOT called
+        time.sleep(0.3)
+        multipoint.run_acquisition.assert_not_called()
+
+        # Error event should have been published
+        assert any("File not found" in e.message for e in error_events)
+
+    def test_acquisition_without_config_path_skips_config_load(self, controller, event_bus, multipoint):
+        """Test acquisition without config_path does not publish WorkflowLoadConfigRequest."""
+        config_requests = self._collect_events(event_bus, WorkflowLoadConfigRequest)
+
+        workflow = Workflow(
+            sequences=[
+                SequenceItem(
+                    name="Acquisition",
+                    sequence_type=SequenceType.ACQUISITION,
+                    included=True,
+                    # No config_path
+                ),
+            ],
+        )
+
+        controller.start_workflow(workflow.to_dict())
+        assert self._wait_for_state(controller, WorkflowRunnerState.RUNNING_ACQUISITION)
+
+        # No config request should have been published
+        time.sleep(0.3)
+        assert len(config_requests) == 0
+
+        # Complete the acquisition
+        experiment_id = multipoint.experiment_ID
+        event_bus.publish(AcquisitionFinished(success=True, experiment_id=experiment_id))
+        assert self._wait_for_state(controller, WorkflowRunnerState.COMPLETED)

@@ -1,5 +1,9 @@
 # Test Fluidics Protocols for E2E Testing
 # These are simulated protocols with minimal durations
+#
+# Available solutions in simulation_fluidics.json:
+#   probe_1..probe_10, stain_1, stain_2,
+#   wash_buffer, imaging_buffer, cleavage_buffer, rinse_buffer
 
 protocols:
   # FISH Round 1 protocols
@@ -19,10 +23,10 @@ protocols:
     description: "Strip fluorophores between rounds"
     steps:
       - operation: flow
-        solution: strip_buffer
+        solution: cleavage_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 100
-        description: "Flow strip buffer"
+        description: "Flow cleavage buffer to strip fluorophores"
       - operation: incubate
         duration_s: 1
         description: "Brief strip incubation"
@@ -30,7 +34,11 @@ protocols:
         solution: wash_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 100
-        repeats: 2
+        description: "Wash away stripped fluorophores"
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
         description: "Wash away stripped fluorophores"
 
   # FISH Round 2 protocols
@@ -54,9 +62,15 @@ protocols:
         solution: wash_buffer
         volume_ul: 300
         flow_rate_ul_per_min: 100
-        repeats: 3
-        description: "Final wash cycles"
-      - operation: aspirate
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 100
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 300
+        flow_rate_ul_per_min: 100
+      - operation: empty
         description: "Remove excess liquid"
 
   # For quick_fish_2round.yaml
@@ -64,7 +78,7 @@ protocols:
     description: "Hybridization round 1"
     steps:
       - operation: flow
-        solution: hyb_buffer
+        solution: probe_1
         volume_ul: 100
         flow_rate_ul_per_min: 50
       - operation: incubate
@@ -74,7 +88,7 @@ protocols:
     description: "Hybridization round 2"
     steps:
       - operation: flow
-        solution: hyb_buffer
+        solution: probe_2
         volume_ul: 100
         flow_rate_ul_per_min: 50
       - operation: incubate
@@ -92,7 +106,10 @@ protocols:
         solution: wash_buffer
         volume_ul: 100
         flow_rate_ul_per_min: 50
-        repeats: 2
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 50
 
   sample_cleanup:
     description: "Clean up sample after imaging"
@@ -101,8 +118,11 @@ protocols:
         solution: wash_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 100
-        repeats: 2
-      - operation: aspirate
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
+      - operation: empty
 
   # For fluidics_only.yaml
   system_prime:
@@ -117,7 +137,7 @@ protocols:
     description: "Apply primary stain"
     steps:
       - operation: flow
-        solution: stain_1
+        solution: probe_1
         volume_ul: 100
         flow_rate_ul_per_min: 25
       - operation: incubate
@@ -127,7 +147,7 @@ protocols:
     description: "Apply secondary stain"
     steps:
       - operation: flow
-        solution: stain_2
+        solution: probe_2
         volume_ul: 100
         flow_rate_ul_per_min: 25
       - operation: incubate
@@ -137,17 +157,20 @@ protocols:
     description: "Final rinse"
     steps:
       - operation: wash
-        solution: wash_buffer
+        solution: rinse_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 100
-        repeats: 2
+      - operation: wash
+        solution: rinse_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
 
   # For quick_fluidics_wash.yaml
   initial_rinse:
     description: "Initial rinse"
     steps:
       - operation: wash
-        solution: wash_buffer
+        solution: rinse_buffer
         volume_ul: 100
         flow_rate_ul_per_min: 100
 
@@ -158,7 +181,10 @@ protocols:
         solution: wash_buffer
         volume_ul: 200
         flow_rate_ul_per_min: 100
-        repeats: 2
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 200
+        flow_rate_ul_per_min: 100
 
   # For v2_repeated.yaml
   probe_1:
@@ -267,22 +293,23 @@ protocols:
       - operation: wash
         solution: wash_buffer
         volume_ul: 500
+        flow_rate_ul_per_min: 100
 
   # For v2_full.yaml
   initial_wash:
     description: "Initial chamber wash"
     steps:
       - operation: wash
-        solution: pbs
+        solution: rinse_buffer
         volume_ul: 1000
         flow_rate_ul_per_min: 200
-      - operation: aspirate
+      - operation: empty
 
   probe_hybridize_1:
     description: "Probe set 1 hybridization"
     steps:
       - operation: flow
-        solution: probe_mix_1
+        solution: probe_1
         volume_ul: 150
         flow_rate_ul_per_min: 50
       - operation: incubate
@@ -292,7 +319,7 @@ protocols:
     description: "Probe set 2 hybridization"
     steps:
       - operation: flow
-        solution: probe_mix_2
+        solution: probe_2
         volume_ul: 150
         flow_rate_ul_per_min: 50
       - operation: incubate
@@ -305,17 +332,24 @@ protocols:
         solution: wash_buffer
         volume_ul: 500
         flow_rate_ul_per_min: 100
-        repeats: 3
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 500
+        flow_rate_ul_per_min: 100
 
   strip:
     description: "Strip probes for next round"
     steps:
       - operation: flow
-        solution: strip_buffer
+        solution: cleavage_buffer
         volume_ul: 500
         flow_rate_ul_per_min: 100
       - operation: incubate
         duration_s: 1
       - operation: wash
-        solution: pbs
+        solution: rinse_buffer
         volume_ul: 500
