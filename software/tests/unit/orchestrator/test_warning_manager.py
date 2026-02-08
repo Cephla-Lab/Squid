@@ -354,6 +354,7 @@ class TestWarningManager:
 
         # Only 5 should be stored
         assert len(manager) == 5
+        assert manager.get_stats().total_count == 5
 
         # The first two should have been removed
         warnings = manager.get_warnings()

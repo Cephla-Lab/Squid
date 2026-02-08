@@ -274,6 +274,10 @@ class OrchestratorSimulator(BaseSimulator):
         experiment_id: Optional[str] = None,
         base_path: Optional[str] = None,
         resume_from_checkpoint: bool = False,
+        start_from_round: int = 0,
+        start_from_step: int = 0,
+        start_from_fov: int = 0,
+        run_single_round: bool = False,
     ) -> bool:
         """
         Start the orchestrated experiment (non-blocking).
@@ -282,6 +286,10 @@ class OrchestratorSimulator(BaseSimulator):
             experiment_id: Unique experiment identifier
             base_path: Base path for experiment output
             resume_from_checkpoint: Resume from checkpoint in base_path
+            start_from_round: 0-based round index to start from
+            start_from_step: 0-based step index within first round
+            start_from_fov: 0-based FOV index within the first imaging step
+            run_single_round: If True, execute only the start round
 
         Returns:
             True if started successfully
@@ -294,6 +302,10 @@ class OrchestratorSimulator(BaseSimulator):
             base_path=base_path or self._ctx.base_path,
             experiment_id=experiment_id,
             resume_from_checkpoint=resume_from_checkpoint,
+            start_from_round=start_from_round,
+            start_from_step=start_from_step,
+            start_from_fov=start_from_fov,
+            run_single_round=run_single_round,
         )
 
     def pause(self) -> bool:
@@ -312,13 +324,13 @@ class OrchestratorSimulator(BaseSimulator):
         """Acknowledge an intervention request."""
         return self.orchestrator.acknowledge_intervention()
 
-    def skip_current_round(self) -> None:
+    def skip_current_round(self) -> bool:
         """Skip the current round."""
-        self.orchestrator.skip_current_round()
+        return self.orchestrator.skip_current_round()
 
-    def skip_to_round(self, round_index: int) -> None:
+    def skip_to_round(self, round_index: int) -> bool:
         """Skip to a specific round."""
-        self.orchestrator.skip_to_round(round_index)
+        return self.orchestrator.skip_to_round(round_index)
 
     def run_and_wait(
         self,

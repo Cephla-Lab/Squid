@@ -1,0 +1,37 @@
+# External imaging protocol definitions.
+# Referenced via imaging_protocol_file in experiment protocols.
+
+bf_quick:
+  description: "Quick brightfield check"
+  channels:
+    - "BF LED matrix full"
+  z_stack:
+    planes: 1
+  focus:
+    enabled: false
+  skip_saving: true
+
+fluorescence_405:
+  description: "405 nm fluorescence imaging"
+  channels:
+    - "Fluorescence 405 nm Ex"
+  z_stack:
+    planes: 3
+    step_um: 0.5
+  focus:
+    enabled: true
+    method: laser
+  skip_saving: true
+
+fluorescence_488_561:
+  description: "488 + 561 nm dual-channel imaging"
+  channels:
+    - "Fluorescence 488 nm Ex"
+    - "Fluorescence 561 nm Ex"
+  z_stack:
+    planes: 3
+    step_um: 0.5
+  focus:
+    enabled: true
+    method: laser
+  skip_saving: true

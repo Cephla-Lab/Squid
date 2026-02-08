@@ -259,6 +259,15 @@ class TestProtocolValidator:
         assert summary.has_errors
         assert any("FITC" in err for err in summary.errors)
 
+    def test_validate_with_empty_available_channels_fails(self, simple_protocol):
+        """An explicit empty channel set should fail channel validation."""
+        validator = ProtocolValidator(available_channels=set())
+        summary = validator.validate(simple_protocol, fov_count=1)
+
+        assert summary.valid is False
+        assert summary.has_errors
+        assert any("DAPI" in err or "FITC" in err for err in summary.errors)
+
     def test_validate_with_all_channels_available(self, simple_protocol):
         """Test validation passes with all channels available."""
         validator = ProtocolValidator(
@@ -415,6 +424,23 @@ class TestProtocolValidator:
 
         assert summary.has_errors
         assert any("nonexistent_config" in err for err in summary.errors)
+
+    def test_validate_round_with_no_steps_fails(self):
+        """Rounds without steps should be invalid."""
+        protocol = ExperimentProtocol(
+            name="Empty Round",
+            imaging_protocols={
+                "standard": ImagingProtocol(channels=["DAPI"]),
+            },
+            rounds=[
+                Round(name="Round 1", steps=[]),
+            ],
+        )
+        validator = ProtocolValidator()
+        summary = validator.validate(protocol, fov_count=1)
+
+        assert summary.valid is False
+        assert any("has no steps" in err for err in summary.errors)
 
     def test_inline_fluidics_protocols_disallowed(self):
         """Test validation error when inline fluidics protocols are provided."""

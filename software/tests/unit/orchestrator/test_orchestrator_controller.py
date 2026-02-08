@@ -20,11 +20,15 @@ from squid.backend.controllers.orchestrator import (
     StopOrchestratorCommand,
     PauseOrchestratorCommand,
     ResumeOrchestratorCommand,
+    ClearWarningsCommand,
+    WarningCategory,
+    WarningSeverity,
 )
 from squid.core.protocol import (
     ExperimentProtocol,
     Round,
     ImagingStep,
+    InterventionStep,
     ImagingProtocol,
 )
 
@@ -207,6 +211,118 @@ class TestStartExperiment:
             assert orchestrator.protocol is not None
             assert orchestrator.protocol.name == "test_protocol"
 
+    def test_start_experiment_rejects_start_round_out_of_bounds(
+        self, orchestrator, protocol_file
+    ):
+        """Test invalid start_from_round is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = orchestrator.start_experiment(
+                protocol_path=protocol_file,
+                base_path=tmpdir,
+                start_from_round=5,
+            )
+            assert result is False
+            assert orchestrator.state == OrchestratorState.IDLE
+
+    def test_start_experiment_rejects_start_step_out_of_bounds(
+        self, orchestrator, protocol_file
+    ):
+        """Test invalid start_from_step is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = orchestrator.start_experiment(
+                protocol_path=protocol_file,
+                base_path=tmpdir,
+                start_from_round=0,
+                start_from_step=5,
+            )
+            assert result is False
+            assert orchestrator.state == OrchestratorState.IDLE
+
+    def test_start_experiment_rejects_negative_start_fov(
+        self, orchestrator, protocol_file
+    ):
+        """Test invalid negative start_from_fov is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = orchestrator.start_experiment(
+                protocol_path=protocol_file,
+                base_path=tmpdir,
+                start_from_fov=-1,
+            )
+            assert result is False
+            assert orchestrator.state == OrchestratorState.IDLE
+
+    def test_start_experiment_rejects_start_fov_for_non_imaging_step(
+        self, orchestrator
+    ):
+        """Test start_from_fov > 0 requires the selected start step to be imaging."""
+        protocol = ExperimentProtocol(
+            name="mixed_steps",
+            version="2.0",
+            imaging_protocols={"standard": ImagingProtocol(channels=["DAPI"])},
+            rounds=[
+                Round(
+                    name="r0",
+                    steps=[
+                        InterventionStep(message="continue"),
+                        ImagingStep(protocol="standard"),
+                    ],
+                )
+            ],
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            from squid.core.protocol import ProtocolLoader
+
+            loader = ProtocolLoader()
+            loader.save(protocol, f.name)
+            protocol_path = f.name
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                result = orchestrator.start_experiment(
+                    protocol_path=protocol_path,
+                    base_path=tmpdir,
+                    start_from_round=0,
+                    start_from_step=0,
+                    start_from_fov=1,
+                )
+                assert result is False
+                assert orchestrator.state == OrchestratorState.IDLE
+        finally:
+            os.unlink(protocol_path)
+
+    def test_start_experiment_rejects_start_fov_out_of_bounds_with_scan_coordinates(
+        self,
+        event_bus,
+        mock_multipoint,
+        mock_experiment_manager,
+        mock_acquisition_planner,
+        mock_imaging_executor,
+        mock_fluidics_controller,
+        protocol_file,
+    ):
+        """Test start_from_fov must be within loaded scan-coordinate count when known."""
+        scan_coordinates = MagicMock()
+        scan_coordinates.region_fov_coordinates = {"region_1": [(0.0, 0.0, 0.0)]}
+        orchestrator = OrchestratorController(
+            event_bus=event_bus,
+            multipoint_controller=mock_multipoint,
+            experiment_manager=mock_experiment_manager,
+            acquisition_planner=mock_acquisition_planner,
+            imaging_executor=mock_imaging_executor,
+            fluidics_controller=mock_fluidics_controller,
+            scan_coordinates=scan_coordinates,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = orchestrator.start_experiment(
+                protocol_path=protocol_file,
+                base_path=tmpdir,
+                start_from_round=0,
+                start_from_step=0,
+                start_from_fov=2,
+            )
+            assert result is False
+            assert orchestrator.state == OrchestratorState.IDLE
+
 
 class TestPauseResumeAbort:
     """Tests for pause/resume/abort controls."""
@@ -225,6 +341,39 @@ class TestPauseResumeAbort:
         """Test that abort fails when idle."""
         result = orchestrator.abort()
         assert result is False
+
+
+class TestSkipControls:
+    """Tests for round skip controls."""
+
+    def test_skip_to_round_when_idle_returns_false(self, orchestrator):
+        """Skip-to-round should fail when no experiment is running."""
+        assert orchestrator.skip_to_round(1) is False
+
+    def test_skip_current_round_requires_runner(self, orchestrator):
+        """Skip-current should fail if no runner is active."""
+        orchestrator._state = OrchestratorState.RUNNING
+        assert orchestrator.skip_current_round() is False
+
+    def test_skip_to_round_delegates_to_runner(self, orchestrator):
+        """Skip-to-round should delegate validation and request to runner."""
+        runner = MagicMock()
+        runner.request_skip_to_round.return_value = True
+        orchestrator._runner = runner
+        orchestrator._state = OrchestratorState.RUNNING
+
+        assert orchestrator.skip_to_round(2) is True
+        runner.request_skip_to_round.assert_called_once_with(2)
+
+    def test_skip_current_round_delegates_to_runner(self, orchestrator):
+        """Skip-current should delegate to runner API."""
+        runner = MagicMock()
+        runner.request_skip_current_round.return_value = True
+        orchestrator._runner = runner
+        orchestrator._state = OrchestratorState.RUNNING
+
+        assert orchestrator.skip_current_round() is True
+        runner.request_skip_current_round.assert_called_once_with()
 
 
 class TestEventHandlers:
@@ -268,6 +417,23 @@ class TestEventHandlers:
                 OrchestratorState.IDLE,
             )
 
+    def test_clear_warnings_ignores_stale_experiment_id(self, orchestrator, event_bus):
+        """ClearWarningsCommand should be scoped to the active experiment ID."""
+        orchestrator._experiment_id = "active_exp"
+        orchestrator.warning_manager.experiment_id = "active_exp"
+        orchestrator.warning_manager.add_warning(
+            WarningCategory.FOCUS,
+            WarningSeverity.LOW,
+            "focus warning",
+        )
+        assert len(orchestrator.warning_manager.get_warnings()) == 1
+
+        event_bus.publish(ClearWarningsCommand(experiment_id="other_exp"))
+
+        import time
+        time.sleep(0.05)
+        assert len(orchestrator.warning_manager.get_warnings()) == 1
+
 
 class TestProgress:
     """Tests for progress tracking."""
@@ -299,6 +465,29 @@ class TestProgress:
 
         # Should have received at least one progress event
         assert len(received_events) >= 0  # May be 0 if experiment completes quickly
+
+    def test_progress_current_round_clamped(self, orchestrator, event_bus):
+        """Test current_round never exceeds total_rounds."""
+        received_events = []
+
+        def on_progress(event):
+            received_events.append(event)
+
+        event_bus.subscribe(OrchestratorProgress, on_progress)
+
+        with orchestrator._progress_lock:
+            orchestrator._progress.total_rounds = 1
+            orchestrator._progress.current_round_index = 1
+            orchestrator._progress.current_round = None
+
+        orchestrator._publish_progress()
+
+        import time
+        time.sleep(0.05)
+
+        assert received_events
+        assert received_events[-1].total_rounds == 1
+        assert received_events[-1].current_round == 1
 
 
 class TestExperimentExecution:

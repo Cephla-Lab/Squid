@@ -1,0 +1,44 @@
+# E2E test protocol: Resource File Paths (Imaging Only)
+# Tests imaging_protocol_file with inline override precedence.
+#
+# The external file defines bf_quick, fluorescence_405, fluorescence_488_561.
+# Inline imaging_protocols overrides fluorescence_405 with a different config.
+# This verifies inline-takes-precedence merging behavior.
+
+name: "Resource File Paths Imaging Only Test"
+version: "2.0"
+description: "Tests imaging_protocol_file with inline override"
+
+imaging_protocol_file: resource_files/imaging_protocols.yaml
+
+# Override fluorescence_405 from the file — inline takes precedence
+imaging_protocols:
+  fluorescence_405:
+    description: "Overridden 405 nm with single z-plane"
+    channels:
+      - "Fluorescence 405 nm Ex"
+    z_stack:
+      planes: 1
+    focus:
+      enabled: false
+    skip_saving: true
+
+fov_sets:
+  main: ../fov_positions/test_2fov_simple.csv
+
+error_handling:
+  focus_failure: skip
+  imaging_failure: warn
+
+rounds:
+  - name: "BF Check"
+    steps:
+      - step_type: imaging
+        protocol: bf_quick
+        fovs: main
+
+  - name: "Fluorescence Round"
+    steps:
+      - step_type: imaging
+        protocol: fluorescence_405
+        fovs: main

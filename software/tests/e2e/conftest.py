@@ -145,6 +145,24 @@ def intervention_protocol(protocols_dir: Path) -> str:
     return str(protocols_dir / "intervention_protocol.yaml")
 
 
+@pytest.fixture
+def v2_full_protocol(protocols_dir: Path) -> str:
+    """Path to V2 full-featured protocol."""
+    return str(protocols_dir / "v2_full.yaml")
+
+
+@pytest.fixture
+def resource_file_paths_full_protocol(protocols_dir: Path) -> str:
+    """Path to protocol using all resource file path fields."""
+    return str(protocols_dir / "resource_file_paths_full.yaml")
+
+
+@pytest.fixture
+def resource_file_paths_imaging_only_protocol(protocols_dir: Path) -> str:
+    """Path to protocol using imaging_protocol_file with inline override."""
+    return str(protocols_dir / "resource_file_paths_imaging_only.yaml")
+
+
 # =============================================================================
 # Fluidics Config Fixtures
 # =============================================================================

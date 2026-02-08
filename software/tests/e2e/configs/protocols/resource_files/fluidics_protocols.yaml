@@ -1,0 +1,22 @@
+# External fluidics protocol definitions.
+# Referenced via fluidics_protocols_file in experiment protocols.
+# These are loaded into FluidicsController at experiment start.
+
+protocols:
+  resource_test_wash:
+    description: "Simple wash for resource file path testing"
+    steps:
+      - operation: wash
+        solution: wash_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 100
+
+  resource_test_probe:
+    description: "Probe delivery for resource file path testing"
+    steps:
+      - operation: flow
+        solution: probe_1
+        volume_ul: 50
+        flow_rate_ul_per_min: 50
+      - operation: incubate
+        duration_s: 1

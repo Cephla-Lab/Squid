@@ -168,6 +168,24 @@ class TestV2ProtocolSchema:
         assert any("missing_config" in e for e in errors)
         assert any("missing_fovs" in e for e in errors)
 
+    def test_validate_references_allows_default_fovs(self):
+        """The reserved FOV alias 'default' should be accepted."""
+        protocol = ExperimentProtocol(
+            name="Default FOV Alias",
+            imaging_protocols={
+                "existing": ImagingProtocol(channels=["A"]),
+            },
+            rounds=[
+                Round(
+                    name="Round 1",
+                    steps=[ImagingStep(protocol="existing", fovs="default")],
+                ),
+            ],
+        )
+
+        errors = protocol.validate_references()
+        assert errors == []
+
     def test_channel_config_override(self):
         """Test channel configuration overrides."""
         config = ImagingProtocol(
@@ -719,6 +737,306 @@ rounds:
         loader = ProtocolLoader()
         with pytest.raises(ProtocolValidationError, match="has no 'repeat' field"):
             loader.load_from_string(yaml_content)
+
+
+class TestResourceFilePaths:
+    """Tests for resource file path fields (imaging_protocol_file, etc.)."""
+
+    def test_imaging_protocol_file_merged_into_imaging_protocols(self):
+        """Test that imaging_protocol_file contents are merged into imaging_protocols."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create external imaging protocols file
+            imaging_file = Path(tmpdir) / "imaging_protos.yaml"
+            imaging_file.write_text(
+                """
+fish_standard:
+  channels: [DAPI, Cy5]
+  z_stack:
+    planes: 5
+brightfield:
+  channels: [BF]
+"""
+            )
+
+            protocol_content = f"""
+name: Imaging File Test
+version: "2.0"
+
+imaging_protocol_file: imaging_protos.yaml
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: fish_standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            assert "fish_standard" in protocol.imaging_protocols
+            assert "brightfield" in protocol.imaging_protocols
+            assert protocol.imaging_protocols["fish_standard"].z_stack.planes == 5
+
+    def test_imaging_protocol_file_inline_takes_precedence(self):
+        """Test that inline imaging_protocols override file definitions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imaging_file = Path(tmpdir) / "imaging_protos.yaml"
+            imaging_file.write_text(
+                """
+standard:
+  channels: [DAPI]
+  z_stack:
+    planes: 3
+"""
+            )
+
+            protocol_content = f"""
+name: Inline Precedence Test
+version: "2.0"
+
+imaging_protocol_file: imaging_protos.yaml
+
+imaging_protocols:
+  standard:
+    channels: [DAPI, Cy5]
+    z_stack:
+      planes: 10
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            # Inline (10 planes) should win over file (3 planes)
+            assert protocol.imaging_protocols["standard"].z_stack.planes == 10
+            assert len(protocol.imaging_protocols["standard"].get_channel_names()) == 2
+
+    def test_imaging_protocol_file_not_found_raises_error(self):
+        """Test that missing imaging_protocol_file raises error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_content = """
+name: Missing Imaging File Test
+version: "2.0"
+
+imaging_protocol_file: nonexistent.yaml
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            with pytest.raises(ProtocolValidationError, match="Imaging protocol file not found"):
+                loader.load(protocol_path)
+
+    def test_fov_file_added_to_fov_sets_as_default(self):
+        """Test that fov_file is added to fov_sets as 'default'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "positions.csv"
+            csv_path.write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
+
+            protocol_content = """
+name: FOV File Test
+version: "2.0"
+
+fov_file: positions.csv
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+        fovs: default
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            assert "default" in protocol.fov_sets
+            assert Path(protocol.fov_sets["default"]).is_absolute()
+            assert protocol.fov_sets["default"] == str(csv_path)
+
+    def test_fov_file_does_not_overwrite_existing_default(self):
+        """Test that fov_file doesn't overwrite an existing 'default' fov_set."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv1 = Path(tmpdir) / "existing.csv"
+            csv1.write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
+
+            csv2 = Path(tmpdir) / "new.csv"
+            csv2.write_text("region,x (mm),y (mm)\nB,3.0,4.0\n")
+
+            protocol_content = """
+name: FOV No Overwrite Test
+version: "2.0"
+
+fov_file: new.csv
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+fov_sets:
+  default: existing.csv
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+        fovs: default
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            # Existing "default" entry should be preserved
+            assert protocol.fov_sets["default"] == str(csv1)
+
+    def test_resource_paths_resolved_to_absolute(self):
+        """Test that all resource file paths are resolved to absolute paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create required files
+            (Path(tmpdir) / "imaging.yaml").write_text("standard:\n  channels: [DAPI]\n")
+            (Path(tmpdir) / "fluidics.yaml").write_text("{}\n")
+            (Path(tmpdir) / "config.json").write_text("{}\n")
+            (Path(tmpdir) / "fovs.csv").write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
+
+            protocol_content = """
+name: Path Resolution Test
+version: "2.0"
+
+imaging_protocol_file: imaging.yaml
+fluidics_protocols_file: fluidics.yaml
+fluidics_config_file: config.json
+fov_file: fovs.csv
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            assert Path(protocol.imaging_protocol_file).is_absolute()
+            assert Path(protocol.fluidics_protocols_file).is_absolute()
+            assert Path(protocol.fluidics_config_file).is_absolute()
+            assert Path(protocol.fov_file).is_absolute()
+
+    def test_resource_fields_default_to_none(self):
+        """Test that resource file fields default to None when not specified."""
+        protocol = ExperimentProtocol(
+            name="No Resources",
+            imaging_protocols={"a": ImagingProtocol(channels=["DAPI"])},
+            rounds=[Round(name="R1", steps=[ImagingStep(protocol="a")])],
+        )
+        assert protocol.imaging_protocol_file is None
+        assert protocol.fluidics_protocols_file is None
+        assert protocol.fluidics_config_file is None
+        assert protocol.fov_file is None
+
+    def test_resource_fields_roundtrip_through_save_load(self):
+        """Test that resource file fields survive save/load cycle."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the files so path resolution works
+            (Path(tmpdir) / "imaging.yaml").write_text("extra:\n  channels: [Cy5]\n")
+            (Path(tmpdir) / "fovs.csv").write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
+
+            protocol_content = """
+name: Roundtrip Test
+version: "2.0"
+
+imaging_protocol_file: imaging.yaml
+fov_file: fovs.csv
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            # Save and reload
+            save_path = Path(tmpdir) / "saved_protocol.yaml"
+            loader.save(protocol, save_path)
+
+            # The saved file should contain the absolute paths
+            reloaded = loader.load(save_path)
+            assert reloaded.imaging_protocol_file is not None
+            assert reloaded.fov_file is not None
+            assert reloaded.fluidics_protocols_file is None  # Not set originally
+
+    def test_imaging_protocol_file_invalid_format_raises_error(self):
+        """Test that non-dict imaging_protocol_file raises error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imaging_file = Path(tmpdir) / "bad_imaging.yaml"
+            imaging_file.write_text("- item1\n- item2\n")
+
+            protocol_content = """
+name: Bad Format Test
+version: "2.0"
+
+imaging_protocol_file: bad_imaging.yaml
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            with pytest.raises(ProtocolValidationError, match="YAML mapping"):
+                loader.load(protocol_path)
 
 
 class TestResolveProtocolChannels:

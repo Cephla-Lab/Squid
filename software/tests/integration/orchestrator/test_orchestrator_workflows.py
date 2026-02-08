@@ -531,10 +531,17 @@ class TestFullExperimentExecution:
         assert not orchestrator.is_running
 
         # Verify events
-        state_changes = [
-            e for e in event_collector if isinstance(e, OrchestratorStateChanged)
-        ]
-        assert len(state_changes) >= 2  # At least RUNNING and COMPLETED
+        timeout = time.time() + 1.0
+        state_changes = []
+        while time.time() < timeout:
+            state_changes = [
+                e for e in event_collector if isinstance(e, OrchestratorStateChanged)
+            ]
+            if any(e.new_state == "COMPLETED" for e in state_changes):
+                break
+            time.sleep(0.05)
+        assert any(e.new_state == "RUNNING" for e in state_changes)
+        assert any(e.new_state == "COMPLETED" for e in state_changes)
 
         round_started = [
             e for e in event_collector if isinstance(e, OrchestratorRoundStarted)
@@ -1215,10 +1222,16 @@ class TestV2ProtocolIntegration:
 
         assert orchestrator_with_mocks.state == OrchestratorState.COMPLETED
 
-        round_started = [
-            e for e in event_collector if isinstance(e, OrchestratorRoundStarted)
-        ]
-        assert len(round_started) == 2
+        timeout = time.time() + 1.0
+        round_started = []
+        while time.time() < timeout:
+            round_started = [
+                e for e in event_collector if isinstance(e, OrchestratorRoundStarted)
+            ]
+            if len(round_started) >= 2:
+                break
+            time.sleep(0.05)
+        assert len(round_started) >= 2
         assert round_started[0].round_name == "Round 1"
         assert round_started[1].round_name == "Round 2"
 
@@ -2450,6 +2463,7 @@ class TestImagingExecutor:
             backend_ctx.event_bus.publish(
                 AcquisitionFinished(success=True, error=None, experiment_id="round_000")
             )
+            return True
 
         multipoint.run_acquisition.side_effect = complete_acquisition
 
