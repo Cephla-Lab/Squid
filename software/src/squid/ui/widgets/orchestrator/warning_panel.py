@@ -25,6 +25,7 @@ from PyQt5.QtGui import QColor, QBrush, QFont
 
 from squid.core.events import handles
 from squid.backend.controllers.orchestrator import (
+    OrchestratorStateChanged,
     WarningCategory,
     WarningSeverity,
     WarningRaised,
@@ -198,6 +199,13 @@ class WarningPanel(EventBusWidget):
     def _on_warnings_cleared(self, event: WarningsCleared) -> None:
         """Handle warnings cleared event."""
         self.warnings_cleared.emit(event.cleared_count)
+
+    @handles(OrchestratorStateChanged)
+    def _on_orchestrator_state_changed(self, event: OrchestratorStateChanged) -> None:
+        """Clear warnings when a new experiment starts running."""
+        if event.new_state == "RUNNING" and event.old_state in ("IDLE", "COMPLETED", "FAILED", "ABORTED"):
+            self._experiment_id = event.experiment_id
+            self.warnings_cleared.emit(self._table.rowCount())
 
     # ========================================================================
     # UI Slots

@@ -122,7 +122,7 @@ class ProtocolValidator:
             )
 
         # Validate channels in imaging_protocols
-        if self._available_channels:
+        if self._available_channels is not None:
             for config_name, config in protocol.imaging_protocols.items():
                 channel_names = config.get_channel_names()
                 missing = set(channel_names) - self._available_channels
@@ -134,6 +134,9 @@ class ProtocolValidator:
 
         # Validate each round
         for round_idx, round_ in enumerate(protocol.rounds):
+            if not round_.steps:
+                errors.append(f"Round '{round_.name}' has no steps")
+                continue
             round_estimates = self._validate_round(
                 protocol, round_, round_idx, fov_count
             )
@@ -342,7 +345,7 @@ class ProtocolValidator:
             warnings.append(
                 f"Round '{round_name}': imaging config '{config_name}' has no channels"
             )
-        elif self._available_channels:
+        elif self._available_channels is not None:
             missing = set(channel_names) - self._available_channels
             if missing:
                 errors.append(

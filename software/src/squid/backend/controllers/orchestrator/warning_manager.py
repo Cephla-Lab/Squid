@@ -47,6 +47,9 @@ class WarningManager:
     Collects warnings during acquisition, provides filtering and querying,
     and monitors thresholds for pause triggers.
 
+    Counts in this manager reflect stored warnings (since last clear),
+    not lifetime totals.
+
     Attributes:
         experiment_id: Current experiment identifier
         thresholds: Warning threshold configuration
@@ -157,7 +160,17 @@ class WarningManager:
             # Enforce max stored warnings (FIFO)
             while len(self._warnings) > self._thresholds.max_stored_warnings:
                 removed = self._warnings.pop(0)
-                # Note: counts remain accumulated even when warnings are removed
+                self._total_warning_count -= 1
+                self._category_counts[removed.category] -= 1
+                if self._category_counts[removed.category] <= 0:
+                    del self._category_counts[removed.category]
+                self._severity_counts[removed.severity] -= 1
+                if self._severity_counts[removed.severity] <= 0:
+                    del self._severity_counts[removed.severity]
+                if removed.fov_id:
+                    self._fov_counts[removed.fov_id] -= 1
+                    if self._fov_counts[removed.fov_id] <= 0:
+                        del self._fov_counts[removed.fov_id]
 
             total_count = self._total_warning_count
             category_count = self._category_counts[category]

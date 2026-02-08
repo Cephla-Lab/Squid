@@ -320,6 +320,9 @@ class ImagingExecutor:
             return False
 
         finally:
+            if hasattr(self._multipoint, "set_start_fov_index"):
+                # Ensure subsequent rounds start from the beginning.
+                self._multipoint.set_start_fov_index(0)
             self._current_experiment_id = None
 
     def _resolve_channels(

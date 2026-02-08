@@ -17,13 +17,14 @@ import threading
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
-from squid.core.events import EventBus, handles
+from squid.core.events import EventBus, FocusLockPiezoLimitCritical, handles
 from squid.core.state_machine import StateMachine
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
     ExperimentProtocol,
     ProtocolLoader,
     FailureAction,
+    ImagingStep,
 )
 
 from squid.backend.controllers.orchestrator import protocol_helpers
@@ -184,6 +185,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         # Start-from parameters (set before starting experiment)
         self._start_from_round: int = 0
         self._start_from_step: int = 0
+        self._start_from_fov: int = 0
         self._run_single_round: bool = False
 
         # Step time estimates from validation (populated by _on_validate_protocol)
@@ -227,6 +229,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             resume_from_checkpoint=cmd.resume_from_checkpoint,
             start_from_round=cmd.start_from_round,
             start_from_step=cmd.start_from_step,
+            start_from_fov=cmd.start_from_fov,
             run_single_round=cmd.run_single_round,
         )
 
@@ -253,16 +256,28 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     @handles(SkipCurrentRoundCommand)
     def _on_skip_current_round(self, _cmd: SkipCurrentRoundCommand) -> None:
         """Handle skip current round command."""
-        self.skip_current_round()
+        if not self.skip_current_round():
+            _log.warning("Skip current round request ignored")
 
     @handles(SkipToRoundCommand)
     def _on_skip_to_round(self, cmd: SkipToRoundCommand) -> None:
         """Handle skip to round command."""
-        self.skip_to_round(cmd.round_index)
+        if not self.skip_to_round(cmd.round_index):
+            _log.warning(f"Skip-to-round request ignored: round_index={cmd.round_index}")
 
     @handles(ClearWarningsCommand)
     def _on_clear_warnings(self, cmd: ClearWarningsCommand) -> None:
         """Handle clear warnings command."""
+        if (
+            cmd.experiment_id
+            and self._experiment_id
+            and cmd.experiment_id != self._experiment_id
+        ):
+            _log.warning(
+                "Ignoring ClearWarningsCommand for stale experiment_id "
+                f"'{cmd.experiment_id}' (active='{self._experiment_id}')"
+            )
+            return
         self._warning_manager.clear(categories=cmd.categories)
 
     @handles(SetWarningThresholdsCommand)
@@ -332,6 +347,28 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             _log.warning(f"Warning threshold reached, pausing: {cmd.message}")
             self.pause()
 
+    @handles(FocusLockPiezoLimitCritical)
+    def _on_focus_lock_piezo_critical(self, event: FocusLockPiezoLimitCritical) -> None:
+        """Handle critical piezo limit warning from focus lock.
+
+        Feeds the warning into the WarningManager so that the orchestrator's
+        existing focus-failure handling (pause/abort/skip/warn) applies.
+        """
+        self.add_warning(
+            category=WarningCategory.FOCUS,
+            severity=WarningSeverity.HIGH,
+            message=(
+                f"Focus lock piezo near {event.direction} limit: "
+                f"{event.position_um:.1f} um (limit={event.limit_um:.1f}, "
+                f"margin={event.margin_um:.1f})"
+            ),
+            context={
+                "direction": event.direction,
+                "position_um": event.position_um,
+                "limit_um": event.limit_um,
+            },
+        )
+
     @handles(ValidateProtocolCommand)
     def _on_validate_protocol(self, cmd: ValidateProtocolCommand) -> None:
         """Handle validate protocol command.
@@ -351,6 +388,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._event_bus.publish(ProtocolValidationStarted(protocol_path=cmd.protocol_path))
 
         try:
+            # Always clear previous validation estimates first to avoid stale ETA
+            self._step_time_estimates = {}
+            self._total_estimated_seconds = 0.0
+
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
@@ -361,7 +402,16 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 available_fluidics = set(self._fluidics_controller.list_protocols())
 
             # Get available channels from planner
-            available_channels = self._planner.get_available_channel_names()
+            available_channels = None
+            raw_channels = self._planner.get_available_channel_names()
+            if raw_channels is not None:
+                try:
+                    available_channels = set(raw_channels)
+                except TypeError:
+                    _log.warning(
+                        "Available channels from planner were not iterable; "
+                        "skipping channel availability validation"
+                    )
 
             fluidics_duration_lookup = None
             if self._fluidics_controller is not None:
@@ -411,6 +461,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             )
 
         except Exception as e:
+            self._step_time_estimates = {}
+            self._total_estimated_seconds = 0.0
             _log.exception(f"Protocol validation failed: {e}")
             self._event_bus.publish(
                 ProtocolValidationComplete(
@@ -437,6 +489,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         resume_from_checkpoint: bool = False,
         start_from_round: int = 0,
         start_from_step: int = 0,
+        start_from_fov: int = 0,
         run_single_round: bool = False,
     ) -> bool:
         """Start a new orchestrated experiment.
@@ -448,6 +501,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             resume_from_checkpoint: Resume from saved checkpoint
             start_from_round: 0-based round index to start from
             start_from_step: 0-based step index within first round
+            start_from_fov: 0-based FOV index within first imaging step
             run_single_round: If True, execute only the start round
 
         Returns:
@@ -455,6 +509,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         """
         self._start_from_round = start_from_round
         self._start_from_step = start_from_step
+        self._start_from_fov = start_from_fov
         self._run_single_round = run_single_round
         if not self._is_in_state(OrchestratorState.IDLE):
             if self._is_in_state(
@@ -470,7 +525,51 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
         try:
             # Load protocol
-            self._protocol = self._protocol_loader.load(protocol_path)
+            protocol = self._protocol_loader.load(protocol_path)
+            total_rounds = len(protocol.rounds)
+            if total_rounds == 0:
+                _log.warning("Cannot start: protocol has no rounds")
+                return False
+            if not resume_from_checkpoint:
+                if start_from_round < 0 or start_from_round >= total_rounds:
+                    _log.warning(
+                        "Cannot start: start_from_round out of bounds "
+                        f"({start_from_round} not in [0, {total_rounds - 1}])"
+                    )
+                    return False
+                steps_in_round = len(protocol.rounds[start_from_round].steps)
+                if start_from_step < 0 or start_from_step >= steps_in_round:
+                    _log.warning(
+                        "Cannot start: start_from_step out of bounds "
+                        f"({start_from_step} not in [0, {steps_in_round - 1}])"
+                    )
+                    return False
+                if start_from_fov < 0:
+                    _log.warning(
+                        "Cannot start: start_from_fov out of bounds "
+                        f"({start_from_fov} must be >= 0)"
+                    )
+                    return False
+                if start_from_fov > 0:
+                    step = protocol.rounds[start_from_round].steps[start_from_step]
+                    if not isinstance(step, ImagingStep):
+                        _log.warning(
+                            "Cannot start: start_from_fov requires an imaging start step"
+                        )
+                        return False
+                    if self._scan_coordinates is not None:
+                        region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                        known_fov_total = 0
+                        if isinstance(region_fovs, dict):
+                            known_fov_total = sum(len(coords) for coords in region_fovs.values())
+                        if known_fov_total > 0 and start_from_fov >= known_fov_total:
+                            _log.warning(
+                                "Cannot start: start_from_fov out of bounds "
+                                f"({start_from_fov} not in [0, {known_fov_total - 1}])"
+                            )
+                            return False
+
+            self._protocol = protocol
             self._protocol_path = protocol_path
             _log.info(f"Loaded protocol: {self._protocol.name}")
 
@@ -482,6 +581,32 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Load fluidics protocols from protocol into FluidicsController
             self._initialize_fluidics_protocols()
+
+            # Auto-load resource files specified in the protocol
+            self._auto_load_resources()
+
+            # Run a structural preflight and refresh ETA estimates for this run.
+            fov_count = 1
+            if self._scan_coordinates is not None:
+                fov_count = sum(
+                    len(coords)
+                    for coords in self._scan_coordinates.region_fov_coordinates.values()
+                )
+                if fov_count <= 0:
+                    fov_count = 1
+            preflight = ProtocolValidator().validate(self._protocol, fov_count=fov_count)
+            self._step_time_estimates = {}
+            self._total_estimated_seconds = 0.0
+            if not preflight.valid:
+                for err in preflight.errors:
+                    _log.warning(f"Preflight validation error: {err}")
+                return False
+            self._total_estimated_seconds = preflight.total_estimated_seconds
+            for op in preflight.operation_estimates:
+                if op.step_index >= 0:
+                    self._step_time_estimates[(op.round_index, op.step_index)] = (
+                        op.estimated_seconds
+                    )
 
             # Load checkpoint if resuming (base_path should be experiment folder)
             self._resume_checkpoint = None
@@ -545,6 +670,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         if self._fluidics_controller is not None:
             self._fluidics_controller.pause()
         self._cancel_token.pause()
+        if self._runner is not None:
+            self._runner.notify_pause()
 
         # Atomic: capture pre-state + transition under single lock hold
         with self._lock:
@@ -580,6 +707,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._imaging_executor.resume()
         if self._fluidics_controller is not None:
             self._fluidics_controller.resume()
+        if self._runner is not None:
+            self._runner.notify_resume()
         self._cancel_token.resume()
 
         # Resume to previous state (RUNNING or WAITING_INTERVENTION)
@@ -684,22 +813,29 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     def skip_current_round(self) -> bool:
         """Skip to the next round (takes effect after current round finishes)."""
-        with self._progress_lock:
-            if self._progress.current_round is None:
-                return False
-            if self._runner is not None:
-                self._runner._skip_current_round_now = True
-                self._runner._skip_to_round_index = self._progress.current_round_index + 1
-        return True
+        runner = self._runner
+        if runner is None:
+            return False
+        if not self._is_in_state(
+            OrchestratorState.RUNNING,
+            OrchestratorState.PAUSED,
+            OrchestratorState.WAITING_INTERVENTION,
+        ):
+            return False
+        return runner.request_skip_current_round()
 
     def skip_to_round(self, round_index: int) -> bool:
         """Skip ahead to a specific round index (0-based)."""
-        if round_index < 0:
+        runner = self._runner
+        if runner is None:
             return False
-        with self._progress_lock:
-            if self._runner is not None:
-                self._runner._skip_to_round_index = round_index
-        return True
+        if not self._is_in_state(
+            OrchestratorState.RUNNING,
+            OrchestratorState.PAUSED,
+            OrchestratorState.WAITING_INTERVENTION,
+        ):
+            return False
+        return runner.request_skip_to_round(round_index)
 
     def _set_operation(self, operation: str) -> None:
         """Set current operation (called by ExperimentRunner)."""
@@ -717,6 +853,45 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             raise RuntimeError(
                 "Inline fluidics_protocols are not allowed. "
                 "Load protocols into FluidicsController separately and reference by name."
+            )
+
+    def _auto_load_resources(self) -> None:
+        """Auto-load resource files specified in the protocol.
+
+        Loads fluidics protocols, FOV positions, and validates fluidics config
+        when paths are provided in the protocol YAML.
+        """
+        if self._protocol is None:
+            return
+
+        # Load fluidics protocols file into FluidicsController
+        if self._protocol.fluidics_protocols_file:
+            if self._fluidics_controller is None:
+                _log.warning(
+                    "Protocol specifies fluidics_protocols_file but no FluidicsController is available"
+                )
+            else:
+                path = self._protocol.fluidics_protocols_file
+                count = self._fluidics_controller.load_protocols(path)
+                _log.info(f"Auto-loaded {count} fluidics protocols from {path}")
+
+        # Validate fluidics config file exists (stored for app-layer use)
+        if self._protocol.fluidics_config_file:
+            from pathlib import Path
+
+            config_path = Path(self._protocol.fluidics_config_file)
+            if not config_path.exists():
+                raise FileNotFoundError(
+                    f"Fluidics config file not found: {config_path}"
+                )
+            _log.info(f"Fluidics config file validated: {config_path}")
+
+        # Load FOV file into scan coordinates
+        if self._protocol.fov_file:
+            protocol_helpers.load_fov_set(
+                csv_path=self._protocol.fov_file,
+                scan_coordinates=self._scan_coordinates,
+                event_bus=self._event_bus,
             )
 
     # ========================================================================
@@ -794,6 +969,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 intervention_acknowledged=self._intervention_acknowledged,
                 start_from_round=self._start_from_round,
                 start_from_step=self._start_from_step,
+                start_from_fov=self._start_from_fov,
                 run_single_round=self._run_single_round,
                 step_time_estimates=self._step_time_estimates,
                 total_estimated_seconds=self._total_estimated_seconds,
@@ -861,11 +1037,16 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             current_round_name = ""
             if self._progress.current_round is not None:
                 current_round_name = self._progress.current_round.round_name
+            total_rounds = self._progress.total_rounds
+            if total_rounds <= 0:
+                current_round = 0
+            else:
+                current_round = min(self._progress.current_round_index + 1, total_rounds)
 
             event = OrchestratorProgress(
                 experiment_id=self._experiment_id,
-                current_round=self._progress.current_round_index + 1,
-                total_rounds=self._progress.total_rounds,
+                current_round=current_round,
+                total_rounds=total_rounds,
                 current_round_name=current_round_name,
                 progress_percent=self._progress.progress_percent,
                 eta_seconds=eta,

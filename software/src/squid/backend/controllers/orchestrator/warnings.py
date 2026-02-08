@@ -129,7 +129,7 @@ class WarningThresholds:
     accumulated warnings.
 
     Attributes:
-        pause_after_count: Pause after this many total warnings (None = disabled)
+        pause_after_count: Pause after this many stored warnings (None = disabled)
         pause_on_severity: Pause immediately on warnings of these severities
         pause_on_categories: Pause immediately on warnings in these categories
         max_stored_warnings: Maximum warnings to keep in memory (FIFO)

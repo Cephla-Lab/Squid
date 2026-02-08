@@ -108,6 +108,12 @@ class ExperimentProtocol(BaseModel):
     # Error handling
     error_handling: ErrorHandlingConfig = Field(default_factory=ErrorHandlingConfig)
 
+    # Resource file paths (optional — auto-loaded at experiment start if specified)
+    imaging_protocol_file: Optional[str] = None
+    fluidics_protocols_file: Optional[str] = None
+    fluidics_config_file: Optional[str] = None
+    fov_file: Optional[str] = None
+
     # Named resources
     fluidics_protocols: Dict[str, FluidicsProtocol] = Field(default_factory=dict)
     imaging_protocols: Dict[str, ImagingProtocol] = Field(default_factory=dict)
@@ -167,7 +173,7 @@ class ExperimentProtocol(BaseModel):
                         errors.append(
                             f"{step_loc}: imaging protocol '{step.protocol}' not found"
                         )
-                    if step.fovs != "current" and step.fovs not in self.fov_sets:
+                    if step.fovs not in ("current", "default") and step.fovs not in self.fov_sets:
                         errors.append(
                             f"{step_loc}: FOV set '{step.fovs}' not found"
                         )

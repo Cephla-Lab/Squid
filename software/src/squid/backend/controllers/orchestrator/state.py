@@ -333,6 +333,7 @@ class StartOrchestratorCommand(Event):
     resume_from_checkpoint: bool = False
     start_from_round: int = 0
     start_from_step: int = 0
+    start_from_fov: int = 0
     run_single_round: bool = False
 
 

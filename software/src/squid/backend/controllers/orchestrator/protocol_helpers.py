@@ -55,6 +55,8 @@ def load_fov_set(
             col_map["x"] = col
         elif col_lower in ("y", "y_mm", "y (mm)") or ("y" in col_lower and "mm" in col_lower):
             col_map["y"] = col
+        elif col_lower in ("z", "z_mm", "z (mm)") or ("z" in col_lower and "mm" in col_lower):
+            col_map["z"] = col
 
     if not all(k in col_map for k in ["region", "x", "y"]):
         raise ValueError(
@@ -66,15 +68,30 @@ def load_fov_set(
 
     for region_id in df[col_map["region"]].unique():
         region_points = df[df[col_map["region"]] == region_id]
-        coords = tuple(
-            (float(x), float(y))
-            for x, y in zip(region_points[col_map["x"]], region_points[col_map["y"]])
-        )
+        if "z" in col_map:
+            coords = tuple(
+                (float(x), float(y), float(z))
+                for x, y, z in zip(
+                    region_points[col_map["x"]],
+                    region_points[col_map["y"]],
+                    region_points[col_map["z"]],
+                )
+            )
+            region_centers[str(region_id)] = (
+                float(region_points[col_map["x"]].mean()),
+                float(region_points[col_map["y"]].mean()),
+                float(region_points[col_map["z"]].mean()),
+            )
+        else:
+            coords = tuple(
+                (float(x), float(y))
+                for x, y in zip(region_points[col_map["x"]], region_points[col_map["y"]])
+            )
+            region_centers[str(region_id)] = (
+                float(region_points[col_map["x"]].mean()),
+                float(region_points[col_map["y"]].mean()),
+            )
         region_fov_coordinates[str(region_id)] = coords
-        region_centers[str(region_id)] = (
-            float(region_points[col_map["x"]].mean()),
-            float(region_points[col_map["y"]].mean()),
-        )
 
     if scan_coordinates is not None and hasattr(scan_coordinates, "load_coordinates"):
         scan_coordinates.load_coordinates(

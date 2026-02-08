@@ -149,6 +149,7 @@ class OrchestratorControlPanel(EventBusWidget):
         # Start-from position (set by tree navigation)
         self._start_round_index: int = 0
         self._start_step_index: int = 0
+        self._start_fov_index: int = 0
         self._run_single_round: bool = False
 
         self._setup_ui()
@@ -441,12 +442,14 @@ class OrchestratorControlPanel(EventBusWidget):
                 self._load_protocol(self._protocol_path)
 
     def _load_protocol(self, protocol_path: str) -> None:
-        import yaml
         from pathlib import Path
+        from squid.core.protocol import ProtocolLoader
 
         try:
-            with open(protocol_path, 'r') as f:
-                protocol_data: Dict[str, Any] = yaml.safe_load(f)
+            # Parse with ProtocolLoader so UI workflow matches execution semantics
+            # (repeat expansion, resource resolution, step normalization).
+            protocol_obj = ProtocolLoader().load(protocol_path)
+            protocol_data = protocol_obj.model_dump(mode="json", exclude_none=True)
 
             self._protocol_data = protocol_data
             protocol_name = protocol_data.get("name", Path(protocol_path).stem)
@@ -483,6 +486,10 @@ class OrchestratorControlPanel(EventBusWidget):
 
             # Protocol must be validated before Start is enabled
             self._validated = False
+            self._start_round_index = 0
+            self._start_step_index = 0
+            self._start_fov_index = 0
+            self._run_single_round = False
             self._start_btn.setEnabled(False)
             self._validate_btn.setEnabled(True)
             _log.info(f"Protocol loaded: {protocol_path}")
@@ -492,6 +499,10 @@ class OrchestratorControlPanel(EventBusWidget):
             self._experiment_label.setText(f"Error: {e}")
             self._protocol_data = None
             self._validated = False
+            self._start_round_index = 0
+            self._start_step_index = 0
+            self._start_fov_index = 0
+            self._run_single_round = False
             self._start_btn.setEnabled(False)
             self._validate_btn.setEnabled(False)
 
@@ -501,6 +512,9 @@ class OrchestratorControlPanel(EventBusWidget):
             return
         if self._protocol_path is None or self._base_path is None:
             _log.warning("No protocol loaded")
+            return
+        if not self._validated:
+            _log.warning("Protocol must be validated before starting")
             return
 
         if self._fov_positions:
@@ -521,13 +535,16 @@ class OrchestratorControlPanel(EventBusWidget):
             experiment_id=self._experiment_id or None,
             start_from_round=self._start_round_index,
             start_from_step=self._start_step_index,
+            start_from_fov=self._start_fov_index,
             run_single_round=self._run_single_round,
         )
-        # Reset start position and single-round flag after use
-        self._run_single_round = False
-        self._start_round_index = 0
-        self._start_step_index = 0
-        if not success:
+        if success:
+            # Reset start position and single-round flag only after successful launch.
+            self._run_single_round = False
+            self._start_round_index = 0
+            self._start_step_index = 0
+            self._start_fov_index = 0
+        else:
             _log.error("Failed to start experiment")
 
     def _on_validate_clicked(self) -> None:
@@ -563,21 +580,23 @@ class OrchestratorControlPanel(EventBusWidget):
     # Public: start position (set by tree navigation)
     # ========================================================================
 
-    def set_start_position(self, round_index: int, step_index: int) -> None:
+    def set_start_position(self, round_index: int, step_index: int, fov_index: int = 0) -> None:
         """Set start position for next experiment run."""
         self._start_round_index = round_index
         self._start_step_index = step_index
+        self._start_fov_index = max(0, fov_index)
         self._run_single_round = False
 
-    def start_from_round(self, round_index: int, step_index: int = 0) -> None:
+    def start_from_round(self, round_index: int, step_index: int = 0, fov_index: int = 0) -> None:
         """Set start position and immediately start."""
-        self.set_start_position(round_index, step_index)
+        self.set_start_position(round_index, step_index, fov_index)
         self._on_start_clicked()
 
-    def run_single_round(self, round_index: int, step_index: int = 0) -> None:
+    def run_single_round(self, round_index: int, step_index: int = 0, fov_index: int = 0) -> None:
         """Set to run a single round and immediately start."""
         self._start_round_index = round_index
         self._start_step_index = step_index
+        self._start_fov_index = max(0, fov_index)
         self._run_single_round = True
         self._on_start_clicked()
 
@@ -646,8 +665,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
     requeue_fov = pyqtSignal(str, int, int, bool)  # fov_id, round_index, time_point, before_current
 
     # Signal for thread-safe UI updates
-    fov_started = pyqtSignal(str, int, float, float)  # fov_id, fov_index, x_mm, y_mm
-    fov_completed = pyqtSignal(str, str, str)  # fov_id, status_name, error_message
+    fov_started = pyqtSignal(str, int, int, int, float, float)  # fov_id, fov_index, round_index, time_point, x_mm, y_mm
+    fov_completed = pyqtSignal(str, int, int, str, str)  # fov_id, round_index, time_point, status_name, error_message
 
     # Signals for round/step status (thread-safe bridge from EventBus)
     _round_started_sig = pyqtSignal(int, str)  # round_index, round_name
@@ -658,13 +677,13 @@ class OrchestratorWorkflowTree(EventBusWidget):
     _validation_complete_sig = pyqtSignal(object)  # ValidationSummary
 
     # Signal to control panel: user selected a start position
-    start_position_changed = pyqtSignal(int, int)  # round_index, step_index
+    start_position_changed = pyqtSignal(int, int, int)  # round_index, step_index, fov_index
 
     # Signal: user wants to start from a specific position (context menu / double-click)
-    start_from_requested = pyqtSignal(int, int)  # round_index, step_index
+    start_from_requested = pyqtSignal(int, int, int)  # round_index, step_index, fov_index
 
     # Signal: user wants to run only a single round (context menu)
-    run_single_round_requested = pyqtSignal(int, int)  # round_index, step_index
+    run_single_round_requested = pyqtSignal(int, int, int)  # round_index, step_index, fov_index
 
     def __init__(
         self,
@@ -673,8 +692,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
     ):
         super().__init__(event_bus, parent)
         self._tree_items: Dict[tuple, QTreeWidgetItem] = {}
-        self._fov_items: Dict[str, QTreeWidgetItem] = {}  # fov_id -> item
-        self._current_highlight: Optional[str] = None  # Currently highlighted fov_id
+        self._fov_items: Dict[Tuple[int, str], List[QTreeWidgetItem]] = {}  # (round_index, fov_id) -> items
+        self._current_highlight_item: Optional[QTreeWidgetItem] = None
         self._current_round_index: int = 0
         self._current_time_point: int = 0
         self._fov_positions: Dict[str, List[Tuple[float, float, float]]] = {}
@@ -709,6 +728,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
 
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
+        self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
 
         placeholder = QTreeWidgetItem(["Load a protocol to see workflow"])
@@ -755,7 +775,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
         self._tree.clear()
         self._tree_items.clear()
         self._fov_items.clear()
-        self._current_highlight = None
+        self._current_highlight_item = None
         self._current_step_key = None
 
         rounds = protocol.get("rounds", [])
@@ -890,6 +910,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
                         "type": "fov",
                         "fov_id": fov_id,
                         "region_id": region_id,
+                        "round_index": round_idx,
+                        "step_index": op_idx,
                         "fov_index": fov_idx,
                         "x_mm": x_mm,
                         "y_mm": y_mm,
@@ -898,7 +920,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
                     })
                     parent_item.addChild(fov_item)
                     self._tree_items[(round_idx, op_idx, fov_idx)] = fov_item
-                    self._fov_items[fov_id] = fov_item
+                    self._fov_items.setdefault((round_idx, fov_id), []).append(fov_item)
                     fov_idx += 1
             return
 
@@ -920,6 +942,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
                 "type": "fov",
                 "fov_id": fov_id,
                 "region_id": "",
+                "round_index": round_idx,
+                "step_index": op_idx,
                 "fov_index": fov_idx,
                 "x_mm": 0.0,
                 "y_mm": 0.0,
@@ -928,7 +952,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
             })
             parent_item.addChild(fov_item)
             self._tree_items[(round_idx, op_idx, fov_idx)] = fov_item
-            self._fov_items[fov_id] = fov_item
+            self._fov_items.setdefault((round_idx, fov_id), []).append(fov_item)
 
     def add_fov_item(
         self,
@@ -961,6 +985,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
             "type": "fov",
             "fov_id": fov_id,
             "region_id": region_id,
+            "round_index": parent_key[0] if len(parent_key) >= 1 else 0,
+            "step_index": parent_key[1] if len(parent_key) >= 2 else 0,
             "fov_index": fov_index,
             "x_mm": x_mm,
             "y_mm": y_mm,
@@ -968,7 +994,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
             "status": "PENDING",
         })
         parent_item.addChild(fov_item)
-        self._fov_items[fov_id] = fov_item
+        round_idx = parent_key[0] if len(parent_key) >= 1 else 0
+        self._fov_items.setdefault((round_idx, fov_id), []).append(fov_item)
 
     def populate_fovs_from_coordinates(
         self,
@@ -1075,7 +1102,8 @@ class OrchestratorWorkflowTree(EventBusWidget):
         if key is not None and not self._is_running:
             round_idx = key[0] if len(key) >= 1 else 0
             step_idx = key[1] if len(key) >= 2 else 0
-            self.start_position_changed.emit(round_idx, step_idx)
+            fov_idx = key[2] if len(key) >= 3 else 0
+            self.start_position_changed.emit(round_idx, step_idx, fov_idx)
 
     def _reset_all_items_to_pending(self) -> None:
         """Reset all tree items to 'pending' status."""
@@ -1091,7 +1119,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
                 if isinstance(item_data, dict):
                     item_data["status"] = "PENDING"
                     item.setData(0, Qt.ItemDataRole.UserRole, item_data)
-        self._current_highlight = None
+        self._current_highlight_item = None
 
     # ========================================================================
     # Round/Step Event Handlers (EventBus → signal → UI thread)
@@ -1239,43 +1267,107 @@ class OrchestratorWorkflowTree(EventBusWidget):
     def _on_fov_started(self, event: FovTaskStarted) -> None:
         self._current_round_index = event.round_index
         self._current_time_point = event.time_point
-        self.fov_started.emit(event.fov_id, event.fov_index, event.x_mm, event.y_mm)
+        self.fov_started.emit(
+            event.fov_id,
+            event.fov_index,
+            event.round_index,
+            event.time_point,
+            event.x_mm,
+            event.y_mm,
+        )
 
     @handles(FovTaskCompleted)
     def _on_fov_completed(self, event: FovTaskCompleted) -> None:
         status_name = event.status.name if hasattr(event.status, 'name') else str(event.status)
         error_msg = event.error_message or ""
-        self.fov_completed.emit(event.fov_id, status_name, error_msg)
+        self.fov_completed.emit(
+            event.fov_id,
+            event.round_index,
+            event.time_point,
+            status_name,
+            error_msg,
+        )
 
-    @pyqtSlot(str, int, float, float)
-    def _handle_fov_started_ui(self, fov_id: str, fov_index: int, x_mm: float, y_mm: float) -> None:
+    def _resolve_fov_item_for_event(self, round_index: int, fov_id: str) -> Optional[QTreeWidgetItem]:
+        """Resolve the target FOV item for a runtime event.
+
+        FOV identifiers are reused across rounds, so lookups must be scoped by
+        round index to avoid updating the wrong tree node.
+        """
+        items = self._fov_items.get((round_index, fov_id), [])
+        if not items:
+            return None
+        if len(items) == 1:
+            return items[0]
+
+        active_step_idx: Optional[int] = None
+        if (
+            self._current_step_key is not None
+            and len(self._current_step_key) >= 2
+            and self._current_step_key[0] == round_index
+        ):
+            active_step_idx = self._current_step_key[1]
+
+        if active_step_idx is not None:
+            for item in items:
+                item_data = item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(item_data, dict) and item_data.get("step_index") == active_step_idx:
+                    return item
+
+        for item in items:
+            item_data = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(item_data, dict) and item_data.get("status") in ("PENDING", "DEFERRED", "EXECUTING"):
+                return item
+
+        return items[0]
+
+    @pyqtSlot(str, int, int, int, float, float)
+    def _handle_fov_started_ui(
+        self,
+        fov_id: str,
+        fov_index: int,
+        round_index: int,
+        time_point: int,
+        x_mm: float,
+        y_mm: float,
+    ) -> None:
         _ = fov_index
+        _ = time_point
 
-        if self._current_highlight and self._current_highlight in self._fov_items:
-            prev_item = self._fov_items[self._current_highlight]
+        if self._current_highlight_item is not None:
+            prev_item = self._current_highlight_item
             prev_item.setBackground(0, QBrush(QColor(0, 0, 0, 0)))
 
-        if fov_id in self._fov_items:
-            item = self._fov_items[fov_id]
-            item.setText(1, "running")
-            item.setForeground(1, QBrush(STATUS_COLORS["running"]))
-            item.setBackground(0, QBrush(_RUNNING_BG))
-            self._tree.scrollToItem(item)
-            self._current_highlight = fov_id
-
-            item_data = item.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(item_data, dict):
-                item_data["x_mm"] = x_mm
-                item_data["y_mm"] = y_mm
-                item_data["status"] = "EXECUTING"
-                item.setData(0, Qt.ItemDataRole.UserRole, item_data)
-
-    @pyqtSlot(str, str, str)
-    def _handle_fov_completed_ui(self, fov_id: str, status_name: str, error_msg: str) -> None:
-        if fov_id not in self._fov_items:
+        item = self._resolve_fov_item_for_event(round_index, fov_id)
+        if item is None:
             return
 
-        item = self._fov_items[fov_id]
+        item.setText(1, "running")
+        item.setForeground(1, QBrush(STATUS_COLORS["running"]))
+        item.setBackground(0, QBrush(_RUNNING_BG))
+        self._tree.scrollToItem(item)
+        self._current_highlight_item = item
+
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(item_data, dict):
+            item_data["x_mm"] = x_mm
+            item_data["y_mm"] = y_mm
+            item_data["status"] = "EXECUTING"
+            item.setData(0, Qt.ItemDataRole.UserRole, item_data)
+
+    @pyqtSlot(str, int, int, str, str)
+    def _handle_fov_completed_ui(
+        self,
+        fov_id: str,
+        round_index: int,
+        time_point: int,
+        status_name: str,
+        error_msg: str,
+    ) -> None:
+        _ = time_point
+        item = self._resolve_fov_item_for_event(round_index, fov_id)
+        if item is None:
+            return
 
         status_map = {
             "COMPLETED": "completed",
@@ -1334,7 +1426,20 @@ class OrchestratorWorkflowTree(EventBusWidget):
         elif item_type == "fov":
             fov_id = item_data.get("fov_id")
             if fov_id:
-                self._build_fov_context_menu(menu, fov_id)
+                round_idx = item_data.get("round_index", 0)
+                step_idx = item_data.get("step_index", 0)
+                fov_idx = item_data.get("fov_index", 0)
+                parent = item.parent()
+                if parent is not None:
+                    parent_data = parent.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(parent_data, dict):
+                        step_idx = parent_data.get("op_index", step_idx)
+                    grandparent = parent.parent()
+                    if grandparent is not None:
+                        grandparent_data = grandparent.data(0, Qt.ItemDataRole.UserRole)
+                        if isinstance(grandparent_data, dict):
+                            round_idx = grandparent_data.get("round_index", round_idx)
+                self._build_fov_context_menu(menu, fov_id, round_idx, step_idx, fov_idx)
         else:
             return
 
@@ -1366,7 +1471,28 @@ class OrchestratorWorkflowTree(EventBusWidget):
             start_from.triggered.connect(lambda: self._start_from(round_idx, op_idx))
             menu.addAction(start_from)
 
-    def _build_fov_context_menu(self, menu: QMenu, fov_id: str) -> None:
+    def _build_fov_context_menu(
+        self,
+        menu: QMenu,
+        fov_id: str,
+        round_idx: int,
+        step_idx: int,
+        fov_idx: int,
+    ) -> None:
+        if not self._is_running:
+            set_start = QAction("Set as start position", self)
+            set_start.triggered.connect(
+                lambda: self._set_start_position(round_idx, step_idx, fov_idx)
+            )
+            menu.addAction(set_start)
+
+            start_from = QAction("Start from this FOV", self)
+            start_from.triggered.connect(
+                lambda: self._start_from(round_idx, step_idx, fov_idx)
+            )
+            menu.addAction(start_from)
+            return
+
         jump_action = QAction("Jump to this FOV", self)
         jump_action.triggered.connect(lambda: self._emit_jump(fov_id))
         menu.addAction(jump_action)
@@ -1389,23 +1515,69 @@ class OrchestratorWorkflowTree(EventBusWidget):
     # Navigation Actions
     # ========================================================================
 
-    def _set_start_position(self, round_idx: int, step_idx: int) -> None:
+    def _set_start_position(
+        self,
+        round_idx: int,
+        step_idx: int,
+        fov_idx: Optional[int] = None,
+    ) -> None:
         """Set the start position indicator without starting."""
-        if step_idx > 0:
+        if fov_idx is not None:
+            key = (round_idx, step_idx, fov_idx)
+            if key not in self._tree_items:
+                key = (round_idx, step_idx)
+        elif step_idx > 0:
             key = (round_idx, step_idx)
         else:
             key = (round_idx,)
         self._update_current_step_indicator(key)
 
-    def _start_from(self, round_idx: int, step_idx: int) -> None:
+    def _start_from(self, round_idx: int, step_idx: int, fov_idx: Optional[int] = None) -> None:
         """Set start position and signal to start from that position."""
-        self._set_start_position(round_idx, step_idx)
-        self.start_from_requested.emit(round_idx, step_idx)
+        self._set_start_position(round_idx, step_idx, fov_idx)
+        self.start_from_requested.emit(round_idx, step_idx, fov_idx or 0)
 
-    def _run_only(self, round_idx: int, step_idx: int) -> None:
+    def _run_only(self, round_idx: int, step_idx: int, fov_idx: Optional[int] = None) -> None:
         """Signal to run a single round from the tree."""
-        self._set_start_position(round_idx, step_idx)
-        self.run_single_round_requested.emit(round_idx, step_idx)
+        self._set_start_position(round_idx, step_idx, fov_idx)
+        self.run_single_round_requested.emit(round_idx, step_idx, fov_idx or 0)
+
+    def _extract_start_indices(
+        self,
+        item: QTreeWidgetItem,
+    ) -> Optional[Tuple[int, int, Optional[int]]]:
+        """Return (round_idx, step_idx, fov_idx?) for tree item selection."""
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not item_data or not isinstance(item_data, dict):
+            return None
+
+        item_type = item_data.get("type")
+        if item_type == "round":
+            return item_data.get("round_index", 0), 0, None
+        if item_type == "operation":
+            round_idx = 0
+            parent = item.parent()
+            if parent is not None:
+                parent_data = parent.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(parent_data, dict):
+                    round_idx = parent_data.get("round_index", 0)
+            return round_idx, item_data.get("op_index", 0), None
+        if item_type == "fov":
+            round_idx = item_data.get("round_index", 0)
+            step_idx = item_data.get("step_index", 0)
+            fov_idx = item_data.get("fov_index", 0)
+            parent = item.parent()
+            if parent is not None:
+                parent_data = parent.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(parent_data, dict):
+                    step_idx = parent_data.get("op_index", step_idx)
+                grandparent = parent.parent()
+                if grandparent is not None:
+                    grandparent_data = grandparent.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(grandparent_data, dict):
+                        round_idx = grandparent_data.get("round_index", round_idx)
+            return round_idx, step_idx, fov_idx
+        return None
 
     def _emit_jump(self, fov_id: str) -> None:
         self.jump_to_fov.emit(fov_id, self._current_round_index, self._current_time_point)
@@ -1436,6 +1608,19 @@ class OrchestratorWorkflowTree(EventBusWidget):
     # Double-Click Navigation
     # ========================================================================
 
+    def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """Single-click selects start position when not running."""
+        _ = column
+        if self._is_running:
+            return
+
+        indices = self._extract_start_indices(item)
+        if indices is None:
+            return
+
+        round_idx, step_idx, fov_idx = indices
+        self._set_start_position(round_idx, step_idx, fov_idx)
+
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         _ = column
         item_data = item.data(0, Qt.ItemDataRole.UserRole)
@@ -1445,21 +1630,20 @@ class OrchestratorWorkflowTree(EventBusWidget):
         item_type = item_data.get("type")
         if item_type == "fov":
             fov_id = item_data.get("fov_id")
-            if fov_id:
+            if fov_id and self._is_running:
                 self._emit_jump(fov_id)
-        elif item_type == "round" and not self._is_running:
-            round_idx = item_data.get("round_index", 0)
-            self._start_from(round_idx, 0)
-        elif item_type == "operation" and not self._is_running:
-            op_idx = item_data.get("op_index", 0)
-            # Find round index from parent
-            parent = item.parent()
-            round_idx = 0
-            if parent is not None:
-                parent_data = parent.data(0, Qt.ItemDataRole.UserRole)
-                if isinstance(parent_data, dict):
-                    round_idx = parent_data.get("round_index", 0)
-            self._start_from(round_idx, op_idx)
+            elif not self._is_running:
+                indices = self._extract_start_indices(item)
+                if indices is None:
+                    return
+                round_idx, step_idx, fov_idx = indices
+                self._start_from(round_idx, step_idx, fov_idx)
+        elif item_type in ("round", "operation") and not self._is_running:
+            indices = self._extract_start_indices(item)
+            if indices is None:
+                return
+            round_idx, step_idx, fov_idx = indices
+            self._start_from(round_idx, step_idx, fov_idx)
 
     # ========================================================================
     # Cleanup

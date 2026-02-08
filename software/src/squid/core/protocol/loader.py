@@ -246,6 +246,38 @@ class ProtocolLoader:
             if csv_path and not Path(csv_path).is_absolute():
                 data["fov_sets"][name] = str(protocol_dir / csv_path)
 
+        # Resolve resource file paths to absolute
+        for field in ("imaging_protocol_file", "fluidics_protocols_file", "fluidics_config_file", "fov_file"):
+            val = data.get(field)
+            if val and not Path(val).is_absolute():
+                data[field] = str(protocol_dir / val)
+
+        # If imaging_protocol_file is set, load and merge into imaging_protocols
+        imaging_file = data.get("imaging_protocol_file")
+        if imaging_file:
+            imaging_path = Path(imaging_file)
+            if not imaging_path.exists():
+                raise ProtocolValidationError(
+                    f"Imaging protocol file not found: {imaging_path}"
+                )
+            with open(imaging_path, "r") as f:
+                file_protocols = yaml.safe_load(f) or {}
+            if not isinstance(file_protocols, dict):
+                raise ProtocolValidationError(
+                    f"Imaging protocol file must contain a YAML mapping, got {type(file_protocols).__name__}"
+                )
+            # Merge: inline definitions take precedence over file definitions
+            inline = data.get("imaging_protocols", {})
+            merged = {**file_protocols, **inline}
+            data["imaging_protocols"] = merged
+
+        # If fov_file is set, add to fov_sets as "default" (without overwriting existing entries)
+        fov_file = data.get("fov_file")
+        if fov_file:
+            fov_sets = data.setdefault("fov_sets", {})
+            if "default" not in fov_sets:
+                fov_sets["default"] = fov_file
+
         return data
 
     def _expand_repeats(self, data: Dict[str, Any]) -> Dict[str, Any]:

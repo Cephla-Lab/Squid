@@ -86,6 +86,7 @@ class ExperimentRunner:
         # Start-from parameters
         start_from_round: int = 0,
         start_from_step: int = 0,
+        start_from_fov: int = 0,
         run_single_round: bool = False,
         # Time estimation
         step_time_estimates: Optional[Dict[Tuple[int, int], float]] = None,
@@ -118,6 +119,7 @@ class ExperimentRunner:
         # Start-from parameters
         self._start_from_round = start_from_round
         self._start_from_step = start_from_step
+        self._start_from_fov = start_from_fov
         self._run_single_round = run_single_round
 
         # Time estimation: per-step estimates from validation
@@ -129,6 +131,8 @@ class ExperimentRunner:
         self._step_start_time: float = 0.0
         self._completed_estimated_total: float = 0.0
         self._completed_actual_total: float = 0.0
+        self._paused_at: Optional[float] = None
+        self._step_paused_total: float = 0.0
 
         # Shared skip flags (written by controller, read by runner)
         self._skip_to_round_index: Optional[int] = None
@@ -167,7 +171,7 @@ class ExperimentRunner:
         # Estimate for current step: estimate minus elapsed in current step
         current_key = (current_round, current_step)
         current_est = self._step_time_estimates.get(current_key, 0.0)
-        elapsed_in_step = time.monotonic() - self._step_start_time if self._step_start_time > 0 else 0.0
+        elapsed_in_step = self._effective_step_elapsed()
         current_remaining = max(0.0, current_est - elapsed_in_step)
 
         # Scaling factor from completed steps
@@ -176,6 +180,58 @@ class ExperimentRunner:
             scale = self._completed_actual_total / self._completed_estimated_total
 
         return (remaining_estimated + current_remaining) * scale
+
+    def notify_pause(self) -> None:
+        """Record that execution is paused to keep ETA stable."""
+        if self._paused_at is None:
+            self._paused_at = time.monotonic()
+
+    def notify_resume(self) -> None:
+        """Record that execution resumed and account for paused time."""
+        if self._paused_at is None:
+            return
+        paused_duration = time.monotonic() - self._paused_at
+        if paused_duration > 0:
+            self._step_paused_total += paused_duration
+        self._paused_at = None
+
+    def _effective_step_elapsed(self) -> float:
+        """Elapsed step time excluding pauses."""
+        if self._step_start_time <= 0:
+            return 0.0
+        now = time.monotonic()
+        paused_at = self._paused_at
+        if paused_at is not None:
+            now = paused_at
+        elapsed = now - self._step_start_time - self._step_paused_total
+        return max(0.0, elapsed)
+
+    def request_skip_current_round(self) -> bool:
+        """Request skipping the remainder of the current round."""
+        with self._progress_lock:
+            if self._progress.current_round is None:
+                return False
+            self._skip_current_round_now = True
+            self._skip_to_round_index = self._progress.current_round_index + 1
+            return True
+
+    def request_skip_to_round(self, round_index: int) -> bool:
+        """Request skipping ahead to a specific round index.
+
+        The request is accepted only while a round is active and when the
+        target round is strictly ahead of the current round.
+        """
+        total_rounds = len(self._protocol.rounds)
+        with self._progress_lock:
+            if self._progress.current_round is None:
+                return False
+            current_round_index = self._progress.current_round_index
+            if round_index < 0 or round_index >= total_rounds:
+                return False
+            if round_index <= current_round_index:
+                return False
+            self._skip_to_round_index = round_index
+            return True
 
     def run(self, resume_checkpoint: Optional[Checkpoint] = None) -> StepResult:
         """Execute all rounds. Called from the worker thread.
@@ -191,7 +247,7 @@ class ExperimentRunner:
         self._latest_eta_seconds = self._total_estimated_seconds if self._total_estimated_seconds > 0 else None
         start_round = self._start_from_round
         resume_step_index = self._start_from_step
-        resume_imaging_fov = 0
+        resume_imaging_fov = self._start_from_fov
         if resume_checkpoint is not None:
             start_round = resume_checkpoint.round_index
             resume_step_index = resume_checkpoint.step_index
@@ -289,6 +345,8 @@ class ExperimentRunner:
                 step_type = "unknown"
 
             # Record step start time for ETA computation
+            self._step_paused_total = 0.0
+            self._paused_at = None
             self._step_start_time = time.monotonic()
 
             # Publish step started event
@@ -333,7 +391,7 @@ class ExperimentRunner:
                 result = StepResult.skipped("unknown", f"Unknown step type: {type(step)}")
 
             # Record actual step duration and update ETA
-            step_duration = time.monotonic() - self._step_start_time
+            step_duration = self._effective_step_elapsed()
             step_key = (round_idx, step_idx)
             step_estimate = self._step_time_estimates.get(step_key, 0.0)
             self._completed_actual_total += step_duration
@@ -361,6 +419,8 @@ class ExperimentRunner:
                 self._progress.current_step_index = step_idx + 1
                 if self._progress.current_round is not None:
                     self._progress.current_round.current_step_index = step_idx + 1
+            if result.success:
+                self._on_checkpoint()
 
             # Handle result
             if result.outcome == StepOutcome.CANCELLED:
@@ -413,8 +473,8 @@ class ExperimentRunner:
         _log.info(f"Round {round_idx}: Running fluidics protocol '{protocol_name}'")
 
         if self._fluidics_controller is None:
-            _log.warning(f"No fluidics controller configured — skipping protocol: {protocol_name}")
-            return StepResult.skipped("fluidics", "No fluidics controller configured")
+            _log.error(f"No fluidics controller configured for protocol '{protocol_name}'")
+            return StepResult.failed("fluidics", "No fluidics controller configured")
 
         try:
             self._cancel_token.check_point()
@@ -466,6 +526,7 @@ class ExperimentRunner:
         """Execute an imaging step."""
         if self._progress.current_round is None:
             return StepResult.skipped("imaging", "No progress tracking")
+        resume_fov = max(resume_fov, 0)
 
         try:
             config_name = step.protocol
@@ -484,9 +545,21 @@ class ExperimentRunner:
                 csv_path = self._protocol.fov_sets[step.fovs]
                 protocol_helpers.load_fov_set(csv_path, self._scan_coordinates, self._event_bus)
 
+            total_fovs = 0
+            if self._scan_coordinates is not None:
+                region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                if isinstance(region_fovs, dict):
+                    total_fovs = sum(len(coords) for coords in region_fovs.values())
+
+            if total_fovs > 0 and resume_fov >= total_fovs:
+                return StepResult.failed(
+                    "imaging",
+                    f"start_from_fov out of bounds ({resume_fov} not in [0, {total_fovs - 1}])",
+                )
+
             with self._progress_lock:
-                self._progress.current_round.imaging_fov_index = 0
-                self._progress.current_round.total_imaging_fovs = 0
+                self._progress.current_round.imaging_fov_index = max(resume_fov, 0)
+                self._progress.current_round.total_imaging_fovs = total_fovs
                 self._progress.current_round.imaging_started = True
                 self._progress.current_round.imaging_completed = False
                 self._last_checkpoint_fov = None
@@ -502,15 +575,6 @@ class ExperimentRunner:
 
             round_dir_name = os.path.basename(round_path)
             round_base_path = os.path.dirname(round_path)
-
-            # Calculate total FOVs
-            if self._scan_coordinates is not None:
-                total_fovs = sum(
-                    len(coords)
-                    for coords in self._scan_coordinates.region_fov_coordinates.values()
-                )
-                with self._progress_lock:
-                    self._progress.current_round.total_imaging_fovs = total_fovs
 
             _log.info(
                 f"Round {round_idx}: Imaging with config='{config_name}', "
@@ -547,8 +611,8 @@ class ExperimentRunner:
                 if not success:
                     return StepResult.failed("imaging", f"Imaging failed for round {round_idx}")
             else:
-                _log.warning(f"No imaging executor configured — skipping imaging: config={config_name}")
-                return StepResult.skipped("imaging", "No imaging executor configured")
+                _log.error(f"No imaging executor configured for config '{config_name}'")
+                return StepResult.failed("imaging", "No imaging executor configured")
 
             with self._progress_lock:
                 self._progress.current_round.imaging_completed = True
