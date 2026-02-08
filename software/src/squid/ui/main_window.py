@@ -75,7 +75,6 @@ from squid.core.events import (
     WellplateFormatChanged,
     AcquisitionStateChanged,
     AcquisitionWorkerFinished,
-    ClearScanCoordinatesCommand,
     ActiveAcquisitionTabChanged,
     AutoLevelCommand,
     LiveStateChanged,
@@ -1042,8 +1041,16 @@ class HighContentScreeningGui(QMainWindow):
 
     def _on_stream_capture_mosaic(self, image, info) -> None:
         if getattr(self, "napariMosaicDisplayWidget", None) is None:
+            log.warning("_on_stream_capture_mosaic: napariMosaicDisplayWidget is None")
             return
         channel_name = self._layer_name_from_capture_info(info)
+        px = getattr(info, "pixel_size_um", None)
+        pos = getattr(info, "position", None)
+        pos_str = f"({pos.x_mm:.4f}, {pos.y_mm:.4f})" if pos else "None"
+        log.info(
+            f"_on_stream_capture_mosaic: channel={channel_name}, "
+            f"pixel_size_um={px}, pos={pos_str}, shape={getattr(image, 'shape', None)}"
+        )
         self.napariMosaicDisplayWidget.updateMosaic(image, info, channel_name)
 
     def _on_stream_capture_multichannel(self, image, info) -> None:
@@ -1174,8 +1181,6 @@ class HighContentScreeningGui(QMainWindow):
             if RUN_FLUIDICS
             else False
         )
-        self._ui_event_bus.publish(ClearScanCoordinatesCommand())
-
         self.toggleWellSelector(
             is_wellplate_acquisition
             and self.wellSelectionWidget.format != "glass slide"
@@ -1313,6 +1318,10 @@ class HighContentScreeningGui(QMainWindow):
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle backend acquisition state changes (UI truth-from-backend)."""
         self._apply_acquisition_ui_state(event.in_progress)
+        # Clear z-plot when a new acquisition starts (not on abort)
+        if event.in_progress and not event.is_aborting:
+            if getattr(self, "zPlotWidget", None) is not None:
+                self.zPlotWidget.clear()
 
     @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:

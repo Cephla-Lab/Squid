@@ -28,6 +28,7 @@ from squid.core.events import (
     ClearManualShapesCommand,
     ManualShapeDrawingEnabledChanged,
     ManualShapesChanged,
+    MosaicLayersCleared,
     MosaicLayersInitialized,
     SetAcquisitionChannelsCommand,
 )
@@ -76,6 +77,7 @@ class MosaicWorker(QObject):
 
             pixel_size_um = info.pixel_size_um
             if pixel_size_um is None or pixel_size_um <= 0:
+                self._log.warning(f"process_tile: skipping tile — pixel_size_um={pixel_size_um}")
                 return
 
             # Stage position is tile center
@@ -514,7 +516,18 @@ class NapariMosaicDisplayWidget(QWidget):
                 self.shapes_mm = [
                     self.convert_shape_to_mm(shape) for shape in self.shape_layer.data
                 ]
-            # else: keep existing shapes_mm (they're already in mm from before clear)
+                # Filter out any shapes that failed to convert (returned empty arrays)
+                self.shapes_mm = [s for s in self.shapes_mm if len(s) > 0]
+            else:
+                self._log.warning(
+                    "Shapes exist but mosaic coordinate system is not initialized "
+                    f"(layers_initialized={self.layers_initialized}, "
+                    f"top_left_coordinate={self.top_left_coordinate}). "
+                    "Cannot convert shapes to mm coordinates."
+                )
+                # Don't keep stale shapes_mm — explicitly signal that conversion failed
+                # by publishing the current (possibly empty) shapes_mm.
+                # shapes_mm stays at its current value (stale but better than silent loss).
         else:
             self.shapes_mm = []
         self.signal_shape_drawn.emit(self.shapes_mm)
@@ -965,6 +978,10 @@ class NapariMosaicDisplayWidget(QWidget):
         self.layers_initialized = False
         self.top_left_coordinate = None
         self.mosaic_dtype = None
+
+        # Notify widgets that the coordinate system is gone (disables ROI mode)
+        if self._event_bus is not None:
+            self._event_bus.publish(MosaicLayersCleared())
 
         # Force garbage collection to return memory to OS
         gc.collect()

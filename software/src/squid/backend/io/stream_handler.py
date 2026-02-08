@@ -5,9 +5,12 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
+import squid.core.logging
 import squid.core.utils.hardware_utils as utils
 import _def
 from squid.core.abc import CameraFrame
+
+_log = squid.core.logging.get_logger(__name__)
 
 
 @dataclass
@@ -176,7 +179,8 @@ class StreamHandler:
                 self._fns.capture(image, capture_info)
             except Exception:
                 # Never let UI fanout failures break the worker/data-plane path.
-                pass
+                import traceback
+                _log.warning("capture fanout failed: %s", traceback.format_exc())
 
         time_now = time.time()
         if time_now - self.timestamp_last_display >= 1 / self.fps_display:

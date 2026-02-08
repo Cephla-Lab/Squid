@@ -30,7 +30,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type, Ty
 import numpy as np
 
 import squid.core.logging
-from squid.core.config.focus_lock import FocusLockMode
 
 _log = squid.core.logging.get_logger("squid.events")
 
@@ -1402,143 +1401,6 @@ class LaserAFCrossCorrelationResult(Event):
 
 
 # ============================================================================
-# Focus Lock Events
-# ============================================================================
-
-FocusLockStatus = Literal["disabled", "ready", "locked", "recovering", "searching", "lost", "paused"]
-
-
-@dataclass
-class FocusLockModeChanged(Event):
-    """Notification that focus lock mode changed."""
-
-    mode: FocusLockMode
-
-
-@dataclass
-class FocusLockStatusChanged(Event):
-    """Notification that focus lock status changed."""
-
-    is_locked: bool
-    status: FocusLockStatus
-    lock_buffer_fill: int
-    lock_buffer_length: int
-
-
-@dataclass
-class FocusLockMetricsUpdated(Event):
-    """Focus lock metrics update."""
-
-    z_error_um: float
-    z_position_um: float
-    spot_snr: float
-    spot_intensity: float
-    z_error_rms_um: float
-    drift_rate_um_per_s: float
-    is_good_reading: bool
-    correlation: float
-    spot_offset_px: float = float("nan")  # Spot offset from reference in pixels
-    piezo_delta_um: float = float("nan")  # Piezo position change from lock reference
-    lock_buffer_fill: int = 0  # Current lock buffer fill level
-    lock_buffer_length: int = 5  # Total lock buffer length
-    lock_quality: float = 1.0  # Smoothed RMS-based quality (0-1, higher is better)
-
-
-@dataclass
-class FocusLockWarning(Event):
-    """Focus lock warning notification."""
-
-    warning_type: str
-    message: str
-
-
-# ============================================================================
-# Focus Lock Commands
-# ============================================================================
-
-
-@dataclass
-class SetFocusLockModeCommand(Event):
-    """Command to set focus lock mode."""
-
-    mode: FocusLockMode
-
-
-@dataclass
-class StartFocusLockCommand(Event):
-    """Command to start focus lock."""
-
-    target_um: float = 0.0
-
-
-@dataclass
-class StopFocusLockCommand(Event):
-    """Command to stop focus lock."""
-
-    pass
-
-
-@dataclass
-class PauseFocusLockCommand(Event):
-    """Command to pause focus lock."""
-
-    pass
-
-
-@dataclass
-class ResumeFocusLockCommand(Event):
-    """Command to resume focus lock."""
-
-    pass
-
-
-@dataclass
-class AdjustFocusLockTargetCommand(Event):
-    """Command to adjust focus lock target by a relative offset."""
-
-    delta_um: float
-
-
-@dataclass
-class SetFocusLockReferenceCommand(Event):
-    """Command to set/lock the current position as the focus lock reference.
-
-    This forces the focus lock to immediately lock at the current Z position,
-    bypassing the normal buffer fill acquisition process.
-    """
-
-    pass
-
-
-@dataclass
-class ReleaseFocusLockReferenceCommand(Event):
-    """Command to release the focus lock reference.
-
-    This clears the lock and returns to 'searching' state while keeping
-    the focus lock loop running.
-    """
-
-    pass
-
-
-@dataclass
-class SetFocusLockAutoSearchCommand(Event):
-    """Command to enable or disable auto-search on lock loss."""
-
-    enabled: bool
-
-
-@dataclass
-class FocusLockSearchProgress(Event):
-    """Progress update during piezo sweep search."""
-
-    phase: str  # "last_position" or "sweep"
-    current_position_um: float
-    search_min_um: float
-    search_max_um: float
-
-
-# ============================================================================
 # Acquisition Commands
 # ============================================================================
 
@@ -1600,6 +1462,12 @@ class StartAcquisitionCommand(Event):
     experiment_id: Optional[str] = None
     acquire_current_fov: bool = False
     xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
+    # Quick scan grid: when set, creates temporary ScanCoordinates(event_bus=None)
+    # to bypass NavigationViewer. Tuple of (x_mm, y_mm, z_mm).
+    quick_scan_center: Optional[Tuple[float, float, float]] = None
+    quick_scan_nx: int = 1
+    quick_scan_ny: int = 1
+    quick_scan_overlap: float = 10.0
 
 
 @dataclass
@@ -2474,6 +2342,13 @@ class MosaicLayersInitialized(Event):
 
 
 @dataclass
+class MosaicLayersCleared(Event):
+    """UI state event: mosaic viewer layers were cleared (coordinate system lost)."""
+
+    pass
+
+
+@dataclass
 class SetWellSelectionScanCoordinatesCommand(Event):
     """Command to compute scan coordinates from the current well selection."""
 
@@ -2664,6 +2539,21 @@ class FocusLockWarning(Event):
 
     warning_type: str  # "piezo_low" | "piezo_high" | "signal_lost" | "snr_low" | "reference_invalid"
     message: str
+
+
+@dataclass
+class FocusLockPiezoLimitCritical(Event):
+    """Critical warning when piezo approaches its range limits.
+
+    Published when the piezo is within piezo_critical_margin_um of its limits.
+    The acquisition system should subscribe to this to take preventive action
+    (e.g., pause, warn operator) before the focus lock becomes unrecoverable.
+    """
+
+    direction: str  # "low" or "high"
+    position_um: float
+    limit_um: float
+    margin_um: float
 
 
 @dataclass

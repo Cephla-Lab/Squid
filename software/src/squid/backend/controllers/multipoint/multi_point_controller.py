@@ -792,7 +792,14 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
-    def run_acquisition(self, acquire_current_fov: bool = False) -> bool:
+    def run_acquisition(
+        self,
+        acquire_current_fov: bool = False,
+        quick_scan_center: Optional[Tuple[float, float, float]] = None,
+        quick_scan_nx: int = 1,
+        quick_scan_ny: int = 1,
+        quick_scan_overlap: float = 10.0,
+    ) -> bool:
         import time as _time
         self._log.info("run_acquisition: ENTER")
         _t0 = _time.perf_counter()
@@ -817,7 +824,43 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
             self._log.info(f"run_acquisition: passed state check ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
-            if not self.validate_acquisition_settings():
+            # Build scan coordinates before validation so quick_scan/acquire_current_fov
+            # coordinates are validated instead of the (empty) global scan coordinates.
+            acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
+            self.run_acquisition_current_fov: bool = False
+            if quick_scan_center is not None:
+                # Quick scan: create temporary ScanCoordinates with event_bus=None
+                # so no events reach NavigationViewer
+                cx, cy, cz = quick_scan_center
+                acquisition_scan_coordinates = ScanCoordinates(
+                    objectiveStore=self.scanCoordinates.objectiveStore,
+                    stage=self.scanCoordinates.stage,
+                    camera=self.scanCoordinates.camera,
+                    event_bus=None,
+                )
+                acquisition_scan_coordinates.add_flexible_region(
+                    "quick_scan",
+                    center_x=cx, center_y=cy, center_z=cz,
+                    Nx=quick_scan_nx, Ny=quick_scan_ny,
+                    overlap_percent=quick_scan_overlap,
+                )
+                self.run_acquisition_current_fov = True
+            elif acquire_current_fov:
+                pos = self._stage_service.get_position()
+                # No callback - we don't want to clobber existing info with this one off fov acquisition
+                # Don't pass event_bus to avoid publishing ClearedScanCoordinates globally
+                acquisition_scan_coordinates = ScanCoordinates(
+                    objectiveStore=self.scanCoordinates.objectiveStore,
+                    stage=self.scanCoordinates.stage,
+                    camera=self.scanCoordinates.camera,
+                    event_bus=None,
+                )
+                acquisition_scan_coordinates.add_single_fov_region(
+                    "current", center_x=pos.x_mm, center_y=pos.y_mm, center_z=pos.z_mm
+                )
+                self.run_acquisition_current_fov = True
+
+            if not self.validate_acquisition_settings(acquisition_scan_coordinates):
                 self._publish_acquisition_state(in_progress=False, allow_missing_experiment_id=True)
                 if self._mode_gate:
                     self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
@@ -851,23 +894,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     + self._config.zstack.delta_z_mm * (self._config.zstack.nz - 1),
                 )
                 self._config = self._config.with_updates(**{"zstack.z_range": z_range})
-
-            acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
-            self.run_acquisition_current_fov: bool = False
-            if acquire_current_fov:
-                pos = self._stage_service.get_position()
-                # No callback - we don't want to clobber existing info with this one off fov acquisition
-                # Don't pass event_bus to avoid publishing ClearedScanCoordinates globally
-                acquisition_scan_coordinates = ScanCoordinates(
-                    objectiveStore=self.scanCoordinates.objectiveStore,
-                    stage=self.scanCoordinates.stage,
-                    camera=self.scanCoordinates.camera,
-                    event_bus=None,
-                )
-                acquisition_scan_coordinates.add_single_fov_region(
-                    "current", center_x=pos.x_mm, center_y=pos.y_mm, center_z=pos.z_mm
-                )
-                self.run_acquisition_current_fov = True
 
             scan_coordinates_target = acquisition_scan_coordinates
             scan_position_information: ScanPositionInformation = (
@@ -1297,8 +1323,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._event_bus.publish(AcquisitionResumed())
         return True
 
-    def validate_acquisition_settings(self) -> bool:
-        """Validate settings before starting acquisition"""
+    def validate_acquisition_settings(self, scan_coordinates: Optional[ScanCoordinates] = None) -> bool:
+        """Validate settings before starting acquisition.
+
+        Args:
+            scan_coordinates: ScanCoordinates to validate against. If None, uses self.scanCoordinates.
+        """
         try:
             self._config.validate()
         except ValueError as exc:
@@ -1306,13 +1336,14 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             return False
 
         # Check for zero FOVs - must have at least one FOV to acquire
-        if self.scanCoordinates is None or not self.scanCoordinates.region_fov_coordinates:
+        coords = scan_coordinates if scan_coordinates is not None else self.scanCoordinates
+        if coords is None or not coords.region_fov_coordinates:
             self._log.error(
                 "No FOVs defined - please add scan positions before starting acquisition"
             )
             return False
         total_fovs = sum(
-            len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values()
+            len(c) for c in coords.region_fov_coordinates.values()
         )
         if total_fovs == 0:
             self._log.error(
@@ -1428,7 +1459,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.set_xy_mode(cmd.xy_mode)
         # Ensure an experiment ID exists before running; auto-create if none exists.
         self._ensure_experiment_ready(cmd.experiment_id)
-        self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)
+        self.run_acquisition(
+            acquire_current_fov=cmd.acquire_current_fov,
+            quick_scan_center=cmd.quick_scan_center,
+            quick_scan_nx=cmd.quick_scan_nx,
+            quick_scan_ny=cmd.quick_scan_ny,
+            quick_scan_overlap=cmd.quick_scan_overlap,
+        )
 
     @handles(StopAcquisitionCommand)
     def _on_stop_acquisition(self, cmd: StopAcquisitionCommand) -> None:
