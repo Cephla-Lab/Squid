@@ -534,15 +534,13 @@ class MERFISHFluidicsDriver(AbstractFluidicsController):
         wash_port: int,
         volume_ul: float,
         flow_rate_ul_per_min: float,
-        repeats: int = 1,
     ) -> bool:
-        """Wash with solution from specified port.
+        """Wash with solution from specified port (single flow cycle).
 
         Args:
             wash_port: Port number for wash solution
-            volume_ul: Volume per wash cycle in microliters
+            volume_ul: Volume in microliters
             flow_rate_ul_per_min: Flow rate in microliters per minute
-            repeats: Number of wash cycles
 
         Returns:
             True if successful, False otherwise.
@@ -561,20 +559,14 @@ class MERFISHFluidicsDriver(AbstractFluidicsController):
             self._current_status = FluidicsOperationStatus.RUNNING
             self._current_port = wash_port
 
-            # Wash is repeated flow_solution calls
-            for i in range(repeats):
-                if self._syringe_pump.is_aborted:
-                    self._current_status = FluidicsOperationStatus.ABORTED
-                    return False
-
-                success = self.flow_solution(
-                    port=wash_port,
-                    volume_ul=volume_ul,
-                    flow_rate_ul_per_min=flow_rate_ul_per_min,
-                    fill_tubing_with_port=None,
-                )
-                if not success:
-                    return False
+            success = self.flow_solution(
+                port=wash_port,
+                volume_ul=volume_ul,
+                flow_rate_ul_per_min=flow_rate_ul_per_min,
+                fill_tubing_with_port=None,
+            )
+            if not success:
+                return False
 
             self._current_status = FluidicsOperationStatus.COMPLETED
             return True
@@ -691,6 +683,12 @@ class MERFISHFluidicsDriver(AbstractFluidicsController):
         if self._config is None:
             return []
         return self._config.available_ports
+
+    def get_syringe_capacity_ul(self) -> float:
+        """Get the syringe capacity in microliters."""
+        if self._config is not None:
+            return self._config.syringe_volume_ul
+        return 5000.0
 
     @property
     def is_busy(self) -> bool:

@@ -372,12 +372,13 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             if self._check_aborted():
                 return False
 
-            # Phase 2: Aspirate from source port into syringe
+            # Phase 2: Aspirate from source port through imaging chamber into syringe
+            # (the physical hardware pulls solution THROUGH the chamber)
             self._notify_phase("aspirating", port, volume_ul, flow_rate_ul_per_min)
             start_vol = self._syringe_volume_ul
             end_vol = min(start_vol + volume_ul, self._syringe_capacity_ul)
             self._simulate_delay(
-                volume_ul / 2,
+                volume_ul,
                 flow_rate_ul_per_min,
                 operation="aspirate",
                 start_syringe_vol=start_vol,
@@ -386,40 +387,6 @@ class SimulatedFluidicsController(AbstractFluidicsController):
 
             if self._check_aborted():
                 return False
-
-            # Phase 3: Switch valve to output (flowcell/sample) and dispense
-            output_port = fill_tubing_with_port if fill_tubing_with_port else port
-            self._notify_phase("valve_switching", output_port, volume_ul, flow_rate_ul_per_min)
-            if self._simulate_timing:
-                time.sleep(scale_duration(0.1, min_seconds=1e-6))  # Valve switch time
-            self._current_port = output_port
-
-            if self._check_aborted():
-                return False
-
-            # Phase 4: Dispense to flowcell/sample
-            self._notify_phase("dispensing", output_port, volume_ul, flow_rate_ul_per_min)
-            start_vol = self._syringe_volume_ul
-            end_vol = max(0.0, start_vol - volume_ul)
-            self._simulate_delay(
-                volume_ul / 2,
-                flow_rate_ul_per_min,
-                operation="dispense",
-                start_syringe_vol=start_vol,
-                end_syringe_vol=end_vol,
-            )
-
-            if self._check_aborted():
-                return False
-
-            # Handle fill_tubing_with_port logging
-            if fill_tubing_with_port:
-                fill_solution = self._port_to_solution.get(
-                    fill_tubing_with_port, f"port_{fill_tubing_with_port}"
-                )
-                _log.debug(
-                    f"[SIMULATED] FILL_TUBING: port={fill_tubing_with_port} ({fill_solution})"
-                )
 
             self._current_status = FluidicsOperationStatus.COMPLETED
             return True
@@ -483,12 +450,12 @@ class SimulatedFluidicsController(AbstractFluidicsController):
                 if self._check_aborted():
                     return False
 
-                # Phase: Aspirate from port
+                # Phase: Aspirate from port through chamber into syringe
                 self._notify_phase("aspirating", port, volume_ul, flow_rate_ul_per_min)
                 start_vol = self._syringe_volume_ul
                 end_vol = min(start_vol + volume_ul, self._syringe_capacity_ul)
                 self._simulate_delay(
-                    volume_ul / 2,
+                    volume_ul,
                     flow_rate_ul_per_min,
                     operation="prime_aspirate",
                     start_syringe_vol=start_vol,
@@ -498,16 +465,16 @@ class SimulatedFluidicsController(AbstractFluidicsController):
                 if self._check_aborted():
                     return False
 
-                # Phase: Dispense (push through to waste/flowcell)
-                self._notify_phase("dispensing", port, volume_ul, flow_rate_ul_per_min)
+                # Phase: Empty syringe to waste
+                self._notify_phase("dispensing", None, self._syringe_volume_ul, None)
+                max_rate = self._limits.get("max_flow_rate_ul_per_min", 1000.0)
                 start_vol = self._syringe_volume_ul
-                end_vol = max(0.0, start_vol - volume_ul)
                 self._simulate_delay(
-                    volume_ul / 2,
-                    flow_rate_ul_per_min,
-                    operation="prime_dispense",
+                    start_vol,
+                    max_rate,
+                    operation="prime_waste",
                     start_syringe_vol=start_vol,
-                    end_syringe_vol=end_vol,
+                    end_syringe_vol=0.0,
                 )
 
             # Set final port
@@ -530,15 +497,13 @@ class SimulatedFluidicsController(AbstractFluidicsController):
         wash_port: int,
         volume_ul: float,
         flow_rate_ul_per_min: float,
-        repeats: int = 1,
     ) -> bool:
-        """Simulate washing with solution from specified port.
+        """Simulate washing with solution from specified port (flow + empty to waste).
 
         Args:
             wash_port: Port number for wash solution
-            volume_ul: Volume per wash cycle in microliters
+            volume_ul: Volume in microliters
             flow_rate_ul_per_min: Flow rate in microliters per minute
-            repeats: Number of wash cycles
 
         Returns:
             True if successful, False otherwise.
@@ -557,7 +522,7 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             solution_name = self._port_to_solution.get(wash_port, f"port_{wash_port}")
             _log.debug(
                 f"[SIMULATED] WASH: port={wash_port} ({solution_name}) "
-                f"volume={volume_ul}ul rate={flow_rate_ul_per_min}ul/min repeats={repeats}"
+                f"volume={volume_ul}ul rate={flow_rate_ul_per_min}ul/min"
             )
 
             # Switch valve to wash port
@@ -565,38 +530,35 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             if self._simulate_timing:
                 time.sleep(scale_duration(0.1, min_seconds=1e-6))
 
-            for i in range(repeats):
-                if self._check_aborted():
-                    return False
+            if self._check_aborted():
+                return False
 
-                _log.debug(f"[SIMULATED] WASH cycle {i + 1}/{repeats}")
+            # Aspirate wash solution through chamber into syringe
+            self._notify_phase("aspirating", wash_port, volume_ul, flow_rate_ul_per_min)
+            start_vol = self._syringe_volume_ul
+            end_vol = min(start_vol + volume_ul, self._syringe_capacity_ul)
+            self._simulate_delay(
+                volume_ul,
+                flow_rate_ul_per_min,
+                operation="wash_aspirate",
+                start_syringe_vol=start_vol,
+                end_syringe_vol=end_vol,
+            )
 
-                # Aspirate wash solution
-                self._notify_phase("aspirating", wash_port, volume_ul, flow_rate_ul_per_min)
-                start_vol = self._syringe_volume_ul
-                end_vol = min(start_vol + volume_ul, self._syringe_capacity_ul)
-                self._simulate_delay(
-                    volume_ul / 2,
-                    flow_rate_ul_per_min,
-                    operation="wash_aspirate",
-                    start_syringe_vol=start_vol,
-                    end_syringe_vol=end_vol,
-                )
+            if self._check_aborted():
+                return False
 
-                if self._check_aborted():
-                    return False
-
-                # Dispense (push through flowcell)
-                self._notify_phase("dispensing", wash_port, volume_ul, flow_rate_ul_per_min)
-                start_vol = self._syringe_volume_ul
-                end_vol = max(0.0, start_vol - volume_ul)
-                self._simulate_delay(
-                    volume_ul / 2,
-                    flow_rate_ul_per_min,
-                    operation="wash_dispense",
-                    start_syringe_vol=start_vol,
-                    end_syringe_vol=end_vol,
-                )
+            # Empty syringe to waste
+            self._notify_phase("dispensing", None, self._syringe_volume_ul, None)
+            max_rate = self._limits.get("max_flow_rate_ul_per_min", 1000.0)
+            start_vol = self._syringe_volume_ul
+            self._simulate_delay(
+                start_vol,
+                max_rate,
+                operation="wash_waste",
+                start_syringe_vol=start_vol,
+                end_syringe_vol=0.0,
+            )
 
             self._current_status = FluidicsOperationStatus.COMPLETED
             return True
@@ -718,6 +680,10 @@ class SimulatedFluidicsController(AbstractFluidicsController):
             Sorted list of available port numbers.
         """
         return sorted(self._port_to_solution.keys())
+
+    def get_syringe_capacity_ul(self) -> float:
+        """Get the syringe capacity in microliters."""
+        return self._syringe_capacity_ul
 
     @property
     def is_busy(self) -> bool:

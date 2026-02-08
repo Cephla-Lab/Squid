@@ -400,15 +400,13 @@ class FluidicsService(BaseService):
         wash_solution: str,
         volume_ul: float,
         flow_rate_ul_per_min: float,
-        repeats: int = 1,
     ) -> bool:
-        """Wash with solution from specified port.
+        """Wash with solution from specified port (flow + empty to waste).
 
         Args:
             wash_solution: Name of wash solution
-            volume_ul: Volume per wash cycle in microliters
+            volume_ul: Volume in microliters
             flow_rate_ul_per_min: Flow rate in microliters per minute
-            repeats: Number of wash cycles
 
         Returns:
             True if successful, False otherwise.
@@ -435,7 +433,7 @@ class FluidicsService(BaseService):
                 operation="wash",
                 port=wash_port,
                 solution=wash_solution,
-                volume_ul=volume_ul * repeats,
+                volume_ul=volume_ul,
                 flow_rate_ul_per_min=flow_rate_ul_per_min,
             )
         )
@@ -450,7 +448,6 @@ class FluidicsService(BaseService):
                     wash_port=wash_port,
                     volume_ul=volume_ul,
                     flow_rate_ul_per_min=flow_rate_ul_per_min,
-                    repeats=repeats,
                 )
 
             if not success:
@@ -680,6 +677,16 @@ class FluidicsService(BaseService):
             if name is not None:
                 result[name] = port
         return result
+
+    def get_syringe_capacity_ul(self) -> float:
+        """Get the syringe capacity in microliters.
+
+        Returns:
+            Syringe capacity from driver, or 5000.0 if unavailable.
+        """
+        if self._driver is None:
+            return 5000.0
+        return self._driver.get_syringe_capacity_ul()
 
     def get_available_ports(self) -> list[int]:
         """Get list of available port numbers.

@@ -198,12 +198,21 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             count = len(protocol_file.protocols)
             _log.info(f"Loaded {count} protocols from {path}")
 
+            # Validate solution names against available hardware
+            validation_warnings = self.validate_protocol_solutions()
+            if validation_warnings:
+                for proto_name, missing in validation_warnings.items():
+                    _log.warning(
+                        f"Protocol '{proto_name}' references unknown solutions: {missing}"
+                    )
+
             # Publish event so UI can update
             if self._event_bus:
                 self._event_bus.publish(
                     FluidicsProtocolsLoaded(
                         path=path,
                         protocols=dict(protocol_file.protocols),
+                        validation_warnings=validation_warnings or None,
                     )
                 )
 
@@ -247,6 +256,35 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
                 return proto
         return None
 
+    def validate_protocol_solutions(self) -> dict[str, list[str]]:
+        """Cross-reference protocol solution names against available solutions.
+
+        Returns:
+            Dict mapping protocol names to lists of missing solution names.
+            Empty dict means all solutions are valid.
+        """
+        service = self._get_fluidics_service()
+        if service is None:
+            return {}
+
+        available = set(service.get_available_solutions().keys())
+        if not available:
+            return {}
+
+        warnings: dict[str, list[str]] = {}
+        for proto_name, protocol in self._protocols.items():
+            missing = []
+            for step in protocol.steps:
+                if step.solution and step.solution not in available:
+                    # Case-insensitive check
+                    if not any(s.lower() == step.solution.lower() for s in available):
+                        if step.solution not in missing:
+                            missing.append(step.solution)
+            if missing:
+                warnings[proto_name] = missing
+
+        return warnings
+
     def list_protocols(self) -> List[str]:
         """List all available protocol names.
 
@@ -254,6 +292,23 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             List of protocol names
         """
         return list(self._protocols.keys())
+
+    def estimate_protocol_duration(self, name: str) -> Optional[float]:
+        """Estimate total duration of a named protocol in seconds.
+
+        Uses per-step volume/flow-rate calculations or explicit durations
+        from the protocol definition.
+
+        Args:
+            name: Protocol name (case-insensitive lookup)
+
+        Returns:
+            Estimated seconds, or None if protocol not found
+        """
+        protocol = self.get_protocol(name)
+        if protocol is None:
+            return None
+        return protocol.estimated_duration_s()
 
     # =========================================================================
     # Status Properties
@@ -630,89 +685,84 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             estimated_remaining = protocol.estimated_duration_s()
 
             for step_pos, step in enumerate(protocol.steps):
-                repeat = 0
-                while repeat < step.repeats:
-                    # Check stop signal
-                    if self._stop_event.is_set():
-                        _log.info("Protocol stopped by user")
-                        self._transition_to(FluidicsControllerState.STOPPED)
-                        self._publish_completed(name, False, step_index, "Stopped by user")
-                        self._reset_to_idle()
-                        return
-
-                    # Check pause signal
-                    if self._pause_event.is_set():
-                        _log.info("Protocol paused")
-                        self._transition_to(FluidicsControllerState.PAUSED)
-                        # Wait for resume or stop
-                        while self._pause_event.is_set() and not self._stop_event.is_set():
-                            time.sleep(0.1)
-                        if self._stop_event.is_set():
-                            _log.info("Protocol stopped while paused")
-                            self._transition_to(FluidicsControllerState.STOPPED)
-                            self._publish_completed(name, False, step_index, "Stopped by user")
-                            self._reset_to_idle()
-                            return
-                        _log.info("Protocol resumed")
-
-                    # Check skip signal
-                    if self._skip_event.is_set():
-                        step_index = self._apply_skip(step_index, step, repeat)
-                        break  # Skip remaining repeats, move to next step
-
-                    # Update step tracking
-                    self._current_step_index = step_index
-                    estimated_remaining -= step.estimated_duration_s() / step.repeats
-
-                    # Get next step description for preview
-                    next_desc = None
-                    if repeat < step.repeats - 1:
-                        next_desc = f"{step.get_description()} (repeat {repeat + 2}/{step.repeats})"
-                    elif step_pos + 1 < len(protocol.steps):
-                        next_step = protocol.steps[step_pos + 1]
-                        next_desc = next_step.get_description()
-
-                    # Publish step started event
-                    if self._event_bus:
-                        self._event_bus.publish(
-                            FluidicsProtocolStepStarted(
-                                protocol_name=name,
-                                step_index=step_index,
-                                total_steps=self._total_steps,
-                                step_description=step.get_description(),
-                                next_step_description=next_desc,
-                                estimated_remaining_s=max(0, estimated_remaining),
-                            )
-                        )
-
-                    # Execute the step
-                    step_success = self._execute_step(step)
-                    if step_success:
-                        step_index += 1
-                        repeat += 1
-                        continue
-
-                    if self._stop_event.is_set():
-                        _log.info("Protocol stopped during step")
-                        self._transition_to(FluidicsControllerState.STOPPED)
-                        self._publish_completed(name, False, step_index, "Stopped by user")
-                        self._reset_to_idle()
-                        return
-
-                    if self._skip_event.is_set():
-                        step_index = self._apply_skip(step_index, step, repeat)
-                        break
-
-                    if self._pause_event.is_set():
-                        _log.info("Protocol paused during step")
-                        continue
-
-                    error_message = f"Step {step_index} failed: {step.get_description()}"
-                    _log.error(error_message)
-                    self._transition_to(FluidicsControllerState.FAILED)
-                    self._publish_completed(name, False, step_index, error_message)
+                # Check stop signal
+                if self._stop_event.is_set():
+                    _log.info("Protocol stopped by user")
+                    self._transition_to(FluidicsControllerState.STOPPED)
+                    self._publish_completed(name, False, step_index, "Stopped by user")
                     self._reset_to_idle()
                     return
+
+                # Check pause signal
+                if self._pause_event.is_set():
+                    _log.info("Protocol paused")
+                    self._transition_to(FluidicsControllerState.PAUSED)
+                    # Wait for resume or stop
+                    while self._pause_event.is_set() and not self._stop_event.is_set():
+                        time.sleep(0.1)
+                    if self._stop_event.is_set():
+                        _log.info("Protocol stopped while paused")
+                        self._transition_to(FluidicsControllerState.STOPPED)
+                        self._publish_completed(name, False, step_index, "Stopped by user")
+                        self._reset_to_idle()
+                        return
+                    _log.info("Protocol resumed")
+
+                # Check skip signal
+                if self._skip_event.is_set():
+                    step_index = self._apply_skip(step_index)
+                    continue
+
+                # Update step tracking
+                self._current_step_index = step_index
+                estimated_remaining -= step.estimated_duration_s()
+
+                # Get next step description for preview
+                next_desc = None
+                if step_pos + 1 < len(protocol.steps):
+                    next_step = protocol.steps[step_pos + 1]
+                    next_desc = next_step.get_description()
+
+                # Publish step started event
+                if self._event_bus:
+                    self._event_bus.publish(
+                        FluidicsProtocolStepStarted(
+                            protocol_name=name,
+                            step_index=step_index,
+                            total_steps=self._total_steps,
+                            step_description=step.get_description(),
+                            next_step_description=next_desc,
+                            estimated_remaining_s=max(0, estimated_remaining),
+                        )
+                    )
+
+                # Execute the step
+                step_success = self._execute_step(step)
+                if step_success:
+                    step_index += 1
+                    continue
+
+                if self._stop_event.is_set():
+                    _log.info("Protocol stopped during step")
+                    self._transition_to(FluidicsControllerState.STOPPED)
+                    self._publish_completed(name, False, step_index, "Stopped by user")
+                    self._reset_to_idle()
+                    return
+
+                if self._skip_event.is_set():
+                    step_index = self._apply_skip(step_index)
+                    continue
+
+                if self._pause_event.is_set():
+                    _log.info("Protocol paused during step")
+                    continue
+
+                error_message = f"Step {step_index} failed: {step.get_description()}"
+                _log.error(error_message)
+                self._transition_to(FluidicsControllerState.FAILED)
+                self._publish_completed(name, False, step_index, error_message)
+                self._reset_to_idle()
+                return
 
             # All steps completed successfully
             success = True
@@ -729,9 +779,7 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             self._publish_completed(name, False, self._current_step_index, error_message)
             self._reset_to_idle()
 
-    def _apply_skip(
-        self, step_index: int, step: FluidicsProtocolStep, repeat: int
-    ) -> int:
+    def _apply_skip(self, step_index: int) -> int:
         """Handle skip requests and return updated step index."""
         _log.info("Step skipped by user")
         self._skip_event.clear()
@@ -742,8 +790,23 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             if self._empty_syringe_on_skip:
                 service.empty_syringe()
 
-        remaining = max(0, step.repeats - repeat)
-        return step_index + remaining
+        new_index = step_index + 1
+
+        # Publish step event so UI updates progress bar immediately
+        if self._event_bus:
+            self._current_step_index = new_index
+            self._event_bus.publish(
+                FluidicsProtocolStepStarted(
+                    protocol_name=self._current_protocol_name or "",
+                    step_index=new_index,
+                    total_steps=self._total_steps,
+                    step_description="(skipped)",
+                    next_step_description=None,
+                    estimated_remaining_s=0,
+                )
+            )
+
+        return new_index
 
     def _execute_step(self, step: FluidicsProtocolStep) -> bool:
         """Execute a single protocol step.
@@ -829,8 +892,8 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
             return self._execute_wash(step)
         elif op == FluidicsCommand.PRIME:
             return self._execute_prime(step)
-        elif op == FluidicsCommand.ASPIRATE:
-            return self._execute_aspirate(step)
+        elif op == FluidicsCommand.EMPTY:
+            return self._execute_empty(step)
         else:
             _log.warning(f"Unknown operation: {op}")
             return False
@@ -859,11 +922,9 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
                 volume_ul=volume,
                 flow_rate_ul_per_min=flow_rate,
             )
-        except RuntimeError as e:
-            if "busy" in str(e).lower():
-                _log.warning(f"Fluidics busy: {e}")
-                return False
-            raise
+        except (RuntimeError, ValueError) as e:
+            _log.warning(f"Flow operation failed: {e}")
+            return False
 
     def _execute_incubate(self, step: FluidicsProtocolStep) -> bool:
         """Execute an INCUBATE operation."""
@@ -901,13 +962,10 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
                 wash_solution=wash_solution,
                 volume_ul=volume,
                 flow_rate_ul_per_min=flow_rate,
-                repeats=1,
             )
-        except RuntimeError as e:
-            if "busy" in str(e).lower():
-                _log.warning(f"Fluidics busy: {e}")
-                return False
-            raise
+        except (RuntimeError, ValueError) as e:
+            _log.warning(f"Wash operation failed: {e}")
+            return False
 
     def _execute_prime(self, step: FluidicsProtocolStep) -> bool:
         """Execute a PRIME operation."""
@@ -940,14 +998,12 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
                 flow_rate_ul_per_min=flow_rate,
                 final_port=final_port,
             )
-        except RuntimeError as e:
-            if "busy" in str(e).lower():
-                _log.warning(f"Fluidics busy: {e}")
-                return False
-            raise
+        except (RuntimeError, ValueError) as e:
+            _log.warning(f"Prime operation failed: {e}")
+            return False
 
-    def _execute_aspirate(self, step: FluidicsProtocolStep) -> bool:
-        """Execute an ASPIRATE operation."""
+    def _execute_empty(self, step: FluidicsProtocolStep) -> bool:
+        """Execute an EMPTY operation."""
         service = self._get_fluidics_service()
         if service is None:
             return False
@@ -957,11 +1013,9 @@ class FluidicsController(StateMachine[FluidicsControllerState]):
 
         try:
             return service.empty_syringe()
-        except RuntimeError as e:
-            if "busy" in str(e).lower():
-                _log.warning(f"Fluidics busy: {e}")
-                return False
-            raise
+        except (RuntimeError, ValueError) as e:
+            _log.warning(f"Empty operation failed: {e}")
+            return False
 
     def _wait_with_cancel(self, duration_s: float) -> None:
         """Wait for specified duration with cancel checks.
