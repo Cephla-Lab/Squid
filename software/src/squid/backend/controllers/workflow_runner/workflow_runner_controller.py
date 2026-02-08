@@ -28,6 +28,8 @@ from squid.backend.controllers.workflow_runner.state import (
     WorkflowSequenceFinished,
     WorkflowScriptOutput,
     WorkflowError,
+    WorkflowLoadConfigRequest,
+    WorkflowLoadConfigResponse,
     StartWorkflowCommand,
     StopWorkflowCommand,
     PauseWorkflowCommand,
@@ -97,6 +99,11 @@ class WorkflowRunnerController(StateMachine[WorkflowRunnerState]):
         self._acquisition_success = False
         self._current_experiment_id: Optional[str] = None
 
+        # Config loading synchronization
+        self._config_load_complete = threading.Event()
+        self._config_load_success = False
+        self._config_load_error: Optional[str] = None
+
     # ========================================================================
     # StateMachine Implementation
     # ========================================================================
@@ -149,6 +156,13 @@ class WorkflowRunnerController(StateMachine[WorkflowRunnerState]):
                 return
         self._acquisition_success = event.success
         self._acquisition_complete.set()
+
+    @handles(WorkflowLoadConfigResponse)
+    def _on_config_load_response(self, event: WorkflowLoadConfigResponse) -> None:
+        """Handle config load response from UI."""
+        self._config_load_success = event.success
+        self._config_load_error = event.error_message
+        self._config_load_complete.set()
 
     # ========================================================================
     # Public Control Methods
@@ -292,7 +306,7 @@ class WorkflowRunnerController(StateMachine[WorkflowRunnerState]):
                     if seq.is_acquisition():
                         if not self._is_in_state(WorkflowRunnerState.RUNNING_ACQUISITION):
                             self._transition_to(WorkflowRunnerState.RUNNING_ACQUISITION)
-                        seq_success = self._run_acquisition(cycle=cycle)
+                        seq_success = self._run_acquisition(cycle=cycle, config_path=seq.config_path)
                     else:
                         if not self._is_in_state(WorkflowRunnerState.RUNNING_SCRIPT):
                             self._transition_to(WorkflowRunnerState.RUNNING_SCRIPT)
@@ -330,12 +344,39 @@ class WorkflowRunnerController(StateMachine[WorkflowRunnerState]):
             self._cancel_token = None
             self._worker_thread = None
 
-    def _run_acquisition(self, cycle: int = 0) -> bool:
-        """Request acquisition from MultiPointController and wait for completion."""
+    def _run_acquisition(self, cycle: int = 0, config_path: Optional[str] = None) -> bool:
+        """Request acquisition from MultiPointController and wait for completion.
+
+        Args:
+            cycle: Current cycle number (0-indexed).
+            config_path: Optional path to acquisition.yaml file. If provided, the UI
+                        will be asked to load settings from this file before starting
+                        acquisition. If None or empty, uses current settings.
+        """
         self._acquisition_complete.clear()
         self._acquisition_success = False
 
         try:
+            # Load config from YAML if config_path is provided
+            if config_path:
+                _log.info(f"Requesting config load from: {config_path}")
+                self._config_load_complete.clear()
+                self._config_load_success = False
+                self._config_load_error = None
+
+                self._event_bus.publish(WorkflowLoadConfigRequest(config_path=config_path))
+
+                # Wait for UI to respond
+                while not self._config_load_complete.is_set():
+                    self._cancel_token.check_point()
+                    self._config_load_complete.wait(timeout=0.5)
+
+                if not self._config_load_success:
+                    error_msg = self._config_load_error or f"Failed to load config from '{config_path}'"
+                    _log.error(error_msg)
+                    self._event_bus.publish(WorkflowError(message=error_msg))
+                    return False
+
             # Set experiment_ID on MultiPointController so _require_experiment_id() passes.
             # Uses direct assignment like ImagingExecutor (not start_new_experiment which
             # adds a timestamp and creates directories that may conflict with user setup).
@@ -344,7 +385,10 @@ class WorkflowRunnerController(StateMachine[WorkflowRunnerState]):
             self._current_experiment_id = experiment_id
             _log.info(f"Starting acquisition with experiment_id={experiment_id}")
 
-            self._multipoint.run_acquisition(acquire_current_fov=False)
+            started = self._multipoint.run_acquisition(acquire_current_fov=False)
+            if not started:
+                _log.error("run_acquisition() returned False — acquisition did not start")
+                return False
 
             # Wait for AcquisitionFinished event
             while not self._acquisition_complete.is_set():

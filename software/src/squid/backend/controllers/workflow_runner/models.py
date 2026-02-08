@@ -32,6 +32,8 @@ class SequenceItem:
     arguments: Optional[str] = None
     python_path: Optional[str] = None  # e.g., "/usr/bin/python3.10" or "/home/user/venv/bin/python"
     conda_env: Optional[str] = None  # e.g., "fluidics_env" - if set, overrides python_path
+    # For acquisitions only:
+    config_path: Optional[str] = None  # Path to acquisition.yaml file; if None, uses current GUI settings
     # Common:
     included: bool = True
     # Cycle arguments (optional) - pass different values to script for each cycle:
@@ -128,23 +130,29 @@ class Workflow:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary for YAML export."""
-        return {
-            "num_cycles": self.num_cycles,
-            "sequences": [
-                {
-                    "name": s.name,
-                    "type": s.sequence_type.value,
-                    "included": s.included,
-                    "script_path": s.script_path,
-                    "arguments": s.arguments,
-                    "python_path": s.python_path,
-                    "conda_env": s.conda_env,
-                    "cycle_arg_name": s.cycle_arg_name,
-                    "cycle_arg_values": s.cycle_arg_values,
-                }
-                for s in self.sequences
-            ],
-        }
+        sequences = []
+        for s in self.sequences:
+            seq_dict = {
+                "name": s.name,
+                "type": s.sequence_type.value,
+                "included": s.included,
+            }
+            # Only include optional fields if they have values
+            optional_fields = [
+                "script_path",
+                "arguments",
+                "python_path",
+                "conda_env",
+                "config_path",
+                "cycle_arg_name",
+                "cycle_arg_values",
+            ]
+            for field_name in optional_fields:
+                value = getattr(s, field_name)
+                if value is not None:
+                    seq_dict[field_name] = value
+            sequences.append(seq_dict)
+        return {"num_cycles": self.num_cycles, "sequences": sequences}
 
     @classmethod
     def from_dict(cls, data: dict, ensure_acquisition: bool = True) -> "Workflow":
@@ -166,6 +174,7 @@ class Workflow:
                     arguments=s.get("arguments"),
                     python_path=s.get("python_path"),
                     conda_env=s.get("conda_env"),
+                    config_path=s.get("config_path"),
                     cycle_arg_name=s.get("cycle_arg_name"),
                     cycle_arg_values=s.get("cycle_arg_values"),
                 )
@@ -189,4 +198,6 @@ class Workflow:
             raise ValueError(f"Workflow file '{file_path}' is empty")
         if not isinstance(data, dict):
             raise ValueError(f"Workflow file must contain a YAML dictionary, got {type(data).__name__}")
-        return cls.from_dict(data)
+        # Note: ensure_acquisition=False - workflows can have zero or multiple
+        # acquisition sequences as needed
+        return cls.from_dict(data, ensure_acquisition=False)

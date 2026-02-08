@@ -7,7 +7,7 @@ Workflow Runner controller.
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 from squid.core.events import Event
 
@@ -142,3 +142,26 @@ class WorkflowError(Event):
     """Emitted when a workflow error occurs."""
 
     message: str
+
+
+@dataclass
+class WorkflowLoadConfigRequest(Event):
+    """Emitted by controller to request UI to load acquisition config.
+
+    The controller publishes this before starting an acquisition that
+    has a config_path. The UI should load the YAML and publish a
+    WorkflowLoadConfigResponse.
+    """
+
+    config_path: str  # Path to acquisition.yaml file
+
+
+@dataclass
+class WorkflowLoadConfigResponse(Event):
+    """Response from UI after attempting to load acquisition config.
+
+    Published by the UI after handling a WorkflowLoadConfigRequest.
+    """
+
+    success: bool
+    error_message: Optional[str] = None
