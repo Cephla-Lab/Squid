@@ -1275,6 +1275,7 @@ USE_JUPYTER_CONSOLE = False
 ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
+ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
 
 
 # Slack Notifications - send real-time notifications during acquisition

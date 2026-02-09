@@ -31,8 +31,11 @@ if USE_TERMINAL_CONSOLE:
 
 if ENABLE_MCP_SERVER_SUPPORT:
     from control.microscope_control_server import MicroscopeControlServer
+    from control.widgets_claude import ClaudeApiKeyDialog, load_claude_api_key_from_cache
+    import shlex
     import subprocess
     import shutil
+    import tempfile
 
 
 if __name__ == "__main__":
@@ -133,6 +136,9 @@ if __name__ == "__main__":
                 return True
             return False
 
+        # Load cached Anthropic API key for Claude Code
+        load_claude_api_key_from_cache()
+
         # Auto-start server if --start-server flag is provided
         if args.start_server:
             start_control_server_if_needed()
@@ -193,8 +199,36 @@ if __name__ == "__main__":
             python_exec_action.toggled.connect(on_python_exec_toggled)
             settings_menu.addAction(python_exec_action)
 
+            # Add Set Anthropic API Key action
+            def open_api_key_dialog():
+                dialog = ClaudeApiKeyDialog(parent=win)
+                dialog.exec_()
+
+            api_key_action = QAction("Set Anthropic API Key...", win)
+            api_key_action.setToolTip("Set the API key used when launching Claude Code")
+            api_key_action.triggered.connect(open_api_key_dialog)
+            settings_menu.addAction(api_key_action)
+
             # Add Launch Claude Code action
             def launch_claude_code():
+                # Check for API key
+                api_key = control._def.ANTHROPIC_API_KEY
+                if not api_key:
+                    reply = QMessageBox.question(
+                        win,
+                        "API Key Not Set",
+                        "No Anthropic API key is configured.\n\n"
+                        "Claude Code requires an API key to authenticate.\n"
+                        "Would you like to set one now?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes,
+                    )
+                    if reply == QMessageBox.Yes:
+                        open_api_key_dialog()
+                        api_key = control._def.ANTHROPIC_API_KEY
+                    if not api_key:
+                        return
+
                 # Start control server if not running
                 if start_control_server_if_needed():
                     control_server_action.setChecked(True)
@@ -242,29 +276,61 @@ if __name__ == "__main__":
                             )
                     return
 
+                # Write a self-deleting launcher script so the API key
+                # never appears in the terminal's visible command line.
+                try:
+                    if sys.platform == "win32":
+                        fd, script_path = tempfile.mkstemp(suffix=".bat", prefix="squid_claude_")
+                        safe_key = api_key.replace('"', '""')
+                        with os.fdopen(fd, "w") as f:
+                            f.write("@echo off\n")
+                            f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
+                            f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
+                            f.write(f'cd /d "{working_dir}"\n')
+                            f.write("claude\n")
+                            f.write('(goto) 2>nul & del "%~f0"\n')
+                    else:
+                        fd, script_path = tempfile.mkstemp(suffix=".sh", prefix="squid_claude_")
+                        with os.fdopen(fd, "w") as f:
+                            f.write("#!/bin/bash\n")
+                            f.write(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}\n")
+                            f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
+                            f.write(f"rm -f {shlex.quote(script_path)}\n")
+                            f.write(f"cd {shlex.quote(working_dir)}\n")
+                            if sys.platform == "darwin":
+                                f.write("claude\n")
+                            else:
+                                f.write("claude\n")
+                                f.write("exec bash\n")
+                        os.chmod(script_path, 0o700)
+                except Exception as e:
+                    log.error(f"Failed to create launcher script: {e}")
+                    QMessageBox.warning(
+                        win,
+                        "Launch Failed",
+                        f"Failed to create launcher script:\n\n{str(e)}",
+                    )
+                    return
+
                 try:
                     if sys.platform == "darwin":  # macOS
-                        script = f"""
-                        tell application "Terminal"
-                            activate
-                            do script "cd '{working_dir}' && claude"
-                        end tell
-                        """
+                        script = (
+                            'tell application "Terminal"\n'
+                            "    activate\n"
+                            f'    do script "{script_path}"\n'
+                            "end tell"
+                        )
                         subprocess.Popen(["osascript", "-e", script])
 
                     elif sys.platform == "win32":  # Windows
-                        # Quote path to handle spaces
-                        subprocess.Popen(
-                            f'start cmd /k "cd /d \\"{working_dir}\\" && claude"',
-                            shell=True,
-                        )
+                        subprocess.Popen(f'start cmd /k "{script_path}"', shell=True)
 
                     else:  # Linux
                         terminals = [
-                            ["gnome-terminal", "--", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
-                            ["konsole", "-e", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
-                            ["xfce4-terminal", "-e", f'bash -c "cd \\"{working_dir}\\" && claude; exec bash"'],
-                            ["xterm", "-e", f'bash -c "cd \\"{working_dir}\\" && claude; exec bash"'],
+                            ["gnome-terminal", "--", "bash", script_path],
+                            ["konsole", "-e", "bash", script_path],
+                            ["xfce4-terminal", "-e", f"bash {shlex.quote(script_path)}"],
+                            ["xterm", "-e", f"bash {shlex.quote(script_path)}"],
                         ]
                         launched = False
                         for cmd in terminals:
@@ -276,6 +342,7 @@ if __name__ == "__main__":
                                 continue
 
                         if not launched:
+                            os.unlink(script_path)
                             QMessageBox.warning(
                                 win,
                                 "Terminal Not Found",
@@ -286,6 +353,11 @@ if __name__ == "__main__":
                     log.info("Launched Claude Code")
 
                 except Exception as e:
+                    # Clean up temp script on failure
+                    try:
+                        os.unlink(script_path)
+                    except OSError:
+                        pass
                     log.error(f"Failed to launch Claude Code: {e}")
                     QMessageBox.warning(
                         win,
