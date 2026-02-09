@@ -34,7 +34,7 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 
 This automatically:
 - Starts the MCP control server (on-demand)
-- Passes the API key securely if one is set (via a temporary launcher script, not visible in process listings)
+- Passes the API key if one is set (via a temporary launcher script that keeps it out of command-line arguments; the key is set as an environment variable for the Claude Code process)
 - Configures the MCP connection
 - Pre-approves all microscope commands
 

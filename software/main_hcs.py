@@ -283,12 +283,14 @@ if __name__ == "__main__":
                         fd, script_path = tempfile.mkstemp(suffix=".bat", prefix="squid_claude_")
                         with os.fdopen(fd, "w") as f:
                             f.write("@echo off\n")
+                            f.write("setlocal\n")
                             if api_key:
                                 safe_key = api_key.replace("%", "%%").replace('"', '""')
                                 f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
                             f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
                             f.write(f'cd /d "{working_dir}"\n')
                             f.write("claude\n")
+                            f.write("endlocal\n")
                             f.write('(goto) 2>nul & del "%~f0"\n')
                     else:
                         fd, script_path = tempfile.mkstemp(suffix=".sh", prefix="squid_claude_")
@@ -300,8 +302,10 @@ if __name__ == "__main__":
                             f.write(f"rm -f {shlex.quote(script_path)}\n")
                             f.write(f"cd {shlex.quote(working_dir)}\n")
                             f.write("claude\n")
-                            # On Linux, keep the terminal open after claude exits
+                            # On Linux, keep the terminal open after claude exits.
+                            # Unset API key so it doesn't linger in the interactive shell.
                             if sys.platform != "darwin":
+                                f.write("unset ANTHROPIC_API_KEY\n")
                                 f.write("exec bash\n")
                         os.chmod(script_path, 0o700)
                 except Exception as e:
