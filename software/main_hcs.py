@@ -286,7 +286,7 @@ if __name__ == "__main__":
                             if api_key:
                                 safe_key = api_key.replace("%", "%%").replace('"', '""')
                                 f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
-                                f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
+                            f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
                             f.write(f'cd /d "{working_dir}"\n')
                             f.write("claude\n")
                             f.write('(goto) 2>nul & del "%~f0"\n')
@@ -296,7 +296,7 @@ if __name__ == "__main__":
                             f.write("#!/bin/bash\n")
                             if api_key:
                                 f.write(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}\n")
-                                f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
+                            f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
                             f.write(f"rm -f {shlex.quote(script_path)}\n")
                             f.write(f"cd {shlex.quote(working_dir)}\n")
                             f.write("claude\n")
@@ -307,8 +307,8 @@ if __name__ == "__main__":
                 except Exception as e:
                     try:
                         os.unlink(script_path)
-                    except (OSError, NameError):
-                        pass
+                    except (OSError, NameError) as cleanup_err:
+                        log.debug(f"Failed to remove temporary launcher script during cleanup: {cleanup_err}")
                     log.error(f"Failed to create launcher script: {e}")
                     QMessageBox.warning(
                         win,
@@ -319,11 +319,12 @@ if __name__ == "__main__":
 
                 try:
                     if sys.platform == "darwin":  # macOS
-                        escaped_path = script_path.replace("\\", "\\\\").replace('"', '\\"')
+                        bash_cmd = f"bash {shlex.quote(script_path)}"
+                        escaped_cmd = bash_cmd.replace("\\", "\\\\").replace('"', '\\"')
                         script = (
                             'tell application "Terminal"\n'
                             "    activate\n"
-                            f'    do script "bash {escaped_path}"\n'
+                            f'    do script "{escaped_cmd}"\n'
                             "end tell"
                         )
                         subprocess.Popen(["osascript", "-e", script])

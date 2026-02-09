@@ -39,6 +39,8 @@ def load_claude_api_key_from_cache():
     try:
         with open(CACHE_FILE, "r") as f:
             data = yaml.safe_load(f)
+        if data is None:
+            return
         if not isinstance(data, dict):
             log.error("Anthropic API key cache file has unexpected format (expected YAML dict)")
             return
@@ -126,7 +128,7 @@ class ClaudeApiKeyDialog(QDialog):
 
     def _on_text_changed(self):
         if self._is_visible:
-            self._stored_key = self.textedit_api_key.toPlainText().strip()
+            self._stored_key = self.textedit_api_key.toPlainText().replace("\n", "").strip()
 
     def _toggle_visibility(self, show: bool):
         self._is_visible = show
@@ -135,7 +137,7 @@ class ClaudeApiKeyDialog(QDialog):
             self.textedit_api_key.setPlainText(self._stored_key)
             self.btn_show.setText("Hide")
         else:
-            self._stored_key = self.textedit_api_key.toPlainText().strip()
+            self._stored_key = self.textedit_api_key.toPlainText().replace("\n", "").strip()
             self.textedit_api_key.setPlainText(_MASK_CHAR * len(self._stored_key))
             self.textedit_api_key.setReadOnly(True)
             self.btn_show.setText("Show")
@@ -150,7 +152,7 @@ class ClaudeApiKeyDialog(QDialog):
     def _save_key(self):
         """Save the API key to runtime config and cache file."""
         if self._is_visible:
-            self._stored_key = self.textedit_api_key.toPlainText().strip()
+            self._stored_key = self.textedit_api_key.toPlainText().replace("\n", "").strip()
         key = self._stored_key or None
 
         data = {"api_key": key}
