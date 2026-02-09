@@ -38,13 +38,16 @@ def load_claude_api_key_from_cache():
         return
     try:
         with open(CACHE_FILE, "r") as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            log.error("Anthropic API key cache file has unexpected format (expected YAML dict)")
+            return
         key = data.get("api_key")
         if key:
             control._def.ANTHROPIC_API_KEY = key
             log.info("Loaded Anthropic API key from cache")
-    except Exception as e:
-        log.warning(f"Failed to load Anthropic API key from cache: {e}")
+    except (yaml.YAMLError, OSError) as e:
+        log.error(f"Failed to load Anthropic API key from cache: {e}")
 
 
 class ClaudeApiKeyDialog(QDialog):
@@ -138,21 +141,22 @@ class ClaudeApiKeyDialog(QDialog):
         key = control._def.ANTHROPIC_API_KEY or ""
         self._stored_key = key
         # Start masked and read-only
-        self.textedit_api_key.setPlainText(_MASK_CHAR * len(key) if key else "")
+        self.textedit_api_key.setPlainText(_MASK_CHAR * len(key))
         self.textedit_api_key.setReadOnly(True)
 
     def _save_key(self):
-        # Read current text — if visible, use it directly; if masked, use stored key
+        """Save the API key to runtime config and cache file."""
         if self._is_visible:
             self._stored_key = self.textedit_api_key.toPlainText().strip()
         key = self._stored_key or None
-        control._def.ANTHROPIC_API_KEY = key
 
         data = {"api_key": key}
         try:
             os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-            with open(CACHE_FILE, "w") as f:
+            fd = os.open(CACHE_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
                 yaml.dump(data, f, default_flow_style=False)
+            control._def.ANTHROPIC_API_KEY = key
             self.label_status.setText("Saved" if key else "Cleared")
             self.label_status.setStyleSheet("color: green;")
             log.info("Anthropic API key %s in cache", "saved" if key else "cleared")
@@ -164,3 +168,4 @@ class ClaudeApiKeyDialog(QDialog):
     def _clear_key(self):
         self._stored_key = ""
         self.textedit_api_key.clear()
+        self._save_key()

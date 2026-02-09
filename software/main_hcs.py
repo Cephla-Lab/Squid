@@ -276,12 +276,14 @@ if __name__ == "__main__":
                             )
                     return
 
-                # Write a self-deleting launcher script so the API key
-                # never appears in the terminal's visible command line.
+                # Write a temporary launcher script so the API key never appears
+                # in the terminal's visible command line (e.g., in `ps` output).
+                # On Unix, the script deletes itself before launching claude.
+                # On Windows, the batch file self-deletes after claude exits.
                 try:
                     if sys.platform == "win32":
                         fd, script_path = tempfile.mkstemp(suffix=".bat", prefix="squid_claude_")
-                        safe_key = api_key.replace('"', '""')
+                        safe_key = api_key.replace("%", "%%").replace('"', '""')
                         with os.fdopen(fd, "w") as f:
                             f.write("@echo off\n")
                             f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
@@ -297,10 +299,9 @@ if __name__ == "__main__":
                             f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
                             f.write(f"rm -f {shlex.quote(script_path)}\n")
                             f.write(f"cd {shlex.quote(working_dir)}\n")
-                            if sys.platform == "darwin":
-                                f.write("claude\n")
-                            else:
-                                f.write("claude\n")
+                            f.write("claude\n")
+                            # On Linux, keep the terminal open after claude exits
+                            if sys.platform != "darwin":
                                 f.write("exec bash\n")
                         os.chmod(script_path, 0o700)
                 except Exception as e:
@@ -314,10 +315,11 @@ if __name__ == "__main__":
 
                 try:
                     if sys.platform == "darwin":  # macOS
+                        escaped_path = script_path.replace("\\", "\\\\").replace('"', '\\"')
                         script = (
                             'tell application "Terminal"\n'
                             "    activate\n"
-                            f'    do script "{script_path}"\n'
+                            f'    do script "{escaped_path}"\n'
                             "end tell"
                         )
                         subprocess.Popen(["osascript", "-e", script])
@@ -356,8 +358,11 @@ if __name__ == "__main__":
                     # Clean up temp script on failure
                     try:
                         os.unlink(script_path)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_err:
+                        log.warning(
+                            f"Failed to clean up launcher script at {script_path}: {cleanup_err}. "
+                            "This file contains the API key and should be manually deleted."
+                        )
                     log.error(f"Failed to launch Claude Code: {e}")
                     QMessageBox.warning(
                         win,
