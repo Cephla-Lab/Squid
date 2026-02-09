@@ -44,6 +44,9 @@ def load_claude_api_key_from_cache():
             return
         key = data.get("api_key")
         if key:
+            if not isinstance(key, str):
+                log.error("Anthropic API key cache has invalid type " f"(expected str, got {type(key).__name__})")
+                return
             control._def.ANTHROPIC_API_KEY = key
             log.info("Loaded Anthropic API key from cache")
     except (yaml.YAMLError, OSError) as e:
@@ -160,7 +163,7 @@ class ClaudeApiKeyDialog(QDialog):
             self.label_status.setText("Saved" if key else "Cleared")
             self.label_status.setStyleSheet("color: green;")
             log.info("Anthropic API key %s in cache", "saved" if key else "cleared")
-        except Exception as e:
+        except (OSError, yaml.YAMLError) as e:
             self.label_status.setText(f"Failed to save: {e}")
             self.label_status.setStyleSheet("color: red;")
             log.error(f"Failed to save Anthropic API key: {e}")

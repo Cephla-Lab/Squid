@@ -305,6 +305,10 @@ if __name__ == "__main__":
                                 f.write("exec bash\n")
                         os.chmod(script_path, 0o700)
                 except Exception as e:
+                    try:
+                        os.unlink(script_path)
+                    except (OSError, NameError):
+                        pass
                     log.error(f"Failed to create launcher script: {e}")
                     QMessageBox.warning(
                         win,
@@ -319,7 +323,7 @@ if __name__ == "__main__":
                         script = (
                             'tell application "Terminal"\n'
                             "    activate\n"
-                            f'    do script "{escaped_path}"\n'
+                            f'    do script "bash {escaped_path}"\n'
                             "end tell"
                         )
                         subprocess.Popen(["osascript", "-e", script])
@@ -340,7 +344,7 @@ if __name__ == "__main__":
                                 subprocess.Popen(cmd)
                                 launched = True
                                 break
-                            except FileNotFoundError:
+                            except OSError:
                                 continue
 
                         if not launched:
@@ -351,6 +355,7 @@ if __name__ == "__main__":
                                 "Could not find a supported terminal emulator.\n\n"
                                 "Supported: gnome-terminal, konsole, xfce4-terminal, xterm",
                             )
+                            return
 
                     log.info("Launched Claude Code")
 
