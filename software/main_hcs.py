@@ -211,23 +211,21 @@ if __name__ == "__main__":
 
             # Add Launch Claude Code action
             def launch_claude_code():
-                # Check for API key
+                # Check for API key (optional — user may already be logged in via claude.ai)
                 api_key = control._def.ANTHROPIC_API_KEY
                 if not api_key:
                     reply = QMessageBox.question(
                         win,
                         "API Key Not Set",
                         "No Anthropic API key is configured.\n\n"
-                        "Claude Code requires an API key to authenticate.\n"
-                        "Would you like to set one now?",
+                        "If you are already logged into claude.ai, you can skip this.\n"
+                        "Otherwise, would you like to set an API key now?",
                         QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.Yes,
+                        QMessageBox.No,
                     )
                     if reply == QMessageBox.Yes:
                         open_api_key_dialog()
                         api_key = control._def.ANTHROPIC_API_KEY
-                    if not api_key:
-                        return
 
                 # Start control server if not running
                 if start_control_server_if_needed():
@@ -283,10 +281,11 @@ if __name__ == "__main__":
                 try:
                     if sys.platform == "win32":
                         fd, script_path = tempfile.mkstemp(suffix=".bat", prefix="squid_claude_")
-                        safe_key = api_key.replace("%", "%%").replace('"', '""')
                         with os.fdopen(fd, "w") as f:
                             f.write("@echo off\n")
-                            f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
+                            if api_key:
+                                safe_key = api_key.replace("%", "%%").replace('"', '""')
+                                f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
                             f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
                             f.write(f'cd /d "{working_dir}"\n')
                             f.write("claude\n")
@@ -295,7 +294,8 @@ if __name__ == "__main__":
                         fd, script_path = tempfile.mkstemp(suffix=".sh", prefix="squid_claude_")
                         with os.fdopen(fd, "w") as f:
                             f.write("#!/bin/bash\n")
-                            f.write(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}\n")
+                            if api_key:
+                                f.write(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}\n")
                             f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
                             f.write(f"rm -f {shlex.quote(script_path)}\n")
                             f.write(f"cd {shlex.quote(working_dir)}\n")

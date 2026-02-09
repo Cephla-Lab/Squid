@@ -27,18 +27,20 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 ### Option A: Launch from GUI (Recommended)
 
 1. Start the Squid GUI
-2. Go to **Settings → Set Anthropic API Key...** and enter your API key (get one from [console.anthropic.com](https://console.anthropic.com/settings/keys))
+2. *(Optional)* Go to **Settings → Set Anthropic API Key...** and enter your API key (get one from [console.anthropic.com](https://console.anthropic.com/settings/keys)). If you are already logged into claude.ai, you can skip this step.
 3. Go to **Settings → Launch Claude Code**
 4. If Claude Code is not installed, you'll be prompted to install it automatically
 5. A terminal will open with Claude Code running in the correct directory
 
 This automatically:
 - Starts the MCP control server (on-demand)
-- Passes the API key securely (via a temporary launcher script, not visible in process listings)
+- Passes the API key securely if one is set (via a temporary launcher script, not visible in process listings)
 - Configures the MCP connection
 - Pre-approves all microscope commands
 
-The API key is cached locally in `cache/claude_api_key.yaml` and persists across restarts. You only need to set it once.
+**Authentication:** Claude Code supports two authentication methods:
+- **claude.ai login** (OAuth) — If you are already logged in via `claude login`, no API key is needed
+- **API key** — Set via **Settings → Set Anthropic API Key...**; cached locally in `cache/claude_api_key.yaml` and persists across restarts
 
 ### On-Demand Control Server
 
