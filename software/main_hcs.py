@@ -348,7 +348,13 @@ if __name__ == "__main__":
                                 continue
 
                         if not launched:
-                            os.unlink(script_path)
+                            try:
+                                os.unlink(script_path)
+                            except OSError as cleanup_err:
+                                log.warning(
+                                    f"Failed to clean up launcher script at {script_path}: {cleanup_err}. "
+                                    "This file contains the API key and should be manually deleted."
+                                )
                             QMessageBox.warning(
                                 win,
                                 "Terminal Not Found",
