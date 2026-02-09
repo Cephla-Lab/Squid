@@ -286,7 +286,7 @@ if __name__ == "__main__":
                             if api_key:
                                 safe_key = api_key.replace("%", "%%").replace('"', '""')
                                 f.write(f'set "ANTHROPIC_API_KEY={safe_key}"\n')
-                            f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
+                                f.write('set "CLAUDE_MODEL=claude-opus-4-6"\n')
                             f.write(f'cd /d "{working_dir}"\n')
                             f.write("claude\n")
                             f.write('(goto) 2>nul & del "%~f0"\n')
@@ -296,7 +296,7 @@ if __name__ == "__main__":
                             f.write("#!/bin/bash\n")
                             if api_key:
                                 f.write(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}\n")
-                            f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
+                                f.write("export CLAUDE_MODEL=claude-opus-4-6\n")
                             f.write(f"rm -f {shlex.quote(script_path)}\n")
                             f.write(f"cd {shlex.quote(working_dir)}\n")
                             f.write("claude\n")
