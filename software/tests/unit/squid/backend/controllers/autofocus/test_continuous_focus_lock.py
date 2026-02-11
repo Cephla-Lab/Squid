@@ -1,6 +1,7 @@
 """Tests for ContinuousFocusLockController."""
 
 import math
+import time
 
 from squid.backend.controllers.autofocus.continuous_focus_lock import (
     ContinuousFocusLockController,
@@ -9,6 +10,7 @@ from squid.backend.controllers.autofocus.laser_auto_focus_controller import Lase
 from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.events import (
     EventBus,
+    FocusLockMetricsUpdated,
     FocusLockPiezoLimitCritical,
     FocusLockStatusChanged,
     FocusLockWarning,
@@ -63,6 +65,27 @@ class _DummyPiezoService:
         self.position = position_um
 
 
+class _CoupledLaserAF(_DummyLaserAF):
+    """Synthetic displacement source coupled to piezo position."""
+
+    def __init__(self, piezo: _DummyPiezoService, disturbance_um: float = 0.0) -> None:
+        super().__init__()
+        self._piezo = piezo
+        self.disturbance_um = disturbance_um
+
+    def measure_displacement_continuous(self) -> LaserAFResult:
+        displacement = self.disturbance_um + (self._piezo.get_position() - 150.0)
+        return LaserAFResult(
+            displacement_um=displacement,
+            spot_intensity=100.0,
+            spot_snr=10.0,
+            correlation=0.95,
+            spot_x_px=100.0,
+            spot_y_px=50.0,
+            timestamp=time.monotonic(),
+        )
+
+
 def test_control_fn_negative_feedback():
     controller = ContinuousFocusLockController(
         laser_af=_DummyLaserAF(),
@@ -74,6 +97,43 @@ def test_control_fn_negative_feedback():
     dt = 1.0 / 60.0
     assert controller._control_fn(1.0, dt) < 0
     assert controller._control_fn(-1.0, dt) > 0
+
+
+def test_closed_loop_feedback_rejects_step_disturbance_without_camera():
+    bus = EventBus()
+    piezo = _DummyPiezoService()
+    laser_af = _CoupledLaserAF(piezo, disturbance_um=0.0)
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=piezo,
+        event_bus=bus,
+        config=FocusLockConfig(
+            loop_rate_hz=80,
+            metrics_rate_hz=20,
+            buffer_length=3,
+            acquire_threshold_um=0.2,
+            maintain_threshold_um=2.0,
+            recovery_attempts=3,
+            recovery_delay_s=0.05,
+        ),
+    )
+
+    controller.start(target_um=0.0)
+    try:
+        assert controller.wait_for_lock(timeout_s=1.0)
+        baseline_position = piezo.get_position()
+
+        # Inject a +1 um disturbance and verify controller drives piezo down.
+        laser_af.disturbance_um = 1.0
+        time.sleep(0.35)
+
+        result = laser_af.measure_displacement_continuous()
+        error_um = controller._compute_error(result)
+
+        assert piezo.get_position() < baseline_position - 0.2
+        assert abs(error_um) < 0.3
+    finally:
+        controller.stop()
 
 
 def test_lock_state_transitions():
@@ -562,6 +622,41 @@ def test_set_focus_lock_params_command():
 
     assert controller._config.buffer_length == 10
     assert controller._config.min_spot_snr == 5.0
+
+
+def test_set_focus_lock_params_command_resizes_runtime_state():
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+        config=FocusLockConfig(buffer_length=10),
+    )
+    controller._lock_buffer_fill = 9
+    controller._error_history.extend([0.1] * 20)
+
+    controller._on_set_params(SetFocusLockParamsCommand(buffer_length=3))
+
+    assert controller._lock_buffer_fill == 3
+    assert controller._error_history.maxlen == 10
+
+
+def test_quality_drops_to_zero_when_lost():
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+    )
+    events: list[FocusLockMetricsUpdated] = []
+    bus.subscribe(FocusLockMetricsUpdated, events.append)
+
+    controller._set_status("lost")
+    result = controller._laser_af.measure_displacement_continuous()
+    controller._publish_metrics(result, error_um=0.0, is_good=False)
+    bus.drain()
+
+    assert events
+    assert events[-1].lock_quality == 0.0
 
 
 def test_start_precondition_not_initialized():

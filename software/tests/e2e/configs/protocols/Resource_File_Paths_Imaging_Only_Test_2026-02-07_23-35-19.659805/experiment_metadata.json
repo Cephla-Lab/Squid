@@ -1,0 +1,24 @@
+{
+  "protocol": {
+    "name": "Resource File Paths Imaging Only Test",
+    "version": "2.0",
+    "path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/resource_file_paths_imaging_only.yaml"
+  },
+  "rounds": [
+    {
+      "index": 0,
+      "name": "BF Check",
+      "steps": [
+        "imaging"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Fluorescence Round",
+      "steps": [
+        "imaging"
+      ]
+    }
+  ],
+  "created_at": "2026-02-07T23:35:19.666001"
+}

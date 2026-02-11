@@ -46,6 +46,7 @@ class NDViewerTab(QWidget):
     _sig_start_zarr_acquisition = Signal(list, list, int, list, int, int, str)  # fov_paths, channels, num_z, fov_labels, height, width, experiment_id
     _sig_start_zarr_acquisition_6d = Signal(list, list, int, list, int, int, list, str)  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels, experiment_id
     _sig_notify_zarr_frame = Signal(int, int, int, str, str, int)  # t, fov_idx, z, channel, experiment_id, region_idx
+    _MAX_REGISTER_EVENTS_PER_FLUSH = 32
 
     def __init__(
         self,
@@ -60,6 +61,11 @@ class NDViewerTab(QWidget):
         self._experiment_id: Optional[str] = None  # Track active push-mode acquisition
         self._subscriptions = []
         self._unsupported_extensions = set()
+        self._pending_register_events: List[tuple[int, int, int, str, str, str]] = []
+        self._register_flush_timer = QTimer(self)
+        self._register_flush_timer.setSingleShot(True)
+        self._register_flush_timer.setInterval(40)
+        self._register_flush_timer.timeout.connect(self._flush_register_image_queue)
 
         self._layout = QVBoxLayout()
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -232,6 +238,9 @@ class NDViewerTab(QWidget):
             except Exception:
                 self._log.exception("Error closing LightweightViewer")
             self._viewer = None
+        if self._register_flush_timer.isActive():
+            self._register_flush_timer.stop()
+        self._pending_register_events.clear()
         self._dataset_path = None
         self._experiment_id = None
 
@@ -284,6 +293,9 @@ class NDViewerTab(QWidget):
                 self._layout.addWidget(self._viewer, 1)
 
             # Start push-mode acquisition
+            if self._register_flush_timer.isActive():
+                self._register_flush_timer.stop()
+            self._pending_register_events.clear()
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
             self._experiment_id = experiment_id
 
@@ -362,6 +374,7 @@ class NDViewerTab(QWidget):
             return
 
         self._log.debug(f"Acquisition ended: {experiment_id}")
+        self._flush_register_image_queue()
 
         if self._viewer is not None:
             try:
@@ -676,7 +689,22 @@ class NDViewerTab(QWidget):
         self, t: int, fov_idx: int, z: int, channel: str, filepath: str, experiment_id: str,
     ) -> None:
         """Slot for _sig_register_image."""
-        self.register_image(t, fov_idx, z, channel, filepath, experiment_id)
+        self._pending_register_events.append((t, fov_idx, z, channel, filepath, experiment_id))
+        if not self._register_flush_timer.isActive():
+            self._register_flush_timer.start()
+
+    def _flush_register_image_queue(self) -> None:
+        """Process pending NDViewer image registrations in bounded batches."""
+        if not self._pending_register_events:
+            return
+
+        batch = self._pending_register_events[: self._MAX_REGISTER_EVENTS_PER_FLUSH]
+        del self._pending_register_events[: len(batch)]
+        for t, fov_idx, z, channel, filepath, experiment_id in batch:
+            self.register_image(t, fov_idx, z, channel, filepath, experiment_id)
+
+        if self._pending_register_events:
+            self._register_flush_timer.start()
 
     def _handle_end_acquisition(self, experiment_id: str, dataset_path: str) -> None:
         """Slot for _sig_end_acquisition."""

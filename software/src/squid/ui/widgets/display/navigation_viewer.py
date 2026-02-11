@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -34,7 +35,6 @@ from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
     handles,
-    AcquisitionStateChanged,
     BinningChanged,
     ClearScanCoordinatesCommand,
     ClickToMoveEnabledChanged,
@@ -43,6 +43,7 @@ from squid.core.events import (
     FocusPointOverlayVisibilityChanged,
     MoveStageToCommand,
     ObjectiveChanged,
+    ROIChanged,
     StageMovementStopped,
     WellplateFormatChanged,
 )
@@ -100,8 +101,10 @@ class NavigationViewer(QFrame):
         self.fov_size_mm: float = 0.0
         self.fov_width_mm: float = 0.0
         self.fov_height_mm: float = 0.0
+        self._last_stage_pos: Optional[Pos] = None
         self._pending_fovs: List[FovCenter] = []  # Pending FOV positions (red)
         self._completed_fovs: List[FovCenter] = []  # Completed FOV positions (blue)
+        self._queued_completed_fovs: List[FovCenter] = []  # Pending paint queue for completed FOVs
         self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
         self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
         # Debounce timer for batching FOV registration redraws
@@ -109,7 +112,11 @@ class NavigationViewer(QFrame):
         self._redraw_timer.setSingleShot(True)
         self._redraw_timer.setInterval(50)  # 50ms debounce
         self._redraw_timer.timeout.connect(self._redraw_scan_overlay)
-        self._redraw_pending: bool = False
+        # Batch completed-FOV paints so long acquisitions do not stall the UI.
+        self._completed_paint_timer: QTimer = QTimer(self)
+        self._completed_paint_timer.setSingleShot(True)
+        self._completed_paint_timer.setInterval(75)
+        self._completed_paint_timer.timeout.connect(self._flush_completed_fov_paints)
         self.image_height: int = 0
         self.image_width: int = 0
         self.rows: int = 0
@@ -216,6 +223,7 @@ class NavigationViewer(QFrame):
             z_mm=event.z_mm,
             theta_rad=getattr(event, "theta_rad", None),
         )
+        self._last_stage_pos = pos
         self.draw_fov_current_location(pos)
 
     @handles(ClickToMoveEnabledChanged)
@@ -238,10 +246,10 @@ class NavigationViewer(QFrame):
             event.number_of_skip,
         )
 
-    @handles(ObjectiveChanged, BinningChanged)
+    @handles(ObjectiveChanged, BinningChanged, ROIChanged)
     def _on_redraw_trigger(self, _event: object) -> None:
         self._log.info(
-            f"ObjectiveChanged/BinningChanged: redrawing. "
+            f"ObjectiveChanged/BinningChanged/ROIChanged: redrawing. "
             f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
         )
         self.update_display_properties(self.sample)
@@ -249,21 +257,11 @@ class NavigationViewer(QFrame):
             f"After redraw: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
         )
 
-    @handles(AcquisitionStateChanged)
-    def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
-        """Clear completed FOVs when a new acquisition starts."""
-        if event.in_progress and not event.is_aborting:
-            self._log.info(
-                f"Acquisition started: clearing {len(self._completed_fovs)} completed FOVs"
-            )
-            self._completed_fovs.clear()
-            self._redraw_scan_overlay()
-
     @handles(CurrentFOVRegistered)
     def _on_current_fov_registered(self, event: CurrentFOVRegistered) -> None:
         """Mark an FOV as completed (moves from red to blue)."""
         pos = (event.x_mm, event.y_mm)
-        self._log.info(
+        self._log.debug(
             f"CurrentFOVRegistered received: ({pos[0]:.6f}, {pos[1]:.6f}), "
             f"size=({event.fov_width_mm}, {event.fov_height_mm}), "
             f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
@@ -302,11 +300,12 @@ class NavigationViewer(QFrame):
         )
         if not already_completed:
             self._completed_fovs.append(completed_fov)
-        self._log.info(
+        self._log.debug(
             f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}, "
             f"matched={matched}"
         )
-        self._redraw_scan_overlay()
+        # Hot path during acquisition: batch paint commits for completed FOVs.
+        self._queue_completed_fov_paint(completed_fov)
 
     @handles(AddScanCoordinateRegion)
     def _on_add_scan_coordinate_region(self, update: AddScanCoordinateRegion) -> None:
@@ -334,6 +333,15 @@ class NavigationViewer(QFrame):
         )
         self._clear_pending_fovs()
 
+    @handles(ClearScanCoordinatesCommand)
+    def _on_clear_scan_coordinates_command(self, event: ClearScanCoordinatesCommand) -> None:
+        if event.clear_displayed_fovs:
+            self._log.info(
+                "ClearScanCoordinatesCommand(clear_displayed_fovs=True): "
+                f"clearing pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
+            )
+            self.clear_overlay()
+
     def clear_slide(self) -> None:
         if self.background_item is not None:
             self.view.removeItem(self.background_item)
@@ -354,26 +362,60 @@ class NavigationViewer(QFrame):
         self.slide = None
         self.scan_overlay = None
 
+    @staticmethod
+    def _parse_circle_sample_diameter(sample: str) -> Optional[float]:
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*mm\s*circle\s*", sample, flags=re.IGNORECASE)
+        if match is None:
+            return None
+        diameter_mm = float(match.group(1))
+        if diameter_mm <= 0:
+            return None
+        return diameter_mm
+
+    @staticmethod
+    def _build_circle_sample_image(diameter_mm: float) -> np.ndarray:
+        # Keep the same canvas size as existing plate assets for consistent UI behavior.
+        image_width = 1509
+        image_height = 1010
+        image = np.full((image_height, image_width, 3), 255, dtype=np.uint8)
+
+        sbs_plate_width_mm = 127.76
+        sbs_plate_height_mm = 85.48
+        px_per_mm_x = image_width / sbs_plate_width_mm
+        px_per_mm_y = image_height / sbs_plate_height_mm
+        diameter_px = int(round(diameter_mm * min(px_per_mm_x, px_per_mm_y)))
+        radius_px = max(1, diameter_px // 2)
+        center = (image_width // 2, image_height // 2)
+
+        cv2.circle(image, center, radius_px, (0, 0, 0), thickness=3, lineType=cv2.LINE_AA)
+        return image
+
     def update_display_properties(self, sample: str) -> None:
         self.sample = sample
         self.clear_slide()
 
-        img_path = self.image_paths.get(sample, self.image_paths["glass slide"])
-        full_path = str(Path(PROJECT_ROOT) / img_path)
-        if not os.path.isfile(full_path):
-            raise FileNotFoundError(f"NavigationViewer image not found: {full_path}")
+        circle_diameter_mm = self._parse_circle_sample_diameter(sample)
+        if circle_diameter_mm is not None:
+            self.slide = self._build_circle_sample_image(circle_diameter_mm)
+        else:
+            img_path = self.image_paths.get(sample, self.image_paths["glass slide"])
+            full_path = str(Path(PROJECT_ROOT) / img_path)
+            if not os.path.isfile(full_path):
+                raise FileNotFoundError(f"NavigationViewer image not found: {full_path}")
 
-        self.slide = cv2.imread(full_path, cv2.IMREAD_COLOR)
-        if self.slide is None:
-            raise RuntimeError(f"Failed to load navigation image: {full_path}")
+            self.slide = cv2.imread(full_path, cv2.IMREAD_COLOR)
+            if self.slide is None:
+                raise RuntimeError(f"Failed to load navigation image: {full_path}")
 
-        self.slide = cv2.cvtColor(self.slide, cv2.COLOR_BGR2RGB)
+            self.slide = cv2.cvtColor(self.slide, cv2.COLOR_BGR2RGB)
         self.image_height, self.image_width = self.slide.shape[:2]
 
         self._update_scale_and_origin()
         self._create_background_layer()
         self._create_overlays()
         self._redraw_scan_overlay()
+        if self._last_stage_pos is not None:
+            self.draw_fov_current_location(self._last_stage_pos)
 
     def _update_scale_and_origin(self) -> None:
         pixel_size_factor = self.objectiveStore.get_pixel_size_factor() or 1.0
@@ -457,6 +499,9 @@ class NavigationViewer(QFrame):
     def clear_overlay(self) -> None:
         """Clear all FOVs (both pending and completed). Used by Clear Scan Grid button."""
         self._log.info(f"clear_overlay called, clearing {len(self._pending_fovs)} pending and {len(self._completed_fovs)} completed FOVs")
+        if self._completed_paint_timer.isActive():
+            self._completed_paint_timer.stop()
+        self._queued_completed_fovs.clear()
         if self.scan_overlay is not None:
             self.scan_overlay[:] = 0
         if self.scan_overlay_item is not None:
@@ -507,11 +552,11 @@ class NavigationViewer(QFrame):
     def register_fov_to_image(self, fov: FovCenter) -> None:
         """Add a pending FOV position (drawn in red)."""
         self._pending_fovs.append(fov)
-        self._log.info(
+        self._log.debug(
             f"Registered pending FOV: ({fov.x_mm}, {fov.y_mm}), "
             f"size=({fov.fov_width_mm}, {fov.fov_height_mm}), total pending={len(self._pending_fovs)}"
         )
-        self._redraw_scan_overlay()
+        self._schedule_redraw()
 
     def deregister_fovs_from_image(self, fov_centers: List[FovCenter]) -> None:
         # Only remove from pending - completed FOVs stay visible until explicitly cleared
@@ -553,14 +598,41 @@ class NavigationViewer(QFrame):
         bottom_right = (x_px + half_w, y_px + half_h)
         cv2.rectangle(overlay, top_left, bottom_right, color, thickness=thickness)
 
+    def _queue_completed_fov_paint(self, fov: FovCenter) -> None:
+        self._queued_completed_fovs.append(fov)
+        self._completed_paint_timer.start()
+
     def _schedule_redraw(self) -> None:
         """Schedule a debounced redraw. Multiple calls within 50ms are coalesced."""
         # Restart the timer on each call to batch rapid updates
         self._redraw_timer.start()
 
+    def _flush_completed_fov_paints(self) -> None:
+        if not self._queued_completed_fovs:
+            return
+        if self.scan_overlay is None or self.scan_overlay_item is None:
+            self._queued_completed_fovs.clear()
+            self._schedule_redraw()
+            return
+
+        thickness = self._get_zoom_adjusted_thickness()
+        for fov in self._queued_completed_fovs:
+            self._draw_fov_box(
+                self.scan_overlay,
+                fov.x_mm,
+                fov.y_mm,
+                color=(0, 0, 255, 200),
+                thickness=thickness,
+                fov_width_mm=fov.fov_width_mm,
+                fov_height_mm=fov.fov_height_mm,
+            )
+        self._queued_completed_fovs.clear()
+        self.scan_overlay_item.setImage(self.scan_overlay)
+
     def _redraw_scan_overlay(self) -> None:
         if self.scan_overlay is None or self.scan_overlay_item is None:
             return
+        self._queued_completed_fovs.clear()
         self.scan_overlay[:] = 0
         thickness = self._get_zoom_adjusted_thickness()
         # Draw pending FOVs in red
@@ -614,7 +686,7 @@ class NavigationViewer(QFrame):
         self._cleanup_subscriptions()
         super().closeEvent(event)
 
-    def _on_destroyed(self) -> None:
+    def _on_destroyed(self, _obj: object = None) -> None:
         """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
         self._cleanup_subscriptions()
 

@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from squid.core.events import (
+    ObjectiveChanged,
     EventBus,
     SelectedWellsChanged,
     SetWellSelectionScanCoordinatesCommand,
@@ -16,6 +17,7 @@ from squid.core.events import (
     ClearScanCoordinatesCommand,
     SortScanCoordinatesCommand,
     ActiveAcquisitionTabChanged,
+    WellplateFormatChanged,
 )
 from squid.backend.managers.scan_coordinates.scan_coordinates import ScanCoordinates
 from squid.backend.managers.objective_store import ObjectiveStore
@@ -222,4 +224,69 @@ class TestWellSelectionAcquisitionFlow:
         assert total_fovs > 0, (
             f"Full flow: No FOVs. regions={list(scan_coords.region_fov_coordinates.keys())}, "
             f"cells={scan_coords._selected_well_cells}"
+        )
+
+    def test_well_selection_reapplies_after_wellplate_format_change(self, event_bus, scan_coords):
+        """Format change should regenerate selected-well coordinates, not leave regions empty."""
+        event_bus.publish(SelectedWellsChanged(
+            format_name="96 well plate",
+            selected_cells=((0, 0), (0, 1)),
+        ))
+        event_bus.publish(SetWellSelectionScanCoordinatesCommand(
+            scan_size_mm=1.0,
+            overlap_percent=10.0,
+            shape="Square",
+        ))
+        event_bus.drain()
+        assert len(scan_coords.region_fov_coordinates) > 0
+
+        event_bus.publish(WellplateFormatChanged(
+            format_name="384 well plate",
+            rows=16,
+            cols=24,
+            well_spacing_mm=4.5,
+            well_size_mm=3.4,
+            a1_x_mm=12.13,
+            a1_y_mm=8.99,
+            a1_x_pixel=143,
+            a1_y_pixel=90,
+            number_of_skip=0,
+        ))
+        event_bus.drain()
+
+        assert len(scan_coords.region_fov_coordinates) > 0, (
+            "Wellplate format change should regenerate well-selection coordinates"
+        )
+        total_fovs = sum(len(c) for c in scan_coords.region_fov_coordinates.values())
+        assert total_fovs > 0
+
+    def test_well_selection_reapplies_after_objective_change(self, event_bus, scan_coords, mock_objective_store):
+        """Objective change should regenerate selected-well coordinates using new pixel factor."""
+        mock_objective_store.get_pixel_size_factor.return_value = 1.0
+        event_bus.publish(SelectedWellsChanged(
+            format_name="96 well plate",
+            selected_cells=((0, 0),),
+        ))
+        event_bus.publish(SetWellSelectionScanCoordinatesCommand(
+            scan_size_mm=3.0,
+            overlap_percent=10.0,
+            shape="Square",
+        ))
+        event_bus.drain()
+        count_before = sum(len(c) for c in scan_coords.region_fov_coordinates.values())
+        assert count_before > 0
+
+        mock_objective_store.get_pixel_size_factor.return_value = 2.0
+        event_bus.publish(ObjectiveChanged(
+            position=0,
+            objective_name="20x",
+            magnification=20.0,
+            pixel_size_um=2.0,
+        ))
+        event_bus.drain()
+        count_after = sum(len(c) for c in scan_coords.region_fov_coordinates.values())
+
+        assert count_after > 0
+        assert count_after != count_before, (
+            "Objective change should regenerate with updated FOV scaling"
         )

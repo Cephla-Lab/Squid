@@ -287,7 +287,14 @@ class ContinuousFocusLockController(BaseController):
         if updates:
             with self._lock:
                 self._config = self._config.model_copy(update=updates)
-            pass
+                # Keep runtime state consistent with updated thresholds/buffer.
+                self._lock_buffer_fill = min(self._lock_buffer_fill, self._config.buffer_length)
+                self._error_history = deque(
+                    self._error_history,
+                    maxlen=max(10, self._config.buffer_length * 3),
+                )
+            # Refresh UI-visible lock bar length even if status value is unchanged.
+            self._set_status(self._status)
 
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""
@@ -655,9 +662,23 @@ class ContinuousFocusLockController(BaseController):
         else:
             current_quality = 1.0
 
-        # Update smoothed quality with exponential moving average
-        alpha = 0.1  # Smoothing factor (lower = smoother)
-        self._smoothed_quality = alpha * current_quality + (1 - alpha) * self._smoothed_quality
+        # Keep quality aligned with lock state so UI doesn't report "excellent"
+        # quality while lock is clearly not established.
+        status = self.status
+        if status in ("lost", "searching"):
+            current_quality = 0.0
+        elif status == "recovering":
+            current_quality = min(current_quality, 0.4)
+        elif not is_good:
+            current_quality = min(current_quality, 0.2)
+
+        # Update smoothed quality with exponential moving average, but force
+        # immediate drop when lock is explicitly lost/searching.
+        if status in ("lost", "searching"):
+            self._smoothed_quality = 0.0
+        else:
+            alpha = 0.1  # Smoothing factor (lower = smoother)
+            self._smoothed_quality = alpha * current_quality + (1 - alpha) * self._smoothed_quality
 
         z_position = self._piezo_service.get_position()
 

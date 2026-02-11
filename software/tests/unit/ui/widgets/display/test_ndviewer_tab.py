@@ -105,6 +105,7 @@ class TestNDViewerTabGoToFov:
 
         # Create mock viewer
         mock_viewer = MagicMock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -126,6 +127,7 @@ class TestNDViewerTabGoToFov:
         tab = NDViewerTab()
 
         mock_viewer = MagicMock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = True
         mock_viewer.get_fov_list.return_value = [
             {"region": "A1", "fov": 0},
@@ -142,6 +144,7 @@ class TestNDViewerTabGoToFov:
         tab = NDViewerTab()
 
         mock_viewer = MagicMock()
+        mock_viewer.is_push_mode_active.return_value = False
         mock_viewer.has_fov_dimension.return_value = False
 
         tab._viewer = mock_viewer
@@ -221,3 +224,37 @@ class TestFindFlatFovIndex:
 
         result = tab._find_flat_fov_index("Z9", 99)
         assert result is None
+
+
+class TestNDViewerRegisterQueue:
+    """Tests for batched NDViewer image registration queue."""
+
+    def test_handle_register_image_queues_and_flushes_in_batches(self, qapp):
+        tab = NDViewerTab()
+        tab.register_image = MagicMock()
+
+        for i in range(100):
+            tab._handle_register_image(0, i, 0, "BF", f"/tmp/f{i}.tif", "exp")
+
+        assert len(tab._pending_register_events) == 100
+
+        tab._flush_register_image_queue()
+        assert tab.register_image.call_count == tab._MAX_REGISTER_EVENTS_PER_FLUSH
+        assert len(tab._pending_register_events) == 100 - tab._MAX_REGISTER_EVENTS_PER_FLUSH
+
+    def test_end_acquisition_flushes_pending_register_events(self, qapp):
+        tab = NDViewerTab()
+        tab._experiment_id = "exp"
+        tab.register_image = MagicMock()
+        tab._viewer = MagicMock()
+        tab._viewer.is_push_mode_active.return_value = True
+        tab._viewer.has_registered_images.return_value = True
+
+        for i in range(5):
+            tab._handle_register_image(0, i, 0, "BF", f"/tmp/f{i}.tif", "exp")
+
+        assert len(tab._pending_register_events) == 5
+
+        tab.end_acquisition("exp")
+        assert tab.register_image.call_count == 5
+        assert len(tab._pending_register_events) == 0

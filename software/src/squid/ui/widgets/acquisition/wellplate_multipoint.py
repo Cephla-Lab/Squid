@@ -49,6 +49,7 @@ from squid.core.events import (
     RequestScanCoordinatesSnapshotCommand,
     ScanCoordinatesSnapshot,
     FocusLockModeChanged,
+    SetFocusLockParamsCommand,
     handles,
 )
 from squid.ui.widgets.base import EventBusFrame
@@ -942,6 +943,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
         self.checkbox_time.toggled.connect(self.on_time_toggled)
         self.checkbox_focus_lock.toggled.connect(self.on_focus_lock_toggled)
+        self.spinbox_buffer_length.valueChanged.connect(self._publish_focus_lock_params)
+        self.spinbox_recovery_attempts.valueChanged.connect(self._publish_focus_lock_params)
+        self.spinbox_min_snr.valueChanged.connect(self._publish_focus_lock_params)
+        self.spinbox_acquire_threshold.valueChanged.connect(self._publish_focus_lock_params)
+        self.spinbox_maintain_threshold.valueChanged.connect(self._publish_focus_lock_params)
 
         # Load cached acquisition settings
         self.load_multipoint_widget_config_from_cache()
@@ -1526,6 +1532,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         """Handle Focus Lock checkbox toggle"""
         self.update_tab_styles()
         self.focus_lock_controls_frame.setVisible(checked)
+        self._publish_focus_lock_params()
         self._log.debug(f"Focus lock {'enabled' if checked else 'disabled'}")
 
     def store_xy_mode_parameters(self, mode):
@@ -2231,6 +2238,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             self._publish(SetAcquisitionChannelsCommand(
                 channel_names=[item.text() for item in self.list_configurations.selectedItems()]
             ))
+            self._publish_focus_lock_params()
             self._publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
@@ -2353,6 +2361,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             "acquire_threshold_um": self.spinbox_acquire_threshold.value(),
             "maintain_threshold_um": self.spinbox_maintain_threshold.value(),
         }
+
+    def _publish_focus_lock_params(self, *_args: object) -> None:
+        settings = self.get_focus_lock_settings()
+        self._publish(
+            SetFocusLockParamsCommand(
+                buffer_length=settings["buffer_length"],
+                recovery_attempts=settings["recovery_attempts"],
+                min_spot_snr=settings["min_spot_snr"],
+                acquire_threshold_um=settings["acquire_threshold_um"],
+                maintain_threshold_um=settings["maintain_threshold_um"],
+            )
+        )
 
     def set_focus_lock_settings(self, settings: dict) -> None:
         """Restore focus lock settings from saved data."""

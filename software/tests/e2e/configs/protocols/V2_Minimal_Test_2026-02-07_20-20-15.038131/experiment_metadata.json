@@ -1,0 +1,17 @@
+{
+  "protocol": {
+    "name": "V2 Minimal Test",
+    "version": "2.0",
+    "path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/v2_minimal.yaml"
+  },
+  "rounds": [
+    {
+      "index": 0,
+      "name": "Round 1",
+      "steps": [
+        "imaging"
+      ]
+    }
+  ],
+  "created_at": "2026-02-07T20:20:15.042551"
+}

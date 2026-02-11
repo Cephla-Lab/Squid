@@ -71,6 +71,28 @@ def test_simulated_camera_fallback_to_full_sensor():
     assert height == 1032, f"Expected height 1032, got {height}"
 
 
+def test_simulated_camera_override_sensor_and_pixel_size():
+    """Test simulated camera supports explicit sensor and pixel-size overrides."""
+    config = CameraConfig(
+        camera_type=CameraVariant.TOUPCAM,
+        camera_model=None,
+        crop_width=None,
+        crop_height=None,
+        default_binning=(1, 1),
+        default_pixel_format="MONO12",
+        simulated_sensor_width_px=2048,
+        simulated_sensor_height_px=2048,
+        simulated_pixel_size_um=6.5,
+    )
+
+    sim_cam = get_camera(config, simulated=True)
+    width, height = sim_cam.get_resolution()
+    assert width == 2048, f"Expected width 2048, got {width}"
+    assert height == 2048, f"Expected height 2048, got {height}"
+    assert sim_cam.get_pixel_size_unbinned_um() == 6.5
+    assert sim_cam.get_pixel_size_binned_um() == 6.5
+
+
 if __name__ == "__main__":
     test_simulated_camera_with_crop_dimensions()
     test_simulated_camera_fallback_to_full_sensor()

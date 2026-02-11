@@ -28,6 +28,7 @@ from squid.core.events import (
     ResumeFocusLockCommand,
     SetFocusLockAutoSearchCommand,
     SetFocusLockModeCommand,
+    SetFocusLockParamsCommand,
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
@@ -328,12 +329,49 @@ class FocusLockSimulator(BaseController):
         with self._lock:
             self._auto_search_enabled = cmd.enabled
 
+    @handles(SetFocusLockParamsCommand)
+    def _on_set_params(self, cmd: SetFocusLockParamsCommand) -> None:
+        updates = {}
+        if cmd.buffer_length is not None:
+            updates["buffer_length"] = cmd.buffer_length
+        if cmd.recovery_attempts is not None:
+            updates["recovery_attempts"] = cmd.recovery_attempts
+        if cmd.min_spot_snr is not None:
+            updates["min_spot_snr"] = cmd.min_spot_snr
+        if cmd.acquire_threshold_um is not None:
+            updates["acquire_threshold_um"] = cmd.acquire_threshold_um
+        if cmd.maintain_threshold_um is not None:
+            updates["maintain_threshold_um"] = cmd.maintain_threshold_um
+        if not updates:
+            return
+
+        with self._lock:
+            self._config = self._config.model_copy(update=updates)
+            self._buffer_length = self._config.buffer_length
+            self._lock_buffer_fill = min(self._lock_buffer_fill, self._buffer_length)
+            self._error_history = deque(
+                self._error_history,
+                maxlen=max(10, self._buffer_length),
+            )
+            # Force a status publish so UI gets updated lock buffer length.
+            self._last_published_status = None
+        self._publish_status_if_needed()
+
     def set_lock(self) -> None:
         """Lock at current position.
 
         Saves the current displacement as the target to maintain.
         The feedback loop will move the piezo to keep displacement at this value.
         """
+        # Snapshot one measurement so lock reference isn't taken from stale zeros
+        # if user presses Lock immediately after Start.
+        result = None
+        if self._laser_af is not None:
+            try:
+                result = self._laser_af.measure_displacement_continuous()
+            except Exception:
+                result = None
+
         # Get current piezo position
         if self._piezo_service is not None:
             current_piezo = self._piezo_service.get_position()
@@ -343,6 +381,12 @@ class FocusLockSimulator(BaseController):
         with self._lock:
             if not self._is_running:
                 return
+            if result is not None:
+                if result.spot_x_px is not None and result.spot_y_px is not None:
+                    self._latest_spot_x = result.spot_x_px
+                    self._latest_spot_y = result.spot_y_px
+                if not math.isnan(result.displacement_um):
+                    self._z_error_um = result.displacement_um
             self._status = "locked"
             self._lock_buffer_fill = self._buffer_length
             # Save current displacement as target to maintain
@@ -478,13 +522,31 @@ class FocusLockSimulator(BaseController):
         Uses same control function as ContinuousFocusLockController.
         Gain increases for small errors (fine adjustment) and decreases for large errors.
         """
-        sigma = 0.5
-        dx = (error_um ** 2) / sigma
+        dx = (error_um ** 2) / self._config.gain_sigma
         scale = self._config.gain_max - self._config.gain
-        p_term = self._config.gain_max - scale * math.exp(-dx)
+        p_term = self._config.gain + scale * math.exp(-dx)
         return -p_term * error_um
 
-    def _apply_piezo_correction(self, displacement_um: float) -> None:
+    def _has_laser_reference(self) -> bool:
+        if self._laser_af is None:
+            return False
+        props = getattr(self._laser_af, "laser_af_properties", None)
+        if props is None:
+            return False
+        has_reference = bool(getattr(props, "has_reference", False))
+        x_reference = getattr(props, "x_reference", None)
+        return has_reference and x_reference is not None
+
+    def _pixel_to_um(self) -> float:
+        if self._laser_af is None:
+            return 0.2
+        props = getattr(self._laser_af, "laser_af_properties", None)
+        if props is None:
+            return 0.2
+        value = float(getattr(props, "pixel_to_um", 0.2))
+        return value if value > 0 else 0.2
+
+    def _apply_piezo_correction(self) -> None:
         """Apply piezo correction to maintain target displacement.
 
         Applies correction when locked or recovering (to help recovery succeed).
@@ -495,10 +557,8 @@ class FocusLockSimulator(BaseController):
         with self._lock:
             if self._status not in ("locked", "recovering"):
                 return
-            target = self._target_displacement_um
-
-        # Compute error: how far we are from target displacement
-        error_um = displacement_um - target
+            # Use the same lock error used by state/metrics logic.
+            error_um = self._z_error_um - self._target_displacement_um
 
         # Only correct if error is significant
         if abs(error_um) < 0.01:  # 10nm deadband
@@ -524,46 +584,56 @@ class FocusLockSimulator(BaseController):
         metrics_period = 1.0 / self._config.metrics_rate_hz
         last_metrics_time = 0.0
 
-        while self._keep_running.is_set():
-            start = time.monotonic()
+        try:
+            while self._keep_running.is_set():
+                start = time.monotonic()
 
-            # Check if paused - skip corrections but keep monitoring
-            with self._lock:
-                is_paused = self._paused
+                # Check if paused - skip corrections but keep monitoring
+                with self._lock:
+                    is_paused = self._paused
 
-            if is_paused:
-                # When paused: still measure for monitoring,
-                # but don't apply corrections or update lock state
-                if self._laser_af is not None:
+                if is_paused:
+                    # When paused: still measure for monitoring,
+                    # but don't apply corrections or update lock state
+                    if self._laser_af is not None:
+                        result = self._laser_af.measure_displacement_continuous()
+                        # Update spot position and frame for display only
+                        with self._lock:
+                            if result.spot_x_px is not None and result.spot_y_px is not None:
+                                self._latest_spot_x = result.spot_x_px
+                                self._latest_spot_y = result.spot_y_px
+                            self._spot_snr = result.spot_snr if result.spot_snr else 0.0
+                            self._spot_intensity = result.spot_intensity if result.spot_intensity else 0.0
+                            self._latest_frame = result.image
+                elif self._status == "searching":
+                    # Handle search mode separately
+                    self._search_step()
+                elif self._laser_af is not None:
+                    # Normal operation: get measurement from laser AF
                     result = self._laser_af.measure_displacement_continuous()
-                    # Update spot position and frame for display only
-                    with self._lock:
-                        if result.spot_x_px is not None and result.spot_y_px is not None:
-                            self._latest_spot_x = result.spot_x_px
-                            self._latest_spot_y = result.spot_y_px
-                        self._spot_snr = result.spot_snr if result.spot_snr else 0.0
-                        self._spot_intensity = result.spot_intensity if result.spot_intensity else 0.0
-                        self._latest_frame = result.image
-            elif self._status == "searching":
-                # Handle search mode separately
-                self._search_step()
-            elif self._laser_af is not None:
-                # Normal operation: get measurement from laser AF
-                result = self._laser_af.measure_displacement_continuous()
-                self._update_from_laser_af_result(result)
+                    self._update_from_laser_af_result(result)
 
-                # Apply piezo correction when locked or recovering
-                if not math.isnan(result.displacement_um):
-                    self._apply_piezo_correction(result.displacement_um)
+                    # Apply piezo correction when locked or recovering
+                    self._apply_piezo_correction()
 
-            # Publish metrics at configured rate (always, regardless of pause state)
-            now = time.monotonic()
-            if now - last_metrics_time >= metrics_period:
-                self._publish_metrics()
-                last_metrics_time = now
+                # Publish metrics at configured rate (always, regardless of pause state)
+                now = time.monotonic()
+                if now - last_metrics_time >= metrics_period:
+                    self._publish_metrics()
+                    last_metrics_time = now
 
-            elapsed = time.monotonic() - start
-            time.sleep(max(0.0, period - elapsed))
+                elapsed = time.monotonic() - start
+                time.sleep(max(0.0, period - elapsed))
+        except Exception:
+            self._log.exception("Focus lock simulator loop crashed; disabling lock")
+        finally:
+            self._keep_running.clear()
+            with self._lock:
+                self._is_running = False
+                self._should_run = False
+                self._paused = False
+                self._status = "disabled"
+            self._publish_status_if_needed()
 
     def _update_from_laser_af_result(self, result) -> None:
         """Update internal state from laser AF measurement result."""
@@ -576,9 +646,24 @@ class FocusLockSimulator(BaseController):
             self._correlation = result.correlation if result.correlation is not None else math.nan
             self._latest_frame = result.image
 
-            # Calculate z error from displacement if we have a reference
-            if not math.isnan(result.displacement_um):
-                self._z_error_um = result.displacement_um
+            # Determine which displacement model to use:
+            # 1) referenced displacement from laser AF, or
+            # 2) spot-offset fallback (sim mode without AF reference).
+            has_reference = self._has_laser_reference()
+            if has_reference:
+                if not math.isnan(result.displacement_um):
+                    self._z_error_um = result.displacement_um
+            elif (
+                self._status in ("locked", "recovering")
+                and result.spot_x_px is not None
+            ):
+                # No AF reference: track offset relative to lock spot.
+                spot_offset_um = (result.spot_x_px - self._locked_spot_x) * self._pixel_to_um()
+                self._z_error_um = self._target_displacement_um + spot_offset_um
+            elif self._status in ("ready", "lost"):
+                # During acquisition without reference, treat current reading as baseline.
+                self._z_error_um = 0.0
+
             # Store lock error (not raw displacement) for RMS calculation
             if self._status in ("locked", "recovering"):
                 lock_error = self._z_error_um - self._target_displacement_um
@@ -594,11 +679,28 @@ class FocusLockSimulator(BaseController):
 
             # Update reading quality
             error_for_quality = lock_error
-            self._is_good_reading = (
-                abs(error_for_quality) <= threshold_um
-                and self._spot_snr >= self._config.min_spot_snr
-                and result.spot_x_px is not None
-            )
+            if result.spot_x_px is None or math.isnan(result.displacement_um):
+                self._is_good_reading = False
+            elif abs(error_for_quality) > threshold_um:
+                self._is_good_reading = False
+            elif self._status in ("locked", "recovering"):
+                # Keep lock based on displacement stability; report low-SNR as warning.
+                self._is_good_reading = True
+            else:
+                # Acquire/reacquire: match real controller criteria.
+                if math.isnan(self._spot_snr) or self._spot_snr < self._config.min_spot_snr:
+                    self._is_good_reading = False
+                elif math.isnan(self._correlation):
+                    self._is_good_reading = True
+                else:
+                    corr_threshold = 0.7
+                    try:
+                        corr_threshold = float(
+                            self._laser_af.laser_af_properties.correlation_threshold
+                        )
+                    except Exception:
+                        pass
+                    self._is_good_reading = self._correlation >= corr_threshold
 
             status_changed = False
 
@@ -646,6 +748,34 @@ class FocusLockSimulator(BaseController):
                             # Reset timer for next attempt
                             self._recovery_start_time = time.monotonic()
 
+            elif self._status == "ready":
+                if self._is_good_reading:
+                    self._lock_buffer_fill = min(self._lock_buffer_fill + 1, self._buffer_length)
+                    if self._lock_buffer_fill >= self._buffer_length:
+                        self._status = "locked"
+                        self._locked_spot_x = self._latest_spot_x
+                        if self._piezo_service is not None:
+                            self._locked_piezo_um = self._piezo_service.get_position()
+                        else:
+                            self._locked_piezo_um = self._z_position_um
+                        status_changed = True
+                else:
+                    self._lock_buffer_fill = max(0, self._lock_buffer_fill - 1)
+
+            elif self._status == "lost":
+                if self._is_good_reading:
+                    self._lock_buffer_fill = min(self._lock_buffer_fill + 1, self._buffer_length)
+                    if self._lock_buffer_fill >= self._buffer_length:
+                        self._status = "locked"
+                        self._locked_spot_x = self._latest_spot_x
+                        if self._piezo_service is not None:
+                            self._locked_piezo_um = self._piezo_service.get_position()
+                        else:
+                            self._locked_piezo_um = self._z_position_um
+                        status_changed = True
+                else:
+                    self._lock_buffer_fill = 0
+
         # Publish status change outside of lock
         if status_changed:
             self._publish_status_if_needed()
@@ -685,9 +815,22 @@ class FocusLockSimulator(BaseController):
             quality_threshold = self._config.offset_threshold_um
             current_quality = max(0.0, 1.0 - z_error_rms / quality_threshold)
 
-            # Update smoothed quality with exponential moving average
-            alpha = 0.3  # Smoothing factor (lower = smoother, higher = faster response)
-            self._smoothed_quality = alpha * current_quality + (1 - alpha) * self._smoothed_quality
+            # Keep quality aligned with lock state so UI doesn't report
+            # excellent quality while searching/lost.
+            if self._status in ("lost", "searching"):
+                current_quality = 0.0
+            elif self._status == "recovering":
+                current_quality = min(current_quality, 0.4)
+            elif not self._is_good_reading:
+                current_quality = min(current_quality, 0.2)
+
+            # Update smoothed quality with exponential moving average, but force
+            # immediate drop when lock is explicitly lost/searching.
+            if self._status in ("lost", "searching"):
+                self._smoothed_quality = 0.0
+            else:
+                alpha = 0.3  # Smoothing factor (lower = smoother, higher = faster response)
+                self._smoothed_quality = alpha * current_quality + (1 - alpha) * self._smoothed_quality
 
             # Calculate offsets from lock reference (only meaningful when locked)
             if self._status == "locked":

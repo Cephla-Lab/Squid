@@ -42,6 +42,7 @@ from squid.core.events import (
     SortScanCoordinatesCommand,
     UpdateScanCoordinateRegionZCommand,
     WellplateFormatChanged,
+    ObjectiveChanged,
     auto_subscribe,
     auto_unsubscribe,
     handles,
@@ -131,6 +132,9 @@ class ScanCoordinates:
         self._well_selection_scan_size_mm: float = 0.0
         self._well_selection_overlap_percent: float = 10.0
         self._well_selection_shape: str = "Square"
+        # Tracks which scan mode most recently authored coordinates.
+        # Used to avoid regenerating coordinates from stale well selection state.
+        self._active_scan_mode: str = "none"
 
         # Centralized region management
         self.region_centers: Dict[str, List[float]] = {}  # {region_id: [x, y, z]}
@@ -193,6 +197,7 @@ class ScanCoordinates:
     @handles(SetLiveScanCoordinatesCommand)
     def _on_set_live_scan_coordinates(self, cmd: Event) -> None:
         assert isinstance(cmd, SetLiveScanCoordinatesCommand)
+        self._active_scan_mode = "live"
         self.set_live_scan_coordinates(
             cmd.x_mm, cmd.y_mm, cmd.scan_size_mm, cmd.overlap_percent, cmd.shape
         )
@@ -220,11 +225,14 @@ class ScanCoordinates:
         assert isinstance(event, SelectedWellsChanged)
         self._selected_well_cells = tuple(event.selected_cells)
         self._log.info(f"_on_selected_wells_changed: {len(self._selected_well_cells)} wells selected")
-        # If we already have scan settings, recompute immediately.
-        if self._well_selection_scan_size_mm > 0:
+        # If well-selection mode is active and we already have scan settings, recompute immediately.
+        if self._active_scan_mode == "well_selection" and self._well_selection_scan_size_mm > 0:
             self._apply_well_selection_coordinates()
         else:
-            self._log.info("_on_selected_wells_changed: scan_size_mm=0, not applying coordinates yet")
+            self._log.info(
+                "_on_selected_wells_changed: not applying coordinates yet "
+                f"(mode={self._active_scan_mode}, scan_size_mm={self._well_selection_scan_size_mm})"
+            )
 
     @handles(SetWellSelectionScanCoordinatesCommand)
     def _on_set_well_selection_scan_coordinates(self, cmd: Event) -> None:
@@ -233,6 +241,7 @@ class ScanCoordinates:
         self._well_selection_scan_size_mm = float(cmd.scan_size_mm)
         self._well_selection_overlap_percent = float(cmd.overlap_percent)
         self._well_selection_shape = str(cmd.shape)
+        self._active_scan_mode = "well_selection"
         self._apply_well_selection_coordinates()
 
     def _apply_well_selection_coordinates(self) -> None:
@@ -252,6 +261,7 @@ class ScanCoordinates:
     @handles(SetManualScanCoordinatesCommand)
     def _on_set_manual_scan_coordinates(self, cmd: Event) -> None:
         assert isinstance(cmd, SetManualScanCoordinatesCommand)
+        self._active_scan_mode = "manual"
         manual_shapes = None
         if cmd.manual_shapes_mm is not None:
             manual_shapes = [np.array(shape, dtype=float) for shape in cmd.manual_shapes_mm]
@@ -262,6 +272,7 @@ class ScanCoordinates:
         assert isinstance(cmd, LoadScanCoordinatesCommand)
         if not cmd.apply:
             return
+        self._active_scan_mode = "loaded"
         self._apply_loaded_coordinates(
             cmd.region_fov_coordinates,
             cmd.region_centers,
@@ -334,6 +345,7 @@ class ScanCoordinates:
     @handles(AddFlexibleRegionCommand)
     def _on_add_flexible_region(self, cmd: Event) -> None:
         assert isinstance(cmd, AddFlexibleRegionCommand)
+        self._active_scan_mode = "flexible"
         self.add_flexible_region(
             region_id=cmd.region_id,
             center_x=cmd.center_x_mm,
@@ -347,6 +359,7 @@ class ScanCoordinates:
     @handles(AddFlexibleRegionWithStepSizeCommand)
     def _on_add_flexible_region_with_step_size(self, cmd: Event) -> None:
         assert isinstance(cmd, AddFlexibleRegionWithStepSizeCommand)
+        self._active_scan_mode = "flexible"
         self.add_flexible_region_with_step_size(
             region_id=cmd.region_id,
             center_x=cmd.center_x_mm,
@@ -376,6 +389,18 @@ class ScanCoordinates:
     @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: Event) -> None:
         assert isinstance(event, WellplateFormatChanged)
+        # Format changes can invalidate previously selected row/col coordinates.
+        self._selected_well_cells = tuple(
+            (row, col)
+            for row, col in self._selected_well_cells
+            if event.number_of_skip <= row < (event.rows - event.number_of_skip)
+            and event.number_of_skip <= col < (event.cols - event.number_of_skip)
+        )
+        should_reapply_well_selection = (
+            self._active_scan_mode == "well_selection"
+            and self._well_selection_scan_size_mm > 0
+            and bool(self._selected_well_cells)
+        )
         self.update_wellplate_settings(
             format_=event.format_name,
             a1_x_mm=event.a1_x_mm,
@@ -386,8 +411,27 @@ class ScanCoordinates:
             spacing_mm=event.well_spacing_mm,
             number_of_skip=event.number_of_skip,
         )
-        # Conservative: format changes invalidate existing regions.
         self.clear_regions()
+        if should_reapply_well_selection:
+            self._log.info(
+                "Wellplate format changed: regenerating well-selection coordinates "
+                f"for {len(self._selected_well_cells)} selected wells"
+            )
+            self._apply_well_selection_coordinates()
+
+    @handles(ObjectiveChanged)
+    def _on_objective_changed(self, event: Event) -> None:
+        assert isinstance(event, ObjectiveChanged)
+        if (
+            self._active_scan_mode == "well_selection"
+            and self._well_selection_scan_size_mm > 0
+            and bool(self._selected_well_cells)
+        ):
+            self._log.info(
+                "Objective changed: regenerating well-selection coordinates "
+                f"for {len(self._selected_well_cells)} selected wells"
+            )
+            self._apply_well_selection_coordinates()
 
     def _publish_update(self, update: ScanCoordinatesUpdate) -> None:
         if self._event_bus is None:

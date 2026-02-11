@@ -1,0 +1,75 @@
+# Acquisition Parameters - round_000_standard
+# Saved automatically when acquisition started
+
+acquisition:
+  experiment_id: round_000_standard
+  start_time: 1770524415.090284
+  widget_type: wellplate
+  xy_mode: Current Position
+  skip_saving: false
+objective:
+  name: 60x
+  magnification: 60.0
+  NA: 1.2
+  pixel_size_um: 0.45119999999999993
+  camera_binning:
+  - 2
+  - 2
+  sensor_pixel_size_um: 7.52
+sample:
+  wellplate_format: 6 well plate
+z_stack:
+  nz: 1
+  delta_z_um: 0.5
+  config: FROM CENTER
+  z_range:
+  - 1.25
+  - 1.25
+  use_piezo: false
+time_series:
+  nt: 1
+  delta_t_s: 0.0
+autofocus:
+  contrast_af: false
+  laser_af: false
+channels:
+- name: Fluorescence 405 nm Ex
+  enabled: true
+  display_color: '#20ADF8'
+  camera: null
+  camera_settings:
+    exposure_time_ms: 25.0
+    gain_mode: 10.0
+    pixel_format: null
+  filter_wheel: null
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 405 nm Ex
+    intensity: 20.0
+  confocal_override: null
+wellplate_scan:
+  scan_size_mm: 0.0
+  overlap_percent: 10.0
+  regions:
+  - name: Region1
+    center_mm:
+    - 0.25
+    - 0.0
+    - 1.25
+    shape: Loaded
+downsampled_views:
+  enabled: true
+  save_well_images: false
+  well_resolutions_um:
+  - 5.0
+  - 10.0
+  - 20.0
+  plate_resolution_um: 10.0
+  z_projection: mip
+  interpolation_method: inter_area_fast
+plate:
+  num_rows: 2
+  num_cols: 3
+fluidics:
+  enabled: false

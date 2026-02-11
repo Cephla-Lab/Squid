@@ -1044,13 +1044,6 @@ class HighContentScreeningGui(QMainWindow):
             log.warning("_on_stream_capture_mosaic: napariMosaicDisplayWidget is None")
             return
         channel_name = self._layer_name_from_capture_info(info)
-        px = getattr(info, "pixel_size_um", None)
-        pos = getattr(info, "position", None)
-        pos_str = f"({pos.x_mm:.4f}, {pos.y_mm:.4f})" if pos else "None"
-        log.info(
-            f"_on_stream_capture_mosaic: channel={channel_name}, "
-            f"pixel_size_um={px}, pos={pos_str}, shape={getattr(image, 'shape', None)}"
-        )
         self.napariMosaicDisplayWidget.updateMosaic(image, info, channel_name)
 
     def _on_stream_capture_multichannel(self, image, info) -> None:
@@ -1277,8 +1270,11 @@ class HighContentScreeningGui(QMainWindow):
     def replaceWellSelectionWidget(
         self, new_widget: widgets.WellSelectionWidget
     ) -> None:
-        self.wellSelectionWidget.setParent(None)
-        self.wellSelectionWidget.deleteLater()
+        old_widget = self.wellSelectionWidget
+        if hasattr(old_widget, "_cleanup_subscriptions"):
+            old_widget._cleanup_subscriptions()
+        old_widget.setParent(None)
+        old_widget.deleteLater()
         self.wellSelectionWidget = new_widget
         if (
             USE_NAPARI_WELL_SELECTION

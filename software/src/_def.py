@@ -814,6 +814,11 @@ class CAMERA_CONFIG:
     AWB_RATIOS_R = 1.375
     AWB_RATIOS_G = 1
     AWB_RATIOS_B = 1.4141
+    # Simulated camera physical/sensor defaults.
+    # These can be overridden per machine config in [CAMERA_CONFIG].
+    SIMULATED_PIXEL_SIZE_UM = 3.76
+    SIMULATED_SENSOR_WIDTH_PX = 3088
+    SIMULATED_SENSOR_HEIGHT_PX = 2064
 
 
 class AF:

@@ -35,6 +35,7 @@ from squid.core.events import (
     ReleaseFocusLockReferenceCommand,
     ResumeFocusLockCommand,
     SetFocusLockAutoSearchCommand,
+    SetFocusLockParamsCommand,
     SetFocusLockReferenceCommand,
     SetPiezoPositionCommand,
     StartFocusLockCommand,
@@ -728,6 +729,22 @@ class FocusLockStatusWidget(EventBusFrame):
         self._lock_buffer_length = event.lock_buffer_length
         self._sync_status_ui()
 
+    @handles(SetFocusLockParamsCommand)
+    def _on_focus_lock_params_changed(self, event: SetFocusLockParamsCommand) -> None:
+        updates = {}
+        if event.buffer_length is not None:
+            updates["buffer_length"] = event.buffer_length
+        if event.recovery_attempts is not None:
+            updates["recovery_attempts"] = event.recovery_attempts
+        if event.min_spot_snr is not None:
+            updates["min_spot_snr"] = event.min_spot_snr
+        if event.acquire_threshold_um is not None:
+            updates["acquire_threshold_um"] = event.acquire_threshold_um
+        if event.maintain_threshold_um is not None:
+            updates["maintain_threshold_um"] = event.maintain_threshold_um
+        if updates:
+            self._config = self._config.model_copy(update=updates)
+
     @handles(FocusLockMetricsUpdated)
     def _on_metrics_updated(self, event: FocusLockMetricsUpdated) -> None:
         self._z_position_um = event.z_position_um
@@ -766,7 +783,7 @@ class FocusLockStatusWidget(EventBusFrame):
         if self._spot_snr is not None and not math.isnan(self._spot_snr):
             self._snr_label.setText(f"SNR: {self._spot_snr:.0f}")
             self._collapsed_snr.setText(f"SNR: {self._spot_snr:.0f}")
-            if self._spot_snr < 5.0:
+            if self._spot_snr < self._config.min_spot_snr:
                 self._snr_label.setStyleSheet("color: #ff6666;")
             else:
                 self._snr_label.setStyleSheet("")

@@ -17,6 +17,7 @@ from squid.ui.widgets.wellplate._common import (
     handles,
 )
 from squid.ui.widgets.base import EventBusWidget
+from squid.ui.widgets.wellplate.calibration import WellplateCalibration
 from squid.core.events import LiveStateChanged, SaveWellplateCalibrationCommand, WellplateFormatChanged
 import csv
 

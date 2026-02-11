@@ -145,13 +145,11 @@ class TestGeneratePolygonGrid:
         assert len(coords) >= 1
 
     def test_empty_for_small_polygon(self):
-        """Empty result for polygon smaller than FOV."""
+        """Very small polygon still returns at least one tile."""
         tiny = np.array([[0, 0], [0.1, 0], [0.05, 0.1]], dtype=float)
         config = GridConfig(fov_width_mm=1.0, fov_height_mm=1.0, overlap_percent=0.0)
-        # This should return centroid since no grid points overlap
         coords = generate_polygon_grid(tiny, config)
-        # May return empty or single point (centroid)
-        assert len(coords) <= 1
+        assert len(coords) >= 1
 
     def test_invalid_polygon(self):
         """Empty result for invalid polygon (< 3 vertices)."""

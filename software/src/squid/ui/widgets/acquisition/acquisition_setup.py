@@ -103,6 +103,8 @@ _FOCUS_CONTROLS_BG = """
 class AcquisitionSetupWidget(EventBusWidget):
     """Unified acquisition setup — vertically stacked, compact layout."""
 
+    _ACQUISITION_START_WATCHDOG_MS = 6000
+
     def __init__(
         self,
         event_bus,
@@ -136,9 +138,13 @@ class AcquisitionSetupWidget(EventBusWidget):
 
         self._is_acquiring = False
         self._active_experiment_id: Optional[str] = None
+        self._start_pending_experiment_id: Optional[str] = None
         self._snapshot_request_id: Optional[str] = None
         self._snapshot_loop = None
         self._snapshot_result = None
+        self._acquisition_start_watchdog = QTimer(self)
+        self._acquisition_start_watchdog.setSingleShot(True)
+        self._acquisition_start_watchdog.timeout.connect(self._on_acquisition_start_timeout)
 
         self._setup_ui()
         self._connect_signals()
@@ -574,14 +580,14 @@ class AcquisitionSetupWidget(EventBusWidget):
         qs.addLayout(grid_row)
 
         self._btn_quick_scan = QPushButton("Quick Scan")
-        self._btn_quick_scan.setMinimumHeight(28)
+        self._btn_quick_scan.setMinimumHeight(32)
         self._btn_quick_scan.setStyleSheet(
             "QPushButton { background-color: #2e7d32; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #388e3c; }"
             "QPushButton:disabled { background-color: #a5d6a7; color: #e0e0e0; }"
         )
         self._btn_quick_scan.setToolTip(
-            "Scan Nx\u00d7Ny grid at current position with selected channels. Single z plane. No files saved."
+            "Run a mosaic quick scan (Nx by Ny) at current position with selected channels. Single z plane. No files saved."
         )
         qs.addWidget(self._btn_quick_scan)
         right.addWidget(self._quick_scan_group)
@@ -825,6 +831,9 @@ class AcquisitionSetupWidget(EventBusWidget):
             f"Generate FOVs: publishing {len(shapes_tuples)} shapes, "
             f"overlap={self._roi_overlap.value()}%"
         )
+        # Clear any displayed FOVs first (including completed quick-scan boxes),
+        # then regenerate from current manual ROI shapes.
+        self._publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
         self._publish(SetManualScanCoordinatesCommand(
             manual_shapes_mm=shapes_tuples,
             overlap_percent=self._roi_overlap.value(),
@@ -930,9 +939,11 @@ class AcquisitionSetupWidget(EventBusWidget):
             self._save_path_edit.setText(path)
 
     def _on_start_stop_acquisition(self) -> None:
-        if not self._is_acquiring:
+        if not self._is_acquiring and self._start_pending_experiment_id is None:
             self._start_acquisition()
         else:
+            self._btn_start_stop.setText("Stopping...")
+            self._btn_start_stop.setChecked(True)
             self._publish(StopAcquisitionCommand())
 
     def _start_acquisition(self) -> None:
@@ -987,12 +998,21 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
 
         self._active_experiment_id = experiment_id
+        self._start_pending_experiment_id = experiment_id
+        self._acquisition_start_watchdog.start(self._ACQUISITION_START_WATCHDOG_MS)
+        self._btn_start_stop.setText("Stop Acquisition")
+        self._btn_start_stop.setChecked(True)
+        self._btn_start_stop.setEnabled(True)
         self._set_controls_enabled(False)
         self._publish(StartAcquisitionCommand(xy_mode=xy_mode))
         _log.info(f"Started acquisition: id={experiment_id}, xy_mode={xy_mode}")
 
     def _quick_scan(self) -> None:
         """One-click tiled scan at current stage position, no saving."""
+        if self._is_acquiring or self._active_experiment_id is not None:
+            QMessageBox.warning(self, "Acquisition Running", "Stop the current acquisition before starting Quick Scan.")
+            return
+
         selected = self._channel_order_widget.get_selected_channels_ordered()
         if not selected:
             QMessageBox.warning(self, "No Channels", "Select at least one channel.")
@@ -1000,10 +1020,17 @@ class AcquisitionSetupWidget(EventBusWidget):
 
         from datetime import datetime
 
-        experiment_id = f"quick_scan_{datetime.now().strftime('%H-%M-%S')}"
+        experiment_id = f"quick_scan_{datetime.now().strftime('%H-%M-%S-%f')}"
         nx = self._qs_nx.value()
         ny = self._qs_ny.value()
         overlap = self._qs_overlap.value()
+        mode_map = {
+            _MODE_MULTIWELL: "Select Wells",
+            _MODE_ROI_TILING: "Manual",
+            _MODE_MULTIPOINT: "Manual",
+            _MODE_LOAD_CSV: "Load Coordinates",
+        }
+        xy_mode = mode_map.get(self._xy_mode_combo.currentIndex(), "Manual")
 
         self._publish(SetAcquisitionParametersCommand(
             skip_saving=True, n_z=1,
@@ -1014,11 +1041,16 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._publish(SetAcquisitionPathCommand(base_path=tempfile.gettempdir()))
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
         self._active_experiment_id = experiment_id
+        self._start_pending_experiment_id = experiment_id
+        self._acquisition_start_watchdog.start(self._ACQUISITION_START_WATCHDOG_MS)
+        self._btn_start_stop.setText("Stop Acquisition")
+        self._btn_start_stop.setChecked(True)
+        self._btn_start_stop.setEnabled(True)
         self._set_controls_enabled(False)
         # Pass grid params directly to controller — bypasses global ScanCoordinates
         # so no FOVs appear in NavigationViewer
         self._publish(StartAcquisitionCommand(
-            xy_mode="Manual",
+            xy_mode=xy_mode,
             quick_scan_center=(self._cached_x_mm, self._cached_y_mm, self._cached_z_mm),
             quick_scan_nx=nx,
             quick_scan_ny=ny,
@@ -1028,6 +1060,34 @@ class AcquisitionSetupWidget(EventBusWidget):
             f"Quick scan started: id={experiment_id}, {nx}x{ny} grid at "
             f"({self._cached_x_mm:.3f}, {self._cached_y_mm:.3f}), channels={selected}"
         )
+
+    def _on_acquisition_start_timeout(self) -> None:
+        """Recover UI if start was requested but no matching state/progress arrived."""
+        pending_id = self._start_pending_experiment_id
+        if pending_id is None or self._is_acquiring:
+            return
+        if self._active_experiment_id is None:
+            return
+        if not self._experiment_id_matches(self._active_experiment_id, pending_id):
+            return
+
+        _log.warning(
+            "Acquisition start watchdog timed out for experiment '%s'; resetting controls.",
+            pending_id,
+        )
+        self._start_pending_experiment_id = None
+        self._is_acquiring = False
+        self._active_experiment_id = None
+        self._btn_start_stop.setText("Start Acquisition")
+        self._btn_start_stop.setChecked(False)
+        self._btn_start_stop.setEnabled(True)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFormat("")
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
+        self._progress_label.setStyleSheet("color: gray; font-size: 11px;")
+        self._progress_label.setText("")
+        self._set_controls_enabled(True)
 
     def _on_clear_fovs(self) -> None:
         self._publish(ClearScanCoordinatesCommand())
@@ -1074,11 +1134,54 @@ class AcquisitionSetupWidget(EventBusWidget):
     # Acquisition state / progress
     # =========================================================================
 
+    def _experiment_id_matches(
+        self,
+        active_experiment_id: Optional[str],
+        event_experiment_id: Optional[str],
+    ) -> bool:
+        """Return True when IDs are equal or one is the timestamp-suffixed form of the other."""
+        if active_experiment_id is None or event_experiment_id is None:
+            return False
+        if active_experiment_id == event_experiment_id:
+            return True
+        return (
+            event_experiment_id.startswith(f"{active_experiment_id}_")
+            or active_experiment_id.startswith(f"{event_experiment_id}_")
+        )
+
     @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
+        if (
+            self._active_experiment_id is not None
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
+            return
+
+        if (
+            self._start_pending_experiment_id is not None
+            and self._experiment_id_matches(
+                self._start_pending_experiment_id, event.experiment_id
+            )
+        ):
+            self._start_pending_experiment_id = None
+
         self._is_acquiring = event.in_progress
         if event.in_progress:
-            self._btn_start_stop.setText("Stop Acquisition")
+            # Use backend-published experiment id as canonical id for later filtering.
+            if event.experiment_id is not None:
+                self._active_experiment_id = event.experiment_id
+            self._btn_start_stop.setChecked(True)
+            if event.is_aborting:
+                self._btn_start_stop.setText("Stopping...")
+                self._btn_start_stop.setEnabled(False)
+            else:
+                self._btn_start_stop.setText("Stop Acquisition")
+                self._btn_start_stop.setEnabled(True)
+            self._progress_bar.setVisible(True)
+            self._progress_label.setVisible(True)
+            self._progress_bar.setValue(0)
             self._progress_bar.setFormat("Starting...")
             self._progress_label.setStyleSheet("font-size: 11px;")
             self._progress_label.setText("")
@@ -1086,10 +1189,13 @@ class AcquisitionSetupWidget(EventBusWidget):
         else:
             self._btn_start_stop.setText("Start Acquisition")
             self._btn_start_stop.setChecked(False)
+            self._btn_start_stop.setEnabled(True)
             self._progress_bar.setValue(0)
             self._progress_bar.setFormat("")
+            self._progress_bar.setVisible(False)
+            self._progress_label.setVisible(False)
             self._progress_label.setStyleSheet("color: gray; font-size: 11px;")
-            self._progress_label.setText("Ready")
+            self._progress_label.setText("")
             self._active_experiment_id = None
             self._set_controls_enabled(True)
             # Generate fresh experiment ID for next run
@@ -1099,11 +1205,30 @@ class AcquisitionSetupWidget(EventBusWidget):
 
     @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
+        if (
+            self._active_experiment_id is not None
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
+            return
+
+        if (
+            self._start_pending_experiment_id is not None
+            and self._experiment_id_matches(
+                self._start_pending_experiment_id, event.experiment_id
+            )
+        ):
+            self._start_pending_experiment_id = None
+
         self._progress_bar.setValue(int(event.progress_percent))
         self._progress_bar.setFormat(f"FOV {event.current_fov}/{event.total_fovs}")
+        self._progress_bar.setVisible(True)
+        self._progress_label.setVisible(True)
         eta = f"ETA: {int(event.eta_seconds)}s" if event.eta_seconds else ""
         self._progress_label.setStyleSheet("font-size: 11px;")
         self._progress_label.setText(
+            f"FOV {event.current_fov}/{event.total_fovs} | "
             f"{event.current_channel} | {event.progress_percent:.0f}%"
             + (f" | {eta}" if eta else "")
         )

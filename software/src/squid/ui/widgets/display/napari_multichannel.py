@@ -95,12 +95,20 @@ class NapariMultiChannelWidget(EventBusWidget):
         """Update cached pixel size when binning changes."""
         if event.pixel_size_binned_um is not None:
             self._pixel_size_binned_um = event.pixel_size_binned_um
+            pixel_size_um = self._pixel_size_factor * self._pixel_size_binned_um
+            if self.pixel_size_um != pixel_size_um:
+                self.pixel_size_um = pixel_size_um
+                self.acquisition_initialized = False
 
     @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Update cached pixel size factor when objective changes."""
         if event.pixel_size_um is not None:
             self._pixel_size_factor = event.pixel_size_um
+            pixel_size_um = self._pixel_size_factor * self._pixel_size_binned_um
+            if self.pixel_size_um != pixel_size_um:
+                self.pixel_size_um = pixel_size_um
+                self.acquisition_initialized = False
 
     @handles(SetAcquisitionChannelsCommand)
     def _on_set_acquisition_channels(self, event: SetAcquisitionChannelsCommand) -> None:
@@ -196,15 +204,35 @@ class NapariMultiChannelWidget(EventBusWidget):
     ) -> None:
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
+        image_height, image_width = image.shape[0], image.shape[1]
+        if k < 0:
+            return
 
-        # Check if the layer exists and has a different dtype
-        if self.dtype != np.dtype(image.dtype):
-            # Remove the existing layer
+        # Reinitialize if dtype/shape changed (e.g., camera binning changed).
+        if (
+            self.dtype != np.dtype(image.dtype)
+            or self.image_height != image_height
+            or self.image_width != image_width
+        ):
             self.layers_initialized = False
             self.acquisition_initialized = False
 
-        if not self.layers_initialized:
-            self.initLayers(image.shape[0], image.shape[1], image.dtype)
+        # Be defensive when z-index arrives before acquisition parameters.
+        if k >= self.Nz:
+            self.Nz = k + 1
+            self.acquisition_initialized = False
+
+        # Reinitialize if an existing layer has incompatible channel shape (e.g., mono<->RGB).
+        if channel_name in self.viewer.layers:
+            layer = self.viewer.layers[channel_name]
+            layer_is_rgb = bool(getattr(layer, "rgb", False))
+            if layer_is_rgb != rgb:
+                self.layers_initialized = False
+                self.acquisition_initialized = False
+
+        # Reinitialize when acquisition metadata changed (Nz/dz/pixel size).
+        if not self.layers_initialized or not self.acquisition_initialized:
+            self.initLayers(image_height, image_width, image.dtype)
 
         if channel_name not in self.viewer.layers:
             self.channels.add(channel_name)
@@ -249,6 +277,11 @@ class NapariMultiChannelWidget(EventBusWidget):
                 layer.refresh()
 
         layer = self.viewer.layers[channel_name]
+        if k >= layer.data.shape[0]:
+            self.Nz = k + 1
+            self.acquisition_initialized = False
+            self.initLayers(image_height, image_width, image.dtype)
+            layer = self.viewer.layers[channel_name]
         layer.data[k] = image
         layer.contrast_limits = self.contrastManager.get_limits(channel_name)
         self.update_layer_count += 1

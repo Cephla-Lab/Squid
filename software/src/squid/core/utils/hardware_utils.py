@@ -7,6 +7,7 @@ import shutil
 import statistics
 import time
 import threading
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -411,6 +412,19 @@ def extract_spot_metrics(
 
     Returns:
         Tuple of (snr, peak_intensity, background_level).
+
+    Notes:
+        ``snr`` is computed as a contrast-to-noise ratio:
+
+            (peak_intensity - background_level) / noise_floor
+
+        where ``noise_floor`` is the larger of:
+        - robust background noise sigma (MAD-derived), and
+        - photon shot-noise estimate sqrt(background_level), and
+        - 1.0 to avoid divide-by-zero.
+
+        This is more representative of real camera behavior than dividing by
+        background brightness directly.
     """
     if cropped_region is None or cropped_region.size == 0:
         return (float("nan"), float("nan"), float("nan"))
@@ -438,7 +452,8 @@ def extract_spot_metrics(
     edge_width = 3
     edge_width = min(edge_width, height // 2, width // 2)
     if edge_width <= 0:
-        background = float(np.median(cropped_region))
+        edges = cropped_region.ravel()
+        background = float(np.median(edges))
     else:
         edges = np.concatenate(
             [
@@ -450,7 +465,17 @@ def extract_spot_metrics(
         )
         background = float(np.median(edges))
 
-    snr = (peak - background) / max(background, 1.0)
+    # Robust background noise estimate via MAD.
+    mad = float(np.median(np.abs(edges - background)))
+    noise_sigma = 1.4826 * mad
+
+    # Include shot-noise floor so deterministic simulated images don't
+    # produce unrealistically infinite SNR values.
+    shot_noise = math.sqrt(max(background, 1.0))
+    noise_floor = max(noise_sigma, shot_noise, 1.0)
+
+    signal = peak - background
+    snr = signal / noise_floor
     return (snr, peak, background)
 
 

@@ -12,8 +12,11 @@ from unittest.mock import MagicMock
 from squid.core.events import (
     EventBus,
     AcquisitionStateChanged,
+    ClearScanCoordinatesCommand,
     CurrentFOVRegistered,
     ObjectiveChanged,
+    ROIChanged,
+    StageMovementStopped,
     WellplateFormatChanged,
     SelectedWellsChanged,
     SetWellSelectionScanCoordinatesCommand,
@@ -164,6 +167,19 @@ class TestFOVRegistration:
         event_bus.drain()
 
         viewer.clear_overlay()
+        assert len(viewer._pending_fovs) == 0
+        assert len(viewer._completed_fovs) == 0
+
+    def test_clear_command_with_display_flag_removes_pending_and_completed(self, event_bus, viewer):
+        fovs = _make_fov_centers([(20.0, 20.0), (21.0, 20.0)])
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=fovs))
+        event_bus.publish(CurrentFOVRegistered(x_mm=20.0, y_mm=20.0, fov_width_mm=1.0, fov_height_mm=1.0))
+        event_bus.drain()
+        assert len(viewer._pending_fovs) == 1
+        assert len(viewer._completed_fovs) == 1
+
+        event_bus.publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+        event_bus.drain()
         assert len(viewer._pending_fovs) == 0
         assert len(viewer._completed_fovs) == 0
 
@@ -325,6 +341,39 @@ class TestObjectiveChangeOverlayLifecycle:
         # viewer.fov_width_mm should have changed
         assert viewer.fov_width_mm != initial_fov_w
 
+    def test_current_fov_marker_persists_after_objective_change(self, event_bus, viewer):
+        event_bus.publish(WellplateFormatChanged(
+            format_name="30 mm circle",
+            rows=1, cols=1,
+            well_spacing_mm=0.0, well_size_mm=30.0,
+            a1_x_mm=20.0, a1_y_mm=20.0,
+            a1_x_pixel=50, a1_y_pixel=50,
+            number_of_skip=0,
+        ))
+        event_bus.drain()
+
+        event_bus.publish(StageMovementStopped(x_mm=20.0, y_mm=20.0, z_mm=0.0))
+        event_bus.drain()
+        assert viewer.current_location_item is not None
+        before = np.array(viewer.current_location_item.image)
+        assert np.any(before != 0)
+
+        event_bus.publish(ObjectiveChanged(position=1, objective_name="10x"))
+        event_bus.drain()
+
+        assert viewer.current_location_item is not None
+        after = np.array(viewer.current_location_item.image)
+        assert np.any(after != 0)
+
+    def test_roi_changed_triggers_display_redraw(self, event_bus, viewer):
+        redraw = MagicMock()
+        viewer.update_display_properties = redraw
+
+        event_bus.publish(ROIChanged(x_offset=0, y_offset=0, width=1200, height=800))
+        event_bus.drain()
+
+        redraw.assert_called_once_with(viewer.sample)
+
 
 # ============================================================================
 # 4. TestAcquisitionDisplayFlow — Red→blue transition + post-acquisition
@@ -369,8 +418,8 @@ class TestAcquisitionDisplayFlow:
         # All completed — not cleared automatically
         assert len(viewer._completed_fovs) == 1
 
-    def test_acquisition_start_clears_completed_fovs(self, event_bus, viewer):
-        """Starting a new acquisition clears completed FOVs from previous run."""
+    def test_acquisition_start_keeps_completed_fovs(self, event_bus, viewer):
+        """Starting a new acquisition should preserve completed FOVs (accumulate across runs)."""
         fovs = _make_fov_centers([(20.0, 20.0), (21.0, 20.0)])
         event_bus.publish(AddScanCoordinateRegion(fov_centers=fovs))
         event_bus.drain()
@@ -382,10 +431,10 @@ class TestAcquisitionDisplayFlow:
         assert len(viewer._completed_fovs) == 2
         assert len(viewer._pending_fovs) == 0
 
-        # Start a new acquisition — completed should be cleared
+        # Start a new acquisition — completed should remain
         event_bus.publish(AcquisitionStateChanged(in_progress=True, experiment_id="exp_001"))
         event_bus.drain()
-        assert len(viewer._completed_fovs) == 0
+        assert len(viewer._completed_fovs) == 2
 
     def test_acquisition_abort_does_not_clear_completed(self, event_bus, viewer):
         """Aborting acquisition should NOT clear completed FOVs."""
@@ -424,6 +473,101 @@ class TestAcquisitionDisplayFlow:
         event_bus.drain()
         assert len(viewer._pending_fovs) == 0
         assert len(viewer._completed_fovs) == 1
+
+    def test_regression_two_runs_accumulate_completed_without_pending_leak(self, event_bus, viewer):
+        """Running acquisition twice should leave no stale pending FOVs and accumulate completed FOVs."""
+        run1 = _make_fov_centers([(20.0, 20.0), (21.0, 20.0), (22.0, 20.0)])
+        run2 = _make_fov_centers([(25.0, 21.0), (26.0, 21.0), (27.0, 21.0)])
+
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=run1))
+        event_bus.drain()
+        for f in run1:
+            event_bus.publish(
+                CurrentFOVRegistered(
+                    x_mm=f.x_mm,
+                    y_mm=f.y_mm,
+                    fov_width_mm=f.fov_width_mm,
+                    fov_height_mm=f.fov_height_mm,
+                )
+            )
+        event_bus.drain()
+        assert len(viewer._pending_fovs) == 0
+        assert len(viewer._completed_fovs) == len(run1)
+
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=run2))
+        event_bus.drain()
+        for f in run2:
+            # Include realistic sub-micron float drift from motion controller rounding.
+            event_bus.publish(
+                CurrentFOVRegistered(
+                    x_mm=f.x_mm + 1e-4,
+                    y_mm=f.y_mm - 1e-4,
+                    fov_width_mm=f.fov_width_mm,
+                    fov_height_mm=f.fov_height_mm,
+                )
+            )
+        event_bus.drain()
+
+        assert len(viewer._pending_fovs) == 0
+        assert len(viewer._completed_fovs) == len(run1) + len(run2)
+
+    def test_regression_roi_regenerate_clears_completed_before_new_grid(self, event_bus, viewer):
+        """ROI regenerate flow should clear displayed FOVs, then show only the new pending grid."""
+        first_run = _make_fov_centers([(20.0, 20.0), (21.0, 20.0)])
+        new_grid = _make_fov_centers([(30.0, 30.0), (31.0, 30.0), (32.0, 30.0)])
+
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=first_run))
+        for f in first_run:
+            event_bus.publish(
+                CurrentFOVRegistered(
+                    x_mm=f.x_mm,
+                    y_mm=f.y_mm,
+                    fov_width_mm=f.fov_width_mm,
+                    fov_height_mm=f.fov_height_mm,
+                )
+            )
+        event_bus.drain()
+        assert len(viewer._completed_fovs) == len(first_run)
+
+        # Matches AcquisitionSetupWidget._on_generate_fovs() behavior.
+        event_bus.publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+        event_bus.publish(ClearedScanCoordinates())
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=new_grid))
+        event_bus.drain()
+
+        assert len(viewer._completed_fovs) == 0
+        assert len(viewer._pending_fovs) == len(new_grid)
+
+    def test_regression_redraw_is_debounced_for_rapid_fov_updates(self, viewer, qtbot):
+        """Rapid FOV updates should coalesce into one redraw to prevent UI stalls."""
+        redraw_calls = 0
+        original = viewer._redraw_scan_overlay
+
+        def _counted_redraw():
+            nonlocal redraw_calls
+            redraw_calls += 1
+            original()
+
+        viewer._redraw_timer.timeout.disconnect()
+        viewer._redraw_timer.timeout.connect(_counted_redraw)
+
+        for i in range(200):
+            viewer.register_fov_to_image(FovCenter(x_mm=20.0 + i * 0.01, y_mm=20.0))
+
+        qtbot.wait(120)
+        assert redraw_calls == 1
+
+    def test_regression_current_fov_queues_batched_paint_path(self, event_bus, viewer):
+        fovs = _make_fov_centers([(20.0, 20.0)])
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=fovs))
+        event_bus.drain()
+
+        viewer._queue_completed_fov_paint = MagicMock()
+
+        event_bus.publish(CurrentFOVRegistered(x_mm=20.0, y_mm=20.0, fov_width_mm=1.0, fov_height_mm=1.0))
+        event_bus.drain()
+
+        viewer._queue_completed_fov_paint.assert_called_once()
 
 
 # ============================================================================
@@ -468,6 +612,22 @@ class TestWellplateFormatChange:
         # Both 96- and 384-well use SBS footprint with same mocked image,
         # so mm_per_pixel should be recalculated to the same value
         assert viewer.mm_per_pixel == pytest.approx(old_mm_per_pixel, rel=0.01)
+
+    def test_mm_circle_format_uses_generated_circle_background(self, event_bus, viewer):
+        event_bus.publish(WellplateFormatChanged(
+            format_name="30 mm circle",
+            rows=1, cols=1,
+            well_spacing_mm=0.0, well_size_mm=30.0,
+            a1_x_mm=0.0, a1_y_mm=0.0,
+            a1_x_pixel=1, a1_y_pixel=1,
+            number_of_skip=0,
+        ))
+        event_bus.drain()
+
+        assert viewer.sample == "30 mm circle"
+        assert viewer.slide is not None
+        # If we had fallen back to mocked cv2.imread, the image would be all zeros.
+        assert np.any(viewer.slide != 0)
 
 
 # ============================================================================

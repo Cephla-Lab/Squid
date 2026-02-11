@@ -19,6 +19,7 @@ from squid.core.events import (
     FocusLockModeChanged,
     FocusLockStatusChanged,
     LaserAFInitialized,
+    SetFocusLockParamsCommand,
     SetFocusLockModeCommand,
     SetFocusLockReferenceCommand,
 )
@@ -77,6 +78,11 @@ class _FakeLaserAF:
 
     def __init__(self, result: Optional[LaserAFResult] = None) -> None:
         self.result = result or _make_good_result()
+        self.laser_af_properties = type(
+            "_Props",
+            (),
+            {"correlation_threshold": 0.7, "has_reference": True, "x_reference": 320.0, "pixel_to_um": 0.2},
+        )()
 
     def measure_displacement_continuous(self) -> LaserAFResult:
         return self.result
@@ -234,8 +240,8 @@ def test_set_lock_recovers_from_transient_bad_reading():
     time.sleep(0.15)  # Lock established
     assert sim.status == "locked"
 
-    # Inject bad readings briefly
-    laser_af.result = _make_bad_snr_result()
+    # Inject a large displacement error briefly
+    laser_af.result = _make_good_result(displacement_um=5.0)
     time.sleep(0.05)  # Quick — should enter recovery
     assert sim.status == "recovering"
 
@@ -279,8 +285,8 @@ def test_set_lock_lost_after_persistent_bad_readings():
     sim.stop()
 
 
-def test_is_good_reading_requires_snr():
-    """_is_good_reading should reject results with low SNR even at zero error."""
+def test_acquire_rejects_low_snr_and_low_correlation():
+    """Acquire path should reject weak measurements when both SNR and correlation are low."""
     bus = EventBus()
     laser_af = _FakeLaserAF(_make_bad_snr_result(displacement_um=0.0))
     piezo = _FakePiezoService()
@@ -294,12 +300,10 @@ def test_is_good_reading_requires_snr():
     _init_laser_af(bus)
 
     sim.start()
-    sim.set_lock()
-    time.sleep(0.2)
+    time.sleep(0.25)
 
-    # Low SNR should cause lock loss even though displacement error is 0
-    assert sim.status != "locked", (
-        "Lock should not hold with SNR below min_spot_snr"
+    assert sim.status == "ready", (
+        f"Expected acquire to stay in 'ready' but got '{sim.status}'"
     )
     sim.stop()
 
@@ -357,6 +361,107 @@ def test_is_good_reading_rejects_large_error():
         "Lock should not hold when error exceeds maintain_threshold_um"
     )
     sim.stop()
+
+
+def test_acquire_rejects_low_snr_even_with_high_correlation():
+    """Acquire path should match real controller: low SNR blocks acquisition."""
+    bus = EventBus()
+    low_snr_high_corr = LaserAFResult(
+        displacement_um=0.0,
+        spot_intensity=100.0,
+        spot_snr=2.0,  # Below default min_spot_snr=5.0
+        correlation=0.95,  # Strong match against reference
+        spot_x_px=320.0,
+        spot_y_px=240.0,
+        timestamp=time.monotonic(),
+        image=np.zeros((480, 640), dtype=np.uint8),
+    )
+    laser_af = _FakeLaserAF(low_snr_high_corr)
+    piezo = _FakePiezoService()
+    config = FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10, buffer_length=3)
+    sim = FocusLockSimulator(
+        bus, config=config, laser_autofocus=laser_af, piezo_service=piezo,
+    )
+    _init_laser_af(bus)
+
+    sim.start()
+    time.sleep(0.35)
+    assert sim.status == "ready", (
+        f"Expected acquire to remain 'ready' with low SNR, got '{sim.status}'"
+    )
+    sim.stop()
+
+
+def test_set_focus_lock_params_command_updates_runtime_config():
+    bus = EventBus()
+    sim = FocusLockSimulator(bus, config=FocusLockConfig(buffer_length=5, min_spot_snr=5.0))
+    _init_laser_af(bus)
+    sim.start()
+    try:
+        assert sim._buffer_length == 5
+        bus.publish(SetFocusLockParamsCommand(buffer_length=8, min_spot_snr=7.5))
+        bus.drain()
+        assert sim._buffer_length == 8
+        assert sim._config.min_spot_snr == 7.5
+    finally:
+        sim.stop()
+
+
+def test_control_fn_gain_schedule_is_highest_near_zero_error():
+    sim = FocusLockSimulator(
+        EventBus(),
+        config=FocusLockConfig(gain=0.5, gain_max=0.7, gain_sigma=0.5),
+    )
+    small_err = 0.2
+    large_err = 1.5
+    small_gain = -sim._control_fn(small_err) / small_err
+    large_gain = -sim._control_fn(large_err) / large_err
+    assert small_gain > large_gain
+
+
+def test_loop_crash_disables_simulator():
+    class _CrashLaserAF:
+        laser_af_properties = type(
+            "_Props", (), {"correlation_threshold": 0.7, "has_reference": True, "x_reference": 320.0}
+        )()
+
+        def measure_displacement_continuous(self):
+            raise RuntimeError("simulated failure")
+
+    bus = EventBus()
+    sim = FocusLockSimulator(
+        bus,
+        config=FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10),
+        laser_autofocus=_CrashLaserAF(),
+        piezo_service=_FakePiezoService(),
+    )
+    _init_laser_af(bus)
+
+    sim.start()
+    deadline = time.monotonic() + 1.0
+    while sim.is_running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sim.is_running is False
+    assert sim.status == "disabled"
+
+
+def test_quality_drops_to_zero_when_lost():
+    bus = EventBus()
+    sim = FocusLockSimulator(bus, config=FocusLockConfig(loop_rate_hz=50, metrics_rate_hz=20))
+    _init_laser_af(bus)
+
+    events = []
+    bus.subscribe(FocusLockMetricsUpdated, events.append)
+
+    sim.start()
+    try:
+        sim._status = "lost"
+        sim._publish_metrics()
+        bus.drain()
+        assert events
+        assert events[-1].lock_quality == 0.0
+    finally:
+        sim.stop()
 
 
 def test_pause_resume_preserves_lock():
@@ -426,3 +531,43 @@ def test_control_fn_negative_feedback():
     assert sim._control_fn(-1.0) > 0
     # Zero error → zero correction
     assert sim._control_fn(0.0) == 0.0
+
+
+def test_no_reference_uses_spot_offset_for_correction():
+    """Without AF reference, locked loop should still correct from spot offset."""
+    bus = EventBus()
+    laser_af = _FakeLaserAF(_make_good_result(displacement_um=0.0))
+    # Simulate missing AF reference.
+    laser_af.laser_af_properties.has_reference = False
+    laser_af.laser_af_properties.x_reference = None
+    laser_af.laser_af_properties.pixel_to_um = 0.2
+
+    piezo = _FakePiezoService(position=150.0)
+    config = FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10, buffer_length=3)
+    sim = FocusLockSimulator(
+        bus, config=config, laser_autofocus=laser_af, piezo_service=piezo,
+    )
+    _init_laser_af(bus)
+
+    sim.start()
+    sim.set_lock()
+    time.sleep(0.1)
+    assert sim.status == "locked"
+
+    # Simulate stage-Z perturbation as spot shift (+20 px => +4 um error @ 0.2 um/px).
+    laser_af.result = LaserAFResult(
+        displacement_um=0.0,  # No displacement available without reference
+        spot_intensity=100.0,
+        spot_snr=10.0,
+        correlation=0.95,
+        spot_x_px=340.0,
+        spot_y_px=240.0,
+        timestamp=time.monotonic(),
+        image=np.zeros((480, 640), dtype=np.uint8),
+    )
+
+    initial_pos = piezo.get_position()
+    time.sleep(0.2)
+    assert piezo.get_position() < initial_pos - 0.2
+
+    sim.stop()

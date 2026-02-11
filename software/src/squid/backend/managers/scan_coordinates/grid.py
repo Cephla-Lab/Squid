@@ -213,7 +213,14 @@ def generate_polygon_grid(
     if config.fov_pattern == "S-Pattern" and valid_points:
         valid_points = apply_s_pattern(valid_points)
 
-    return valid_points
+    if valid_points:
+        return valid_points
+
+    # Very small ROIs can fall fully inside one FOV without containing any grid
+    # center/corner test point. Return ROI centroid so at least one tile is acquired.
+    centroid_x = float(np.mean(vertices[:, 0]))
+    centroid_y = float(np.mean(vertices[:, 1]))
+    return [(centroid_x, centroid_y)]
 
 
 def generate_grid_by_count(

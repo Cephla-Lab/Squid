@@ -1,0 +1,44 @@
+{
+  "protocol": {
+    "name": "Multi-Round Fluidics-Imaging",
+    "version": "2.0",
+    "path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/multi_round_fluidics_imaging.yaml"
+  },
+  "rounds": [
+    {
+      "index": 0,
+      "name": "Round 1 - Probe 1",
+      "steps": [
+        "fluidics",
+        "fluidics",
+        "imaging"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Round 2 - Probe 2",
+      "steps": [
+        "fluidics",
+        "fluidics",
+        "imaging"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Round 3 - Probe 3",
+      "steps": [
+        "fluidics",
+        "fluidics",
+        "imaging"
+      ]
+    },
+    {
+      "index": 3,
+      "name": "Final Wash",
+      "steps": [
+        "fluidics"
+      ]
+    }
+  ],
+  "created_at": "2026-02-07T20:10:45.008714"
+}

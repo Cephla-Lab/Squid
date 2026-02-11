@@ -71,6 +71,27 @@ class SimulatedCameraBase(AbstractCamera):
         self._current_raw_frame = None
         self._current_frame = None
 
+        # Per-config simulation overrides (sensor geometry + physical pixel size).
+        # Fall back to historical defaults when not configured.
+        configured_pixel_size_um = getattr(self._config, "simulated_pixel_size_um", None)
+        self._pixel_size_um = (
+            float(configured_pixel_size_um)
+            if configured_pixel_size_um is not None and float(configured_pixel_size_um) > 0
+            else float(self.PIXEL_SIZE_UM)
+        )
+        configured_sensor_width = getattr(self._config, "simulated_sensor_width_px", None)
+        configured_sensor_height = getattr(self._config, "simulated_sensor_height_px", None)
+        self._full_sensor_width = (
+            int(configured_sensor_width)
+            if configured_sensor_width is not None and int(configured_sensor_width) > 0
+            else int(self.FULL_SENSOR_WIDTH)
+        )
+        self._full_sensor_height = (
+            int(configured_sensor_height)
+            if configured_sensor_height is not None and int(configured_sensor_height) > 0
+            else int(self.FULL_SENSOR_HEIGHT)
+        )
+
         self._exposure_time_ms = None
         self.set_exposure_time(20)
         self._frame_format = CameraFrameFormat.RAW
@@ -90,10 +111,10 @@ class SimulatedCameraBase(AbstractCamera):
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
         # Use crop dimensions from config if provided, otherwise use full sensor
         # Clamp to sensor bounds to avoid unexpectedly large frames
-        roi_w = self._config.crop_width if self._config.crop_width else self.FULL_SENSOR_WIDTH
-        roi_h = self._config.crop_height if self._config.crop_height else self.FULL_SENSOR_HEIGHT
-        roi_w = min(roi_w, self.FULL_SENSOR_WIDTH)
-        roi_h = min(roi_h, self.FULL_SENSOR_HEIGHT)
+        roi_w = self._config.crop_width if self._config.crop_width else self._full_sensor_width
+        roi_h = self._config.crop_height if self._config.crop_height else self._full_sensor_height
+        roi_w = min(roi_w, self._full_sensor_width)
+        roi_h = min(roi_h, self._full_sensor_height)
         self._roi = (0, 0, roi_w, roi_h)
         self._temperature_setpoint = None
         self._continue_streaming = False
@@ -169,11 +190,11 @@ class SimulatedCameraBase(AbstractCamera):
 
     @debug_log
     def get_pixel_size_unbinned_um(self) -> float:
-        return self.PIXEL_SIZE_UM
+        return self._pixel_size_um
 
     @debug_log
     def get_pixel_size_binned_um(self) -> float:
-        return self.PIXEL_SIZE_UM * self.get_binning()[0]
+        return self._pixel_size_um * self.get_binning()[0]
 
     def get_crop_size(self) -> Tuple[Optional[int], Optional[int]]:
         """Override to clamp crop size to actual sensor dimensions.
@@ -338,10 +359,10 @@ class SimulatedCameraBase(AbstractCamera):
     def _get_clamped_roi(self) -> Tuple[int, int, int, int]:
         """Get ROI clamped to sensor bounds."""
         roi_x, roi_y, roi_w, roi_h = self._roi
-        roi_x = max(0, min(roi_x, self.FULL_SENSOR_WIDTH - 1))
-        roi_y = max(0, min(roi_y, self.FULL_SENSOR_HEIGHT - 1))
-        roi_w = min(roi_w, self.FULL_SENSOR_WIDTH - roi_x)
-        roi_h = min(roi_h, self.FULL_SENSOR_HEIGHT - roi_y)
+        roi_x = max(0, min(roi_x, self._full_sensor_width - 1))
+        roi_y = max(0, min(roi_y, self._full_sensor_height - 1))
+        roi_w = min(roi_w, self._full_sensor_width - roi_x)
+        roi_h = min(roi_h, self._full_sensor_height - roi_y)
         return roi_x, roi_y, roi_w, roi_h
 
     def _create_frame(self, width: int, height: int, max_val: int, dtype) -> np.ndarray:
@@ -654,7 +675,7 @@ class SimulatedMainCamera(SimulatedCameraBase):
             self._objective_name = event.objective_name
 
         # Calculate actual pixel size for logging
-        pixel_size = self.PIXEL_SIZE_UM * self.get_binning()[0] * self._pixel_size_factor
+        pixel_size = self._pixel_size_um * self.get_binning()[0] * self._pixel_size_factor
         self._log.info(
             f"Objective changed to {self._objective_name}: "
             f"pixel_size_factor={self._pixel_size_factor:.4f}, "
@@ -747,7 +768,7 @@ class SimulatedMainCamera(SimulatedCameraBase):
         # Use UNBINNED pixel size since _create_frame works with pre-binning dimensions.
         # The physical FOV = width * pixel_size_um must match what acquisition expects.
         # After binning in _next_frame(), pixel count shrinks but physical area stays same.
-        pixel_size_um = self.PIXEL_SIZE_UM * self._pixel_size_factor
+        pixel_size_um = self._pixel_size_um * self._pixel_size_factor
 
         # Calculate brightness scale based on exposure and gain
         # Reference: 100ms exposure, 0 gain = 1.0 scale

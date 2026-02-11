@@ -28,6 +28,7 @@ from squid.backend.controllers.multipoint.acquisition_context import acquisition
 from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
 from squid.backend.controllers.multipoint.dependencies import AcquisitionDependencies
 from squid.backend.managers import ScanCoordinates
+from squid.backend.managers.scan_coordinates.scan_coordinates import AddScanCoordinateRegion, FovCenter
 from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.live_controller import LiveController
 from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
@@ -800,10 +801,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         quick_scan_ny: int = 1,
         quick_scan_overlap: float = 10.0,
     ) -> bool:
-        import time as _time
-        self._log.info("run_acquisition: ENTER")
-        _t0 = _time.perf_counter()
-
         # Check if in IDLE state
         if not self._is_in_state(AcquisitionControllerState.IDLE):
             self._log.warning(f"Cannot start acquisition - state is {self.state.name}")
@@ -822,15 +819,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Start per-acquisition logging if enabled
             self._start_per_acquisition_log()
 
-            self._log.info(f"run_acquisition: passed state check ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
-
             # Build scan coordinates before validation so quick_scan/acquire_current_fov
             # coordinates are validated instead of the (empty) global scan coordinates.
             acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
             self.run_acquisition_current_fov: bool = False
             if quick_scan_center is not None:
-                # Quick scan: create temporary ScanCoordinates with event_bus=None
-                # so no events reach NavigationViewer
+                # Quick scan: use temporary ScanCoordinates to avoid mutating
+                # the global scan-coordinate state.
                 cx, cy, cz = quick_scan_center
                 acquisition_scan_coordinates = ScanCoordinates(
                     objectiveStore=self.scanCoordinates.objectiveStore,
@@ -844,6 +839,24 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     Nx=quick_scan_nx, Ny=quick_scan_ny,
                     overlap_percent=quick_scan_overlap,
                 )
+                # Publish transient FOV previews so NavigationViewer can show
+                # planned quick-scan boxes and mark them completed as FOVs finish.
+                if self._event_bus:
+                    try:
+                        quick_fovs = acquisition_scan_coordinates.region_fov_coordinates.get("quick_scan", [])
+                        if quick_fovs:
+                            fov_width_mm, fov_height_mm = acquisition_scan_coordinates._get_current_fov_dimensions()
+                            self._event_bus.publish(
+                                AddScanCoordinateRegion(
+                                    fov_centers=FovCenter.from_scan_coordinates(
+                                        quick_fovs,
+                                        fov_width_mm=fov_width_mm,
+                                        fov_height_mm=fov_height_mm,
+                                    )
+                                )
+                            )
+                    except Exception:
+                        self._log.exception("Failed to publish quick-scan preview FOVs")
                 self.run_acquisition_current_fov = True
             elif acquire_current_fov:
                 pos = self._stage_service.get_position()
@@ -868,14 +881,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self._transition_to(AcquisitionControllerState.IDLE)
                 return False
 
-            self._log.info(f"run_acquisition: passed validate_acquisition_settings ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
-
             # Publish acquisition started state
-            self._log.info("run_acquisition: about to publish in_progress=True")
             self._publish_acquisition_state(in_progress=True)
-            self._log.info(f"run_acquisition: published in_progress=True ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
-
-            self._log.info("start multipoint")
             self._acquisition_context = acquisition_context(
                 self.liveController,
                 self._camera_service,
@@ -1110,11 +1117,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # AcquisitionWorkerFinished before we've transitioned to RUNNING state.
             # The _on_worker_finished handler filters events if not in RUNNING state.
             self._transition_to(AcquisitionControllerState.RUNNING)
-            self._log.info(f"run_acquisition: starting worker thread ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
             self.thread.start()
             # Publish NDViewer start event for push-mode display
             self._publish_ndviewer_start(acquisition_params)
-            self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
             return True
         except Exception:
             self._log.exception("Failed to start acquisition")
@@ -1168,6 +1173,14 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 )
         self._log.info(f"build_params: plate dimensions = {plate_num_rows}x{plate_num_cols}")
 
+        generate_downsampled_views = (
+            not self.run_acquisition_current_fov
+            and (
+                self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES")
+                or self._feature_flags.is_enabled("DISPLAY_PLATE_VIEW")
+            )
+        )
+
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -1192,11 +1205,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             skip_saving=self._config.skip_saving,
             acquisition_order=self._config.acquisition_order,
             # Downsampled view generation parameters
-            generate_downsampled_views=(
-                self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES")
-                or self._feature_flags.is_enabled("DISPLAY_PLATE_VIEW")
+            generate_downsampled_views=generate_downsampled_views,
+            save_downsampled_well_images=(
+                generate_downsampled_views
+                and self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES")
             ),
-            save_downsampled_well_images=self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES"),
             downsampled_well_resolutions_um=_def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=_def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=_def.DOWNSAMPLED_Z_PROJECTION,
@@ -1440,21 +1453,19 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     @handles(StartNewExperimentCommand)
     def _on_start_new_experiment(self, cmd: StartNewExperimentCommand) -> None:
         """Handle StartNewExperimentCommand from EventBus."""
+        if self.acquisition_in_progress():
+            self._log.warning(
+                "Ignoring StartNewExperimentCommand while acquisition is in progress "
+                "(state=%s, requested_id=%s)",
+                self.state.name,
+                cmd.experiment_id,
+            )
+            return
         self.start_new_experiment(cmd.experiment_id)
 
     @handles(StartAcquisitionCommand)
     def _on_start_acquisition(self, cmd: StartAcquisitionCommand) -> None:
         """Handle StartAcquisitionCommand from EventBus."""
-        self._log.info(f"_on_start_acquisition: received command with xy_mode={cmd.xy_mode}")
-        # Log current scan coordinates state
-        if self.scanCoordinates:
-            num_regions = len(self.scanCoordinates.region_centers)
-            num_fovs = sum(len(c) for c in self.scanCoordinates.region_fov_coordinates.values())
-            self._log.info(f"_on_start_acquisition: scanCoordinates has {num_regions} regions, {num_fovs} FOVs")
-            if num_regions > 0:
-                self._log.info(f"_on_start_acquisition: region_ids={list(self.scanCoordinates.region_centers.keys())[:5]}...")
-        else:
-            self._log.warning("_on_start_acquisition: scanCoordinates is None!")
         # Set xy_mode from command before building acquisition params
         self.set_xy_mode(cmd.xy_mode)
         # Ensure an experiment ID exists before running; auto-create if none exists.
@@ -1481,17 +1492,10 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         """
         # Filter out stale events from previous acquisitions
         if event.experiment_id != self.experiment_ID:
-            self._log.debug(
-                f"Ignoring stale worker finished event: "
-                f"expected {self.experiment_ID}, got {event.experiment_id}"
-            )
             return
 
         # Only process if we're in a running/aborting state
         if not self._is_in_state(AcquisitionControllerState.RUNNING, AcquisitionControllerState.ABORTING):
-            self._log.debug(
-                f"Ignoring worker finished event - state is {self.state.name}"
-            )
             return
 
         self._log.info(
@@ -1519,12 +1523,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         if not self._is_in_state(AcquisitionControllerState.RUNNING, AcquisitionControllerState.ABORTING):
             return
 
-        # Log progress at debug level for tracking
-        self._log.debug(
-            f"Worker progress: region {event.current_region}/{event.total_regions}, "
-            f"fov {event.current_fov}/{event.total_fovs}, "
-            f"timepoint {event.current_timepoint}/{event.total_timepoints}"
-        )
+        # Progress events are consumed by UI handlers; no controller-side logging needed.
 
     def _publish_acquisition_state(
         self,
@@ -1533,8 +1532,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         allow_missing_experiment_id: bool = False,
     ) -> None:
         """Publish acquisition state changed event."""
-        import threading
-        thread_name = threading.current_thread().name
         experiment_id = self.experiment_ID
         if allow_missing_experiment_id and not experiment_id:
             self._log.warning(
@@ -1542,14 +1539,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             )
             return
         experiment_id = self._require_experiment_id()
-        self._log.info(f"_publish_acquisition_state(in_progress={in_progress}, is_aborting={is_aborting}, experiment_id={experiment_id}) from thread {thread_name}")
         if self._event_bus:
             self._event_bus.publish(AcquisitionStateChanged(
                 in_progress=in_progress,
                 experiment_id=experiment_id,
                 is_aborting=is_aborting
             ))
-            self._log.info(f"Published AcquisitionStateChanged(in_progress={in_progress}, experiment_id={experiment_id})")
 
     def _publish_acquisition_finished(
         self,
@@ -1591,14 +1586,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
         # Build channel names from selected configurations
         channels = [config.name for config in self.selected_configurations]
-        self._log.debug(f"_publish_ndviewer_start: {len(channels)} channels: {channels}")
 
         # Get image dimensions from camera
         width, height = self._camera_service.get_crop_size()
-        self._log.debug(f"_publish_ndviewer_start: crop_size=({width}, {height})")
         if width is None or height is None:
             width, height = self._camera_service.get_resolution()
-            self._log.debug(f"_publish_ndviewer_start: resolution=({width}, {height})")
         if width is None or height is None:
             self._log.warning("_publish_ndviewer_start: Cannot get camera dimensions, skipping")
             return
@@ -1747,9 +1739,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._ndviewer_mode = "inactive"
             return
 
-        # Build dataset path for file-based loading (used when push-mode isn't available)
+        # Build dataset path for file-based loading (used when push-mode isn't available).
+        # When skip_saving is enabled (e.g., Quick Scan), no files will exist, so avoid
+        # triggering NDViewer fallback retries against an empty folder.
         dataset_path = None
-        if self.base_path and self.experiment_ID:
+        if not self._config.skip_saving and self.base_path and self.experiment_ID:
             dataset_path = os.path.join(self.base_path, self.experiment_ID)
 
         self._event_bus.publish(

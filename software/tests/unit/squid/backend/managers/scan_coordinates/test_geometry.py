@@ -147,6 +147,25 @@ class TestFovOverlapsPolygon:
         # At least one corner should be inside
         assert result is True
 
+    def test_polygon_inside_fov_without_center_or_corner_hit(self):
+        """Overlap is detected when polygon lies inside FOV interior."""
+        thin_strip = np.array(
+            [[-0.2, 0.85], [0.2, 0.85], [0.2, 0.95], [-0.2, 0.95]],
+            dtype=float,
+        )
+        # FOV rectangle is [-1, 1] x [-1, 1]. No FOV corner is inside this strip,
+        # and the FOV center (0,0) is also outside, but shapes still overlap.
+        assert fov_overlaps_polygon(0.0, 0.0, 2.0, 2.0, thin_strip) is True
+
+    def test_polygon_crosses_fov_edge_without_corner_containment(self):
+        """Overlap is detected when polygon edge intersects FOV edge."""
+        sliver = np.array(
+            [[-1.5, 0.95], [1.5, 0.95], [1.5, 1.05], [-1.5, 1.05]],
+            dtype=float,
+        )
+        # This intersects the top FOV boundary y=1.0, but contains neither center nor corners.
+        assert fov_overlaps_polygon(0.0, 0.0, 2.0, 2.0, sliver) is True
+
 
 class TestBoundingBox:
     """Tests for bounding_box function."""

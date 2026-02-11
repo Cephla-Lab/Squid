@@ -1,0 +1,16 @@
+description: ''
+channels:
+- Fluorescence 488 nm Ex
+- Fluorescence 638 nm Ex
+- Fluorescence 561 nm Ex
+z_stack:
+  planes: 1
+  step_um: 1.5
+  direction: from_bottom
+acquisition_order: channel_first
+focus:
+  enabled: true
+  method: laser
+  interval_fovs: 1
+skip_saving: false
+save_format: ome-tiff

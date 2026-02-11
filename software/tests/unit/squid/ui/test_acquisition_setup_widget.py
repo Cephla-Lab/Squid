@@ -110,6 +110,17 @@ def collected_commands(event_bus):
     return commands
 
 
+@pytest.fixture
+def collected_clear_commands(event_bus):
+    commands = []
+
+    def handler(evt):
+        commands.append(evt)
+
+    event_bus.subscribe(ClearScanCoordinatesCommand, handler)
+    return commands
+
+
 # ===========================================================================
 # Mosaic ROI → FOV Generation (the bug)
 # ===========================================================================
@@ -198,6 +209,22 @@ class TestMosaicROIFullFlow:
         assert len(cmd.manual_shapes_mm) > 0
         assert len(cmd.manual_shapes_mm[0]) == 4  # 4 vertices
 
+    def test_generate_fovs_clears_displayed_fovs_first(
+        self, widget, event_bus, collected_clear_commands
+    ):
+        shapes = (
+            ((15.0, 15.0), (18.0, 15.0), (18.0, 18.0), (15.0, 18.0)),
+        )
+        event_bus.publish(ManualShapesChanged(shapes_mm=shapes))
+        event_bus.drain()
+        collected_clear_commands.clear()
+
+        widget._on_generate_fovs()
+        event_bus.drain()
+
+        assert len(collected_clear_commands) > 0
+        assert collected_clear_commands[-1].clear_displayed_fovs is True
+
     def test_generate_fovs_with_none_shapes_is_noop(self, widget, event_bus, collected_commands):
         """Generate FOVs with no shapes should be a no-op."""
         assert widget._manual_shapes_mm is None
@@ -222,6 +249,40 @@ class TestMosaicROIFullFlow:
         assert "0 FOVs" not in text or text == "0 FOVs", (
             f"FOV count should be non-zero, got: '{text}'"
         )
+
+    def test_stage_move_after_roi_draw_does_not_shift_generated_fovs(
+        self, widget, event_bus, scan_coords, collected_commands
+    ):
+        """Manual ROI FOVs should be invariant to subsequent stage movement."""
+        shapes = (
+            ((15.0, 15.0), (18.0, 15.0), (18.0, 18.0), (15.0, 18.0)),
+        )
+        event_bus.publish(ManualShapesChanged(shapes_mm=shapes))
+        event_bus.drain()
+
+        # First generation (reference)
+        widget._on_generate_fovs()
+        event_bus.drain()
+        assert "manual" in scan_coords.region_fov_coordinates
+        coords_before = np.array(scan_coords.region_fov_coordinates["manual"], dtype=float)
+        cmd_before = collected_commands[-1]
+        assert cmd_before.manual_shapes_mm == shapes
+
+        # Move stage after ROI was already stored.
+        event_bus.publish(StagePositionChanged(x_mm=41.0, y_mm=7.5, z_mm=2.0))
+        event_bus.drain()
+        assert widget._cached_x_mm == pytest.approx(41.0)
+        assert widget._cached_y_mm == pytest.approx(7.5)
+
+        # Regenerate and verify exact same ROI payload and FOV placement.
+        widget._on_generate_fovs()
+        event_bus.drain()
+        assert "manual" in scan_coords.region_fov_coordinates
+        coords_after = np.array(scan_coords.region_fov_coordinates["manual"], dtype=float)
+        cmd_after = collected_commands[-1]
+
+        assert cmd_after.manual_shapes_mm == shapes
+        np.testing.assert_allclose(coords_after, coords_before, atol=1e-9)
 
     def test_roi_status_label_updates(self, widget, event_bus):
         """ROI status label should show number of ROIs when in ROI mode."""
@@ -1316,20 +1377,26 @@ class TestQuickScanValidation:
         assert len(acq_cmds) == 0, "No StartAcquisitionCommand should be published"
         assert widget._active_experiment_id is None, "experiment_id should not be set"
 
-    def test_warns_no_fovs(self, widget):
-        """Quick Scan with no FOVs should show warning."""
+    def test_allows_no_fovs(self, widget, event_bus):
+        """Quick Scan should run even when no scan coordinates/FOVs are pre-generated."""
+        from squid.core.events import StartAcquisitionCommand
         import unittest.mock
 
         self._select_channel(widget)
         assert widget._total_fovs == 0
+        acq_cmds = []
+        event_bus.subscribe(StartAcquisitionCommand, lambda e: acq_cmds.append(e))
 
         with unittest.mock.patch(
             "squid.ui.widgets.acquisition.acquisition_setup.QMessageBox"
         ) as mock_mb:
             widget._quick_scan()
-            mock_mb.warning.assert_called_once()
+            event_bus.drain()
+            mock_mb.warning.assert_not_called()
 
-        assert widget._active_experiment_id is None
+        assert len(acq_cmds) == 1
+        assert widget._active_experiment_id is not None
+        assert widget._active_experiment_id.startswith("quick_scan_")
 
     def test_no_channels_does_not_disable_controls(self, widget, event_bus, scan_coords):
         """Failed validation should leave controls enabled."""
@@ -1347,8 +1414,8 @@ class TestQuickScanValidation:
         assert widget._xy_checkbox.isEnabled()
         assert widget._channel_order_widget.isEnabled()
 
-    def test_no_fovs_does_not_disable_controls(self, widget):
-        """Failed FOV validation should leave controls enabled."""
+    def test_no_fovs_still_disables_controls_on_start(self, widget):
+        """No pre-generated FOVs: Quick Scan still starts and disables controls."""
         import unittest.mock
 
         self._select_channel(widget)
@@ -1358,10 +1425,12 @@ class TestQuickScanValidation:
         ):
             widget._quick_scan()
 
-        assert widget._btn_quick_scan.isEnabled()
+        assert not widget._btn_quick_scan.isEnabled()
+        assert not widget._xy_checkbox.isEnabled()
+        assert not widget._channel_order_widget.isEnabled()
 
-    def test_channel_check_happens_before_fov_check(self, widget):
-        """When both channels and FOVs are missing, channel error should show first."""
+    def test_channel_check_warns_when_channels_missing(self, widget):
+        """When channels are missing, Quick Scan should warn about channel selection."""
         import unittest.mock
 
         widget._channel_order_widget.set_selected_channels([])
@@ -1441,6 +1510,47 @@ class TestQuickScanControlState:
         assert widget._channel_order_widget.isEnabled()
         assert widget._save_path_edit.isEnabled()
         assert widget._skip_saving.isEnabled()
+
+    def test_controls_reenabled_after_completion_with_backend_suffixed_id(
+        self, widget, event_bus, scan_coords
+    ):
+        """Backend appends a timestamp suffix to experiment_id; completion should still re-enable controls."""
+        self._select_channel(widget)
+        self._add_fov(widget, event_bus)
+        widget._quick_scan()
+        requested_id = widget._active_experiment_id
+        backend_id = f"{requested_id}_2026-02-11_09-10-11.123456"
+
+        event_bus.publish(AcquisitionStateChanged(in_progress=True, experiment_id=backend_id))
+        event_bus.drain()
+        assert widget._active_experiment_id == backend_id
+
+        event_bus.publish(AcquisitionStateChanged(in_progress=False, experiment_id=backend_id))
+        event_bus.drain()
+
+        assert widget._active_experiment_id is None
+        assert widget._btn_quick_scan.isEnabled()
+        assert widget._xy_checkbox.isEnabled()
+
+    def test_start_watchdog_recovers_controls_when_backend_never_starts(
+        self, widget, event_bus, scan_coords, qtbot, monkeypatch
+    ):
+        """If no matching acquisition state/progress arrives, controls should auto-recover."""
+        self._select_channel(widget)
+        self._add_fov(widget, event_bus)
+        monkeypatch.setattr(widget, "_ACQUISITION_START_WATCHDOG_MS", 20)
+
+        widget._quick_scan()
+        event_bus.drain()
+
+        assert not widget._btn_quick_scan.isEnabled()
+        assert widget._active_experiment_id is not None
+
+        qtbot.wait(80)
+
+        assert widget._btn_quick_scan.isEnabled()
+        assert widget._xy_checkbox.isEnabled()
+        assert widget._active_experiment_id is None
 
     def test_start_stop_button_shows_stop_during_quick_scan(self, widget, event_bus, scan_coords):
         """Start/Stop button should change to 'Stop Acquisition' during Quick Scan."""
@@ -1732,6 +1842,50 @@ class TestQuickScanEdgeCases:
         event_bus.drain()
 
         assert len(stop_cmds) == 1
+        assert "Stopping" in widget._btn_start_stop.text()
+
+        # Backend acknowledges aborting, then completion
+        event_bus.publish(AcquisitionStateChanged(
+            in_progress=True, experiment_id=exp_id, is_aborting=True,
+        ))
+        event_bus.drain()
+        assert "Stopping" in widget._btn_start_stop.text()
+        assert not widget._btn_start_stop.isEnabled()
+
+        event_bus.publish(AcquisitionStateChanged(
+            in_progress=False, experiment_id=exp_id, is_aborting=True,
+        ))
+        event_bus.drain()
+        assert "Start" in widget._btn_start_stop.text()
+        assert widget._btn_start_stop.isEnabled()
+        assert widget._btn_quick_scan.isEnabled()
+        assert not widget._is_acquiring
+        assert widget._active_experiment_id is None
+
+    def test_stop_via_start_stop_button_while_quick_scan_start_pending(self, widget, event_bus, scan_coords):
+        """Stop should work even before the first in_progress=True state event arrives."""
+        from squid.core.events import StartAcquisitionCommand, StopAcquisitionCommand
+
+        start_cmds = []
+        stop_cmds = []
+        event_bus.subscribe(StartAcquisitionCommand, lambda e: start_cmds.append(e))
+        event_bus.subscribe(StopAcquisitionCommand, lambda e: stop_cmds.append(e))
+
+        self._select_channel(widget)
+        self._add_fov(widget, event_bus)
+        widget._quick_scan()
+        event_bus.drain()
+
+        assert len(start_cmds) == 1
+        assert widget._start_pending_experiment_id is not None
+        assert "Stop" in widget._btn_start_stop.text()
+
+        # Before any AcquisitionStateChanged(in_progress=True), pressing Start/Stop should still stop.
+        widget._on_start_stop_acquisition()
+        event_bus.drain()
+
+        assert len(stop_cmds) == 1
+        assert len(start_cmds) == 1, "Pending stop should not trigger a new start acquisition"
 
     def test_quick_scan_after_regular_acquisition_completes(self, widget, event_bus, scan_coords):
         """Quick Scan should work after a regular acquisition completes."""

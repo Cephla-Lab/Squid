@@ -1,0 +1,90 @@
+# Acquisition Parameters - round_000_tiled_zstack
+# Saved automatically when acquisition started
+
+acquisition:
+  experiment_id: round_000_tiled_zstack
+  start_time: 1770511422.839277
+  widget_type: wellplate
+  xy_mode: Current Position
+  skip_saving: true
+objective:
+  name: 20x
+  magnification: 20.0
+  NA: 0.8
+  pixel_size_um: 1.3536
+  camera_binning:
+  - 2
+  - 2
+  sensor_pixel_size_um: 7.52
+sample:
+  wellplate_format: test_calibration
+z_stack:
+  nz: 5
+  delta_z_um: 1.0
+  config: FROM CENTER
+  z_range:
+  - 1.25
+  - 1.254
+  use_piezo: false
+time_series:
+  nt: 1
+  delta_t_s: 0.0
+autofocus:
+  contrast_af: false
+  laser_af: false
+channels:
+- name: BF LED matrix full
+  enabled: false
+  display_color: '#FFFFFF'
+  camera: null
+  camera_settings:
+    exposure_time_ms: 12.0
+    gain_mode: 0.0
+    pixel_format: null
+  filter_wheel: null
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: BF LED matrix full
+    intensity: 5.0
+  confocal_override: null
+- name: Fluorescence 488 nm Ex
+  enabled: true
+  display_color: '#1FFF00'
+  camera: null
+  camera_settings:
+    exposure_time_ms: 25.0
+    gain_mode: 10.0
+    pixel_format: null
+  filter_wheel: null
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 488 nm Ex
+    intensity: 20.0
+  confocal_override: null
+wellplate_scan:
+  scan_size_mm: 0.0
+  overlap_percent: 10.0
+  regions:
+  - name: Region1
+    center_mm:
+    - 0.25
+    - 0.25
+    - 1.25
+    shape: Loaded
+downsampled_views:
+  enabled: true
+  save_well_images: false
+  well_resolutions_um:
+  - 5.0
+  - 10.0
+  - 20.0
+  plate_resolution_um: 10.0
+  z_projection: mip
+  interpolation_method: inter_area_fast
+plate:
+  num_rows: 1
+  num_cols: 1
+fluidics:
+  enabled: false

@@ -149,6 +149,19 @@ class TestEventBusWidgetBase:
 
         assert len(widget._subscriptions) == 0
 
+    def test_destroyed_signal_callback_cleans_up_with_arg(self):
+        """Destroyed signal passes QObject arg; cleanup should still run."""
+        from squid.ui.widgets.base import EventBusWidget
+
+        bus = EventBus()
+        widget = EventBusWidget(bus)
+        handler = MagicMock()
+        widget._subscribe(DummyEvent, handler)
+        assert len(widget._subscriptions) == 1
+
+        widget._on_destroyed(object())
+        assert len(widget._subscriptions) == 0
+
 
 @pytest.mark.skipif(_skip_widget_tests, reason="Skipping widget tests in offscreen mode")
 class TestEventBusFrame:

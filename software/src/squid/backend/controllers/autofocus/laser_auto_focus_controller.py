@@ -237,21 +237,30 @@ class LaserAutofocusController(BaseController):
 
     def initialize_manual(self, config: LaserAFConfig) -> None:
         """Initialize laser autofocus with manual parameters."""
-        x_ref_adjusted = config.x_reference - config.x_offset if config.x_reference is not None else None
+        has_reference = bool(config.has_reference and config.x_reference is not None)
+        x_ref_adjusted = (
+            config.x_reference - config.x_offset if has_reference else None
+        )
         adjusted_config = config.model_copy(
             update={
                 "x_reference": x_ref_adjusted,  # x_reference is relative to the cropped region
+                "has_reference": has_reference,
                 "x_offset": int((config.x_offset // 8) * 8),
                 "y_offset": int((config.y_offset // 2) * 2),
                 "width": int((config.width // 8) * 8),
                 "height": int((config.height // 2) * 2),
             }
         )
+        if not has_reference:
+            # Drop stale reference image/position from cached configs.
+            adjusted_config.set_reference_image(None)
 
         self.laser_af_properties = adjusted_config
 
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
+        else:
+            self.reference_crop = None
 
         self._set_camera_roi(
             self.laser_af_properties.x_offset,
@@ -269,7 +278,8 @@ class LaserAutofocusController(BaseController):
             and self.objectiveStore.current_objective
         ):
             self.laserAFSettingManager.update_laser_af_settings(
-                self.objectiveStore.current_objective, config.model_dump()
+                self.objectiveStore.current_objective,
+                self.laser_af_properties.model_dump(),
             )
 
     def load_cached_configuration(self) -> None:
@@ -288,6 +298,10 @@ class LaserAutofocusController(BaseController):
             config = self.laserAFSettingManager.get_settings_for_objective(
                 current_objective
             )
+            if not config.has_reference:
+                # Prevent stale cached x_reference from being used as a live reference.
+                config = config.model_copy(update={"x_reference": None})
+                config.set_reference_image(None)
 
             # Update camera settings
             self._set_camera_exposure(config.focus_camera_exposure_time_ms)
@@ -301,6 +315,8 @@ class LaserAutofocusController(BaseController):
             self.laser_af_properties = config
             if config.has_reference:
                 self.reference_crop = config.reference_image_cropped
+            else:
+                self.reference_crop = None
 
     def initialize_auto(self) -> bool:
         """Automatically initialize laser autofocus by finding the spot and calibrating.
@@ -521,7 +537,10 @@ class LaserAutofocusController(BaseController):
                 )
                 return finish_with(float("nan"))  # Signal invalid measurement
 
-            if self.laser_af_properties.x_reference is None:
+            if (
+                not self.laser_af_properties.has_reference
+                or self.laser_af_properties.x_reference is None
+            ):
                 self._log.warning("Cannot calculate displacement - reference position not set")
                 return finish_with(float("nan"))
 
@@ -966,7 +985,14 @@ class LaserAutofocusController(BaseController):
         else:
             snr, intensity, _background = self._last_spot_metrics
 
-        x_reference = self.laser_af_properties.x_reference or 0.0
+        if (
+            self.laser_af_properties.has_reference
+            and self.laser_af_properties.x_reference is not None
+        ):
+            x_reference = self.laser_af_properties.x_reference
+        else:
+            # No valid lock reference yet; report displacement relative to current spot.
+            x_reference = spot.x
         displacement_um = compute_displacement(
             spot.x, x_reference, self.laser_af_properties.pixel_to_um
         )

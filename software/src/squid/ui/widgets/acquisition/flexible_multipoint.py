@@ -15,6 +15,7 @@ from squid.core.events import (
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
     SetAcquisitionChannelsCommand,
+    SetFocusLockParamsCommand,
     StartNewExperimentCommand,
     StartAcquisitionCommand,
     StopAcquisitionCommand,
@@ -74,6 +75,7 @@ from _def import (
     USE_OVERLAP_FOR_FLEXIBLE,
     squid,
 )
+from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
 from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
@@ -115,6 +117,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype="<U20")
         self.use_overlap = USE_OVERLAP_FOR_FLEXIBLE
+        focus_lock_defaults = FocusLockConfig()
+        self._focus_lock_settings = {
+            "enabled": False,
+            "buffer_length": focus_lock_defaults.buffer_length,
+            "recovery_attempts": focus_lock_defaults.recovery_attempts,
+            "min_spot_snr": focus_lock_defaults.min_spot_snr,
+            "acquire_threshold_um": focus_lock_defaults.acquire_threshold_um,
+            "maintain_threshold_um": focus_lock_defaults.maintain_threshold_um,
+        }
 
         # Cached acquisition state from events
         self._acquisition_in_progress = False
@@ -1036,6 +1047,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             self._publish(SetAcquisitionChannelsCommand(
                 channel_names=[item.text() for item in self.list_configurations.selectedItems()]
             ))
+            self._publish_focus_lock_params()
             self._publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
@@ -1665,6 +1677,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
     def _on_focus_lock_toggled(self, checked: bool) -> None:
         """Handle focus lock checkbox toggle."""
+        self._focus_lock_settings["enabled"] = checked
         # When focus lock is enabled, disable the single-shot AF checkboxes
         if checked:
             self.checkbox_withAutofocus.setChecked(False)
@@ -1674,16 +1687,50 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         else:
             self.checkbox_withAutofocus.setEnabled(True)
             self.checkbox_withReflectionAutofocus.setEnabled(True)
+        self._publish_focus_lock_params()
 
     def get_focus_lock_settings(self) -> dict:
         """Get current focus lock settings for saving."""
-        return {
-            "enabled": self.checkbox_focus_lock.isChecked(),
-        }
+        settings = dict(self._focus_lock_settings)
+        settings["enabled"] = self.checkbox_focus_lock.isChecked()
+        return settings
 
     def set_focus_lock_settings(self, settings: dict) -> None:
         """Restore focus lock settings from saved data."""
-        self.checkbox_focus_lock.setChecked(settings.get("enabled", False))
+        self._focus_lock_settings.update(
+            {
+                "enabled": settings.get("enabled", False),
+                "buffer_length": settings.get(
+                    "buffer_length", self._focus_lock_settings["buffer_length"]
+                ),
+                "recovery_attempts": settings.get(
+                    "recovery_attempts", self._focus_lock_settings["recovery_attempts"]
+                ),
+                "min_spot_snr": settings.get(
+                    "min_spot_snr", self._focus_lock_settings["min_spot_snr"]
+                ),
+                "acquire_threshold_um": settings.get(
+                    "acquire_threshold_um", self._focus_lock_settings["acquire_threshold_um"]
+                ),
+                "maintain_threshold_um": settings.get(
+                    "maintain_threshold_um", self._focus_lock_settings["maintain_threshold_um"]
+                ),
+            }
+        )
+        self.checkbox_focus_lock.setChecked(bool(self._focus_lock_settings["enabled"]))
+        self._publish_focus_lock_params()
+
+    def _publish_focus_lock_params(self) -> None:
+        settings = self.get_focus_lock_settings()
+        self._publish(
+            SetFocusLockParamsCommand(
+                buffer_length=int(settings["buffer_length"]),
+                recovery_attempts=int(settings["recovery_attempts"]),
+                min_spot_snr=float(settings["min_spot_snr"]),
+                acquire_threshold_um=float(settings["acquire_threshold_um"]),
+                maintain_threshold_um=float(settings["maintain_threshold_um"]),
+            )
+        )
 
     # =========================================================================
     # Preset Save/Load

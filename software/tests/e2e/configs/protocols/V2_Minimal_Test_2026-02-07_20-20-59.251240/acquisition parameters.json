@@ -1,0 +1,12 @@
+{
+  "protocol": "V2 Minimal Test",
+  "experiment_label": "V2 Minimal Test",
+  "objective": {
+    "magnification": 60.0,
+    "NA": 1.2,
+    "tube_lens_f_mm": 180.0,
+    "name": "60x"
+  },
+  "sensor_pixel_size_um": 7.52,
+  "tube_lens_mm": 50.0
+}

@@ -55,7 +55,7 @@ class EventBusSubscriptionMixin:
         if hasattr(self, "destroyed"):
             self.destroyed.connect(self._on_destroyed)  # type: ignore[union-attr]
 
-    def _on_destroyed(self) -> None:
+    def _on_destroyed(self, _obj: object = None) -> None:
         """Clean up subscriptions when widget is destroyed (handles deleteLater())."""
         self._cleanup_subscriptions()
 

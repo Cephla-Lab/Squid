@@ -8,6 +8,62 @@ from typing import Tuple
 import numpy as np
 
 
+def _point_on_segment(
+    px: float, py: float, x1: float, y1: float, x2: float, y2: float, eps: float = 1e-9
+) -> bool:
+    """Return True when point P lies on segment AB (with tolerance)."""
+    cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1)
+    if abs(cross) > eps:
+        return False
+    return (
+        min(x1, x2) - eps <= px <= max(x1, x2) + eps
+        and min(y1, y2) - eps <= py <= max(y1, y2) + eps
+    )
+
+
+def _segment_orientation(
+    ax: float, ay: float, bx: float, by: float, cx: float, cy: float, eps: float = 1e-9
+) -> int:
+    """Return orientation of triplet (a, b, c): 1 ccw, -1 cw, 0 collinear."""
+    cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if abs(cross) <= eps:
+        return 0
+    return 1 if cross > 0 else -1
+
+
+def _segments_intersect(
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    q1: Tuple[float, float],
+    q2: Tuple[float, float],
+    eps: float = 1e-9,
+) -> bool:
+    """Return True if two 2D segments intersect (including touching)."""
+    p1x, p1y = p1
+    p2x, p2y = p2
+    q1x, q1y = q1
+    q2x, q2y = q2
+
+    o1 = _segment_orientation(p1x, p1y, p2x, p2y, q1x, q1y, eps)
+    o2 = _segment_orientation(p1x, p1y, p2x, p2y, q2x, q2y, eps)
+    o3 = _segment_orientation(q1x, q1y, q2x, q2y, p1x, p1y, eps)
+    o4 = _segment_orientation(q1x, q1y, q2x, q2y, p2x, p2y, eps)
+
+    if o1 != o2 and o3 != o4:
+        return True
+
+    if o1 == 0 and _point_on_segment(q1x, q1y, p1x, p1y, p2x, p2y, eps):
+        return True
+    if o2 == 0 and _point_on_segment(q2x, q2y, p1x, p1y, p2x, p2y, eps):
+        return True
+    if o3 == 0 and _point_on_segment(p1x, p1y, q1x, q1y, q2x, q2y, eps):
+        return True
+    if o4 == 0 and _point_on_segment(p2x, p2y, q1x, q1y, q2x, q2y, eps):
+        return True
+
+    return False
+
+
 def point_in_polygon(x: float, y: float, vertices: np.ndarray) -> bool:
     """Check if a point (x, y) is inside a polygon defined by vertices.
 
@@ -24,6 +80,13 @@ def point_in_polygon(x: float, y: float, vertices: np.ndarray) -> bool:
     n = len(vertices)
     if n < 3:
         return False
+
+    # Treat points on polygon boundary as inside for scan inclusion logic.
+    for i in range(n):
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i + 1) % n]
+        if _point_on_segment(x, y, x1, y1, x2, y2):
+            return True
 
     inside = False
     p1x, p1y = vertices[0]
@@ -122,11 +185,14 @@ def fov_overlaps_polygon(
     Returns:
         True if FOV overlaps with the polygon, False otherwise.
     """
-    # Check if center is in polygon
+    if len(vertices) < 3:
+        return False
+
+    # Check if center is in polygon.
     if point_in_polygon(fov_x, fov_y, vertices):
         return True
 
-    # Check if any corner is in polygon
+    # Check if any corner is in polygon.
     half_width = fov_width / 2
     half_height = fov_height / 2
 
@@ -136,8 +202,32 @@ def fov_overlaps_polygon(
         (fov_x - half_width, fov_y + half_height),
         (fov_x + half_width, fov_y + half_height),
     ]
+    if any(point_in_polygon(cx, cy, vertices) for cx, cy in corners):
+        return True
 
-    return any(point_in_polygon(cx, cy, vertices) for cx, cy in corners)
+    # Check if any polygon vertex is inside the FOV rectangle.
+    x_min = fov_x - half_width
+    x_max = fov_x + half_width
+    y_min = fov_y - half_height
+    y_max = fov_y + half_height
+    for vx, vy in vertices:
+        if x_min <= vx <= x_max and y_min <= vy <= y_max:
+            return True
+
+    # Check edge intersections between rectangle and polygon.
+    rect_edges = [
+        (corners[0], corners[1]),
+        (corners[1], corners[3]),
+        (corners[3], corners[2]),
+        (corners[2], corners[0]),
+    ]
+    n = len(vertices)
+    for i in range(n):
+        poly_edge = (tuple(vertices[i]), tuple(vertices[(i + 1) % n]))
+        if any(_segments_intersect(poly_edge[0], poly_edge[1], r0, r1) for r0, r1 in rect_edges):
+            return True
+
+    return False
 
 
 def bounding_box(vertices: np.ndarray) -> Tuple[float, float, float, float]:

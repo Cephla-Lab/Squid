@@ -158,18 +158,25 @@ class WellSelectionWidget(EventBusSubscriptionMixin, QTableWidget):
         # If the app switches to the 1536 selector widget, main_window replaces this widget.
         if event.format_name == "1536 well plate":
             return
-        self.format = event.format_name
-        self.rows = int(event.rows)
-        self.columns = int(event.cols)
-        self.spacing_mm = float(event.well_spacing_mm)
-        self.number_of_skip = int(event.number_of_skip)
-        self.a1_x_mm = float(event.a1_x_mm)
-        self.a1_y_mm = float(event.a1_y_mm)
-        self.a1_x_pixel = int(event.a1_x_pixel)
-        self.a1_y_pixel = int(event.a1_y_pixel)
-        self.well_size_mm = float(event.well_size_mm)
-        self._apply_format()
-        self._publish_selection()
+        try:
+            self.format = event.format_name
+            self.rows = int(event.rows)
+            self.columns = int(event.cols)
+            self.spacing_mm = float(event.well_spacing_mm)
+            self.number_of_skip = int(event.number_of_skip)
+            self.a1_x_mm = float(event.a1_x_mm)
+            self.a1_y_mm = float(event.a1_y_mm)
+            self.a1_x_pixel = int(event.a1_x_pixel)
+            self.a1_y_pixel = int(event.a1_y_pixel)
+            self.well_size_mm = float(event.well_size_mm)
+            self._apply_format()
+            self._publish_selection()
+        except RuntimeError as exc:
+            # A queued callback can fire briefly after deleteLater() during widget swaps.
+            if "has been deleted" in str(exc):
+                self._cleanup_subscriptions()
+                return
+            raise
 
     def setData(self) -> None:
         for i in range(self.rowCount()):

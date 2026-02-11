@@ -40,7 +40,8 @@ import squid.core.logging
 class TileUpdate:
     """Processed tile ready for GUI insertion."""
     channel: str
-    mosaic: np.ndarray
+    tile: np.ndarray
+    tile_top_left: Tuple[float, float]  # (y_mm, x_mm)
     extents: Tuple[float, float, float, float]  # (min_y, max_y, min_x, max_x)
     top_left: Tuple[float, float]  # (y_mm, x_mm)
     pixel_size_mm: float
@@ -49,7 +50,7 @@ class TileUpdate:
 
 
 class MosaicWorker(QObject):
-    """Worker that runs in QThread, composites tiles into mosaic arrays."""
+    """Worker that runs in QThread, preprocesses tiles for GUI insertion."""
 
     # Signal emitted when mosaic is updated (channel, TileUpdate)
     mosaic_updated = Signal(object)
@@ -58,7 +59,6 @@ class MosaicWorker(QObject):
         super().__init__()
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._target_pixel_size_um = target_pixel_size_um
-        self._mosaics: Dict[str, np.ndarray] = {}
         self._extents: Dict[str, List[float]] = {}  # channel -> [min_y, max_y, min_x, max_x]
         self._top_left: Dict[str, List[float]] = {}  # channel -> [y_mm, x_mm]
         self._mosaic_dtype: Optional[np.dtype] = None
@@ -74,16 +74,17 @@ class MosaicWorker(QObject):
                 return
             if image.shape[0] <= 0 or image.shape[1] <= 0:
                 return
+            # Own the pixel buffer in worker thread to avoid GUI-thread copies.
+            image = np.array(image, copy=True)
 
             pixel_size_um = info.pixel_size_um
             if pixel_size_um is None or pixel_size_um <= 0:
-                self._log.warning(f"process_tile: skipping tile — pixel_size_um={pixel_size_um}")
+                self._log.warning(f"Skipping tile with invalid pixel size: {pixel_size_um}")
                 return
 
             # Stage position is tile center
             center_x_mm = info.position.x_mm
             center_y_mm = info.position.y_mm
-            self._log.info(f"process_tile: center=({center_x_mm:.4f}, {center_y_mm:.4f}) mm, channel={channel}")
             original_shape = image.shape
 
             # Compute initial contrast limits on first image per channel
@@ -148,39 +149,28 @@ class MosaicWorker(QObject):
                 x_mm = center_x_mm - original_tile_width_mm / 2
                 y_mm = center_y_mm - original_tile_height_mm / 2
 
-                # Initialize or update channel mosaic
-                if channel not in self._mosaics:
+                # Initialize/update extents for GUI-side incremental compositing.
+                if channel not in self._extents:
                     self._extents[channel] = [
                         y_mm,
                         y_mm + image.shape[0] * self._pixel_size_mm,
                         x_mm,
                         x_mm + image.shape[1] * self._pixel_size_mm,
                     ]
-                    self._top_left[channel] = [y_mm, x_mm]
-                    if image.ndim == 3 and image.shape[2] == 3:
-                        self._mosaics[channel] = np.zeros_like(image)
-                    else:
-                        self._mosaics[channel] = np.zeros_like(image)
                 else:
-                    # Update extents
                     ext = self._extents[channel]
                     ext[0] = min(ext[0], y_mm)
                     ext[1] = max(ext[1], y_mm + image.shape[0] * self._pixel_size_mm)
                     ext[2] = min(ext[2], x_mm)
                     ext[3] = max(ext[3], x_mm + image.shape[1] * self._pixel_size_mm)
 
-                # Resize mosaic if needed
-                self._ensure_mosaic_size(channel, image)
+                self._top_left[channel] = [self._extents[channel][0], self._extents[channel][2]]
 
-                # Insert tile
-                self._insert_tile(channel, image, x_mm, y_mm)
-
-                # Prepare update - COPY the mosaic array for thread safety
-                # The GUI thread will receive its own copy that won't be modified by the worker
                 contrast = self._contrast_limits.get(channel)
                 update = TileUpdate(
                     channel=channel,
-                    mosaic=self._mosaics[channel].copy(),
+                    tile=image,
+                    tile_top_left=(y_mm, x_mm),
                     extents=tuple(self._extents[channel]),
                     top_left=tuple(self._top_left[channel]),
                     pixel_size_mm=self._pixel_size_mm,
@@ -214,89 +204,9 @@ class MosaicWorker(QObject):
         scale = dst_max / src_max
         return (image.astype(np.float32) * scale).astype(target_dtype)
 
-    def _ensure_mosaic_size(self, channel: str, image: np.ndarray) -> None:
-        """Expand mosaic if extents have grown."""
-        ext = self._extents[channel]
-        mosaic_height = int(math.ceil((ext[1] - ext[0]) / self._pixel_size_mm))
-        mosaic_width = int(math.ceil((ext[3] - ext[2]) / self._pixel_size_mm))
-
-        mosaic = self._mosaics[channel]
-        if mosaic.shape[0] >= mosaic_height and mosaic.shape[1] >= mosaic_width:
-            return  # No resize needed
-
-        # Create new mosaic with padding for future growth
-        pad_factor = 1.2
-        new_height = int(mosaic_height * pad_factor)
-        new_width = int(mosaic_width * pad_factor)
-
-        is_rgb = mosaic.ndim == 3 and mosaic.shape[2] == 3
-        if is_rgb:
-            new_mosaic = np.zeros((new_height, new_width, 3), dtype=mosaic.dtype)
-        else:
-            new_mosaic = np.zeros((new_height, new_width), dtype=mosaic.dtype)
-
-        # Copy existing data
-        old_top_left = self._top_left[channel]
-        new_top_left = [ext[0], ext[2]]
-
-        y_offset = int(round((old_top_left[0] - new_top_left[0]) / self._pixel_size_mm))
-        x_offset = int(round((old_top_left[1] - new_top_left[1]) / self._pixel_size_mm))
-
-        y_offset = max(0, y_offset)
-        x_offset = max(0, x_offset)
-
-        y_end = min(y_offset + mosaic.shape[0], new_mosaic.shape[0])
-        x_end = min(x_offset + mosaic.shape[1], new_mosaic.shape[1])
-
-        if y_end > y_offset and x_end > x_offset:
-            if is_rgb:
-                new_mosaic[y_offset:y_end, x_offset:x_end, :] = mosaic[:y_end - y_offset, :x_end - x_offset, :]
-            else:
-                new_mosaic[y_offset:y_end, x_offset:x_end] = mosaic[:y_end - y_offset, :x_end - x_offset]
-
-        self._mosaics[channel] = new_mosaic
-        self._top_left[channel] = new_top_left
-
-    def _insert_tile(self, channel: str, image: np.ndarray, x_mm: float, y_mm: float) -> None:
-        """Insert tile into mosaic at correct position."""
-        mosaic = self._mosaics[channel]
-        top_left = self._top_left[channel]
-
-        y_pos = int(round((y_mm - top_left[0]) / self._pixel_size_mm))
-        x_pos = int(round((x_mm - top_left[1]) / self._pixel_size_mm))
-
-        # Clip to bounds
-        y_img0, x_img0 = 0, 0
-        if y_pos < 0:
-            y_img0 = -y_pos
-            y_pos = 0
-        if x_pos < 0:
-            x_img0 = -x_pos
-            x_pos = 0
-
-        y_end = min(y_pos + (image.shape[0] - y_img0), mosaic.shape[0])
-        x_end = min(x_pos + (image.shape[1] - x_img0), mosaic.shape[1])
-
-        if y_end <= y_pos or x_end <= x_pos:
-            return
-
-        is_rgb = image.ndim == 3 and image.shape[2] == 3
-        if is_rgb:
-            mosaic[y_pos:y_end, x_pos:x_end, :] = image[
-                y_img0:y_img0 + (y_end - y_pos),
-                x_img0:x_img0 + (x_end - x_pos),
-                :
-            ]
-        else:
-            mosaic[y_pos:y_end, x_pos:x_end] = image[
-                y_img0:y_img0 + (y_end - y_pos),
-                x_img0:x_img0 + (x_end - x_pos)
-            ]
-
     def clear(self) -> None:
         """Clear all mosaics (called when clearing the view)."""
         with self._lock:
-            self._mosaics.clear()
             self._extents.clear()
             self._top_left.clear()
             self._mosaic_dtype = None
@@ -321,12 +231,10 @@ class MosaicCompositor(QObject):
         self._tile_received.connect(self._worker.process_tile)
 
         self._thread.start()
-        self._log.info("MosaicCompositor started")
 
     def submit(self, image: np.ndarray, info: CaptureInfo, channel: str) -> None:
         """Submit tile from any thread - Qt handles delivery to worker thread."""
-        # Copy image before emitting (releases camera buffer)
-        self._tile_received.emit(image.copy(), info, channel)
+        self._tile_received.emit(image, info, channel)
 
     @property
     def mosaic_updated(self) -> Signal:
@@ -341,7 +249,6 @@ class MosaicCompositor(QObject):
         """Stop the worker thread."""
         self._thread.quit()
         self._thread.wait()
-        self._log.info("MosaicCompositor stopped")
 
 
 class NapariMosaicDisplayWidget(QWidget):
@@ -395,8 +302,9 @@ class NapariMosaicDisplayWidget(QWidget):
         self._compositor = MosaicCompositor(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM, parent=self)
         self._compositor.mosaic_updated.connect(self._on_mosaic_updated)
 
-        # Throttle napari updates to max 10 FPS
-        self._pending_updates: Dict[str, TileUpdate] = {}
+        # Throttle napari updates to max 10 FPS.
+        # Keep full update order so tiles are not dropped.
+        self._pending_updates: List[TileUpdate] = []
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._flush_pending_updates)
         self._refresh_timer.start(100)  # 100ms = 10 FPS max
@@ -545,33 +453,32 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def convert_shape_to_mm(self, shape_data: np.ndarray) -> np.ndarray:
         shape_data_mm = []
-        ref = self._get_reference_layer()
-        if ref is None or self.top_left_coordinate is None:
+        if shape_data is None:
             return np.array(shape_data_mm)
         for point in shape_data:
-            coords = ref.world_to_data(point)
-            x_mm = self.top_left_coordinate[1] + coords[1] * self.viewer_pixel_size_mm
-            y_mm = self.top_left_coordinate[0] + coords[0] * self.viewer_pixel_size_mm
+            # Shape points are stored in napari world coordinates (um).
+            # Convert directly to stage mm to avoid per-layer/top-left drift.
+            if len(point) < 2:
+                continue
+            x_mm = float(point[-1]) / 1000.0
+            y_mm = float(point[-2]) / 1000.0
             shape_data_mm.append([x_mm, y_mm])
         return np.array(shape_data_mm)
 
     def convert_mm_to_viewer_shapes(
         self, shapes_mm: list[np.ndarray]
     ) -> list[list[np.ndarray]]:
-        ref = self._get_reference_layer()
-        if ref is None or self.top_left_coordinate is None:
-            return []
         viewer_shapes = []
         for shape_mm in shapes_mm:
             viewer_shape = []
             for point_mm in shape_mm:
-                x_data = (
-                    point_mm[0] - self.top_left_coordinate[1]
-                ) / self.viewer_pixel_size_mm
-                y_data = (
-                    point_mm[1] - self.top_left_coordinate[0]
-                ) / self.viewer_pixel_size_mm
-                world_coords = ref.data_to_world([y_data, x_data])
+                if len(point_mm) < 2:
+                    continue
+                # napari world coordinates are [y_um, x_um] for 2D data.
+                world_coords = np.array(
+                    [float(point_mm[1]) * 1000.0, float(point_mm[0]) * 1000.0],
+                    dtype=float,
+                )
                 viewer_shape.append(world_coords)
             viewer_shapes.append(viewer_shape)
         return viewer_shapes
@@ -606,22 +513,23 @@ class NapariMosaicDisplayWidget(QWidget):
     @Slot(object)
     def _on_mosaic_updated(self, update: TileUpdate) -> None:
         """Called when compositor has a new tile ready. Queue for batch refresh."""
-        self._pending_updates[update.channel] = update
+        self._pending_updates.append(update)
 
     def _flush_pending_updates(self) -> None:
         """Apply pending updates to napari layers (runs on GUI thread via QTimer)."""
         if not self._pending_updates:
             return
 
+        updates = self._pending_updates
+        self._pending_updates = []
+
         channels_updated = set()
-        for channel, update in self._pending_updates.items():
+        for update in updates:
             try:
                 self._apply_tile_update(update)
-                channels_updated.add(channel)
+                channels_updated.add(update.channel)
             except Exception as e:
-                self._log.error(f"Error applying tile update for {channel}: {e}")
-
-        self._pending_updates.clear()
+                self._log.error(f"Error applying tile update for {update.channel}: {e}")
 
         # Single batch refresh for all updated layers
         if channels_updated:
@@ -632,6 +540,11 @@ class NapariMosaicDisplayWidget(QWidget):
     def _apply_tile_update(self, update: TileUpdate) -> None:
         """Apply a single tile update to the napari viewer."""
         channel = update.channel
+        prev_top_left = (
+            list(self.top_left_coordinate)
+            if self.top_left_coordinate is not None
+            else [update.top_left[0], update.top_left[1]]
+        )
 
         # Update widget state from the update
         self.viewer_pixel_size_mm = update.pixel_size_mm
@@ -640,7 +553,7 @@ class NapariMosaicDisplayWidget(QWidget):
 
         if not self.layers_initialized and not self._has_mosaic_image_layers():
             self.layers_initialized = True
-            self.mosaic_dtype = update.mosaic.dtype
+            self.mosaic_dtype = update.tile.dtype
             self.signal_layers_initialized.emit()
             if self._event_bus is not None:
                 self._event_bus.publish(MosaicLayersInitialized())
@@ -650,9 +563,16 @@ class NapariMosaicDisplayWidget(QWidget):
             update.top_left[0] * 1000,  # y in um
             update.top_left[1] * 1000,  # x in um
         )
+        is_rgb = update.tile.ndim == 3 and update.tile.shape[2] == 3
 
-        # Create layer if it doesn't exist
-        if channel not in self.viewer.layers:
+        layer = self.viewer.layers[channel] if channel in self.viewer.layers else None
+        if layer is not None and bool(getattr(layer, "rgb", False)) != is_rgb:
+            # Recreate layer if channel dimensionality changed (mono <-> RGB).
+            self.viewer.layers.remove(layer)
+            layer = None
+
+        # Create layer if it doesn't exist (or was removed due to incompatibility).
+        if layer is None:
             channel_info = CHANNEL_COLORS_MAP.get(
                 self.extractWavelength(channel), {"hex": 0xFFFFFF, "name": "gray"}
             )
@@ -661,9 +581,19 @@ class NapariMosaicDisplayWidget(QWidget):
             else:
                 color = self.generateColormap(channel_info)
 
-            is_rgb = update.mosaic.ndim == 3 and update.mosaic.shape[2] == 3
+            mosaic_height = max(
+                1, int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
+            )
+            mosaic_width = max(
+                1, int(math.ceil((self.viewer_extents[3] - self.viewer_extents[2]) / self.viewer_pixel_size_mm))
+            )
+            initial_data = (
+                np.zeros((mosaic_height, mosaic_width, 3), dtype=update.tile.dtype)
+                if is_rgb
+                else np.zeros((mosaic_height, mosaic_width), dtype=update.tile.dtype)
+            )
             layer = self.viewer.add_image(
-                update.mosaic,
+                initial_data,
                 name=channel,
                 rgb=is_rgb,
                 colormap=color,
@@ -678,10 +608,21 @@ class NapariMosaicDisplayWidget(QWidget):
             layer.mouse_double_click_callbacks.append(self.onDoubleClick)
             layer.events.contrast_limits.connect(self.signalContrastLimits)
         else:
-            # Update existing layer data and position
-            layer = self.viewer.layers[channel]
-            layer.data = update.mosaic
-            layer.translate = translate_um
+            if update.tile.dtype != layer.data.dtype:
+                update.tile = self.convertImageDtype(update.tile, layer.data.dtype)
+
+        self.updateLayer(
+            layer=layer,
+            image=update.tile,
+            x_mm=update.tile_top_left[1],
+            y_mm=update.tile_top_left[0],
+            prev_top_left=prev_top_left,
+        )
+        layer.scale = (
+            self.viewer_pixel_size_mm * 1000,
+            self.viewer_pixel_size_mm * 1000,
+        )
+        layer.translate = translate_um
 
         # Update contrast limits
         if update.contrast_min is not None and update.contrast_max is not None:
@@ -724,7 +665,7 @@ class NapariMosaicDisplayWidget(QWidget):
             self._log.error(f"updateMosaic: empty image shape={getattr(image, 'shape', None)}")
             return
 
-        # Submit to background compositor (image is copied in submit())
+        # Submit to background compositor (copy + downsample happen in worker thread).
         self._compositor.submit(image, info, channel_name)
 
     def updateLayer(
@@ -834,12 +775,6 @@ class NapariMosaicDisplayWidget(QWidget):
         if x_pos < 0:
             x_img0 = -x_pos
             x_pos = 0
-        self._log.info(
-            f"  -> inserting tile at pixel pos=({x_pos}, {y_pos}), image.shape={image.shape}, "
-            f"viewer_pixel_size_mm={self.viewer_pixel_size_mm:.6f}, "
-            f"top_left_coord={self.top_left_coordinate}, layer.data.shape={layer.data.shape}"
-        )
-
         # ensure indices are within bounds
         y_end = min(y_pos + (image.shape[0] - y_img0), layer.data.shape[0])
         x_end = min(x_pos + (image.shape[1] - x_img0), layer.data.shape[1])
@@ -942,13 +877,15 @@ class NapariMosaicDisplayWidget(QWidget):
         return self.contrastManager.get_default_limits()
 
     def onDoubleClick(self, layer: napari.layers.Image, event: Any) -> None:
-        coords = layer.world_to_data(event.position)
-        if coords is not None:
-            x_mm = self.top_left_coordinate[1] + coords[-1] * self.viewer_pixel_size_mm
-            y_mm = self.top_left_coordinate[0] + coords[-2] * self.viewer_pixel_size_mm
-            print(f"move from click: ({x_mm:.6f}, {y_mm:.6f})")
-            if self._event_bus is not None and self._click_to_move_enabled:
-                self._event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+        if event.position is None:
+            return
+        if len(event.position) < 2:
+            return
+        x_mm = float(event.position[-1]) / 1000.0
+        y_mm = float(event.position[-2]) / 1000.0
+        print(f"move from click: ({x_mm:.6f}, {y_mm:.6f})")
+        if self._event_bus is not None and self._click_to_move_enabled:
+            self._event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
     def resetView(self) -> None:
         self.viewer.reset_view()

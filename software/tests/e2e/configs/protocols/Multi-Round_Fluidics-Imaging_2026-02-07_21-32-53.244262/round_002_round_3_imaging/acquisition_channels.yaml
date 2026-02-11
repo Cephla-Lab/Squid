@@ -1,0 +1,26 @@
+version: 1
+objective: 50x
+confocal_mode: false
+channels:
+- name: Fluorescence 638 nm Ex
+  enabled: true
+  display_color: '#FF0000'
+  camera_settings:
+    exposure_time_ms: 25.0
+    gain_mode: 10.0
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 638 nm Ex
+    intensity: 20.0
+- name: Fluorescence 730 nm Ex
+  enabled: true
+  display_color: '#770000'
+  camera_settings:
+    exposure_time_ms: 25.0
+    gain_mode: 10.0
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 730 nm Ex
+    intensity: 20.0

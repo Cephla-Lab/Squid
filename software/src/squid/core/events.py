@@ -2264,7 +2264,15 @@ class ImageCoordinateClickedCommand(Event):
 
 @dataclass
 class ClearScanCoordinatesCommand(Event):
-    """Command to clear all scan coordinate regions."""
+    """Command to clear all scan coordinate regions.
+
+    Attributes:
+        clear_displayed_fovs:
+            When True, UI viewers should also clear any currently displayed FOV
+            overlays (including completed FOVs), not just pending scan regions.
+    """
+
+    clear_displayed_fovs: bool = False
 
 
 @dataclass

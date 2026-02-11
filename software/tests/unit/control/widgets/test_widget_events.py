@@ -348,6 +348,34 @@ class TestWellplateFormatWidgetEvents:
         )
         assert "test_format" in WELLPLATE_FORMAT_SETTINGS
 
+    def test_select_calibrate_format_opens_dialog_without_nameerror(self, qapp, monkeypatch):
+        from qtpy.QtWidgets import QDialog
+        from squid.ui.widgets.wellplate.format import WellplateFormatWidget
+
+        class DummyCalibrationDialog:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def exec_(self):
+                return QDialog.Rejected
+
+        monkeypatch.setattr(
+            "squid.ui.widgets.wellplate.format.WellplateCalibration",
+            DummyCalibrationDialog,
+        )
+
+        bus = FakeBus()
+        widget = WellplateFormatWidget(
+            event_bus=bus,
+            streamHandler=self.DummyStream(),
+        )
+        previous_format = widget.wellplate_format
+        custom_index = widget.comboBox.findData("custom")
+
+        widget.wellplateChanged(custom_index)
+
+        assert widget.wellplate_format == previous_format
+
 
 @pytest.mark.skipif(_skip_widgets, reason="Skipping widget tests in offscreen mode")
 class TestNoDirectHardwareAttributes:

@@ -1,0 +1,12 @@
+{
+  "protocol": "Multi-Round Fluidics-Imaging",
+  "experiment_label": "Multi-Round Fluidics-Imaging",
+  "objective": {
+    "magnification": 50.0,
+    "NA": 0.8,
+    "tube_lens_f_mm": 180.0,
+    "name": "50x"
+  },
+  "sensor_pixel_size_um": 7.52,
+  "tube_lens_mm": 50.0
+}

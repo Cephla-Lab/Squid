@@ -543,6 +543,12 @@ class CameraConfig(pydantic.BaseModel):
     # Used by simulated cameras to generate appropriate test images.
     is_focus_camera: bool = False
 
+    # Simulated-camera-only overrides.
+    # If unset, simulated cameras use their built-in defaults.
+    simulated_pixel_size_um: Optional[float] = None
+    simulated_sensor_width_px: Optional[int] = None
+    simulated_sensor_height_px: Optional[int] = None
+
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
     if old_string == "Toupcam":
@@ -628,6 +634,9 @@ _camera_config = CameraConfig(
         g=_def.CAMERA_CONFIG.AWB_RATIOS_G,
         b=_def.CAMERA_CONFIG.AWB_RATIOS_B,
     ),
+    simulated_pixel_size_um=getattr(_def.CAMERA_CONFIG, "SIMULATED_PIXEL_SIZE_UM", None),
+    simulated_sensor_width_px=getattr(_def.CAMERA_CONFIG, "SIMULATED_SENSOR_WIDTH_PX", None),
+    simulated_sensor_height_px=getattr(_def.CAMERA_CONFIG, "SIMULATED_SENSOR_HEIGHT_PX", None),
 )
 
 
