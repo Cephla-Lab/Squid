@@ -180,7 +180,15 @@ class ParameterInspectionPanel(QWidget):
                 total_z_range = (z_planes - 1) * z_step_um
                 self._add_row("Total Z Range (µm)", f"{total_z_range:.2f}")
 
-            self._add_row("Use Autofocus", str(imaging.get("use_autofocus", False)))
+            focus_mode = imaging.get("autofocus_mode")
+            if focus_mode is not None:
+                self._add_row("Autofocus Mode", str(focus_mode))
+                self._add_row(
+                    "AF Interval (FOVs)",
+                    str(imaging.get("autofocus_interval_fovs", 1)),
+                )
+            else:
+                self._add_row("Use Autofocus", str(imaging.get("use_autofocus", False)))
 
     def show_operation(
         self,
@@ -257,7 +265,11 @@ class ParameterInspectionPanel(QWidget):
             self._add_row("Z-Stack Mode", str(z_mode))
 
         # Focus settings (show if explicitly set)
-        if "use_autofocus" in data:
+        if "autofocus_mode" in data:
+            self._add_row("Autofocus Mode", str(data.get("autofocus_mode")))
+            if "autofocus_interval_fovs" in data:
+                self._add_row("AF Interval (FOVs)", str(data.get("autofocus_interval_fovs")))
+        elif "use_autofocus" in data:
             self._add_row("Use Autofocus", str(data.get("use_autofocus", False)))
         if "use_focus_lock" in data:
             self._add_row("Use Focus Lock", str(data.get("use_focus_lock", True)))

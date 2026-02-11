@@ -5,10 +5,11 @@ replacing the scattered state variables in MultiPointController with a structure
 immutable configuration that can be validated and passed atomically.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from typing import Optional, Tuple
 
 import _def
+from squid.core.events import AutofocusMode, FocusLockSettings
 
 
 @dataclass(frozen=True)
@@ -132,16 +133,18 @@ class FocusConfig:
     """Configuration for autofocus during acquisition.
 
     Attributes:
-        do_contrast_af: Enable software contrast-based autofocus.
-        do_reflection_af: Enable laser/reflection-based autofocus.
+        mode: Selected autofocus mode for acquisition.
+        interval_fovs: Run contrast/laser AF every N FOVs.
+        focus_lock: Focus-lock parameters used when mode is FOCUS_LOCK.
         gen_focus_map: Generate focus map before acquisition.
         use_manual_focus_map: Use a pre-defined manual focus map.
         focus_map_dx_mm: X spacing for auto-generated focus map.
         focus_map_dy_mm: Y spacing for auto-generated focus map.
     """
 
-    do_contrast_af: bool = False
-    do_reflection_af: bool = False
+    mode: AutofocusMode = AutofocusMode.NONE
+    interval_fovs: int = 1
+    focus_lock: FocusLockSettings = field(default_factory=FocusLockSettings)
     gen_focus_map: bool = False
     use_manual_focus_map: bool = False
     focus_map_dx_mm: float = 3.0
@@ -149,6 +152,8 @@ class FocusConfig:
 
     def __post_init__(self) -> None:
         """Validate focus configuration."""
+        if self.interval_fovs < 1:
+            raise ValueError(f"interval_fovs must be >= 1, got {self.interval_fovs}")
         if self.focus_map_dx_mm <= 0:
             raise ValueError(f"focus_map_dx_mm must be > 0, got {self.focus_map_dx_mm}")
         if self.focus_map_dy_mm <= 0:
@@ -157,7 +162,7 @@ class FocusConfig:
     @property
     def any_autofocus_enabled(self) -> bool:
         """Whether any autofocus method is enabled."""
-        return self.do_contrast_af or self.do_reflection_af
+        return self.mode != AutofocusMode.NONE
 
 
 @dataclass(frozen=True)
@@ -216,11 +221,6 @@ class AcquisitionConfig:
                 f"display_resolution_scaling must be in (0, 1], "
                 f"got {self.display_resolution_scaling}"
             )
-
-        # Warn about potentially conflicting settings
-        if self.focus.do_reflection_af and self.focus.do_contrast_af:
-            # Both can be used together, but log at debug level
-            pass
 
         if self.focus.gen_focus_map and self.focus.use_manual_focus_map:
             raise ValueError(

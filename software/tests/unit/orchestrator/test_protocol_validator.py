@@ -2,6 +2,7 @@
 
 import pytest
 
+from squid.core.events import AutofocusMode
 from squid.core.protocol import (
     ExperimentProtocol,
     FluidicsStep,
@@ -511,7 +512,7 @@ class TestProtocolValidator:
             imaging_protocols={
                 "with_af": ImagingProtocol(
                     channels=["DAPI"],
-                    focus=FocusConfig(enabled=True, method="contrast"),
+                    focus=FocusConfig(mode=AutofocusMode.CONTRAST),
                 ),
             },
             rounds=[

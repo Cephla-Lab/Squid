@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from squid.core.events import (
+    AutofocusMode,
     # Commands
     AddFlexibleRegionCommand,
     ClearScanCoordinatesCommand,
@@ -104,8 +105,7 @@ class AcquisitionSimulator(BaseSimulator):
         self._z_stacking_config = "FROM BOTTOM"
         self._n_t = 1
         self._delta_t_s = 0.0
-        self._use_autofocus = False
-        self._use_reflection_af = False
+        self._autofocus_mode = AutofocusMode.NONE
         self._use_piezo = False
         self._skip_saving = True
 
@@ -437,8 +437,12 @@ class AcquisitionSimulator(BaseSimulator):
         Returns:
             self for chaining
         """
-        self._use_autofocus = contrast_af
-        self._use_reflection_af = laser_af
+        if laser_af:
+            self._autofocus_mode = AutofocusMode.LASER_REFLECTION
+        elif contrast_af:
+            self._autofocus_mode = AutofocusMode.CONTRAST
+        else:
+            self._autofocus_mode = AutofocusMode.NONE
 
         # Set up laser AF reference if needed (hardware setup, not controller config)
         if laser_af and not self._bus_only:
@@ -524,8 +528,8 @@ class AcquisitionSimulator(BaseSimulator):
                 n_t=self._n_t,
                 delta_t_s=self._delta_t_s,
                 use_piezo=self._use_piezo,
-                use_autofocus=self._use_autofocus,
-                use_reflection_af=self._use_reflection_af,
+                autofocus_mode=self._autofocus_mode,
+                autofocus_interval_fovs=1,
                 skip_saving=self._skip_saving,
                 z_range=(z_min, z_max),
                 z_stacking_config=z_stacking_config,
@@ -641,6 +645,5 @@ class AcquisitionSimulator(BaseSimulator):
         self._delta_z_um = 1.0
         self._n_t = 1
         self._delta_t_s = 0.0
-        self._use_autofocus = False
-        self._use_reflection_af = False
+        self._autofocus_mode = AutofocusMode.NONE
         self._use_piezo = False

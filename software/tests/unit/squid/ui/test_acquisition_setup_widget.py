@@ -13,6 +13,7 @@ from qtpy.QtCore import Qt
 from squid.core.events import (
     AcquisitionProgress,
     AcquisitionStateChanged,
+    AutofocusMode,
     EventBus,
     ManualShapesChanged,
     MosaicLayersInitialized,
@@ -538,7 +539,7 @@ class TestProtocolBuild:
         protocol = widget.build_imaging_protocol()
         assert len(protocol.channels) > 0
         assert protocol.z_stack.planes == 1
-        assert not protocol.focus.enabled
+        assert protocol.focus.mode == AutofocusMode.NONE
 
     def test_build_protocol_with_z(self, widget):
         self._select_channel(widget)
@@ -555,8 +556,7 @@ class TestProtocolBuild:
         widget._focus_method.setCurrentIndex(0)  # Contrast AF
         widget._contrast_af_interval.setValue(5)
         protocol = widget.build_imaging_protocol()
-        assert protocol.focus.enabled
-        assert protocol.focus.method == "contrast"
+        assert protocol.focus.mode == AutofocusMode.CONTRAST
         assert protocol.focus.interval_fovs == 5
 
     def test_build_protocol_no_channels_raises(self, widget):
@@ -582,8 +582,7 @@ class TestProtocolBuild:
         assert proto2.z_stack.planes == proto1.z_stack.planes
         assert proto2.z_stack.step_um == proto1.z_stack.step_um
         assert proto2.z_stack.direction == proto1.z_stack.direction
-        assert proto2.focus.enabled == proto1.focus.enabled
-        assert proto2.focus.method == proto1.focus.method
+        assert proto2.focus.mode == proto1.focus.mode
 
 
 # ===========================================================================
@@ -906,6 +905,86 @@ class TestAcquisitionControls:
         assert "StartNewExperimentCommand" in types
         assert "StartAcquisitionCommand" in types
 
+    def test_start_acquisition_sets_contrast_autofocus_mode(self, widget, event_bus):
+        """Contrast focus selection should publish contrast autofocus mode."""
+        from squid.core.events import SetAcquisitionParametersCommand
+
+        params = []
+        event_bus.subscribe(SetAcquisitionParametersCommand, lambda e: params.append(e))
+
+        self._select_channel(widget)
+        widget._save_path_edit.setText("/tmp/test_acq")
+        widget._focus_checkbox.setChecked(True)
+        widget._focus_method.setCurrentIndex(0)
+        widget._contrast_af_interval.setValue(6)
+
+        widget._start_acquisition()
+        event_bus.drain()
+
+        assert len(params) == 1
+        assert params[0].autofocus_mode == AutofocusMode.CONTRAST
+        assert params[0].autofocus_interval_fovs == 6
+
+    def test_start_acquisition_sets_laser_autofocus_mode(self, widget, event_bus):
+        """Laser focus selection should publish laser autofocus mode."""
+        from squid.core.events import SetAcquisitionParametersCommand
+
+        params = []
+        event_bus.subscribe(SetAcquisitionParametersCommand, lambda e: params.append(e))
+
+        self._select_channel(widget)
+        widget._save_path_edit.setText("/tmp/test_acq")
+        widget._focus_checkbox.setChecked(True)
+        widget._focus_method.setCurrentIndex(1)
+        widget._laser_af_interval.setValue(4)
+
+        widget._start_acquisition()
+        event_bus.drain()
+
+        assert len(params) == 1
+        assert params[0].autofocus_mode == AutofocusMode.LASER_REFLECTION
+        assert params[0].autofocus_interval_fovs == 4
+
+    def test_start_acquisition_sets_focus_lock_mode_and_params(self, event_bus, qtbot, monkeypatch):
+        """Focus lock selection should publish focus-lock mode with lock settings."""
+        from squid.core.events import SetAcquisitionParametersCommand
+        from squid.ui.widgets.acquisition import acquisition_setup as setup_module
+
+        monkeypatch.setattr(
+            setup_module._FEATURE_FLAGS,
+            "is_enabled",
+            lambda flag: flag == "SUPPORT_LASER_AUTOFOCUS",
+        )
+
+        widget = setup_module.AcquisitionSetupWidget(
+            event_bus=event_bus,
+            initial_channel_configs=["BF LED matrix full", "Fluorescence 488 nm Ex"],
+        )
+        qtbot.addWidget(widget)
+
+        params = []
+        event_bus.subscribe(SetAcquisitionParametersCommand, lambda e: params.append(e))
+
+        self._select_channel(widget)
+        widget._save_path_edit.setText("/tmp/test_acq")
+        widget._focus_checkbox.setChecked(True)
+        widget._focus_method.setCurrentIndex(2)
+        widget._fl_buffer.setValue(7)
+        widget._fl_retries.setValue(5)
+        widget._fl_tolerance.setValue(0.42)
+        widget._fl_auto_recover.setChecked(True)
+
+        widget._start_acquisition()
+        event_bus.drain()
+
+        assert len(params) == 1
+        assert params[0].autofocus_mode == AutofocusMode.FOCUS_LOCK
+        assert params[0].focus_lock_settings is not None
+        assert params[0].focus_lock_settings.buffer_length == 7
+        assert params[0].focus_lock_settings.recovery_attempts == 5
+        assert params[0].focus_lock_settings.acquire_threshold_um == pytest.approx(0.42)
+        assert params[0].focus_lock_settings.auto_search_enabled is True
+
     def test_start_requires_channels(self, widget, qtbot):
         """Start without channels should show warning (not crash)."""
         widget._channel_order_widget.set_selected_channels([])
@@ -1001,6 +1080,49 @@ class TestAcquisitionControls:
         assert widget._progress_bar.value() == 25
         assert "5/20" in widget._progress_label.text()
         assert "DAPI" in widget._progress_label.text()
+
+    def test_start_acquisition_with_spaces_in_experiment_id_tracks_backend_events(
+        self, widget, event_bus
+    ):
+        """Backend canonicalizes spaces to underscores; UI should still track lifecycle."""
+        from squid.core.events import AcquisitionProgress
+
+        self._select_channel(widget)
+        widget._save_path_edit.setText("/tmp/test_acq")
+        widget._skip_saving.blockSignals(True)
+        widget._skip_saving.setChecked(False)
+        widget._skip_saving.blockSignals(False)
+        widget._experiment_id_edit.setText("my experiment")
+
+        widget._start_acquisition()
+        event_bus.drain()
+
+        backend_id = "my_experiment_2026-02-11_09-10-11.123456"
+        event_bus.publish(AcquisitionStateChanged(in_progress=True, experiment_id=backend_id))
+        event_bus.drain()
+        assert widget._is_acquiring
+        assert widget._active_experiment_id == backend_id
+
+        event_bus.publish(
+            AcquisitionProgress(
+                current_fov=2,
+                total_fovs=10,
+                current_round=1,
+                total_rounds=1,
+                current_channel="BF LED matrix full",
+                progress_percent=20.0,
+                experiment_id=backend_id,
+                eta_seconds=5.0,
+            )
+        )
+        event_bus.drain()
+        assert widget._progress_bar.value() == 20
+
+        event_bus.publish(AcquisitionStateChanged(in_progress=False, experiment_id=backend_id))
+        event_bus.drain()
+        assert not widget._is_acquiring
+        assert widget._active_experiment_id is None
+        assert widget._xy_checkbox.isEnabled()
 
     def test_controls_disabled_during_acquisition(self, widget, event_bus):
         """Controls should be disabled during acquisition."""
@@ -1275,8 +1397,7 @@ class TestQuickScan:
         widget._quick_scan()
         event_bus.drain()
 
-        assert params[0].use_autofocus is False
-        assert params[0].use_reflection_af is False
+        assert params[0].autofocus_mode == AutofocusMode.NONE
 
     def test_quick_scan_passes_selected_channels(self, widget, event_bus, scan_coords):
         """SetAcquisitionChannelsCommand should contain the selected channels."""
@@ -2053,8 +2174,7 @@ class TestQuickScanEdgeCases:
         widget._quick_scan()
         event_bus.drain()
 
-        assert params[0].use_autofocus is False
-        assert params[0].use_reflection_af is False
+        assert params[0].autofocus_mode == AutofocusMode.NONE
 
     def test_quick_scan_button_click_via_qtbot(self, widget, event_bus, scan_coords, qtbot):
         """Simulate actual button click via qtbot.mouseClick."""

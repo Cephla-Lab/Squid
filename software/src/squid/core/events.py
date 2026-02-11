@@ -24,6 +24,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from enum import Enum
 from threading import Lock
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type, TypeVar
 
@@ -1405,6 +1406,28 @@ class LaserAFCrossCorrelationResult(Event):
 # ============================================================================
 
 
+class AutofocusMode(str, Enum):
+    """Autofocus mode used for acquisition workflows."""
+
+    NONE = "none"
+    CONTRAST = "contrast"
+    LASER_REFLECTION = "laser_reflection"
+    FOCUS_LOCK = "focus_lock"
+
+
+@dataclass(frozen=True)
+class FocusLockSettings:
+    """Focus-lock specific acquisition settings."""
+
+    buffer_length: int = 5
+    recovery_attempts: int = 3
+    min_spot_snr: float = 10.0
+    acquire_threshold_um: float = 0.25
+    maintain_threshold_um: float = 0.5
+    auto_search_enabled: bool = False
+    lock_timeout_s: float = 5.0
+
+
 @dataclass
 class SetAcquisitionParametersCommand(Event):
     """Command to set acquisition parameters."""
@@ -1418,8 +1441,9 @@ class SetAcquisitionParametersCommand(Event):
     delta_t_s: Optional[float] = None
     n_t: Optional[int] = None
     use_piezo: Optional[bool] = None
-    use_autofocus: Optional[bool] = None
-    use_reflection_af: Optional[bool] = None
+    autofocus_mode: Optional[AutofocusMode] = None
+    autofocus_interval_fovs: Optional[int] = None
+    focus_lock_settings: Optional[FocusLockSettings] = None
     gen_focus_map: Optional[bool] = None
     use_manual_focus_map: Optional[bool] = None
     z_range: Optional[Tuple[float, float]] = None

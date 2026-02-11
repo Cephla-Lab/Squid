@@ -42,9 +42,13 @@ from typing import TYPE_CHECKING
 
 from squid.core.events import (
     handles,
+    AutofocusMode,
+    FocusLockSettings,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
     SetAcquisitionChannelsCommand,
+    SetFocusLockAutoSearchCommand,
+    SetFocusLockParamsCommand,
     SetFluidicsRoundsCommand,
     StartNewExperimentCommand,
     StartAcquisitionCommand,
@@ -357,12 +361,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         return self._config.timing.dt_s
 
     @property
-    def do_autofocus(self) -> bool:  # legacy attribute
-        return self._config.focus.do_contrast_af
-
-    @property
-    def do_reflection_af(self) -> bool:  # legacy attribute
-        return self._config.focus.do_reflection_af
+    def autofocus_mode(self) -> AutofocusMode:
+        return self._config.focus.mode
 
     @property
     def display_resolution_scaling(self) -> float:  # legacy attribute
@@ -447,11 +447,27 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     def set_deltat(self, delta: float) -> None:
         self.update_config(**{"timing.dt_s": delta})
 
-    def set_af_flag(self, flag: bool) -> None:
-        self.update_config(**{"focus.do_contrast_af": flag})
+    def set_autofocus_mode(self, mode: AutofocusMode) -> None:
+        self.update_config(**{"focus.mode": AutofocusMode(mode)})
 
-    def set_reflection_af_flag(self, flag: bool) -> None:
-        self.update_config(**{"focus.do_reflection_af": flag})
+    def set_autofocus_interval(self, interval_fovs: int) -> None:
+        self.update_config(**{"focus.interval_fovs": int(interval_fovs)})
+
+    def set_focus_lock_settings(self, settings: FocusLockSettings) -> None:
+        self.update_config(**{"focus.focus_lock": settings})
+        if self._event_bus:
+            self._event_bus.publish(
+                SetFocusLockParamsCommand(
+                    buffer_length=settings.buffer_length,
+                    recovery_attempts=settings.recovery_attempts,
+                    min_spot_snr=settings.min_spot_snr,
+                    acquire_threshold_um=settings.acquire_threshold_um,
+                    maintain_threshold_um=settings.maintain_threshold_um,
+                )
+            )
+            self._event_bus.publish(
+                SetFocusLockAutoSearchCommand(enabled=settings.auto_search_enabled)
+            )
 
     def set_manual_focus_map_flag(self, flag: bool) -> None:
         self.update_config(**{"focus.use_manual_focus_map": flag})
@@ -540,8 +556,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             "Nz": self._config.zstack.nz,
             "dt(s)": self._config.timing.dt_s,
             "Nt": self._config.timing.nt,
-            "with AF": self._config.focus.do_contrast_af,
-            "with reflection AF": self._config.focus.do_reflection_af,
+            "autofocus_mode": self._config.focus.mode.value,
+            "autofocus_interval_fovs": self._config.focus.interval_fovs,
             "with manual focus map": self._config.focus.use_manual_focus_map,
         }
         try:  # write objective data if it is available
@@ -972,7 +988,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                         region_fov_coords[i] = (x, y, z)
                         scan_coordinates_target.update_fov_z_level(region_id, i, z)
 
-            elif self._config.focus.gen_focus_map and not self._config.focus.do_reflection_af:
+            elif (
+                self._config.focus.gen_focus_map
+                and self._config.focus.mode != AutofocusMode.LASER_REFLECTION
+                and self._config.focus.mode != AutofocusMode.FOCUS_LOCK
+            ):
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
@@ -1195,8 +1215,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             deltaZ=self._config.zstack.delta_z_um,
             Nt=self._config.timing.nt,
             deltat=self._config.timing.dt_s,
-            do_autofocus=self._config.focus.do_contrast_af,
-            do_reflection_autofocus=self._config.focus.do_reflection_af,
+            autofocus_mode=self._config.focus.mode,
+            autofocus_interval_fovs=self._config.focus.interval_fovs,
+            focus_lock_settings=self._config.focus.focus_lock,
             use_piezo=self._config.zstack.use_piezo,
             display_resolution_scaling=self._config.display_resolution_scaling,
             z_stacking_config=self._config.zstack.stacking_direction,
@@ -1364,7 +1385,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             )
             return False
 
-        if self._config.focus.do_reflection_af:
+        if self._config.focus.mode in (AutofocusMode.LASER_REFLECTION, AutofocusMode.FOCUS_LOCK):
             if self.laserAutoFocusController is None:
                 self._log.error(
                     "Laser Autofocus Not Ready - Laser AF controller not configured."
@@ -1374,6 +1395,17 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             if laser_props is None or not getattr(laser_props, "has_reference", False):
                 self._log.error(
                     "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
+                )
+                return False
+        if self._config.focus.mode == AutofocusMode.FOCUS_LOCK:
+            if self._focus_lock_controller is None:
+                self._log.error(
+                    "Focus Lock Not Ready - focus lock controller not configured."
+                )
+                return False
+            if self._piezo_service is None or not self._piezo_service.is_available:
+                self._log.error(
+                    "Focus Lock Not Ready - piezo stage is required for focus lock."
                 )
                 return False
         return True
@@ -1403,10 +1435,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.set_Nt(cmd.n_t)
         if cmd.use_piezo is not None:
             self.set_use_piezo(cmd.use_piezo)
-        if cmd.use_autofocus is not None:
-            self.set_af_flag(cmd.use_autofocus)
-        if cmd.use_reflection_af is not None:
-            self.set_reflection_af_flag(cmd.use_reflection_af)
+        if cmd.autofocus_mode is not None:
+            self.set_autofocus_mode(cmd.autofocus_mode)
+        if cmd.autofocus_interval_fovs is not None:
+            self.set_autofocus_interval(cmd.autofocus_interval_fovs)
+        if cmd.focus_lock_settings is not None:
+            self.set_focus_lock_settings(cmd.focus_lock_settings)
         if cmd.gen_focus_map is not None:
             self.set_gen_focus_map_flag(cmd.gen_focus_map)
         if cmd.use_manual_focus_map is not None:

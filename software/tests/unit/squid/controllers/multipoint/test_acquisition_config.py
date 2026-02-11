@@ -5,10 +5,12 @@ import pytest
 from squid.backend.controllers.multipoint.acquisition_config import (
     AcquisitionConfig,
     FocusConfig,
+    FocusLockSettings,
     GridConfig,
     TimingConfig,
     ZStackConfig,
 )
+from squid.core.events import AutofocusMode
 
 
 class TestGridConfig:
@@ -203,27 +205,38 @@ class TestFocusConfig:
     def test_default_values(self):
         """Default values are reasonable."""
         config = FocusConfig()
-        assert config.do_contrast_af is False
-        assert config.do_reflection_af is False
+        assert config.mode == AutofocusMode.NONE
+        assert config.interval_fovs == 1
         assert config.gen_focus_map is False
         assert config.use_manual_focus_map is False
         assert config.focus_map_dx_mm > 0
         assert config.focus_map_dy_mm > 0
+        assert isinstance(config.focus_lock, FocusLockSettings)
 
     def test_any_autofocus_enabled_false(self):
         """No autofocus when both disabled."""
         config = FocusConfig()
         assert config.any_autofocus_enabled is False
 
-    def test_any_autofocus_enabled_contrast(self):
-        """Autofocus enabled with contrast AF."""
-        config = FocusConfig(do_contrast_af=True)
+    def test_any_autofocus_enabled_contrast_mode(self):
+        """Autofocus enabled with contrast AF mode."""
+        config = FocusConfig(mode=AutofocusMode.CONTRAST)
         assert config.any_autofocus_enabled is True
 
-    def test_any_autofocus_enabled_reflection(self):
-        """Autofocus enabled with reflection AF."""
-        config = FocusConfig(do_reflection_af=True)
+    def test_any_autofocus_enabled_reflection_mode(self):
+        """Autofocus enabled with reflection AF mode."""
+        config = FocusConfig(mode=AutofocusMode.LASER_REFLECTION)
         assert config.any_autofocus_enabled is True
+
+    def test_any_autofocus_enabled_focus_lock_mode(self):
+        """Autofocus enabled with focus lock mode."""
+        config = FocusConfig(mode=AutofocusMode.FOCUS_LOCK)
+        assert config.any_autofocus_enabled is True
+
+    def test_rejects_invalid_interval(self):
+        """Rejects interval_fovs < 1."""
+        with pytest.raises(ValueError, match="interval_fovs must be >= 1"):
+            FocusConfig(interval_fovs=0)
 
     def test_rejects_zero_focus_map_dx(self):
         """Rejects focus_map_dx_mm <= 0."""
@@ -239,7 +252,7 @@ class TestFocusConfig:
         """FocusConfig is immutable."""
         config = FocusConfig()
         with pytest.raises(AttributeError):
-            config.do_contrast_af = True
+            config.mode = AutofocusMode.CONTRAST
 
 
 class TestAcquisitionConfig:
@@ -345,8 +358,14 @@ class TestAcquisitionConfig:
     def test_with_updates_nested_focus(self):
         """with_updates modifies nested focus fields."""
         config = AcquisitionConfig()
-        new_config = config.with_updates(**{"focus.do_contrast_af": True})
-        assert new_config.focus.do_contrast_af is True
+        new_config = config.with_updates(
+            **{
+                "focus.mode": AutofocusMode.CONTRAST,
+                "focus.interval_fovs": 7,
+            }
+        )
+        assert new_config.focus.mode == AutofocusMode.CONTRAST
+        assert new_config.focus.interval_fovs == 7
 
     def test_with_updates_mixed(self):
         """with_updates handles mixed top-level and nested."""

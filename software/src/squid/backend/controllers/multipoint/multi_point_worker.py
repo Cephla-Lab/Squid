@@ -100,6 +100,7 @@ from squid.backend.controllers.multipoint.checkpoint import (
     find_latest_checkpoint,
 )
 from squid.core.config.feature_flags import get_feature_flags
+from squid.core.events import AutofocusMode
 
 if TYPE_CHECKING:
     from squid.backend.services import (
@@ -234,12 +235,14 @@ class MultiPointWorker:
         self.Nt = acquisition_parameters.Nt
         self.dt = scale_duration(acquisition_parameters.deltat)
 
-        self.do_autofocus = acquisition_parameters.do_autofocus
-        self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
+        self.autofocus_mode = acquisition_parameters.autofocus_mode
+        self.autofocus_interval_fovs = acquisition_parameters.autofocus_interval_fovs
+        self.focus_lock_settings = acquisition_parameters.focus_lock_settings
         self.use_piezo = acquisition_parameters.use_piezo
         self.display_resolution_scaling = (
             acquisition_parameters.display_resolution_scaling
         )
+        self._focus_lock_started_by_acquisition = False
 
         self.experiment_ID = acquisition_parameters.experiment_ID
         self.base_path = acquisition_parameters.base_path
@@ -475,10 +478,10 @@ class MultiPointWorker:
             objective_store=objective_store,
         )
         self._autofocus_executor.configure(
-            do_autofocus=self.do_autofocus,
-            do_reflection_af=self.do_reflection_af,
+            autofocus_mode=self.autofocus_mode,
             nz=self.NZ,
             z_stacking_config=self.z_stacking_config,
+            fovs_per_af=self.autofocus_interval_fovs,
         )
         self._autofocus_executor.set_apply_config_callback(self._select_config)
 
@@ -871,10 +874,45 @@ class MultiPointWorker:
         self._checkpoint_interval = max(1, interval)
         self._log.info(f"Checkpoint interval set to {self._checkpoint_interval}")
 
+    def _prepare_focus_lock_for_acquisition(self) -> None:
+        """Start and verify focus lock for focus-lock acquisition mode."""
+        if self.autofocus_mode != AutofocusMode.FOCUS_LOCK:
+            return
+
+        controller = self._focus_lock_controller
+        if controller is None:
+            raise RuntimeError("Focus lock controller not available for focus-lock mode")
+
+        was_active = self._autofocus_executor.is_focus_lock_active()
+        if not was_active:
+            controller.start()
+            self._focus_lock_started_by_acquisition = True
+
+        timeout_s = float(getattr(self.focus_lock_settings, "lock_timeout_s", 5.0))
+        if not self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s):
+            raise RuntimeError(
+                f"Focus lock failed to acquire before acquisition start (timeout={timeout_s:.1f}s)"
+            )
+
+    def _teardown_focus_lock_for_acquisition(self) -> None:
+        """Stop focus lock if this acquisition started it."""
+        if not self._focus_lock_started_by_acquisition:
+            return
+        controller = self._focus_lock_controller
+        if controller is None:
+            return
+        try:
+            controller.stop()
+        except Exception:
+            self._log.exception("Failed to stop focus lock during acquisition teardown")
+        finally:
+            self._focus_lock_started_by_acquisition = False
+
     def run(self) -> None:
         this_image_callback_id: Optional[str] = None
         acquisition_error: Optional[Exception] = None
         try:
+            self._prepare_focus_lock_for_acquisition()
             # Publish acquisition started event via ProgressTracker
             self._progress_tracker.start()
 
@@ -966,6 +1004,7 @@ class MultiPointWorker:
             acquisition_error = e
             raise
         finally:
+            self._teardown_focus_lock_for_acquisition()
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
             # sure to always wait for final images here before removing our callback.
             self._wait_for_outstanding_callback_images()
@@ -1424,7 +1463,7 @@ class MultiPointWorker:
         self._position_controller.move_to_coordinate(x_mm=x_mm, y_mm=y_mm)
 
         # Handle Z positioning based on autofocus mode and timepoint
-        if (self.do_reflection_af or self.do_autofocus) and self.time_point > 0:
+        if self.autofocus_mode != AutofocusMode.NONE and self.time_point > 0:
             if (region_id, fov) in self._last_time_point_z_pos:
                 last_z_mm: float = self._last_time_point_z_pos[(region_id, fov)]
                 self._position_controller.move_to_z(last_z_mm)
@@ -1790,8 +1829,16 @@ class MultiPointWorker:
 
         # Verify focus lock before capture (replaces per-FOV laser AF when focus lock is active)
         if focus_lock_active:
-            if not self._autofocus_executor.wait_for_focus_lock(timeout_s=5.0):
-                self._log.warning("Focus lock verification failed, continuing anyway")
+            focus_lock_settings = getattr(self, "focus_lock_settings", None)
+            timeout_s = float(getattr(focus_lock_settings, "lock_timeout_s", 5.0))
+            if not self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s):
+                message = (
+                    "Focus lock verification failed before FOV capture "
+                    f"(timeout={timeout_s:.1f}s)"
+                )
+                if self.autofocus_mode == AutofocusMode.FOCUS_LOCK:
+                    raise RuntimeError(message)
+                self._log.warning("%s, continuing anyway", message)
 
         # Pause focus lock for ALL captures (prevents piezo jitter during exposure)
         focus_lock_paused = False
@@ -1832,7 +1879,7 @@ class MultiPointWorker:
 
             if (
                 z_level == 0
-                and (self.do_reflection_af or self.do_autofocus)
+                and self.autofocus_mode != AutofocusMode.NONE
                 and self.Nt > 1
             ):
                 self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
@@ -1913,7 +1960,7 @@ class MultiPointWorker:
                 if (
                     z_level == 0
                     and config_idx == 0
-                    and (self.do_reflection_af or self.do_autofocus)
+                    and self.autofocus_mode != AutofocusMode.NONE
                     and self.Nt > 1
                 ):
                     self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
@@ -2078,7 +2125,10 @@ class MultiPointWorker:
             return result
         except Exception as e:
             # Save laser AF camera image on failure (worker-specific behavior)
-            if self.do_reflection_af and self.laser_auto_focus_controller is not None:
+            if (
+                self.autofocus_mode == AutofocusMode.LASER_REFLECTION
+                and self.laser_auto_focus_controller is not None
+            ):
                 file_ID: str = f"{region_id}_focus_camera.bmp"
                 saving_path: str = os.path.join(
                     self.base_path, self.experiment_ID, str(self.time_point), file_ID

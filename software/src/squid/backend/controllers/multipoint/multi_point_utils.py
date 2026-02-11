@@ -7,6 +7,7 @@ from squid.backend.managers import ScanCoordinates
 from squid.core.config.models import AcquisitionChannel
 from squid.core.abc import CameraFrame
 from _def import ZProjectionMode, DownsamplingMethod
+from squid.core.events import AutofocusMode, FocusLockSettings
 
 
 
@@ -44,8 +45,9 @@ class AcquisitionParameters:
     Nt: int
     deltat: float
 
-    do_autofocus: bool
-    do_reflection_autofocus: bool
+    autofocus_mode: AutofocusMode
+    autofocus_interval_fovs: int
+    focus_lock_settings: FocusLockSettings
 
     use_piezo: bool
     display_resolution_scaling: float

@@ -15,7 +15,8 @@ def set_acquisition_parameters(
     n_y: int = 1,
     delta_x_mm: float = 0.5,
     delta_y_mm: float = 0.5,
-    use_autofocus: bool = False,
+    autofocus_mode: str = "none",
+    autofocus_interval_fovs: int = 1,
 ) -> dict[str, Any]:
     """Configure acquisition parameters.
 
@@ -28,14 +29,15 @@ def set_acquisition_parameters(
         n_y: Number of FOVs in Y direction
         delta_x_mm: X step size in millimeters
         delta_y_mm: Y step size in millimeters
-        use_autofocus: Run autofocus at each position
+        autofocus_mode: Autofocus mode (none, contrast, laser_reflection, focus_lock)
+        autofocus_interval_fovs: Run AF every N FOVs for contrast/laser modes
 
     Returns:
         Dict with configured parameters and total_fovs
     """
     app = get_app()
 
-    from squid.core.events import SetAcquisitionParametersCommand
+    from squid.core.events import AutofocusMode, SetAcquisitionParametersCommand
 
     app.event_bus.publish(
         SetAcquisitionParametersCommand(
@@ -45,7 +47,8 @@ def set_acquisition_parameters(
             n_y=n_y,
             delta_x_mm=delta_x_mm,
             delta_y_mm=delta_y_mm,
-            use_autofocus=use_autofocus,
+            autofocus_mode=AutofocusMode(autofocus_mode),
+            autofocus_interval_fovs=autofocus_interval_fovs,
         )
     )
 
@@ -56,7 +59,8 @@ def set_acquisition_parameters(
         "n_y": n_y,
         "delta_x_mm": delta_x_mm,
         "delta_y_mm": delta_y_mm,
-        "use_autofocus": use_autofocus,
+        "autofocus_mode": autofocus_mode,
+        "autofocus_interval_fovs": autofocus_interval_fovs,
         "total_fovs": n_x * n_y,
     }
 
@@ -80,12 +84,14 @@ def start_acquisition(
     app = get_app()
     check_mode_gate(app.mode_gate, "start acquisition")
 
-    from squid.core.events import StartAcquisitionCommand
+    from squid.core.events import SetAcquisitionPathCommand, StartAcquisitionCommand
+
+    if base_path:
+        app.event_bus.publish(SetAcquisitionPathCommand(base_path=base_path))
 
     app.event_bus.publish(
         StartAcquisitionCommand(
             experiment_id=experiment_id,
-            base_path=base_path,
         )
     )
 

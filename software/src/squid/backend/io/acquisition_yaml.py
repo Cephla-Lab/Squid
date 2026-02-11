@@ -28,6 +28,7 @@ import numpy as np
 import yaml
 
 import squid.core.logging
+from squid.core.events import AutofocusMode, FocusLockSettings
 
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters
@@ -71,8 +72,8 @@ class AcquisitionYAMLData:
     channel_names: List[str] = field(default_factory=list)
 
     # Autofocus
-    contrast_af: bool = False
-    laser_af: bool = False
+    autofocus_mode: str = AutofocusMode.NONE.value
+    autofocus_interval_fovs: int = 1
 
     # Focus lock (continuous focus tracking during acquisition)
     focus_lock_enabled: bool = False
@@ -196,10 +197,12 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         # Channels
         channel_names=channel_names,
         # Autofocus
-        contrast_af=autofocus.get("contrast_af", autofocus.get("do_contrast_af", False)),
-        laser_af=autofocus.get("laser_af", autofocus.get("do_reflection_af", False)),
+        autofocus_mode=autofocus.get("mode", AutofocusMode.NONE.value),
+        autofocus_interval_fovs=autofocus.get("interval_fovs", 1),
         # Focus lock (continuous focus tracking during acquisition)
-        focus_lock_enabled=focus_lock.get("enabled", False),
+        focus_lock_enabled=focus_lock.get(
+            "enabled", autofocus.get("mode") == AutofocusMode.FOCUS_LOCK.value
+        ),
         focus_lock_buffer_length=focus_lock.get("buffer_length", 5),
         focus_lock_recovery_attempts=focus_lock.get("recovery_attempts", 3),
         focus_lock_min_spot_snr=focus_lock.get("min_spot_snr", 10.0),
@@ -382,21 +385,34 @@ def save_acquisition_yaml(
             "delta_t_s": params.deltat,
         },
         "autofocus": {
-            "contrast_af": params.do_autofocus,
-            "laser_af": params.do_reflection_autofocus,
+            "mode": _serialize_for_yaml(params.autofocus_mode),
+            "interval_fovs": params.autofocus_interval_fovs,
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
 
-    # Add focus lock section if provided
-    if focus_lock_settings:
+    # Add focus lock section (optional override + acquisition parameters)
+    fl_settings = focus_lock_settings
+    if fl_settings is None and isinstance(params.focus_lock_settings, FocusLockSettings):
+        fl_settings = {
+            "buffer_length": params.focus_lock_settings.buffer_length,
+            "recovery_attempts": params.focus_lock_settings.recovery_attempts,
+            "min_spot_snr": params.focus_lock_settings.min_spot_snr,
+            "acquire_threshold_um": params.focus_lock_settings.acquire_threshold_um,
+            "maintain_threshold_um": params.focus_lock_settings.maintain_threshold_um,
+            "auto_search_enabled": params.focus_lock_settings.auto_search_enabled,
+            "lock_timeout_s": params.focus_lock_settings.lock_timeout_s,
+        }
+    if fl_settings:
         yaml_dict["focus_lock"] = {
-            "enabled": focus_lock_settings.get("enabled", False),
-            "buffer_length": focus_lock_settings.get("buffer_length", 5),
-            "recovery_attempts": focus_lock_settings.get("recovery_attempts", 3),
-            "min_spot_snr": focus_lock_settings.get("min_spot_snr", 10.0),
-            "acquire_threshold_um": focus_lock_settings.get("acquire_threshold_um", 0.25),
-            "maintain_threshold_um": focus_lock_settings.get("maintain_threshold_um", 0.5),
+            "enabled": params.autofocus_mode == AutofocusMode.FOCUS_LOCK,
+            "buffer_length": fl_settings.get("buffer_length", 5),
+            "recovery_attempts": fl_settings.get("recovery_attempts", 3),
+            "min_spot_snr": fl_settings.get("min_spot_snr", 10.0),
+            "acquire_threshold_um": fl_settings.get("acquire_threshold_um", 0.25),
+            "maintain_threshold_um": fl_settings.get("maintain_threshold_um", 0.5),
+            "auto_search_enabled": fl_settings.get("auto_search_enabled", False),
+            "lock_timeout_s": fl_settings.get("lock_timeout_s", 5.0),
         }
 
     # Add widget-specific scan section
@@ -495,7 +511,7 @@ def save_acquisition_preset(
         z_stack_settings: Dict with nz, delta_z_um, config, use_piezo
         time_series_settings: Dict with nt, delta_t_s
         channel_names: List of channel names (in imaging order)
-        autofocus_settings: Dict with contrast_af, laser_af
+        autofocus_settings: Dict with mode and interval_fovs
         focus_lock_settings: Dict with enabled, buffer_length, recovery_attempts, etc.
         flexible_scan_settings: Dict with nx, ny, delta_x_mm, delta_y_mm, overlap_percent, positions
         wellplate_scan_settings: Dict with scan_size_mm, overlap_percent, shape, regions
@@ -537,8 +553,8 @@ def save_acquisition_preset(
     # Autofocus settings
     if autofocus_settings:
         yaml_dict["autofocus"] = {
-            "contrast_af": autofocus_settings.get("contrast_af", False),
-            "laser_af": autofocus_settings.get("laser_af", False),
+            "mode": autofocus_settings.get("mode", AutofocusMode.NONE.value),
+            "interval_fovs": autofocus_settings.get("interval_fovs", 1),
         }
 
     # Focus lock settings

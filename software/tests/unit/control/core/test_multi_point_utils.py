@@ -5,7 +5,7 @@ import numpy as np
 
 from squid.core.abc import CameraFrame, CameraFrameFormat, Pos
 from squid.core.config import CameraPixelFormat
-from squid.core.events import AcquisitionCoordinates, EventBus
+from squid.core.events import AcquisitionCoordinates, AutofocusMode, EventBus, FocusLockSettings
 from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
 from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters, ScanPositionInformation
@@ -31,8 +31,9 @@ def _make_params() -> AcquisitionParameters:
         deltaZ=0.0,
         Nt=1,
         deltat=0.0,
-        do_autofocus=False,
-        do_reflection_autofocus=False,
+        autofocus_mode=AutofocusMode.NONE,
+        autofocus_interval_fovs=1,
+        focus_lock_settings=FocusLockSettings(),
         use_piezo=False,
         display_resolution_scaling=1.0,
         z_stacking_config="FROM BOTTOM",
@@ -101,4 +102,3 @@ def test_multipoint_worker_fans_out_frame_via_stream_handler_and_publishes_coord
     assert kwargs["timestamp"] == 456.0
     assert kwargs["capture_info"] is info
     assert coords_events and coords_events[-1].x_mm == 1.0 and coords_events[-1].region_id == 7
-

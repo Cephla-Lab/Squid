@@ -17,6 +17,7 @@ from squid.core.protocol.imaging_protocol import (
     ChannelConfigOverride,
     ZStackConfig,
     FocusConfig,
+    FocusLockConfig,
 )
 
 # Error handling
@@ -56,6 +57,7 @@ __all__ = [
     "ChannelConfigOverride",
     "ZStackConfig",
     "FocusConfig",
+    "FocusLockConfig",
     # Error handling
     "ErrorHandlingConfig",
     "FailureAction",

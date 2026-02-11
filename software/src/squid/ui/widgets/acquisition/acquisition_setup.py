@@ -41,6 +41,7 @@ from _def import (
 )
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.events import (
+    AutofocusMode,
     AcquisitionProgress,
     AcquisitionStateChanged,
     ActiveAcquisitionTabChanged,
@@ -59,6 +60,7 @@ from squid.core.events import (
     ScanCoordinatesSnapshot,
     ScanCoordinatesUpdated,
     SetAcquisitionChannelsCommand,
+    FocusLockSettings,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
     SetManualScanCoordinatesCommand,
@@ -69,7 +71,12 @@ from squid.core.events import (
     StopAcquisitionCommand,
     handles,
 )
-from squid.core.protocol.imaging_protocol import FocusConfig, ImagingProtocol, ZStackConfig
+from squid.core.protocol.imaging_protocol import (
+    FocusConfig,
+    FocusLockConfig,
+    ImagingProtocol,
+    ZStackConfig,
+)
 from squid.core.utils.geometry_utils import calculate_scan_size_from_coverage, calculate_well_coverage
 from squid.ui.widgets.acquisition.channel_order_widget import ChannelOrderWidget
 from squid.ui.widgets.base import CollapsibleGroupBox, EventBusWidget
@@ -149,6 +156,13 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._setup_ui()
         self._connect_signals()
         self._update_tab_styles()
+
+    @staticmethod
+    def _normalize_experiment_id(experiment_id: Optional[str]) -> Optional[str]:
+        """Normalize IDs to match backend canonicalization (spaces -> underscores)."""
+        if experiment_id is None:
+            return None
+        return experiment_id.strip().replace(" ", "_")
 
     # =========================================================================
     # UI — everything stacked vertically, no grid
@@ -979,15 +993,35 @@ class AcquisitionSetupWidget(EventBusWidget):
         z_stacking_config = self._z_direction.currentIndex() if self._z_checkbox.isChecked() else 1
 
         # Focus settings
-        use_af = self._focus_checkbox.isChecked() and self._focus_method.currentIndex() == 0
-        use_reflection_af = self._focus_checkbox.isChecked() and self._focus_method.currentIndex() >= 1
+        autofocus_mode = AutofocusMode.NONE
+        autofocus_interval_fovs = 1
+        focus_lock_settings = None
+        if self._focus_checkbox.isChecked():
+            focus_method = self._focus_method.currentIndex()
+            if focus_method == 0:
+                autofocus_mode = AutofocusMode.CONTRAST
+                autofocus_interval_fovs = self._contrast_af_interval.value()
+            elif focus_method == 1:
+                autofocus_mode = AutofocusMode.LASER_REFLECTION
+                autofocus_interval_fovs = self._laser_af_interval.value()
+            else:
+                tolerance_um = self._fl_tolerance.value()
+                autofocus_mode = AutofocusMode.FOCUS_LOCK
+                focus_lock_settings = FocusLockSettings(
+                    buffer_length=self._fl_buffer.value(),
+                    recovery_attempts=self._fl_retries.value(),
+                    acquire_threshold_um=tolerance_um,
+                    maintain_threshold_um=max(0.5, tolerance_um),
+                    auto_search_enabled=self._fl_auto_recover.isChecked(),
+                )
 
         # Publish command sequence
         self._publish(SetAcquisitionParametersCommand(
             delta_z_um=self._z_delta.value(),
             n_z=self._z_nz.value() if self._z_checkbox.isChecked() else 1,
-            use_autofocus=use_af,
-            use_reflection_af=use_reflection_af,
+            autofocus_mode=autofocus_mode,
+            autofocus_interval_fovs=autofocus_interval_fovs,
+            focus_lock_settings=focus_lock_settings,
             skip_saving=self._skip_saving.isChecked(),
             z_stacking_config=z_stacking_config,
             widget_type="setup",
@@ -997,8 +1031,9 @@ class AcquisitionSetupWidget(EventBusWidget):
             self._publish(SetAcquisitionPathCommand(base_path=save_path))
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
 
-        self._active_experiment_id = experiment_id
-        self._start_pending_experiment_id = experiment_id
+        canonical_id = self._normalize_experiment_id(experiment_id)
+        self._active_experiment_id = canonical_id
+        self._start_pending_experiment_id = canonical_id
         self._acquisition_start_watchdog.start(self._ACQUISITION_START_WATCHDOG_MS)
         self._btn_start_stop.setText("Stop Acquisition")
         self._btn_start_stop.setChecked(True)
@@ -1034,14 +1069,16 @@ class AcquisitionSetupWidget(EventBusWidget):
 
         self._publish(SetAcquisitionParametersCommand(
             skip_saving=True, n_z=1,
-            use_autofocus=False, use_reflection_af=False,
+            autofocus_mode=AutofocusMode.NONE,
+            autofocus_interval_fovs=1,
             widget_type="setup",
         ))
         self._publish(SetAcquisitionChannelsCommand(channel_names=selected))
         self._publish(SetAcquisitionPathCommand(base_path=tempfile.gettempdir()))
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._active_experiment_id = experiment_id
-        self._start_pending_experiment_id = experiment_id
+        canonical_id = self._normalize_experiment_id(experiment_id)
+        self._active_experiment_id = canonical_id
+        self._start_pending_experiment_id = canonical_id
         self._acquisition_start_watchdog.start(self._ACQUISITION_START_WATCHDOG_MS)
         self._btn_start_stop.setText("Stop Acquisition")
         self._btn_start_stop.setChecked(True)
@@ -1140,13 +1177,15 @@ class AcquisitionSetupWidget(EventBusWidget):
         event_experiment_id: Optional[str],
     ) -> bool:
         """Return True when IDs are equal or one is the timestamp-suffixed form of the other."""
-        if active_experiment_id is None or event_experiment_id is None:
+        active_id = self._normalize_experiment_id(active_experiment_id)
+        event_id = self._normalize_experiment_id(event_experiment_id)
+        if active_id is None or event_id is None:
             return False
-        if active_experiment_id == event_experiment_id:
+        if active_id == event_id:
             return True
         return (
-            event_experiment_id.startswith(f"{active_experiment_id}_")
-            or active_experiment_id.startswith(f"{event_experiment_id}_")
+            event_id.startswith(f"{active_id}_")
+            or active_id.startswith(f"{event_id}_")
         )
 
     @handles(AcquisitionStateChanged)
@@ -1171,7 +1210,9 @@ class AcquisitionSetupWidget(EventBusWidget):
         if event.in_progress:
             # Use backend-published experiment id as canonical id for later filtering.
             if event.experiment_id is not None:
-                self._active_experiment_id = event.experiment_id
+                self._active_experiment_id = self._normalize_experiment_id(
+                    event.experiment_id
+                )
             self._btn_start_stop.setChecked(True)
             if event.is_aborting:
                 self._btn_start_stop.setText("Stopping...")
@@ -1299,17 +1340,27 @@ class AcquisitionSetupWidget(EventBusWidget):
         if not selected:
             raise ValueError("Select at least one channel")
         z_dir = _Z_DIRECTION_MAP.get(self._z_direction.currentIndex(), "from_center")
-        focus_on = self._focus_checkbox.isChecked()
-        if focus_on:
+        focus_mode = AutofocusMode.NONE
+        focus_interval = 1
+        focus_lock = FocusLockConfig()
+        if self._focus_checkbox.isChecked():
             mi = self._focus_method.currentIndex()
             if mi == 0:
-                fm, iv = "contrast", self._contrast_af_interval.value()
+                focus_mode = AutofocusMode.CONTRAST
+                focus_interval = self._contrast_af_interval.value()
             elif mi == 1:
-                fm, iv = "laser", self._laser_af_interval.value()
+                focus_mode = AutofocusMode.LASER_REFLECTION
+                focus_interval = self._laser_af_interval.value()
             else:
-                fm, iv = "laser", 1
-        else:
-            fm, iv = "none", 1
+                tolerance_um = self._fl_tolerance.value()
+                focus_mode = AutofocusMode.FOCUS_LOCK
+                focus_lock = FocusLockConfig(
+                    buffer_length=self._fl_buffer.value(),
+                    recovery_attempts=self._fl_retries.value(),
+                    acquire_threshold_um=tolerance_um,
+                    maintain_threshold_um=max(0.5, tolerance_um),
+                    auto_search_enabled=self._fl_auto_recover.isChecked(),
+                )
         fmt_map = {0: "ome-tiff", 1: "tiff", 2: "zarr-v3"}
         return ImagingProtocol(
             channels=selected,
@@ -1318,7 +1369,11 @@ class AcquisitionSetupWidget(EventBusWidget):
                 step_um=self._z_delta.value(), direction=z_dir,
             ),
             acquisition_order="channel_first",
-            focus=FocusConfig(enabled=focus_on, method=fm, interval_fovs=iv),
+            focus=FocusConfig(
+                mode=focus_mode,
+                interval_fovs=focus_interval,
+                focus_lock=focus_lock,
+            ),
             skip_saving=self._skip_saving.isChecked(),
             save_format=fmt_map.get(self._save_format.currentIndex(), "ome-tiff"),
         )
@@ -1332,14 +1387,19 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._z_nz.blockSignals(False)
         self._z_delta.setValue(protocol.z_stack.step_um)
         self._z_direction.setCurrentIndex(_Z_DIRECTION_REVERSE.get(protocol.z_stack.direction, 1))
-        self._focus_checkbox.setChecked(protocol.focus.enabled)
-        if protocol.focus.enabled:
-            if protocol.focus.method == "contrast":
-                self._focus_method.setCurrentIndex(0)
-                self._contrast_af_interval.setValue(protocol.focus.interval_fovs)
-            elif protocol.focus.method == "laser":
-                self._focus_method.setCurrentIndex(1)
-                self._laser_af_interval.setValue(protocol.focus.interval_fovs)
+        self._focus_checkbox.setChecked(protocol.focus.mode != AutofocusMode.NONE)
+        if protocol.focus.mode == AutofocusMode.CONTRAST:
+            self._focus_method.setCurrentIndex(0)
+            self._contrast_af_interval.setValue(protocol.focus.interval_fovs)
+        elif protocol.focus.mode == AutofocusMode.LASER_REFLECTION:
+            self._focus_method.setCurrentIndex(1)
+            self._laser_af_interval.setValue(protocol.focus.interval_fovs)
+        elif protocol.focus.mode == AutofocusMode.FOCUS_LOCK and self._focus_method.count() > 2:
+            self._focus_method.setCurrentIndex(2)
+            self._fl_buffer.setValue(protocol.focus.focus_lock.buffer_length)
+            self._fl_retries.setValue(protocol.focus.focus_lock.recovery_attempts)
+            self._fl_tolerance.setValue(protocol.focus.focus_lock.acquire_threshold_um)
+            self._fl_auto_recover.setChecked(protocol.focus.focus_lock.auto_search_enabled)
         self._skip_saving.blockSignals(True)
         self._skip_saving.setChecked(protocol.skip_saving)
         self._skip_saving.blockSignals(False)

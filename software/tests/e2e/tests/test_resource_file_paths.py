@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from squid.core.events import AutofocusMode
 from squid.core.protocol import ProtocolLoader
 from tests.harness import BackendContext
 from tests.e2e.harness import OrchestratorSimulator
@@ -94,7 +95,10 @@ class TestResourceFilePathsLoading:
         # fluorescence_405 is defined in both the file (3 z-planes) and inline (1 z-plane)
         # Inline should win
         assert protocol.imaging_protocols["fluorescence_405"].z_stack.planes == 1
-        assert protocol.imaging_protocols["fluorescence_405"].focus.enabled is False
+        assert (
+            protocol.imaging_protocols["fluorescence_405"].focus.mode
+            == AutofocusMode.NONE
+        )
 
         # bf_quick comes only from the file and should still be present
         assert "bf_quick" in protocol.imaging_protocols

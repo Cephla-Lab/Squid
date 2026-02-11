@@ -8,6 +8,7 @@ Supports V2 step-based protocol format.
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import squid.core.logging
+from squid.core.events import AutofocusMode
 from squid.core.protocol import (
     ExperimentProtocol,
     Round,
@@ -402,11 +403,11 @@ class ProtocolValidator:
         time_per_fov = self._timing["stage_move_seconds"]
 
         # Autofocus time
-        if imaging_config.focus.enabled:
-            if imaging_config.focus.method == "laser":
-                time_per_fov += self._timing["laser_autofocus_seconds"]
-            elif imaging_config.focus.method == "contrast":
-                time_per_fov += self._timing["autofocus_seconds"]
+        focus_mode = imaging_config.focus.mode
+        if focus_mode == AutofocusMode.LASER_REFLECTION:
+            time_per_fov += self._timing["laser_autofocus_seconds"]
+        elif focus_mode == AutofocusMode.CONTRAST:
+            time_per_fov += self._timing["autofocus_seconds"]
 
         # Time per channel
         for _ in range(num_channels):

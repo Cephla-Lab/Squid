@@ -50,8 +50,8 @@ channels:
   - name: RFP
 
 autofocus:
-  contrast_af: true
-  laser_af: false
+  mode: contrast
+  interval_fovs: 3
 
 wellplate_scan:
   scan_size_mm: 1.5
@@ -80,8 +80,8 @@ wellplate_scan:
         assert data.nt == 3
         assert data.delta_t_s == 60.0
         assert data.channel_names == ["DAPI", "GFP", "RFP"]
-        assert data.contrast_af is True
-        assert data.laser_af is False
+        assert data.autofocus_mode == "contrast"
+        assert data.autofocus_interval_fovs == 3
         assert data.scan_size_mm == 1.5
         assert data.overlap_percent == 15.0
         assert len(data.wellplate_regions) == 2
@@ -317,8 +317,8 @@ class TestAcquisitionYAMLData:
         assert data.delta_z_um == 1.0
         assert data.delta_t_s == 0.0
         assert data.channel_names == []
-        assert data.contrast_af is False
-        assert data.laser_af is False
+        assert data.autofocus_mode == "none"
+        assert data.autofocus_interval_fovs == 1
 
     def test_all_values(self):
         """Test setting all values."""
@@ -336,8 +336,8 @@ class TestAcquisitionYAMLData:
             nt=5,
             delta_t_s=30.0,
             channel_names=["DAPI", "GFP"],
-            contrast_af=True,
-            laser_af=True,
+            autofocus_mode="laser_reflection",
+            autofocus_interval_fovs=2,
             nx=5,
             ny=5,
             delta_x_mm=0.5,

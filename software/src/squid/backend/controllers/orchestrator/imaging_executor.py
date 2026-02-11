@@ -17,7 +17,14 @@ from typing import Callable, List, Optional, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.config.test_timing import scale_duration
-from squid.core.events import EventBus, handles, auto_subscribe, auto_unsubscribe
+from squid.core.events import (
+    AutofocusMode,
+    EventBus,
+    FocusLockSettings,
+    handles,
+    auto_subscribe,
+    auto_unsubscribe,
+)
 from squid.core.events import AcquisitionFinished, AcquisitionProgress
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import ImagingProtocol, ChannelConfigOverride
@@ -254,18 +261,11 @@ class ImagingExecutor:
             focus = imaging_config.focus
             self._multipoint.update_config(
                 **{
-                    "focus.do_contrast_af": focus.enabled and focus.method == "contrast",
-                    "focus.do_reflection_af": focus.enabled and focus.method == "laser",
+                    "focus.mode": AutofocusMode(focus.mode),
+                    "focus.interval_fovs": focus.interval_fovs,
+                    "focus.focus_lock": FocusLockSettings(**focus.focus_lock.model_dump()),
                 }
             )
-
-            # Configure autofocus executor with interval if available
-            if hasattr(self._multipoint, "_autofocus_executor") and self._multipoint._autofocus_executor:
-                self._multipoint._autofocus_executor.configure(
-                    do_autofocus=focus.enabled and focus.method == "contrast",
-                    do_reflection_af=focus.enabled and focus.method == "laser",
-                    fovs_per_af=focus.interval_fovs if focus.enabled else None,
-                )
 
             # Configure skip_saving
             self._multipoint.update_config(skip_saving=imaging_config.skip_saving)
@@ -290,7 +290,7 @@ class ImagingExecutor:
                 f"Starting imaging: channels={channel_names}, "
                 f"z_planes={imaging_config.z_stack.planes}, "
                 f"acquisition_order={acquisition_order}, "
-                f"focus={imaging_config.focus.method if imaging_config.focus.enabled else 'disabled'}"
+                f"focus={imaging_config.focus.mode.value}"
             )
             started = self._multipoint.run_acquisition(acquire_current_fov=False)
             if not started:

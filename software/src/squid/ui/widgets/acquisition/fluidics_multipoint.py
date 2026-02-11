@@ -7,6 +7,7 @@ import pandas as pd
 
 import squid.core.logging
 from squid.core.events import (
+    AutofocusMode,
     auto_subscribe,
     auto_unsubscribe,
     handles,
@@ -154,7 +155,11 @@ class MultiPointWithFluidicsWidget(QFrame):
         )
         # Initial reflection AF flag set via event
         self._event_bus.publish(SetAcquisitionParametersCommand(
-            use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+            autofocus_mode=(
+                AutofocusMode.LASER_REFLECTION
+                if MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+                else AutofocusMode.NONE
+            )
         ))
 
         # Piezo checkbox
@@ -340,7 +345,12 @@ class MultiPointWithFluidicsWidget(QFrame):
                 delta_z_um=self.entry_deltaZ.value(),
                 n_z=self.entry_NZ.value(),
                 use_piezo=self.checkbox_usePiezo.isChecked(),
-                use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
+                autofocus_mode=(
+                    AutofocusMode.LASER_REFLECTION
+                    if self.checkbox_withReflectionAutofocus.isChecked()
+                    else AutofocusMode.NONE
+                ),
+                autofocus_interval_fovs=1,
                 use_fluidics=True,  # may be set to False from other widgets
                 n_t=len(rounds),
             ))
@@ -727,7 +737,12 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def _on_reflection_af_toggled(self, checked: bool) -> None:
         """Handle reflection AF checkbox toggle - publish event."""
-        self._event_bus.publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+        self._event_bus.publish(
+            SetAcquisitionParametersCommand(
+                autofocus_mode=AutofocusMode.LASER_REFLECTION if checked else AutofocusMode.NONE,
+                autofocus_interval_fovs=1,
+            )
+        )
 
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""

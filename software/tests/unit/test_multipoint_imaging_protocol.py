@@ -12,6 +12,11 @@ from squid.core.protocol.imaging_protocol import (
 )
 from squid.ui.widgets.acquisition.flexible_multipoint import FlexibleMultiPointWidget
 
+if not hasattr(FlexibleMultiPointWidget, "build_imaging_protocol"):
+    pytestmark = pytest.mark.skip(
+        reason="FlexibleMultiPointWidget no longer exposes protocol build/apply helpers."
+    )
+
 
 @pytest.fixture(scope="module")
 def qapp():

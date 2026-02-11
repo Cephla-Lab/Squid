@@ -4,6 +4,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
+from squid.core.events import AutofocusMode
 from squid.core.protocol import (
     ExperimentProtocol,
     Round,
@@ -247,10 +248,10 @@ class TestV2ProtocolSchema:
     def test_focus_config_interval_validation(self):
         """Test FocusConfig validates interval_fovs >= 1."""
         with pytest.raises(ValueError, match="interval_fovs must be >= 1"):
-            FocusConfig(enabled=True, interval_fovs=0)
+            FocusConfig(interval_fovs=0)
 
         # Valid interval should work
-        config = FocusConfig(enabled=True, interval_fovs=5)
+        config = FocusConfig(mode=AutofocusMode.CONTRAST, interval_fovs=5)
         assert config.interval_fovs == 5
 
 
@@ -432,22 +433,20 @@ imaging_protocols:
   laser_af:
     channels: [DAPI]
     focus:
-      enabled: true
-      method: laser
+      mode: laser_reflection
       interval_fovs: 1
 
   contrast_af:
     channels: [DAPI]
     focus:
-      enabled: true
-      method: contrast
+      mode: contrast
       channel: DAPI
       interval_fovs: 5
 
   no_af:
     channels: [DAPI]
     focus:
-      enabled: false
+      mode: none
 
 rounds:
   - name: Round 1
@@ -459,18 +458,16 @@ rounds:
         protocol = loader.load_from_string(yaml_content)
 
         laser_config = protocol.imaging_protocols["laser_af"]
-        assert laser_config.focus.enabled is True
-        assert laser_config.focus.method == "laser"
+        assert laser_config.focus.mode == AutofocusMode.LASER_REFLECTION
         assert laser_config.focus.interval_fovs == 1
 
         contrast_config = protocol.imaging_protocols["contrast_af"]
-        assert contrast_config.focus.enabled is True
-        assert contrast_config.focus.method == "contrast"
+        assert contrast_config.focus.mode == AutofocusMode.CONTRAST
         assert contrast_config.focus.channel == "DAPI"
         assert contrast_config.focus.interval_fovs == 5
 
         no_af_config = protocol.imaging_protocols["no_af"]
-        assert no_af_config.focus.enabled is False
+        assert no_af_config.focus.mode == AutofocusMode.NONE
 
     def test_invalid_step_type_raises_error(self):
         """Test that invalid step_type raises validation error."""
@@ -506,8 +503,7 @@ z_stack:
   planes: 5
   step_um: 0.5
 focus:
-  enabled: true
-  method: laser
+  mode: laser_reflection
 """)
 
             # Create main protocol that references it
@@ -535,7 +531,7 @@ rounds:
             config = protocol.imaging_protocols["fish_standard"]
             assert config.description == "External FISH config"
             assert config.z_stack.planes == 5
-            assert config.focus.method == "laser"
+            assert config.focus.mode == AutofocusMode.LASER_REFLECTION
 
     def test_file_reference_not_found_raises_error(self):
         """Test that missing file: reference raises error."""

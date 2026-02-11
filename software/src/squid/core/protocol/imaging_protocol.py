@@ -11,6 +11,8 @@ from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
+from squid.core.events import AutofocusMode
+
 
 class ChannelConfigOverride(BaseModel):
     """Per-channel overrides for an imaging protocol.
@@ -72,25 +74,32 @@ class ZStackConfig(BaseModel):
         return v
 
 
+class FocusLockConfig(BaseModel):
+    """Focus-lock settings for imaging protocols."""
+
+    buffer_length: int = 5
+    recovery_attempts: int = 3
+    min_spot_snr: float = 10.0
+    acquire_threshold_um: float = 0.25
+    maintain_threshold_um: float = 0.5
+    auto_search_enabled: bool = False
+    lock_timeout_s: float = 5.0
+
+
 class FocusConfig(BaseModel):
     """Focus settings for imaging.
 
-    Focus method semantics:
-    - "laser": Uses hardware laser autofocus (do_reflection_af=True)
-    - "contrast": Uses software contrast-based autofocus (do_contrast_af=True)
-    - "none": No autofocus
-
     Attributes:
-        enabled: Whether autofocus is enabled
-        method: Autofocus method to use
-        channel: Channel to use for contrast AF (if method="contrast")
-        interval_fovs: Run autofocus every N FOVs (passed to AutofocusExecutor.configure)
+        mode: Autofocus method to use
+        channel: Channel to use for contrast AF (if mode is CONTRAST)
+        interval_fovs: Run contrast/laser autofocus every N FOVs
+        focus_lock: Focus-lock settings used when mode is FOCUS_LOCK
     """
 
-    enabled: bool = False
-    method: Literal["laser", "contrast", "none"] = "laser"
+    mode: AutofocusMode = AutofocusMode.NONE
     channel: Optional[str] = None  # For contrast AF
-    interval_fovs: int = 1  # Passed to AutofocusExecutor.configure(fovs_per_af=...)
+    interval_fovs: int = 1
+    focus_lock: FocusLockConfig = Field(default_factory=FocusLockConfig)
 
     @field_validator("interval_fovs")
     @classmethod
@@ -134,8 +143,7 @@ class ImagingProtocol(BaseModel):
             step_um: 0.5
           acquisition_order: channel_first
           focus:
-            enabled: true
-            method: laser
+            mode: laser_reflection
     """
 
     description: str = ""

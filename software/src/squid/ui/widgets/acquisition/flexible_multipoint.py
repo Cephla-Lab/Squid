@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from squid.core.events import (
+    AutofocusMode,
     EventBus,
     StagePositionChanged,
     MoveStageCommand,
@@ -15,6 +16,7 @@ from squid.core.events import (
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
     SetAcquisitionChannelsCommand,
+    FocusLockSettings,
     SetFocusLockParamsCommand,
     StartNewExperimentCommand,
     StartAcquisitionCommand,
@@ -358,18 +360,20 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         self.checkbox_withAutofocus.setChecked(
             MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
-        # Set initial autofocus flag via event
-        self._publish(SetAcquisitionParametersCommand(
-            use_autofocus=MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
-        ))
 
         self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
         self.checkbox_withReflectionAutofocus.setChecked(
             MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
-        # Set initial reflection AF flag via event
+        autofocus_mode = AutofocusMode.NONE
+        if MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT:
+            autofocus_mode = AutofocusMode.LASER_REFLECTION
+            self.checkbox_withAutofocus.setChecked(False)
+        elif MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT:
+            autofocus_mode = AutofocusMode.CONTRAST
+        # Set initial autofocus mode via event
         self._publish(SetAcquisitionParametersCommand(
-            use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+            autofocus_mode=autofocus_mode
         ))
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
@@ -1031,8 +1035,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
                 delta_t_s=self.entry_dt.value(),
                 n_t=self.entry_Nt.value(),
                 use_piezo=self.checkbox_usePiezo.isChecked(),
-                use_autofocus=self.checkbox_withAutofocus.isChecked(),
-                use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
+                autofocus_mode=self._current_autofocus_mode(),
+                autofocus_interval_fovs=self.spinbox_af_interval.value(),
+                focus_lock_settings=self._current_focus_lock_settings(),
                 use_fluidics=False,
                 skip_saving=self.checkbox_skipSaving.isChecked(),
                 z_range=z_range,
@@ -1494,8 +1499,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
             delta_t_s=0,
             n_t=1,
             use_piezo=False,
-            use_autofocus=False,
-            use_reflection_af=False,
+            autofocus_mode=AutofocusMode.NONE,
+            autofocus_interval_fovs=1,
             use_fluidics=False,
             z_range=(z, z),
         ))
@@ -1635,6 +1640,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     # UI Event Handlers (publish commands)
     # =========================================================================
 
+    def _current_autofocus_mode(self) -> AutofocusMode:
+        if self.checkbox_focus_lock.isChecked():
+            return AutofocusMode.FOCUS_LOCK
+        if self.checkbox_withReflectionAutofocus.isChecked():
+            return AutofocusMode.LASER_REFLECTION
+        if self.checkbox_withAutofocus.isChecked():
+            return AutofocusMode.CONTRAST
+        return AutofocusMode.NONE
+
+    def _current_focus_lock_settings(self) -> FocusLockSettings:
+        settings = self.get_focus_lock_settings()
+        return FocusLockSettings(
+            buffer_length=int(settings["buffer_length"]),
+            recovery_attempts=int(settings["recovery_attempts"]),
+            min_spot_snr=float(settings["min_spot_snr"]),
+            acquire_threshold_um=float(settings["acquire_threshold_um"]),
+            maintain_threshold_um=float(settings["maintain_threshold_um"]),
+            auto_search_enabled=bool(settings.get("enabled", False)),
+        )
+
     def _on_dt_changed(self, value: float) -> None:
         """Handle dt spinbox change - publish event."""
         self._publish(SetAcquisitionParametersCommand(delta_t_s=value))
@@ -1661,11 +1686,37 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
     def _on_autofocus_toggled(self, checked: bool) -> None:
         """Handle autofocus checkbox toggle - publish event."""
-        self._publish(SetAcquisitionParametersCommand(use_autofocus=checked))
+        if checked:
+            self.checkbox_withReflectionAutofocus.blockSignals(True)
+            self.checkbox_withReflectionAutofocus.setChecked(False)
+            self.checkbox_withReflectionAutofocus.blockSignals(False)
+            self.checkbox_focus_lock.blockSignals(True)
+            self.checkbox_focus_lock.setChecked(False)
+            self.checkbox_focus_lock.blockSignals(False)
+        self._publish(
+            SetAcquisitionParametersCommand(
+                autofocus_mode=self._current_autofocus_mode(),
+                autofocus_interval_fovs=self.spinbox_af_interval.value(),
+                focus_lock_settings=self._current_focus_lock_settings(),
+            )
+        )
 
     def _on_reflection_af_toggled(self, checked: bool) -> None:
         """Handle reflection AF checkbox toggle - publish event."""
-        self._publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+        if checked:
+            self.checkbox_withAutofocus.blockSignals(True)
+            self.checkbox_withAutofocus.setChecked(False)
+            self.checkbox_withAutofocus.blockSignals(False)
+            self.checkbox_focus_lock.blockSignals(True)
+            self.checkbox_focus_lock.setChecked(False)
+            self.checkbox_focus_lock.blockSignals(False)
+        self._publish(
+            SetAcquisitionParametersCommand(
+                autofocus_mode=self._current_autofocus_mode(),
+                autofocus_interval_fovs=self.spinbox_af_interval.value(),
+                focus_lock_settings=self._current_focus_lock_settings(),
+            )
+        )
 
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
@@ -1687,6 +1738,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         else:
             self.checkbox_withAutofocus.setEnabled(True)
             self.checkbox_withReflectionAutofocus.setEnabled(True)
+        self._publish(
+            SetAcquisitionParametersCommand(
+                autofocus_mode=self._current_autofocus_mode(),
+                autofocus_interval_fovs=self.spinbox_af_interval.value(),
+                focus_lock_settings=self._current_focus_lock_settings(),
+            )
+        )
         self._publish_focus_lock_params()
 
     def get_focus_lock_settings(self) -> dict:
@@ -1775,8 +1833,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
                 },
                 channel_names=selected_channels,
                 autofocus_settings={
-                    "contrast_af": self.checkbox_withAutofocus.isChecked(),
-                    "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                    "mode": self._current_autofocus_mode().value,
+                    "interval_fovs": self.spinbox_af_interval.value(),
                 },
                 focus_lock_settings=self.get_focus_lock_settings(),
                 flexible_scan_settings={
@@ -1901,19 +1959,21 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
                 self.entry_overlap.setValue(yaml_data.overlap_percent)
 
             # Autofocus
-            self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
-            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            autofocus_mode = AutofocusMode(yaml_data.autofocus_mode)
+            self.checkbox_withAutofocus.setChecked(autofocus_mode == AutofocusMode.CONTRAST)
+            self.checkbox_withReflectionAutofocus.setChecked(
+                autofocus_mode == AutofocusMode.LASER_REFLECTION
+            )
 
             # Focus lock settings
-            if yaml_data.focus_lock_enabled:
-                self.set_focus_lock_settings({
-                    "enabled": yaml_data.focus_lock_enabled,
-                    "buffer_length": yaml_data.focus_lock_buffer_length,
-                    "recovery_attempts": yaml_data.focus_lock_recovery_attempts,
-                    "min_spot_snr": yaml_data.focus_lock_min_spot_snr,
-                    "acquire_threshold_um": yaml_data.focus_lock_acquire_threshold_um,
-                    "maintain_threshold_um": yaml_data.focus_lock_maintain_threshold_um,
-                })
+            self.set_focus_lock_settings({
+                "enabled": autofocus_mode == AutofocusMode.FOCUS_LOCK or yaml_data.focus_lock_enabled,
+                "buffer_length": yaml_data.focus_lock_buffer_length,
+                "recovery_attempts": yaml_data.focus_lock_recovery_attempts,
+                "min_spot_snr": yaml_data.focus_lock_min_spot_snr,
+                "acquire_threshold_um": yaml_data.focus_lock_acquire_threshold_um,
+                "maintain_threshold_um": yaml_data.focus_lock_maintain_threshold_um,
+            })
 
             # Channels - select matching channels in list
             self.list_configurations.clearSelection()

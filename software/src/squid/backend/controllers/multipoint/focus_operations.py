@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING, Dict, Tuple
 
 import squid.core.logging
 from _def import Acquisition, MULTIPOINT_AUTOFOCUS_CHANNEL
+from squid.core.events import AutofocusMode
 
 if TYPE_CHECKING:
     from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
@@ -38,8 +39,7 @@ class AutofocusExecutor:
 
         # Configure autofocus mode
         executor.configure(
-            do_autofocus=True,
-            do_reflection_af=False,
+            autofocus_mode=AutofocusMode.CONTRAST,
             nz=1,
             z_stacking_config="FROM CENTER",
         )
@@ -73,8 +73,7 @@ class AutofocusExecutor:
         self._objectives = objective_store
 
         # Configuration
-        self._do_autofocus = False
-        self._do_reflection_af = False
+        self._autofocus_mode = AutofocusMode.NONE
         self._nz = 1
         self._z_stacking_config = "FROM BOTTOM"
         self._af_fov_count = 0
@@ -94,8 +93,7 @@ class AutofocusExecutor:
 
     def configure(
         self,
-        do_autofocus: bool = False,
-        do_reflection_af: bool = False,
+        autofocus_mode: AutofocusMode = AutofocusMode.NONE,
         nz: int = 1,
         z_stacking_config: str = "FROM BOTTOM",
         fovs_per_af: Optional[int] = None,
@@ -104,14 +102,12 @@ class AutofocusExecutor:
         Configure autofocus behavior.
 
         Args:
-            do_autofocus: Enable contrast-based autofocus
-            do_reflection_af: Enable laser reflection autofocus
+            autofocus_mode: Autofocus mode for this acquisition
             nz: Number of z-levels
             z_stacking_config: Z-stacking configuration
             fovs_per_af: Number of FOVs between autofocus (None = use default)
         """
-        self._do_autofocus = do_autofocus
-        self._do_reflection_af = do_reflection_af
+        self._autofocus_mode = AutofocusMode(autofocus_mode)
         self._nz = nz
         self._z_stacking_config = z_stacking_config
         if fovs_per_af is not None:
@@ -147,15 +143,18 @@ class AutofocusExecutor:
         Returns:
             True if autofocus should be performed
         """
-        # Focus lock handles focus continuously - skip per-FOV AF
-        if self.is_focus_lock_active():
+        if self._autofocus_mode == AutofocusMode.NONE:
             return False
 
-        if self._do_reflection_af:
+        if self._autofocus_mode == AutofocusMode.FOCUS_LOCK:
+            # In focus-lock mode we do lock verification at capture boundaries.
+            return False
+
+        if self._autofocus_mode == AutofocusMode.LASER_REFLECTION:
             return True
 
         # Contrast-based AF conditions
-        if not self._do_autofocus:
+        if self._autofocus_mode != AutofocusMode.CONTRAST:
             return False
 
         # Only AF when not taking z-stack or doing z-stack from center
@@ -191,10 +190,11 @@ class AutofocusExecutor:
         if not self.should_perform_autofocus():
             return True
 
-        if self._do_reflection_af:
+        if self._autofocus_mode == AutofocusMode.LASER_REFLECTION:
             return self._perform_laser_af()
-        else:
+        if self._autofocus_mode == AutofocusMode.CONTRAST:
             return self._perform_contrast_af(timeout_s)
+        return True
 
     def generate_focus_map_for_acquisition(
         self,

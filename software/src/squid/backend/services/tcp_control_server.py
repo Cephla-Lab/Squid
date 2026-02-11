@@ -36,10 +36,12 @@ from squid.backend.managers.scan_coordinates.grid import (
     generate_square_grid,
 )
 from squid.core.events import (
+    AutofocusMode,
     AcquisitionFinished,
     AcquisitionStarted,
     ClearScanCoordinatesCommand,
     EventBus,
+    FocusLockSettings,
     LoadScanCoordinatesCommand,
     SetAcquisitionChannelsCommand,
     SetAcquisitionParametersCommand,
@@ -467,6 +469,8 @@ class TCPControlServer:
         )
 
         # 3. Set acquisition parameters
+        autofocus_mode = AutofocusMode(yaml_data.autofocus_mode)
+
         self._event_bus.publish(
             SetAcquisitionParametersCommand(
                 n_z=yaml_data.nz,
@@ -474,8 +478,16 @@ class TCPControlServer:
                 n_t=yaml_data.nt,
                 delta_t_s=yaml_data.delta_t_s,
                 use_piezo=yaml_data.use_piezo,
-                use_autofocus=yaml_data.contrast_af,
-                use_reflection_af=yaml_data.laser_af,
+                autofocus_mode=autofocus_mode,
+                autofocus_interval_fovs=yaml_data.autofocus_interval_fovs,
+                focus_lock_settings=FocusLockSettings(
+                    buffer_length=yaml_data.focus_lock_buffer_length,
+                    recovery_attempts=yaml_data.focus_lock_recovery_attempts,
+                    min_spot_snr=yaml_data.focus_lock_min_spot_snr,
+                    acquire_threshold_um=yaml_data.focus_lock_acquire_threshold_um,
+                    maintain_threshold_um=yaml_data.focus_lock_maintain_threshold_um,
+                    auto_search_enabled=yaml_data.focus_lock_enabled,
+                ),
                 widget_type=yaml_data.widget_type,
                 scan_size_mm=yaml_data.scan_size_mm,
                 overlap_percent=yaml_data.overlap_percent,

@@ -10,6 +10,7 @@ import pytest
 from squid.backend.controllers.multipoint.focus_operations import (
     AutofocusExecutor,
 )
+from squid.core.events import AutofocusMode
 
 
 class FakeAutofocusController:
@@ -89,8 +90,7 @@ class TestAutofocusExecutor:
         """Test AutofocusExecutor initialization."""
         executor = AutofocusExecutor()
 
-        assert executor._do_autofocus is False
-        assert executor._do_reflection_af is False
+        assert executor._autofocus_mode == AutofocusMode.NONE
         assert executor._nz == 1
 
     def test_configure(self):
@@ -98,15 +98,13 @@ class TestAutofocusExecutor:
         executor = AutofocusExecutor()
 
         executor.configure(
-            do_autofocus=True,
-            do_reflection_af=False,
+            autofocus_mode=AutofocusMode.CONTRAST,
             nz=5,
             z_stacking_config="FROM CENTER",
             fovs_per_af=10,
         )
 
-        assert executor._do_autofocus is True
-        assert executor._do_reflection_af is False
+        assert executor._autofocus_mode == AutofocusMode.CONTRAST
         assert executor._nz == 5
         assert executor._z_stacking_config == "FROM CENTER"
         assert executor._fovs_per_af == 10
@@ -114,14 +112,14 @@ class TestAutofocusExecutor:
     def test_should_perform_autofocus_reflection_af(self):
         """Test that reflection AF always returns True."""
         executor = AutofocusExecutor()
-        executor.configure(do_reflection_af=True)
+        executor.configure(autofocus_mode=AutofocusMode.LASER_REFLECTION)
 
         assert executor.should_perform_autofocus() is True
 
     def test_should_perform_autofocus_contrast_af(self):
         """Test contrast AF with single z-level."""
         executor = AutofocusExecutor()
-        executor.configure(do_autofocus=True, nz=1)
+        executor.configure(autofocus_mode=AutofocusMode.CONTRAST, nz=1)
 
         assert executor.should_perform_autofocus() is True
 
@@ -129,7 +127,9 @@ class TestAutofocusExecutor:
         """Test contrast AF with z-stack from center."""
         executor = AutofocusExecutor()
         executor.configure(
-            do_autofocus=True, nz=5, z_stacking_config="FROM CENTER"
+            autofocus_mode=AutofocusMode.CONTRAST,
+            nz=5,
+            z_stacking_config="FROM CENTER",
         )
 
         assert executor.should_perform_autofocus() is True
@@ -138,7 +138,9 @@ class TestAutofocusExecutor:
         """Test contrast AF with z-stack from bottom returns False."""
         executor = AutofocusExecutor()
         executor.configure(
-            do_autofocus=True, nz=5, z_stacking_config="FROM BOTTOM"
+            autofocus_mode=AutofocusMode.CONTRAST,
+            nz=5,
+            z_stacking_config="FROM BOTTOM",
         )
 
         assert executor.should_perform_autofocus() is False
@@ -146,7 +148,7 @@ class TestAutofocusExecutor:
     def test_should_perform_autofocus_fov_interval(self):
         """Test AF respects FOV interval."""
         executor = AutofocusExecutor()
-        executor.configure(do_autofocus=True, nz=1, fovs_per_af=3)
+        executor.configure(autofocus_mode=AutofocusMode.CONTRAST, nz=1, fovs_per_af=3)
 
         # FOV 0 should trigger AF
         executor.af_fov_count = 0
@@ -164,7 +166,7 @@ class TestAutofocusExecutor:
         """Test performing contrast-based autofocus."""
         af = FakeAutofocusController()
         executor = AutofocusExecutor(autofocus_controller=af)
-        executor.configure(do_autofocus=True, nz=1)
+        executor.configure(autofocus_mode=AutofocusMode.CONTRAST, nz=1)
 
         result = executor.perform_autofocus()
 
@@ -176,7 +178,7 @@ class TestAutofocusExecutor:
         af = FakeAutofocusController()
         af.autofocus_completed = False
         executor = AutofocusExecutor(autofocus_controller=af)
-        executor.configure(do_autofocus=True, nz=1)
+        executor.configure(autofocus_mode=AutofocusMode.CONTRAST, nz=1)
 
         result = executor.perform_autofocus(timeout_s=1.0)
 
@@ -186,7 +188,7 @@ class TestAutofocusExecutor:
         """Test performing laser reflection autofocus."""
         laser_af = FakeLaserAFController()
         executor = AutofocusExecutor(laser_af_controller=laser_af)
-        executor.configure(do_reflection_af=True)
+        executor.configure(autofocus_mode=AutofocusMode.LASER_REFLECTION)
 
         result = executor.perform_autofocus()
 
@@ -198,7 +200,7 @@ class TestAutofocusExecutor:
         laser_af = FakeLaserAFController()
         laser_af.should_fail = True
         executor = AutofocusExecutor(laser_af_controller=laser_af)
-        executor.configure(do_reflection_af=True)
+        executor.configure(autofocus_mode=AutofocusMode.LASER_REFLECTION)
 
         result = executor.perform_autofocus()
 
@@ -229,18 +231,17 @@ class TestAutofocusExecutor:
         assert executor.is_focus_lock_active() is False
 
     def test_should_perform_autofocus_skips_when_focus_lock_active(self):
-        """Test that autofocus is skipped when focus lock is active."""
+        """Focus lock mode should skip per-FOV autofocus."""
         focus_lock = FakeFocusLockController()
         focus_lock.is_active = True
 
         executor = AutofocusExecutor(focus_lock_controller=focus_lock)
-        executor.configure(do_reflection_af=True)
+        executor.configure(autofocus_mode=AutofocusMode.FOCUS_LOCK)
 
-        # Focus lock is active, so per-FOV AF should be skipped
         assert executor.should_perform_autofocus() is False
 
-    def test_perform_autofocus_skips_when_focus_lock_active(self):
-        """Test perform_autofocus returns True (skip) when focus lock is active."""
+    def test_perform_autofocus_skips_in_focus_lock_mode(self):
+        """Focus lock mode should skip per-FOV autofocus calls."""
         focus_lock = FakeFocusLockController()
         focus_lock.is_active = True
         laser_af = FakeLaserAFController()
@@ -249,13 +250,29 @@ class TestAutofocusExecutor:
             focus_lock_controller=focus_lock,
             laser_af_controller=laser_af,
         )
-        executor.configure(do_reflection_af=True)
+        executor.configure(autofocus_mode=AutofocusMode.FOCUS_LOCK)
 
-        # Should return True (skipped) without calling laser AF
         result = executor.perform_autofocus()
 
         assert result is True
         assert len(laser_af.move_to_target_calls) == 0
+
+    def test_perform_autofocus_laser_mode_ignores_external_focus_lock_state(self):
+        """Laser AF mode should run laser AF even if an external lock is active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        laser_af = FakeLaserAFController()
+
+        executor = AutofocusExecutor(
+            focus_lock_controller=focus_lock,
+            laser_af_controller=laser_af,
+        )
+        executor.configure(autofocus_mode=AutofocusMode.LASER_REFLECTION)
+
+        result = executor.perform_autofocus()
+
+        assert result is True
+        assert len(laser_af.move_to_target_calls) == 1
 
     def test_wait_for_focus_lock_success(self):
         """Test waiting for focus lock to achieve lock."""
@@ -380,7 +397,7 @@ class TestAutofocusExecutor:
             channel_config_manager=channel_config,
             objective_store=objectives,
         )
-        executor.configure(do_autofocus=True, nz=1)
+        executor.configure(autofocus_mode=AutofocusMode.CONTRAST, nz=1)
         executor.set_apply_config_callback(mock_callback)
 
         executor.perform_autofocus()

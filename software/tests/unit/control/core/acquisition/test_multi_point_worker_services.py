@@ -6,7 +6,12 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from squid.core.events import EventBus, AcquisitionWorkerFinished
+from squid.core.events import (
+    EventBus,
+    AcquisitionWorkerFinished,
+    AutofocusMode,
+    FocusLockSettings,
+)
 import _def as _def
 
 # Avoid spawning JobRunner processes in tests
@@ -41,8 +46,9 @@ def _make_params() -> AcquisitionParameters:
         deltaZ=0.0,
         Nt=1,
         deltat=0.0,
-        do_autofocus=False,
-        do_reflection_autofocus=False,
+        autofocus_mode=AutofocusMode.NONE,
+        autofocus_interval_fovs=1,
+        focus_lock_settings=FocusLockSettings(),
         use_piezo=False,
         display_resolution_scaling=1.0,
         z_stacking_config="FROM BOTTOM",

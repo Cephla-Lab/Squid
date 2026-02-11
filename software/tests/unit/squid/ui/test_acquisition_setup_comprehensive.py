@@ -10,7 +10,7 @@ Bug reference table:
   #4  XY OFF→ON doesn't call _update_xy_coordinates (coords stay cleared)
   #5  Objective/binning changes ignored when tab inactive (_is_active_tab guard)
   #6  CSV-loaded coordinates never recalculated on objective change
-  #7  apply_imaging_protocol doesn't restore focus method when focus.enabled=False
+  #7  apply_imaging_protocol doesn't restore focus method when focus.mode=none
   #8  Z-range state (z_range_enable, z_min, z_max) not saved/loaded in protocol
   #9  ROI status label text persists after mode switch (hidden but stale)
   #10 Well scan param changes while not in multiwell mode silently dropped
@@ -20,6 +20,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from squid.core.events import (
+    AutofocusMode,
     ActiveAcquisitionTabChanged,
     AddFlexibleRegionCommand,
     BinningChanged,
@@ -745,7 +746,7 @@ class TestProtocolSaveLoadRoundTrip:
         proto = widget.build_imaging_protocol()
         assert proto.channels == ["BF LED matrix full"]
         assert proto.z_stack.planes == 1
-        assert not proto.focus.enabled
+        assert proto.focus.mode == AutofocusMode.NONE
 
         widget.apply_imaging_protocol(proto)
         proto2 = widget.build_imaging_protocol()
@@ -804,14 +805,12 @@ class TestProtocolSaveLoadRoundTrip:
         widget._contrast_af_interval.setValue(7)
 
         proto = widget.build_imaging_protocol()
-        assert proto.focus.enabled
-        assert proto.focus.method == "contrast"
+        assert proto.focus.mode == AutofocusMode.CONTRAST
         assert proto.focus.interval_fovs == 7
 
         widget.apply_imaging_protocol(proto)
         proto2 = widget.build_imaging_protocol()
-        assert proto2.focus.enabled
-        assert proto2.focus.method == "contrast"
+        assert proto2.focus.mode == AutofocusMode.CONTRAST
         assert proto2.focus.interval_fovs == 7
 
     def test_laser_af_round_trip(self, widget):
@@ -822,11 +821,11 @@ class TestProtocolSaveLoadRoundTrip:
         widget._laser_af_interval.setValue(5)
 
         proto = widget.build_imaging_protocol()
-        assert proto.focus.method == "laser"
+        assert proto.focus.mode == AutofocusMode.LASER_REFLECTION
 
         widget.apply_imaging_protocol(proto)
         proto2 = widget.build_imaging_protocol()
-        assert proto2.focus.method == "laser"
+        assert proto2.focus.mode == AutofocusMode.LASER_REFLECTION
         assert proto2.focus.interval_fovs == 5
 
     def test_no_z_no_focus_round_trip(self, widget):
@@ -834,19 +833,19 @@ class TestProtocolSaveLoadRoundTrip:
         _select_channel(widget, "BF LED matrix full")
         proto = widget.build_imaging_protocol()
         assert proto.z_stack.planes == 1
-        assert not proto.focus.enabled
+        assert proto.focus.mode == AutofocusMode.NONE
 
         widget.apply_imaging_protocol(proto)
         proto2 = widget.build_imaging_protocol()
         assert proto2.z_stack.planes == 1
-        assert not proto2.focus.enabled
+        assert proto2.focus.mode == AutofocusMode.NONE
 
     def test_missing_channels_silently_dropped(self, widget):
         """Apply protocol with channels not in widget — silently dropped."""
         proto = ImagingProtocol(
             channels=["BF LED matrix full", "NonexistentChannel"],
             z_stack=ZStackConfig(planes=1),
-            focus=FocusConfig(enabled=False),
+            focus=FocusConfig(mode=AutofocusMode.NONE),
         )
         widget.apply_imaging_protocol(proto)
         selected = widget._channel_order_widget.get_selected_channels_ordered()
@@ -908,7 +907,7 @@ class TestProtocolSaveLoadRoundTrip:
         assert widget._save_format.currentIndex() == 2
 
     def test_focus_disabled_method_not_restored(self, widget):
-        """Bug #7: apply_imaging_protocol doesn't restore focus method when enabled=False."""
+        """Bug #7: apply_imaging_protocol doesn't restore focus method when mode=none."""
         _select_channel(widget, "BF LED matrix full")
         # Set up widget with laser AF
         widget._focus_checkbox.setChecked(True)
@@ -917,9 +916,7 @@ class TestProtocolSaveLoadRoundTrip:
 
         # Build protocol with focus disabled
         proto = widget.build_imaging_protocol()
-        assert not proto.focus.enabled
-        # method is "none" when focus is disabled
-        assert proto.focus.method == "none"
+        assert proto.focus.mode == AutofocusMode.NONE
 
         # Reset widget to contrast AF
         widget._focus_checkbox.setChecked(True)
@@ -928,10 +925,10 @@ class TestProtocolSaveLoadRoundTrip:
         # Apply the disabled-focus protocol
         widget.apply_imaging_protocol(proto)
 
-        # Bug #7: focus method is NOT restored when enabled=False
-        # The apply code only enters the if-block when focus.enabled is True
+        # Bug #7: focus method is NOT restored when focus mode is none
+        # The apply code only enters the if-block when focus mode is not none
         assert widget._focus_method.currentIndex() == 0, (
-            "Bug #7: focus method not restored when focus.enabled=False — "
+            "Bug #7: focus method not restored when focus.mode=none — "
             "combo stays at whatever it was before apply"
         )
 
