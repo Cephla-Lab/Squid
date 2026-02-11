@@ -15,6 +15,7 @@ from squid.backend.controllers.autofocus.laser_auto_focus_controller import Lase
 from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.events import (
     EventBus,
+    FocusLockFrameUpdated,
     FocusLockMetricsUpdated,
     FocusLockModeChanged,
     FocusLockStatusChanged,
@@ -166,6 +167,53 @@ def test_wait_for_lock():
     # Give time for lock buffer to fill
     time.sleep(0.2)
     assert sim.wait_for_lock(timeout_s=1.0) is True
+    sim.stop()
+
+
+def test_start_does_not_auto_lock_without_explicit_reference():
+    """Start should keep simulator ready until lock is explicitly engaged."""
+    bus = EventBus()
+    laser_af = _FakeLaserAF(_make_good_result(displacement_um=0.0))
+    piezo = _FakePiezoService()
+    sim = FocusLockSimulator(
+        bus,
+        config=FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10, buffer_length=3),
+        laser_autofocus=laser_af,
+        piezo_service=piezo,
+    )
+    _init_laser_af(bus)
+
+    sim.start()
+    try:
+        time.sleep(0.25)
+        assert sim.status == "ready"
+        assert sim.wait_for_lock(timeout_s=0.2) is False
+    finally:
+        sim.stop()
+
+
+def test_release_lock_stays_released():
+    """Release should not be immediately undone by auto re-lock logic."""
+    bus = EventBus()
+    laser_af = _FakeLaserAF(_make_good_result(displacement_um=0.0))
+    piezo = _FakePiezoService()
+    sim = FocusLockSimulator(
+        bus,
+        config=FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10, buffer_length=3),
+        laser_autofocus=laser_af,
+        piezo_service=piezo,
+    )
+    _init_laser_af(bus)
+
+    sim.start()
+    sim.set_lock_reference()
+    time.sleep(0.1)
+    assert sim.status == "locked"
+
+    sim.release_lock_reference()
+    assert sim.status == "ready"
+    time.sleep(0.2)
+    assert sim.status == "ready"
     sim.stop()
 
 
@@ -571,3 +619,29 @@ def test_no_reference_uses_spot_offset_for_correction():
     assert piezo.get_position() < initial_pos - 0.2
 
     sim.stop()
+
+
+def test_preview_publish_uses_full_frame_dimensions():
+    """Preview should publish full camera frame dimensions and raw spot coordinates."""
+    bus = EventBus()
+    sim = FocusLockSimulator(bus)
+    sim._preview_publish_period_s = 0.0
+    sim._latest_frame = np.zeros((64, 256), dtype=np.uint8)
+    sim._latest_spot_x = 12.0
+    sim._latest_spot_y = 20.0
+
+    frame_events: list[FocusLockFrameUpdated] = []
+    bus.subscribe(FocusLockFrameUpdated, frame_events.append)
+
+    sim._publish_frame()
+    bus.drain()
+
+    assert len(frame_events) == 1
+    event = frame_events[0]
+    assert event.frame.shape == (64, 256)
+    assert event.frame_width == 256
+    assert event.frame_height == 64
+    assert event.spot_valid is True
+    # Simulator adds small preview jitter when spot is valid.
+    assert abs(event.spot_x_px - 12.0) < 15.0
+    assert abs(event.spot_y_px - 20.0) < 15.0

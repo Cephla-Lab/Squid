@@ -4,7 +4,7 @@ import math
 import threading
 import time
 from collections import deque
-from typing import Deque, Optional, Tuple
+from typing import Deque, Optional
 
 import numpy as np
 
@@ -60,6 +60,7 @@ class ContinuousFocusLockController(BaseController):
         self._paused = False
         self._running = False
         self._should_run = False
+        self._lock_reference_active = False
         self._target_um = 0.0
 
         self._lock = threading.RLock()
@@ -74,8 +75,9 @@ class ContinuousFocusLockController(BaseController):
         self._warning_debounce_s = 5.0
         self._warning_last_time: dict[str, float] = {}
 
-        # Frame preview configuration - match laser AF camera aspect ratio
-        self._preview_crop_size = (200, 160)  # (width, height) of cropped preview
+        # Frame preview configuration
+        self._preview_publish_period_s = 0.2  # Limit preview updates to 5 Hz.
+        self._last_preview_publish_time = 0.0
 
         # Recovery state
         self._recovery_attempts_remaining = 0
@@ -233,6 +235,14 @@ class ContinuousFocusLockController(BaseController):
         with self._lock:
             self._target_um += float(delta_um)
 
+    def set_lock_reference(self) -> None:
+        """Engage lock at the current displacement reference."""
+        self._set_lock_reference()
+
+    def release_lock_reference(self) -> None:
+        """Release active lock reference and return to ready state."""
+        self._release_lock_reference()
+
     @handles(SetFocusLockModeCommand)
     def _on_set_mode_command(self, cmd: SetFocusLockModeCommand) -> None:
         self.set_mode(cmd.mode)
@@ -259,11 +269,11 @@ class ContinuousFocusLockController(BaseController):
 
     @handles(SetFocusLockReferenceCommand)
     def _on_set_reference_command(self, cmd: SetFocusLockReferenceCommand) -> None:
-        self._set_lock_reference()
+        self.set_lock_reference()
 
     @handles(ReleaseFocusLockReferenceCommand)
     def _on_release_reference_command(self, cmd: ReleaseFocusLockReferenceCommand) -> None:
-        self._release_lock_reference()
+        self.release_lock_reference()
 
     @handles(SetFocusLockAutoSearchCommand)
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
@@ -310,6 +320,7 @@ class ContinuousFocusLockController(BaseController):
         with self._lock:
             if not self._running:
                 return
+            self._lock_reference_active = True
             self._locked_piezo_um = self._piezo_service.get_position()
             self._lock_buffer_fill = self._config.buffer_length
             self._target_um = target_um
@@ -322,6 +333,7 @@ class ContinuousFocusLockController(BaseController):
         with self._lock:
             if not self._running:
                 return
+            self._lock_reference_active = False
             self._lock_buffer_fill = 0
         self._set_status("ready")
 
@@ -483,6 +495,12 @@ class ContinuousFocusLockController(BaseController):
 
     def _update_lock_state(self, is_good: bool, error_um: float) -> None:
         """Update lock state machine with recovery and search support."""
+        if not self._lock_reference_active:
+            self._lock_buffer_fill = 0
+            if self._status in ("locked", "recovering", "lost"):
+                self._set_status("ready")
+            return
+
         new_status: Optional[str] = None
 
         if self._status == "locked":
@@ -702,7 +720,11 @@ class ContinuousFocusLockController(BaseController):
         self._publish_frame(result)
 
     def _publish_frame(self, result: LaserAFResult) -> None:
-        """Crop and publish the AF spot frame for preview."""
+        """Publish the AF camera frame and spot position for preview."""
+        now = time.monotonic()
+        if now - self._last_preview_publish_time < self._preview_publish_period_s:
+            return
+
         frame = result.image
         if frame is None:
             return
@@ -720,58 +742,18 @@ class ContinuousFocusLockController(BaseController):
             spot_y = h / 2.0
             spot_valid = False
 
-        cropped, crop_spot_x, crop_spot_y = self._crop_around_spot(
-            frame, spot_x, spot_y
-        )
-        if cropped is None:
-            return
-
-        crop_h, crop_w = cropped.shape[:2]
+        self._last_preview_publish_time = now
+        frame_h, frame_w = frame.shape[:2]
         self._event_bus.publish(
             FocusLockFrameUpdated(
-                frame=cropped,
-                spot_x_px=crop_spot_x,
-                spot_y_px=crop_spot_y,
-                frame_width=crop_w,
-                frame_height=crop_h,
+                frame=frame,
+                spot_x_px=spot_x,
+                spot_y_px=spot_y,
+                frame_width=frame_w,
+                frame_height=frame_h,
                 spot_valid=spot_valid,
             )
         )
-
-    def _crop_around_spot(
-        self, frame: np.ndarray, spot_x: float, spot_y: float
-    ) -> Tuple[Optional[np.ndarray], float, float]:
-        """Crop frame around spot position.
-
-        Returns:
-            Tuple of (cropped_frame, spot_x_in_crop, spot_y_in_crop).
-            Returns (None, 0, 0) if frame is invalid.
-        """
-        if frame is None or frame.size == 0:
-            return None, 0.0, 0.0
-
-        h, w = frame.shape[:2]
-        crop_w, crop_h = self._preview_crop_size
-
-        # Calculate crop region centered on spot
-        x1 = int(max(0, spot_x - crop_w // 2))
-        y1 = int(max(0, spot_y - crop_h // 2))
-        x2 = min(w, x1 + crop_w)
-        y2 = min(h, y1 + crop_h)
-
-        # Adjust if crop goes beyond bounds
-        if x2 - x1 < crop_w:
-            x1 = max(0, x2 - crop_w)
-        if y2 - y1 < crop_h:
-            y1 = max(0, y2 - crop_h)
-
-        cropped = frame[y1:y2, x1:x2]
-
-        # Calculate spot position in cropped frame
-        crop_spot_x = spot_x - x1
-        crop_spot_y = spot_y - y1
-
-        return cropped, crop_spot_x, crop_spot_y
 
     def _check_warnings(self, result: LaserAFResult, error_um: float) -> None:
         min_um, max_um = self._piezo_service.get_range()
@@ -827,6 +809,7 @@ class ContinuousFocusLockController(BaseController):
         return max(min_um, min(max_um, position_um))
 
     def _reset_lock_state(self) -> None:
+        self._lock_reference_active = False
         self._lock_buffer_fill = 0
         self._error_history.clear()
         self._drift_history.clear()

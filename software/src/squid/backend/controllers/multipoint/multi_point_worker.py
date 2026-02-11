@@ -888,6 +888,15 @@ class MultiPointWorker:
             controller.start()
             self._focus_lock_started_by_acquisition = True
 
+        controller_status = getattr(controller, "status", None)
+        if controller_status != "locked":
+            if hasattr(controller, "set_lock_reference"):
+                controller.set_lock_reference()
+            elif hasattr(controller, "set_lock"):
+                controller.set_lock()
+            else:
+                raise RuntimeError("Focus lock controller does not support setting lock reference")
+
         timeout_s = float(getattr(self.focus_lock_settings, "lock_timeout_s", 5.0))
         if not self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s):
             raise RuntimeError(

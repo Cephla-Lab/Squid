@@ -76,6 +76,7 @@ class FocusLockSimulator(BaseController):
         self._is_running = False
         self._should_run = False  # True when started (even if paused)
         self._paused = False  # True when paused (loop keeps running, corrections skipped)
+        self._lock_reference_active = False
 
         self._lock = threading.RLock()
         self._lock_buffer_fill = 0
@@ -115,6 +116,8 @@ class FocusLockSimulator(BaseController):
         self._latest_frame: Optional[np.ndarray] = None
         self._latest_spot_x: float = 0.0
         self._latest_spot_y: float = 0.0
+        self._preview_publish_period_s = 0.2  # Limit preview updates to 5 Hz.
+        self._last_preview_publish_time = 0.0
 
         # Recovery state
         self._recovery_attempts_remaining = 0
@@ -251,6 +254,14 @@ class FocusLockSimulator(BaseController):
                 return
             self._target_displacement_um += float(delta_um)
 
+    def set_lock_reference(self) -> None:
+        """Engage lock at the current displacement reference."""
+        self.set_lock()
+
+    def release_lock_reference(self) -> None:
+        """Release active lock reference and return to ready state."""
+        self.release_lock()
+
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         """Wait for lock to be achieved."""
         if not self.is_running:
@@ -318,11 +329,11 @@ class FocusLockSimulator(BaseController):
 
     @handles(SetFocusLockReferenceCommand)
     def _on_set_reference_command(self, cmd: SetFocusLockReferenceCommand) -> None:
-        self.set_lock()
+        self.set_lock_reference()
 
     @handles(ReleaseFocusLockReferenceCommand)
     def _on_release_reference_command(self, cmd: ReleaseFocusLockReferenceCommand) -> None:
-        self.release_lock()
+        self.release_lock_reference()
 
     @handles(SetFocusLockAutoSearchCommand)
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
@@ -381,6 +392,7 @@ class FocusLockSimulator(BaseController):
         with self._lock:
             if not self._is_running:
                 return
+            self._lock_reference_active = True
             if result is not None:
                 if result.spot_x_px is not None and result.spot_y_px is not None:
                     self._latest_spot_x = result.spot_x_px
@@ -401,11 +413,13 @@ class FocusLockSimulator(BaseController):
         with self._lock:
             if not self._is_running:
                 return
+            self._lock_reference_active = False
             self._status = "ready"
             self._lock_buffer_fill = 0
         self._publish_status_if_needed()
 
     def _reset_lock_state(self) -> None:
+        self._lock_reference_active = False
         self._lock_buffer_fill = 0
         self._lock_loss_until = None
         self._target_displacement_um = 0.0
@@ -705,7 +719,12 @@ class FocusLockSimulator(BaseController):
             status_changed = False
 
             # State machine for lock management
-            if self._status == "locked":
+            if not self._lock_reference_active:
+                self._lock_buffer_fill = 0
+                if self._status in ("locked", "recovering", "lost", "searching"):
+                    self._status = "ready"
+                    status_changed = True
+            elif self._status == "locked":
                 if self._is_good_reading:
                     # Good reading - maintain lock
                     self._lock_buffer_fill = min(self._lock_buffer_fill + 1, self._buffer_length)
@@ -865,6 +884,10 @@ class FocusLockSimulator(BaseController):
 
     def _publish_frame(self) -> None:
         """Publish the laser AF camera frame with spot position and simulated noise."""
+        now = time.monotonic()
+        if now - self._last_preview_publish_time < self._preview_publish_period_s:
+            return
+
         # Get latest frame from measurement result
         frame = self._latest_frame
         if frame is None:
@@ -891,14 +914,15 @@ class FocusLockSimulator(BaseController):
         # Add noise to the frame
         frame = self._add_frame_noise(frame)
 
-        # Publish the full frame (UI will handle display)
+        self._last_preview_publish_time = now
+        frame_h, frame_w = frame.shape[:2]
         self._event_bus.publish(
             FocusLockFrameUpdated(
                 frame=frame,
                 spot_x_px=float(spot_x),
                 spot_y_px=float(spot_y),
-                frame_width=w,
-                frame_height=h,
+                frame_width=frame_w,
+                frame_height=frame_h,
                 spot_valid=spot_valid,
             )
         )

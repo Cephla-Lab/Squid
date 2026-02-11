@@ -3,6 +3,8 @@
 import math
 import time
 
+import numpy as np
+
 from squid.backend.controllers.autofocus.continuous_focus_lock import (
     ContinuousFocusLockController,
 )
@@ -10,6 +12,7 @@ from squid.backend.controllers.autofocus.laser_auto_focus_controller import Lase
 from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.events import (
     EventBus,
+    FocusLockFrameUpdated,
     FocusLockMetricsUpdated,
     FocusLockPiezoLimitCritical,
     FocusLockStatusChanged,
@@ -120,6 +123,7 @@ def test_closed_loop_feedback_rejects_step_disturbance_without_camera():
 
     controller.start(target_um=0.0)
     try:
+        controller.set_lock_reference()
         assert controller.wait_for_lock(timeout_s=1.0)
         baseline_position = piezo.get_position()
 
@@ -134,6 +138,48 @@ def test_closed_loop_feedback_rejects_step_disturbance_without_camera():
         assert abs(error_um) < 0.3
     finally:
         controller.stop()
+
+
+def test_start_does_not_auto_lock_without_explicit_reference():
+    """Start should keep controller ready until lock is explicitly engaged."""
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+        config=FocusLockConfig(loop_rate_hz=80, metrics_rate_hz=20, buffer_length=3),
+    )
+
+    controller.start()
+    try:
+        time.sleep(0.2)
+        assert controller.status == "ready"
+        assert controller.wait_for_lock(timeout_s=0.2) is False
+    finally:
+        controller.stop()
+
+
+def test_release_reference_stays_released():
+    """Release should not be immediately undone by auto re-lock logic."""
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+        config=FocusLockConfig(buffer_length=3),
+    )
+    controller._running = True
+    controller._should_run = True
+
+    controller.set_lock_reference()
+    assert controller.status == "locked"
+
+    controller.release_lock_reference()
+    assert controller.status == "ready"
+
+    for _ in range(5):
+        controller._update_lock_state(True, 0.0)
+
+    assert controller.status == "ready"
+    assert controller._lock_buffer_fill == 0
 
 
 def test_lock_state_transitions():
@@ -154,6 +200,7 @@ def test_lock_state_transitions():
     bus.subscribe(FocusLockStatusChanged, events.append)
 
     # Start in ready state, build up buffer
+    controller._lock_reference_active = True
     controller._set_status("ready")
     controller._update_lock_state(True, 0.0)  # buffer_fill = 1
     controller._update_lock_state(True, 0.0)  # buffer_fill = 2
@@ -206,6 +253,7 @@ def test_pause_preserves_lock_state():
 
     # Simulate lock acquisition
     controller._should_run = True
+    controller._lock_reference_active = True
     controller._set_status("ready")
     controller._update_lock_state(True, 0.0)  # buffer_fill = 1
     controller._update_lock_state(True, 0.0)  # buffer_fill = 2
@@ -584,6 +632,7 @@ def test_recovery_with_delayed_good_readings():
     bus.subscribe(FocusLockStatusChanged, events.append)
 
     # Get to locked state
+    controller._lock_reference_active = True
     controller._set_status("ready")
     for _ in range(3):
         controller._update_lock_state(True, 0.0)
@@ -809,6 +858,7 @@ def test_integral_resets_on_recovery():
     controller._integral_accumulator = 1.0
 
     # Get to locked state
+    controller._lock_reference_active = True
     controller._set_status("locked")
     controller._lock_buffer_fill = 3
 
@@ -1121,3 +1171,40 @@ def test_piezo_critical_warning_high_limit():
     assert critical_events[0].direction == "high"
     assert critical_events[0].position_um == 295.0
     assert critical_events[0].limit_um == 300.0
+
+
+def test_publish_frame_uses_full_camera_frame_dimensions():
+    """Frame preview events should publish the full frame, not a spot-centered crop."""
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+    )
+    controller._preview_publish_period_s = 0.0
+
+    frame_events: list[FocusLockFrameUpdated] = []
+    bus.subscribe(FocusLockFrameUpdated, frame_events.append)
+
+    result = LaserAFResult(
+        displacement_um=0.0,
+        spot_intensity=100.0,
+        spot_snr=10.0,
+        correlation=0.95,
+        spot_x_px=45.0,
+        spot_y_px=30.0,
+        timestamp=time.monotonic(),
+        image=np.zeros((80, 320), dtype=np.uint8),
+    )
+
+    controller._publish_frame(result)
+    bus.drain()
+
+    assert len(frame_events) == 1
+    event = frame_events[0]
+    assert event.frame.shape == (80, 320)
+    assert event.frame_width == 320
+    assert event.frame_height == 80
+    assert event.spot_x_px == 45.0
+    assert event.spot_y_px == 30.0
+    assert event.spot_valid is True
