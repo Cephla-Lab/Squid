@@ -5,7 +5,7 @@ width: 1536
 height: 256
 pixel_to_um: 0.2
 has_reference: false
-calibration_timestamp: '2026-02-10 23:00:53'
+calibration_timestamp: '2026-02-11 12:36:04'
 pixel_to_um_calibration_distance: 6.0
 laser_af_range: 100.0
 laser_af_averaging_n: 3

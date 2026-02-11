@@ -576,7 +576,7 @@ class HighContentScreeningGui(QMainWindow):
             self.ndviewerTab: Optional[widgets.NDViewerTab] = None
             if ENABLE_NDVIEWER:
                 try:
-                    self.ndviewerTab = widgets.NDViewerTab(event_bus=self._event_bus)
+                    self.ndviewerTab = widgets.NDViewerTab(event_bus=self._ui_event_bus)
                     self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
                 except ImportError:
                     self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
@@ -1369,21 +1369,23 @@ class HighContentScreeningGui(QMainWindow):
 
     @handles(AcquisitionStarted)
     def _on_acquisition_started(self, event: AcquisitionStarted) -> None:
-        """Update NDViewer tab when acquisition starts."""
+        """Handle acquisition start without forcing file-mode dataset loading.
+
+        NDViewer receives push-mode start/image events directly from the acquisition
+        pipeline. Eagerly calling set_dataset_path() here can trigger expensive
+        file-system scans on the UI thread while the run is starting.
+        """
         if getattr(self, "ndviewerTab", None) is None:
             return
 
         try:
             base_path = event.base_path
             experiment_id = event.experiment_id
-            self.log.debug(f"_on_acquisition_started: base_path={base_path}, experiment_id={experiment_id}")
-
-            if base_path and experiment_id:
-                dataset_path = os.path.join(base_path, experiment_id)
-                self.log.debug(f"Setting NDViewer dataset path to: {dataset_path}")
-                self.ndviewerTab.set_dataset_path(dataset_path)
-            else:
-                self.log.debug("_on_acquisition_started: base_path or experiment_id not set in event")
+            self.log.debug(
+                "_on_acquisition_started: base_path=%s, experiment_id=%s (defer file-mode load)",
+                base_path,
+                experiment_id,
+            )
         except Exception:
             self.log.exception("Failed to update NDViewer tab for new acquisition")
 

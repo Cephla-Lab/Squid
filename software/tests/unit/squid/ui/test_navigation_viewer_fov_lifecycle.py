@@ -267,6 +267,21 @@ class TestCurrentFOVRegisteredMatching:
         event_bus.drain()
         assert len(viewer._completed_fovs) == 1
 
+    def test_duplicate_registration_does_not_raise_handler_errors(self, event_bus, viewer, caplog):
+        """Duplicate CurrentFOVRegistered should not trigger handler exceptions."""
+        import logging
+
+        event_bus.publish(CurrentFOVRegistered(x_mm=20.0, y_mm=20.0, fov_width_mm=1.0, fov_height_mm=1.0))
+        with caplog.at_level(logging.ERROR):
+            event_bus.publish(CurrentFOVRegistered(x_mm=20.0002, y_mm=19.9998, fov_width_mm=1.0, fov_height_mm=1.0))
+            event_bus.drain()
+
+        assert len(viewer._completed_fovs) == 1
+        assert not any(
+            "CurrentFOVRegistered" in rec.message and "failed for event" in rec.message
+            for rec in caplog.records
+        )
+
     def test_no_pending_still_adds_completed(self, event_bus, viewer):
         """CurrentFOVRegistered with empty pending → 0 pending, 1 completed."""
         assert len(viewer._pending_fovs) == 0
@@ -315,6 +330,78 @@ class TestObjectiveChangeOverlayLifecycle:
         event_bus.publish(ObjectiveChanged(position=1, objective_name="20x"))
         event_bus.drain()
         assert len(viewer._completed_fovs) == 1
+
+
+class _DummyTimer:
+    def __init__(self):
+        self.active = False
+        self.starts = 0
+
+    def isActive(self):
+        return self.active
+
+    def start(self):
+        self.active = True
+        self.starts += 1
+
+    def stop(self):
+        self.active = False
+
+
+class TestNavigationViewerPerformanceGuards:
+
+    def test_completed_paint_flush_is_chunked(self, viewer):
+        viewer._completed_paint_timer = _DummyTimer()
+        viewer.scan_overlay_item = MagicMock()
+        viewer.scan_overlay = np.zeros_like(viewer.scan_overlay)
+
+        total = viewer._COMPLETED_PAINT_BATCH_SIZE + 5
+        for i in range(total):
+            viewer._queued_completed_fovs.append(
+                FovCenter(
+                    x_mm=20.0 + i * 0.001,
+                    y_mm=20.0,
+                    fov_width_mm=1.0,
+                    fov_height_mm=1.0,
+                )
+            )
+
+        viewer._flush_completed_fov_paints()
+        assert len(viewer._queued_completed_fovs) == 5
+        assert viewer._completed_paint_timer.starts == 1
+
+        viewer._completed_paint_timer.active = False
+        viewer._flush_completed_fov_paints()
+        assert len(viewer._queued_completed_fovs) == 0
+
+    def test_wellplate_change_clears_indexes(self, event_bus, viewer):
+        fovs = _make_fov_centers([(20.0, 20.0), (21.0, 20.0)])
+        event_bus.publish(AddScanCoordinateRegion(fov_centers=fovs))
+        event_bus.publish(CurrentFOVRegistered(x_mm=20.0, y_mm=20.0, fov_width_mm=1.0, fov_height_mm=1.0))
+        event_bus.drain()
+        assert viewer._pending_fov_index
+        assert viewer._completed_fov_index
+
+        event_bus.publish(
+            WellplateFormatChanged(
+                format_name="96 well plate",
+                rows=8,
+                cols=12,
+                well_spacing_mm=9.0,
+                well_size_mm=6.0,
+                a1_x_mm=14.38,
+                a1_y_mm=11.24,
+                a1_x_pixel=73,
+                a1_y_pixel=73,
+                number_of_skip=1,
+            )
+        )
+        event_bus.drain()
+
+        assert len(viewer._pending_fovs) == 0
+        assert len(viewer._completed_fovs) == 0
+        assert not viewer._pending_fov_index
+        assert not viewer._completed_fov_index
 
     def test_overlay_redrawn_after_objective_change(self, event_bus, viewer):
         fovs = _make_fov_centers([(20.0, 20.0)])

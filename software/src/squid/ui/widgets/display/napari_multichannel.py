@@ -18,7 +18,6 @@ from squid.core.config.feature_flags import get_feature_flags
 from squid.backend.managers import ContrastManager
 from squid.core.events import (
     handles,
-    EventBus,
     BinningChanged,
     ObjectiveChanged,
     SetAcquisitionChannelsCommand,
@@ -27,7 +26,7 @@ from squid.core.events import (
 from squid.ui.widgets.base import EventBusWidget
 
 if TYPE_CHECKING:
-    pass
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -59,7 +58,7 @@ class NapariMultiChannelWidget(EventBusWidget):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         contrastManager: ContrastManager,
         initial_pixel_size_factor: float = 1.0,
         initial_pixel_size_binned_um: float = 1.0,

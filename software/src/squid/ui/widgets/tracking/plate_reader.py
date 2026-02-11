@@ -14,10 +14,9 @@ from squid.ui.widgets.tracking._common import (
 )
 from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
-from typing import List
+from typing import TYPE_CHECKING, List
 from squid.core.events import (
     handles,
-    EventBus,
     SetPlateReaderParametersCommand,
     SetPlateReaderPathCommand,
     SetPlateReaderChannelsCommand,
@@ -32,6 +31,9 @@ from squid.core.events import (
     PlateReaderLocationChanged,
 )
 from squid.ui.widgets.base import EventBusFrame
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class PlateReaderAcquisitionWidget(EventBusFrame):
@@ -48,7 +50,7 @@ class PlateReaderAcquisitionWidget(EventBusFrame):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_channel_configs: List[str],
         show_configurations: bool = True,
     ) -> None:
@@ -213,7 +215,7 @@ class PlateReaderNavigationWidget(EventBusFrame):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
     ) -> None:
         super().__init__(event_bus)
         self.add_components()

@@ -25,7 +25,6 @@ from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
     handles,
-    EventBus,
     StartLiveCommand,
     StopLiveCommand,
     LiveStateChanged,
@@ -53,6 +52,7 @@ from squid.core.events import (
 if TYPE_CHECKING:
     from squid.backend.io.stream_handler import StreamHandler
     from squid.ui.widgets.display.image_display import ImageDisplayWindow
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class LaserAutofocusSettingWidget(QWidget):
@@ -73,7 +73,7 @@ class LaserAutofocusSettingWidget(QWidget):
     def __init__(
         self,
         streamHandler: "StreamHandler",
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_properties: Dict[str, Any],
         initial_is_initialized: bool = False,
         initial_characterization_mode: bool = False,
@@ -84,7 +84,7 @@ class LaserAutofocusSettingWidget(QWidget):
 
         Args:
             streamHandler: Stream handler for display FPS control
-            event_bus: EventBus for publishing commands and subscribing to state
+            event_bus: UIEventBus for publishing commands and subscribing to state
             initial_properties: Dict with initial laser AF properties (from LaserAFConfig)
             initial_is_initialized: Whether laser AF is already initialized
             initial_characterization_mode: Whether characterization mode is enabled
@@ -723,7 +723,7 @@ class LaserAutofocusControlWidget(QFrame):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_is_initialized: bool = False,
         initial_has_reference: bool = False,
         main: Optional[QWidget] = None,
@@ -733,7 +733,7 @@ class LaserAutofocusControlWidget(QFrame):
         """Initialize the laser autofocus control widget.
 
         Args:
-            event_bus: EventBus for publishing commands and subscribing to state
+            event_bus: UIEventBus for publishing commands and subscribing to state
             initial_is_initialized: Whether laser AF is already initialized
             initial_has_reference: Whether a reference has been set
             main: Parent widget

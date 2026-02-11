@@ -3,7 +3,7 @@ import os
 import time
 from queue import Queue, Full
 from threading import Lock, Thread
-from typing import Optional, Tuple, Any, List
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -43,6 +43,9 @@ from squid.core.events import (
 )
 
 _FEATURE_FLAGS = get_feature_flags()
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class ImageDisplay(QObject):
@@ -103,7 +106,7 @@ class ImageDisplayWindow(QMainWindow):
     def __init__(
         self,
         contrastManager: Optional[ContrastManager] = None,
-        event_bus: Optional["EventBus"] = None,
+        event_bus: Optional["UIEventBus"] = None,
         window_title: str = "",
         show_LUT: bool = False,
         autoLevels: bool = False,
@@ -111,7 +114,7 @@ class ImageDisplayWindow(QMainWindow):
         super().__init__()
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.contrastManager: Optional[ContrastManager] = contrastManager
-        self._event_bus: Optional["EventBus"] = event_bus
+        self._event_bus: Optional["UIEventBus"] = event_bus
         self._subscriptions: List[Tuple[type, object]] = []
         self._current_configuration_name: str = "Unknown"
         self.setWindowTitle(window_title)

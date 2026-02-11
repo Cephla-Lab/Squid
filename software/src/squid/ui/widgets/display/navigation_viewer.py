@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import os
 import re
+from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt, QTimer
-from qtpy.QtWidgets import QFrame, QPushButton, QVBoxLayout
+from qtpy.QtWidgets import QAction, QFrame, QPushButton, QVBoxLayout
 
 from _def import (
     A1_X_MM,
@@ -55,6 +56,10 @@ if TYPE_CHECKING:
 
 
 class NavigationViewer(QFrame):
+    _FOV_MATCH_TOLERANCE_MM = 1e-3
+    _FOV_KEY_SCALE = 1000  # 1e-3 mm bins
+    _COMPLETED_PAINT_BATCH_SIZE = 256
+
     def __init__(
         self,
         objectivestore: ObjectiveStore,
@@ -103,8 +108,10 @@ class NavigationViewer(QFrame):
         self.fov_height_mm: float = 0.0
         self._last_stage_pos: Optional[Pos] = None
         self._pending_fovs: List[FovCenter] = []  # Pending FOV positions (red)
+        self._pending_fov_index: Dict[Tuple[int, int], Set[int]] = {}
         self._completed_fovs: List[FovCenter] = []  # Completed FOV positions (blue)
-        self._queued_completed_fovs: List[FovCenter] = []  # Pending paint queue for completed FOVs
+        self._completed_fov_index: Dict[Tuple[int, int], Set[int]] = {}
+        self._queued_completed_fovs: Deque[FovCenter] = deque()  # Pending paint queue for completed FOVs
         self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
         self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
         # Debounce timer for batching FOV registration redraws
@@ -174,6 +181,7 @@ class NavigationViewer(QFrame):
 
         self.view = self.graphics_widget.addViewBox(invertX=not INVERTED_OBJECTIVE, invertY=True)
         self.view.setAspectLocked(True)
+        self._install_context_menu_actions()
 
         self.btn_clear_coordinates = QPushButton("Clear Scan Grid", self.graphics_widget)
         self.btn_clear_coordinates.clicked.connect(self._publish_clear_scan_grid)
@@ -187,6 +195,35 @@ class NavigationViewer(QFrame):
 
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
         self.view.sigRangeChanged.connect(self._on_view_range_changed)
+
+    def _install_context_menu_actions(self) -> None:
+        menu = getattr(self.view, "menu", None)
+        if menu is None:
+            return
+        recenter_action = QAction("Recenter Navigation View", self)
+        recenter_action.triggered.connect(self._recenter_navigation_view)
+        menu.addSeparator()
+        menu.addAction(recenter_action)
+
+    def _recenter_navigation_view(self) -> None:
+        if self.image_width <= 0 or self.image_height <= 0:
+            return
+        view_rect = self.view.viewRect()
+        view_width = float(view_rect.width())
+        view_height = float(view_rect.height())
+        if view_width <= 0 or view_height <= 0:
+            self.view.autoRange(padding=0)
+            return
+
+        center_x = self.image_width / 2.0
+        center_y = self.image_height / 2.0
+        half_width = view_width / 2.0
+        half_height = view_height / 2.0
+        self.view.setRange(
+            xRange=(center_x - half_width, center_x + half_width),
+            yRange=(center_y - half_height, center_y + half_height),
+            padding=0,
+        )
 
     def _publish_clear_scan_grid(self) -> None:
         # Always clear the overlay fully (including completed FOVs) when user clicks button
@@ -233,8 +270,7 @@ class NavigationViewer(QFrame):
     @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         # Clear all FOVs when wellplate format changes - old positions are no longer valid
-        self._pending_fovs.clear()
-        self._completed_fovs.clear()
+        self.clear_overlay()
         self.update_wellplate_settings(
             event.format_name,
             event.a1_x_mm,
@@ -266,22 +302,16 @@ class NavigationViewer(QFrame):
             f"size=({event.fov_width_mm}, {event.fov_height_mm}), "
             f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
         )
-        # Remove from pending if present - use 1e-3 (1 micron) tolerance for float comparison.
-        # Stage controllers and float arithmetic can introduce drift > 1e-6 easily.
-        tolerance = 1e-3
-        prev_pending_count = len(self._pending_fovs)
-        new_pending = [
-            f for f in self._pending_fovs
-            if abs(f.x_mm - pos[0]) > tolerance or abs(f.y_mm - pos[1]) > tolerance
-        ]
-        matched = prev_pending_count - len(new_pending)
-        self._pending_fovs = new_pending
+        # Remove a pending FOV in O(1)-style indexed lookup with tolerance.
+        matched = 1 if self._pop_pending_fov_near(pos[0], pos[1]) else 0
+        prev_pending_count = len(self._pending_fovs) + matched
         if matched == 0 and prev_pending_count > 0:
             # Find the nearest pending FOV for diagnostic purposes
-            nearest_dist = min(
-                (abs(f.x_mm - pos[0]) + abs(f.y_mm - pos[1]))
-                for f in self._pending_fovs
-            ) if self._pending_fovs else float("inf")
+            nearest_dist = (
+                min((abs(f.x_mm - pos[0]) + abs(f.y_mm - pos[1])) for f in self._pending_fovs)
+                if self._pending_fovs
+                else float("inf")
+            )
             self._log.warning(
                 f"CurrentFOVRegistered at ({pos[0]:.6f}, {pos[1]:.6f}) did not match "
                 f"any of {prev_pending_count} pending FOVs (nearest_dist={nearest_dist:.6f}mm)"
@@ -293,19 +323,14 @@ class NavigationViewer(QFrame):
             fov_width_mm=event.fov_width_mm,
             fov_height_mm=event.fov_height_mm,
         )
-        # Check if this position is already in completed (use tolerance)
-        already_completed = any(
-            abs(f.x_mm - pos[0]) <= tolerance and abs(f.y_mm - pos[1]) <= tolerance
-            for f in self._completed_fovs
-        )
-        if not already_completed:
-            self._completed_fovs.append(completed_fov)
+        added_completed = self._add_completed_fov(completed_fov)
         self._log.debug(
             f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}, "
-            f"matched={matched}"
+            f"matched={matched}, added_completed={added_completed}"
         )
         # Hot path during acquisition: batch paint commits for completed FOVs.
-        self._queue_completed_fov_paint(completed_fov)
+        if added_completed:
+            self._queue_completed_fov_paint(completed_fov)
 
     @handles(AddScanCoordinateRegion)
     def _on_add_scan_coordinate_region(self, update: AddScanCoordinateRegion) -> None:
@@ -494,6 +519,7 @@ class NavigationViewer(QFrame):
         """Clear only pending FOVs (keeps completed FOVs visible)."""
         self._log.info(f"_clear_pending_fovs called, clearing {len(self._pending_fovs)} pending (keeping {len(self._completed_fovs)} completed)")
         self._pending_fovs.clear()
+        self._pending_fov_index.clear()
         self._redraw_scan_overlay()
 
     def clear_overlay(self) -> None:
@@ -507,6 +533,8 @@ class NavigationViewer(QFrame):
         if self.scan_overlay_item is not None:
             self.scan_overlay_item.setImage(self.scan_overlay)
         self._pending_fovs.clear()
+        self._pending_fov_index.clear()
+        self._completed_fov_index.clear()
         self._completed_fovs.clear()
 
     def clear_focus_points(self) -> None:
@@ -542,7 +570,7 @@ class NavigationViewer(QFrame):
             return
         # Add all FOVs first without redrawing
         for center in fov_centers:
-            self._pending_fovs.append(center)
+            self._add_pending_fov(center)
         self._log.debug(
             f"Registered {len(fov_centers)} pending FOVs, total pending={len(self._pending_fovs)}"
         )
@@ -551,7 +579,7 @@ class NavigationViewer(QFrame):
 
     def register_fov_to_image(self, fov: FovCenter) -> None:
         """Add a pending FOV position (drawn in red)."""
-        self._pending_fovs.append(fov)
+        self._add_pending_fov(fov)
         self._log.debug(
             f"Registered pending FOV: ({fov.x_mm}, {fov.y_mm}), "
             f"size=({fov.fov_width_mm}, {fov.fov_height_mm}), total pending={len(self._pending_fovs)}"
@@ -559,10 +587,106 @@ class NavigationViewer(QFrame):
         self._schedule_redraw()
 
     def deregister_fovs_from_image(self, fov_centers: List[FovCenter]) -> None:
-        # Only remove from pending - completed FOVs stay visible until explicitly cleared
-        to_remove = {(c.x_mm, c.y_mm) for c in fov_centers}
-        self._pending_fovs = [f for f in self._pending_fovs if (f.x_mm, f.y_mm) not in to_remove]
+        # Only remove from pending - completed FOVs stay visible until explicitly cleared.
+        # Remove one pending entry per requested center to preserve duplicate semantics.
+        for center in fov_centers:
+            self._pop_pending_fov_near(center.x_mm, center.y_mm)
         self._schedule_redraw()
+
+    def _fov_key(self, x_mm: float, y_mm: float) -> Tuple[int, int]:
+        return (
+            int(round(x_mm * self._FOV_KEY_SCALE)),
+            int(round(y_mm * self._FOV_KEY_SCALE)),
+        )
+
+    def _neighbor_keys(self, key: Tuple[int, int]) -> Tuple[Tuple[int, int], ...]:
+        kx, ky = key
+        return (
+            (kx - 1, ky - 1), (kx - 1, ky), (kx - 1, ky + 1),
+            (kx, ky - 1), (kx, ky), (kx, ky + 1),
+            (kx + 1, ky - 1), (kx + 1, ky), (kx + 1, ky + 1),
+        )
+
+    def _add_pending_fov(self, fov: FovCenter) -> None:
+        idx = len(self._pending_fovs)
+        self._pending_fovs.append(fov)
+        key = self._fov_key(fov.x_mm, fov.y_mm)
+        self._pending_fov_index.setdefault(key, set()).add(idx)
+
+    def _contains_completed_fov_near(self, x_mm: float, y_mm: float) -> bool:
+        target_key = self._fov_key(x_mm, y_mm)
+        tolerance = self._FOV_MATCH_TOLERANCE_MM
+        for key in self._neighbor_keys(target_key):
+            idxs = self._completed_fov_index.get(key)
+            if not idxs:
+                continue
+            for idx in idxs:
+                if idx < 0 or idx >= len(self._completed_fovs):
+                    continue
+                fov = self._completed_fovs[idx]
+                dx = abs(fov.x_mm - x_mm)
+                dy = abs(fov.y_mm - y_mm)
+                if dx <= tolerance and dy <= tolerance:
+                    return True
+        return False
+
+    def _add_completed_fov(self, fov: FovCenter) -> bool:
+        if self._contains_completed_fov_near(fov.x_mm, fov.y_mm):
+            return False
+        idx = len(self._completed_fovs)
+        self._completed_fovs.append(fov)
+        key = self._fov_key(fov.x_mm, fov.y_mm)
+        self._completed_fov_index.setdefault(key, set()).add(idx)
+        return True
+
+    def _remove_pending_fov_at(self, idx: int) -> None:
+        last_idx = len(self._pending_fovs) - 1
+        to_remove = self._pending_fovs[idx]
+        remove_key = self._fov_key(to_remove.x_mm, to_remove.y_mm)
+
+        remove_bucket = self._pending_fov_index.get(remove_key)
+        if remove_bucket is not None:
+            remove_bucket.discard(idx)
+            if not remove_bucket:
+                self._pending_fov_index.pop(remove_key, None)
+
+        if idx != last_idx:
+            moved = self._pending_fovs[last_idx]
+            self._pending_fovs[idx] = moved
+            moved_key = self._fov_key(moved.x_mm, moved.y_mm)
+            moved_bucket = self._pending_fov_index.get(moved_key)
+            if moved_bucket is not None:
+                moved_bucket.discard(last_idx)
+                moved_bucket.add(idx)
+
+        self._pending_fovs.pop()
+
+    def _pop_pending_fov_near(self, x_mm: float, y_mm: float) -> bool:
+        target_key = self._fov_key(x_mm, y_mm)
+        tolerance = self._FOV_MATCH_TOLERANCE_MM
+        best_idx: Optional[int] = None
+        best_dist = float("inf")
+
+        for key in self._neighbor_keys(target_key):
+            idxs = self._pending_fov_index.get(key)
+            if not idxs:
+                continue
+            for idx in idxs:
+                if idx < 0 or idx >= len(self._pending_fovs):
+                    continue
+                fov = self._pending_fovs[idx]
+                dx = abs(fov.x_mm - x_mm)
+                dy = abs(fov.y_mm - y_mm)
+                if dx <= tolerance and dy <= tolerance:
+                    dist = dx + dy
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+
+        if best_idx is None:
+            return False
+        self._remove_pending_fov_at(best_idx)
+        return True
 
     def draw_fov_current_location(self, pos: Pos) -> None:
         if self.current_location_item is None or self.scan_overlay is None:
@@ -600,7 +724,8 @@ class NavigationViewer(QFrame):
 
     def _queue_completed_fov_paint(self, fov: FovCenter) -> None:
         self._queued_completed_fovs.append(fov)
-        self._completed_paint_timer.start()
+        if not self._completed_paint_timer.isActive():
+            self._completed_paint_timer.start()
 
     def _schedule_redraw(self) -> None:
         """Schedule a debounced redraw. Multiple calls within 50ms are coalesced."""
@@ -616,7 +741,9 @@ class NavigationViewer(QFrame):
             return
 
         thickness = self._get_zoom_adjusted_thickness()
-        for fov in self._queued_completed_fovs:
+        batch_count = min(len(self._queued_completed_fovs), self._COMPLETED_PAINT_BATCH_SIZE)
+        for _ in range(batch_count):
+            fov = self._queued_completed_fovs.popleft()
             self._draw_fov_box(
                 self.scan_overlay,
                 fov.x_mm,
@@ -626,8 +753,9 @@ class NavigationViewer(QFrame):
                 fov_width_mm=fov.fov_width_mm,
                 fov_height_mm=fov.fov_height_mm,
             )
-        self._queued_completed_fovs.clear()
         self.scan_overlay_item.setImage(self.scan_overlay)
+        if self._queued_completed_fovs:
+            self._completed_paint_timer.start()
 
     def _redraw_scan_overlay(self) -> None:
         if self.scan_overlay is None or self.scan_overlay_item is None:

@@ -1,14 +1,13 @@
 # Flexible multi-point acquisition widget
 import math
 import time
-from typing import Optional, List
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from squid.core.events import (
     AutofocusMode,
-    EventBus,
     StagePositionChanged,
     MoveStageCommand,
     ObjectiveChanged,
@@ -87,6 +86,9 @@ from squid.backend.io.acquisition_yaml import (
     parse_acquisition_yaml,
 )
 
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
+
 
 _FEATURE_FLAGS = get_feature_flags()
 from squid.ui.widgets.base import error_dialog, check_space_available_with_error_dialog
@@ -96,7 +98,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     def __init__(
         self,
         focusMapWidget,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_channel_configs: List[str],
         z_ustep_per_mm: Optional[float] = None,
         initial_z_mm: float = 0.0,
@@ -1057,7 +1059,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
                 experiment_id=self.lineEdit_experimentID.text()
             ))
             requested_id = self.lineEdit_experimentID.text().strip()
-            self._active_experiment_id = requested_id or None
+            self._active_experiment_id = self._normalize_experiment_id(requested_id)
 
             # TODO: check_space_available_with_error_dialog needs to be refactored
             # to not require multipointController reference
@@ -1507,9 +1509,33 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
         # Start the acquisition process for the single FOV
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
-        self._active_experiment_id = experiment_id.strip() or None
+        self._active_experiment_id = self._normalize_experiment_id(experiment_id)
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
         self._publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
+
+    @staticmethod
+    def _normalize_experiment_id(experiment_id: Optional[str]) -> Optional[str]:
+        if experiment_id is None:
+            return None
+        normalized = experiment_id.strip()
+        return normalized or None
+
+    @classmethod
+    def _experiment_id_matches(
+        cls,
+        active_experiment_id: Optional[str],
+        event_experiment_id: Optional[str],
+    ) -> bool:
+        active_id = cls._normalize_experiment_id(active_experiment_id)
+        event_id = cls._normalize_experiment_id(event_experiment_id)
+        if active_id is None or event_id is None:
+            return False
+        if active_id == event_id:
+            return True
+        return (
+            event_id.startswith(f"{active_id}_")
+            or active_id.startswith(f"{event_id}_")
+        )
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -1573,7 +1599,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
@@ -1588,7 +1619,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         if not self.is_current_acquisition_widget:
             return
@@ -1622,7 +1658,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     @handles(AcquisitionRegionProgress)
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         self.update_region_progress(event.current_region, event.total_regions)
 

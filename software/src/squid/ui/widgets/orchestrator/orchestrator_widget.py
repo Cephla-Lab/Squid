@@ -54,7 +54,7 @@ from squid.backend.controllers.orchestrator.validation import ValidationSummary
 from squid.ui.widgets.orchestrator.validation_dialog import ValidationResultDialog
 
 if TYPE_CHECKING:
-    from squid.core.events import EventBus
+    from squid.ui.ui_event_bus import UIEventBus
     from squid.backend.controllers.orchestrator import OrchestratorController
 
 import squid.core.logging
@@ -134,7 +134,7 @@ class OrchestratorControlPanel(EventBusWidget):
 
     def __init__(
         self,
-        event_bus: "EventBus",
+        event_bus: "UIEventBus",
         orchestrator: Optional["OrchestratorController"] = None,
         parent: Optional[QWidget] = None,
     ):
@@ -687,7 +687,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
 
     def __init__(
         self,
-        event_bus: "EventBus",
+        event_bus: "UIEventBus",
         parent: Optional[QWidget] = None,
     ):
         super().__init__(event_bus, parent)

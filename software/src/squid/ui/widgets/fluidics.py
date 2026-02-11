@@ -730,12 +730,18 @@ class FluidicsWidget(QWidget):
                 SimulatedFluidicsController,
             )
             from squid.backend.services.fluidics_service import FluidicsService
-            from squid.core.events import event_bus
 
-            # Prefer registry event bus if available to keep UI in sync.
-            core_bus = event_bus
+            # Resolve the core EventBus without falling back to global singleton.
+            # Prefer registry bus, then unwrap the UIEventBus if available.
+            core_bus = None
             if self._service_registry is not None:
-                core_bus = getattr(self._service_registry, "_event_bus", event_bus)
+                core_bus = getattr(self._service_registry, "_event_bus", None)
+            if core_bus is None:
+                core_bus = getattr(self._event_bus, "core_bus", None)
+            if core_bus is None:
+                raise RuntimeError(
+                    "Cannot initialize fluidics: core EventBus unavailable"
+                )
 
             driver = None
             if self._is_simulation:

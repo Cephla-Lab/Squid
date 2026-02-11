@@ -309,21 +309,24 @@ class SpotPreviewWidget(QWidget):
 
         widget_w = self.width()
         widget_h = self.height()
+        painter.fillRect(0, 0, widget_w, widget_h, QColor(0, 0, 0))
 
         if self._pixmap is not None and not self._pixmap.isNull():
-            # Scale pixmap to fill widget width (ignore aspect ratio for full width)
+            # Keep camera geometry intact: show full frame without distortion.
             scaled = self._pixmap.scaled(
-                widget_w, widget_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+                widget_w, widget_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            painter.drawPixmap(0, 0, scaled)
+            x_offset = (widget_w - scaled.width()) // 2
+            y_offset = (widget_h - scaled.height()) // 2
+            painter.drawPixmap(x_offset, y_offset, scaled)
 
             # Draw small circle at spot centroid position (only if spot detection was valid)
             if self._frame is not None and self._spot_valid:
                 frame_h, frame_w = self._frame.shape[:2]
-                scale_x = widget_w / frame_w
-                scale_y = widget_h / frame_h
-                spot_x = int(self._spot_x * scale_x)
-                spot_y = int(self._spot_y * scale_y)
+                scale_x = scaled.width() / frame_w
+                scale_y = scaled.height() / frame_h
+                spot_x = int(x_offset + self._spot_x * scale_x)
+                spot_y = int(y_offset + self._spot_y * scale_y)
 
                 # Draw green circle at spot center
                 painter.setPen(QPen(QColor(0, 255, 0), 2))
@@ -340,6 +343,7 @@ class SpotPreviewWidget(QWidget):
         """Clear the preview."""
         self._frame = None
         self._pixmap = None
+        self._frame_bytes = None
         self.update()
 
 

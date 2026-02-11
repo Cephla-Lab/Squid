@@ -13,7 +13,6 @@ import squid.core.logging
 from squid.core.utils.geometry_utils import get_effective_well_size, calculate_well_coverage
 from squid.core.events import (
     AutofocusMode,
-    EventBus,
     StagePositionChanged,
     MoveStageCommand,
     ObjectiveChanged,
@@ -58,6 +57,7 @@ from squid.ui.widgets.base import EventBusFrame
 
 if TYPE_CHECKING:
     from squid.backend.services import StageService
+    from squid.ui.ui_event_bus import UIEventBus
 from qtpy.QtCore import Qt, QTimer, QEventLoop
 from qtpy.QtWidgets import (
     QFrame,
@@ -110,7 +110,7 @@ from squid.ui.widgets.wellplate import WellSelectionWidget
 class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_channel_configs: List[str],
         initial_objective: str,
         objective_pixel_size_factors: dict[str, float],
@@ -2259,7 +2259,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
                 experiment_id=self.lineEdit_experimentID.text()
             ))
             requested_id = self.lineEdit_experimentID.text().strip()
-            self._active_experiment_id = requested_id or None
+            self._active_experiment_id = self._normalize_experiment_id(requested_id)
 
             # TODO: check_space_available_with_error_dialog needs to be refactored
             # to not require multipointController reference
@@ -2537,9 +2537,33 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
 
         # Start the acquisition process for the single FOV
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
-        self._active_experiment_id = experiment_id.strip() or None
+        self._active_experiment_id = self._normalize_experiment_id(experiment_id)
         self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
         self._publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
+
+    @staticmethod
+    def _normalize_experiment_id(experiment_id: Optional[str]) -> Optional[str]:
+        if experiment_id is None:
+            return None
+        normalized = experiment_id.strip()
+        return normalized or None
+
+    @classmethod
+    def _experiment_id_matches(
+        cls,
+        active_experiment_id: Optional[str],
+        event_experiment_id: Optional[str],
+    ) -> bool:
+        active_id = cls._normalize_experiment_id(active_experiment_id)
+        event_id = cls._normalize_experiment_id(event_experiment_id)
+        if active_id is None or event_id is None:
+            return False
+        if active_id == event_id:
+            return True
+        return (
+            event_id.startswith(f"{active_id}_")
+            or active_id.startswith(f"{event_id}_")
+        )
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
@@ -2772,7 +2796,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
         import threading
         thread_name = threading.current_thread().name
         self._log.info(f"_on_acquisition_state_changed(in_progress={event.in_progress}) on thread {thread_name}")
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
@@ -2788,7 +2817,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         if not self.is_current_acquisition_widget:
             return
@@ -2822,7 +2856,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, EventBusFrame):
     @handles(AcquisitionRegionProgress)
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
-        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+        if (
+            self._active_experiment_id
+            and not self._experiment_id_matches(
+                self._active_experiment_id, event.experiment_id
+            )
+        ):
             return
         self.update_region_progress(event.current_region, event.total_regions)
 

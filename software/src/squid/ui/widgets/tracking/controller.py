@@ -17,7 +17,7 @@ from squid.ui.widgets.tracking._common import (
     TRACKERS,
 )
 from squid.backend.services import PeripheralService
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 import numpy as np
 from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
@@ -25,7 +25,6 @@ from qtpy.QtCore import QMetaObject
 from squid.ui.widgets.hardware.objectives import ObjectivesWidget
 from squid.core.events import (
     handles,
-    EventBus,
     ObjectiveChanged,
     SetTrackingParametersCommand,
     SetTrackingPathCommand,
@@ -36,6 +35,9 @@ from squid.core.events import (
     TrackingStateChanged,
 )
 from squid.ui.widgets.base import EventBusFrame
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class TrackingControllerWidget(EventBusFrame):
@@ -55,7 +57,7 @@ class TrackingControllerWidget(EventBusFrame):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_channel_configs: List[str],
         peripheral_service: PeripheralService,
         objectivesWidget: ObjectivesWidget,

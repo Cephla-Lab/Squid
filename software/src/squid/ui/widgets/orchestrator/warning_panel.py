@@ -36,7 +36,7 @@ from squid.backend.controllers.orchestrator import (
 from squid.ui.widgets.base import EventBusWidget
 
 if TYPE_CHECKING:
-    from squid.core.events import EventBus
+    from squid.ui.ui_event_bus import UIEventBus
     from squid.backend.controllers.orchestrator import WarningManager
 
 import squid.core.logging
@@ -83,7 +83,7 @@ class WarningPanel(EventBusWidget):
 
     def __init__(
         self,
-        event_bus: "EventBus",
+        event_bus: "UIEventBus",
         warning_manager: Optional["WarningManager"] = None,
         parent: Optional[QWidget] = None,
     ):

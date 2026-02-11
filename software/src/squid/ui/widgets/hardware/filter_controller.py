@@ -1,4 +1,6 @@
 # Filter wheel controller widget
+from typing import TYPE_CHECKING
+
 from qtpy.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -12,7 +14,6 @@ from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
     handles,
-    EventBus,
     SetFilterPositionCommand,
     HomeFilterWheelCommand,
     SetFilterAutoSwitchCommand,
@@ -20,11 +21,14 @@ from squid.core.events import (
     FilterAutoSwitchChanged,
 )
 
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
+
 
 class FilterControllerWidget(QFrame):
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         wheel_index: int = 1,
         num_positions: int = 7,
         initial_position: int = 1,

@@ -49,6 +49,11 @@ class UIEventBus:
     def _on_dispatcher_destroyed(self, _obj: object = None) -> None:
         self._dispatcher_alive = False
 
+    @property
+    def core_bus(self) -> EventBus:
+        """Expose underlying core EventBus for backend-only service wiring."""
+        return self._core_bus
+
     def publish(self, event: Event) -> None:
         """Publish an event to the core bus.
 

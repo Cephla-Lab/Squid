@@ -5,7 +5,7 @@ import math
 import numpy as np
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import cv2
 import napari
@@ -22,7 +22,6 @@ from squid.core.events import (
     auto_subscribe,
     auto_unsubscribe,
     handles,
-    EventBus,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
     ClearManualShapesCommand,
@@ -34,6 +33,9 @@ from squid.core.events import (
 )
 
 import squid.core.logging
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 @dataclass
@@ -266,7 +268,7 @@ class NapariMosaicDisplayWidget(QWidget):
     def __init__(
         self,
         contrastManager: ContrastManager,
-        event_bus: Optional[EventBus] = None,
+        event_bus: Optional["UIEventBus"] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)

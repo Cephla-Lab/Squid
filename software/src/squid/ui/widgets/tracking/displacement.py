@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from squid.ui.widgets.tracking._common import (
     List,
     QDoubleSpinBox,
@@ -8,12 +10,14 @@ from squid.ui.widgets.tracking._common import (
 )
 from squid.core.events import (
     handles,
-    EventBus,
     SetDisplacementMeasurementSettingsCommand,
     SetWaveformDisplayNCommand,
     DisplacementReadingsChanged,
 )
 from squid.ui.widgets.base import EventBusFrame
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class DisplacementMeasurementWidget(EventBusFrame):
@@ -29,7 +33,7 @@ class DisplacementMeasurementWidget(EventBusFrame):
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
     ) -> None:
         super().__init__(event_bus)
         self.add_components()
