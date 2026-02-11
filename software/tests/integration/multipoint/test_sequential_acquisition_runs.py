@@ -8,8 +8,10 @@ from typing import List, Tuple
 import pytest
 
 from squid.core.events import (
+    AddFlexibleRegionCommand,
     AcquisitionWorkerFinished,
     AutofocusMode,
+    ClearScanCoordinatesCommand,
     SetAcquisitionChannelsCommand,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
@@ -73,15 +75,25 @@ def _run_quick_scan_and_wait(
     sim.publish(SetAcquisitionChannelsCommand(channel_names=[channels[0]]))
     sim.publish(SetAcquisitionPathCommand(base_path=sim.ctx.base_path))
     sim.publish(StartNewExperimentCommand(experiment_id=exp_id))
+    # Quick scan now uses the normal coordinate pipeline:
+    # clear regions, add one temporary flexible region, then start acquisition.
+    sim.publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+    sim.publish(
+        AddFlexibleRegionCommand(
+            region_id="quick_scan",
+            center_x_mm=x_mm,
+            center_y_mm=y_mm,
+            center_z_mm=z_mm,
+            n_x=nx,
+            n_y=ny,
+            overlap_percent=overlap,
+        )
+    )
     sim.sleep(0.2)
     sim.publish(
         StartAcquisitionCommand(
             experiment_id=exp_id,
-            xy_mode="Current Position",
-            quick_scan_center=(x_mm, y_mm, z_mm),
-            quick_scan_nx=nx,
-            quick_scan_ny=ny,
-            quick_scan_overlap=overlap,
+            xy_mode="Manual",
         )
     )
 
