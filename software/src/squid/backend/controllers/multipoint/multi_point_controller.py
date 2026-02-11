@@ -176,6 +176,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.thread: Optional[Thread] = None
         self._current_round_index: int = 0
         self._start_fov_index: int = 0  # FOV index to start from (for resume)
+        self._active_worker_experiment_id: Optional[str] = None
 
         # Store services and event bus
         self._camera_service = camera_service
@@ -1137,6 +1138,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # AcquisitionWorkerFinished before we've transitioned to RUNNING state.
             # The _on_worker_finished handler filters events if not in RUNNING state.
             self._transition_to(AcquisitionControllerState.RUNNING)
+            self._active_worker_experiment_id = acquisition_params.experiment_ID
             self.thread.start()
             # Publish NDViewer start event for push-mode display
             self._publish_ndviewer_start(acquisition_params)
@@ -1169,6 +1171,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     self._force_state(AcquisitionControllerState.IDLE, reason="cleanup after failed start")
             elif self._is_in_state(AcquisitionControllerState.PREPARING):
                 self._force_state(AcquisitionControllerState.IDLE, reason="cleanup after failed start")
+            self._active_worker_experiment_id = None
             return False
 
     def build_params(
@@ -1294,6 +1297,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Never let cleanup errors block UI re-enabling
             self._log.exception("Error during acquisition cleanup")
         finally:
+            # Clear active worker token so stale finish events from old runs are ignored.
+            self._active_worker_experiment_id = None
             # Stop per-acquisition logging
             self._stop_per_acquisition_log()
 
@@ -1524,13 +1529,18 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         This is the primary mechanism for the worker to signal completion.
         Uses experiment_id to filter out stale events from previous acquisitions.
         """
-        # Filter out stale events from previous acquisitions
-        if event.experiment_id != self.experiment_ID:
+        expected_id = self._active_worker_experiment_id or self.experiment_ID
+        if expected_id is None:
+            return
+        if event.experiment_id != expected_id:
             return
 
-        # Only process if we're in a running/aborting state
         if not self._is_in_state(AcquisitionControllerState.RUNNING, AcquisitionControllerState.ABORTING):
-            return
+            self._log.warning(
+                "Processing AcquisitionWorkerFinished for experiment '%s' while controller state is %s",
+                event.experiment_id,
+                self.state.name,
+            )
 
         self._log.info(
             f"Worker finished: success={event.success}, "
@@ -1611,6 +1621,20 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._log.info("_publish_ndviewer_start called")
         if not self._event_bus:
             self._log.warning("_publish_ndviewer_start: no event_bus, skipping")
+            return
+
+        # NDViewer push mode is only meaningful when frames are registered incrementally.
+        # OME-TIFF and multi-page TIFF paths do not emit NDViewerImageRegistered events,
+        # so starting push mode there can leave stale UI state between runs.
+        if _def.FILE_SAVING_OPTION not in (
+            _def.FileSavingOption.INDIVIDUAL_IMAGES,
+            _def.FileSavingOption.ZARR_V3,
+        ):
+            self._log.info(
+                "Skipping NDViewer push start for file mode %s",
+                _def.FILE_SAVING_OPTION.value,
+            )
+            self._ndviewer_mode = "inactive"
             return
         try:
             experiment_id = self._require_experiment_id()

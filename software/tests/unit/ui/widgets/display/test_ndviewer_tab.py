@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from qtpy.QtWidgets import QApplication
 
+from squid.core.events import AcquisitionStarted, NDViewerImageRegistered
 from squid.ui.widgets.display.ndviewer_tab import NDViewerTab
 
 
@@ -258,3 +259,89 @@ class TestNDViewerRegisterQueue:
         tab.end_acquisition("exp")
         assert tab.register_image.call_count == 5
         assert len(tab._pending_register_events) == 0
+
+    def test_eventbus_register_events_coalesce_wakeup_signals(self, qapp):
+        tab = NDViewerTab()
+        first = tab._enqueue_register_event(0, 0, 0, "BF", "/tmp/f0.tif", "exp")
+        assert first is True
+        for i in range(1, 20):
+            should_wake = tab._enqueue_register_event(0, i, 0, "BF", f"/tmp/f{i}.tif", "exp")
+            assert should_wake is False
+
+        assert len(tab._pending_register_events) == 20
+
+    def test_event_handler_enqueues_events(self, qapp):
+        tab = NDViewerTab()
+        for i in range(5):
+            tab._on_ndviewer_image_registered(
+                NDViewerImageRegistered(
+                    t=0,
+                    fov_idx=i,
+                    z=0,
+                    channel="BF",
+                    filepath=f"/tmp/f{i}.tif",
+                    experiment_id="exp",
+                )
+            )
+        assert len(tab._pending_register_events) == 5
+
+
+class TestNDViewerRetryCancellation:
+    """Tests for stale dataset-retry cancellation across acquisitions."""
+
+    def test_load_dataset_retry_ignores_stale_generation(self, qapp):
+        tab = NDViewerTab()
+        tab.set_dataset_path = MagicMock()
+        tab._dataset_retry_generation = 5
+
+        tab._load_dataset_with_retry("/tmp/some-dataset", retry_generation=4)
+
+        tab.set_dataset_path.assert_not_called()
+
+    def test_acquisition_started_increments_retry_generation(self, qapp):
+        tab = NDViewerTab()
+        tab._dataset_retry_generation = 3
+
+        tab._on_acquisition_started(AcquisitionStarted(experiment_id="exp", timestamp=1.0))
+
+        assert tab._dataset_retry_generation == 4
+
+
+class TestNDViewerEndAcquisitionFallback:
+    """Tests for dataset fallback behavior at acquisition end."""
+
+    def test_end_acquisition_without_push_mode_schedules_dataset_retry(self, qapp):
+        tab = NDViewerTab()
+        tab._dataset_retry_generation = 10
+        tab._load_dataset_with_retry = MagicMock()
+
+        single_shot_calls = []
+
+        def _run_now(delay_ms, callback):
+            single_shot_calls.append(delay_ms)
+            callback()
+
+        with patch("squid.ui.widgets.display.ndviewer_tab.QTimer.singleShot", side_effect=_run_now):
+            tab.end_acquisition("exp-2", dataset_path="/tmp/dataset")
+
+        assert single_shot_calls == [200]
+        tab._load_dataset_with_retry.assert_called_once_with(
+            "/tmp/dataset",
+            max_attempts=8,
+            delay_ms=200,
+            retry_generation=11,
+        )
+
+    def test_end_acquisition_keeps_experiment_filter_in_push_mode(self, qapp):
+        tab = NDViewerTab()
+        tab._experiment_id = "active-exp"
+        tab._dataset_retry_generation = 2
+        tab._load_dataset_with_retry = MagicMock()
+
+        with patch("squid.ui.widgets.display.ndviewer_tab.QTimer.singleShot") as single_shot:
+            tab.end_acquisition("other-exp", dataset_path="/tmp/dataset")
+
+        # Mismatched experiment IDs must still be ignored when push mode is active.
+        single_shot.assert_not_called()
+        tab._load_dataset_with_retry.assert_not_called()
+        assert tab._dataset_retry_generation == 2

@@ -8,15 +8,17 @@ within the main GUI. Features:
 - Push-based API for real-time image display during acquisition
 """
 
+from collections import deque
 import os
-from typing import List, Optional
+import threading
+from typing import TYPE_CHECKING, Deque, List, Optional
 
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 import squid.core.logging
 from squid.core.events import (
-    EventBus,
+    AcquisitionStarted,
     NDViewerAcquisitionEnded,
     NDViewerImageRegistered,
     NDViewerStartAcquisition,
@@ -27,6 +29,9 @@ from squid.core.events import (
     auto_unsubscribe,
     handles,
 )
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class NDViewerTab(QWidget):
@@ -41,16 +46,18 @@ class NDViewerTab(QWidget):
     # These signals can be emitted from any thread and will be received on the main thread
     _sig_start_acquisition = Signal(list, int, int, int, list, str)  # channels, num_z, height, width, fov_labels, experiment_id
     _sig_register_image = Signal(int, int, int, str, str, str)  # t, fov_idx, z, channel, filepath, experiment_id
+    _sig_register_queue_ready = Signal()
     _sig_end_acquisition = Signal(str, str)  # experiment_id, dataset_path (empty string if None)
     # Zarr push-mode signals
     _sig_start_zarr_acquisition = Signal(list, list, int, list, int, int, str)  # fov_paths, channels, num_z, fov_labels, height, width, experiment_id
     _sig_start_zarr_acquisition_6d = Signal(list, list, int, list, int, int, list, str)  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels, experiment_id
     _sig_notify_zarr_frame = Signal(int, int, int, str, str, int)  # t, fov_idx, z, channel, experiment_id, region_idx
     _MAX_REGISTER_EVENTS_PER_FLUSH = 32
+    _MAX_PENDING_REGISTER_EVENTS = 4096
 
     def __init__(
         self,
-        event_bus: Optional[EventBus] = None,
+        event_bus: Optional["UIEventBus"] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -61,7 +68,12 @@ class NDViewerTab(QWidget):
         self._experiment_id: Optional[str] = None  # Track active push-mode acquisition
         self._subscriptions = []
         self._unsupported_extensions = set()
-        self._pending_register_events: List[tuple[int, int, int, str, str, str]] = []
+        self._pending_register_events: Deque[tuple[int, int, int, str, str, str]] = deque()
+        self._pending_register_events_lock = threading.Lock()
+        self._register_drain_requested = False
+        self._register_drop_log_counter = 0
+        # Monotonic token used to cancel stale dataset-retry callbacks across runs.
+        self._dataset_retry_generation = 0
         self._register_flush_timer = QTimer(self)
         self._register_flush_timer.setSingleShot(True)
         self._register_flush_timer.setInterval(40)
@@ -78,6 +90,7 @@ class NDViewerTab(QWidget):
         # Connect cross-thread signals to slots (queued connection ensures main thread execution)
         self._sig_start_acquisition.connect(self._handle_start_acquisition)
         self._sig_register_image.connect(self._handle_register_image)
+        self._sig_register_queue_ready.connect(self._handle_register_queue_ready)
         self._sig_end_acquisition.connect(self._handle_end_acquisition)
         self._sig_start_zarr_acquisition.connect(self._handle_start_zarr_acquisition)
         self._sig_start_zarr_acquisition_6d.connect(self._handle_start_zarr_acquisition_6d)
@@ -86,6 +99,31 @@ class NDViewerTab(QWidget):
         # Subscribe to EventBus events if available
         if self._event_bus is not None:
             self._subscriptions = auto_subscribe(self, self._event_bus)
+
+    def _cancel_dataset_retries(self) -> None:
+        """Invalidate all pending dataset-retry callbacks."""
+        self._dataset_retry_generation += 1
+
+    def _dispose_viewer(self) -> None:
+        """Close and remove the embedded viewer widget safely."""
+        if self._viewer is None:
+            return
+        try:
+            self._viewer.close()
+        except Exception:
+            self._log.exception("Error closing LightweightViewer")
+        try:
+            self._layout.removeWidget(self._viewer)
+        except Exception:
+            pass
+        self._viewer.deleteLater()
+        self._viewer = None
+
+    def _recreate_viewer(self, viewer_cls: type) -> None:
+        """Create a fresh viewer instance to avoid stale cross-run state."""
+        self._dispose_viewer()
+        self._viewer = viewer_cls("")
+        self._layout.addWidget(self._viewer, 1)
 
     def _show_placeholder(self, message: str) -> None:
         """Show placeholder with message and hide viewer."""
@@ -230,17 +268,13 @@ class NDViewerTab(QWidget):
             auto_unsubscribe(self._subscriptions, self._event_bus)
             self._subscriptions = []
 
-        if self._viewer is not None:
-            try:
-                # Calling close() triggers LightweightViewer.closeEvent(),
-                # which stops refresh timers and closes open file handles
-                self._viewer.close()
-            except Exception:
-                self._log.exception("Error closing LightweightViewer")
-            self._viewer = None
+        self._cancel_dataset_retries()
+        self._dispose_viewer()
         if self._register_flush_timer.isActive():
             self._register_flush_timer.stop()
-        self._pending_register_events.clear()
+        with self._pending_register_events_lock:
+            self._pending_register_events.clear()
+            self._register_drain_requested = False
         self._dataset_path = None
         self._experiment_id = None
 
@@ -286,16 +320,20 @@ class NDViewerTab(QWidget):
             return False
 
         try:
-            # Create viewer if needed
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for push mode")
-                self._viewer = LightweightViewer("")  # Empty path for push mode
-                self._layout.addWidget(self._viewer, 1)
+            # Starting a new acquisition invalidates file-mode retry callbacks.
+            self._cancel_dataset_retries()
+            self._dataset_path = None
+            self._unsupported_extensions.clear()
+            # Always rebuild viewer between runs to avoid stale push/file mode state.
+            self._recreate_viewer(LightweightViewer)
 
             # Start push-mode acquisition
             if self._register_flush_timer.isActive():
                 self._register_flush_timer.stop()
-            self._pending_register_events.clear()
+            with self._pending_register_events_lock:
+                self._pending_register_events.clear()
+                self._register_drain_requested = False
+                self._register_drop_log_counter = 0
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
             self._experiment_id = experiment_id
 
@@ -370,13 +408,19 @@ class NDViewerTab(QWidget):
             experiment_id: Acquisition identifier (must match active acquisition)
             dataset_path: Optional path to dataset folder for file-based loading
         """
-        if self._experiment_id != experiment_id:
+        # If push mode is active, enforce experiment-id matching.
+        # If push mode was never started (e.g., non-push file modes),
+        # allow dataset-path fallback loading without an active experiment id.
+        push_mode_active = self._experiment_id is not None
+        if push_mode_active and self._experiment_id != experiment_id:
             return
 
         self._log.debug(f"Acquisition ended: {experiment_id}")
         self._flush_register_image_queue()
+        # Invalidate any stale retry chain before deciding whether to start a new one.
+        self._cancel_dataset_retries()
 
-        if self._viewer is not None:
+        if self._viewer is not None and push_mode_active:
             try:
                 self._viewer.end_acquisition()
             except Exception:
@@ -390,13 +434,38 @@ class NDViewerTab(QWidget):
             if not push_mode_has_data and dataset_path:
                 # Fall back to file-based loading (for OME-TIFF or when push-mode didn't work)
                 self._dataset_path = None
+                retry_generation = self._dataset_retry_generation
                 # Delayed loading allows filesystem to sync after multiprocessing writes
                 def start_retry() -> None:
-                    self._load_dataset_with_retry(dataset_path, max_attempts=8, delay_ms=200)
+                    self._load_dataset_with_retry(
+                        dataset_path,
+                        max_attempts=8,
+                        delay_ms=200,
+                        retry_generation=retry_generation,
+                    )
 
                 QTimer.singleShot(200, start_retry)
+        elif dataset_path:
+            # No push-mode acquisition was started; fall back directly to file-mode load.
+            self._dataset_path = None
+            retry_generation = self._dataset_retry_generation
+
+            def start_retry() -> None:
+                self._load_dataset_with_retry(
+                    dataset_path,
+                    max_attempts=8,
+                    delay_ms=200,
+                    retry_generation=retry_generation,
+                )
+
+            QTimer.singleShot(200, start_retry)
 
         self._experiment_id = None
+        if self._register_flush_timer.isActive():
+            self._register_flush_timer.stop()
+        with self._pending_register_events_lock:
+            self._pending_register_events.clear()
+            self._register_drain_requested = False
 
     def _load_dataset_with_retry(
         self,
@@ -404,12 +473,20 @@ class NDViewerTab(QWidget):
         attempt: int = 0,
         max_attempts: int = 8,
         delay_ms: int = 200,
+        retry_generation: Optional[int] = None,
     ) -> None:
         """Load dataset with retry for filesystem sync issues.
 
         Files may not be visible immediately after subprocess writers complete.
         This method retries loading with exponential backoff.
         """
+        if (
+            retry_generation is not None
+            and retry_generation != self._dataset_retry_generation
+        ):
+            # A newer acquisition/retry cycle superseded this callback.
+            return
+
         self.set_dataset_path(dataset_path)
 
         # Check if the viewer found any FOVs
@@ -425,7 +502,13 @@ class NDViewerTab(QWidget):
             self._dataset_path = None  # Clear so next attempt reloads
 
             def retry() -> None:
-                self._load_dataset_with_retry(dataset_path, attempt + 1, max_attempts, delay_ms)
+                self._load_dataset_with_retry(
+                    dataset_path,
+                    attempt + 1,
+                    max_attempts,
+                    delay_ms,
+                    retry_generation=retry_generation,
+                )
 
             QTimer.singleShot(next_delay, retry)
         else:
@@ -496,10 +579,10 @@ class NDViewerTab(QWidget):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for zarr push mode")
-                self._viewer = LightweightViewer("")
-                self._layout.addWidget(self._viewer, 1)
+            self._cancel_dataset_retries()
+            self._dataset_path = None
+            self._unsupported_extensions.clear()
+            self._recreate_viewer(LightweightViewer)
 
             self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
             self._experiment_id = experiment_id
@@ -592,10 +675,10 @@ class NDViewerTab(QWidget):
             return False
 
         try:
-            if self._viewer is None:
-                self._log.debug("Creating new LightweightViewer for 6D zarr push mode")
-                self._viewer = LightweightViewer("")
-                self._layout.addWidget(self._viewer, 1)
+            self._cancel_dataset_retries()
+            self._dataset_path = None
+            self._unsupported_extensions.clear()
+            self._recreate_viewer(LightweightViewer)
 
             if hasattr(self._viewer, "start_zarr_acquisition_6d"):
                 self._viewer.start_zarr_acquisition_6d(
@@ -626,7 +709,7 @@ class NDViewerTab(QWidget):
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
-    # EventBus handlers (run on dispatch thread, emit signals to main thread)
+    # Event handlers (safe for both UIEventBus main-thread delivery and core-bus delivery)
     # ─────────────────────────────────────────────────────────────────────────
 
     @handles(NDViewerStartAcquisition)
@@ -640,15 +723,26 @@ class NDViewerTab(QWidget):
     @handles(NDViewerImageRegistered)
     def _on_ndviewer_image_registered(self, event: NDViewerImageRegistered) -> None:
         """Handle NDViewerImageRegistered event."""
-        self._sig_register_image.emit(
-            event.t, event.fov_idx, event.z, event.channel,
-            event.filepath, event.experiment_id,
+        should_wake = self._enqueue_register_event(
+            event.t,
+            event.fov_idx,
+            event.z,
+            event.channel,
+            event.filepath,
+            event.experiment_id,
         )
+        if should_wake:
+            self._sig_register_queue_ready.emit()
 
     @handles(NDViewerAcquisitionEnded)
     def _on_ndviewer_acquisition_ended(self, event: NDViewerAcquisitionEnded) -> None:
         """Handle NDViewerAcquisitionEnded event."""
         self._sig_end_acquisition.emit(event.experiment_id, event.dataset_path or "")
+
+    @handles(AcquisitionStarted)
+    def _on_acquisition_started(self, _event: AcquisitionStarted) -> None:
+        """Cancel stale retry callbacks as soon as a new acquisition begins."""
+        self._cancel_dataset_retries()
 
     @handles(NDViewerStartZarrAcquisition)
     def _on_ndviewer_start_zarr_acquisition(self, event: NDViewerStartZarrAcquisition) -> None:
@@ -689,21 +783,63 @@ class NDViewerTab(QWidget):
         self, t: int, fov_idx: int, z: int, channel: str, filepath: str, experiment_id: str,
     ) -> None:
         """Slot for _sig_register_image."""
-        self._pending_register_events.append((t, fov_idx, z, channel, filepath, experiment_id))
+        self._enqueue_register_event(t, fov_idx, z, channel, filepath, experiment_id)
         if not self._register_flush_timer.isActive():
             self._register_flush_timer.start()
 
+    def _handle_register_queue_ready(self) -> None:
+        """Slot for queue-ready signal from EventBus thread."""
+        if not self._register_flush_timer.isActive():
+            self._register_flush_timer.start()
+
+    def _enqueue_register_event(
+        self, t: int, fov_idx: int, z: int, channel: str, filepath: str, experiment_id: str,
+    ) -> bool:
+        """Queue an NDViewer image registration event.
+
+        Returns:
+            True when the queue transitions from idle to draining.
+        """
+        should_wake = False
+        dropped = False
+        with self._pending_register_events_lock:
+            if len(self._pending_register_events) >= self._MAX_PENDING_REGISTER_EVENTS:
+                self._pending_register_events.popleft()
+                dropped = True
+            self._pending_register_events.append((t, fov_idx, z, channel, filepath, experiment_id))
+            if not self._register_drain_requested:
+                self._register_drain_requested = True
+                should_wake = True
+
+        if dropped:
+            self._register_drop_log_counter += 1
+            if self._register_drop_log_counter <= 3 or self._register_drop_log_counter % 1000 == 0:
+                self._log.warning(
+                    "NDViewer register queue full (%d); dropping oldest image event (drop_count=%d).",
+                    self._MAX_PENDING_REGISTER_EVENTS,
+                    self._register_drop_log_counter,
+                )
+        return should_wake
+
     def _flush_register_image_queue(self) -> None:
         """Process pending NDViewer image registrations in bounded batches."""
-        if not self._pending_register_events:
+        batch: List[tuple[int, int, int, str, str, str]] = []
+        with self._pending_register_events_lock:
+            for _ in range(self._MAX_REGISTER_EVENTS_PER_FLUSH):
+                if not self._pending_register_events:
+                    break
+                batch.append(self._pending_register_events.popleft())
+            has_more = bool(self._pending_register_events)
+            if not has_more:
+                self._register_drain_requested = False
+
+        if not batch:
             return
 
-        batch = self._pending_register_events[: self._MAX_REGISTER_EVENTS_PER_FLUSH]
-        del self._pending_register_events[: len(batch)]
         for t, fov_idx, z, channel, filepath, experiment_id in batch:
             self.register_image(t, fov_idx, z, channel, filepath, experiment_id)
 
-        if self._pending_register_events:
+        if has_more:
             self._register_flush_timer.start()
 
     def _handle_end_acquisition(self, experiment_id: str, dataset_path: str) -> None:
