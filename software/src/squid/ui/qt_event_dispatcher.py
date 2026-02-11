@@ -36,17 +36,13 @@ class QtEventDispatcher(QObject):
         # Also store Python's main thread for reliable cross-thread detection
         # QThread.currentThread() can return the main thread for non-Qt threads
         self._python_main_thread = threading.main_thread()
-        _log.debug(f"QtEventDispatcher created in thread {self._qt_main_thread}")
-
     @Slot(object, object)
     def _on_dispatch(self, handler: Callable, event: Any) -> None:
         """Execute handler(event) in the main thread."""
-        _log.debug(f"QtEventDispatcher: executing {handler.__name__ if hasattr(handler, '__name__') else handler} for {type(event).__name__}")
         try:
             handler(event)
         except Exception as e:
             _log.exception(f"Handler {handler} raised exception for {event}: {e}")
-        _log.debug(f"QtEventDispatcher: completed {type(event).__name__}")
 
     def is_main_thread(self) -> bool:
         """Return True if called from the Qt main thread.

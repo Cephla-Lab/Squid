@@ -44,20 +44,8 @@ class SimulatedCameraBase(AbstractCamera):
 
     @staticmethod
     def debug_log(method):
-        """Decorator for logging method calls."""
-        import inspect
-
-        @functools.wraps(method)
-        def _logged_method(self, *args, **kwargs):
-            kwargs_pairs = tuple(f"{k}={v}" for (k, v) in kwargs.items())
-            args_str = tuple(str(a) for a in args)
-            current_frame = inspect.currentframe()
-            self._log.debug(
-                f"{inspect.getouterframes(current_frame)[1][3]} -> {method.__name__}({','.join(args_str + kwargs_pairs)})"
-            )
-            return method(self, *args, **kwargs)
-
-        return _logged_method
+        """No-op decorator (logging removed for performance)."""
+        return method
 
     class MissingAttribImpl:
         """Placeholder for missing camera attributes during migration."""
@@ -68,19 +56,12 @@ class SimulatedCameraBase(AbstractCamera):
             self._val = self.name_to_val.get(name, None)
 
         def __get__(self, instance, owner):
-            self._log.debug("Get")
             return self._val
 
         def __set__(self, instance, value):
-            self._log.debug(f"Set={value}")
             self._val = value
 
         def __call__(self, *args, **kwargs):
-            kwarg_pairs = [f"{k}={v}" for (k, v) in kwargs.items()]
-            args_str = [str(a) for a in args]
-            self._log.debug(
-                f"Called(*args, **kwargs) -> Called({','.join(args_str)}, {','.join(kwarg_pairs)}"
-            )
             return self._val
 
     def __init__(self, config: CameraConfig, **kwargs):
@@ -327,7 +308,7 @@ class SimulatedCameraBase(AbstractCamera):
 
     @debug_log
     def send_trigger(self, illumination_time: Optional[float] = None):
-        self._log.debug(f"send_trigger called, mode={self._acquisition_mode}")
+        pass
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
             self._log.warning(
                 "Sending triggers in continuous acquisition mode is not allowed."
@@ -781,20 +762,7 @@ class SimulatedMainCamera(SimulatedCameraBase):
         total_z_um = self._get_total_z_um()
         piezo_deviation = self._piezo_z_um - self._piezo_home_um
 
-        # Log first few frames at INFO level, then DEBUG
-        if self._frame_id < 5:
-            fov_width_um = width * pixel_size_um
-            fov_height_um = height * pixel_size_um
-            self._log.info(
-                f"Creating frame: {width}x{height}px, FOV={fov_width_um/1000:.2f}x{fov_height_um/1000:.2f}mm, "
-                f"stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f}, {self._stage_z_um:.1f})um, "
-                f"piezo={self._piezo_z_um:.1f}um (delta={piezo_deviation:+.1f}), total_z={total_z_um:.1f}um, "
-                f"pixel_size={pixel_size_um:.3f}um"
-            )
-        else:
-            self._log.debug(
-                f"Creating frame: stage_z={self._stage_z_um:.1f}um, piezo_delta={piezo_deviation:+.1f}um, total_z={total_z_um:.1f}um"
-            )
+        pass
 
         # Create background with noise (changes each frame like real camera)
         # Scale background with brightness, but cap to avoid washing out image.
