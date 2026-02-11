@@ -251,6 +251,7 @@ class SpotPreviewWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._frame: Optional[np.ndarray] = None
+        self._frame_bytes: Optional[bytes] = None
         self._spot_x: float = 0.0
         self._spot_y: float = 0.0
         self._spot_valid: bool = False
@@ -276,23 +277,28 @@ class SpotPreviewWidget(QWidget):
         """Convert numpy array to QPixmap."""
         if self._frame is None:
             self._pixmap = None
+            self._frame_bytes = None
             return
 
-        frame = self._frame
+        frame = np.asarray(self._frame)
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.uint8, copy=False)
+        frame = np.ascontiguousarray(frame)
         h, w = frame.shape[:2]
 
         # Handle grayscale
         if len(frame.shape) == 2:
-            # Convert to RGB for QImage
             bytes_per_line = w
+            self._frame_bytes = frame.tobytes()
             qimg = QImage(
-                frame.data, w, h, bytes_per_line, QImage.Format_Grayscale8
+                self._frame_bytes, w, h, bytes_per_line, QImage.Format_Grayscale8
             )
         else:
             # RGB image
             bytes_per_line = 3 * w
+            self._frame_bytes = frame.tobytes()
             qimg = QImage(
-                frame.data, w, h, bytes_per_line, QImage.Format_RGB888
+                self._frame_bytes, w, h, bytes_per_line, QImage.Format_RGB888
             )
 
         self._pixmap = QPixmap.fromImage(qimg)
