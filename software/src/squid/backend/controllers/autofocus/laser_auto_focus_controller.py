@@ -355,9 +355,7 @@ class LaserAutofocusController(BaseController):
         )
         self.reference_crop = None
         config.set_reference_image(None)
-        self._log.info(
-            f"Laser spot location on the full sensor is ({int(x)}, {int(y)})"
-        )
+        pass  # Spot located; proceed with ROI setup
 
         self.initialize_manual(config)
 
@@ -444,7 +442,7 @@ class LaserAutofocusController(BaseController):
             pixel_to_um = self.laser_af_properties.pixel_to_um_calibration_distance / (
                 x1 - x0
             )
-        self._log.info(f"Pixel to um conversion factor is {pixel_to_um:.3f} um/pixel")
+        pass  # Calibration complete
         calibration_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Update config with new calibration values
@@ -478,7 +476,7 @@ class LaserAutofocusController(BaseController):
         self.laserAFSettingManager.save_configurations(
             self.objectiveStore.current_objective
         )
-        self._log.info("Updated threshold properties")
+        pass  # Threshold properties saved
 
     def measure_displacement(self) -> float:
         """Measure the displacement of the laser spot from the reference position.
@@ -488,7 +486,6 @@ class LaserAutofocusController(BaseController):
         """
 
         if not self._measurement_lock.acquire(timeout=0.1):
-            self._log.warning("Measurement blocked - continuous lock is running")
             return float("nan")
 
         def finish_with(um: float) -> float:
@@ -541,7 +538,6 @@ class LaserAutofocusController(BaseController):
     def measure_displacement_continuous(self) -> LaserAFResult:
         """Measure displacement assuming laser is already on."""
         if not self._measurement_lock.acquire(timeout=0.1):
-            self._log.warning("Measurement blocked - continuous lock is running")
             return LaserAFResult(
                 displacement_um=float("nan"),
                 spot_intensity=0.0,
@@ -610,9 +606,6 @@ class LaserAutofocusController(BaseController):
             return False
 
         current_displacement_um = self.measure_displacement()
-        self._log.info(
-            f"Current laser AF displacement: {current_displacement_um:.1f} μm"
-        )
 
         if math.isnan(current_displacement_um):
             self._log.error(
@@ -653,12 +646,8 @@ class LaserAutofocusController(BaseController):
                         success=False, target_um=target_um, error="Cross-correlation check failed"
                     ))
                 return False
-            else:
-                self._log.info("Cross correlation check passed - spots are well aligned")
-
         # Measure final displacement after move to confirm
         final_displacement = self.measure_displacement()
-        self._log.info(f"Final displacement after move: {final_displacement:.1f} μm (target: {target_um:.1f} μm)")
 
         if publish_result and self._event_bus is not None:
             self._event_bus.publish(LaserAFMoveCompleted(
@@ -724,7 +713,6 @@ class LaserAutofocusController(BaseController):
             return False
 
         self._publish_displacement(0)
-        self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
 
         # Tell simulated camera to use current Z as reference (for spot position simulation)
         try:
@@ -748,8 +736,6 @@ class LaserAutofocusController(BaseController):
         self.laserAFSettingManager.save_configurations(
             self.objectiveStore.current_objective
         )
-
-        self._log.info("Reference spot position set")
 
         return True
 
@@ -820,8 +806,6 @@ class LaserAutofocusController(BaseController):
             self._log.warning("Cross correlation check failed - invalid crops")
             return False, 0.0
 
-        self._log.info(f"Cross correlation with reference: {correlation:.3f}")
-
         # Check if correlation exceeds threshold
         if correlation < self.laser_af_properties.correlation_threshold:
             self._log.warning("Cross correlation check failed - spots not well aligned")
@@ -870,9 +854,6 @@ class LaserAutofocusController(BaseController):
             try:
                 image = self.get_new_frame()
                 if image is None:
-                    self._log.warning(
-                        f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}"
-                    )
                     continue
 
                 result = self._detect_spot_in_frame(
@@ -881,19 +862,13 @@ class LaserAutofocusController(BaseController):
                     use_center_crop=use_center_crop,
                 )
                 if result is None:
-                    self._log.warning(
-                        f"No spot detected in frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}"
-                    )
                     continue
 
                 tmp_x += result.x
                 tmp_y += result.y
                 successful_detections += 1
 
-            except Exception as e:
-                self._log.error(
-                    f"Error processing frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}: {str(e)}"
-                )
+            except Exception:
                 continue
 
         # Re-enable camera callbacks
@@ -912,9 +887,6 @@ class LaserAutofocusController(BaseController):
         x: float = tmp_x / successful_detections
         y: float = tmp_y / successful_detections
 
-        self._log.debug(
-            f"Spot centroid found at ({x:.1f}, {y:.1f}) from {successful_detections} detections"
-        )
         if image is not None:
             self._update_last_crop_and_metrics(image, x, y)
             return LaserSpotCentroid(x_px=x, y_px=y, image=image)
@@ -976,12 +948,6 @@ class LaserAutofocusController(BaseController):
                 max_range_um=self.laser_af_properties.laser_af_range,
             )
         ):
-            self._log.warning(
-                "Spot detected at (%.1f, %.1f) is out of range (%.1f um), skipping it.",
-                spot.x,
-                spot.y,
-                self.laser_af_properties.laser_af_range,
-            )
             return None
 
         return spot
@@ -1150,7 +1116,6 @@ class LaserAutofocusController(BaseController):
             else:
                 x = result.x
                 y = result.y
-                self._log.info(f"Spot detected at ({x:.1f}, {y:.1f})")
                 self._event_bus.publish(LaserAFFrameCaptured(success=True))
                 # Include the image in the event so the widget can display it with the crosshair
                 self._event_bus.publish(

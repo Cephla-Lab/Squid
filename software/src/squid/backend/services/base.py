@@ -97,7 +97,6 @@ class BaseService(ABC):
         """
         self._event_bus.subscribe(event_type, handler)  # type: ignore
         self._subscriptions.append((event_type, handler))  # type: ignore
-        self._log.debug(f"Subscribed to {event_type.__name__}")
 
     def publish(self, event: Event):
         """
@@ -106,12 +105,10 @@ class BaseService(ABC):
         Args:
             event: Event to publish
         """
-        self._log.debug(f"Publishing {type(event).__name__}")
         self._event_bus.publish(event)
 
     def shutdown(self):
         """Unsubscribe from all events and clean up."""
         for event_type, handler in self._subscriptions:
             self._event_bus.unsubscribe(event_type, handler)
-            self._log.debug(f"Unsubscribed from {event_type.__name__}")
         self._subscriptions.clear()

@@ -820,7 +820,7 @@ class SaveZarrJob(Job):
             z_mm=info.position.z_mm,
             fov=fov if (not is_hcs and use_6d_fov) else None,
         )
-        self._log.debug(f"Wrote frame t={t}, c={c}, z={z} to {output_path}")
+        pass
 
 
 @dataclass

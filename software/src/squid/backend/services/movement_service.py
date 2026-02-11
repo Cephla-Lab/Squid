@@ -124,14 +124,13 @@ class MovementService(BaseService):
                 elif self._previous_piezo_pos != current_piezo:
                     self._previous_piezo_pos = current_piezo
                     self._event_bus.publish(PiezoPositionChanged(position_um=current_piezo))
-            except Exception as e:
-                _log.debug(f"Error reading piezo position: {e}")
+            except Exception:
+                pass
 
         # Poll stage
         try:
             pos = self._stage.get_pos()
-        except Exception as e:
-            _log.debug(f"Error reading stage position: {e}")
+        except Exception:
             return
 
         # Initialize previous position on first poll

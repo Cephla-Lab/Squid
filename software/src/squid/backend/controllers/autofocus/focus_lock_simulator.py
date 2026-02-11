@@ -9,7 +9,6 @@ from typing import Callable, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
-import squid.core.logging
 from squid.core.config.focus_lock import FocusLockConfig, FocusLockMode
 from squid.backend.controllers.base import BaseController
 from squid.core.events import (
@@ -130,7 +129,6 @@ class FocusLockSimulator(BaseController):
     def _on_laser_af_initialized(self, event: LaserAFInitialized) -> None:
         """Track laser AF initialization state."""
         self._laser_af_initialized = event.is_initialized and event.success
-        self._log.info(f"Laser AF initialized: {self._laser_af_initialized}")
 
     @handles(PiezoPositionChanged)
     def _on_piezo_position_changed(self, event: PiezoPositionChanged) -> None:
@@ -206,7 +204,6 @@ class FocusLockSimulator(BaseController):
         """
         with self._lock:
             if not self._should_run:
-                self._log.debug("resume() called but lock is not running, ignoring")
                 return
             if not self._paused:
                 # Not paused, nothing to resume
@@ -252,7 +249,6 @@ class FocusLockSimulator(BaseController):
                 self._log.warning("Cannot adjust target: not locked")
                 return
             self._target_displacement_um += float(delta_um)
-            self._log.info(f"Adjusted target displacement to {self._target_displacement_um:.3f} um")
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         """Wait for lock to be achieved."""
@@ -331,7 +327,6 @@ class FocusLockSimulator(BaseController):
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
-        self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
 
     def set_lock(self) -> None:
         """Lock at current position.
@@ -355,10 +350,6 @@ class FocusLockSimulator(BaseController):
             # Save reference values for UI display
             self._locked_spot_x = self._latest_spot_x
             self._locked_piezo_um = current_piezo
-            self._log.info(
-                f"Focus lock set: displacement={self._target_displacement_um:.3f} um, "
-                f"spot_x={self._locked_spot_x:.1f} px, piezo={self._locked_piezo_um:.1f} um"
-            )
         self._publish_status_if_needed()
 
     def release_lock(self) -> None:
@@ -387,7 +378,6 @@ class FocusLockSimulator(BaseController):
         self._status = "searching"
         self._search_phase = "last_position"
         self._search_position = self._locked_piezo_um
-        self._log.info(f"Starting search at last position: {self._search_position:.1f} um")
 
     def _get_piezo_range(self) -> Tuple[float, float]:
         """Get the piezo range from service or defaults."""
@@ -424,31 +414,19 @@ class FocusLockSimulator(BaseController):
             self._publish_status_if_needed()
             return
 
-        # Log the search step
-        self._log.debug(
-            f"Search step: phase={self._search_phase}, position={self._search_position:.1f} um"
-        )
-
         # Move piezo to current search position (piezo service adds 10ms settle time)
         self._piezo_service.move_to(self._search_position)
 
         # Additional settle time for measurement stability
         settle_time_s = self._config.search_settle_ms / 1000.0
-        self._log.debug(f"Settling for {self._config.search_settle_ms:.0f} ms...")
         time.sleep(settle_time_s)
 
         # Get a measurement and check if we found focus
         if self._laser_af is not None:
             result = self._laser_af.measure_displacement_continuous()
-            snr = result.spot_snr if result.spot_snr else 0.0
-            self._log.debug(
-                f"Search measurement: displacement={result.displacement_um:.2f} um, SNR={snr:.1f}"
-            )
 
             # Check if this is a good enough reading to lock
             if self._is_good_search_reading(result):
-                # Found it! Set lock at this position
-                self._log.info(f"Focus found at {self._search_position:.1f} um")
                 self.set_lock()
                 return
 
@@ -469,7 +447,6 @@ class FocusLockSimulator(BaseController):
             # Last position didn't work, start local sweep
             self._search_phase = "sweep"
             self._search_position = search_min
-            self._log.info(f"Last position failed, starting sweep from {search_min:.1f} to {search_max:.1f} um")
         else:
             # Continue sweep
             self._search_position += self._config.search_step_um
@@ -637,10 +614,6 @@ class FocusLockSimulator(BaseController):
                     self._recovery_start_time = time.monotonic()
                     self._recovery_good_count = 0
                     status_changed = True
-                    self._log.info(
-                        f"Entering recovery mode: {self._recovery_attempts_remaining} attempts, "
-                        f"error={lock_error:.3f}um"
-                    )
 
             elif self._status == "recovering":
                 if self._is_good_reading:
@@ -651,7 +624,6 @@ class FocusLockSimulator(BaseController):
                         self._status = "locked"
                         self._lock_buffer_fill = self._config.recovery_window_readings
                         status_changed = True
-                        self._log.info("Focus lock recovered")
                 else:
                     # Bad reading during recovery - reset good count
                     self._recovery_good_count = 0
@@ -670,13 +642,9 @@ class FocusLockSimulator(BaseController):
                                 self._status = "lost"
                                 self._lock_buffer_fill = 0
                                 status_changed = True
-                                self._log.warning("Focus lock lost - recovery attempts exhausted")
                         else:
                             # Reset timer for next attempt
                             self._recovery_start_time = time.monotonic()
-                            self._log.debug(
-                                f"Recovery attempt failed, {self._recovery_attempts_remaining} remaining"
-                            )
 
         # Publish status change outside of lock
         if status_changed:

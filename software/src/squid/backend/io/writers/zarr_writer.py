@@ -784,17 +784,11 @@ class ZarrWriter:
         # Write using TensorStore and wait for completion
         if config.ndim == 5:
             future = self._dataset[t, c, z, :, :].write(image)
-            _log.debug(f"Writing frame t={t}, c={c}, z={z}")
         else:
             future = self._dataset[fov, t, c, z, :, :].write(image)
-            _log.debug(f"Writing frame fov={fov}, t={t}, c={c}, z={z}")
 
         # Wait for write to complete (blocking)
         future.result()
-        if config.ndim == 5:
-            _log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
-        else:
-            _log.debug(f"Write complete for frame fov={fov}, t={t}, c={c}, z={z}")
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
@@ -809,7 +803,6 @@ class ZarrWriter:
             return 0
 
         count = len(self._pending_futures)
-        _log.debug(f"Waiting for {count} pending writes...")
 
         # Wait for all TensorStore futures in parallel using asyncio.gather
         async def _wait_all():
@@ -819,7 +812,6 @@ class ZarrWriter:
         loop.run_until_complete(_wait_all())
 
         self._pending_futures.clear()
-        _log.debug(f"Completed {count} pending writes")
         return count
 
     @property

@@ -2140,7 +2140,6 @@ class MultiPointWorker:
         Process a camera frame - extracted from _image_callback for error containment.
         """
         with self._timing.get_timer("_image_callback"):
-            self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
             info: Optional[CaptureInfo] = self._current_capture_info.get_and_clear()
 
             self._ready_for_next_trigger.set()

@@ -199,7 +199,6 @@ class ContinuousFocusLockController(BaseController):
         """
         with self._lock:
             if not self._should_run:
-                self._log.debug("resume() called but lock is not running, ignoring")
                 return
             if not self._paused:
                 # Not paused, nothing to resume
@@ -270,7 +269,7 @@ class ContinuousFocusLockController(BaseController):
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
-        self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
+        pass
 
     @handles(SetFocusLockParamsCommand)
     def _on_set_params(self, cmd: SetFocusLockParamsCommand) -> None:
@@ -288,7 +287,7 @@ class ContinuousFocusLockController(BaseController):
         if updates:
             with self._lock:
                 self._config = self._config.model_copy(update=updates)
-            self._log.info(f"Focus lock params updated: {updates}")
+            pass
 
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""
@@ -297,9 +296,7 @@ class ContinuousFocusLockController(BaseController):
         if math.isnan(target_um):
             target_um = self._latest_valid_displacement_um
             if not math.isnan(target_um):
-                self._log.debug(
-                    "Focus lock reference used cached displacement due to invalid immediate measurement"
-                )
+                pass
         if math.isnan(target_um):
             self._log.warning("Cannot set focus lock reference: no valid displacement reading")
             return
@@ -311,10 +308,6 @@ class ContinuousFocusLockController(BaseController):
             self._target_um = target_um
             self._latest_valid_displacement_um = target_um
             self._integral_accumulator = 0.0  # Reset integral for new reference
-            self._log.info(
-                f"Focus lock set at piezo={self._locked_piezo_um:.1f} um, "
-                f"target={self._target_um:.3f} um"
-            )
         self._set_status("locked")
 
     def _release_lock_reference(self) -> None:
@@ -498,10 +491,6 @@ class ContinuousFocusLockController(BaseController):
                 self._recovery_start_time = time.monotonic()
                 self._recovery_good_count = 0
                 self._integral_accumulator = 0.0  # Reset integral (error direction may flip)
-                self._log.info(
-                    f"Entering recovery mode: {self._recovery_attempts_remaining} attempts, "
-                    f"error={error_um:.3f}um"
-                )
 
         elif self._status == "recovering":
             if is_good:
@@ -511,7 +500,6 @@ class ContinuousFocusLockController(BaseController):
                     # Successfully recovered!
                     new_status = "locked"
                     self._lock_buffer_fill = self._config.recovery_window_readings
-                    self._log.info("Focus lock recovered")
             else:
                 # Bad reading during recovery - reset good count
                 self._recovery_good_count = 0
@@ -529,13 +517,11 @@ class ContinuousFocusLockController(BaseController):
                         else:
                             new_status = "lost"
                             self._lock_buffer_fill = 0
-                            self._log.warning("Focus lock lost - recovery attempts exhausted")
+                            pass
                     else:
                         # Reset timer for next attempt
                         self._recovery_start_time = time.monotonic()
-                        self._log.debug(
-                            f"Recovery attempt failed, {self._recovery_attempts_remaining} remaining"
-                        )
+                        pass
 
         elif self._status == "ready":
             # Building up to lock
@@ -546,7 +532,7 @@ class ContinuousFocusLockController(BaseController):
                 if self._lock_buffer_fill >= self._config.buffer_length:
                     new_status = "locked"
                     self._locked_piezo_um = self._piezo_service.get_position()
-                    self._log.info(f"Focus lock achieved at piezo={self._locked_piezo_um:.1f}um")
+                    pass
             else:
                 self._lock_buffer_fill = max(0, self._lock_buffer_fill - 1)
 
@@ -557,7 +543,7 @@ class ContinuousFocusLockController(BaseController):
                 if self._lock_buffer_fill >= self._config.buffer_length:
                     new_status = "locked"
                     self._locked_piezo_um = self._piezo_service.get_position()
-                    self._log.info("Focus lock re-acquired")
+                    pass
             else:
                 self._lock_buffer_fill = 0
 
@@ -568,7 +554,7 @@ class ContinuousFocusLockController(BaseController):
         """Start the piezo sweep search to re-find focus."""
         self._search_phase = "last_position"
         self._search_position = self._locked_piezo_um
-        self._log.info(f"Starting search at last position: {self._search_position:.1f} um")
+        pass
 
     def _get_search_bounds(self) -> tuple[float, float]:
         """Get the search bounds: ±search_range_um around last position, clamped to safe range."""
@@ -597,7 +583,7 @@ class ContinuousFocusLockController(BaseController):
         result = self._laser_af.measure_displacement_continuous()
         if self._is_good_search_reading(result):
             # Found it! Set lock at this position
-            self._log.info(f"Focus found at {self._search_position:.1f} um")
+            pass
             self._locked_piezo_um = self._search_position
             self._target_um = result.displacement_um
             self._lock_buffer_fill = self._config.buffer_length
@@ -621,14 +607,14 @@ class ContinuousFocusLockController(BaseController):
             # Last position didn't work, start local sweep
             self._search_phase = "sweep"
             self._search_position = search_min
-            self._log.info(f"Last position failed, starting sweep from {search_min:.1f} to {search_max:.1f} um")
+            pass
         else:
             # Continue sweep
             self._search_position += self._config.search_step_um
             if self._search_position > search_max:
                 # Search failed
                 self._lock_buffer_fill = 0
-                self._log.warning("Focus lock lost - search sweep completed without finding lock")
+                pass
                 self._set_status("lost")
 
     def _is_good_search_reading(self, result: LaserAFResult) -> bool:
