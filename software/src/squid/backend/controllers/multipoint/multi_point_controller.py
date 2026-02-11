@@ -28,7 +28,6 @@ from squid.backend.controllers.multipoint.acquisition_context import acquisition
 from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
 from squid.backend.controllers.multipoint.dependencies import AcquisitionDependencies
 from squid.backend.managers import ScanCoordinates
-from squid.backend.managers.scan_coordinates.scan_coordinates import AddScanCoordinateRegion, FovCenter
 from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.live_controller import LiveController
 from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
@@ -813,10 +812,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     def run_acquisition(
         self,
         acquire_current_fov: bool = False,
-        quick_scan_center: Optional[Tuple[float, float, float]] = None,
-        quick_scan_nx: int = 1,
-        quick_scan_ny: int = 1,
-        quick_scan_overlap: float = 10.0,
     ) -> bool:
         # Check if in IDLE state
         if not self._is_in_state(AcquisitionControllerState.IDLE):
@@ -836,46 +831,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Start per-acquisition logging if enabled
             self._start_per_acquisition_log()
 
-            # Build scan coordinates before validation so quick_scan/acquire_current_fov
-            # coordinates are validated instead of the (empty) global scan coordinates.
+            # Build scan coordinates for validation.
+            # Normal acquisitions use global self.scanCoordinates (already populated
+            # by ClearScanCoordinatesCommand / AddFlexibleRegionCommand before start).
+            # acquire_current_fov creates a one-off single-FOV set (Snap Images).
             acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
             self.run_acquisition_current_fov: bool = False
-            if quick_scan_center is not None:
-                # Quick scan: use temporary ScanCoordinates to avoid mutating
-                # the global scan-coordinate state.
-                cx, cy, cz = quick_scan_center
-                acquisition_scan_coordinates = ScanCoordinates(
-                    objectiveStore=self.scanCoordinates.objectiveStore,
-                    stage=self.scanCoordinates.stage,
-                    camera=self.scanCoordinates.camera,
-                    event_bus=None,
-                )
-                acquisition_scan_coordinates.add_flexible_region(
-                    "quick_scan",
-                    center_x=cx, center_y=cy, center_z=cz,
-                    Nx=quick_scan_nx, Ny=quick_scan_ny,
-                    overlap_percent=quick_scan_overlap,
-                )
-                # Publish transient FOV previews so NavigationViewer can show
-                # planned quick-scan boxes and mark them completed as FOVs finish.
-                if self._event_bus:
-                    try:
-                        quick_fovs = acquisition_scan_coordinates.region_fov_coordinates.get("quick_scan", [])
-                        if quick_fovs:
-                            fov_width_mm, fov_height_mm = acquisition_scan_coordinates._get_current_fov_dimensions()
-                            self._event_bus.publish(
-                                AddScanCoordinateRegion(
-                                    fov_centers=FovCenter.from_scan_coordinates(
-                                        quick_fovs,
-                                        fov_width_mm=fov_width_mm,
-                                        fov_height_mm=fov_height_mm,
-                                    )
-                                )
-                            )
-                    except Exception:
-                        self._log.exception("Failed to publish quick-scan preview FOVs")
-                self.run_acquisition_current_fov = True
-            elif acquire_current_fov:
+            if acquire_current_fov:
                 pos = self._stage_service.get_position()
                 # No callback - we don't want to clobber existing info with this one off fov acquisition
                 # Don't pass event_bus to avoid publishing ClearedScanCoordinates globally
@@ -1509,13 +1471,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.set_xy_mode(cmd.xy_mode)
         # Ensure an experiment ID exists before running; auto-create if none exists.
         self._ensure_experiment_ready(cmd.experiment_id)
-        self.run_acquisition(
-            acquire_current_fov=cmd.acquire_current_fov,
-            quick_scan_center=cmd.quick_scan_center,
-            quick_scan_nx=cmd.quick_scan_nx,
-            quick_scan_ny=cmd.quick_scan_ny,
-            quick_scan_overlap=cmd.quick_scan_overlap,
-        )
+        self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)
 
     @handles(StopAcquisitionCommand)
     def _on_stop_acquisition(self, cmd: StopAcquisitionCommand) -> None:

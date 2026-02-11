@@ -1084,15 +1084,16 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._btn_start_stop.setChecked(True)
         self._btn_start_stop.setEnabled(True)
         self._set_controls_enabled(False)
-        # Pass grid params directly to controller — bypasses global ScanCoordinates
-        # so no FOVs appear in NavigationViewer
-        self._publish(StartAcquisitionCommand(
-            xy_mode=xy_mode,
-            quick_scan_center=(self._cached_x_mm, self._cached_y_mm, self._cached_z_mm),
-            quick_scan_nx=nx,
-            quick_scan_ny=ny,
-            quick_scan_overlap=overlap,
+        # Set up quick scan grid through normal coordinate pipeline
+        self._publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+        self._publish(AddFlexibleRegionCommand(
+            region_id="quick_scan",
+            center_x_mm=self._cached_x_mm,
+            center_y_mm=self._cached_y_mm,
+            center_z_mm=self._cached_z_mm,
+            n_x=nx, n_y=ny, overlap_percent=overlap,
         ))
+        self._publish(StartAcquisitionCommand(xy_mode=xy_mode))
         _log.info(
             f"Quick scan started: id={experiment_id}, {nx}x{ny} grid at "
             f"({self._cached_x_mm:.3f}, {self._cached_y_mm:.3f}), channels={selected}"

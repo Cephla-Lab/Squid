@@ -1486,12 +1486,6 @@ class StartAcquisitionCommand(Event):
     experiment_id: Optional[str] = None
     acquire_current_fov: bool = False
     xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
-    # Quick scan grid: when set, creates temporary ScanCoordinates(event_bus=None)
-    # to bypass NavigationViewer. Tuple of (x_mm, y_mm, z_mm).
-    quick_scan_center: Optional[Tuple[float, float, float]] = None
-    quick_scan_nx: int = 1
-    quick_scan_ny: int = 1
-    quick_scan_overlap: float = 10.0
 
 
 @dataclass
@@ -2590,17 +2584,16 @@ class FocusLockPiezoLimitCritical(Event):
 
 @dataclass
 class FocusLockFrameUpdated(Event):
-    """Cropped AF spot region for widget preview.
+    """AF camera frame for focus lock widget preview.
 
-    Published at ~10 Hz when focus lock is active. Contains a small
-    cropped region around the detected spot for display in the widget.
+    Published at ~10 Hz when focus lock is active.
     """
 
-    frame: np.ndarray  # Small cropped region around spot (grayscale)
-    spot_x_px: float  # Centroid x position in cropped frame
-    spot_y_px: float  # Centroid y position in cropped frame
-    frame_width: int  # Width of the cropped frame
-    frame_height: int  # Height of the cropped frame
+    frame: np.ndarray  # Grayscale AF camera frame
+    spot_x_px: float  # Centroid x position in frame
+    spot_y_px: float  # Centroid y position in frame
+    frame_width: int  # Frame width
+    frame_height: int  # Frame height
     spot_valid: bool = True  # Whether spot detection succeeded (draw marker only if True)
 
 
