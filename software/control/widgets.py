@@ -5874,6 +5874,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             if widget is not None:
                 widget.setVisible(is_visible)
 
+        # Update AF checkboxes: SET_RANGE disables both AF types
+        if is_visible:
+            update_autofocus_checkboxes(
+                contrast_af_allowed=False,
+                laser_af_allowed=False,
+                contrast_af_checkbox=self.checkbox_withAutofocus,
+                laser_af_checkbox=self.checkbox_withReflectionAutofocus,
+            )
+        else:
+            # Re-enable based on current z-stack mode
+            mode = ZStackMode(self.combobox_z_stack.currentIndex())
+            update_autofocus_checkboxes(
+                contrast_af_allowed=mode.allows_contrast_af,
+                laser_af_allowed=mode.allows_laser_af,
+                contrast_af_checkbox=self.checkbox_withAutofocus,
+                laser_af_checkbox=self.checkbox_withReflectionAutofocus,
+            )
+
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
         current_z = self.stage.get_pos().z_mm * 1000
@@ -8551,7 +8569,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
                 z = self.stage.get_pos().z_mm
-                mode = ZStackMode.FROM_CENTER if z_mode == "From Center" else ZStackMode.FROM_BOTTOM
+                mode_map = {
+                    "From Bottom": ZStackMode.FROM_BOTTOM,
+                    "From Center": ZStackMode.FROM_CENTER,
+                }
+                mode = mode_map.get(z_mode, ZStackMode.FROM_BOTTOM)
                 z_range = calculate_z_range(
                     z,
                     self.entry_deltaZ.value(),
