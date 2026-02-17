@@ -8992,12 +8992,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 "FROM CENTER": "From Center",
                 "SET RANGE": "Set Range",
             }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
-            if yaml_data.z_stacking_config == "FROM TOP":
+            z_mode = z_mode_map.get(yaml_data.z_stacking_config)
+            if z_mode is None:
                 self._log.warning(
-                    f"YAML has z_stacking_config='FROM TOP' which is not supported in wellplate mode. "
-                    f"Using 'From Bottom' instead."
+                    f"Unsupported z_stacking_config in wellplate mode: '{yaml_data.z_stacking_config}'. "
+                    f"Valid values: {list(z_mode_map.keys())}. Using 'From Bottom'."
                 )
+                z_mode = "From Bottom"
             self.combobox_z_mode.setCurrentText(z_mode)
 
             # Piezo setting

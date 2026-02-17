@@ -1,7 +1,6 @@
 """Tests for z-stack mode helpers in widgets.py."""
 
-import logging
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
 import pytest
 

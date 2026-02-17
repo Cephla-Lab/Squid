@@ -640,6 +640,10 @@ class MultiPointWorker:
         if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])
+        elif self.z_stacking_config == "FROM CENTER":
+            # Move to center of z-range so autofocus runs at the correct Z level
+            center_z = (self.z_range[0] + self.z_range[1]) / 2
+            self.move_to_z_level(center_z)
         else:
             self.move_to_z_level(self.z_range[0])
 
@@ -1282,7 +1286,10 @@ class MultiPointWorker:
         return True
 
     def prepare_z_stack(self):
-        # Allow stage to stabilize after moving to z_range start position
+        # For FROM CENTER: autofocus ran at center, now move to bottom before imaging
+        if self.z_stacking_config == "FROM CENTER":
+            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
