@@ -199,9 +199,14 @@ def calculate_z_range(current_z_mm: float, dz_um: float, nz: int, mode: ZStackMo
     Returns:
         Tuple of (min_z_mm, max_z_mm) for set_z_range()
 
-    Note:
-        SET_RANGE mode should not use this function - the user specifies Z min/max directly.
+    Raises:
+        ValueError: If mode is SET_RANGE (user specifies Z min/max directly)
     """
+    if mode == ZStackMode.SET_RANGE:
+        raise ValueError(
+            "calculate_z_range() should not be called with SET_RANGE mode. " "Use user-specified Z min/max directly."
+        )
+
     dz_mm = dz_um / 1000
     total_z_travel = dz_mm * (nz - 1)
 
@@ -210,8 +215,10 @@ def calculate_z_range(current_z_mm: float, dz_um: float, nz: int, mode: ZStackMo
         return (current_z_mm - half_range, current_z_mm + half_range)
     elif mode == ZStackMode.FROM_TOP:
         return (current_z_mm - total_z_travel, current_z_mm)
-    else:  # FROM_BOTTOM (default)
+    elif mode == ZStackMode.FROM_BOTTOM:
         return (current_z_mm, current_z_mm + total_z_travel)
+    else:
+        raise ValueError(f"Unknown ZStackMode: {mode}")
 
 
 def update_autofocus_checkboxes(
@@ -5853,6 +5860,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         except ValueError:
             self._log.error(f"Invalid z-stack mode index: {index}. Using default (From Bottom).")
             mode = ZStackMode.FROM_BOTTOM
+            self.combobox_z_stack.blockSignals(True)
+            self.combobox_z_stack.setCurrentIndex(0)
+            self.combobox_z_stack.blockSignals(False)
 
         update_autofocus_checkboxes(
             contrast_af_allowed=mode.allows_contrast_af,
@@ -5884,7 +5894,17 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             )
         else:
             # Re-enable based on current z-stack mode
-            mode = ZStackMode(self.combobox_z_stack.currentIndex())
+            try:
+                mode = ZStackMode(self.combobox_z_stack.currentIndex())
+            except ValueError:
+                self._log.error(
+                    f"Invalid z-stack mode index: {self.combobox_z_stack.currentIndex()}. "
+                    f"Using default (From Bottom)."
+                )
+                mode = ZStackMode.FROM_BOTTOM
+                self.combobox_z_stack.blockSignals(True)
+                self.combobox_z_stack.setCurrentIndex(0)
+                self.combobox_z_stack.blockSignals(False)
             update_autofocus_checkboxes(
                 contrast_af_allowed=mode.allows_contrast_af,
                 laser_af_allowed=mode.allows_laser_af,
@@ -6166,7 +6186,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
             else:
                 z = self.stage.get_pos().z_mm
-                mode = ZStackMode(self.combobox_z_stack.currentIndex())
+                try:
+                    mode = ZStackMode(self.combobox_z_stack.currentIndex())
+                except ValueError:
+                    self._log.error(
+                        f"Invalid z-stack mode index: {self.combobox_z_stack.currentIndex()}. " f"Aborting acquisition."
+                    )
+                    self.btn_startAcquisition.setChecked(False)
+                    error_dialog("Invalid z-stack mode. Please re-select and try again.")
+                    return
                 z_range = calculate_z_range(
                     z,
                     self.entry_deltaZ.value(),
@@ -8573,7 +8601,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     "From Bottom": ZStackMode.FROM_BOTTOM,
                     "From Center": ZStackMode.FROM_CENTER,
                 }
-                mode = mode_map.get(z_mode, ZStackMode.FROM_BOTTOM)
+                mode = mode_map.get(z_mode)
+                if mode is None:
+                    self._log.error(
+                        f"Unexpected z_mode at acquisition start: '{z_mode}'. "
+                        f"Expected: {list(mode_map.keys())}. Aborting acquisition."
+                    )
+                    self.btn_startAcquisition.setChecked(False)
+                    QMessageBox.warning(self, "Warning", "Invalid z-stack mode. Please re-select and try again.")
+                    return
                 z_range = calculate_z_range(
                     z,
                     self.entry_deltaZ.value(),

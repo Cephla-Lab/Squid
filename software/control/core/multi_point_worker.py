@@ -635,8 +635,16 @@ class MultiPointWorker:
         finally:
             self.microcontroller.enable_joystick(True)
 
+    _VALID_Z_STACKING_CONFIGS = set(Z_STACKING_CONFIG_MAP.values())
+
     def initialize_z_stack(self):
-        # z stacking config
+        if self.z_stacking_config not in self._VALID_Z_STACKING_CONFIGS:
+            self._log.error(
+                f"Invalid z_stacking_config: '{self.z_stacking_config}'. "
+                f"Valid values: {self._VALID_Z_STACKING_CONFIGS}. Defaulting to 'FROM BOTTOM'."
+            )
+            self.z_stacking_config = "FROM BOTTOM"
+
         if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])

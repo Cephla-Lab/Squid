@@ -119,6 +119,11 @@ class TestCalculateZRange:
         assert min_z == pytest.approx(1.95)
         assert max_z == pytest.approx(2.05)
 
+    def test_set_range_raises_error(self):
+        """SET_RANGE should raise ValueError - user specifies Z min/max directly."""
+        with pytest.raises(ValueError, match="SET_RANGE"):
+            calculate_z_range(1.0, 10.0, 5, ZStackMode.SET_RANGE)
+
 
 class TestUpdateAutofocusCheckboxes:
     """Tests for update_autofocus_checkboxes() function."""
