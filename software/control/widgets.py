@@ -3065,13 +3065,14 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.init_ui()
 
-        self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
-        self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        if self.xlight.has_emission_filters_wheel:
+            self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
+            self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
+        if self.xlight.has_dichroic_filters_wheel:
+            self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+            self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
         if self.xlight.has_dichroic_filter_slider:
             self.filter_slider.setValue(self.xlight.get_filter_slider())
-
-        self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
-        self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
 
         self.disk_position_state = self.xlight.get_disk_position()
 
@@ -3107,17 +3108,16 @@ class SpinningDiskConfocalWidget(QWidget):
 
     def init_ui(self):
 
-        emissionFilterLayout = QHBoxLayout()
-        emissionFilterLayout.addWidget(QLabel("Emission Position"))
-        self.dropdown_emission_filter = QComboBox(self)
-        self.dropdown_emission_filter.addItems([str(i + 1) for i in range(8)])
-        emissionFilterLayout.addWidget(self.dropdown_emission_filter)
+        # Only create widgets if hardware supports them
+        self.dropdown_emission_filter = None
+        if self.xlight.has_emission_filters_wheel:
+            self.dropdown_emission_filter = QComboBox(self)
+            self.dropdown_emission_filter.addItems([str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)])
 
-        dichroicLayout = QHBoxLayout()
-        dichroicLayout.addWidget(QLabel("Dichroic Position"))
-        self.dropdown_dichroic = QComboBox(self)
-        self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
-        dichroicLayout.addWidget(self.dropdown_dichroic)
+        self.dropdown_dichroic = None
+        if self.xlight.has_dichroic_filters_wheel:
+            self.dropdown_dichroic = QComboBox(self)
+            self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
 
         illuminationIrisLayout = QHBoxLayout()
         illuminationIrisLayout.addWidget(QLabel("Illumination Iris"))
@@ -3182,8 +3182,10 @@ class SpinningDiskConfocalWidget(QWidget):
 
     @Slot(bool)
     def enable_all_buttons(self, enable: bool):
-        self.dropdown_emission_filter.setEnabled(enable)
-        self.dropdown_dichroic.setEnabled(enable)
+        if self.dropdown_emission_filter:
+            self.dropdown_emission_filter.setEnabled(enable)
+        if self.dropdown_dichroic:
+            self.dropdown_dichroic.setEnabled(enable)
         self.btn_toggle_widefield.setEnabled(enable)
         self.btn_toggle_motor.setEnabled(enable)
         self.slider_illumination_iris.setEnabled(enable)

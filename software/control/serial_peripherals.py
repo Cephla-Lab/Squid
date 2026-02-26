@@ -114,13 +114,15 @@ class SerialDevice:
             # check response
             if response == expected_response:
                 return response
-            else:
-                log.warning(response)
 
             # check prefix if the full response does not match
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
+
+            # Log mismatch for debugging (response didn't match exactly or by prefix)
+            if response:
+                log.warning(f"Serial response mismatch: got '{response}', expected '{expected_response}'")
 
             time.sleep(attempt_delay)  # Wait before retrying
 
@@ -239,7 +241,7 @@ class XLight:
     Supports V1, V2, V3, and Cicero with automatic protocol detection.
     """
 
-    def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=True):
+    def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=False):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         self.has_spinning_disk_motor = False
@@ -338,10 +340,11 @@ class XLight:
 
     def set_emission_filter(self, position, extraction=False, validate=True):
         if self.disable_emission_filter_wheel:
-            print("emission filter wheel disabled")
+            self.log.info("Emission filter wheel disabled, skipping set_emission_filter")
             return -1
-        if str(position) not in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            raise ValueError("Invalid emission filter wheel position!")
+        valid_positions = [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
+        if str(position) not in valid_positions:
+            raise ValueError(f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}")
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -349,7 +352,7 @@ class XLight:
 
         if validate:
             current_pos = self.serial_connection.write_and_check(
-                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=0.01
+                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=self.sleep_time_for_wheel
             )
             self.emission_wheel_pos = int(current_pos[1])
         else:
@@ -360,7 +363,7 @@ class XLight:
         return self.emission_wheel_pos
 
     def get_emission_filter(self):
-        current_pos = self.serial_connection.write_and_check("rB\r", "rB", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check("rB\r", "rB", read_delay=self.sleep_time_for_wheel)
         self.emission_wheel_pos = int(current_pos[2])
         return self.emission_wheel_pos
 
@@ -373,13 +376,13 @@ class XLight:
             position_to_write += "m"
 
         current_pos = self.serial_connection.write_and_check(
-            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=0.01
+            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=self.sleep_time_for_wheel
         )
         self.dichroic_wheel_pos = int(current_pos[1])
         return self.dichroic_wheel_pos
 
     def get_dichroic(self):
-        current_pos = self.serial_connection.write_and_check("rC\r", "rC", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check("rC\r", "rC", read_delay=self.sleep_time_for_wheel)
         self.dichroic_wheel_pos = int(current_pos[2])
         return self.dichroic_wheel_pos
 

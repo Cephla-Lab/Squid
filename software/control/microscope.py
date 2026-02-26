@@ -85,7 +85,10 @@ class MicroscopeAddons:
             # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
             # This needs to be changed when we figure out better machine configuration structure.
             xlight = (
-                serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
+                serial_peripherals.XLight(
+                    control._def.XLIGHT_SERIAL_NUMBER,
+                    control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL,
+                )
                 if not spinning_disk_simulated
                 else serial_peripherals.XLight_Simulation()
             )
