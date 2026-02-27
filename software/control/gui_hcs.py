@@ -294,8 +294,12 @@ class QtMultiPointController(MultiPointController, QObject):
                 self._ndviewer_fov_labels.append(f"{region_name}:{i}")
                 fov_idx += 1
 
-        # Get image dimensions from camera (after binning)
-        width, height = self.microscope.camera.get_resolution()
+        # Get image dimensions from camera (after binning and software crop)
+        crop_width, crop_height = self.microscope.camera.get_crop_size()
+        if crop_width is not None and crop_height is not None:
+            width, height = crop_width, crop_height
+        else:
+            width, height = self.microscope.camera.get_resolution()
 
         # Check save format to determine which API to use
         if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
