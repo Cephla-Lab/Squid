@@ -383,9 +383,15 @@ class ToupcamCamera(AbstractCamera):
         if self._capabilities.has_low_noise_mode:
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_LOW_NOISE, 0)
 
-        # set temperature
         self._set_fan_speed(self._config.default_fan_speed)
-        self.set_temperature(self._config.default_temperature)
+
+        # set temperature
+        if self._config.default_temperature is None:
+            if self._capabilities.has_TEC:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_TEC, 0)
+                self._log.info("TEC disabled (default_temperature is None)")
+        else:
+            self.set_temperature(self._config.default_temperature)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
         self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
