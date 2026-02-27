@@ -2322,7 +2322,7 @@ class Toupcam:
             try: # Firstly try to load the library in the directory where this file is located
                 dir_ = os.path.abspath(os.path.join(os.path.dirname(__file__),'..','drivers and libraries','toupcam'))
                 if sys.platform == 'win32':
-                    cls.__lib = ctypes.windll.LoadLibrary(os.path.join(dir_,'win','x64','toupcam.dll'))
+                    cls.__lib = ctypes.windll.LoadLibrary(os.path.join(dir_,'windows','x64','toupcam.dll'))
                 elif sys.platform.startswith('linux'):
                     cls.__lib = ctypes.cdll.LoadLibrary(os.path.join(dir_,'linux','x64','libtoupcam.so'))
                 else:
