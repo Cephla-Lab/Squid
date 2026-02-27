@@ -90,6 +90,13 @@ void callback_send_hardware_trigger()
     // doesn't get partially written values.
     noInterrupts();
     int camera_channel = buffer_rx[2] & 0x0f;
+
+    // For level trigger mode, ignore new triggers while one is already active
+    if (trigger_mode != 0 && trigger_output_level[camera_channel] == LOW) {
+        interrupts();
+        return;
+    }
+
     control_strobe[camera_channel] = buffer_rx[2] >> 7;
     illumination_on_time[camera_channel] = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
     digitalWrite(camera_trigger_pins[camera_channel], LOW);
