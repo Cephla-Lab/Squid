@@ -16414,10 +16414,10 @@ class AddAcquisitionChannelDialog(QDialog):
             camera=camera,
             filter_wheel=filter_wheel,
             filter_position=filter_position,
+            z_offset_um=0.0,
             illumination_settings=IlluminationSettings(
                 illumination_channel=illum_name,
                 intensity=20.0,
-                z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(
                 exposure_time_ms=20.0,
