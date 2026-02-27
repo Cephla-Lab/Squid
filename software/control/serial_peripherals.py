@@ -344,7 +344,9 @@ class XLight:
             return -1
         valid_positions = [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
         if str(position) not in valid_positions:
-            raise ValueError(f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}")
+            raise ValueError(
+                f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}"
+            )
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
