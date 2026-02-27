@@ -94,6 +94,27 @@ class TestCameraDefinition:
             CameraDefinition(id=0, serial_number="ABC12345")
         assert "greater than or equal to 1" in str(exc_info.value)
 
+    def test_camera_definition_with_trigger_channel(self):
+        """Test camera definition with trigger_channel field."""
+        camera = CameraDefinition(
+            name="Main Camera",
+            id=1,
+            serial_number="ABC12345",
+            trigger_channel=0,
+        )
+        assert camera.trigger_channel == 0
+
+    def test_camera_definition_trigger_channel_none_by_default(self):
+        """Test that trigger_channel is None by default."""
+        camera = CameraDefinition(serial_number="ABC12345")
+        assert camera.trigger_channel is None
+
+    def test_camera_definition_negative_trigger_channel_rejected(self):
+        """Test that negative trigger_channel is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            CameraDefinition(serial_number="ABC12345", trigger_channel=-1)
+        assert "greater than or equal to 0" in str(exc_info.value)
+
 
 class TestCameraRegistryConfig:
     """Tests for CameraRegistryConfig model."""
@@ -234,6 +255,39 @@ class TestCameraRegistryConfig:
                 ]
             )
         assert "Camera IDs must be unique" in str(exc_info.value)
+
+    def test_get_trigger_channel_configured(self):
+        """Test getting trigger channel when explicitly configured."""
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Camera 1", id=1, serial_number="ABC", trigger_channel=2),
+                CameraDefinition(name="Camera 2", id=2, serial_number="DEF", trigger_channel=5),
+            ]
+        )
+        assert registry.get_trigger_channel(1) == 2
+        assert registry.get_trigger_channel(2) == 5
+
+    def test_get_trigger_channel_default(self):
+        """Test that trigger channel defaults to camera_id - 1."""
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Camera 1", id=1, serial_number="ABC"),
+                CameraDefinition(name="Camera 2", id=2, serial_number="DEF"),
+            ]
+        )
+        # No trigger_channel configured, should default to id - 1
+        assert registry.get_trigger_channel(1) == 0  # camera 1 → channel 0
+        assert registry.get_trigger_channel(2) == 1  # camera 2 → channel 1
+
+    def test_get_trigger_channel_not_found(self):
+        """Test trigger channel for non-existent camera ID."""
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Camera 1", id=1, serial_number="ABC"),
+            ]
+        )
+        # Non-existent camera ID 99: should default to 99 - 1 = 98
+        assert registry.get_trigger_channel(99) == 98
 
 
 class TestFilterWheelDefinition:

@@ -1099,6 +1099,12 @@ SQUID_FILTERWHEEL_CONFIGS = {
     },
 }
 
+# Multi-camera support
+# All cameras must be the same type (specified by CAMERA_TYPE above)
+USE_MULTI_CAMERA = False
+MULTI_CAMERA_IDS = [1]  # List of camera IDs to instantiate
+MULTI_CAMERA_SNS = {}  # Camera ID -> serial number, e.g., {"1": "ABC123", "2": "DEF456"}
+
 # Stage
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""

@@ -535,6 +535,17 @@ def validate_channel_group(
     """
     errors = []
 
+    # Check for empty channel names
+    empty_entries = [i + 1 for i, entry in enumerate(group.channels) if not entry.name]
+    if empty_entries:
+        errors.append(f"Group '{group.name}' has unselected channel(s) at row(s): {empty_entries}")
+
+    # Check for duplicate channel names in the group (excluding empty names)
+    channel_names = [entry.name for entry in group.channels if entry.name]
+    if len(channel_names) != len(set(channel_names)):
+        duplicates = [name for name in set(channel_names) if channel_names.count(name) > 1]
+        errors.append(f"Group '{group.name}' has duplicate channels: {duplicates}")
+
     # Track cameras used (v1.0: camera field is int ID)
     cameras_used: List[Optional[int]] = []
     for entry in group.channels:

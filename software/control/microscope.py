@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 
@@ -27,6 +27,11 @@ import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
+from squid.camera.config_factory import (
+    DEFAULT_SINGLE_CAMERA_ID,
+    create_camera_configs,
+    get_primary_camera_id,
+)
 
 if control._def.USE_XERYON:
     from control.objective_changer_2_pos_controller import (
@@ -271,35 +276,79 @@ class Microscope:
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
-        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
-            # NOTE(imo): If this succeeds, it means we sent the request,
-            # but we didn't necessarily get confirmation of success.
-            if addons.nl5 and control._def.NL5_USE_DOUT:
-                addons.nl5.start_acquisition()
-            else:
-                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
+        # Get camera registry for multi-camera support
+        from control.core.config import ConfigRepository
+
+        config_repo = ConfigRepository()
+        camera_registry = config_repo.get_camera_registry()
+
+        # Generate per-camera configs from registry + base template
+        base_camera_config = squid.config.get_camera_config()
+        camera_configs = create_camera_configs(camera_registry, base_camera_config)
+
+        def make_hw_trigger_fn(trigger_channel: int):
+            """Create a hardware trigger function for a specific camera channel."""
+
+            def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+                # NOTE(imo): If this succeeds, it means we sent the request,
+                # but we didn't necessarily get confirmation of success.
+                if addons.nl5 and control._def.NL5_USE_DOUT:
+                    addons.nl5.start_acquisition()
+                else:
+                    illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
+                    cam_trigger_log.debug(
+                        f"Sending hw trigger ch={trigger_channel} with illumination_time="
+                        f"{illumination_time_us if illumination_time else None} [us]"
+                    )
+                    low_level_devices.microcontroller.send_hardware_trigger(
+                        illumination_time is not None, illumination_time_us, trigger_channel
+                    )
+                return True
+
+            return acquisition_camera_hw_trigger_fn
+
+        def make_hw_strobe_delay_fn(trigger_channel: int):
+            """Create a strobe delay function for a specific camera channel."""
+
+            def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+                strobe_delay_us = int(1000 * strobe_delay_ms)
                 cam_trigger_log.debug(
-                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
+                    f"Setting microcontroller strobe delay ch={trigger_channel} to {strobe_delay_us} [us]"
                 )
-                low_level_devices.microcontroller.send_hardware_trigger(
-                    illumination_time is not None, illumination_time_us
+                low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us, trigger_channel)
+                low_level_devices.microcontroller.wait_till_operation_is_completed()
+
+                return True
+
+            return acquisition_camera_hw_strobe_delay_fn
+
+        # Instantiate all cameras
+        cameras: Dict[int, AbstractCamera] = {}
+        for camera_id, cam_config in camera_configs.items():
+            # Get trigger channel from registry (defaults to camera_id - 1 if not configured)
+            trigger_channel = camera_registry.get_trigger_channel(camera_id) if camera_registry else (camera_id - 1)
+            cam_trigger_log.info(
+                f"Initializing camera {camera_id} (SN: {cam_config.serial_number}, trigger_ch={trigger_channel})"
+            )
+            try:
+                camera = squid.camera.utils.get_camera(
+                    config=cam_config,
+                    simulated=camera_simulated,
+                    hw_trigger_fn=make_hw_trigger_fn(trigger_channel),
+                    hw_set_strobe_delay_ms_fn=make_hw_strobe_delay_fn(trigger_channel),
                 )
-            return True
+                cameras[camera_id] = camera
+            except Exception as e:
+                cam_trigger_log.error(f"Failed to initialize camera {camera_id}: {e}")
+                # Close any cameras we've already opened
+                for cleanup_cam_id, opened_camera in cameras.items():
+                    try:
+                        opened_camera.close()
+                    except Exception as cleanup_exc:
+                        cam_trigger_log.error(f"Cleanup failed for camera {cleanup_cam_id}: {cleanup_exc}")
+                raise RuntimeError(f"Failed to initialize camera {camera_id}: {e}") from e
 
-        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
-            strobe_delay_us = int(1000 * strobe_delay_ms)
-            cam_trigger_log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
-            low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us)
-            low_level_devices.microcontroller.wait_till_operation_is_completed()
-
-            return True
-
-        camera = squid.camera.utils.get_camera(
-            config=squid.config.get_camera_config(),
-            simulated=camera_simulated,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
+        cam_trigger_log.info(f"Initialized {len(cameras)} camera(s): IDs {sorted(cameras.keys())}")
 
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
@@ -332,10 +381,11 @@ class Microscope:
 
         return Microscope(
             stage=stage,
-            camera=camera,
+            cameras=cameras,
             illumination_controller=illumination_controller,
             addons=addons,
             low_level_drivers=low_level_devices,
+            config_repo=config_repo,
             simulated=simulated,
             skip_init=skip_init,
         )
@@ -343,11 +393,12 @@ class Microscope:
     def __init__(
         self,
         stage: AbstractStage,
-        camera: AbstractCamera,
+        cameras: Union[AbstractCamera, Dict[int, AbstractCamera]],
         illumination_controller: IlluminationController,
         addons: MicroscopeAddons,
         low_level_drivers: LowLevelDrivers,
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
+        config_repo: Optional["ConfigRepository"] = None,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
         skip_init: bool = False,
@@ -355,7 +406,20 @@ class Microscope:
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.stage: AbstractStage = stage
-        self.camera: AbstractCamera = camera
+
+        # Multi-camera support: accept either a single camera or a dict of cameras
+        # For backward compatibility, a single camera is wrapped in a dict with default ID
+        if isinstance(cameras, dict):
+            self._cameras: Dict[int, AbstractCamera] = cameras
+        else:
+            # Backward compatibility: wrap single camera in dict
+            self._cameras = {DEFAULT_SINGLE_CAMERA_ID: cameras}
+
+        self._primary_camera_id: int = get_primary_camera_id(list(self._cameras.keys()))
+        self._log.info(
+            f"Initialized with {len(self._cameras)} camera(s), " f"primary camera ID: {self._primary_camera_id}"
+        )
+
         self.illumination_controller: IlluminationController = illumination_controller
 
         self.addons = addons
@@ -365,8 +429,8 @@ class Microscope:
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
 
-        # Centralized config management
-        self.config_repo: ConfigRepository = ConfigRepository()
+        # Centralized config management - reuse passed repo or create new one
+        self.config_repo: ConfigRepository = config_repo if config_repo is not None else ConfigRepository()
 
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
@@ -396,7 +460,11 @@ class Microscope:
                 for_displacement_measurement=True,
             )
 
-        self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
+        self.live_controller: LiveController = LiveController(
+            microscope=self,
+            camera=self._cameras[self._primary_camera_id],
+            initial_camera_id=self._primary_camera_id,
+        )
 
         # Sync confocal mode from hardware (must be after LiveController creation)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
@@ -404,6 +472,56 @@ class Microscope:
 
         if not skip_prepare_for_use:
             self._prepare_for_use(skip_init=skip_init)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MULTI-CAMERA API
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def camera(self) -> AbstractCamera:
+        """Get the primary camera (backward compatible).
+
+        Returns:
+            The primary camera instance (camera with lowest ID).
+        """
+        return self._cameras[self._primary_camera_id]
+
+    def get_camera(self, camera_id: int) -> AbstractCamera:
+        """Get a camera by its ID.
+
+        Args:
+            camera_id: The camera ID (from cameras.yaml).
+
+        Returns:
+            The camera instance.
+
+        Raises:
+            ValueError: If camera_id is not found.
+        """
+        if camera_id not in self._cameras:
+            available = sorted(self._cameras.keys())
+            raise ValueError(f"Camera ID {camera_id} not found. Available IDs: {available}")
+        return self._cameras[camera_id]
+
+    def get_camera_ids(self) -> List[int]:
+        """Get sorted list of all camera IDs.
+
+        Returns:
+            List of camera IDs in ascending order.
+        """
+        return sorted(self._cameras.keys())
+
+    def get_camera_count(self) -> int:
+        """Get the number of cameras.
+
+        Returns:
+            Number of cameras in the system.
+        """
+        return len(self._cameras)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # INITIALIZATION AND LIFECYCLE
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def _prepare_for_use(self, skip_init: bool = False):
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
@@ -423,10 +541,14 @@ class Microscope:
                     "does not support this feature (requires v1.1+)"
                 )
 
-        self.camera.set_pixel_format(
-            squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        # Initialize all cameras with default settings
+        default_pixel_format = squid.config.CameraPixelFormat.from_string(
+            control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT
         )
-        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        for camera_id, camera in self._cameras.items():
+            self._log.debug(f"Initializing camera {camera_id}")
+            camera.set_pixel_format(default_pixel_format)
+            camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
@@ -540,6 +662,20 @@ class Microscope:
             self.addons.camera_focus.enable_callbacks(True)
             self.addons.camera_focus.start_streaming()
 
+    def get_trigger_channel_for_camera(self, camera_id: int) -> int:
+        """Get the trigger channel for a camera.
+
+        Args:
+            camera_id: The camera ID to look up.
+
+        Returns:
+            The trigger channel from camera registry, or camera_id - 1 as fallback.
+        """
+        camera_registry = self.config_repo.get_camera_registry()
+        if camera_registry:
+            return camera_registry.get_trigger_channel(camera_id)
+        return camera_id - 1
+
     def acquire_image(self) -> np.ndarray:
         """Acquire a single image from the camera.
 
@@ -561,8 +697,13 @@ class Microscope:
             self._wait_for_microcontroller()
             self.camera.send_trigger()
         elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
+            # Get trigger channel for active camera
+            active_camera_id = self.live_controller._active_camera_id
+            trigger_channel = self.get_trigger_channel_for_camera(active_camera_id)
             self.low_level_drivers.microcontroller.send_hardware_trigger(
-                control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                control_illumination=True,
+                illumination_on_time_us=self.camera.get_exposure_time() * 1000,
+                trigger_output_ch=trigger_channel,
             )
 
         try:
@@ -728,10 +869,17 @@ class Microscope:
             except Exception as e:
                 self._log.warning(f"Error closing focus camera: {e}")
 
-        try:
-            self.camera.close()
-        except Exception as e:
-            self._log.warning(f"Error closing camera: {e}")
+        # Close all cameras
+        for camera_id, camera in self._cameras.items():
+            try:
+                # Stop streaming first (some cameras require this before close)
+                try:
+                    camera.stop_streaming()
+                except Exception as stream_e:
+                    self._log.debug(f"stop_streaming for camera {camera_id}: {stream_e}")
+                camera.close()
+            except Exception as e:
+                self._log.warning(f"Error closing camera {camera_id}: {e}")
 
     def move_to_position(self, x: float, y: float, z: float) -> None:
         """Move the stage to an absolute XYZ position.

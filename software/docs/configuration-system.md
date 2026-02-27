@@ -115,40 +115,81 @@ channels:
 
 ### cameras.yaml (Optional)
 
-Maps camera IDs to hardware serial numbers. **Optional for single-camera systems.**
+Provides user-friendly names for cameras. **Serial numbers are configured in the INI file.**
+
+**All cameras must be the same type** (specified by `camera_type` in INI).
+
+**INI Settings (required for multi-camera):**
+
+```ini
+[GENERAL]
+# Camera type - all cameras must be the same type
+camera_type = Toupcam
+
+# Enable multi-camera support (default: False)
+use_multi_camera = True
+
+# List of camera IDs to instantiate (default: [1])
+multi_camera_ids = [1, 2]
+
+# Camera serial numbers (required for multi-camera)
+# Maps camera ID to hardware serial number
+multi_camera_sns = {"1": "ABC12345", "2": "DEF67890"}
+```
+
+| INI Setting | Default | Description |
+|-------------|---------|-------------|
+| `camera_type` | `Default` | Camera type (all cameras must be same type): `Toupcam`, `Hamamatsu`, `FLIR`, etc. |
+| `use_multi_camera` | `False` | Enable multi-camera mode. When `False`, single camera used. |
+| `multi_camera_ids` | `[1]` | List of camera IDs to instantiate. |
+| `multi_camera_sns` | `{}` | **Required for multi-camera.** Maps camera ID to serial number. |
+
+**YAML Configuration (optional, for friendly names and trigger channels):**
 
 ```yaml
 version: 1.0
 
 cameras:
   # Primary imaging camera
-  - id: 1                          # Camera ID (used in channel configs and hardware_bindings)
+  - id: 1                          # Camera ID (matches INI)
     name: "Main Camera"            # User-friendly name for UI
-    serial_number: "ABC12345"      # Camera serial number (from manufacturer)
-    model: "Hamamatsu C15440"      # Optional: displayed in UI for reference
+    serial_number: "ABC12345"      # Informational only (actual SN from INI)
+    trigger_channel: 0             # MCU trigger output channel (0-based)
 
-  # Secondary camera for simultaneous imaging
+  # Secondary camera
   - id: 2
     name: "Side Camera"
     serial_number: "DEF67890"
-    model: "Basler acA2040"
+    trigger_channel: 1             # Optional: defaults to (id - 1) if not set
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes (multi-camera) | Camera ID matching INI `multi_camera_ids` |
+| `name` | No | User-friendly name shown in UI (defaults to "Camera N") |
+| `serial_number` | No | Informational; actual SN comes from INI |
+| `trigger_channel` | No | MCU trigger output channel (0-based). Defaults to `id - 1` |
 
 **Fields:**
 
 | Field | Description |
 |-------|-------------|
 | `version` | Schema version (`1.0`) |
-| `cameras[].id` | Camera ID (must be unique, used in channel configs) |
-| `cameras[].name` | User-friendly name for UI (must be unique) |
-| `cameras[].serial_number` | Hardware serial number (must be unique) |
-| `cameras[].model` | Optional: camera model for reference |
+| `cameras[].id` | Camera ID (must match ID in `multi_camera_ids`) |
+| `cameras[].name` | User-friendly name for UI dropdowns |
+| `cameras[].serial_number` | Informational only (actual serial number comes from INI) |
 
 **Usage:**
-- If `cameras.yaml` doesn't exist, the system assumes single-camera mode
-- Single camera: `id` and `name` are optional (defaults applied)
-- Multi-camera: `id` and `name` are required for all cameras
-- Channel configs use the `id` field to reference cameras (e.g., `camera: 1`)
+- Serial numbers **must** be in INI (`multi_camera_sns`), not YAML
+- YAML (`cameras.yaml`) is optional and provides friendly names only
+- If `cameras.yaml` doesn't exist, cameras are named "Camera 1", "Camera 2", etc.
+- All cameras use the same `camera_type` setting
+
+**UI Configuration:**
+
+When `use_multi_camera = True`, a "Camera Configuration" menu item appears under **Settings > Advanced**. This dialog shows:
+- Camera IDs and serial numbers (from INI, read-only)
+- Camera names (editable, saved to `cameras.yaml`)
 
 ### filter_wheels.yaml (Optional)
 

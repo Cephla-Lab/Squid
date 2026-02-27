@@ -6,3 +6,6 @@
 
 # PlatformIO
 .pio/
+
+# Worktrees
+worktrees/

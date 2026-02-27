@@ -747,6 +747,19 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
+        # Camera Configuration (only shown if multi-camera is enabled)
+        if USE_MULTI_CAMERA:
+            camera_config_action = QAction("Camera Configuration", self)
+            camera_config_action.triggered.connect(self.openCameraConfigEditor)
+            advanced_menu.addAction(camera_config_action)
+
+        # Channel Group Configuration (only shown if multi-camera system)
+        camera_count = len(self.microscope.config_repo.get_camera_names())
+        if camera_count > 1:
+            channel_group_config_action = QAction("Channel Group Configuration", self)
+            channel_group_config_action.triggered.connect(self.openChannelGroupConfigEditor)
+            advanced_menu.addAction(channel_group_config_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -847,8 +860,14 @@ class HighContentScreeningGui(QMainWindow):
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER)
         else:
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
+        self._frame_callback = self.streamHandler.get_frame_callback()
+        self._frame_callback_id = self.camera.add_frame_callback(self._frame_callback)
         self.camera.enable_callbacks(enabled=True)
+
+        # Register callback to move frame callback when live camera switches (multi-camera support)
+        self.liveController.on_camera_switched = self._on_live_camera_switched
+        # Register callback to update UI when trigger mode changes (multi-camera support)
+        self.liveController.on_trigger_mode_changed = self._on_trigger_mode_changed
 
         if self.camera_focus:
             self.camera_focus.set_acquisition_mode(
@@ -865,6 +884,49 @@ class HighContentScreeningGui(QMainWindow):
                 self.objective_changer.moveToPosition1(move_z=False)
             elif DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_2:
                 self.objective_changer.moveToPosition2(move_z=False)
+
+    def _on_live_camera_switched(self, old_camera, new_camera):
+        """Handle camera switch for live preview (multi-camera support).
+
+        Moves the frame callback from the old camera to the new camera so that
+        frames from the new camera are properly displayed.
+
+        Note: At this point, old_camera has already stopped streaming.
+        Uses QTimer.singleShot for thread safety since this may be called from non-GUI thread.
+        """
+        from qtpy.QtCore import QTimer
+
+        def switch_callback():
+            try:
+                self.log.info(f"Moving frame callback from old camera to new camera")
+                old_callback_id = self._frame_callback_id
+                # Add to new camera first to minimize window with no callbacks
+                self._frame_callback_id = new_camera.add_frame_callback(self._frame_callback)
+                # Then remove from old camera (already stopped, just cleanup)
+                old_camera.remove_frame_callback(old_callback_id)
+            except Exception as e:
+                self.log.error(f"Failed to switch camera frame callback: {e}")
+
+        QTimer.singleShot(0, switch_callback)
+
+    def _on_trigger_mode_changed(self, new_mode):
+        """Handle trigger mode change when switching cameras (multi-camera support).
+
+        Updates the UI to reflect the new camera's trigger mode.
+        """
+        self.log.info(f"Updating UI trigger mode to: {new_mode}")
+        if hasattr(self, "liveControlWidget") and self.liveControlWidget:
+            # Use QTimer to safely update UI from potentially non-GUI thread
+            from qtpy.QtCore import QTimer
+
+            def update_display():
+                try:
+                    if self.liveControlWidget is not None:
+                        self.liveControlWidget.update_trigger_mode_display(new_mode)
+                except Exception as e:
+                    self.log.error(f"Failed to update trigger mode display: {e}")
+
+            QTimer.singleShot(0, update_display)
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:
@@ -2189,6 +2251,18 @@ class HighContentScreeningGui(QMainWindow):
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openCameraConfigEditor(self):
+        """Open the camera configuration dialog"""
+        dialog = widgets.CameraConfiguratorDialog(self.microscope.config_repo, self)
+        dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openChannelGroupConfigEditor(self):
+        """Open the channel group configuration dialog"""
+        dialog = widgets.ChannelGroupEditorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

@@ -87,8 +87,13 @@ class AutofocusWorker:
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
                     image = self.camera.read_frame()
                 else:
+                    # Get trigger channel for active camera
+                    active_camera_id = self.liveController._active_camera_id
+                    trigger_channel = self.liveController.microscope.get_trigger_channel_for_camera(active_camera_id)
                     self.microcontroller.send_hardware_trigger(
-                        control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                        control_illumination=True,
+                        illumination_on_time_us=self.camera.get_exposure_time() * 1000,
+                        trigger_output_ch=trigger_channel,
                     )
                     image = self.camera.read_frame()
             if image is None:

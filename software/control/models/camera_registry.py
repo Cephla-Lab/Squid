@@ -25,6 +25,11 @@ class CameraDefinition(BaseModel):
     id: Optional[int] = Field(None, ge=1, description="Camera ID for hardware bindings")
     serial_number: str = Field(..., min_length=1, description="Hardware serial number")
     model: Optional[str] = Field(None, description="Camera model for display")
+    trigger_channel: Optional[int] = Field(
+        None,
+        ge=0,
+        description="MCU trigger output channel for hardware triggering (0-based)",
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -160,3 +165,20 @@ class CameraRegistryConfig(BaseModel):
         """Get serial number for a camera name."""
         camera = self.get_camera_by_name(camera_name)
         return camera.serial_number if camera else None
+
+    def get_trigger_channel(self, camera_id: int) -> int:
+        """Get trigger channel for a camera ID.
+
+        Returns the configured trigger_channel, or defaults to (camera_id - 1)
+        if not configured (camera ID 1 → channel 0, camera ID 2 → channel 1, etc.)
+        """
+        camera = self.get_camera_by_id(camera_id)
+        if camera and camera.trigger_channel is not None:
+            return camera.trigger_channel
+        # Default: camera ID 1 → channel 0, camera ID 2 → channel 1, etc.
+        default_channel = camera_id - 1 if camera_id >= 1 else 0
+        if camera is None:
+            logger.warning(
+                f"Camera ID {camera_id} not found in registry, " f"using default trigger channel {default_channel}"
+            )
+        return default_channel
