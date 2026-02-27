@@ -10,4 +10,6 @@ pip install cuda-python
 pip install cupy-cuda12x
 pip3 install torch torchvision torchaudio
 
+pip3 install "numpy<2"
+
 sudo apt autoremove -y
