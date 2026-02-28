@@ -111,7 +111,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
     def _move_to_position(self, wheel_id: int, target_pos: int):
-        """Move wheel to target position with automatic re-home on failure.
+        """Move wheel to target position using shortest path with automatic re-home on failure.
+
+        This method calculates both clockwise and counter-clockwise distances and
+        chooses the shorter path. For a circular filter wheel, this can reduce
+        movement time by up to 50% in worst-case scenarios.
 
         If the movement times out (e.g., motor stall), this method will:
         1. Log a warning
@@ -132,8 +136,21 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if target_pos == current_pos:
             return
 
-        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-        delta = (target_pos - current_pos) * step_size
+        num_positions = config.max_index - config.min_index + 1
+        step_size = SCREW_PITCH_W_MM / num_positions
+
+        # Calculate forward (positive) and backward (negative) distances
+        # Using modulo to handle circular wrapping
+        forward_steps = (target_pos - current_pos) % num_positions
+        backward_steps = (current_pos - target_pos) % num_positions
+
+        # Choose shortest path
+        if forward_steps <= backward_steps:
+            delta = forward_steps * step_size
+            _log.debug(f"Wheel {wheel_id}: {current_pos} -> {target_pos}, forward {forward_steps} steps")
+        else:
+            delta = -backward_steps * step_size
+            _log.debug(f"Wheel {wheel_id}: {current_pos} -> {target_pos}, backward {backward_steps} steps")
 
         try:
             self._move_wheel(wheel_id, delta)
