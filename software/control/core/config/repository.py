@@ -24,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from control.models import (
     AcquisitionChannel,
+    AcquisitionChannelOverride,
     AcquisitionOutputConfig,
     CameraMappingsConfig,
     CameraRegistryConfig,
@@ -229,7 +230,8 @@ class ConfigRepository:
             import control._def
 
             obj_list = objectives or (list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None)
-            if ensure_default_configs(self, profile, obj_list):
+            include_confocal = getattr(control._def, "ENABLE_SPINNING_DISK_CONFOCAL", False)
+            if ensure_default_configs(self, profile, obj_list, include_confocal=include_confocal):
                 logger.info(f"Generated default configs for profile '{profile}'")
         except ImportError as e:
             # Expected if running without full dependencies or in test environment
@@ -701,6 +703,7 @@ class ConfigRepository:
         setting: str,
         value: Any,
         profile: Optional[str] = None,
+        confocal_mode: bool = False,
     ) -> bool:
         """
         Update a specific setting of a channel configuration and save.
@@ -719,6 +722,7 @@ class ConfigRepository:
             setting: Setting name ("ExposureTime", "AnalogGain", "IlluminationIntensity")
             value: New value for the setting
             profile: Profile name (defaults to current profile)
+            confocal_mode: If True, write to confocal_override instead of base settings
 
         Returns:
             True if update was successful, False otherwise
@@ -780,12 +784,26 @@ class ConfigRepository:
             logger.warning(f"Channel '{channel_name}' not found in objective config")
             return False
 
-        # Update the field
-        if location == "camera":
-            # v1.1: camera_settings is a single object, not a Dict
-            setattr(acq_channel.camera_settings, field, value)
-        elif location == "illumination":
-            acq_channel.illumination_settings.intensity = value
+        if confocal_mode:
+            # Write to confocal_override — create it if it doesn't exist
+            if acq_channel.confocal_override is None:
+                acq_channel.confocal_override = AcquisitionChannelOverride(
+                    camera_settings=acq_channel.camera_settings.model_copy(),
+                    illumination_settings=IlluminationSettings(
+                        intensity=acq_channel.illumination_settings.intensity,
+                    ),
+                )
+
+            if location == "camera":
+                setattr(acq_channel.confocal_override.camera_settings, field, value)
+            elif location == "illumination":
+                acq_channel.confocal_override.illumination_settings.intensity = value
+        else:
+            # Write to base settings (existing behavior)
+            if location == "camera":
+                setattr(acq_channel.camera_settings, field, value)
+            elif location == "illumination":
+                acq_channel.illumination_settings.intensity = value
 
         # Save
         self.save_objective_config(profile, objective, obj_config)
