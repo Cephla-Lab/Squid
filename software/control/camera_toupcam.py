@@ -16,6 +16,7 @@ from squid.abc import (
     CameraFrame,
 )
 from squid.config import CameraConfig, ToupcamCameraModel
+import control._def
 from control._def import *
 
 import threading
@@ -833,7 +834,7 @@ class ToupcamCamera(AbstractCamera):
         self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
 
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
+            if control._def.HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
                 try:
                     self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, 2)
                 except toupcam.HRESULTException as ex:
