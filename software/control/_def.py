@@ -1469,6 +1469,13 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     "yes",
                 )
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+            if _general_config.has_option("GENERAL", "use_trigger_ready"):
+                USE_TRIGGER_READY = _general_config.get("GENERAL", "use_trigger_ready").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+                log.info(f"Loaded USE_TRIGGER_READY={USE_TRIGGER_READY} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 

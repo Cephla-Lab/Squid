@@ -1528,6 +1528,8 @@ class MultiPointWorker:
                 if control._def.USE_TRIGGER_READY:
                     t0 = time.time()
                     while self.microcontroller.trigger_pending:
+                        if self.abort_requested_fn():
+                            break
                         if time.time() - t0 > 2:
                             self._log.warning("Trigger-ready wait timed out after 2s")
                             break

@@ -235,7 +235,7 @@ void callback_set_trigger_ready_mode()
 {
     use_trigger_ready = (buffer_rx[2] != 0);
     // Clear any pending triggers when mode changes
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 6; i++)
         pending_trigger[i] = false;
 }
 
@@ -288,7 +288,7 @@ void callback_initialize()
     // reset trigger mode to normal
     trigger_mode = 0;
     use_trigger_ready = false;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 6; i++)
         pending_trigger[i] = false;
 }
 
@@ -319,6 +319,6 @@ void callback_reset()
     cmd_id = 0;
     trigger_mode = 0;
     use_trigger_ready = false;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 6; i++)
         pending_trigger[i] = false;
 }

@@ -43,6 +43,10 @@ extern long timestamp_trigger_rising_edge[6];
 // 0: normal trigger mode
 // 1: level trigger mode
 extern volatile uint8_t trigger_mode;
+extern volatile bool use_trigger_ready;
+extern volatile bool pending_trigger[6];
+extern volatile bool pending_control_strobe[6];
+extern volatile uint32_t pending_illumination_on_time[6];
 extern IntervalTimer strobeTimer;
 
 /***************************************************************************************************/
