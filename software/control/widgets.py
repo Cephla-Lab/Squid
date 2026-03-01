@@ -4198,7 +4198,11 @@ class LiveControlWidget(QFrame):
         if self.is_switching_mode == False:
             self.currentConfiguration.exposure_time = new_value
             self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "ExposureTime", new_value
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "ExposureTime",
+                new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newExposureTime.emit(new_value)
 
@@ -4206,7 +4210,11 @@ class LiveControlWidget(QFrame):
         if self.is_switching_mode == False:
             self.currentConfiguration.analog_gain = new_value
             self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "AnalogGain", new_value
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "AnalogGain",
+                new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newAnalogGain.emit(new_value)
 
@@ -4218,6 +4226,7 @@ class LiveControlWidget(QFrame):
                 self.currentConfiguration.name,
                 "IlluminationIntensity",
                 new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.liveController.update_illumination()
 
@@ -11143,7 +11152,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.exposure_time = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "ExposureTime", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "ExposureTime",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.signal_newExposureTime.emit(new_value)
 
@@ -11152,7 +11165,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.analog_gain = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "AnalogGain", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "AnalogGain",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.signal_newAnalogGain.emit(new_value)
 
@@ -11161,7 +11178,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.illumination_intensity = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "IlluminationIntensity", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "IlluminationIntensity",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.liveController.update_illumination()
 
