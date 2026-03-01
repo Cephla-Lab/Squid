@@ -534,6 +534,11 @@ class CameraConfig(pydantic.BaseModel):
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
     default_white_balance_gains: Optional[RGBValue] = None
 
+    # Enable global reset mode (global shutter) if the camera supports it.
+    # When enabled, all sensor rows are exposed simultaneously instead of sequentially (rolling shutter).
+    # If the camera does not support global reset, a warning is logged and rolling shutter is used.
+    use_global_reset_mode: bool = False
+
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
     if old_string == "Toupcam":

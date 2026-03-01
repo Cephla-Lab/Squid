@@ -98,6 +98,15 @@ class HamamatsuCamera(AbstractCamera):
         self._capabilities: HamamatsuCapabilities = capabilities
         self._is_streaming = threading.Event()
 
+        # Configure global reset (global shutter) mode if requested
+        if self._config.use_global_reset_mode:
+            if self._set_prop(DCAM_IDPROP.SHUTTER_MODE, DCAMPROP.SHUTTER_MODE.GLOBAL):
+                self._log.info("Global reset mode (global shutter) enabled")
+            else:
+                self._log.warning(
+                    "Failed to set global shutter mode, camera may not support it. Using rolling shutter."
+                )
+
         # We store exposure time so we don't need to worry about backing out strobe time from the
         # time stored on the camera.
         #
@@ -208,7 +217,11 @@ class HamamatsuCamera(AbstractCamera):
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
 
-        return (line_interval_s + trigger_delay_s) * 1000.0
+        strobe_time_ms = (line_interval_s + trigger_delay_s) * 1000.0
+        self._log.debug(
+            f"Strobe time: {strobe_time_ms:.3f} ms (line_interval={line_interval_s*1000:.3f} ms, trigger_delay={trigger_delay_s*1000:.3f} ms, resolution={resolution})"
+        )
+        return strobe_time_ms
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
