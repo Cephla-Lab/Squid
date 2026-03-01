@@ -24,6 +24,7 @@ void callback_initfilterwheel();
 void callback_initfilterwheel_w2();
 void callback_set_axis_disable_enable();
 void callback_set_trigger_mode();
+void callback_set_trigger_ready_mode();
 void callback_initialize();
 void callback_reset();
 

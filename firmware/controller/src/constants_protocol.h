@@ -74,6 +74,7 @@ static const int TURN_OFF_ALL_PORTS = 39;      // Turn off all illumination port
 static const int SET_ILLUMINATION_TIMEOUT = 40;  // Set auto-shutoff timeout for illumination
 
 static const int SET_PIN_LEVEL = 41;
+static const int SET_TRIGGER_READY_MODE = 42;
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

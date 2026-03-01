@@ -67,6 +67,8 @@ void init_camera()
     pinMode(camera_trigger_pins[i], OUTPUT);
     digitalWrite(camera_trigger_pins[i], HIGH);
   }
+  // Trigger-ready input from camera (HIGH = camera ready to accept trigger)
+  pinMode(trigger_ready_pin, INPUT);
 }
 
 void init_io()

@@ -409,6 +409,25 @@ void finalize_homing_xy()
 
 void do_camera_trigger()
 {
+  // Check for pending triggers (when trigger-ready gating deferred a trigger)
+  if (use_trigger_ready)
+  {
+    for (int camera_channel = 0; camera_channel < 4; camera_channel++)
+    {
+      if (pending_trigger[camera_channel] && digitalRead(trigger_ready_pin) == HIGH)
+      {
+        noInterrupts();
+        control_strobe[camera_channel] = pending_control_strobe[camera_channel];
+        illumination_on_time[camera_channel] = pending_illumination_on_time[camera_channel];
+        digitalWrite(camera_trigger_pins[camera_channel], LOW);
+        timestamp_trigger_rising_edge[camera_channel] = micros();
+        trigger_output_level[camera_channel] = LOW;
+        pending_trigger[camera_channel] = false;
+        interrupts();
+      }
+    }
+  }
+
   if (trigger_mode == 0) {
     for (int camera_channel = 0; camera_channel < 4; camera_channel++)
     {

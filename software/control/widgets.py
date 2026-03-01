@@ -1346,6 +1346,15 @@ class PreferencesDialog(QDialog):
         self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
+        self.trigger_ready_checkbox = QCheckBox()
+        self.trigger_ready_checkbox.setChecked(self._get_config_bool("GENERAL", "use_trigger_ready", False))
+        self.trigger_ready_checkbox.setToolTip(
+            "When enabled, the MCU waits for the camera's trigger-ready signal\n"
+            "before sending the next hardware trigger pulse. Prevents missed\n"
+            "frames when the camera hasn't finished processing the previous exposure."
+        )
+        hw_layout.addRow("Wait for Trigger Ready:", self.trigger_ready_checkbox)
+
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
@@ -1837,6 +1846,12 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+        self.config.set(
+            "GENERAL",
+            "use_trigger_ready",
+            "true" if self.trigger_ready_checkbox.isChecked() else "false",
+        )
+        control._def.USE_TRIGGER_READY = self.trigger_ready_checkbox.isChecked()
 
         # Advanced - Development Settings
         self.config.set(
@@ -2201,6 +2216,11 @@ class PreferencesDialog(QDialog):
         new_val = self.illumination_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "use_trigger_ready", False)
+        new_val = self.trigger_ready_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Wait for Trigger Ready", str(old_val), str(new_val), False))
 
         # Advanced - Development Settings
         # Enable/disable requires restart (for warning banner/dialog), but speed/compression

@@ -48,6 +48,7 @@ void init_callbacks()
     cmd_map[INITFILTERWHEEL_W2] = &callback_initfilterwheel_w2;
     cmd_map[SET_AXIS_DISABLE_ENABLE] = &callback_set_axis_disable_enable;
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
+    cmd_map[SET_TRIGGER_READY_MODE] = &callback_set_trigger_ready_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
     cmd_map[RESET] = &callback_reset;
@@ -97,8 +98,22 @@ void callback_send_hardware_trigger()
         return;
     }
 
-    control_strobe[camera_channel] = buffer_rx[2] >> 7;
-    illumination_on_time[camera_channel] = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
+    bool ctrl_strobe = buffer_rx[2] >> 7;
+    uint32_t illum_on_time = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
+
+    // If trigger-ready gating is enabled, check the trigger-ready pin
+    if (use_trigger_ready && digitalRead(trigger_ready_pin) != HIGH)
+    {
+        // Camera not ready - store as pending trigger
+        pending_trigger[camera_channel] = true;
+        pending_control_strobe[camera_channel] = ctrl_strobe;
+        pending_illumination_on_time[camera_channel] = illum_on_time;
+        interrupts();
+        return;
+    }
+
+    control_strobe[camera_channel] = ctrl_strobe;
+    illumination_on_time[camera_channel] = illum_on_time;
     digitalWrite(camera_trigger_pins[camera_channel], LOW);
     timestamp_trigger_rising_edge[camera_channel] = micros();
     trigger_output_level[camera_channel] = LOW;
@@ -216,6 +231,14 @@ void callback_set_trigger_mode()
         trigger_mode = buffer_rx[2];
 }
 
+void callback_set_trigger_ready_mode()
+{
+    use_trigger_ready = (buffer_rx[2] != 0);
+    // Clear any pending triggers when mode changes
+    for (int i = 0; i < 4; i++)
+        pending_trigger[i] = false;
+}
+
 void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
@@ -264,6 +287,9 @@ void callback_initialize()
 
     // reset trigger mode to normal
     trigger_mode = 0;
+    use_trigger_ready = false;
+    for (int i = 0; i < 4; i++)
+        pending_trigger[i] = false;
 }
 
 void callback_reset()
@@ -292,4 +318,7 @@ void callback_reset()
     is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
+    use_trigger_ready = false;
+    for (int i = 0; i < 4; i++)
+        pending_trigger[i] = false;
 }

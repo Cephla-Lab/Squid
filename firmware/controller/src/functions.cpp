@@ -196,7 +196,13 @@ unsigned long strobe_delay[6] = {0, 0, 0, 0, 0, 0};
 uint32_t illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
 long timestamp_trigger_rising_edge[6] = {0, 0, 0, 0, 0, 0};
 volatile uint8_t trigger_mode = 0;
+volatile bool use_trigger_ready = false;
 IntervalTimer strobeTimer;
+
+// Pending trigger state (when trigger-ready gating is enabled and camera not ready)
+volatile bool pending_trigger[4] = {false, false, false, false};
+volatile bool pending_control_strobe[4] = {false, false, false, false};
+volatile uint32_t pending_illumination_on_time[4] = {0, 0, 0, 0};
 
 /***************************************************************************************************/
 /***************************************** illumination ********************************************/

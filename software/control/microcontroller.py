@@ -1012,6 +1012,12 @@ class Microcontroller:
         cmd[2] = mode
         self.send_command(cmd)
 
+    def set_trigger_ready_mode(self, enabled):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_TRIGGER_READY_MODE
+        cmd[2] = 1 if enabled else 0
+        self.send_command(cmd)
+
     def _move_axis_usteps(self, usteps, axis_command_code):
         direction = np.sign(usteps)
         n_microsteps_abs = abs(usteps)

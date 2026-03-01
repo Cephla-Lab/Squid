@@ -202,6 +202,7 @@ class CMD_SET:
     TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
     SET_ILLUMINATION_TIMEOUT = 40  # Set auto-shutoff timeout for illumination
     SET_PIN_LEVEL = 41
+    SET_TRIGGER_READY_MODE = 42
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -1113,6 +1114,7 @@ class HardwareTriggerMode:
 
 
 HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
+USE_TRIGGER_READY = False
 
 
 def read_objectives_csv(file_path):

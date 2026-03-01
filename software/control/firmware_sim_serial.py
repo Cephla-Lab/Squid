@@ -108,6 +108,8 @@ class FirmwareConstants:
             "SET_STROBE_DELAY",
             "SET_AXIS_DISABLE_ENABLE",
             "SET_PIN_LEVEL",
+            "SET_TRIGGER_MODE",
+            "SET_TRIGGER_READY_MODE",
             "INITFILTERWHEEL",
             "INITIALIZE",
             "RESET",
