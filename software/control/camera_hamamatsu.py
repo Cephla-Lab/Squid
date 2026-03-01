@@ -97,6 +97,7 @@ class HamamatsuCamera(AbstractCamera):
         self._camera: Dcam = camera
         self._capabilities: HamamatsuCapabilities = capabilities
         self._is_streaming = threading.Event()
+        self._is_global_reset = False
 
         # Configure global reset (global shutter) mode if requested
         if self._config.use_global_reset_mode:
@@ -117,6 +118,7 @@ class HamamatsuCamera(AbstractCamera):
         mode = DCAMPROP.SHUTTER_MODE.GLOBAL if enabled else DCAMPROP.SHUTTER_MODE.ROLLING
         mode_name = "global" if enabled else "rolling"
         if self._set_prop(DCAM_IDPROP.SHUTTER_MODE, mode):
+            self._is_global_reset = enabled
             self._log.info(f"Shutter mode set to {mode_name}")
             self.set_exposure_time(self.get_exposure_time())
         else:
@@ -225,10 +227,20 @@ class HamamatsuCamera(AbstractCamera):
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
 
-        strobe_time_ms = (line_interval_s + trigger_delay_s) * 1000.0
-        self._log.debug(
-            f"Strobe time: {strobe_time_ms:.3f} ms (line_interval={line_interval_s*1000:.3f} ms, trigger_delay={trigger_delay_s*1000:.3f} ms, resolution={resolution})"
-        )
+        if self._is_global_reset:
+            # Global reset: all rows expose simultaneously, no rolling readout delay.
+            # Only the trigger delay applies.
+            strobe_time_ms = trigger_delay_s * 1000.0
+            self._log.debug(
+                f"Strobe time (global reset): {strobe_time_ms:.3f} ms "
+                f"(line_interval={line_interval_s*1000:.3f} ms skipped, trigger_delay={trigger_delay_s*1000:.3f} ms, resolution={resolution})"
+            )
+        else:
+            strobe_time_ms = (line_interval_s + trigger_delay_s) * 1000.0
+            self._log.debug(
+                f"Strobe time: {strobe_time_ms:.3f} ms "
+                f"(line_interval={line_interval_s*1000:.3f} ms, trigger_delay={trigger_delay_s*1000:.3f} ms, resolution={resolution})"
+            )
         return strobe_time_ms
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
