@@ -636,6 +636,7 @@ class Microcontroller:
         self.theta_pos = 0  # unit: microstep or encoder resolution
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
+        self.trigger_pending = False
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
         # and can be changed with enable_joystick(...)
         self.joystick_listener_events_enabled = False
@@ -1611,6 +1612,10 @@ class Microcontroller:
                 # switch
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
+
+                # trigger-pending flag (firmware v1.2+): set when a hardware
+                # trigger was deferred because the camera wasn't ready
+                self.trigger_pending = bool(self.button_and_switch_state & (1 << BIT_POS_TRIGGER_PENDING))
 
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)

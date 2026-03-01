@@ -106,8 +106,9 @@ static const int AXES_XY = 4;
 static const int AXIS_W = 5;
 static const int AXIS_W2 = 6;
 
-// Button/switch bit positions in response packet
+// Button/switch bit positions in response byte 18
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
+static const int BIT_POS_TRIGGER_PENDING = 7;
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

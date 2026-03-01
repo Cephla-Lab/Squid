@@ -1518,13 +1518,20 @@ class MultiPointWorker:
                 # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
                 self._sleep(max(0.0, exposure_done_time - time.time()))
                 # When trigger-ready gating is enabled, ensure the previous trigger
-                # has actually fired before we send the next one. In the normal case
-                # (camera ready), the ACK arrives during the sleep above so this
-                # returns instantly (zero overhead). It only blocks when accumulated
-                # delay from slow frames exceeds one frame period — preventing the
-                # firmware's single pending-trigger slot from being overwritten.
+                # has actually fired before we send the next one. The firmware
+                # reports trigger-pending status in bit 7 of byte 18 (independent
+                # of the command ACK system, so no entanglement with other commands).
+                # In the normal case the pending flag clears during the sleep above
+                # (zero overhead). This only blocks when accumulated delay from slow
+                # frames exceeds one frame period — preventing the firmware's single
+                # pending-trigger slot from being overwritten.
                 if control._def.USE_TRIGGER_READY:
-                    self.microcontroller.wait_till_operation_is_completed(timeout_limit_s=2)
+                    t0 = time.time()
+                    while self.microcontroller.trigger_pending:
+                        if time.time() - t0 > 2:
+                            self._log.warning("Trigger-ready wait timed out after 2s")
+                            break
+                        time.sleep(0.001)
             else:
                 # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
                 # To overcome this, just wait until the frame for this capture actually comes into the image

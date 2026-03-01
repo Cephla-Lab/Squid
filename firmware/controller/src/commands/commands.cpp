@@ -104,13 +104,10 @@ void callback_send_hardware_trigger()
     // If trigger-ready gating is enabled, check the trigger-ready pin
     if (use_trigger_ready && digitalRead(trigger_ready_pin) != HIGH)
     {
-        // Camera not ready - store as pending trigger and signal busy to software
-        // (software can call wait_till_operation_is_completed after its frame-time
-        // sleep to block only when accumulated delay exceeds one frame period)
+        // Camera not ready - store as pending trigger
         pending_trigger[camera_channel] = true;
         pending_control_strobe[camera_channel] = ctrl_strobe;
         pending_illumination_on_time[camera_channel] = illum_on_time;
-        mcu_cmd_execution_in_progress = true;
         interrupts();
         return;
     }
