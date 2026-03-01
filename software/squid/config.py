@@ -583,6 +583,7 @@ _camera_config = CameraConfig(
     default_white_balance_gains=RGBValue(
         r=_def.CAMERA_CONFIG.AWB_RATIOS_R, g=_def.CAMERA_CONFIG.AWB_RATIOS_G, b=_def.CAMERA_CONFIG.AWB_RATIOS_B
     ),
+    use_global_reset_mode=_def.CAMERA_CONFIG.USE_GLOBAL_RESET_MODE,
 )
 
 

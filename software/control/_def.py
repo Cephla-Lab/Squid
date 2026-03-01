@@ -761,6 +761,7 @@ class CAMERA_CONFIG:
     AWB_RATIOS_R = 1.375
     AWB_RATIOS_G = 1
     AWB_RATIOS_B = 1.4141
+    USE_GLOBAL_RESET_MODE = False
 
 
 class AF:
@@ -1466,6 +1467,11 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     "yes",
                 )
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+            if _general_config.has_option("GENERAL", "use_global_reset_mode"):
+                CAMERA_CONFIG.USE_GLOBAL_RESET_MODE = _general_config.get(
+                    "GENERAL", "use_global_reset_mode"
+                ).lower() in ("true", "1", "yes")
+                log.info(f"Loaded USE_GLOBAL_RESET_MODE={CAMERA_CONFIG.USE_GLOBAL_RESET_MODE} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 
