@@ -408,17 +408,7 @@ class ToupcamCamera(AbstractCamera):
 
         # Configure global reset mode if requested
         if self._config.use_global_reset_mode:
-            if self._capabilities.has_global_shutter:
-                try:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
-                    self._is_global_reset = True
-                    self._log.info("Global reset mode enabled")
-                except toupcam.HRESULTException as ex:
-                    self._log.error(f"Failed to enable global reset mode: hr=0x{ex.hr:x}")
-            else:
-                self._log.warning(
-                    "Global reset mode requested but camera does not support global shutter, using rolling shutter"
-                )
+            self.set_global_reset_mode(True)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
         self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
@@ -433,6 +423,28 @@ class ToupcamCamera(AbstractCamera):
         self._raw_set_resolution(width, height)
 
         # TODO: Do hardware cropping here (set ROI)
+
+    def set_global_reset_mode(self, enabled: bool):
+        if enabled:
+            if not self._capabilities.has_global_shutter:
+                self._log.warning("Global reset mode requested but camera does not support global shutter")
+                return
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
+                self._is_global_reset = True
+                self._log.info("Global reset mode enabled")
+            except toupcam.HRESULTException as ex:
+                self._log.error(f"Failed to enable global reset mode: hr=0x{ex.hr:x}")
+                return
+        else:
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 0)
+                self._is_global_reset = False
+                self._log.info("Global reset mode disabled")
+            except toupcam.HRESULTException as ex:
+                self._log.error(f"Failed to disable global reset mode: hr=0x{ex.hr:x}")
+                return
+        self._update_internal_settings()
 
     def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func

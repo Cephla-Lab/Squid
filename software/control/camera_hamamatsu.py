@@ -100,12 +100,7 @@ class HamamatsuCamera(AbstractCamera):
 
         # Configure global reset (global shutter) mode if requested
         if self._config.use_global_reset_mode:
-            if self._set_prop(DCAM_IDPROP.SHUTTER_MODE, DCAMPROP.SHUTTER_MODE.GLOBAL):
-                self._log.info("Global reset mode (global shutter) enabled")
-            else:
-                self._log.warning(
-                    "Failed to set global shutter mode, camera may not support it. Using rolling shutter."
-                )
+            self.set_global_reset_mode(True)
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
         # time stored on the camera.
@@ -113,6 +108,15 @@ class HamamatsuCamera(AbstractCamera):
         # We just set it to some sane value to start.
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
+
+    def set_global_reset_mode(self, enabled: bool):
+        mode = DCAMPROP.SHUTTER_MODE.GLOBAL if enabled else DCAMPROP.SHUTTER_MODE.ROLLING
+        mode_name = "global" if enabled else "rolling"
+        if self._set_prop(DCAM_IDPROP.SHUTTER_MODE, mode):
+            self._log.info(f"Shutter mode set to {mode_name}")
+            self.set_exposure_time(self.get_exposure_time())
+        else:
+            self._log.warning(f"Failed to set shutter mode to {mode_name}, camera may not support it")
 
     def close(self):
         self._cleanup_read_thread()
