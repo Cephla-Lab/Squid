@@ -7,7 +7,7 @@ from typing import Union
 import json
 import csv
 import squid.logging
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 
 log = squid.logging.get_logger(__name__)
 
@@ -1107,7 +1107,7 @@ PRIOR_STAGE_SN = ""
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
 
-class HardwareTriggerMode:
+class HardwareTriggerMode(IntEnum):
     EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
     LEVEL = 1  # Variable pulse width (illumination_on_time)
 

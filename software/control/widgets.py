@@ -1346,6 +1346,28 @@ class PreferencesDialog(QDialog):
         self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
+        self.hw_trigger_mode_combo = QComboBox()
+        for member in HardwareTriggerMode:
+            self.hw_trigger_mode_combo.addItem(member.name.title(), member.value)
+        self.hw_trigger_mode_combo.setToolTip(
+            "Edge: Fixed pulse width (TRIGGER_PULSE_LENGTH_us)\n" "Level: Variable pulse width (illumination_on_time)"
+        )
+        try:
+            hw_trigger_value = HardwareTriggerMode(self._get_config_int("GENERAL", "hardware_trigger_mode", 0))
+        except ValueError:
+            raw = self._get_config_int("GENERAL", "hardware_trigger_mode", 0)
+            logger.warning("Invalid hardware_trigger_mode=%d in INI, defaulting to EDGE", raw)
+            hw_trigger_value = HardwareTriggerMode.EDGE
+        self.hw_trigger_mode_combo.setCurrentIndex(hw_trigger_value)
+        self.hw_trigger_mode_label = QLabel("Hardware Trigger Mode:")
+        hw_layout.addRow(self.hw_trigger_mode_label, self.hw_trigger_mode_combo)
+
+        # Only show for cameras that support level trigger
+        camera_type = self._get_config_value("GENERAL", "camera_type", "Default")
+        supports_level_trigger = camera_type in ("Toupcam", "Tucsen")
+        self.hw_trigger_mode_label.setVisible(supports_level_trigger)
+        self.hw_trigger_mode_combo.setVisible(supports_level_trigger)
+
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
@@ -1837,6 +1859,8 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+        self.config.set("GENERAL", "hardware_trigger_mode", str(self.hw_trigger_mode_combo.currentIndex()))
+        control._def.HARDWARE_TRIGGER_MODE = HardwareTriggerMode(self.hw_trigger_mode_combo.currentIndex())
 
         # Advanced - Development Settings
         self.config.set(
@@ -2201,6 +2225,16 @@ class PreferencesDialog(QDialog):
         new_val = self.illumination_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
+
+        try:
+            old_mode = HardwareTriggerMode(self._get_config_int("GENERAL", "hardware_trigger_mode", 0))
+        except ValueError:
+            raw = self._get_config_int("GENERAL", "hardware_trigger_mode", 0)
+            logger.warning("Invalid hardware_trigger_mode=%d in INI, defaulting to EDGE", raw)
+            old_mode = HardwareTriggerMode.EDGE
+        new_mode = HardwareTriggerMode(self.hw_trigger_mode_combo.currentIndex())
+        if old_mode != new_mode:
+            changes.append(("Hardware Trigger Mode", old_mode.name.title(), new_mode.name.title(), False))
 
         # Advanced - Development Settings
         # Enable/disable requires restart (for warning banner/dialog), but speed/compression
