@@ -423,6 +423,9 @@ void do_camera_trigger()
         timestamp_trigger_rising_edge[camera_channel] = micros();
         trigger_output_level[camera_channel] = LOW;
         pending_trigger[camera_channel] = false;
+        // Clear busy flag so the next status packet reports COMPLETED,
+        // unblocking software's wait_till_operation_is_completed()
+        mcu_cmd_execution_in_progress = false;
         interrupts();
       }
     }
