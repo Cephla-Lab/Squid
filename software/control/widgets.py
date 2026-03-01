@@ -1347,13 +1347,16 @@ class PreferencesDialog(QDialog):
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
         self.hw_trigger_mode_combo = QComboBox()
-        self.hw_trigger_mode_combo.addItems(["Edge", "Level"])
+        for member in HardwareTriggerMode:
+            self.hw_trigger_mode_combo.addItem(member.name.title(), member.value)
         self.hw_trigger_mode_combo.setToolTip(
             "Edge: Fixed pulse width (TRIGGER_PULSE_LENGTH_us)\n" "Level: Variable pulse width (illumination_on_time)"
         )
         try:
             hw_trigger_value = HardwareTriggerMode(self._get_config_int("GENERAL", "hardware_trigger_mode", 0))
         except ValueError:
+            raw = self._get_config_int("GENERAL", "hardware_trigger_mode", 0)
+            logger.warning("Invalid hardware_trigger_mode=%d in INI, defaulting to EDGE", raw)
             hw_trigger_value = HardwareTriggerMode.EDGE
         self.hw_trigger_mode_combo.setCurrentIndex(hw_trigger_value)
         self.hw_trigger_mode_label = QLabel("Hardware Trigger Mode:")
@@ -2226,6 +2229,8 @@ class PreferencesDialog(QDialog):
         try:
             old_mode = HardwareTriggerMode(self._get_config_int("GENERAL", "hardware_trigger_mode", 0))
         except ValueError:
+            raw = self._get_config_int("GENERAL", "hardware_trigger_mode", 0)
+            logger.warning("Invalid hardware_trigger_mode=%d in INI, defaulting to EDGE", raw)
             old_mode = HardwareTriggerMode.EDGE
         new_mode = HardwareTriggerMode(self.hw_trigger_mode_combo.currentIndex())
         if old_mode != new_mode:
