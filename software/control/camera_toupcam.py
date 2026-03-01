@@ -75,10 +75,6 @@ class ToupcamCamera(AbstractCamera):
     ) -> StrobeInfo:
         log = squid.logging.get_logger("ToupcamCamera._calculate_strobe_delay")
 
-        if is_global_reset:
-            log.debug("Global reset mode active, strobe_time_us=0, trigger_delay_us=0")
-            return StrobeInfo(strobe_time_us=0, trigger_delay_us=0)
-
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
 
         pixel_bits = pixel_size * 8
@@ -165,6 +161,16 @@ class ToupcamCamera(AbstractCamera):
 
         trigger_delay_us = (shr * line_length) / 72
         strobe_time = int(vheight * row_time)
+
+        if is_global_reset:
+            # Global reset: all rows expose simultaneously, so no rolling readout delay.
+            # trigger_delay_us is kept as-is — TODO: verify against Toupcam global reset docs,
+            # the actual trigger delay in global reset mode may differ from rolling shutter.
+            log.debug(
+                f"Global reset mode: strobe_time_us=0, trigger_delay_us={trigger_delay_us}. "
+                f"{resolution_width=}, {resolution_height=}, {pixel_bits=}, {line_length=}, {low_noise=}, {vheight=}"
+            )
+            return StrobeInfo(strobe_time_us=0, trigger_delay_us=trigger_delay_us)
 
         log.debug(
             f"New strobe time calculated as {strobe_time} [us]. {resolution_width=}, {resolution_height=}, {pixel_bits=}, {line_length=}, {low_noise=}, {vheight=}, {trigger_delay_us=}"
