@@ -72,18 +72,10 @@ void send_position_update()
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
-    // Trigger-pending status in bit 7: set if any channel has a deferred trigger
-    bool any_trigger_pending = false;
-    for (int i = 0; i < 4; i++)
-    {
-      if (pending_trigger[i])
-      {
-        any_trigger_pending = true;
-        break;
-      }
-    }
+    // Trigger-pending status in bit 7: set when channel 0 has a deferred trigger
     buffer_tx[18] &= ~(1 << BIT_POS_TRIGGER_PENDING);
-    buffer_tx[18] |= (any_trigger_pending ? 1 : 0) << BIT_POS_TRIGGER_PENDING;
+    if (pending_trigger[0])
+      buffer_tx[18] |= (1 << BIT_POS_TRIGGER_PENDING);
 
     // Illumination port status in byte 19: bits 0-4 = D1-D5 on/off state
     uint8_t port_status = 0;
