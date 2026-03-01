@@ -424,6 +424,9 @@ class ToupcamCamera(AbstractCamera):
 
         # TODO: Do hardware cropping here (set ROI)
 
+    def supports_global_reset_mode(self) -> bool:
+        return self._capabilities.has_global_shutter
+
     def set_global_reset_mode(self, enabled: bool):
         if enabled:
             if not self._capabilities.has_global_shutter:

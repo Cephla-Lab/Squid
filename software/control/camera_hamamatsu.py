@@ -109,6 +109,10 @@ class HamamatsuCamera(AbstractCamera):
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
 
+    def supports_global_reset_mode(self) -> bool:
+        attr = self._camera.prop_getattr(DCAM_IDPROP.SHUTTER_MODE)
+        return attr is not None and not isinstance(attr, bool)
+
     def set_global_reset_mode(self, enabled: bool):
         mode = DCAMPROP.SHUTTER_MODE.GLOBAL if enabled else DCAMPROP.SHUTTER_MODE.ROLLING
         mode_name = "global" if enabled else "rolling"
