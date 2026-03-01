@@ -1352,6 +1352,7 @@ class PreferencesDialog(QDialog):
             "Edge: Fixed pulse width (TRIGGER_PULSE_LENGTH_us)\n" "Level: Variable pulse width (illumination_on_time)"
         )
         hw_trigger_value = self._get_config_int("GENERAL", "hardware_trigger_mode", 0)
+        hw_trigger_value = max(0, min(hw_trigger_value, 1))
         self.hw_trigger_mode_combo.setCurrentIndex(hw_trigger_value)
         self.hw_trigger_mode_label = QLabel("Hardware Trigger Mode:")
         hw_layout.addRow(self.hw_trigger_mode_label, self.hw_trigger_mode_combo)
@@ -1854,7 +1855,8 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
         self.config.set("GENERAL", "hardware_trigger_mode", str(self.hw_trigger_mode_combo.currentIndex()))
-        control._def.HARDWARE_TRIGGER_MODE = self.hw_trigger_mode_combo.currentIndex()
+        trigger_modes = [HardwareTriggerMode.EDGE, HardwareTriggerMode.LEVEL]
+        control._def.HARDWARE_TRIGGER_MODE = trigger_modes[self.hw_trigger_mode_combo.currentIndex()]
 
         # Advanced - Development Settings
         self.config.set(
