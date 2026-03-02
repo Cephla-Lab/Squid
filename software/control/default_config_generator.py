@@ -15,7 +15,6 @@ from control.models import (
     AcquisitionChannel,
     AcquisitionChannelOverride,
     CameraSettings,
-    ConfocalConfig,
     ConfocalSettings,
     GeneralChannelConfig,
     IlluminationChannel,
@@ -23,6 +22,7 @@ from control.models import (
     IlluminationSettings,
     ObjectiveChannelConfig,
 )
+from control.models.confocal_config import ConfocalConfig
 from control.models.illumination_config import (
     DEFAULT_LED_COLOR,
     DEFAULT_WAVELENGTH_COLORS,
@@ -38,8 +38,41 @@ DEFAULT_ILLUMINATION_INTENSITY = 20.0
 DEFAULT_LED_ILLUMINATION_INTENSITY = 5.0  # Lower intensity for USB LED sources
 DEFAULT_Z_OFFSET_UM = 0.0
 
+# Confocal iris properties and defaults
+ALL_IRIS_PROPERTIES = {"illumination_iris", "emission_iris"}
+DEFAULT_IRIS_VALUE = 100.0  # Fully open
+
 # Standard objectives
 DEFAULT_OBJECTIVES = ["2x", "4x", "10x", "20x", "40x", "50x", "60x"]
+
+
+def build_confocal_settings_from_config(
+    confocal_config: Optional[ConfocalConfig] = None,
+) -> ConfocalSettings:
+    """Build ConfocalSettings with iris fields driven by confocal_config.yaml.
+
+    Resolution order:
+    1. Model registry: if confocal_config has a model field, use its objective_properties
+    2. Backwards compat: use objective_specific_properties string list
+    3. Fallback (no config): include all iris properties at default value
+
+    Args:
+        confocal_config: Confocal hardware config (None = include all iris fields)
+
+    Returns:
+        ConfocalSettings with matching iris fields set to defaults
+    """
+    if confocal_config is not None:
+        # Try model registry first
+        model_def = confocal_config.get_model_def()
+        if model_def is not None:
+            return ConfocalSettings(**model_def.objective_properties)
+        # Backwards compat: use objective_specific_properties string list
+        iris_props = ALL_IRIS_PROPERTIES & set(confocal_config.objective_specific_properties)
+        kwargs = {prop: DEFAULT_IRIS_VALUE for prop in iris_props}
+        return ConfocalSettings(**kwargs)
+    # No config: fallback to all iris properties
+    return ConfocalSettings(**{prop: DEFAULT_IRIS_VALUE for prop in ALL_IRIS_PROPERTIES})
 
 
 def get_display_color_for_channel(channel: IlluminationChannel) -> str:
@@ -110,6 +143,7 @@ def create_objective_acquisition_channel(
     illumination_channel: IlluminationChannel,
     include_confocal: bool = False,
     camera_id: Optional[int] = None,
+    confocal_config: Optional[ConfocalConfig] = None,
 ) -> AcquisitionChannel:
     """
     Create an acquisition channel for objective-specific YAML files (v1.0 schema).
@@ -147,11 +181,11 @@ def create_objective_acquisition_channel(
         intensity=default_intensity,
     )
 
+    confocal_hardware_settings = None
     confocal_override = None
 
     if include_confocal:
-        # v1.0: confocal_override contains only iris settings (objective-specific)
-        # Filter wheel resolved via hardware_bindings, not stored in config
+        confocal_hardware_settings = build_confocal_settings_from_config(confocal_config)
         confocal_override = AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
                 illumination_channel=None,
@@ -161,10 +195,6 @@ def create_objective_acquisition_channel(
                 exposure_time_ms=DEFAULT_EXPOSURE_TIME_MS,
                 gain_mode=DEFAULT_GAIN_MODE,
                 pixel_format=None,
-            ),
-            confocal_settings=ConfocalSettings(
-                illumination_iris=None,  # Objective-specific
-                emission_iris=None,  # Objective-specific
             ),
         )
 
@@ -177,6 +207,7 @@ def create_objective_acquisition_channel(
         filter_position=None,  # Not in objective files
         z_offset_um=DEFAULT_Z_OFFSET_UM,  # v1.0: at channel level (placeholder, from general.yaml)
         illumination_settings=illumination_settings,
+        confocal_hardware_settings=confocal_hardware_settings,
         confocal_override=confocal_override,
     )
 
@@ -214,6 +245,7 @@ def generate_objective_config(
     illumination_config: IlluminationChannelConfig,
     include_confocal: bool = False,
     camera_id: Optional[int] = None,
+    confocal_config: Optional[ConfocalConfig] = None,
 ) -> ObjectiveChannelConfig:
     """
     Generate an objective-specific configuration (v1.0 schema).
@@ -233,7 +265,7 @@ def generate_objective_config(
     channels = []
     for ill_channel in illumination_config.channels:
         acq_channel = create_objective_acquisition_channel(
-            ill_channel, include_confocal=include_confocal, camera_id=camera_id
+            ill_channel, include_confocal=include_confocal, camera_id=camera_id, confocal_config=confocal_config
         )
         channels.append(acq_channel)
 
@@ -242,16 +274,17 @@ def generate_objective_config(
 
 def generate_default_configs(
     illumination_config: IlluminationChannelConfig,
-    confocal_config: Optional[ConfocalConfig],
+    include_confocal: bool = False,
     objectives: Optional[List[str]] = None,
     camera_id: Optional[int] = None,
+    confocal_config: Optional[ConfocalConfig] = None,
 ) -> Tuple[GeneralChannelConfig, Dict[str, ObjectiveChannelConfig]]:
     """
     Generate default acquisition configs for all objectives.
 
     Args:
         illumination_config: Available illumination channels
-        confocal_config: Confocal configuration (None if no confocal)
+        include_confocal: Whether to include confocal_override sections in objective configs
         objectives: List of objectives to generate configs for (default: standard set)
         camera_id: Camera ID (optional for single-camera systems)
 
@@ -261,8 +294,6 @@ def generate_default_configs(
     if objectives is None:
         objectives = DEFAULT_OBJECTIVES
 
-    include_confocal = confocal_config is not None
-
     general_config = generate_general_config(
         illumination_config, include_confocal=include_confocal, camera_id=camera_id
     )
@@ -270,7 +301,7 @@ def generate_default_configs(
     objective_configs = {}
     for objective in objectives:
         objective_configs[objective] = generate_objective_config(
-            illumination_config, include_confocal=include_confocal, camera_id=camera_id
+            illumination_config, include_confocal=include_confocal, camera_id=camera_id, confocal_config=confocal_config
         )
 
     return general_config, objective_configs
@@ -314,6 +345,7 @@ def ensure_default_configs(
     config_repo: ConfigRepository,
     profile: str,
     objectives: Optional[List[str]] = None,
+    include_confocal: bool = False,
 ) -> bool:
     """
     Ensure a profile has default configurations.
@@ -328,6 +360,8 @@ def ensure_default_configs(
         config_repo: ConfigRepository instance
         profile: Profile name
         objectives: List of objectives (default: standard set)
+        include_confocal: Whether to include confocal_override sections.
+            Should be set from ENABLE_SPINNING_DISK_CONFOCAL.
 
     Returns:
         True if configs were generated, False if they already existed or migration is pending
@@ -351,12 +385,29 @@ def ensure_default_configs(
         logger.error("Cannot generate defaults: illumination_channel_config.yaml not found")
         raise FileNotFoundError("illumination_channel_config.yaml is required to generate default configs")
 
-    # Check for confocal
-    confocal_config = config_repo.get_confocal_config()
+    # Load confocal config (reuse for both warning check and generation)
+    confocal_config = config_repo.get_confocal_config() if include_confocal else None
+
+    # Warn if confocal is enabled but confocal_config.yaml is missing or invalid
+    if include_confocal and confocal_config is None:
+        confocal_path = config_repo.machine_configs_path / "confocal_config.yaml"
+        if confocal_path.exists():
+            logger.warning(
+                f"confocal_config.yaml exists but failed to load (invalid format). "
+                f"Confocal overrides will still be generated with defaults. "
+                f"Fix {confocal_path} to match the expected schema."
+            )
+        else:
+            logger.warning(
+                "Confocal is enabled but confocal_config.yaml not found. "
+                "Confocal overrides will be generated with defaults."
+            )
 
     # Generate configs
     logger.info(f"Generating default configs for profile '{profile}'")
-    general_config, objective_configs = generate_default_configs(illumination_config, confocal_config, objectives)
+    general_config, objective_configs = generate_default_configs(
+        illumination_config, include_confocal=include_confocal, objectives=objectives, confocal_config=confocal_config
+    )
 
     # Ensure directories exist
     config_repo.ensure_profile_directories(profile)

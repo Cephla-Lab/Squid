@@ -737,6 +737,8 @@ class ConfigRepository:
             "ExposureTime": ("camera", "exposure_time_ms"),
             "AnalogGain": ("camera", "gain_mode"),
             "IlluminationIntensity": ("illumination", "intensity"),
+            "IlluminationIris": ("confocal_hw", "illumination_iris"),
+            "EmissionIris": ("confocal_hw", "emission_iris"),
         }
 
         if setting not in setting_mapping:
@@ -771,7 +773,6 @@ class ConfigRepository:
                         illumination_settings=IlluminationSettings(
                             illumination_channel=None,  # From general.yaml
                             intensity=ch.illumination_settings.intensity,
-                            z_offset_um=0.0,  # Placeholder, from general.yaml
                         ),
                     )
                     for ch in general_config.channels
@@ -784,9 +785,25 @@ class ConfigRepository:
             logger.warning(f"Channel '{channel_name}' not found in objective config")
             return False
 
-        if confocal_mode:
+        # Iris settings go to confocal_hardware_settings (applies in both modes)
+        if location == "confocal_hw":
+            if acq_channel.confocal_hardware_settings is None:
+                from control.default_config_generator import build_confocal_settings_from_config
+
+                acq_channel.confocal_hardware_settings = build_confocal_settings_from_config(
+                    self.get_confocal_config()
+                )
+            setattr(acq_channel.confocal_hardware_settings, field, value)
+        elif confocal_mode:
             # Write to confocal_override — create it if it doesn't exist
             if acq_channel.confocal_override is None:
+                # Also create confocal_hardware_settings if missing
+                if acq_channel.confocal_hardware_settings is None:
+                    from control.default_config_generator import build_confocal_settings_from_config
+
+                    acq_channel.confocal_hardware_settings = build_confocal_settings_from_config(
+                        self.get_confocal_config()
+                    )
                 acq_channel.confocal_override = AcquisitionChannelOverride(
                     camera_settings=acq_channel.camera_settings.model_copy(),
                     illumination_settings=IlluminationSettings(

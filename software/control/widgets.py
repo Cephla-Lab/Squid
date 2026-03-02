@@ -3057,10 +3057,13 @@ class LaserAutofocusSettingWidget(QWidget):
 class SpinningDiskConfocalWidget(QWidget):
 
     signal_toggle_confocal_widefield = Signal(bool)
+    signal_illumination_iris_changed = Signal(float)
+    signal_emission_iris_changed = Signal(float)
 
     def __init__(self, xlight):
         super(SpinningDiskConfocalWidget, self).__init__()
 
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.xlight = xlight
 
         self.init_ui()
@@ -3243,6 +3246,24 @@ class SpinningDiskConfocalWidget(QWidget):
         self.xlight.set_dichroic(selected_pos)
         self.enable_all_buttons(True)
 
+    def update_iris_from_config(self, configuration):
+        """Update iris UI and hardware from a channel's confocal_hardware_settings."""
+        hw_settings = getattr(configuration, "confocal_hardware_settings", None)
+        if hw_settings is None:
+            return
+        self.block_iris_control_signals(True)
+        try:
+            if hw_settings.illumination_iris is not None and self.xlight.has_illumination_iris_diaphragm:
+                value = int(hw_settings.illumination_iris)
+                self.slider_illumination_iris.setValue(value)
+                self.spinbox_illumination_iris.setValue(value)
+            if hw_settings.emission_iris is not None and self.xlight.has_emission_iris_diaphragm:
+                value = int(hw_settings.emission_iris)
+                self.slider_emission_iris.setValue(value)
+                self.spinbox_emission_iris.setValue(value)
+        finally:
+            self.block_iris_control_signals(False)
+
     def update_illumination_iris(self, from_slider: bool):
         self.block_iris_control_signals(True)  # avoid signals triggered by enable/disable buttons
         self.enable_all_buttons(False)
@@ -3252,6 +3273,7 @@ class SpinningDiskConfocalWidget(QWidget):
             value = self.spinbox_illumination_iris.value()
             self.slider_illumination_iris.setValue(value)
         self.xlight.set_illumination_iris(value)
+        self.signal_illumination_iris_changed.emit(float(value))
         self.enable_all_buttons(True)
         self.block_iris_control_signals(False)
 
@@ -3264,6 +3286,7 @@ class SpinningDiskConfocalWidget(QWidget):
             value = self.spinbox_emission_iris.value()
             self.slider_emission_iris.setValue(value)
         self.xlight.set_emission_iris(value)
+        self.signal_emission_iris_changed.emit(float(value))
         self.enable_all_buttons(True)
         self.block_iris_control_signals(False)
 
@@ -4229,6 +4252,24 @@ class LiveControlWidget(QFrame):
                 confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.liveController.update_illumination()
+
+    def update_config_illumination_iris(self, new_value):
+        if self.currentConfiguration:
+            self.liveController.microscope.config_repo.update_channel_setting(
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "IlluminationIris",
+                new_value,
+            )
+
+    def update_config_emission_iris(self, new_value):
+        if self.currentConfiguration:
+            self.liveController.microscope.config_repo.update_channel_setting(
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "EmissionIris",
+                new_value,
+            )
 
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)

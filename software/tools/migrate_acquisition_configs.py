@@ -336,8 +336,6 @@ def convert_xml_channels_to_acquisition_config(
 
         if include_confocal and name in confocal_by_name:
             conf_ch = confocal_by_name[name]
-            # v1.0: confocal_override contains only iris settings (objective-specific)
-            # Filter wheel resolved via hardware_bindings, not stored in config
             confocal_override = AcquisitionChannelOverride(
                 illumination_settings=IlluminationSettings(
                     illumination_channel=None,  # Overrides don't need illumination_channel
@@ -346,10 +344,6 @@ def convert_xml_channels_to_acquisition_config(
                 camera_settings=CameraSettings(
                     exposure_time_ms=conf_ch["exposure_time_ms"],
                     gain_mode=conf_ch["analog_gain"],
-                ),
-                confocal_settings=ConfocalSettings(
-                    illumination_iris=None,  # No iris data in legacy XML
-                    emission_iris=None,  # No iris data in legacy XML
                 ),
             )
 

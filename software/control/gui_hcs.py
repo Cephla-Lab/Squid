@@ -1604,6 +1604,17 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
+            # Update iris UI when channel changes
+            self.liveControlWidget.signal_live_configuration.connect(
+                self.spinningDiskConfocalWidget.update_iris_from_config
+            )
+            # Save iris values to config when changed (persistence through LiveControlWidget)
+            self.spinningDiskConfocalWidget.signal_illumination_iris_changed.connect(
+                self.liveControlWidget.update_config_illumination_iris
+            )
+            self.spinningDiskConfocalWidget.signal_emission_iris_changed.connect(
+                self.liveControlWidget.update_config_emission_iris
+            )
             # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
             # this GUI code runs. The microscope queries hardware state and calls
             # live_controller.sync_confocal_mode_from_hardware() during init.

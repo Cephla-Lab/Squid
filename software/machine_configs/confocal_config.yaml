@@ -1,0 +1,13 @@
+version: 1
+model: xlight_v3
+
+filter_wheels:
+  - name: "Emission Wheel"
+    id: 1
+    type: emission
+    positions:
+      1: "Empty"
+      2: "BP 525/50"
+      3: "BP 600/50"
+      4: "BP 700/75"
+      5: "LP 650"

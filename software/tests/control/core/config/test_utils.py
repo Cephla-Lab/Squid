@@ -57,7 +57,10 @@ def sample_channel_with_confocal_override():
             exposure_time_ms=100.0,
             gain_mode=0.0,
         ),
-        # v1.0: confocal_override contains iris settings only (no confocal_settings at channel level)
+        confocal_hardware_settings=ConfocalSettings(
+            illumination_iris=50.0,
+            emission_iris=50.0,
+        ),
         confocal_override=AcquisitionChannelOverride(
             illumination_settings=IlluminationSettings(
                 illumination_channel="488nm",
@@ -66,10 +69,6 @@ def sample_channel_with_confocal_override():
             camera_settings=CameraSettings(
                 exposure_time_ms=200.0,  # Longer exposure for confocal
                 gain_mode=1.0,
-            ),
-            confocal_settings=ConfocalSettings(
-                illumination_iris=50.0,
-                emission_iris=50.0,
             ),
         ),
     )
