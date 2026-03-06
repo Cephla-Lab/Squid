@@ -44,15 +44,17 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.init_ui()
 
-        self.dropdown_emission_filter.setCurrentText(
-            str(self.xlight.get_emission_filter())
-        )
-        self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        if self.xlight.has_emission_filters_wheel:
+            self.dropdown_emission_filter.setCurrentText(
+                str(self.xlight.get_emission_filter())
+            )
+            self.dropdown_emission_filter.currentIndexChanged.connect(
+                self.set_emission_filter
+            )
 
-        self.dropdown_emission_filter.currentIndexChanged.connect(
-            self.set_emission_filter
-        )
-        self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
+        if self.xlight.has_dichroic_filters_wheel:
+            self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+            self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
 
         self.disk_position_state = self.xlight.get_disk_position()
         if self._event_bus is not None and self._current_objective is not None:
@@ -112,17 +114,26 @@ class SpinningDiskConfocalWidget(QWidget):
             )
 
     def init_ui(self) -> None:
-        emissionFilterLayout = QHBoxLayout()
-        emissionFilterLayout.addWidget(QLabel("Emission Position"))
-        self.dropdown_emission_filter = QComboBox(self)
-        self.dropdown_emission_filter.addItems([str(i + 1) for i in range(8)])
-        emissionFilterLayout.addWidget(self.dropdown_emission_filter)
+        from _def import XLIGHT_EMISSION_FILTER_POSITIONS
 
-        dichroicLayout = QHBoxLayout()
-        dichroicLayout.addWidget(QLabel("Dichroic Position"))
-        self.dropdown_dichroic = QComboBox(self)
-        self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
-        dichroicLayout.addWidget(self.dropdown_dichroic)
+        self.dropdown_emission_filter = None
+        self.dropdown_dichroic = None
+
+        if self.xlight.has_emission_filters_wheel:
+            emissionFilterLayout = QHBoxLayout()
+            emissionFilterLayout.addWidget(QLabel("Emission Position"))
+            self.dropdown_emission_filter = QComboBox(self)
+            self.dropdown_emission_filter.addItems(
+                [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
+            )
+            emissionFilterLayout.addWidget(self.dropdown_emission_filter)
+
+        if self.xlight.has_dichroic_filters_wheel:
+            dichroicLayout = QHBoxLayout()
+            dichroicLayout.addWidget(QLabel("Dichroic Position"))
+            self.dropdown_dichroic = QComboBox(self)
+            self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
+            dichroicLayout.addWidget(self.dropdown_dichroic)
 
         illuminationIrisLayout = QHBoxLayout()
         illuminationIrisLayout.addWidget(QLabel("Illumination Iris"))
@@ -186,8 +197,10 @@ class SpinningDiskConfocalWidget(QWidget):
         self.setLayout(layout)
 
     def enable_all_buttons(self, enable: bool) -> None:
-        self.dropdown_emission_filter.setEnabled(enable)
-        self.dropdown_dichroic.setEnabled(enable)
+        if self.dropdown_emission_filter is not None:
+            self.dropdown_emission_filter.setEnabled(enable)
+        if self.dropdown_dichroic is not None:
+            self.dropdown_dichroic.setEnabled(enable)
         self.btn_toggle_widefield.setEnabled(enable)
         self.btn_toggle_motor.setEnabled(enable)
         self.slider_illumination_iris.setEnabled(enable)
@@ -229,12 +242,16 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
 
     def set_emission_filter(self, index: int) -> None:
+        if self.dropdown_emission_filter is None:
+            return
         self.enable_all_buttons(False)
         selected_pos = self.dropdown_emission_filter.currentText()
         self.xlight.set_emission_filter(selected_pos)
         self.enable_all_buttons(True)
 
     def set_dichroic(self, index: int) -> None:
+        if self.dropdown_dichroic is None:
+            return
         self.enable_all_buttons(False)
         selected_pos = self.dropdown_dichroic.currentText()
         self.xlight.set_dichroic(selected_pos)

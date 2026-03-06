@@ -120,13 +120,15 @@ class SerialDevice:
             # check response
             if response == expected_response:
                 return response
-            else:
-                log.warning(response)
 
             # check prefix if the full response does not match
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
+
+            # Log mismatch for debugging (ports upstream 08ef8c5e)
+            if response:
+                log.warning(f"Serial response mismatch: got '{response}', expected '{expected_response}'")
 
             time.sleep(attempt_delay)  # Wait before retrying
 

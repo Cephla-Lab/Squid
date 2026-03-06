@@ -239,6 +239,12 @@ class ApplicationContext:
 
                     if getattr(_config, "DEFAULT_TRIGGER_MODE") == TriggerMode.HARDWARE:
                         camera_service.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                        # Set microcontroller trigger mode to match (ports upstream 2408902a)
+                        mc = self._microscope.low_level_drivers.microcontroller if self._microscope else None
+                        if mc is not None:
+                            from _def import HARDWARE_TRIGGER_MODE
+
+                            mc.set_trigger_mode(HARDWARE_TRIGGER_MODE)
                     else:
                         camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
                 self._camera_frame_callback_id = camera_service.add_frame_callback(
@@ -294,6 +300,12 @@ class ApplicationContext:
 
                     if getattr(_config, "DEFAULT_TRIGGER_MODE") == TriggerMode.HARDWARE:
                         camera_service.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                        # Set microcontroller trigger mode to match (ports upstream 2408902a)
+                        mc = self._microscope.low_level_drivers.microcontroller if self._microscope else None
+                        if mc is not None:
+                            from _def import HARDWARE_TRIGGER_MODE
+
+                            mc.set_trigger_mode(HARDWARE_TRIGGER_MODE)
                     else:
                         camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
                 self._camera_frame_callback_id = camera_service.add_frame_callback(

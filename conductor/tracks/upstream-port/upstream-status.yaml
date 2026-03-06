@@ -3,7 +3,7 @@ meta:
   target_branch: multipoint-refactor
   cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-02-07T15:55:46'
+  last_verified: '2026-03-04T14:30:43'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -684,7 +684,8 @@ commits:
     title: 'fix: minor UI and path fixes (#494)'
     status: ported
     ported_date: '2026-02-07'
-    notes: Path separator fix (Path / operator) in _def.py, text selectability in warning_error_widget.py. Test dir rename skipped (different structure).
+    notes: Path separator fix (Path / operator) in _def.py, text selectability in warning_error_widget.py. Test dir rename
+      skipped (different structure).
   833ae523:
     title: 'feat: Workflow Runner - Edit button and multiple Acquisition sequences with config paths (#493)'
     status: in-progress
@@ -699,3 +700,42 @@ commits:
   88c0065c:
     title: 'feat: Wellplate calibration improvements - center point method and parameter editing (#490)'
     status: in-progress
+  2408902a:
+    title: 'fix: prevent level trigger from never ending when retriggered too fast (#500)'
+    status: ported
+    ported_date: '2026-03-05'
+    analysis_file: commits/27-pending-march-ports.md
+  84b49652:
+    title: 'fix: Move z_offset_um to AcquisitionChannel level in add channel dialog (#502)'
+    status: skipped
+    skip_reason: already-fixed
+    skip_justification: arch_v2 schema already has z_offset_um on AcquisitionChannel with explicit comment referencing this upstream bug.
+    skip_date: '2026-03-05'
+  5e5fb921:
+    title: 'fix: Pin numpy<2 to fix CI test failures (#501)'
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: Build scripts only (setup_22.04.sh). arch_v2 manages dependencies separately.
+    skip_date: '2026-03-05'
+  bcad6087:
+    title: 'feat: Disable TEC when default_temperature is None for Toupcam (#499)'
+    status: ported
+    ported_date: '2026-03-05'
+    analysis_file: commits/27-pending-march-ports.md
+  623c2017:
+    title: 'fix: Use cropped image dimensions for NDViewer configuration (#498)'
+    status: skipped
+    skip_reason: already-fixed
+    skip_justification: arch_v2 _publish_ndviewer_start() already calls get_crop_size() with fallback to get_resolution().
+    skip_date: '2026-03-05'
+  08ef8c5e:
+    title: 'fix: XLight/Cicero filter wheel integration (#497)'
+    status: ported
+    ported_date: '2026-03-05'
+    analysis_file: commits/27-pending-march-ports.md
+  e5e07d25:
+    title: 'feat: Add Anthropic API key management for Claude Code (#495)'
+    status: skipped
+    skip_reason: not-applicable
+    skip_justification: GUI convenience feature for upstream main_hcs.py Claude Code integration. Not relevant to arch_v2 architecture.
+    skip_date: '2026-03-05'

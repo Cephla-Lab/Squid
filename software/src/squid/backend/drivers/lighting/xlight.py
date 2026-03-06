@@ -2,7 +2,7 @@ import serial
 import time
 
 from squid.backend.drivers.peripherals.serial_base import SerialDevice, SerialDeviceError
-from _def import XLIGHT_ILLUMINATION_IRIS_DEFAULT, XLIGHT_EMISSION_IRIS_DEFAULT
+from _def import XLIGHT_ILLUMINATION_IRIS_DEFAULT, XLIGHT_EMISSION_IRIS_DEFAULT, XLIGHT_EMISSION_FILTER_POSITIONS
 
 import squid.core.logging
 
@@ -200,8 +200,11 @@ class XLight:
         if self.disable_emission_filter_wheel:
             print("emission filter wheel disabled")
             return -1
-        if str(position) not in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            raise ValueError("Invalid emission filter wheel position!")
+        valid_positions = [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
+        if str(position) not in valid_positions:
+            raise ValueError(
+                f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}"
+            )
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -209,7 +212,7 @@ class XLight:
 
         if validate:
             current_pos = self.serial_connection.write_and_check(
-                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=0.01
+                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=self.sleep_time_for_wheel
             )
             self.emission_wheel_pos = int(current_pos[1])
         else:
@@ -221,7 +224,7 @@ class XLight:
 
     def get_emission_filter(self):
         current_pos = self.serial_connection.write_and_check(
-            "rB\r", "rB", read_delay=0.01
+            "rB\r", "rB", read_delay=self.sleep_time_for_wheel
         )
         self.emission_wheel_pos = int(current_pos[2])
         return self.emission_wheel_pos
@@ -235,14 +238,14 @@ class XLight:
             position_to_write += "m"
 
         current_pos = self.serial_connection.write_and_check(
-            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=0.01
+            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=self.sleep_time_for_wheel
         )
         self.dichroic_wheel_pos = int(current_pos[1])
         return self.dichroic_wheel_pos
 
     def get_dichroic(self):
         current_pos = self.serial_connection.write_and_check(
-            "rC\r", "rC", read_delay=0.01
+            "rC\r", "rC", read_delay=self.sleep_time_for_wheel
         )
         self.dichroic_wheel_pos = int(current_pos[2])
         return self.dichroic_wheel_pos
