@@ -47,19 +47,22 @@ def repo_with_profile(temp_dir):
 
     # Create a minimal illumination config
     illumination_yaml = machine_configs / "illumination_channel_config.yaml"
-    illumination_yaml.write_text("""
+    illumination_yaml.write_text(
+        """
 version: 1
 channels:
   - name: "488nm"
     type: epi_illumination
     controller_port: D2
     wavelength_nm: 488
-""")
+"""
+    )
 
     # Create a general config (schema v1.0)
     # Note: z_offset_um is at channel level, not in illumination_settings
     general_yaml = default_profile / "channel_configs" / "general.yaml"
-    general_yaml.write_text("""
+    general_yaml.write_text(
+        """
 version: 1.0
 channel_groups: []
 channels:
@@ -73,11 +76,13 @@ channels:
     camera_settings:
       exposure_time_ms: 100.0
       gain_mode: 0.0
-""")
+"""
+    )
 
     # Create an objective config (schema v1.0)
     objective_yaml = default_profile / "channel_configs" / "20x.yaml"
-    objective_yaml.write_text("""
+    objective_yaml.write_text(
+        """
 version: 1.0
 channels:
   - name: "Fluorescence 488nm"
@@ -88,7 +93,8 @@ channels:
     camera_settings:
       exposure_time_ms: 50.0
       gain_mode: 1.0
-""")
+"""
+    )
 
     repo = ConfigRepository(base_path=temp_dir)
     repo.set_profile("default")
@@ -310,7 +316,8 @@ class TestConfigRepositoryCacheManagement:
             profile_path = user_profiles / profile / "channel_configs"
             profile_path.mkdir(parents=True)
             (user_profiles / profile / "laser_af_configs").mkdir()
-            (profile_path / "general.yaml").write_text(f"""
+            (profile_path / "general.yaml").write_text(
+                f"""
 version: 1.0
 channel_groups: []
 channels:
@@ -323,7 +330,8 @@ channels:
     camera_settings:
       exposure_time_ms: 100.0
       gain_mode: 0.0
-""")
+"""
+            )
 
         repo = ConfigRepository(base_path=temp_dir)
 
@@ -370,11 +378,13 @@ class TestConfigRepositoryErrorHandling:
         (temp_dir / "user_profiles" / "default" / "channel_configs").mkdir(parents=True)
 
         # Write invalid YAML
-        (machine_configs / "illumination_channel_config.yaml").write_text("""
+        (machine_configs / "illumination_channel_config.yaml").write_text(
+            """
 version: 1
 channels:
   - name: [invalid yaml
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         config = repo.get_illumination_config()
@@ -388,12 +398,14 @@ channels:
         (temp_dir / "user_profiles" / "default" / "channel_configs").mkdir(parents=True)
 
         # Write valid YAML but invalid schema (missing required fields)
-        (machine_configs / "illumination_channel_config.yaml").write_text("""
+        (machine_configs / "illumination_channel_config.yaml").write_text(
+            """
 version: 1
 channels:
   - name: "Test"
     # missing required 'type' field
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         config = repo.get_illumination_config()
@@ -417,7 +429,8 @@ class TestConfigRepositoryCameraRegistry:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Main Camera"
@@ -427,7 +440,8 @@ cameras:
   - name: "Side Camera"
     id: 2
     serial_number: "DEF456"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         registry = repo.get_camera_registry()
@@ -451,12 +465,14 @@ cameras:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Test"
     serial_number: "XYZ"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         registry1 = repo.get_camera_registry()
@@ -469,7 +485,8 @@ cameras:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Main Camera"
@@ -478,7 +495,8 @@ cameras:
   - name: "Secondary Camera"
     id: 2
     serial_number: "DEF"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         names = repo.get_camera_names()
@@ -526,7 +544,8 @@ class TestConfigRepositoryFilterWheelRegistry:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -536,7 +555,8 @@ filter_wheels:
       1: "Empty"
       2: "BP 525/50"
       3: "BP 600/50"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         registry = repo.get_filter_wheel_registry()
@@ -560,7 +580,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Test Wheel"
@@ -568,7 +589,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         registry1 = repo.get_filter_wheel_registry()
@@ -581,7 +603,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -594,7 +617,8 @@ filter_wheels:
     type: excitation
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         names = repo.get_filter_wheel_names()
@@ -647,12 +671,14 @@ class TestConfigRepositoryHardwareBindings:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "hardware_bindings.yaml").write_text("""
+        (machine_configs / "hardware_bindings.yaml").write_text(
+            """
 version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
   2: "standalone.1"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         bindings = repo.get_hardware_bindings()
@@ -681,11 +707,13 @@ emission_filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "hardware_bindings.yaml").write_text("""
+        (machine_configs / "hardware_bindings.yaml").write_text(
+            """
 version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         bindings1 = repo.get_hardware_bindings()
@@ -723,7 +751,8 @@ class TestConfigRepositoryFilterWheelAggregation:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -732,7 +761,8 @@ filter_wheels:
     positions:
       1: "Empty"
       2: "BP 525/50"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         all_wheels = repo.get_all_filter_wheels()
@@ -747,7 +777,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "confocal_config.yaml").write_text("""
+        (machine_configs / "confocal_config.yaml").write_text(
+            """
 version: 1
 filter_wheels:
   - name: "Confocal Emission"
@@ -756,7 +787,8 @@ filter_wheels:
     positions:
       1: "Empty"
       2: "LP 500"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         all_wheels = repo.get_all_filter_wheels()
@@ -771,7 +803,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Standalone Emission"
@@ -779,9 +812,11 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
-        (machine_configs / "confocal_config.yaml").write_text("""
+        (machine_configs / "confocal_config.yaml").write_text(
+            """
 version: 1
 filter_wheels:
   - name: "Confocal Emission"
@@ -789,7 +824,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         all_wheels = repo.get_all_filter_wheels()
@@ -813,7 +849,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -826,7 +863,8 @@ filter_wheels:
     type: excitation
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         emission_wheels = repo.get_emission_wheels()
@@ -840,7 +878,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -853,7 +892,8 @@ filter_wheels:
     type: excitation
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         excitation_wheels = repo.get_excitation_wheels()
@@ -871,7 +911,8 @@ class TestConfigRepositoryResolveWheelReference:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -884,7 +925,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         ref = FilterWheelReference(source=FILTER_WHEEL_SOURCE_STANDALONE, id=2)
@@ -899,7 +941,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "confocal_config.yaml").write_text("""
+        (machine_configs / "confocal_config.yaml").write_text(
+            """
 version: 1
 filter_wheels:
   - name: "Confocal Emission"
@@ -907,7 +950,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         ref = FilterWheelReference(source=FILTER_WHEEL_SOURCE_CONFOCAL, name="Confocal Emission")
@@ -921,7 +965,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -929,7 +974,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         ref = FilterWheelReference(source=FILTER_WHEEL_SOURCE_STANDALONE, id=99)
@@ -942,7 +988,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -950,7 +997,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         # Wheel exists in standalone but we're looking in confocal
@@ -968,7 +1016,8 @@ class TestConfigRepositoryEffectiveEmissionWheel:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -976,13 +1025,16 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
-        (machine_configs / "hardware_bindings.yaml").write_text("""
+        (machine_configs / "hardware_bindings.yaml").write_text(
+            """
 version: 1.0
 emission_filter_wheels:
   1: "standalone.1"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)
@@ -995,7 +1047,8 @@ emission_filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
@@ -1003,13 +1056,16 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
-        (machine_configs / "hardware_bindings.yaml").write_text("""
+        (machine_configs / "hardware_bindings.yaml").write_text(
+            """
 version: 1.0
 emission_filter_wheels:
   1: "standalone.1"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         # Camera 2 has no binding
@@ -1022,21 +1078,25 @@ emission_filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Main Camera"
     serial_number: "ABC123"
-""")
+"""
+        )
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)
@@ -1049,7 +1109,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Main Camera"
@@ -1058,16 +1119,19 @@ cameras:
   - name: "Side Camera"
     id: 2
     serial_number: "DEF456"
-""")
+"""
+        )
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)
@@ -1080,14 +1144,17 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "cameras.yaml").write_text("""
+        (machine_configs / "cameras.yaml").write_text(
+            """
 version: 1.0
 cameras:
   - name: "Main Camera"
     serial_number: "ABC123"
-""")
+"""
+        )
 
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel 1"
@@ -1100,7 +1167,8 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)
@@ -1113,7 +1181,8 @@ filter_wheels:
         machine_configs = temp_dir / "machine_configs"
         machine_configs.mkdir()
 
-        (machine_configs / "confocal_config.yaml").write_text("""
+        (machine_configs / "confocal_config.yaml").write_text(
+            """
 version: 1
 filter_wheels:
   - name: "Confocal Emission"
@@ -1121,13 +1190,16 @@ filter_wheels:
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
-        (machine_configs / "hardware_bindings.yaml").write_text("""
+        (machine_configs / "hardware_bindings.yaml").write_text(
+            """
 version: 1.0
 emission_filter_wheels:
   1: "confocal.1"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)
@@ -1141,14 +1213,16 @@ emission_filter_wheels:
         machine_configs.mkdir()
 
         # Only filter_wheels.yaml exists - no cameras.yaml
-        (machine_configs / "filter_wheels.yaml").write_text("""
+        (machine_configs / "filter_wheels.yaml").write_text(
+            """
 version: 1.0
 filter_wheels:
   - name: "Emission Wheel"
     type: emission
     positions:
       1: "Empty"
-""")
+"""
+        )
 
         repo = ConfigRepository(base_path=temp_dir)
         wheel = repo.get_effective_emission_wheel(camera_id=1)

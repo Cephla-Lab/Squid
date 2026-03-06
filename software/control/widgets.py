@@ -618,7 +618,8 @@ class CollapsibleGroupBox(QWidget):
 
         # Header button with arrow
         self._header = QPushButton()
-        self._header.setStyleSheet("""
+        self._header.setStyleSheet(
+            """
             QPushButton {
                 text-align: left;
                 padding: 8px;
@@ -632,7 +633,8 @@ class CollapsibleGroupBox(QWidget):
             QPushButton:hover {
                 background-color: palette(light);
             }
-            """)
+            """
+        )
         self._header.clicked.connect(self._toggle)
         main_layout.addWidget(self._header)
 
@@ -640,7 +642,8 @@ class CollapsibleGroupBox(QWidget):
         self.content_widget = QFrame()
         self.content_widget.setObjectName("collapsibleContent")
         self.content_widget.setFrameShape(QFrame.StyledPanel)
-        self.content_widget.setStyleSheet("""
+        self.content_widget.setStyleSheet(
+            """
             QFrame#collapsibleContent {
                 border: 1px solid palette(mid);
                 border-top: none;
@@ -652,7 +655,8 @@ class CollapsibleGroupBox(QWidget):
                 border: none;
                 background: transparent;
             }
-            """)
+            """
+        )
         self.content = QVBoxLayout(self.content_widget)
         self.content.setContentsMargins(15, 10, 10, 10)
         main_layout.addWidget(self.content_widget)
@@ -7167,7 +7171,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Create informational labels for when modes are not selected
         self.z_not_selected_label = QLabel("Z stack not selected")
         self.z_not_selected_label.setAlignment(Qt.AlignCenter)
-        self.z_not_selected_label.setStyleSheet("""
+        self.z_not_selected_label.setStyleSheet(
+            """
             QLabel {
                 background-color: palette(button);
                 border: 1px solid palette(mid);
@@ -7175,12 +7180,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 padding: 0px;
                 color: palette(text);
             }
-        """)
+        """
+        )
         self.z_not_selected_label.setVisible(False)
 
         self.time_not_selected_label = QLabel("Time lapse not selected")
         self.time_not_selected_label.setAlignment(Qt.AlignCenter)
-        self.time_not_selected_label.setStyleSheet("""
+        self.time_not_selected_label.setStyleSheet(
+            """
             QLabel {
                 background-color: palette(button);
                 border: 1px solid palette(mid);
@@ -7188,7 +7195,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 padding: 0px;
                 color: palette(text);
             }
-        """)
+        """
+        )
         self.time_not_selected_label.setVisible(False)
 
         # Z controls frame for Z-min and Z-max (full row 2) with blue background
