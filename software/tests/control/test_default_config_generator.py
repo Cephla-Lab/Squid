@@ -7,11 +7,10 @@ Tests default configuration generation functions.
 import pytest
 
 from control.default_config_generator import (
-    ALL_IRIS_PROPERTIES,
+    ALL_IRIS_DEFAULTS,
     DEFAULT_EXPOSURE_TIME_MS,
     DEFAULT_GAIN_MODE,
     DEFAULT_ILLUMINATION_INTENSITY,
-    DEFAULT_IRIS_VALUE,
     build_confocal_settings_from_config,
     create_general_acquisition_channel,
     create_objective_acquisition_channel,
@@ -92,9 +91,9 @@ class TestDefaultConfigGenerator:
 
         # Iris settings are now in confocal_hardware_settings (channel level)
         assert acq_channel.confocal_hardware_settings is not None
-        # No confocal_config passed → fallback: both iris at DEFAULT_IRIS_VALUE (100.0)
-        assert acq_channel.confocal_hardware_settings.illumination_iris == DEFAULT_IRIS_VALUE
-        assert acq_channel.confocal_hardware_settings.emission_iris == DEFAULT_IRIS_VALUE
+        # No confocal_config passed → fallback: both iris at ALL_IRIS_DEFAULTS
+        assert acq_channel.confocal_hardware_settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
+        assert acq_channel.confocal_hardware_settings.emission_iris == ALL_IRIS_DEFAULTS["emission_iris"]
         # confocal_override still exists for camera/illumination diffs
         assert acq_channel.confocal_override is not None
         assert acq_channel.confocal_override.camera_settings is not None
@@ -211,10 +210,10 @@ class TestBuildConfocalSettingsFromConfig:
     """Tests for build_confocal_settings_from_config()."""
 
     def test_no_config_returns_all_iris_defaults(self):
-        """None config → both iris fields at DEFAULT_IRIS_VALUE."""
+        """None config → both iris fields at ALL_IRIS_DEFAULTS."""
         settings = build_confocal_settings_from_config(None)
-        assert settings.illumination_iris == DEFAULT_IRIS_VALUE
-        assert settings.emission_iris == DEFAULT_IRIS_VALUE
+        assert settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
+        assert settings.emission_iris == ALL_IRIS_DEFAULTS["emission_iris"]
 
     def test_model_xlight_v3_returns_both_iris(self):
         """Config with model=xlight_v3 → both iris at model default (100.0)."""
@@ -244,17 +243,17 @@ class TestBuildConfocalSettingsFromConfig:
             objective_specific_properties=["illumination_iris"],
         )
         settings = build_confocal_settings_from_config(config)
-        assert settings.illumination_iris == DEFAULT_IRIS_VALUE
+        assert settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
         assert settings.emission_iris is None
 
     def test_config_with_both_iris_properties(self):
-        """Config listing both iris properties (no model) → both at DEFAULT_IRIS_VALUE."""
+        """Config listing both iris properties (no model) → both at ALL_IRIS_DEFAULTS."""
         config = ConfocalConfig(
             objective_specific_properties=["illumination_iris", "emission_iris"],
         )
         settings = build_confocal_settings_from_config(config)
-        assert settings.illumination_iris == DEFAULT_IRIS_VALUE
-        assert settings.emission_iris == DEFAULT_IRIS_VALUE
+        assert settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
+        assert settings.emission_iris == ALL_IRIS_DEFAULTS["emission_iris"]
 
     def test_config_with_only_illumination_iris(self):
         """Config listing only illumination_iris → emission_iris is None."""
@@ -262,7 +261,7 @@ class TestBuildConfocalSettingsFromConfig:
             objective_specific_properties=["illumination_iris"],
         )
         settings = build_confocal_settings_from_config(config)
-        assert settings.illumination_iris == DEFAULT_IRIS_VALUE
+        assert settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
         assert settings.emission_iris is None
 
     def test_config_with_only_emission_iris(self):
@@ -272,7 +271,7 @@ class TestBuildConfocalSettingsFromConfig:
         )
         settings = build_confocal_settings_from_config(config)
         assert settings.illumination_iris is None
-        assert settings.emission_iris == DEFAULT_IRIS_VALUE
+        assert settings.emission_iris == ALL_IRIS_DEFAULTS["emission_iris"]
 
     def test_config_with_empty_properties_no_iris(self):
         """Config with empty objective_specific_properties → both None."""
@@ -289,7 +288,7 @@ class TestBuildConfocalSettingsFromConfig:
             objective_specific_properties=["emission_filter_wheel_position", "illumination_iris"],
         )
         settings = build_confocal_settings_from_config(config)
-        assert settings.illumination_iris == DEFAULT_IRIS_VALUE
+        assert settings.illumination_iris == ALL_IRIS_DEFAULTS["illumination_iris"]
         assert settings.emission_iris is None
 
 

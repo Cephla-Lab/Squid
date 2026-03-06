@@ -22,6 +22,7 @@ from control.models import (
     IlluminationSettings,
     ObjectiveChannelConfig,
 )
+from control._def import XLIGHT_EMISSION_IRIS_DEFAULT, XLIGHT_ILLUMINATION_IRIS_DEFAULT
 from control.models.confocal_config import ConfocalConfig
 from control.models.illumination_config import (
     DEFAULT_LED_COLOR,
@@ -38,13 +39,11 @@ DEFAULT_ILLUMINATION_INTENSITY = 20.0
 DEFAULT_LED_ILLUMINATION_INTENSITY = 5.0  # Lower intensity for USB LED sources
 DEFAULT_Z_OFFSET_UM = 0.0
 
-# Confocal iris properties and defaults
-ALL_IRIS_PROPERTIES = {"illumination_iris", "emission_iris"}
-# Iris defaults come from _def.py (XLIGHT_ILLUMINATION_IRIS_DEFAULT / XLIGHT_EMISSION_IRIS_DEFAULT)
-# This fallback is used when no confocal_config.yaml or model registry is available
-from control._def import XLIGHT_ILLUMINATION_IRIS_DEFAULT
-
-DEFAULT_IRIS_VALUE = float(XLIGHT_ILLUMINATION_IRIS_DEFAULT)
+# Confocal iris properties and their defaults from _def.py
+ALL_IRIS_DEFAULTS = {
+    "illumination_iris": float(XLIGHT_ILLUMINATION_IRIS_DEFAULT),
+    "emission_iris": float(XLIGHT_EMISSION_IRIS_DEFAULT),
+}
 
 # Standard objectives
 DEFAULT_OBJECTIVES = ["2x", "4x", "10x", "20x", "40x", "50x", "60x"]
@@ -72,11 +71,11 @@ def build_confocal_settings_from_config(
         if model_def is not None:
             return ConfocalSettings(**model_def.objective_properties)
         # Backwards compat: use objective_specific_properties string list
-        iris_props = ALL_IRIS_PROPERTIES & set(confocal_config.objective_specific_properties)
-        kwargs = {prop: DEFAULT_IRIS_VALUE for prop in iris_props}
+        iris_props = set(ALL_IRIS_DEFAULTS) & set(confocal_config.objective_specific_properties)
+        kwargs = {prop: ALL_IRIS_DEFAULTS[prop] for prop in iris_props}
         return ConfocalSettings(**kwargs)
     # No config: fallback to all iris properties
-    return ConfocalSettings(**{prop: DEFAULT_IRIS_VALUE for prop in ALL_IRIS_PROPERTIES})
+    return ConfocalSettings(**ALL_IRIS_DEFAULTS)
 
 
 def get_display_color_for_channel(channel: IlluminationChannel) -> str:
