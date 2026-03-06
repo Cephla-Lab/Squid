@@ -1002,6 +1002,7 @@ class Microcontroller:
             self._heartbeat_thread.join(timeout=2.0)
             if self._heartbeat_thread.is_alive():
                 self.log.warning("[MCU] Heartbeat thread did not stop within 2s timeout")
+                self._heartbeat_thread = None
                 return
         self._heartbeat_thread = None
         self.log.debug("[MCU] Heartbeat stopped")
@@ -1473,16 +1474,17 @@ class Microcontroller:
         self.last_command_aborted_error = None
 
     def resend_last_command(self):
-        if self.last_command is not None:
-            self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
-            self.mcu_cmd_execution_in_progress = True
-            # We use the retry count for both checksum errors, and to keep track of
-            # timeout re-attempts.
-            self.last_command_send_timestamp = time.time()
-            self.retry = self.retry + 1
-        else:
-            self.log.warning("resend requested with no last_command, something is wrong!")
-            self.abort_current_command("Resend last requested with no last command")
+        with self._cmd_lock:
+            if self.last_command is not None:
+                self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+                self.mcu_cmd_execution_in_progress = True
+                # We use the retry count for both checksum errors, and to keep track of
+                # timeout re-attempts.
+                self.last_command_send_timestamp = time.time()
+                self.retry = self.retry + 1
+            else:
+                self.log.warning("resend requested with no last_command, something is wrong!")
+                self.abort_current_command("Resend last requested with no last command")
 
     def read_received_packet(self):
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
