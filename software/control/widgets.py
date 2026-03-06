@@ -3096,8 +3096,8 @@ class SpinningDiskConfocalWidget(QWidget):
             self.spinbox_illumination_iris.setValue(illumination_iris)
 
             self.slider_illumination_iris.sliderReleased.connect(lambda: self.update_illumination_iris(True))
-            # Update spinbox values during sliding without sending to hardware
-            self.slider_illumination_iris.valueChanged.connect(self.spinbox_illumination_iris.setValue)
+            # Update spinbox + apply on click-to-position (not during drag)
+            self.slider_illumination_iris.valueChanged.connect(self._on_illumination_iris_value_changed)
             self.spinbox_illumination_iris.editingFinished.connect(lambda: self.update_illumination_iris(False))
         if self.xlight.has_emission_iris_diaphragm:
             emission_iris = self.xlight.emission_iris
@@ -3105,8 +3105,8 @@ class SpinningDiskConfocalWidget(QWidget):
             self.spinbox_emission_iris.setValue(emission_iris)
 
             self.slider_emission_iris.sliderReleased.connect(lambda: self.update_emission_iris(True))
-            # Update spinbox values during sliding without sending to hardware
-            self.slider_emission_iris.valueChanged.connect(self.spinbox_emission_iris.setValue)
+            # Update spinbox + apply on click-to-position (not during drag)
+            self.slider_emission_iris.valueChanged.connect(self._on_emission_iris_value_changed)
             self.spinbox_emission_iris.editingFinished.connect(lambda: self.update_emission_iris(False))
 
     def init_ui(self):
@@ -3276,6 +3276,18 @@ class SpinningDiskConfocalWidget(QWidget):
                 self._set_iris_ui(slider, spinbox, value)
         finally:
             self.block_iris_control_signals(False)
+
+    def _on_illumination_iris_value_changed(self, value):
+        """Handle illumination iris slider valueChanged — sync spinbox, apply on click-to-position."""
+        self.spinbox_illumination_iris.setValue(value)
+        if not self.slider_illumination_iris.isSliderDown():
+            self.update_illumination_iris(True)
+
+    def _on_emission_iris_value_changed(self, value):
+        """Handle emission iris slider valueChanged — sync spinbox, apply on click-to-position."""
+        self.spinbox_emission_iris.setValue(value)
+        if not self.slider_emission_iris.isSliderDown():
+            self.update_emission_iris(True)
 
     def _update_iris_hardware(self, from_slider, slider, spinbox, hw_setter, signal):
         """Shared logic for updating an iris value from UI interaction."""
