@@ -685,8 +685,10 @@ class HighContentScreeningGui(QMainWindow):
         if self._skip_init:
             if USE_XERYON and self.objective_changer:
                 if cached_pos := squid.stage.utils.get_cached_position():
-                    self.log.info(f"Restoring cached Z position after Xeryon restart: {cached_pos.z_mm} mm")
-                    self.stage.move_z_to(cached_pos.z_mm)
+                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                    target_z_mm = max(cached_pos.z_mm, safety_z_mm)
+                    self.log.info(f"Restoring cached Z position after Xeryon restart: {target_z_mm} mm")
+                    self.stage.move_z_to(target_z_mm)
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -2643,8 +2645,9 @@ class HighContentScreeningGui(QMainWindow):
         """Common cleanup logic shared between closeEvent and restart.
 
         Args:
-            for_restart: If True, skip Z retraction and objective reset (preserving position),
-                        and wrap operations in try-except to ensure cleanup completes.
+            for_restart: If True, wrap operations in try-except to ensure cleanup completes.
+                        Z retraction and objective reset still run when using Xeryon
+                        (Xeryon must be zeroed before re-init), but are skipped otherwise.
         """
         context = "restart" if for_restart else "shutdown"
 
@@ -2752,15 +2755,17 @@ class HighContentScreeningGui(QMainWindow):
         # On restart, only retract Z and reset if Xeryon objective changer is present
         # (Xeryon must be zeroed before re-init; Z must retract first for safety).
         if not for_restart or USE_XERYON:
+            z_retracted = False
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+                z_retracted = True
             except Exception:
                 if for_restart:
                     self.log.exception(f"Error retracting Z during {context}")
                 else:
                     raise
 
-            if USE_XERYON and self.objective_changer:
+            if USE_XERYON and self.objective_changer and z_retracted:
                 try:
                     self.objective_changer.moveToZero()
                 except Exception:
@@ -2814,7 +2819,7 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
     def _cleanup_for_restart(self):
-        """Clean up hardware and resources for restart (preserves Z position)."""
+        """Clean up hardware and resources for restart. Retracts Z and resets Xeryon if present."""
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
