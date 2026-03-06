@@ -680,9 +680,15 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize Slack notifier
         self._setup_slack_notifier()
 
-        # Skip cached position restoration on restart (hardware position hasn't changed)
+        # Skip cached position restoration on restart (hardware position hasn't changed),
+        # except Z when using Xeryon (Z was retracted during cleanup).
         if self._skip_init:
-            self.log.info("Skipping cached position restoration (--skip-init flag set)")
+            if USE_XERYON and self.objective_changer:
+                if cached_pos := squid.stage.utils.get_cached_position():
+                    self.log.info(f"Restoring cached Z position after Xeryon restart: {cached_pos.z_mm} mm")
+                    self.stage.move_z_to(cached_pos.z_mm)
+            else:
+                self.log.info("Skipping cached position restoration (--skip-init flag set)")
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             if cached_pos := squid.stage.utils.get_cached_position():
