@@ -647,6 +647,9 @@ class Microcontroller:
         self._heartbeat_thread = None
         self._heartbeat_stop_event = threading.Event()
 
+        # Lock to serialize all outgoing serial commands (heartbeat thread + main thread)
+        self._cmd_lock = threading.Lock()
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -1434,25 +1437,26 @@ class Microcontroller:
         self.set_pin_level(MCU_PINS.AF_LASER, 0)
 
     def send_command(self, command):
-        self._cmd_id = (self._cmd_id + 1) % 256
-        command[0] = self._cmd_id
-        command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
-        cmd_type = command[1]
-        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
-        self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
-        self.mcu_cmd_execution_in_progress = True
-        self.last_command = command
-        self.last_command_send_timestamp = time.time()
-        self.retry = 0
+        with self._cmd_lock:
+            self._cmd_id = (self._cmd_id + 1) % 256
+            command[0] = self._cmd_id
+            command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
+            cmd_type = command[1]
+            cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+            self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
+            self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+            self.mcu_cmd_execution_in_progress = True
+            self.last_command = command
+            self.last_command_send_timestamp = time.time()
+            self.retry = 0
 
-        if self.last_command_aborted_error is not None:
-            self.log.warning(
-                "Last command aborted and not cleared before new command sent!", self.last_command_aborted_error
-            )
-        self.last_command_aborted_error = None
+            if self.last_command_aborted_error is not None:
+                self.log.warning(
+                    "Last command aborted and not cleared before new command sent!", self.last_command_aborted_error
+                )
+            self.last_command_aborted_error = None
 
-        self._warn_if_reads_stale()
+            self._warn_if_reads_stale()
 
     def abort_current_command(self, reason):
         cmd_type = self.last_command[1] if self.last_command is not None else -1
@@ -1631,7 +1635,7 @@ class Microcontroller:
 
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[22]
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:

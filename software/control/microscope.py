@@ -416,7 +416,7 @@ class Microscope:
                 timeout_s = control._def.WATCHDOG_TIMEOUT_S
                 mcu.set_watchdog_timeout(timeout_s)
                 mcu.wait_till_operation_is_completed()
-                mcu.start_heartbeat()
+                mcu.start_heartbeat(interval_s=timeout_s / 2)
                 self._log.info(f"Illumination watchdog enabled: timeout={timeout_s}s, heartbeat={timeout_s / 2}s")
             else:
                 self._log.warning(

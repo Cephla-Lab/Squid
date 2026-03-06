@@ -1,10 +1,9 @@
 import struct
-import threading
 import time
 
 import pytest
 
-from control._def import CMD_SET, WATCHDOG_TIMEOUT_S, DEFAULT_WATCHDOG_TIMEOUT_MS, MAX_WATCHDOG_TIMEOUT_MS
+from control._def import CMD_SET, DEFAULT_WATCHDOG_TIMEOUT_MS, MAX_WATCHDOG_TIMEOUT_MS
 from control.microcontroller import Microcontroller, SimSerial
 
 

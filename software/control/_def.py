@@ -358,6 +358,9 @@ def port_index_to_source_code(port_index: int) -> int:
     return mapping.get(port_index, -1)
 
 
+# Response byte positions for MCU protocol (24-byte response)
+RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Nibble-encoded: high=major, low=minor
+
 # Serial watchdog (illumination auto-shutoff safety)
 # Must match firmware constants in constants.h
 DEFAULT_WATCHDOG_TIMEOUT_MS = 5000  # 5 seconds (matches firmware)
