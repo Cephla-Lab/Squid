@@ -67,6 +67,8 @@ _CMD_NAMES = {
     CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
     CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
     CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
+    CMD_SET.SET_WATCHDOG_TIMEOUT: "SET_WATCHDOG_TIMEOUT",
+    CMD_SET.HEARTBEAT: "HEARTBEAT",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -180,9 +182,11 @@ class AbstractCephlaMicroSerial(abc.ABC):
 class SimSerial(AbstractCephlaMicroSerial):
     # Number of illumination ports for simulation
     NUM_ILLUMINATION_PORTS = 16
-    # Simulated firmware version (1.0 supports multi-port illumination)
+    # Simulated firmware version
+    # v1.0: multi-port illumination support
+    # v1.1: serial watchdog for illumination auto-shutoff
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 0
+    FIRMWARE_VERSION_MINOR = 1
 
     @staticmethod
     def response_bytes_for(
@@ -232,6 +236,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         # Multi-port illumination state for simulation
         self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Serial watchdog (firmware v1.1+)
+        self.watchdog_timeout_ms = DEFAULT_WATCHDOG_TIMEOUT_MS
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -320,6 +327,17 @@ class SimSerial(AbstractCephlaMicroSerial):
         elif command_byte == CMD_SET.TURN_OFF_ALL_PORTS:
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
+        elif command_byte == CMD_SET.SET_WATCHDOG_TIMEOUT:
+            requested_timeout = (
+                (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
+            )
+            if requested_timeout > MAX_WATCHDOG_TIMEOUT_MS:
+                requested_timeout = MAX_WATCHDOG_TIMEOUT_MS
+            if requested_timeout == 0:
+                requested_timeout = DEFAULT_WATCHDOG_TIMEOUT_MS
+            self.watchdog_timeout_ms = requested_timeout
+        elif command_byte == CMD_SET.HEARTBEAT:
+            pass  # No-op, just triggers a response
         # Legacy illumination commands - sync with multi-port state
         elif command_byte == CMD_SET.SET_ILLUMINATION:
             source = write_bytes[2]
