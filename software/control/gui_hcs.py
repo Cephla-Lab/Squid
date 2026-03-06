@@ -2770,10 +2770,7 @@ class HighContentScreeningGui(QMainWindow):
                         raise
 
         if not for_restart:
-            try:
-                self.microcontroller.turn_off_all_pid()
-            except Exception:
-                raise
+            self.microcontroller.turn_off_all_pid()
 
         # Turn off CellX lasers
         if ENABLE_CELLX:
