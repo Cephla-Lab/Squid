@@ -71,6 +71,20 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
+def load_confocal_config(software_path: Path) -> Optional[ConfocalConfig]:
+    """Load confocal_config.yaml if it exists. Returns None on missing/invalid file."""
+    confocal_yaml = software_path / "machine_configs" / "confocal_config.yaml"
+    if not confocal_yaml.exists():
+        return None
+    try:
+        with open(confocal_yaml, "r") as f:
+            data = yaml.safe_load(f)
+        return ConfocalConfig(**data)
+    except Exception as e:
+        logger.warning(f"Failed to load confocal_config.yaml: {e}")
+        return None
+
+
 def extract_wavelength_from_name(channel_name: str) -> Optional[int]:
     """
     Extract wavelength from a channel name.
@@ -719,15 +733,7 @@ def run_auto_migration(software_path: Optional[Path] = None, force: bool = False
     create_backup(source_path, dry_run=False)
 
     # Load confocal config if available
-    confocal_config = None
-    confocal_yaml = software_path / "machine_configs" / "confocal_config.yaml"
-    if confocal_yaml.exists():
-        try:
-            with open(confocal_yaml, "r") as f:
-                data = yaml.safe_load(f)
-            confocal_config = ConfocalConfig(**data)
-        except Exception as e:
-            logger.warning(f"Failed to load confocal_config.yaml: {e}")
+    confocal_config = load_confocal_config(software_path)
 
     # Migrate each profile
     success_count = 0
@@ -852,15 +858,7 @@ def main():
     logger.info(f"Profiles to migrate: {', '.join(profiles)}")
 
     # Load confocal config if available
-    confocal_config = None
-    confocal_yaml = software_path / "machine_configs" / "confocal_config.yaml"
-    if confocal_yaml.exists():
-        try:
-            with open(confocal_yaml, "r") as f:
-                data = yaml.safe_load(f)
-            confocal_config = ConfocalConfig(**data)
-        except Exception as e:
-            logger.warning(f"Failed to load confocal_config.yaml: {e}")
+    confocal_config = load_confocal_config(software_path)
 
     # Migrate each profile
     success_count = 0

@@ -459,9 +459,7 @@ class TestEnsureDefaultConfigsConfocal:
             "    wavelength_nm: 488\n"
         )
 
-        (machine_configs / "confocal_config.yaml").write_text(
-            "version: 1\n" "model: cicero\n"
-        )
+        (machine_configs / "confocal_config.yaml").write_text("version: 1\n" "model: cicero\n")
 
         profile_path = temp_dir / "user_profiles" / "default"
         (profile_path / "channel_configs").mkdir(parents=True)
