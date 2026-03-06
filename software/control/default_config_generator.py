@@ -315,7 +315,9 @@ def has_legacy_configs_to_migrate(profile: str, base_path: Optional[Path] = None
     Check if there are legacy configs (XML/JSON) that need migration.
 
     Legacy configs are in acquisition_configurations/{profile}/{objective}/ with:
-    - channel_configurations.xml (required)
+    - channel_configurations.xml (non-confocal systems)
+    - widefield_configurations.xml (confocal systems)
+    - confocal_configurations.xml (confocal overrides, optional)
     - laser_af_settings.json (optional)
 
     If these exist, we should NOT generate default configs - migration should run first.
@@ -335,10 +337,12 @@ def has_legacy_configs_to_migrate(profile: str, base_path: Optional[Path] = None
     if not legacy_path.exists():
         return False
 
-    # Check for channel_configurations.xml in any subdirectory (objective folders)
+    # Check for channel XML files in any subdirectory (objective folders)
     for item in legacy_path.iterdir():
         if item.is_dir() and not item.name.startswith("."):
             if (item / "channel_configurations.xml").exists():
+                return True
+            if (item / "widefield_configurations.xml").exists():
                 return True
 
     return False
