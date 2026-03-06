@@ -145,3 +145,8 @@ bool illumination_is_on = false;
 // Multi-port illumination control (all ports off and at zero intensity by default)
 bool illumination_port_is_on[NUM_ILLUMINATION_PORTS] = {false};
 uint16_t illumination_port_intensity[NUM_ILLUMINATION_PORTS] = {0};
+
+// Serial watchdog (illumination auto-shutoff safety) - disabled until software enables
+uint32_t last_serial_message_time = 0;
+uint32_t watchdog_timeout_ms = DEFAULT_WATCHDOG_TIMEOUT_MS;
+bool watchdog_enabled = false;

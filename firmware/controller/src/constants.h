@@ -8,8 +8,9 @@
 /***************************************************************************************************/
 // Version is sent in response byte 22 as nibble-encoded: high nibble = major, low nibble = minor
 // Version 1.0 = first version with multi-port illumination support
+// Version 1.1 = serial watchdog for illumination auto-shutoff
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 0
+#define FIRMWARE_VERSION_MINOR 1
 
 #include "def/def_v1.h"
 
@@ -126,6 +127,11 @@ static const float BLUE_ADJUSTMENT_FACTOR = 1;
 #define NUM_LEDS 128 // DOTSTAR_NUM_LEDS
 #define LED_MATRIX_DATA_PIN 26
 #define LED_MATRIX_CLOCK_PIN 27
+
+// Serial watchdog (illumination auto-shutoff safety)
+// If no serial message is received within timeout, firmware turns off all illumination
+#define DEFAULT_WATCHDOG_TIMEOUT_MS 5000
+#define MAX_WATCHDOG_TIMEOUT_MS 3600000
 
 /***************************************************************************************************/
 /******************************************* steppers **********************************************/
