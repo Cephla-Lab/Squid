@@ -273,11 +273,6 @@ class XLight:
 
         self.print_config()
 
-        if self.has_illumination_iris_diaphragm:
-            self.set_illumination_iris(XLIGHT_ILLUMINATION_IRIS_DEFAULT)
-        if self.has_emission_iris_diaphragm:
-            self.set_emission_iris(XLIGHT_EMISSION_IRIS_DEFAULT)
-
     def _open_serial(self, SN, baudrate):
         """Open serial connection with specified baud rate."""
         self.serial_connection = SerialDevice(
@@ -408,9 +403,10 @@ class XLight:
 
     def set_illumination_iris(self, value):
         # value: 0 - 100
+        if value == self.illumination_iris:
+            return self.illumination_iris
         self.illumination_iris = value
-        value = str(int(10 * value))
-        self.serial_connection.write_and_check("J" + value + "\r", "J" + value, read_delay=3)
+        self.serial_connection.write_and_read("J" + str(int(10 * value)) + "\r", read_delay=2)
         return self.illumination_iris
 
     def get_illumination_iris(self):
@@ -420,9 +416,10 @@ class XLight:
 
     def set_emission_iris(self, value):
         # value: 0 - 100
+        if value == self.emission_iris:
+            return self.emission_iris
         self.emission_iris = value
-        value = str(int(10 * value))
-        self.serial_connection.write_and_check("V" + value + "\r", "V" + value, read_delay=3)
+        self.serial_connection.write_and_read("V" + str(int(10 * value)) + "\r", read_delay=2)
         return self.emission_iris
 
     def get_emission_iris(self):
