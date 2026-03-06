@@ -2742,16 +2742,16 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z, reset objective changer, and turn off PIDs only on full shutdown
-        # (for restart, preserve hardware state since new process will use --skip-init)
-        if not for_restart:
+        # Retract Z before moving Xeryon to zero (always when using Xeryon, only on full shutdown otherwise)
+        if not for_restart or (USE_XERYON and self.objective_changer):
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-                if USE_XERYON:
+                if USE_XERYON and self.objective_changer:
                     self.objective_changer.moveToZero()
             except Exception:
                 self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
 
+        if not for_restart:
             try:
                 self.microcontroller.turn_off_all_pid()
             except Exception:
