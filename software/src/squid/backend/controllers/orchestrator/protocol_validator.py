@@ -357,6 +357,16 @@ class ProtocolValidator:
         # Estimate time
         time_seconds = self._estimate_imaging_time(imaging_config, fov_count)
 
+        if imaging_config.focus.mode == AutofocusMode.FOCUS_LOCK:
+            if imaging_config.focus.interval_fovs != 1:
+                warnings.append(
+                    "focus.interval_fovs is ignored for focus-lock imaging and should remain 1"
+                )
+            if imaging_config.z_stack.planes > 1:
+                warnings.append(
+                    "focus_lock with multi-plane z-stack pauses corrections during capture; review QC after the run"
+                )
+
         # Estimate disk usage
         disk_bytes = 0
         if not imaging_config.skip_saving:
@@ -408,6 +418,8 @@ class ProtocolValidator:
             time_per_fov += self._timing["laser_autofocus_seconds"]
         elif focus_mode == AutofocusMode.CONTRAST:
             time_per_fov += self._timing["autofocus_seconds"]
+        elif focus_mode == AutofocusMode.FOCUS_LOCK:
+            time_per_fov += self._timing["focus_lock_acquire_seconds"]
 
         # Time per channel
         for _ in range(num_channels):

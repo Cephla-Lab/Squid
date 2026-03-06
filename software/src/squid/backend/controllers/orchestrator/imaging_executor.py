@@ -11,8 +11,13 @@ V2 Support:
 """
 
 import copy
+import csv
+import json
+import math
 import os
 import threading
+import time
+from collections import defaultdict
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 import squid.core.logging
@@ -20,7 +25,11 @@ from squid.core.config.test_timing import scale_duration
 from squid.core.events import (
     AutofocusMode,
     EventBus,
+    FocusLockMetricsUpdated,
+    FocusLockPiezoLimitCritical,
     FocusLockSettings,
+    FocusLockStatusChanged,
+    FocusLockWarning,
     handles,
     auto_subscribe,
     auto_unsubscribe,
@@ -28,6 +37,7 @@ from squid.core.events import (
 from squid.core.events import AcquisitionFinished, AcquisitionProgress
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import ImagingProtocol, ChannelConfigOverride
+from squid.backend.controllers.orchestrator.state import AddWarningCommand
 
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint import MultiPointController
@@ -36,6 +46,257 @@ if TYPE_CHECKING:
     from squid.core.config.models import AcquisitionChannel
 
 _log = squid.core.logging.get_logger(__name__)
+
+
+class _FocusLockRunMonitor:
+    """Collect focus-lock QC during a single imaging round."""
+
+    def __init__(
+        self,
+        event_bus: EventBus,
+        output_dir: str,
+        round_index: int,
+        round_name: str,
+    ) -> None:
+        self._event_bus = event_bus
+        self._output_dir = output_dir
+        self._round_index = round_index
+        self._round_name = round_name
+        self._subscriptions: list[tuple[type, object]] = []
+        self._current_fov_index: Optional[int] = None
+        self._current_total_fovs: int = 0
+        self._start_time = time.monotonic()
+        self._last_status: Optional[str] = None
+        self._last_status_change_time = self._start_time
+        self._status_durations: dict[str, float] = defaultdict(float)
+        self._status_transition_counts: dict[str, int] = defaultdict(int)
+        self._warning_counts: dict[str, int] = defaultdict(int)
+        self._rows: list[dict[str, object]] = []
+        self._abs_errors: list[float] = []
+        self._rms_errors: list[float] = []
+        self._drift_rates: list[float] = []
+        self._snr_values: list[float] = []
+        self._lock_quality_values: list[float] = []
+        self._good_readings = 0
+        self._total_readings = 0
+        self._last_sample_time = 0.0
+        self._low_snr_streak = 0
+        self._quality_low_started: Optional[float] = None
+        self._recovering_started: Optional[float] = None
+        self._alert_last_time: dict[str, float] = {}
+
+    def start(self) -> None:
+        for event_type, handler in (
+            (FocusLockStatusChanged, self._on_status_changed),
+            (FocusLockMetricsUpdated, self._on_metrics_updated),
+            (FocusLockWarning, self._on_warning),
+            (FocusLockPiezoLimitCritical, self._on_piezo_critical),
+        ):
+            self._event_bus.subscribe(event_type, handler)
+            self._subscriptions.append((event_type, handler))
+
+    def stop(self) -> None:
+        now = time.monotonic()
+        if self._last_status is not None:
+            self._status_durations[self._last_status] += max(0.0, now - self._last_status_change_time)
+        for event_type, handler in self._subscriptions:
+            self._event_bus.unsubscribe(event_type, handler)
+        self._subscriptions.clear()
+        self._write_outputs()
+
+    def update_progress(self, fov_index: int, total_fovs: int) -> None:
+        self._current_fov_index = fov_index
+        self._current_total_fovs = total_fovs
+
+    def _record_row(self, event_type: str, **extra: object) -> None:
+        row = {
+            "timestamp_monotonic": time.monotonic(),
+            "event_type": event_type,
+            "round_index": self._round_index,
+            "round_name": self._round_name,
+            "fov_index": self._current_fov_index,
+            "total_fovs": self._current_total_fovs,
+        }
+        row.update(extra)
+        self._rows.append(row)
+
+    def _publish_warning(self, key: str, severity: str, message: str, context: Optional[dict[str, object]] = None) -> None:
+        now = time.monotonic()
+        last_time = self._alert_last_time.get(key)
+        if last_time is not None and now - last_time < 5.0:
+            return
+        self._alert_last_time[key] = now
+        self._event_bus.publish(
+            AddWarningCommand(
+                category="FOCUS",
+                severity=severity,
+                message=message,
+                round_index=self._round_index,
+                round_name=self._round_name,
+                operation_type="imaging",
+                fov_index=self._current_fov_index,
+                context=context,
+            )
+        )
+
+    def _on_status_changed(self, event: FocusLockStatusChanged) -> None:
+        now = time.monotonic()
+        if self._last_status is not None:
+            self._status_durations[self._last_status] += max(0.0, now - self._last_status_change_time)
+        self._last_status = event.status
+        self._last_status_change_time = now
+        self._status_transition_counts[event.status] += 1
+        self._record_row(
+            "status",
+            status=event.status,
+            lock_buffer_fill=event.lock_buffer_fill,
+            lock_buffer_length=event.lock_buffer_length,
+        )
+        if event.status in ("lost", "searching"):
+            self._publish_warning(
+                f"status:{event.status}",
+                "HIGH",
+                f"Focus lock transitioned to {event.status}",
+                context={"status": event.status},
+            )
+        if event.status == "recovering":
+            self._recovering_started = now
+        else:
+            self._recovering_started = None
+
+    def _on_metrics_updated(self, event: FocusLockMetricsUpdated) -> None:
+        self._total_readings += 1
+        if event.is_good_reading:
+            self._good_readings += 1
+        if not isinstance(event.z_error_um, float) or not math.isnan(event.z_error_um):
+            self._abs_errors.append(abs(event.z_error_um))
+        if not math.isnan(event.z_error_rms_um):
+            self._rms_errors.append(event.z_error_rms_um)
+        if not math.isnan(event.drift_rate_um_per_s):
+            self._drift_rates.append(abs(event.drift_rate_um_per_s))
+        if not math.isnan(event.spot_snr):
+            self._snr_values.append(event.spot_snr)
+        if not math.isnan(event.lock_quality):
+            self._lock_quality_values.append(event.lock_quality)
+
+        now = time.monotonic()
+        if now - self._last_sample_time >= 1.0:
+            self._last_sample_time = now
+            self._record_row(
+                "metrics",
+                z_error_um=event.z_error_um,
+                z_position_um=event.z_position_um,
+                spot_snr=event.spot_snr,
+                z_error_rms_um=event.z_error_rms_um,
+                drift_rate_um_per_s=event.drift_rate_um_per_s,
+                correlation=event.correlation,
+                lock_quality=event.lock_quality,
+            )
+
+        if not math.isnan(event.spot_snr) and event.spot_snr < 5.0:
+            self._low_snr_streak += 1
+            if self._low_snr_streak == 1:
+                self._publish_warning("snr_low_start", "LOW", "Focus lock SNR dropped below 5")
+            elif self._low_snr_streak >= 10:
+                self._publish_warning("snr_low_sustained", "MEDIUM", "Focus lock SNR remained low for 10 samples")
+        else:
+            self._low_snr_streak = 0
+
+        if not math.isnan(event.lock_quality) and event.lock_quality < 0.3:
+            if self._quality_low_started is None:
+                self._quality_low_started = now
+            elif now - self._quality_low_started >= 2.0:
+                self._publish_warning("quality_low", "MEDIUM", "Focus lock quality remained below 0.3")
+        else:
+            self._quality_low_started = None
+
+        if self._recovering_started is not None and now - self._recovering_started >= 5.0:
+            self._publish_warning("recovering_sustained", "MEDIUM", "Focus lock stayed in recovering state for more than 5s")
+
+    def _on_warning(self, event: FocusLockWarning) -> None:
+        self._warning_counts[event.warning_type] += 1
+        self._record_row("warning", warning_type=event.warning_type, message=event.message)
+        severity = "LOW"
+        if event.warning_type in {"signal_lost", "measurement_stale"}:
+            severity = "MEDIUM"
+        self._publish_warning(
+            f"warning:{event.warning_type}",
+            severity,
+            event.message,
+            context={"warning_type": event.warning_type},
+        )
+
+    def _on_piezo_critical(self, event: FocusLockPiezoLimitCritical) -> None:
+        self._record_row(
+            "critical",
+            direction=event.direction,
+            position_um=event.position_um,
+            limit_um=event.limit_um,
+            margin_um=event.margin_um,
+        )
+
+    def _quantile(self, values: list[float], q: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+        return ordered[index]
+
+    def _write_outputs(self) -> None:
+        os.makedirs(self._output_dir, exist_ok=True)
+        summary = {
+            "round_index": self._round_index,
+            "round_name": self._round_name,
+            "status_transition_counts": dict(self._status_transition_counts),
+            "status_durations_s": {key: round(value, 3) for key, value in self._status_durations.items()},
+            "warning_counts": dict(self._warning_counts),
+            "max_abs_z_error_um": max(self._abs_errors) if self._abs_errors else 0.0,
+            "p95_abs_z_error_um": self._quantile(self._abs_errors, 0.95),
+            "p95_rms_error_um": self._quantile(self._rms_errors, 0.95),
+            "max_drift_rate_um_per_s": max(self._drift_rates) if self._drift_rates else 0.0,
+            "min_spot_snr": min(self._snr_values) if self._snr_values else 0.0,
+            "average_lock_quality": (
+                sum(self._lock_quality_values) / len(self._lock_quality_values)
+                if self._lock_quality_values
+                else 0.0
+            ),
+            "fraction_good_readings": (
+                self._good_readings / self._total_readings if self._total_readings else 0.0
+            ),
+        }
+
+        with open(os.path.join(self._output_dir, "focus_lock_summary.json"), "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+
+        fieldnames = [
+            "timestamp_monotonic",
+            "event_type",
+            "round_index",
+            "round_name",
+            "fov_index",
+            "total_fovs",
+            "status",
+            "lock_buffer_fill",
+            "lock_buffer_length",
+            "warning_type",
+            "message",
+            "z_error_um",
+            "z_position_um",
+            "spot_snr",
+            "z_error_rms_um",
+            "drift_rate_um_per_s",
+            "correlation",
+            "lock_quality",
+            "direction",
+            "position_um",
+            "limit_um",
+            "margin_um",
+        ]
+        with open(os.path.join(self._output_dir, "focus_lock_timeseries.csv"), "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in self._rows:
+                writer.writerow(row)
 
 
 def resolve_protocol_channels(
@@ -159,6 +420,7 @@ class ImagingExecutor:
         # FOV progress tracking
         self._images_per_fov: int = 1
         self._progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None
+        self._focus_lock_monitor: Optional[_FocusLockRunMonitor] = None
 
         # Event subscriptions
         self._subscriptions = auto_subscribe(self, event_bus)
@@ -284,6 +546,14 @@ class ImagingExecutor:
             output_dir = os.path.join(output_path, experiment_id)
             os.makedirs(output_dir, exist_ok=True)
             self._write_acquisition_output(output_dir, resolved_channels or [], channel_names)
+            if focus.mode == AutofocusMode.FOCUS_LOCK:
+                self._focus_lock_monitor = _FocusLockRunMonitor(
+                    event_bus=self._event_bus,
+                    output_dir=output_dir,
+                    round_index=round_index,
+                    round_name=f"Round {round_index + 1}",
+                )
+                self._focus_lock_monitor.start()
 
             # Start the acquisition
             _log.info(
@@ -320,6 +590,9 @@ class ImagingExecutor:
             return False
 
         finally:
+            if self._focus_lock_monitor is not None:
+                self._focus_lock_monitor.stop()
+                self._focus_lock_monitor = None
             if hasattr(self._multipoint, "set_start_fov_index"):
                 # Ensure subsequent rounds start from the beginning.
                 self._multipoint.set_start_fov_index(0)
@@ -399,8 +672,6 @@ class ImagingExecutor:
             return
         if event.experiment_id != self._current_experiment_id:
             return
-        if self._progress_callback is None:
-            return
 
         images_per_fov = max(self._images_per_fov, 1)
         current_image = max(event.current_fov, 1)
@@ -412,6 +683,11 @@ class ImagingExecutor:
             else 0
         )
 
+        if self._focus_lock_monitor is not None:
+            self._focus_lock_monitor.update_progress(fov_index, total_fovs)
+
+        if self._progress_callback is None:
+            return
         self._progress_callback(fov_index, total_fovs, event.eta_seconds)
 
     @handles(AcquisitionFinished)

@@ -148,6 +148,7 @@ DEFAULT_TIMING_ESTIMATES = {
     "stage_move_seconds": 0.3,  # Time to move stage between FOVs
     "autofocus_seconds": 2.0,  # Time for software autofocus
     "laser_autofocus_seconds": 0.5,  # Time for laser autofocus
+    "focus_lock_acquire_seconds": 2.0,  # Time to acquire/verify focus lock at step start
     "channel_switch_seconds": 0.2,  # Time to switch channels
     "exposure_overhead_seconds": 0.1,  # Camera overhead per exposure
 
@@ -165,6 +166,6 @@ DEFAULT_TIMING_ESTIMATES = {
 DEFAULT_DISK_ESTIMATES = {
     "bytes_per_pixel_mono": 2,  # 16-bit grayscale
     "bytes_per_pixel_color": 6,  # 16-bit RGB
-    "compression_ratio": 0.7,  # Typical TIFF compression
+    "compression_ratio": 1.0,  # Typical TIFF compression
     "metadata_bytes_per_fov": 4096,  # JSON metadata per FOV
 }

@@ -455,6 +455,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def set_focus_lock_settings(self, settings: FocusLockSettings) -> None:
         self.update_config(**{"focus.focus_lock": settings})
+        if getattr(self, "_autofocus_executor", None) is not None:
+            self._autofocus_executor.apply_focus_lock_settings(settings)
         if self._event_bus:
             self._event_bus.publish(
                 SetFocusLockParamsCommand(

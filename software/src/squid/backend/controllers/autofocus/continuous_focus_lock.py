@@ -4,6 +4,7 @@ import math
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Deque, Optional
 
 import numpy as np
@@ -37,6 +38,19 @@ from squid.core.events import (
     StopFocusLockCommand,
     handles,
 )
+
+
+@dataclass(frozen=True)
+class FocusLockCandidate:
+    """Scored candidate for lock acquisition or re-lock search."""
+
+    piezo_position_um: float
+    displacement_um: float
+    target_error_um: float
+    spot_snr: float
+    correlation: float
+    score: float
+    is_valid: bool
 
 
 class ContinuousFocusLockController(BaseController):
@@ -88,9 +102,14 @@ class ContinuousFocusLockController(BaseController):
         self._auto_search_enabled = self._config.auto_search_enabled
         self._search_phase: str = ""  # "last_position" or "sweep"
         self._search_position: float = 0.0
+        self._search_positions: list[float] = []
+        self._search_position_index: int = 0
+        self._search_candidate_confirmations: int = 0
 
         # Reference piezo position when lock was set (for search recovery)
         self._locked_piezo_um: float = 0.0
+        self._locked_spot_x_px: float = float("nan")
+        self._latest_spot_x_px: float = float("nan")
 
         # PI controller state
         self._integral_accumulator: float = 0.0
@@ -99,6 +118,13 @@ class ContinuousFocusLockController(BaseController):
         self._last_good_error_um: float = 0.0
         self._consecutive_nan_count: int = 0
         self._latest_valid_displacement_um: float = float("nan")
+
+        # Deterministic lock acquisition / stale-measurement guards.
+        self._acquire_confirmation_readings: int = max(2, min(3, self._config.buffer_length))
+        self._search_confirmation_readings: int = 2
+        self._stale_measurement_limit: int = 5
+        self._last_measurement_signature: Optional[tuple[float, float, float, float]] = None
+        self._stale_measurement_count: int = 0
 
     @property
     def mode(self) -> FocusLockMode:
@@ -144,6 +170,7 @@ class ContinuousFocusLockController(BaseController):
             if self._running:
                 return
             self._target_um = float(target_um)
+            self._mode = "on"
             self._paused = False
             self._should_run = True
             self._stop_event.clear()
@@ -164,6 +191,7 @@ class ContinuousFocusLockController(BaseController):
         with self._lock:
             if not self._running and self._status == "disabled":
                 return
+            self._mode = "off"
             self._paused = False
             self._running = False
             self._should_run = False
@@ -218,6 +246,35 @@ class ContinuousFocusLockController(BaseController):
     def shutdown(self) -> None:
         self.stop()
         super().shutdown()
+
+    def apply_settings(self, settings: "object") -> None:
+        """Apply acquisition-scoped focus-lock settings synchronously."""
+        updates = {}
+        for field_name in (
+            "buffer_length",
+            "recovery_attempts",
+            "min_spot_snr",
+            "acquire_threshold_um",
+            "maintain_threshold_um",
+        ):
+            value = getattr(settings, field_name, None)
+            if value is not None:
+                updates[field_name] = value
+
+        if updates:
+            with self._lock:
+                self._config = self._config.model_copy(update=updates)
+                self._lock_buffer_fill = min(self._lock_buffer_fill, self._config.buffer_length)
+                self._error_history = deque(
+                    self._error_history,
+                    maxlen=max(10, self._config.buffer_length * 3),
+                )
+                self._acquire_confirmation_readings = max(2, min(3, self._config.buffer_length))
+        auto_search_enabled = getattr(settings, "auto_search_enabled", None)
+        if auto_search_enabled is not None:
+            with self._lock:
+                self._auto_search_enabled = bool(auto_search_enabled)
+        self._set_status(self._status)
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         if not self.is_running:
@@ -306,6 +363,50 @@ class ContinuousFocusLockController(BaseController):
             # Refresh UI-visible lock bar length even if status value is unchanged.
             self._set_status(self._status)
 
+    def acquire_lock_reference(
+        self,
+        timeout_s: float = 5.0,
+        confirmation_readings: Optional[int] = None,
+    ) -> bool:
+        """Acquire a stable lock reference using bounded retries."""
+        if not self.is_running:
+            return False
+
+        required = confirmation_readings or self._acquire_confirmation_readings
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        accepted: list[LaserAFResult] = []
+
+        while time.monotonic() <= deadline:
+            result = self._laser_af.measure_displacement_continuous()
+            if self._detect_stale_measurement(result):
+                self._publish_warning("measurement_stale", "Focus lock measurements appear stale")
+                accepted.clear()
+                continue
+
+            if not self._is_valid_lock_sample(result):
+                accepted.clear()
+                continue
+
+            accepted.append(result)
+            if len(accepted) > required:
+                accepted = accepted[-required:]
+
+            if len(accepted) < required:
+                continue
+
+            displacements = [sample.displacement_um for sample in accepted]
+            spread = max(displacements) - min(displacements)
+            if spread > self._config.acquire_threshold_um:
+                accepted = accepted[-1:]
+                continue
+
+            target_um = float(sum(displacements) / len(displacements))
+            spot_x_px = accepted[-1].spot_x_px
+            self._commit_lock_reference(target_um, spot_x_px)
+            return True
+
+        return False
+
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""
         result = self._laser_af.measure_displacement_continuous()
@@ -320,13 +421,7 @@ class ContinuousFocusLockController(BaseController):
         with self._lock:
             if not self._running:
                 return
-            self._lock_reference_active = True
-            self._locked_piezo_um = self._piezo_service.get_position()
-            self._lock_buffer_fill = self._config.buffer_length
-            self._target_um = target_um
-            self._latest_valid_displacement_um = target_um
-            self._integral_accumulator = 0.0  # Reset integral for new reference
-        self._set_status("locked")
+        self._commit_lock_reference(target_um, result.spot_x_px)
 
     def _release_lock_reference(self) -> None:
         """Release the lock and return to ready state."""
@@ -335,7 +430,37 @@ class ContinuousFocusLockController(BaseController):
                 return
             self._lock_reference_active = False
             self._lock_buffer_fill = 0
+            self._locked_spot_x_px = float("nan")
         self._set_status("ready")
+
+    def _commit_lock_reference(self, target_um: float, spot_x_px: Optional[float]) -> None:
+        with self._lock:
+            if not self._running:
+                return
+            self._lock_reference_active = True
+            self._locked_piezo_um = self._piezo_service.get_position()
+            self._lock_buffer_fill = self._config.buffer_length
+            self._target_um = target_um
+            self._latest_valid_displacement_um = target_um
+            self._integral_accumulator = 0.0
+            self._search_candidate_confirmations = 0
+            self._locked_spot_x_px = (
+                float(spot_x_px) if spot_x_px is not None else float("nan")
+            )
+        self._set_status("locked")
+
+    def _is_valid_lock_sample(self, result: LaserAFResult) -> bool:
+        if math.isnan(result.displacement_um):
+            return False
+        if math.isnan(result.spot_snr) or result.spot_snr < self._config.min_spot_snr:
+            return False
+        if result.correlation is not None:
+            if math.isnan(result.correlation):
+                return False
+            threshold = self._laser_af.laser_af_properties.correlation_threshold
+            if result.correlation < threshold:
+                return False
+        return True
 
     def _p_gain(self, error_um: float) -> float:
         """Proportional gain that is highest at small errors and decays at large errors.
@@ -397,26 +522,33 @@ class ContinuousFocusLockController(BaseController):
                     # When paused: still measure and publish metrics for monitoring,
                     # but don't apply corrections or update lock state
                     result = self._laser_af.measure_displacement_continuous()
+                    stale_measurement = self._detect_stale_measurement(result)
                     if not math.isnan(result.displacement_um):
                         self._latest_valid_displacement_um = result.displacement_um
+                    if result.spot_x_px is not None:
+                        self._latest_spot_x_px = float(result.spot_x_px)
                     error_um = self._compute_error(result)
-                    is_good = self._is_good_reading(result, error_um)
+                    is_good = self._is_good_reading(result, error_um) and not stale_measurement
 
                     now = time.monotonic()
                     if now - last_metrics_time >= metrics_period:
                         self._publish_metrics(result, error_um, is_good)
                         last_metrics_time = now
+                    self._check_warnings(result, error_um)
                 elif self._status == "searching":
                     # Handle search mode separately
                     self._search_step()
                 else:
                     # Normal operation
                     result = self._laser_af.measure_displacement_continuous()
+                    stale_measurement = self._detect_stale_measurement(result)
                     if not math.isnan(result.displacement_um):
                         self._latest_valid_displacement_um = result.displacement_um
+                    if result.spot_x_px is not None:
+                        self._latest_spot_x_px = float(result.spot_x_px)
 
                     error_um = self._compute_error(result)
-                    is_good = self._is_good_reading(result, error_um)
+                    is_good = self._is_good_reading(result, error_um) and not stale_measurement
 
                     self._update_lock_state(is_good, error_um)
 
@@ -577,9 +709,12 @@ class ContinuousFocusLockController(BaseController):
 
     def _start_search(self) -> None:
         """Start the piezo sweep search to re-find focus."""
+        self._search_positions = self._build_search_positions()
+        self._search_position_index = 0
+        self._search_position = self._search_positions[0] if self._search_positions else self._locked_piezo_um
         self._search_phase = "last_position"
-        self._search_position = self._locked_piezo_um
-        pass
+        self._search_candidate_confirmations = 0
+        self._integral_accumulator = 0.0
 
     def _get_search_bounds(self) -> tuple[float, float]:
         """Get the search bounds: ±search_range_um around last position, clamped to safe range."""
@@ -595,6 +730,67 @@ class ContinuousFocusLockController(BaseController):
         search_max = min(safe_max, local_max)
         return search_min, search_max
 
+    def _build_search_positions(self) -> list[float]:
+        search_min, search_max = self._get_search_bounds()
+        positions = [self._locked_piezo_um]
+        step_index = 1
+        while True:
+            delta = step_index * self._config.search_step_um
+            added = False
+            low = self._locked_piezo_um - delta
+            high = self._locked_piezo_um + delta
+            if low >= search_min:
+                positions.append(low)
+                added = True
+            if high <= search_max:
+                positions.append(high)
+                added = True
+            if not added:
+                break
+            step_index += 1
+        return positions
+
+    def _search_target_tolerance_um(self) -> float:
+        return max(
+            self._config.maintain_threshold_um * 2.0,
+            self._config.acquire_threshold_um * 3.0,
+        )
+
+    def _score_search_candidate(
+        self,
+        result: LaserAFResult,
+        piezo_position_um: float,
+    ) -> FocusLockCandidate:
+        correlation = float("nan")
+        if result.correlation is not None:
+            correlation = float(result.correlation)
+        target_error_um = (
+            float("inf")
+            if math.isnan(result.displacement_um)
+            else abs(result.displacement_um - self._target_um)
+        )
+        is_valid = self._is_valid_lock_sample(result) and (
+            target_error_um <= self._search_target_tolerance_um()
+        )
+        if math.isnan(correlation):
+            correlation_score = 0.0
+        else:
+            correlation_score = correlation
+        score = (
+            result.spot_snr * 0.1
+            + correlation_score
+            - target_error_um * 10.0
+        )
+        return FocusLockCandidate(
+            piezo_position_um=piezo_position_um,
+            displacement_um=result.displacement_um,
+            target_error_um=target_error_um,
+            spot_snr=result.spot_snr,
+            correlation=correlation,
+            score=score,
+            is_valid=is_valid,
+        )
+
     def _search_step(self) -> None:
         """Perform one step of the piezo sweep search."""
         if self._status != "searching":
@@ -606,14 +802,15 @@ class ContinuousFocusLockController(BaseController):
 
         # Get a measurement and check if we found focus
         result = self._laser_af.measure_displacement_continuous()
-        if self._is_good_search_reading(result):
-            # Found it! Set lock at this position
-            pass
-            self._locked_piezo_um = self._search_position
-            self._target_um = result.displacement_um
-            self._lock_buffer_fill = self._config.buffer_length
-            self._set_status("locked")
+        candidate = self._score_search_candidate(result, self._search_position)
+        if candidate.is_valid:
+            self._search_candidate_confirmations += 1
+            if self._search_candidate_confirmations >= self._search_confirmation_readings:
+                self._locked_piezo_um = self._search_position
+                self._commit_lock_reference(self._target_um, result.spot_x_px)
             return
+        else:
+            self._search_candidate_confirmations = 0
 
         # Get search bounds
         search_min, search_max = self._get_search_bounds()
@@ -631,15 +828,17 @@ class ContinuousFocusLockController(BaseController):
         if self._search_phase == "last_position":
             # Last position didn't work, start local sweep
             self._search_phase = "sweep"
-            self._search_position = search_min
-            pass
+            self._search_position_index = 1
+            if self._search_position_index < len(self._search_positions):
+                self._search_position = self._search_positions[self._search_position_index]
         else:
             # Continue sweep
-            self._search_position += self._config.search_step_um
-            if self._search_position > search_max:
+            self._search_position_index += 1
+            if self._search_position_index < len(self._search_positions):
+                self._search_position = self._search_positions[self._search_position_index]
+            else:
                 # Search failed
                 self._lock_buffer_fill = 0
-                pass
                 self._set_status("lost")
 
     def _is_good_search_reading(self, result: LaserAFResult) -> bool:
@@ -653,7 +852,40 @@ class ContinuousFocusLockController(BaseController):
             return False
         if math.isnan(result.spot_snr) or result.spot_snr < self._config.min_spot_snr:
             return False
-        return True
+        return abs(result.displacement_um - self._target_um) <= self._search_target_tolerance_um()
+
+    def _detect_stale_measurement(self, result: LaserAFResult) -> bool:
+        spot_x = float("nan") if result.spot_x_px is None else float(result.spot_x_px)
+        correlation = float("nan") if result.correlation is None else float(result.correlation)
+        signature = (
+            float(result.timestamp),
+            float(result.displacement_um),
+            spot_x,
+            correlation,
+        )
+        previous = self._last_measurement_signature
+        self._last_measurement_signature = signature
+        if previous is None:
+            self._stale_measurement_count = 1
+            return False
+
+        same_timestamp = signature[0] <= previous[0]
+        same_measurement = (
+            math.isclose(signature[1], previous[1], abs_tol=1e-9)
+            and (
+                (math.isnan(signature[2]) and math.isnan(previous[2]))
+                or math.isclose(signature[2], previous[2], abs_tol=1e-9)
+            )
+            and (
+                (math.isnan(signature[3]) and math.isnan(previous[3]))
+                or math.isclose(signature[3], previous[3], abs_tol=1e-9)
+            )
+        )
+        if same_timestamp or same_measurement:
+            self._stale_measurement_count += 1
+        else:
+            self._stale_measurement_count = 1
+        return self._stale_measurement_count >= self._stale_measurement_limit
 
     def _publish_metrics(self, result: LaserAFResult, error_um: float, is_good: bool) -> None:
         if not math.isnan(error_um):
@@ -699,6 +931,12 @@ class ContinuousFocusLockController(BaseController):
             self._smoothed_quality = alpha * current_quality + (1 - alpha) * self._smoothed_quality
 
         z_position = self._piezo_service.get_position()
+        spot_offset_px = float("nan")
+        if not math.isnan(self._locked_spot_x_px) and result.spot_x_px is not None:
+            spot_offset_px = float(result.spot_x_px) - self._locked_spot_x_px
+        piezo_delta_um = float("nan")
+        if self._lock_reference_active:
+            piezo_delta_um = z_position - self._locked_piezo_um
 
         self._event_bus.publish(
             FocusLockMetricsUpdated(
@@ -710,6 +948,8 @@ class ContinuousFocusLockController(BaseController):
                 drift_rate_um_per_s=drift_rate,
                 is_good_reading=is_good,
                 correlation=result.correlation if result.correlation is not None else float("nan"),
+                spot_offset_px=spot_offset_px,
+                piezo_delta_um=piezo_delta_um,
                 lock_buffer_fill=self._lock_buffer_fill,
                 lock_buffer_length=self._config.buffer_length,
                 lock_quality=self._smoothed_quality,
@@ -777,6 +1017,8 @@ class ContinuousFocusLockController(BaseController):
             self._publish_warning("signal_lost", "Focus lock signal lost")
         if result.spot_snr < self._config.min_spot_snr:
             self._publish_warning("snr_low", "Spot SNR below threshold")
+        if self._stale_measurement_count >= self._stale_measurement_limit:
+            self._publish_warning("measurement_stale", "Focus lock measurements appear stale")
 
     def _publish_warning(self, warning_type: str, message: str) -> None:
         now = time.monotonic()
@@ -822,12 +1064,19 @@ class ContinuousFocusLockController(BaseController):
         # Reset search state
         self._search_phase = ""
         self._search_position = 0.0
+        self._search_positions = []
+        self._search_position_index = 0
+        self._search_candidate_confirmations = 0
         # Reset PI controller state
         self._integral_accumulator = 0.0
         # Reset NaN holdover state
         self._last_good_error_um = 0.0
         self._consecutive_nan_count = 0
         self._latest_valid_displacement_um = float("nan")
+        self._locked_spot_x_px = float("nan")
+        self._latest_spot_x_px = float("nan")
+        self._last_measurement_signature = None
+        self._stale_measurement_count = 0
 
     def _set_status(self, status: str) -> None:
         with self._lock:

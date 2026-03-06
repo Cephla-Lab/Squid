@@ -10,7 +10,7 @@ import pytest
 from squid.backend.controllers.multipoint.focus_operations import (
     AutofocusExecutor,
 )
-from squid.core.events import AutofocusMode
+from squid.core.events import AutofocusMode, FocusLockSettings
 
 
 class FakeAutofocusController:
@@ -48,12 +48,22 @@ class FakeFocusLockController:
         self.is_running = False
         self.is_active = False  # New: tracks if started (even if paused)
         self.wait_result = True
+        self.acquire_result = True
         self.pause_called = False
         self.resume_called = False
         self.should_fail_pause = False
+        self.applied_settings = []
+        self.acquire_calls = []
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         return self.wait_result
+
+    def apply_settings(self, settings: FocusLockSettings) -> None:
+        self.applied_settings.append(settings)
+
+    def acquire_lock_reference(self, timeout_s: float = 5.0) -> bool:
+        self.acquire_calls.append(timeout_s)
+        return self.acquire_result
 
     def pause(self) -> None:
         if self.should_fail_pause:
@@ -404,3 +414,59 @@ class TestAutofocusExecutor:
 
         assert len(callback_received) == 1
         assert callback_received[0] == channel_config.returned_config
+
+    def test_apply_focus_lock_settings_updates_live_controller(self):
+        focus_lock = FakeFocusLockController()
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+        settings = FocusLockSettings(
+            buffer_length=7,
+            recovery_attempts=4,
+            min_spot_snr=8.0,
+            acquire_threshold_um=0.2,
+            maintain_threshold_um=0.4,
+            auto_search_enabled=True,
+            lock_timeout_s=3.0,
+        )
+
+        executor.apply_focus_lock_settings(settings)
+
+        assert focus_lock.applied_settings == [settings]
+
+    def test_prepare_focus_lock_for_acquisition_uses_bounded_retry_path(self):
+        focus_lock = FakeFocusLockController()
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+        settings = FocusLockSettings(lock_timeout_s=2.5)
+
+        result = executor.prepare_focus_lock_for_acquisition(settings)
+
+        assert result is True
+        assert focus_lock.acquire_calls == [2.5]
+
+    def test_prepare_focus_lock_for_acquisition_falls_back_to_wait_for_lock(self):
+        class _LegacyFocusLockController:
+            def __init__(self) -> None:
+                self.is_active = True
+                self.wait_result = True
+
+            def wait_for_lock(self, timeout_s: float = 5.0) -> bool:  # noqa: ARG002
+                return self.wait_result
+
+        focus_lock = _LegacyFocusLockController()
+        focus_lock.is_active = True
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+        settings = FocusLockSettings(lock_timeout_s=1.5)
+
+        result = executor.prepare_focus_lock_for_acquisition(settings)
+
+        assert result is True
+
+    def test_verify_focus_lock_before_capture_returns_reason(self):
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        focus_lock.wait_result = False
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        ok, reason = executor.verify_focus_lock_before_capture(timeout_s=1.0)
+
+        assert ok is False
+        assert "timeout" in reason

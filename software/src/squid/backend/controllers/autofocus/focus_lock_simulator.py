@@ -149,12 +149,16 @@ class FocusLockSimulator(BaseController):
             self._log.warning("Cannot start focus lock: laser AF not initialized")
             return
 
+        publish_mode_on = False
         with self._lock:
             if self._is_running:
                 return
             self._reset_lock_state()
             self._paused = False
             self._status = "ready"
+            if self._mode != "on":
+                self._mode = "on"
+                publish_mode_on = True
             self._keep_running.set()
             self._thread = threading.Thread(
                 target=self._simulation_loop,
@@ -164,11 +168,14 @@ class FocusLockSimulator(BaseController):
             self._is_running = True
             self._should_run = True
             self._thread.start()
+        if publish_mode_on:
+            self._event_bus.publish(FocusLockModeChanged(mode="on"))
         self._publish_status_if_needed()
 
     def stop(self) -> None:
         """Stop the simulator loop."""
         thread = None
+        publish_mode_off = False
         with self._lock:
             self._keep_running.clear()
             thread = self._thread
@@ -177,9 +184,14 @@ class FocusLockSimulator(BaseController):
             self._should_run = False
             self._paused = False
             self._status = "disabled"
+            if self._mode != "off":
+                self._mode = "off"
+                publish_mode_off = True
             self._reset_lock_state()
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        if publish_mode_off:
+            self._event_bus.publish(FocusLockModeChanged(mode="off"))
         self._publish_status_if_needed()
 
     def pause(self) -> None:

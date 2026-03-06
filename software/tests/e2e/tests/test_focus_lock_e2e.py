@@ -39,6 +39,14 @@ def _wait_until(predicate, timeout_s: float = 5.0, poll_s: float = 0.02) -> bool
     return False
 
 
+def _start_and_lock(ctx: FocusLockTestContext, timeout_s: float = 5.0) -> None:
+    """Start the simulator and explicitly engage the lock reference."""
+    ctx.simulator.start()
+    assert ctx.wait_for_status("ready", timeout_s=3.0)
+    ctx.simulator.set_lock_reference()
+    assert ctx.wait_for_status("locked", timeout_s=timeout_s)
+
+
 # ---------------------------------------------------------------------------
 # Start / Lock lifecycle
 # ---------------------------------------------------------------------------
@@ -61,11 +69,7 @@ class TestStartAndLock:
         """Wait for buffer to fill → assert 'locked' event published."""
         with FocusLockTestContext() as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-
-            assert ctx.wait_for_status("ready", timeout_s=3.0)
-            # With buffer_length=3 and 50Hz loop, lock should arrive quickly
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             ctx.simulator.stop()
 
@@ -176,15 +180,15 @@ class TestRecovery:
         )
         with FocusLockTestContext(config=config) as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
-            # Drop SNR below threshold to trigger recovery
-            ctx.laser_af.set_snr(0.1)
+            # Remove the spot signal to trigger recovery.
+            ctx.laser_af.set_signal_present(False)
             assert ctx.wait_for_status("recovering", timeout_s=5.0)
 
-            # Restore good SNR
-            ctx.laser_af.set_snr(12.0)
+            # Restore the signal and nominal displacement.
+            ctx.laser_af.set_signal_present(True)
+            ctx.laser_af.set_displacement(0.0)
             assert ctx.wait_for_status("locked", timeout_s=5.0)
 
             ctx.simulator.stop()
@@ -202,11 +206,10 @@ class TestRecovery:
         )
         with FocusLockTestContext(config=config) as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
-            # Drop SNR to trigger bad readings
-            ctx.laser_af.set_snr(0.1)
+            # Remove the spot to trigger recovery failure.
+            ctx.laser_af.set_signal_present(False)
 
             # Should exhaust recovery and go to lost
             assert ctx.wait_for_status("lost", timeout_s=5.0)
@@ -237,11 +240,10 @@ class TestSearch:
         )
         with FocusLockTestContext(config=config) as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             # Break the lock
-            ctx.laser_af.set_snr(0.1)
+            ctx.laser_af.set_signal_present(False)
 
             # Should enter searching after recovery exhausts
             assert ctx.wait_for_status("searching", timeout_s=5.0)
@@ -268,8 +270,7 @@ class TestPauseResume:
         """Lock → pause → resume, assert lock restored without re-acquisition."""
         with FocusLockTestContext() as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             # Pause
             ctx.simulator.pause()
@@ -288,8 +289,7 @@ class TestPauseResume:
         """100 rapid pause/resume cycles, assert no crash + valid final state."""
         with FocusLockTestContext() as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             errors = []
 
@@ -327,8 +327,7 @@ class TestPauseResume:
         """Resume on a running but not paused simulator does nothing."""
         with FocusLockTestContext() as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             ctx.collector.clear()
             ctx.simulator.resume()
@@ -353,8 +352,7 @@ class TestPiezoWarnings:
         """Drive piezo near limits, assert FocusLockWarning published."""
         with FocusLockTestContext() as ctx:
             ctx.initialize()
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             # Move piezo near lower limit
             ctx.piezo.move_to(1.0)  # Well within warning margin of 0.0
@@ -413,8 +411,7 @@ class TestStateReset:
             ctx.initialize()
 
             # First cycle: get locked
-            ctx.simulator.start()
-            assert ctx.wait_for_status("locked", timeout_s=5.0)
+            _start_and_lock(ctx)
 
             # Let some error history accumulate
             time.sleep(0.2)

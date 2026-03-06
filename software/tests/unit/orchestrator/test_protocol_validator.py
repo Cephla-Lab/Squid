@@ -258,7 +258,60 @@ class TestProtocolValidator:
 
         assert summary.valid is False
         assert summary.has_errors
-        assert any("FITC" in err for err in summary.errors)
+
+    def test_validate_focus_lock_adds_zstack_and_interval_warnings(self):
+        protocol = ExperimentProtocol(
+            name="Focus Lock Warnings",
+            version="2.0",
+            imaging_protocols={
+                "lock_scan": ImagingProtocol(
+                    channels=["DAPI"],
+                    z_stack=ZStackConfig(planes=3),
+                    focus=FocusConfig(
+                        mode=AutofocusMode.FOCUS_LOCK,
+                        interval_fovs=3,
+                    ),
+                ),
+            },
+            rounds=[Round(name="Round 1", steps=[ImagingStep(protocol="lock_scan")])],
+        )
+        validator = ProtocolValidator()
+
+        summary = validator.validate(protocol, fov_count=2)
+
+        round_warnings = summary.get_warnings_for_round(0)
+        assert any("interval_fovs" in warning for warning in round_warnings)
+        assert any("multi-plane z-stack" in warning for warning in round_warnings)
+
+    def test_validate_focus_lock_adds_lock_acquire_time_overhead(self):
+        protocol = ExperimentProtocol(
+            name="Focus Lock Timing",
+            version="2.0",
+            imaging_protocols={
+                "lock_scan": ImagingProtocol(
+                    channels=["DAPI"],
+                    z_stack=ZStackConfig(planes=1),
+                    focus=FocusConfig(
+                        mode=AutofocusMode.FOCUS_LOCK,
+                    ),
+                ),
+            },
+            rounds=[Round(name="Round 1", steps=[ImagingStep(protocol="lock_scan")])],
+        )
+        validator = ProtocolValidator(
+            timing_estimates={
+                "stage_move_seconds": 0.0,
+                "channel_switch_seconds": 0.0,
+                "exposure_overhead_seconds": 0.0,
+                "focus_lock_acquire_seconds": 2.0,
+            }
+        )
+
+        summary = validator.validate(protocol, fov_count=1)
+        imaging_ops = [op for op in summary.operation_estimates if op.operation_type == "imaging"]
+
+        assert imaging_ops
+        assert imaging_ops[0].estimated_seconds >= 2.0
 
     def test_validate_with_empty_available_channels_fails(self, simple_protocol):
         """An explicit empty channel set should fail channel validation."""

@@ -6,6 +6,7 @@ with a real EventBus and simulated laser AF controller / piezo service.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import defaultdict
@@ -64,6 +65,7 @@ class FakeLaserAF:
         self._spot_snr = 12.0
         self._spot_intensity = 200.0
         self._correlation = 0.95
+        self._signal_present = True
         self._should_fail = False
         self._lock = threading.Lock()
         self.laser_af_properties = _FakeLaserAFProps()
@@ -72,13 +74,16 @@ class FakeLaserAF:
         with self._lock:
             if self._should_fail:
                 raise RuntimeError("Simulated measurement failure")
+            spot_x_px = 100.0 if self._signal_present else None
+            spot_y_px = 50.0 if self._signal_present else None
+            displacement_um = self._displacement_um if self._signal_present else math.nan
             return LaserAFResult(
-                displacement_um=self._displacement_um,
+                displacement_um=displacement_um,
                 spot_intensity=self._spot_intensity,
                 spot_snr=self._spot_snr,
                 correlation=self._correlation,
-                spot_x_px=100.0,
-                spot_y_px=50.0,
+                spot_x_px=spot_x_px,
+                spot_y_px=spot_y_px,
                 timestamp=time.monotonic(),
                 image=np.zeros((64, 256), dtype=np.uint8),
             )
@@ -94,6 +99,10 @@ class FakeLaserAF:
     def set_should_fail(self, fail: bool) -> None:
         with self._lock:
             self._should_fail = fail
+
+    def set_signal_present(self, present: bool) -> None:
+        with self._lock:
+            self._signal_present = present
 
     def turn_on_laser(self, bypass_mode_gate: bool = False) -> None:
         pass

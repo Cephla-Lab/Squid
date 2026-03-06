@@ -4,6 +4,7 @@ import math
 import time
 
 import numpy as np
+import pytest
 
 from squid.backend.controllers.autofocus.continuous_focus_lock import (
     ContinuousFocusLockController,
@@ -64,6 +65,9 @@ class _DummyPiezoService:
     def get_range(self):
         return (0.0, 300.0)
 
+    def move_to(self, position_um: float) -> None:
+        self.position = position_um
+
     def move_to_fast(self, position_um: float) -> None:
         self.position = position_um
 
@@ -87,6 +91,44 @@ class _CoupledLaserAF(_DummyLaserAF):
             spot_y_px=50.0,
             timestamp=time.monotonic(),
         )
+
+
+class _SequenceLaserAF(_DummyLaserAF):
+    """Laser AF stub that returns a deterministic result sequence."""
+
+    def __init__(self, results: list[LaserAFResult]) -> None:
+        super().__init__()
+        self._results = list(results)
+        self._index = 0
+
+    def measure_displacement_continuous(self) -> LaserAFResult:
+        if not self._results:
+            return super().measure_displacement_continuous()
+        if self._index >= len(self._results):
+            return self._results[-1]
+        result = self._results[self._index]
+        self._index += 1
+        return result
+
+
+def _make_result(
+    *,
+    displacement_um: float,
+    spot_snr: float = 10.0,
+    correlation: float | None = 0.95,
+    spot_x_px: float | None = 100.0,
+    timestamp: float | None = None,
+) -> LaserAFResult:
+    return LaserAFResult(
+        displacement_um=displacement_um,
+        spot_intensity=100.0,
+        spot_snr=spot_snr,
+        correlation=correlation,
+        spot_x_px=spot_x_px,
+        spot_y_px=50.0 if spot_x_px is not None else None,
+        timestamp=time.monotonic() if timestamp is None else timestamp,
+        image=np.zeros((64, 256), dtype=np.uint8),
+    )
 
 
 def test_control_fn_negative_feedback():
@@ -236,6 +278,22 @@ def test_laser_state_tracking():
 
     assert laser_af.on_calls == 1
     assert laser_af.off_calls == 1
+
+
+def test_mode_property_tracks_start_and_stop():
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+    )
+
+    controller.start()
+    try:
+        assert controller.mode == "on"
+    finally:
+        controller.stop()
+
+    assert controller.mode == "off"
 
 
 def test_pause_preserves_lock_state():
@@ -495,6 +553,96 @@ def test_set_lock_reference_no_valid_displacement_keeps_status():
     assert controller._target_um == 0.5
 
 
+def test_acquire_lock_reference_retries_until_measurement_stabilizes():
+    bus = EventBus()
+    laser_af = _SequenceLaserAF(
+        [
+            _make_result(displacement_um=float("nan"), spot_snr=0.0, correlation=None, spot_x_px=None),
+            _make_result(displacement_um=0.15, spot_snr=12.0, correlation=0.96, timestamp=10.0),
+            _make_result(displacement_um=0.16, spot_snr=12.0, correlation=0.96, timestamp=10.1),
+            _make_result(displacement_um=0.15, spot_snr=12.0, correlation=0.96, timestamp=10.2),
+        ]
+    )
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+        config=FocusLockConfig(buffer_length=3, acquire_threshold_um=0.2, maintain_threshold_um=0.4),
+    )
+    controller._running = True
+    controller._should_run = True
+
+    acquired = controller.acquire_lock_reference(timeout_s=0.3, confirmation_readings=3)
+
+    assert acquired is True
+    assert controller.status == "locked"
+    assert controller._lock_reference_active is True
+    assert controller._target_um == pytest.approx(0.15, abs=0.02)
+
+
+def test_search_positions_are_symmetric_around_last_lock():
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+        config=FocusLockConfig(search_range_um=40.0, search_step_um=10.0),
+    )
+    controller._locked_piezo_um = 150.0
+
+    controller._start_search()
+
+    assert controller._search_positions == [150.0, 140.0, 160.0, 130.0, 170.0, 120.0, 180.0, 110.0, 190.0]
+
+
+def test_search_candidate_rejects_far_high_snr_reflection():
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+        config=FocusLockConfig(acquire_threshold_um=0.2, maintain_threshold_um=0.5, min_spot_snr=5.0),
+    )
+    controller._target_um = 0.0
+    controller._status = "searching"
+
+    candidate = controller._score_search_candidate(
+        _make_result(displacement_um=4.5, spot_snr=25.0, correlation=0.98, timestamp=20.0),
+        piezo_position_um=150.0,
+    )
+
+    assert candidate.is_valid is False
+
+
+def test_search_requires_confirmation_before_relocking():
+    bus = EventBus()
+    piezo = _DummyPiezoService()
+    laser_af = _SequenceLaserAF(
+        [
+            _make_result(displacement_um=0.05, spot_snr=12.0, correlation=0.98, timestamp=30.0),
+            _make_result(displacement_um=0.04, spot_snr=12.0, correlation=0.98, timestamp=30.1),
+        ]
+    )
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=piezo,
+        event_bus=bus,
+        config=FocusLockConfig(search_range_um=20.0, search_step_um=10.0),
+    )
+    controller._running = True
+    controller._should_run = True
+    controller._target_um = 0.0
+    controller._locked_piezo_um = 150.0
+    controller._search_confirmation_readings = 2
+    controller._start_search()
+    controller._set_status("searching")
+
+    controller._search_step()
+    assert controller.status == "searching"
+
+    controller._search_step()
+    assert controller.status == "locked"
+    assert piezo.get_position() == pytest.approx(150.0)
+
+
 def test_is_good_reading_ignores_correlation_for_nonzero_target():
     """Low correlation should not reject otherwise-good reads for non-zero target lock."""
     controller = ContinuousFocusLockController(
@@ -611,6 +759,73 @@ def test_control_fn_zero_error():
     result = controller._control_fn(0.0, dt)
     assert result == 0.0
     assert not math.isnan(result)
+
+
+def test_detect_stale_measurement_after_repeated_identical_samples():
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+    )
+    controller._stale_measurement_limit = 3
+
+    result = _make_result(displacement_um=0.1, spot_snr=12.0, correlation=0.95, timestamp=40.0)
+
+    assert controller._detect_stale_measurement(result) is False
+    assert controller._detect_stale_measurement(result) is False
+    assert controller._detect_stale_measurement(result) is True
+
+
+def test_publish_metrics_populates_spot_and_piezo_offsets():
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+    )
+    metrics_events: list[FocusLockMetricsUpdated] = []
+    bus.subscribe(FocusLockMetricsUpdated, metrics_events.append)
+
+    controller._status = "locked"
+    controller._lock_reference_active = True
+    controller._locked_spot_x_px = 100.0
+    controller._locked_piezo_um = 145.0
+    controller._piezo_service.position = 150.0
+
+    controller._publish_metrics(
+        _make_result(displacement_um=0.2, spot_snr=12.0, correlation=0.97, spot_x_px=104.5, timestamp=50.0),
+        error_um=0.2,
+        is_good=True,
+    )
+    bus.drain()
+
+    assert metrics_events
+    event = metrics_events[-1]
+    assert event.spot_offset_px == pytest.approx(4.5)
+    assert event.piezo_delta_um == pytest.approx(5.0)
+
+
+def test_paused_loop_still_emits_focus_lock_warnings():
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_SequenceLaserAF(
+            [_make_result(displacement_um=0.0, spot_snr=0.5, correlation=0.95, timestamp=60.0)]
+        ),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+        config=FocusLockConfig(loop_rate_hz=40.0, metrics_rate_hz=20.0, min_spot_snr=5.0),
+    )
+    warnings: list[FocusLockWarning] = []
+    bus.subscribe(FocusLockWarning, warnings.append)
+
+    controller.start()
+    try:
+        controller.pause()
+        time.sleep(0.1)
+        bus.drain()
+        assert any(event.warning_type == "snr_low" for event in warnings)
+    finally:
+        controller.stop()
 
 
 def test_recovery_with_delayed_good_readings():

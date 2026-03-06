@@ -888,17 +888,22 @@ class MultiPointWorker:
             controller.start()
             self._focus_lock_started_by_acquisition = True
 
-        controller_status = getattr(controller, "status", None)
-        if controller_status != "locked":
-            if hasattr(controller, "set_lock_reference"):
-                controller.set_lock_reference()
-            elif hasattr(controller, "set_lock"):
-                controller.set_lock()
-            else:
-                raise RuntimeError("Focus lock controller does not support setting lock reference")
+        prepare_focus_lock = getattr(self._autofocus_executor, "prepare_focus_lock_for_acquisition", None)
+        prepared = False
+        if callable(prepare_focus_lock):
+            prepared = bool(prepare_focus_lock(self.focus_lock_settings))
+        else:
+            controller_status = getattr(controller, "status", None)
+            if controller_status != "locked":
+                if hasattr(controller, "set_lock_reference"):
+                    controller.set_lock_reference()
+                elif hasattr(controller, "set_lock"):
+                    controller.set_lock()
+            timeout_s = float(getattr(self.focus_lock_settings, "lock_timeout_s", 5.0))
+            prepared = self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s)
 
-        timeout_s = float(getattr(self.focus_lock_settings, "lock_timeout_s", 5.0))
-        if not self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s):
+        if not prepared:
+            timeout_s = float(getattr(self.focus_lock_settings, "lock_timeout_s", 5.0))
             raise RuntimeError(
                 f"Focus lock failed to acquire before acquisition start (timeout={timeout_s:.1f}s)"
             )
@@ -1840,10 +1845,16 @@ class MultiPointWorker:
         if focus_lock_active:
             focus_lock_settings = getattr(self, "focus_lock_settings", None)
             timeout_s = float(getattr(focus_lock_settings, "lock_timeout_s", 5.0))
-            if not self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s):
+            verify_focus_lock = getattr(self._autofocus_executor, "verify_focus_lock_before_capture", None)
+            if callable(verify_focus_lock):
+                focus_lock_ok, reason = verify_focus_lock(timeout_s=timeout_s)
+            else:
+                focus_lock_ok = self._autofocus_executor.wait_for_focus_lock(timeout_s=timeout_s)
+                reason = None if focus_lock_ok else f"timeout={timeout_s:.1f}s"
+            if not focus_lock_ok:
                 message = (
                     "Focus lock verification failed before FOV capture "
-                    f"(timeout={timeout_s:.1f}s)"
+                    f"({reason or f'timeout={timeout_s:.1f}s'})"
                 )
                 if self.autofocus_mode == AutofocusMode.FOCUS_LOCK:
                     raise RuntimeError(message)

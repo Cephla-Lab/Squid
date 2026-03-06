@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING, Dict, Tuple
 
 import squid.core.logging
 from _def import Acquisition, MULTIPOINT_AUTOFOCUS_CHANNEL
-from squid.core.events import AutofocusMode
+from squid.core.events import AutofocusMode, FocusLockSettings
 
 if TYPE_CHECKING:
     from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
@@ -341,6 +341,33 @@ class AutofocusExecutor:
             return False
 
     # Focus lock helper methods for MultiPointWorker
+
+    def apply_focus_lock_settings(self, settings: FocusLockSettings) -> None:
+        """Apply focus-lock settings synchronously when a live controller is available."""
+        if self._focus_lock is None:
+            return
+        apply_settings = getattr(self._focus_lock, "apply_settings", None)
+        if callable(apply_settings):
+            apply_settings(settings)
+
+    def prepare_focus_lock_for_acquisition(self, settings: FocusLockSettings) -> bool:
+        """Acquire a stable focus lock before acquisition begins."""
+        if self._focus_lock is None:
+            return False
+
+        timeout_s = float(getattr(settings, "lock_timeout_s", 5.0))
+        acquire_lock_reference = getattr(self._focus_lock, "acquire_lock_reference", None)
+        if callable(acquire_lock_reference):
+            return bool(acquire_lock_reference(timeout_s=timeout_s))
+        return self.wait_for_focus_lock(timeout_s=timeout_s)
+
+    def verify_focus_lock_before_capture(self, timeout_s: float = 5.0) -> tuple[bool, Optional[str]]:
+        """Verify that focus lock is established immediately before capture."""
+        if self._focus_lock is None or not self.is_focus_lock_active():
+            return False, "focus lock inactive"
+        if self.wait_for_focus_lock(timeout_s=timeout_s):
+            return True, None
+        return False, f"focus lock verification timeout after {timeout_s:.1f}s"
 
     def wait_for_focus_lock(self, timeout_s: float = 5.0) -> bool:
         """
