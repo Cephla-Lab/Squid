@@ -193,15 +193,16 @@ class SimSerial(AbstractCephlaMicroSerial):
         command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
     ) -> bytes:
         """
-        - command ID (1 byte)
-        - execution status (1 byte)
-        - X pos (4 bytes)
-        - Y pos (4 bytes)
-        - Z pos (4 bytes)
-        - Theta (4 bytes)
-        - buttons and switches (1 byte)
-        - reserved (4 bytes) - byte 22 contains firmware version
-        - CRC (1 byte)
+        - byte 0: command ID (1 byte)
+        - byte 1: execution status (1 byte)
+        - bytes 2-5: X pos (4 bytes)
+        - bytes 6-9: Y pos (4 bytes)
+        - bytes 10-13: Z pos (4 bytes)
+        - bytes 14-17: Theta (4 bytes)
+        - byte 18: buttons and switches (1 byte)
+        - bytes 19-21: reserved (3 bytes)
+        - byte 22: firmware version, nibble-encoded (1 byte)
+        - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
