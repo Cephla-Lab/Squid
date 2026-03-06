@@ -2742,7 +2742,10 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z before moving Xeryon to zero (always when using Xeryon, only on full shutdown otherwise)
+        # Retract Z before moving the Xeryon objective changer to zero:
+        # - On full shutdown (for_restart is False), always retract Z and, if present, reset Xeryon to zero.
+        # - On restart (for_restart is True), only do this if using Xeryon with an objective changer;
+        #   otherwise the current Z position is preserved.
         if not for_restart or (USE_XERYON and self.objective_changer):
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
