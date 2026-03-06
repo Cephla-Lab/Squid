@@ -200,7 +200,9 @@ class CMD_SET:
     SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
     SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
     TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
+    SET_WATCHDOG_TIMEOUT = 40  # Set serial watchdog timeout and enable
     SET_PIN_LEVEL = 41
+    HEARTBEAT = 42  # No-op keepalive for watchdog
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -354,6 +356,13 @@ def port_index_to_source_code(port_index: int) -> int:
         4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
     }
     return mapping.get(port_index, -1)
+
+
+# Serial watchdog (illumination auto-shutoff safety)
+# Must match firmware constants in constants.h
+DEFAULT_WATCHDOG_TIMEOUT_MS = 5000  # 5 seconds (matches firmware)
+MAX_WATCHDOG_TIMEOUT_MS = 3600000  # 1 hour (matches firmware)
+WATCHDOG_TIMEOUT_S = DEFAULT_WATCHDOG_TIMEOUT_MS / 1000.0
 
 
 class VOLUMETRIC_IMAGING:
