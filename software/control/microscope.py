@@ -413,7 +413,7 @@ class Microscope:
         if self.low_level_drivers.microcontroller:
             mcu = self.low_level_drivers.microcontroller
             if mcu.firmware_version >= (1, 1):
-                timeout_s = getattr(control._def, "WATCHDOG_TIMEOUT_S", 5.0)
+                timeout_s = control._def.WATCHDOG_TIMEOUT_S
                 mcu.set_watchdog_timeout(timeout_s)
                 mcu.wait_till_operation_is_completed()
                 mcu.start_heartbeat()

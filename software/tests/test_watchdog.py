@@ -87,7 +87,7 @@ class TestHeartbeat:
         assert mcu._heartbeat_thread is not None
         assert mcu._heartbeat_thread.is_alive()
         mcu.stop_heartbeat()
-        assert not mcu._heartbeat_thread.is_alive()
+        assert mcu._heartbeat_thread is None
 
     def test_close_stops_heartbeat(self):
         """close() should stop the heartbeat thread."""

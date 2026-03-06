@@ -984,6 +984,8 @@ class Microcontroller:
                             f"[MCU] Heartbeat has failed {consecutive_failures} times consecutively. "
                             "Firmware watchdog may fire and disable illumination."
                         )
+                    elif consecutive_failures % 50 == 0:
+                        self.log.error(f"[MCU] Heartbeat still failing: {consecutive_failures} consecutive failures")
 
         self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
@@ -997,6 +999,7 @@ class Microcontroller:
             if self._heartbeat_thread.is_alive():
                 self.log.warning("[MCU] Heartbeat thread did not stop within 2s timeout")
                 return
+        self._heartbeat_thread = None
         self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
