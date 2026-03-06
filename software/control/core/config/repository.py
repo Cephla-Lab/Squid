@@ -792,9 +792,7 @@ class ConfigRepository:
             if acq_channel.confocal_hardware_settings is None:
                 from control.default_config_generator import build_confocal_settings_from_config
 
-                acq_channel.confocal_hardware_settings = build_confocal_settings_from_config(
-                    self.get_confocal_config()
-                )
+                acq_channel.confocal_hardware_settings = build_confocal_settings_from_config(self.get_confocal_config())
             setattr(acq_channel.confocal_hardware_settings, field, value)
         elif confocal_mode:
             # Write to confocal_override — create it if it doesn't exist
@@ -814,8 +812,14 @@ class ConfigRepository:
                 )
 
             if location == "camera":
+                if acq_channel.confocal_override.camera_settings is None:
+                    acq_channel.confocal_override.camera_settings = acq_channel.camera_settings.model_copy()
                 setattr(acq_channel.confocal_override.camera_settings, field, value)
             elif location == "illumination":
+                if acq_channel.confocal_override.illumination_settings is None:
+                    acq_channel.confocal_override.illumination_settings = IlluminationSettings(
+                        intensity=acq_channel.illumination_settings.intensity,
+                    )
                 acq_channel.confocal_override.illumination_settings.intensity = value
         else:
             # Write to base settings (existing behavior)

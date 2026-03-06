@@ -618,8 +618,7 @@ class CollapsibleGroupBox(QWidget):
 
         # Header button with arrow
         self._header = QPushButton()
-        self._header.setStyleSheet(
-            """
+        self._header.setStyleSheet("""
             QPushButton {
                 text-align: left;
                 padding: 8px;
@@ -633,8 +632,7 @@ class CollapsibleGroupBox(QWidget):
             QPushButton:hover {
                 background-color: palette(light);
             }
-            """
-        )
+            """)
         self._header.clicked.connect(self._toggle)
         main_layout.addWidget(self._header)
 
@@ -642,8 +640,7 @@ class CollapsibleGroupBox(QWidget):
         self.content_widget = QFrame()
         self.content_widget.setObjectName("collapsibleContent")
         self.content_widget.setFrameShape(QFrame.StyledPanel)
-        self.content_widget.setStyleSheet(
-            """
+        self.content_widget.setStyleSheet("""
             QFrame#collapsibleContent {
                 border: 1px solid palette(mid);
                 border-top: none;
@@ -655,8 +652,7 @@ class CollapsibleGroupBox(QWidget):
                 border: none;
                 background: transparent;
             }
-            """
-        )
+            """)
         self.content = QVBoxLayout(self.content_widget)
         self.content.setContentsMargins(15, 10, 10, 10)
         main_layout.addWidget(self.content_widget)
@@ -3249,18 +3245,38 @@ class SpinningDiskConfocalWidget(QWidget):
     def update_iris_from_config(self, configuration):
         """Update iris UI controls from a channel's confocal_hardware_settings."""
         hw_settings = getattr(configuration, "confocal_hardware_settings", None)
-        if hw_settings is None:
-            return
         self.block_iris_control_signals(True)
         try:
-            if hw_settings.illumination_iris is not None and self.xlight.has_illumination_iris_diaphragm:
-                value = int(hw_settings.illumination_iris)
-                self.slider_illumination_iris.setValue(value)
-                self.spinbox_illumination_iris.setValue(value)
-            if hw_settings.emission_iris is not None and self.xlight.has_emission_iris_diaphragm:
-                value = int(hw_settings.emission_iris)
-                self.slider_emission_iris.setValue(value)
-                self.spinbox_emission_iris.setValue(value)
+            if hw_settings is None:
+                if self.xlight.has_illumination_iris_diaphragm:
+                    default_illum = self.slider_illumination_iris.minimum()
+                    self.slider_illumination_iris.setValue(default_illum)
+                    self.spinbox_illumination_iris.setValue(default_illum)
+                if self.xlight.has_emission_iris_diaphragm:
+                    default_em = self.slider_emission_iris.minimum()
+                    self.slider_emission_iris.setValue(default_em)
+                    self.spinbox_emission_iris.setValue(default_em)
+                return
+
+            if self.xlight.has_illumination_iris_diaphragm:
+                if hw_settings.illumination_iris is not None:
+                    value = int(hw_settings.illumination_iris)
+                    self.slider_illumination_iris.setValue(value)
+                    self.spinbox_illumination_iris.setValue(value)
+                else:
+                    default_illum = self.slider_illumination_iris.minimum()
+                    self.slider_illumination_iris.setValue(default_illum)
+                    self.spinbox_illumination_iris.setValue(default_illum)
+
+            if self.xlight.has_emission_iris_diaphragm:
+                if hw_settings.emission_iris is not None:
+                    value = int(hw_settings.emission_iris)
+                    self.slider_emission_iris.setValue(value)
+                    self.spinbox_emission_iris.setValue(value)
+                else:
+                    default_em = self.slider_emission_iris.minimum()
+                    self.slider_emission_iris.setValue(default_em)
+                    self.spinbox_emission_iris.setValue(default_em)
         finally:
             self.block_iris_control_signals(False)
 
@@ -7157,8 +7173,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Create informational labels for when modes are not selected
         self.z_not_selected_label = QLabel("Z stack not selected")
         self.z_not_selected_label.setAlignment(Qt.AlignCenter)
-        self.z_not_selected_label.setStyleSheet(
-            """
+        self.z_not_selected_label.setStyleSheet("""
             QLabel {
                 background-color: palette(button);
                 border: 1px solid palette(mid);
@@ -7166,14 +7181,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 padding: 0px;
                 color: palette(text);
             }
-        """
-        )
+        """)
         self.z_not_selected_label.setVisible(False)
 
         self.time_not_selected_label = QLabel("Time lapse not selected")
         self.time_not_selected_label.setAlignment(Qt.AlignCenter)
-        self.time_not_selected_label.setStyleSheet(
-            """
+        self.time_not_selected_label.setStyleSheet("""
             QLabel {
                 background-color: palette(button);
                 border: 1px solid palette(mid);
@@ -7181,8 +7194,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 padding: 0px;
                 color: palette(text);
             }
-        """
-        )
+        """)
         self.time_not_selected_label.setVisible(False)
 
         # Z controls frame for Z-min and Z-max (full row 2) with blue background

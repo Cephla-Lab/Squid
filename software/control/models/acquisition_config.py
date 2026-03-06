@@ -276,8 +276,10 @@ class AcquisitionChannel(BaseModel):
             filter_position=self.filter_position,
             z_offset_um=self.z_offset_um,
             illumination_settings=merged_illumination,
-            confocal_hardware_settings=self.confocal_hardware_settings.model_copy() if self.confocal_hardware_settings else None,
-            confocal_override=self.confocal_override,
+            confocal_hardware_settings=(
+                self.confocal_hardware_settings.model_copy() if self.confocal_hardware_settings else None
+            ),
+            confocal_override=self.confocal_override.model_copy(deep=True) if self.confocal_override else None,
         )
 
 

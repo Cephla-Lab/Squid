@@ -363,7 +363,8 @@ def ensure_default_configs(
         config_repo: ConfigRepository instance
         profile: Profile name
         objectives: List of objectives (default: standard set)
-        include_confocal: Whether to include confocal_override sections.
+        include_confocal: Whether to include confocal-related settings
+            (confocal_override sections and confocal_hardware_settings).
             Should be set from ENABLE_SPINNING_DISK_CONFOCAL.
 
     Returns:
