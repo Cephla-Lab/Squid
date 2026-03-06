@@ -328,9 +328,7 @@ class SimSerial(AbstractCephlaMicroSerial):
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
         elif command_byte == CMD_SET.SET_WATCHDOG_TIMEOUT:
-            requested_timeout = (
-                (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
-            )
+            requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
             if requested_timeout > MAX_WATCHDOG_TIMEOUT_MS:
                 requested_timeout = MAX_WATCHDOG_TIMEOUT_MS
             if requested_timeout == 0:
@@ -370,6 +368,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.theta,
                 self.joystick_button,
                 self.switch,
+                firmware_version=(SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR),
             )
         )
 
@@ -644,6 +643,10 @@ class Microcontroller:
         # (0, 0) indicates legacy firmware without version reporting
         self.firmware_version = (0, 0)
 
+        # Heartbeat thread for serial watchdog keepalive
+        self._heartbeat_thread = None
+        self._heartbeat_stop_event = threading.Event()
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -684,6 +687,7 @@ class Microcontroller:
             )
 
     def close(self):
+        self.stop_heartbeat()
         self.terminate_reading_received_packet_thread = True
         self.thread_read_received_packet.join()
         self._serial.close()
@@ -912,6 +916,65 @@ class Microcontroller:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
+
+    def set_watchdog_timeout(self, timeout_s: float) -> None:
+        """Set firmware serial watchdog timeout and enable the watchdog.
+
+        The firmware will automatically turn off all illumination if it stops
+        receiving serial messages for longer than this timeout. This is a safety
+        feature to protect against software crashes or USB disconnects.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            timeout_s: Timeout in seconds. Valid range is 0 to 3600 (1 hour).
+                Values below 0 are clamped to 0. Values above 3600 are clamped to 3600.
+                A value of 0 tells the firmware to use its default timeout (5s).
+        """
+        timeout_ms = int(max(0, min(timeout_s * 1000, MAX_WATCHDOG_TIMEOUT_MS)))
+        self.log.debug(f"[MCU] set_watchdog_timeout: {timeout_s}s ({timeout_ms}ms)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_WATCHDOG_TIMEOUT
+        cmd[2] = (timeout_ms >> 24) & 0xFF
+        cmd[3] = (timeout_ms >> 16) & 0xFF
+        cmd[4] = (timeout_ms >> 8) & 0xFF
+        cmd[5] = timeout_ms & 0xFF
+        self.send_command(cmd)
+
+    def send_heartbeat(self) -> None:
+        """Send a no-op heartbeat command to reset the firmware watchdog timer."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HEARTBEAT
+        self.send_command(cmd)
+
+    def start_heartbeat(self, interval_s: float = None) -> None:
+        """Start a daemon thread that sends periodic heartbeat commands.
+
+        Args:
+            interval_s: Seconds between heartbeats. Defaults to WATCHDOG_TIMEOUT_S / 2.
+        """
+        if interval_s is None:
+            interval_s = WATCHDOG_TIMEOUT_S / 2
+        self._heartbeat_stop_event.clear()
+
+        def _heartbeat_loop():
+            while not self._heartbeat_stop_event.wait(interval_s):
+                try:
+                    self.send_heartbeat()
+                except Exception as e:
+                    self.log.debug(f"[MCU] Heartbeat send failed: {e}")
+
+        self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+        self.log.debug(f"[MCU] Heartbeat started: interval={interval_s}s")
+
+    def stop_heartbeat(self) -> None:
+        """Stop the heartbeat thread."""
+        self._heartbeat_stop_event.set()
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=2.0)
+        self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
         illumination_on_time_us = int(illumination_on_time_us)
