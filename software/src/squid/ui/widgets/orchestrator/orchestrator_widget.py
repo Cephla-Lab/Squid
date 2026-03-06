@@ -38,8 +38,10 @@ from squid.backend.controllers.orchestrator import (
     OrchestratorRoundCompleted,
     OrchestratorStepStarted,
     OrchestratorStepCompleted,
+    OrchestratorAttemptUpdate,
     OrchestratorInterventionRequired,
     OrchestratorError,
+    ResolveInterventionCommand,
     ValidateProtocolCommand,
     ProtocolValidationComplete,
 )
@@ -83,6 +85,7 @@ def _format_duration(seconds: float) -> str:
 STATUS_COLORS = {
     "pending": QColor("#888888"),
     "running": QColor("#42A5F5"),
+    "retrying": QColor("#29B6F6"),
     "completed": QColor("#66BB6A"),
     "failed": QColor("#EF5350"),
     "skipped": QColor("#FFA726"),
@@ -125,8 +128,8 @@ class OrchestratorControlPanel(EventBusWidget):
 
     # Signals for thread-safe UI updates
     state_changed = pyqtSignal(str, str)  # old_state, new_state
-    progress_updated = pyqtSignal(int, int, float, str, object)  # current, total, percent, name, eta_seconds
-    intervention_required = pyqtSignal(str)  # message
+    progress_updated = pyqtSignal(object)  # OrchestratorProgress
+    intervention_required = pyqtSignal(object)  # OrchestratorInterventionRequired
     error_occurred = pyqtSignal(str, str)  # type, message
     fov_positions_changed = pyqtSignal(dict)  # FOV positions dict
     protocol_loaded = pyqtSignal(dict)  # protocol data
@@ -151,6 +154,7 @@ class OrchestratorControlPanel(EventBusWidget):
         self._start_step_index: int = 0
         self._start_fov_index: int = 0
         self._run_single_round: bool = False
+        self._last_progress: Optional[OrchestratorProgress] = None
 
         self._setup_ui()
         self._connect_signals()
@@ -161,8 +165,8 @@ class OrchestratorControlPanel(EventBusWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        status_group = self._create_status_section()
-        layout.addWidget(status_group)
+        overview_group = self._create_status_section()
+        layout.addWidget(overview_group)
 
         controls = self._create_controls_section()
         layout.addWidget(controls)
@@ -177,22 +181,56 @@ class OrchestratorControlPanel(EventBusWidget):
         layout.addStretch()
 
     def _create_status_section(self) -> QGroupBox:
-        group = QGroupBox("Experiment Status")
+        group = QGroupBox("Run Overview")
         layout = QVBoxLayout(group)
+        layout.setSpacing(8)
 
         self._status_label = QLabel("IDLE")
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         font = QFont()
-        font.setPointSize(16)
+        font.setPointSize(18)
         font.setBold(True)
         self._status_label.setFont(font)
         self._status_label.setStyleSheet("color: #888;")
         layout.addWidget(self._status_label)
 
         self._experiment_label = QLabel("No protocol loaded")
-        self._experiment_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._experiment_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._experiment_label.setWordWrap(True)
+        self._experiment_label.setStyleSheet("color: #b8c1cc;")
         layout.addWidget(self._experiment_label)
+
+        metrics = QWidget()
+        metrics_layout = QHBoxLayout(metrics)
+        metrics_layout.setContentsMargins(0, 2, 0, 0)
+        metrics_layout.setSpacing(8)
+        self._overview_labels: Dict[str, QLabel] = {}
+        for key, title in (
+            ("step", "Step"),
+            ("fov", "FOV"),
+            ("operation", "Subsystem"),
+            ("attempt", "Attempt"),
+            ("elapsed", "Elapsed"),
+            ("effective", "Active"),
+            ("eta", "ETA"),
+        ):
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setStyleSheet(
+                "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
+            )
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            title_label = QLabel(title)
+            title_label.setStyleSheet("color: #7f8b99; font-size: 10px;")
+            value_label = QLabel("--")
+            value_label.setStyleSheet("color: #edf2f7; font-weight: 600;")
+            value_label.setWordWrap(True)
+            card_layout.addWidget(title_label)
+            card_layout.addWidget(value_label)
+            metrics_layout.addWidget(card, 1)
+            self._overview_labels[key] = value_label
+        layout.addWidget(metrics)
 
         return group
 
@@ -247,6 +285,7 @@ class OrchestratorControlPanel(EventBusWidget):
     def _create_progress_section(self) -> QGroupBox:
         group = QGroupBox("Progress")
         layout = QVBoxLayout(group)
+        layout.setSpacing(8)
 
         # Round progress
         round_layout = QHBoxLayout()
@@ -282,6 +321,18 @@ class OrchestratorControlPanel(EventBusWidget):
         time_layout.addWidget(self._time_remaining_label)
         layout.addLayout(time_layout)
 
+        overhead_layout = QHBoxLayout()
+        overhead_layout.addWidget(QLabel("Paused:"))
+        self._paused_time_label = QLabel("0s")
+        self._paused_time_label.setStyleSheet("color: #aaa;")
+        overhead_layout.addWidget(self._paused_time_label)
+        overhead_layout.addStretch()
+        overhead_layout.addWidget(QLabel("Retry overhead:"))
+        self._retry_time_label = QLabel("0s")
+        self._retry_time_label.setStyleSheet("color: #aaa;")
+        overhead_layout.addWidget(self._retry_time_label)
+        layout.addLayout(overhead_layout)
+
         return group
 
     def _create_intervention_section(self) -> QFrame:
@@ -308,11 +359,40 @@ class OrchestratorControlPanel(EventBusWidget):
         self._intervention_message.setStyleSheet("color: #FFE082; border: none;")
         layout.addWidget(self._intervention_message)
 
-        self._acknowledge_btn = QPushButton("ACKNOWLEDGE")
+        self._intervention_context = QLabel("")
+        self._intervention_context.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._intervention_context.setWordWrap(True)
+        self._intervention_context.setStyleSheet("color: #ffe6a7; border: none;")
+        layout.addWidget(self._intervention_context)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(6)
+
+        self._acknowledge_btn = QPushButton("Continue")
         self._acknowledge_btn.setMinimumHeight(36)
         self._acknowledge_btn.setStyleSheet(BTN_STYLES["acknowledge"])
         self._acknowledge_btn.clicked.connect(self._on_acknowledge_clicked)
-        layout.addWidget(self._acknowledge_btn)
+        button_row.addWidget(self._acknowledge_btn)
+
+        self._retry_btn = QPushButton("Retry")
+        self._retry_btn.setMinimumHeight(36)
+        self._retry_btn.setStyleSheet(BTN_STYLES["resume"])
+        self._retry_btn.clicked.connect(self._on_retry_clicked)
+        button_row.addWidget(self._retry_btn)
+
+        self._skip_btn = QPushButton("Skip")
+        self._skip_btn.setMinimumHeight(36)
+        self._skip_btn.setStyleSheet(BTN_STYLES["secondary"])
+        self._skip_btn.clicked.connect(self._on_skip_clicked)
+        button_row.addWidget(self._skip_btn)
+
+        self._abort_intervention_btn = QPushButton("Abort")
+        self._abort_intervention_btn.setMinimumHeight(36)
+        self._abort_intervention_btn.setStyleSheet(BTN_STYLES["destructive"])
+        self._abort_intervention_btn.clicked.connect(self._on_intervention_abort_clicked)
+        button_row.addWidget(self._abort_intervention_btn)
+
+        layout.addLayout(button_row)
 
         return frame
 
@@ -333,17 +413,11 @@ class OrchestratorControlPanel(EventBusWidget):
 
     @handles(OrchestratorProgress)
     def _on_progress(self, event: OrchestratorProgress) -> None:
-        self.progress_updated.emit(
-            event.current_round,
-            event.total_rounds,
-            event.progress_percent,
-            event.current_round_name,
-            event.eta_seconds,
-        )
+        self.progress_updated.emit(event)
 
     @handles(OrchestratorInterventionRequired)
     def _on_intervention(self, event: OrchestratorInterventionRequired) -> None:
-        self.intervention_required.emit(event.message)
+        self.intervention_required.emit(event)
 
     @handles(OrchestratorError)
     def _on_error(self, event: OrchestratorError) -> None:
@@ -383,33 +457,74 @@ class OrchestratorControlPanel(EventBusWidget):
         # Reset time remaining on terminal states
         if new_state == "COMPLETED":
             self._time_remaining_label.setText("Complete")
+            self._overview_labels["eta"].setText("Complete")
             self._time_remaining_label.setStyleSheet("color: #66BB6A;")
         elif new_state in ("FAILED", "ABORTED", "IDLE"):
             self._time_remaining_label.setText("--")
+            self._overview_labels["eta"].setText("--")
             self._time_remaining_label.setStyleSheet("color: #aaa;")
 
-    @pyqtSlot(int, int, float, str, object)
-    def _on_progress_updated_ui(
-        self, current: int, total: int, percent: float, name: str, eta_seconds: object
-    ) -> None:
-        self._round_label.setText(f"{current} / {total}")
-        self._round_name_label.setText(name)
-        self._progress_bar.setValue(int(percent))
+    @pyqtSlot(object)
+    def _on_progress_updated_ui(self, event: OrchestratorProgress) -> None:
+        self._last_progress = event
+        self._round_label.setText(f"{event.current_round} / {event.total_rounds}")
+        self._round_name_label.setText(event.current_round_name)
+        self._progress_bar.setValue(int(event.progress_percent))
+        self._overview_labels["step"].setText(
+            event.current_step_name or f"Step {event.current_step_index + 1}"
+        )
+        if event.current_fov_label:
+            fov_text = event.current_fov_label
+        elif event.total_fovs > 0:
+            fov_text = f"{event.current_fov_index + 1} / {event.total_fovs}"
+        else:
+            fov_text = "--"
+        self._overview_labels["fov"].setText(fov_text)
+        self._overview_labels["operation"].setText(event.current_operation or "--")
+        attempt_text = str(event.attempt)
+        if event.attempt > 1:
+            attempt_text = f"{event.attempt} (retry)"
+        self._overview_labels["attempt"].setText(attempt_text)
+        self._overview_labels["elapsed"].setText(self._format_time_remaining(event.elapsed_seconds))
+        self._overview_labels["effective"].setText(
+            self._format_time_remaining(event.effective_run_seconds)
+        )
+        self._paused_time_label.setText(self._format_time_remaining(event.paused_seconds))
+        self._retry_time_label.setText(
+            self._format_time_remaining(event.retry_overhead_seconds)
+        )
 
         # Update time remaining display
-        if eta_seconds is not None and isinstance(eta_seconds, (int, float)) and eta_seconds > 0:
-            self._time_remaining_label.setText(self._format_time_remaining(float(eta_seconds)))
+        if event.eta_seconds is not None and isinstance(event.eta_seconds, (int, float)) and event.eta_seconds > 0:
+            eta_text = self._format_time_remaining(float(event.eta_seconds))
+            self._time_remaining_label.setText(eta_text)
+            self._overview_labels["eta"].setText(eta_text)
             self._time_remaining_label.setStyleSheet("color: #ddd;")
-        elif percent >= 100.0:
+        elif event.progress_percent >= 100.0:
             self._time_remaining_label.setText("Complete")
+            self._overview_labels["eta"].setText("Complete")
             self._time_remaining_label.setStyleSheet("color: #66BB6A;")
         else:
             self._time_remaining_label.setText("--")
+            self._overview_labels["eta"].setText("--")
             self._time_remaining_label.setStyleSheet("color: #aaa;")
 
-    @pyqtSlot(str)
-    def _on_intervention_required_ui(self, message: str) -> None:
-        self._intervention_message.setText(message)
+    @pyqtSlot(object)
+    def _on_intervention_required_ui(self, event: OrchestratorInterventionRequired) -> None:
+        self._intervention_message.setText(event.message)
+        context_bits = []
+        if event.current_step_name:
+            context_bits.append(event.current_step_name)
+        if event.current_fov_label:
+            context_bits.append(event.current_fov_label)
+        if event.attempt > 0:
+            context_bits.append(f"attempt {event.attempt}")
+        self._intervention_context.setText(" | ".join(context_bits))
+        allowed = set(event.allowed_actions)
+        self._acknowledge_btn.setVisible("acknowledge" in allowed)
+        self._retry_btn.setVisible("retry" in allowed)
+        self._skip_btn.setVisible("skip" in allowed)
+        self._abort_intervention_btn.setVisible("abort" in allowed)
         self._intervention_frame.setVisible(True)
 
     @pyqtSlot(str, str)
@@ -575,6 +690,26 @@ class OrchestratorControlPanel(EventBusWidget):
     def _on_acknowledge_clicked(self) -> None:
         if self._orchestrator is not None:
             self._orchestrator.acknowledge_intervention()
+        else:
+            self._publish(ResolveInterventionCommand(action="acknowledge"))
+
+    def _on_retry_clicked(self) -> None:
+        if self._orchestrator is not None:
+            self._orchestrator.resolve_intervention("retry")
+        else:
+            self._publish(ResolveInterventionCommand(action="retry"))
+
+    def _on_skip_clicked(self) -> None:
+        if self._orchestrator is not None:
+            self._orchestrator.resolve_intervention("skip")
+        else:
+            self._publish(ResolveInterventionCommand(action="skip"))
+
+    def _on_intervention_abort_clicked(self) -> None:
+        if self._orchestrator is not None:
+            self._orchestrator.resolve_intervention("abort")
+        else:
+            self._publish(ResolveInterventionCommand(action="abort"))
 
     # ========================================================================
     # Public: start position (set by tree navigation)
@@ -673,6 +808,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
     _round_completed_sig = pyqtSignal(int, str, bool, str)  # round_index, round_name, success, error
     _step_started_sig = pyqtSignal(int, int, str, float)  # round_index, step_index, step_type, estimated_seconds
     _step_completed_sig = pyqtSignal(int, int, str, bool, str, float)  # round_index, step_index, step_type, success, error, duration_seconds
+    _attempt_update_sig = pyqtSignal(int, int, int, str, str)  # round_index, step_index, attempt, phase, message
     _state_changed_sig = pyqtSignal(str, str)  # old_state, new_state
     _validation_complete_sig = pyqtSignal(object)  # ValidationSummary
 
@@ -759,6 +895,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
         self._round_completed_sig.connect(self._handle_round_completed_ui)
         self._step_started_sig.connect(self._handle_step_started_ui)
         self._step_completed_sig.connect(self._handle_step_completed_ui)
+        self._attempt_update_sig.connect(self._handle_attempt_update_ui)
         self._state_changed_sig.connect(self._handle_state_changed_ui)
         self._validation_complete_sig.connect(self._handle_validation_complete_ui)
 
@@ -1150,6 +1287,16 @@ class OrchestratorWorkflowTree(EventBusWidget):
             event.success, event.error or "", event.duration_seconds,
         )
 
+    @handles(OrchestratorAttemptUpdate)
+    def _on_attempt_update(self, event: OrchestratorAttemptUpdate) -> None:
+        self._attempt_update_sig.emit(
+            event.round_index,
+            event.step_index,
+            event.attempt,
+            event.phase,
+            event.message,
+        )
+
     @handles(OrchestratorStateChanged)
     def _on_state_changed(self, event: OrchestratorStateChanged) -> None:
         self._state_changed_sig.emit(event.old_state, event.new_state)
@@ -1223,6 +1370,24 @@ class OrchestratorWorkflowTree(EventBusWidget):
         # Show actual duration after completion
         if duration_seconds > 0:
             self.set_time_estimate(key, _format_duration(duration_seconds))
+
+    @pyqtSlot(int, int, int, str, str)
+    def _handle_attempt_update_ui(
+        self,
+        round_index: int,
+        step_index: int,
+        attempt: int,
+        phase: str,
+        message: str,
+    ) -> None:
+        key = (round_index, step_index)
+        item = self._tree_items.get(key)
+        if item is None:
+            return
+        if phase in ("retry_scheduled", "failed") and attempt > 1:
+            self.update_item_status(key, "retrying", details=f"Attempt {attempt}: {message[:50]}".strip())
+        elif phase == "started" and attempt > 1:
+            self.update_item_status(key, "retrying", details=f"Retry attempt {attempt}")
 
     @pyqtSlot(str, str)
     def _handle_state_changed_ui(self, old_state: str, new_state: str) -> None:

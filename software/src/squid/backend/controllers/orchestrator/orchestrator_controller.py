@@ -12,6 +12,7 @@ V2 Protocol Support:
 """
 
 from datetime import datetime
+import json
 import os
 import threading
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
@@ -23,12 +24,12 @@ from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
     ExperimentProtocol,
     ProtocolLoader,
-    FailureAction,
     ImagingStep,
 )
 
 from squid.backend.controllers.orchestrator import protocol_helpers
 from squid.backend.controllers.orchestrator.experiment_runner import ExperimentRunner
+from squid.backend.controllers.orchestrator.run_logger import RunLogger
 from squid.backend.controllers.orchestrator.state import (
     OrchestratorState,
     ORCHESTRATOR_TRANSITIONS,
@@ -47,12 +48,14 @@ from squid.backend.controllers.orchestrator.state import (
     PauseOrchestratorCommand,
     ResumeOrchestratorCommand,
     AcknowledgeInterventionCommand,
+    ResolveInterventionCommand,
     SkipCurrentRoundCommand,
     SkipToRoundCommand,
     ClearWarningsCommand,
     SetWarningThresholdsCommand,
     AddWarningCommand,
     ValidateProtocolCommand,
+    OrchestratorTimingSnapshot,
     ProtocolValidationStarted,
     ProtocolValidationComplete,
 )  # fmt: skip
@@ -195,7 +198,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         # Worker thread and runner
         self._worker_thread: Optional[threading.Thread] = None
         self._runner: Optional[ExperimentRunner] = None
-        self._intervention_acknowledged = threading.Event()
+        self._intervention_resolved = threading.Event()
+        self._intervention_action = "acknowledge"
+        self._run_logger: Optional[RunLogger] = None
+        self._timing_stop = threading.Event()
+        self._timing_thread: Optional[threading.Thread] = None
 
     # ========================================================================
     # StateMachine Implementation
@@ -251,7 +258,13 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     @handles(AcknowledgeInterventionCommand)
     def _on_acknowledge_intervention(self, cmd: AcknowledgeInterventionCommand) -> None:
         """Handle intervention acknowledgment."""
+        del cmd
         self.acknowledge_intervention()
+
+    @handles(ResolveInterventionCommand)
+    def _on_resolve_intervention(self, cmd: ResolveInterventionCommand) -> None:
+        """Handle explicit intervention action resolution."""
+        self.resolve_intervention(cmd.action)
 
     @handles(SkipCurrentRoundCommand)
     def _on_skip_current_round(self, _cmd: SkipCurrentRoundCommand) -> None:
@@ -328,21 +341,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             context=cmd.context,
         )
 
-        # Apply focus_failure handling from protocol if this is a focus warning
-        if category == WarningCategory.FOCUS and self._protocol is not None:
-            focus_action = self._protocol.error_handling.focus_failure
-            if focus_action == FailureAction.PAUSE:
-                if self._is_in_state(OrchestratorState.RUNNING):
-                    _log.warning(f"Focus failure (action=pause): {cmd.message}")
-                    self.pause()
-                    return
-            elif focus_action == FailureAction.ABORT:
-                if self._is_in_state(OrchestratorState.RUNNING):
-                    _log.error(f"Focus failure (action=abort): {cmd.message}")
-                    self.abort()
-                    return
-            # For SKIP and WARN, just continue (warning already logged)
-
         if should_pause and self._is_in_state(OrchestratorState.RUNNING):
             _log.warning(f"Warning threshold reached, pausing: {cmd.message}")
             self.pause()
@@ -395,43 +393,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
-            # Create validator with available fluidics protocols and channels
-            # Only check protocols loaded in FluidicsController - inline definitions not allowed
-            available_fluidics: Optional[set[str]] = None
-            if self._fluidics_controller is not None:
-                available_fluidics = set(self._fluidics_controller.list_protocols())
+            validator = self._build_protocol_validator()
 
-            # Get available channels from planner
-            available_channels = None
-            raw_channels = self._planner.get_available_channel_names()
-            if raw_channels is not None:
-                try:
-                    available_channels = set(raw_channels)
-                except TypeError:
-                    _log.warning(
-                        "Available channels from planner were not iterable; "
-                        "skipping channel availability validation"
-                    )
-
-            fluidics_duration_lookup = None
-            if self._fluidics_controller is not None:
-                fluidics_duration_lookup = self._fluidics_controller.estimate_protocol_duration
-
-            validator = ProtocolValidator(
-                available_fluidics_protocols=available_fluidics,
-                available_channels=available_channels,
-                fluidics_duration_lookup=fluidics_duration_lookup,
-            )
-
-            # Get FOV count: prefer command parameter, then scan_coordinates, then default
-            fov_count = cmd.fov_count
-            if fov_count <= 0 and self._scan_coordinates is not None:
-                fov_count = sum(
-                    len(coords)
-                    for coords in self._scan_coordinates.region_fov_coordinates.values()
-                )
-            if fov_count <= 0:
-                fov_count = 1  # Default to 1 if no FOVs specified
+            fov_count = self._current_fov_count(cmd.fov_count)
 
             # Validate
             summary = validator.validate(protocol, fov_count=fov_count)
@@ -578,6 +542,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._experiment_id = self._experiment_label
             self._warning_manager.experiment_id = self._experiment_id
             self._warning_manager.clear()  # Clear warnings from any previous experiment
+            self._intervention_resolved.clear()
+            self._intervention_action = "acknowledge"
 
             # Load fluidics protocols from protocol into FluidicsController
             self._initialize_fluidics_protocols()
@@ -585,16 +551,11 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Auto-load resource files specified in the protocol
             self._auto_load_resources()
 
-            # Run a structural preflight and refresh ETA estimates for this run.
-            fov_count = 1
-            if self._scan_coordinates is not None:
-                fov_count = sum(
-                    len(coords)
-                    for coords in self._scan_coordinates.region_fov_coordinates.values()
-                )
-                if fov_count <= 0:
-                    fov_count = 1
-            preflight = ProtocolValidator().validate(self._protocol, fov_count=fov_count)
+            # Run the same preflight used by the Validate flow.
+            preflight = self._build_protocol_validator().validate(
+                self._protocol,
+                fov_count=self._current_fov_count(),
+            )
             self._step_time_estimates = {}
             self._total_estimated_seconds = 0.0
             if not preflight.valid:
@@ -806,10 +767,15 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     def acknowledge_intervention(self) -> bool:
         """Acknowledge intervention and continue."""
-        if self._is_in_state(OrchestratorState.WAITING_INTERVENTION):
-            self._intervention_acknowledged.set()
-            return True
-        return False
+        return self.resolve_intervention("acknowledge")
+
+    def resolve_intervention(self, action: str) -> bool:
+        """Resolve an intervention with a fixed operator action."""
+        if not self._is_in_state(OrchestratorState.WAITING_INTERVENTION):
+            return False
+        self._intervention_action = action
+        self._intervention_resolved.set()
+        return True
 
     def skip_current_round(self) -> bool:
         """Skip to the next round (takes effect after current round finishes)."""
@@ -840,6 +806,91 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     def _set_operation(self, operation: str) -> None:
         """Set current operation (called by ExperimentRunner)."""
         self._current_operation = operation
+
+    def _consume_intervention_action(self) -> str:
+        """Consume the most recent intervention action and reset to acknowledge."""
+        action = self._intervention_action
+        self._intervention_action = "acknowledge"
+        return action
+
+    def _current_fov_count(self, requested_fov_count: int = 0) -> int:
+        """Resolve the effective FOV count for validation and ETA."""
+        if requested_fov_count > 0:
+            return requested_fov_count
+        if self._scan_coordinates is not None:
+            region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+            if isinstance(region_fovs, dict):
+                total = sum(len(coords) for coords in region_fovs.values())
+                if total > 0:
+                    return total
+        return 1
+
+    def _build_protocol_validator(
+        self,
+        *,
+        available_fluidics: Optional[set[str]] = None,
+        available_channels: Optional[set[str]] = None,
+        fluidics_duration_lookup=None,
+    ) -> ProtocolValidator:
+        """Build the shared validator used by both Validate and Start."""
+        if available_fluidics is None and self._fluidics_controller is not None:
+            available_fluidics = set(self._fluidics_controller.list_protocols())
+        if available_channels is None:
+            raw_channels = self._planner.get_available_channel_names()
+            if isinstance(raw_channels, (list, tuple, set, frozenset)):
+                available_channels = set(raw_channels)
+        if fluidics_duration_lookup is None and self._fluidics_controller is not None:
+            fluidics_duration_lookup = self._fluidics_controller.estimate_protocol_duration
+
+        return ProtocolValidator(
+            available_fluidics_protocols=available_fluidics,
+            available_channels=available_channels,
+            fluidics_duration_lookup=fluidics_duration_lookup,
+        )
+
+    def _write_experiment_metadata_file(self) -> None:
+        """Persist the canonical protocol snapshot and runtime context to disk."""
+        if not self._experiment_path or self._protocol is None:
+            return
+        metadata_path = os.path.join(self._experiment_path, "experiment_metadata.json")
+        payload = {
+            "experiment_id": self._experiment_id,
+            "protocol_path": self._protocol_path,
+            "protocol": self._protocol.model_dump(mode="json", exclude_none=True),
+            "written_at": datetime.now().isoformat(),
+        }
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+
+    def _start_timing_publisher(self) -> None:
+        """Publish continuously updated timing/progress snapshots during a run."""
+        self._timing_stop.clear()
+
+        def _worker() -> None:
+            while not self._timing_stop.wait(0.5):
+                runner = self._runner
+                if runner is None:
+                    continue
+                if self._is_in_state(
+                    OrchestratorState.RUNNING,
+                    OrchestratorState.WAITING_INTERVENTION,
+                    OrchestratorState.PAUSED,
+                ):
+                    self._publish_progress()
+
+        self._timing_thread = threading.Thread(
+            target=_worker,
+            name="OrchestratorTimingPublisher",
+            daemon=True,
+        )
+        self._timing_thread.start()
+
+    def _stop_timing_publisher(self) -> None:
+        """Stop the background timing publisher."""
+        self._timing_stop.set()
+        if self._timing_thread is not None:
+            self._timing_thread.join(timeout=1.0)
+        self._timing_thread = None
 
     # ========================================================================
     # Protocol Initialization
@@ -942,6 +993,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                             self._context,
                             metadata,
                         )
+            self._write_experiment_metadata_file()
+            self._run_logger = RunLogger(self._event_bus, self._experiment_path)
+            self._run_logger.start()
+            self._start_timing_publisher()
 
             # Create runner and execute
             runner = ExperimentRunner(
@@ -966,7 +1021,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 on_transition=self._transition_to,
                 on_pause=self.pause,
                 on_add_warning=self.add_warning,
-                intervention_acknowledged=self._intervention_acknowledged,
+                intervention_resolved=self._intervention_resolved,
+                consume_intervention_action=self._consume_intervention_action,
                 start_from_round=self._start_from_round,
                 start_from_step=self._start_from_step,
                 start_from_fov=self._start_from_fov,
@@ -996,6 +1052,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 self._experiment_manager.finalize_experiment(self._context, success=False)
 
         finally:
+            self._stop_timing_publisher()
+            if self._run_logger is not None:
+                self._run_logger.stop()
+                self._run_logger = None
             self._runner = None
             self._cancel_token = None
             self._context = None
@@ -1023,25 +1083,49 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 round_index=self._progress.current_round_index,
                 step_index=self._progress.current_step_index,
                 imaging_fov_index=max(self._progress.current_round.imaging_fov_index, 0),
+                current_attempt=max(self._progress.current_attempt, 1),
+                elapsed_seconds=self._progress.elapsed_seconds,
+                paused_seconds=self._progress.paused_seconds,
+                effective_run_seconds=self._progress.effective_run_seconds,
             )
 
         ckpt.save_checkpoint(checkpoint, self._experiment_path)
 
     def _publish_progress(self) -> None:
         """Publish progress event."""
-        # Compute ETA outside progress_lock (compute_eta acquires it internally)
         runner = self._runner
-        eta = runner.compute_eta() if runner is not None else None
+        timing = runner.get_timing_snapshot() if runner is not None else {
+            "elapsed_seconds": self._progress.elapsed_seconds,
+            "effective_run_seconds": self._progress.effective_run_seconds,
+            "paused_seconds": self._progress.paused_seconds,
+            "retry_overhead_seconds": self._progress.retry_overhead_seconds,
+            "intervention_overhead_seconds": self._progress.intervention_overhead_seconds,
+            "eta_seconds": None,
+            "subsystem_seconds": dict(self._progress.subsystem_seconds),
+        }
 
         with self._progress_lock:
             current_round_name = ""
+            total_steps = 0
+            current_fov_index = 0
+            total_fovs = 0
             if self._progress.current_round is not None:
                 current_round_name = self._progress.current_round.round_name
+                total_steps = self._progress.current_round.total_steps
+                current_fov_index = self._progress.current_round.imaging_fov_index
+                total_fovs = self._progress.current_round.total_imaging_fovs
             total_rounds = self._progress.total_rounds
             if total_rounds <= 0:
                 current_round = 0
             else:
                 current_round = min(self._progress.current_round_index + 1, total_rounds)
+
+            self._progress.elapsed_seconds = float(timing["elapsed_seconds"])
+            self._progress.effective_run_seconds = float(timing["effective_run_seconds"])
+            self._progress.paused_seconds = float(timing["paused_seconds"])
+            self._progress.retry_overhead_seconds = float(timing["retry_overhead_seconds"])
+            self._progress.intervention_overhead_seconds = float(timing["intervention_overhead_seconds"])
+            self._progress.subsystem_seconds = dict(timing["subsystem_seconds"])
 
             event = OrchestratorProgress(
                 experiment_id=self._experiment_id,
@@ -1049,11 +1133,35 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 total_rounds=total_rounds,
                 current_round_name=current_round_name,
                 progress_percent=self._progress.progress_percent,
-                eta_seconds=eta,
+                eta_seconds=timing["eta_seconds"],
                 current_operation=self._current_operation,
+                current_step_name=self._progress.current_step_name,
+                current_step_index=self._progress.current_step_index,
+                total_steps=total_steps,
+                current_fov_label=self._progress.current_fov_label,
+                current_fov_index=current_fov_index,
+                total_fovs=total_fovs,
+                attempt=self._progress.current_attempt,
+                elapsed_seconds=self._progress.elapsed_seconds,
+                effective_run_seconds=self._progress.effective_run_seconds,
+                paused_seconds=self._progress.paused_seconds,
+                retry_overhead_seconds=self._progress.retry_overhead_seconds,
+                intervention_overhead_seconds=self._progress.intervention_overhead_seconds,
             )
 
         self._event_bus.publish(event)
+        self._event_bus.publish(
+            OrchestratorTimingSnapshot(
+                experiment_id=self._experiment_id,
+                elapsed_seconds=float(timing["elapsed_seconds"]),
+                effective_run_seconds=float(timing["effective_run_seconds"]),
+                paused_seconds=float(timing["paused_seconds"]),
+                retry_overhead_seconds=float(timing["retry_overhead_seconds"]),
+                intervention_overhead_seconds=float(timing["intervention_overhead_seconds"]),
+                eta_seconds=timing["eta_seconds"],
+                subsystem_seconds=dict(timing["subsystem_seconds"]),
+            )
+        )
 
     def _publish_round_started(self, round_idx: int, name: str) -> None:
         """Publish round started event."""

@@ -7,7 +7,7 @@ Defines the state machine for experiment orchestration.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Literal, Optional, Set
 
 from squid.core.events import Event
 
@@ -136,6 +136,15 @@ class ExperimentProgress:
     current_step_index: int = 0  # V2: step position within current round
     started_at: Optional[datetime] = None
     estimated_completion: Optional[datetime] = None
+    current_step_name: str = ""
+    current_fov_label: str = ""
+    current_attempt: int = 1
+    elapsed_seconds: float = 0.0
+    effective_run_seconds: float = 0.0
+    paused_seconds: float = 0.0
+    retry_overhead_seconds: float = 0.0
+    intervention_overhead_seconds: float = 0.0
+    subsystem_seconds: Dict[str, float] = field(default_factory=dict)
 
     @property
     def progress_percent(self) -> float:
@@ -223,6 +232,10 @@ class Checkpoint:
 
     # Additional state
     metadata: Dict[str, Any] = field(default_factory=dict)
+    current_attempt: int = 1
+    elapsed_seconds: float = 0.0
+    paused_seconds: float = 0.0
+    effective_run_seconds: float = 0.0
 
 
 # ============================================================================
@@ -251,6 +264,18 @@ class OrchestratorProgress(Event):
     progress_percent: float
     eta_seconds: Optional[float] = None
     current_operation: str = ""  # "fluidics", "imaging", "waiting"
+    current_step_name: str = ""
+    current_step_index: int = 0
+    total_steps: int = 0
+    current_fov_label: str = ""
+    current_fov_index: int = 0
+    total_fovs: int = 0
+    attempt: int = 1
+    elapsed_seconds: float = 0.0
+    effective_run_seconds: float = 0.0
+    paused_seconds: float = 0.0
+    retry_overhead_seconds: float = 0.0
+    intervention_overhead_seconds: float = 0.0
 
 
 @dataclass
@@ -306,6 +331,40 @@ class OrchestratorInterventionRequired(Event):
     round_index: int
     round_name: str
     message: str
+    kind: str = "acknowledge"
+    attempt: int = 1
+    current_step_name: str = ""
+    current_fov_label: str = ""
+    allowed_actions: tuple[str, ...] = ("acknowledge",)
+
+
+@dataclass
+class OrchestratorTimingSnapshot(Event):
+    """Periodic timing snapshot for UI and disk logging."""
+
+    experiment_id: str
+    elapsed_seconds: float
+    effective_run_seconds: float
+    paused_seconds: float
+    retry_overhead_seconds: float
+    intervention_overhead_seconds: float
+    eta_seconds: Optional[float]
+    subsystem_seconds: Dict[str, float]
+
+
+@dataclass
+class OrchestratorAttemptUpdate(Event):
+    """Emitted when the orchestrator starts/completes/retries a step attempt."""
+
+    experiment_id: str
+    round_index: int
+    step_index: int
+    step_type: str
+    attempt: int
+    phase: str
+    message: str = ""
+    current_fov_index: Optional[int] = None
+    current_fov_label: str = ""
 
 
 @dataclass
@@ -363,6 +422,13 @@ class AcknowledgeInterventionCommand(Event):
     """Command to acknowledge an intervention and continue."""
 
     pass
+
+
+@dataclass
+class ResolveInterventionCommand(Event):
+    """Resolve a blocking intervention with a fixed operator action."""
+
+    action: Literal["acknowledge", "retry", "skip", "abort"]
 
 
 @dataclass

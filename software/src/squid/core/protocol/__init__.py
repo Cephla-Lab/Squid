@@ -9,6 +9,9 @@ from squid.core.protocol.step import (
     FluidicsStep,
     ImagingStep,
     InterventionStep,
+    StepFailurePolicy,
+    PartialFocusGateOverride,
+    PartialCapturePolicyOverride,
 )
 
 # Imaging protocol (canonical module)
@@ -18,6 +21,9 @@ from squid.core.protocol.imaging_protocol import (
     ZStackConfig,
     FocusConfig,
     FocusLockConfig,
+    ImagingAcquisitionConfig,
+    FocusGateConfig,
+    CapturePolicyConfig,
 )
 
 # Error handling
@@ -30,6 +36,8 @@ from squid.core.protocol.error_handling import (
 from squid.core.protocol.schema import (
     ExperimentProtocol,
     Round,
+    ProtocolDefaults,
+    ProtocolResources,
     FluidicsCommand,
 )
 
@@ -52,18 +60,26 @@ __all__ = [
     "FluidicsStep",
     "ImagingStep",
     "InterventionStep",
+    "StepFailurePolicy",
+    "PartialFocusGateOverride",
+    "PartialCapturePolicyOverride",
     # Imaging protocol
     "ImagingProtocol",
     "ChannelConfigOverride",
     "ZStackConfig",
     "FocusConfig",
     "FocusLockConfig",
+    "ImagingAcquisitionConfig",
+    "FocusGateConfig",
+    "CapturePolicyConfig",
     # Error handling
     "ErrorHandlingConfig",
     "FailureAction",
     # Schema
     "ExperimentProtocol",
     "Round",
+    "ProtocolDefaults",
+    "ProtocolResources",
     "FluidicsCommand",
     # Fluidics protocols
     "FluidicsProtocol",

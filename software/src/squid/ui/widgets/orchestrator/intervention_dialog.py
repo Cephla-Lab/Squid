@@ -1,12 +1,11 @@
-"""
-Intervention Dialog for operator acknowledgment.
-"""
+"""Intervention dialog with a small fixed action set."""
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
+    QHBoxLayout,
     QVBoxLayout,
     QLabel,
     QPushButton,
@@ -19,21 +18,20 @@ _log = squid.core.logging.get_logger(__name__)
 
 
 class InterventionDialog(QDialog):
-    """Modal dialog for operator intervention acknowledgment.
-
-    Displays a message and requires the operator to acknowledge
-    before the experiment can continue.
-    """
+    """Modal dialog for operator intervention resolution."""
 
     def __init__(
         self,
         round_name: str,
         message: str,
+        allowed_actions: Sequence[str] = ("acknowledge",),
         parent: Optional[QDialog] = None,
     ):
         super().__init__(parent)
         self._round_name = round_name
         self._message = message
+        self._allowed_actions = tuple(allowed_actions)
+        self.selected_action = "acknowledge"
 
         self.setWindowTitle("Operator Intervention Required")
         self.setModal(True)
@@ -68,11 +66,23 @@ class InterventionDialog(QDialog):
         message_label.setWordWrap(True)
         layout.addWidget(message_label)
 
-        # Acknowledge button
-        acknowledge_btn = QPushButton("ACKNOWLEDGE AND CONTINUE")
-        acknowledge_btn.setMinimumHeight(50)
-        acknowledge_btn.setStyleSheet(
-            "background-color: #FF9800; color: white; font-weight: bold;"
-        )
-        acknowledge_btn.clicked.connect(self.accept)
-        layout.addWidget(acknowledge_btn)
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        for action, label, style in (
+            ("acknowledge", "Continue", "background-color: #FF9800; color: white; font-weight: bold;"),
+            ("retry", "Retry", "background-color: #1976D2; color: white; font-weight: bold;"),
+            ("skip", "Skip", "background-color: #424242; color: white; font-weight: bold;"),
+            ("abort", "Abort", "background-color: #C62828; color: white; font-weight: bold;"),
+        ):
+            if action not in self._allowed_actions:
+                continue
+            button = QPushButton(label)
+            button.setMinimumHeight(46)
+            button.setStyleSheet(style)
+            button.clicked.connect(lambda _checked=False, chosen=action: self._accept_action(chosen))
+            button_row.addWidget(button)
+        layout.addLayout(button_row)
+
+    def _accept_action(self, action: str) -> None:
+        self.selected_action = action
+        self.accept()

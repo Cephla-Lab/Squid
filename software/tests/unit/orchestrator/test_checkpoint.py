@@ -27,6 +27,10 @@ def sample_checkpoint():
         round_index=2,
         step_index=1,
         imaging_fov_index=5,
+        current_attempt=3,
+        elapsed_seconds=123.4,
+        paused_seconds=5.6,
+        effective_run_seconds=117.8,
         created_at=datetime.now(),
     )
 
@@ -53,6 +57,8 @@ class TestCheckpointCreation:
         assert checkpoint.round_index == 3
         assert checkpoint.step_index == 2
         assert checkpoint.imaging_fov_index == 10
+        assert checkpoint.current_attempt == 1
+        assert checkpoint.elapsed_seconds == 0.0
         assert checkpoint.created_at is not None
 
     def test_create_checkpoint_with_defaults(self, checkpoint_manager):
@@ -94,6 +100,10 @@ class TestCheckpointPersistence:
             assert loaded.round_index == sample_checkpoint.round_index
             assert loaded.step_index == sample_checkpoint.step_index
             assert loaded.imaging_fov_index == sample_checkpoint.imaging_fov_index
+            assert loaded.current_attempt == sample_checkpoint.current_attempt
+            assert loaded.elapsed_seconds == sample_checkpoint.elapsed_seconds
+            assert loaded.paused_seconds == sample_checkpoint.paused_seconds
+            assert loaded.effective_run_seconds == sample_checkpoint.effective_run_seconds
 
     def test_load_nonexistent_checkpoint(self, checkpoint_manager):
         """Test loading from a path with no checkpoint."""
@@ -159,6 +169,10 @@ class TestCheckpointFileFormat:
                 "round_index",
                 "step_index",
                 "imaging_fov_index",
+                "current_attempt",
+                "elapsed_seconds",
+                "paused_seconds",
+                "effective_run_seconds",
                 "created_at",
             ]
 

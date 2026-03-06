@@ -44,6 +44,10 @@ def save_checkpoint(checkpoint: Checkpoint, experiment_path: str) -> str:
         "created_at": checkpoint.created_at.isoformat(),
         "paused_at": checkpoint.paused_at.isoformat() if checkpoint.paused_at else None,
         "metadata": checkpoint.metadata,
+        "current_attempt": checkpoint.current_attempt,
+        "elapsed_seconds": checkpoint.elapsed_seconds,
+        "paused_seconds": checkpoint.paused_seconds,
+        "effective_run_seconds": checkpoint.effective_run_seconds,
     }
 
     with open(checkpoint_path, "w") as f:
@@ -84,6 +88,10 @@ def load_checkpoint(experiment_path: str) -> Optional[Checkpoint]:
             created_at=datetime.fromisoformat(data["created_at"]),
             paused_at=datetime.fromisoformat(data["paused_at"]) if data.get("paused_at") else None,
             metadata=data.get("metadata", {}),
+            current_attempt=data.get("current_attempt", 1),
+            elapsed_seconds=data.get("elapsed_seconds", 0.0),
+            paused_seconds=data.get("paused_seconds", 0.0),
+            effective_run_seconds=data.get("effective_run_seconds", 0.0),
         )
 
         _log.info(f"Loaded checkpoint from {checkpoint_path}")
@@ -130,6 +138,10 @@ def create_checkpoint(
     imaging_z_index: int = 0,
     imaging_channel_index: int = 0,
     metadata: Optional[dict] = None,
+    current_attempt: int = 1,
+    elapsed_seconds: float = 0.0,
+    paused_seconds: float = 0.0,
+    effective_run_seconds: float = 0.0,
 ) -> Checkpoint:
     """Create a new checkpoint object.
 
@@ -159,6 +171,10 @@ def create_checkpoint(
         imaging_z_index=imaging_z_index,
         imaging_channel_index=imaging_channel_index,
         metadata=metadata or {},
+        current_attempt=current_attempt,
+        elapsed_seconds=elapsed_seconds,
+        paused_seconds=paused_seconds,
+        effective_run_seconds=effective_run_seconds,
     )
 
 

@@ -218,9 +218,23 @@ class ProtocolLoader:
             Data with file references resolved
         """
         data = copy.deepcopy(data)
+        resources = data.setdefault("resources", {})
+
+        # Preserve legacy top-level keys but normalize to resources for the canonical model.
+        for field in (
+            "imaging_protocols",
+            "fluidics_protocols",
+            "imaging_protocol_file",
+            "fluidics_protocols_file",
+            "fluidics_config_file",
+            "fov_sets",
+            "fov_file",
+        ):
+            if field in data and field not in resources:
+                resources[field] = data[field]
 
         # Resolve imaging protocols with file: references
-        for name, config in data.get("imaging_protocols", {}).items():
+        for name, config in resources.get("imaging_protocols", {}).items():
             if isinstance(config, dict) and "file" in config:
                 file_path = protocol_dir / config["file"]
                 if not file_path.exists():
@@ -228,10 +242,10 @@ class ProtocolLoader:
                         f"Imaging protocol file not found: {file_path}"
                     )
                 with open(file_path, "r") as f:
-                    data["imaging_protocols"][name] = yaml.safe_load(f)
+                    resources.setdefault("imaging_protocols", {})[name] = yaml.safe_load(f)
 
         # Resolve fluidics_protocols with file: references
-        for name, proto in data.get("fluidics_protocols", {}).items():
+        for name, proto in resources.get("fluidics_protocols", {}).items():
             if isinstance(proto, dict) and "file" in proto:
                 file_path = protocol_dir / proto["file"]
                 if not file_path.exists():
@@ -239,21 +253,21 @@ class ProtocolLoader:
                         f"Fluidics protocol file not found: {file_path}"
                     )
                 with open(file_path, "r") as f:
-                    data["fluidics_protocols"][name] = yaml.safe_load(f)
+                    resources.setdefault("fluidics_protocols", {})[name] = yaml.safe_load(f)
 
         # Make FOV set paths absolute
-        for name, csv_path in data.get("fov_sets", {}).items():
+        for name, csv_path in resources.get("fov_sets", {}).items():
             if csv_path and not Path(csv_path).is_absolute():
-                data["fov_sets"][name] = str(protocol_dir / csv_path)
+                resources.setdefault("fov_sets", {})[name] = str(protocol_dir / csv_path)
 
         # Resolve resource file paths to absolute
         for field in ("imaging_protocol_file", "fluidics_protocols_file", "fluidics_config_file", "fov_file"):
-            val = data.get(field)
+            val = resources.get(field)
             if val and not Path(val).is_absolute():
-                data[field] = str(protocol_dir / val)
+                resources[field] = str(protocol_dir / val)
 
         # If imaging_protocol_file is set, load and merge into imaging_protocols
-        imaging_file = data.get("imaging_protocol_file")
+        imaging_file = resources.get("imaging_protocol_file")
         if imaging_file:
             imaging_path = Path(imaging_file)
             if not imaging_path.exists():
@@ -267,17 +281,18 @@ class ProtocolLoader:
                     f"Imaging protocol file must contain a YAML mapping, got {type(file_protocols).__name__}"
                 )
             # Merge: inline definitions take precedence over file definitions
-            inline = data.get("imaging_protocols", {})
+            inline = resources.get("imaging_protocols", {})
             merged = {**file_protocols, **inline}
-            data["imaging_protocols"] = merged
+            resources["imaging_protocols"] = merged
 
         # If fov_file is set, add to fov_sets as "default" (without overwriting existing entries)
-        fov_file = data.get("fov_file")
+        fov_file = resources.get("fov_file")
         if fov_file:
-            fov_sets = data.setdefault("fov_sets", {})
+            fov_sets = resources.setdefault("fov_sets", {})
             if "default" not in fov_sets:
                 fov_sets["default"] = fov_file
 
+        data["resources"] = resources
         return data
 
     def _expand_repeats(self, data: Dict[str, Any]) -> Dict[str, Any]:

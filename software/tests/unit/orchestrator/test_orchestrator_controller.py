@@ -342,6 +342,13 @@ class TestPauseResumeAbort:
         result = orchestrator.abort()
         assert result is False
 
+    def test_resolve_intervention_sets_action_when_waiting(self, orchestrator):
+        """Explicit intervention actions should resolve the wait state."""
+        orchestrator._state = OrchestratorState.WAITING_INTERVENTION
+        assert orchestrator.resolve_intervention("retry") is True
+        assert orchestrator._intervention_action == "retry"
+        assert orchestrator._intervention_resolved.is_set() is True
+
 
 class TestSkipControls:
     """Tests for round skip controls."""

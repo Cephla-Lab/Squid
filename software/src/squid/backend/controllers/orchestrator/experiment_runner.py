@@ -18,12 +18,14 @@ from squid.core.config.test_timing import scale_duration
 from squid.core.events import EventBus
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
+    CapturePolicyConfig,
     ExperimentProtocol,
+    FocusGateConfig,
     Round,
     FluidicsStep,
     ImagingStep,
     InterventionStep,
-    FailureAction,
+    ImagingProtocol,
 )
 
 from squid.backend.controllers.orchestrator import protocol_helpers
@@ -34,6 +36,7 @@ from squid.backend.controllers.orchestrator.state import (
     StepResult,
     StepOutcome,
     Checkpoint,
+    OrchestratorAttemptUpdate,
     OrchestratorInterventionRequired,
     OrchestratorStepStarted,
     OrchestratorStepCompleted,
@@ -82,7 +85,9 @@ class ExperimentRunner:
         on_transition: Callable[[OrchestratorState], None],
         on_pause: Callable[[], bool],
         on_add_warning: Callable[..., bool],
-        intervention_acknowledged: threading.Event,
+        intervention_resolved: Optional[threading.Event] = None,
+        consume_intervention_action: Optional[Callable[[], str]] = None,
+        intervention_acknowledged: Optional[threading.Event] = None,
         # Start-from parameters
         start_from_round: int = 0,
         start_from_step: int = 0,
@@ -114,7 +119,8 @@ class ExperimentRunner:
         self._on_transition = on_transition
         self._on_pause = on_pause
         self._on_add_warning = on_add_warning
-        self._intervention_acknowledged = intervention_acknowledged
+        self._intervention_resolved = intervention_resolved or intervention_acknowledged or threading.Event()
+        self._consume_intervention_action = consume_intervention_action or (lambda: "acknowledge")
 
         # Start-from parameters
         self._start_from_round = start_from_round
@@ -133,6 +139,12 @@ class ExperimentRunner:
         self._completed_actual_total: float = 0.0
         self._paused_at: Optional[float] = None
         self._step_paused_total: float = 0.0
+        self._total_paused_seconds: float = 0.0
+        self._retry_overhead_seconds: float = 0.0
+        self._intervention_overhead_seconds: float = 0.0
+        self._subsystem_durations: Dict[str, float] = {}
+        self._current_operation_started_at: Optional[float] = None
+        self._current_operation: str = ""
 
         # Shared skip flags (written by controller, read by runner)
         self._skip_to_round_index: Optional[int] = None
@@ -193,6 +205,7 @@ class ExperimentRunner:
         paused_duration = time.monotonic() - self._paused_at
         if paused_duration > 0:
             self._step_paused_total += paused_duration
+            self._total_paused_seconds += paused_duration
         self._paused_at = None
 
     def _effective_step_elapsed(self) -> float:
@@ -205,6 +218,73 @@ class ExperimentRunner:
             now = paused_at
         elapsed = now - self._step_start_time - self._step_paused_total
         return max(0.0, elapsed)
+
+    def _effective_run_elapsed(self) -> float:
+        """Elapsed experiment time excluding pauses."""
+        if self._run_start_time <= 0:
+            return 0.0
+        now = time.monotonic()
+        if self._paused_at is not None:
+            now = self._paused_at
+        return max(0.0, now - self._run_start_time - self._total_paused_seconds)
+
+    def get_timing_snapshot(self) -> dict[str, object]:
+        """Return a thread-safe timing snapshot for UI and disk logging."""
+        eta = self.compute_eta()
+        return {
+            "elapsed_seconds": max(0.0, time.monotonic() - self._run_start_time) if self._run_start_time > 0 else 0.0,
+            "effective_run_seconds": self._effective_run_elapsed(),
+            "paused_seconds": self._total_paused_seconds,
+            "retry_overhead_seconds": self._retry_overhead_seconds,
+            "intervention_overhead_seconds": self._intervention_overhead_seconds,
+            "eta_seconds": eta,
+            "subsystem_seconds": dict(self._subsystem_durations),
+        }
+
+    def _set_operation(self, operation: str) -> None:
+        """Track active subsystem duration accounting."""
+        now = time.monotonic()
+        if self._current_operation_started_at is not None:
+            previous = self._progress.current_round.current_step_type if self._progress.current_round else self._current_operation
+            previous = self._current_operation or previous
+            if previous:
+                self._subsystem_durations[previous] = self._subsystem_durations.get(previous, 0.0) + max(
+                    0.0,
+                    now - self._current_operation_started_at,
+                )
+        self._current_operation = operation
+        self._current_operation_started_at = now
+        self._on_operation_change(operation)
+        self._on_progress()
+
+    def _publish_attempt_update(
+        self,
+        round_idx: int,
+        step_idx: int,
+        step_type: str,
+        attempt: int,
+        phase: str,
+        message: str = "",
+    ) -> None:
+        with self._progress_lock:
+            current_fov_index = 0
+            current_fov_label = self._progress.current_fov_label
+            if self._progress.current_round is not None:
+                current_fov_index = self._progress.current_round.imaging_fov_index
+            self._progress.current_attempt = attempt
+        self._event_bus.publish(
+            OrchestratorAttemptUpdate(
+                experiment_id=self._experiment_id,
+                round_index=round_idx,
+                step_index=step_idx,
+                step_type=step_type,
+                attempt=attempt,
+                phase=phase,
+                message=message,
+                current_fov_index=current_fov_index,
+                current_fov_label=current_fov_label,
+            )
+        )
 
     def request_skip_current_round(self) -> bool:
         """Request skipping the remainder of the current round."""
@@ -242,7 +322,8 @@ class ExperimentRunner:
         Returns:
             StepResult summarizing the experiment outcome
         """
-        self._run_start_time = time.monotonic()
+        initial_elapsed = max(0.0, resume_checkpoint.elapsed_seconds) if resume_checkpoint is not None else 0.0
+        self._run_start_time = time.monotonic() - initial_elapsed
         # Initialize ETA from total estimate
         self._latest_eta_seconds = self._total_estimated_seconds if self._total_estimated_seconds > 0 else None
         start_round = self._start_from_round
@@ -252,6 +333,15 @@ class ExperimentRunner:
             start_round = resume_checkpoint.round_index
             resume_step_index = resume_checkpoint.step_index
             resume_imaging_fov = resume_checkpoint.imaging_fov_index
+            self._total_paused_seconds = max(0.0, resume_checkpoint.paused_seconds)
+            with self._progress_lock:
+                self._progress.current_attempt = max(1, resume_checkpoint.current_attempt)
+                self._progress.elapsed_seconds = max(0.0, resume_checkpoint.elapsed_seconds)
+                self._progress.paused_seconds = max(0.0, resume_checkpoint.paused_seconds)
+                self._progress.effective_run_seconds = max(
+                    0.0,
+                    resume_checkpoint.effective_run_seconds,
+                )
 
         # Determine end round for run_single_round mode
         end_round = len(self._protocol.rounds)
@@ -367,28 +457,57 @@ class ExperimentRunner:
                 self._latest_eta_seconds = eta
             self._on_progress()
 
-            # Execute the step
             if isinstance(step, FluidicsStep):
                 with self._progress_lock:
                     if self._progress.current_round is not None:
                         self._progress.current_round.current_step_type = "fluidics"
-                self._on_operation_change("fluidics")
-                result = self._execute_fluidics_step(round_idx, step)
+                self._set_operation("fluidics")
             elif isinstance(step, ImagingStep):
                 with self._progress_lock:
                     if self._progress.current_round is not None:
                         self._progress.current_round.current_step_type = "imaging"
-                self._on_operation_change("imaging")
-                fov_resume = resume_imaging_fov if step_idx == resume_step_index else 0
-                result = self._execute_imaging_step(round_idx, step, resume_fov=fov_resume)
+                self._set_operation("imaging")
             elif isinstance(step, InterventionStep):
                 with self._progress_lock:
                     if self._progress.current_round is not None:
                         self._progress.current_round.current_step_type = "intervention"
-                self._on_operation_change("intervention")
-                result = self._execute_intervention_step(round_idx, step)
+                self._set_operation("intervention")
             else:
-                result = StepResult.skipped("unknown", f"Unknown step type: {type(step)}")
+                self._set_operation("unknown")
+
+            fov_resume = resume_imaging_fov if step_idx == resume_step_index else 0
+            result = self._execute_step_with_retries(
+                round_idx=round_idx,
+                step_idx=step_idx,
+                step=step,
+                resume_fov=fov_resume,
+            )
+
+            while result.outcome == StepOutcome.FAILED:
+                resolution = self._apply_step_failure_policy(
+                    round_idx,
+                    step_idx,
+                    step,
+                    result,
+                )
+                if resolution == "abort":
+                    raise CancellationError(result.error_message or "Cancelled")
+                if resolution == "skip_step":
+                    result = StepResult.skipped(step_type, result.error_message or "Skipped after intervention")
+                    break
+
+                resume_fov = 0
+                if isinstance(step, ImagingStep) and self._progress.current_round is not None:
+                    resume_fov = max(self._progress.current_round.imaging_fov_index, 0)
+                result = self._execute_step_with_retries(
+                    round_idx=round_idx,
+                    step_idx=step_idx,
+                    step=step,
+                    resume_fov=resume_fov,
+                )
+
+            if result.outcome == StepOutcome.CANCELLED:
+                raise CancellationError(result.error_message or "Cancelled")
 
             # Record actual step duration and update ETA
             step_duration = self._effective_step_elapsed()
@@ -422,27 +541,6 @@ class ExperimentRunner:
             if result.success:
                 self._on_checkpoint()
 
-            # Handle result
-            if result.outcome == StepOutcome.CANCELLED:
-                raise CancellationError(result.error_message or "Cancelled")
-
-            if result.outcome == StepOutcome.FAILED:
-                action = self._get_failure_action(step)
-                if action == FailureAction.ABORT:
-                    raise RuntimeError(result.error_message or f"Step failed in round {round_idx}")
-                elif action == FailureAction.PAUSE:
-                    _log.info(f"Pausing after step failure (error_handling={action.value})")
-                    self._on_pause()
-                    self._cancel_token.check_point()
-                    _log.info("Resumed after step failure, continuing to next step")
-                elif action == FailureAction.WARN:
-                    self._on_add_warning(
-                        category=WarningCategory.EXECUTION,
-                        severity=WarningSeverity.MEDIUM,
-                        message=f"{result.step_type.capitalize()} step failed: {result.error_message}",
-                    )
-                # SKIP: fall through
-
             with self._progress_lock:
                 should_skip = self._skip_current_round_now
                 if should_skip:
@@ -455,14 +553,152 @@ class ExperimentRunner:
         self._on_progress()
         return skipped
 
-    def _get_failure_action(self, step) -> FailureAction:
-        """Determine failure action for a step from protocol error_handling."""
-        error_handling = self._protocol.error_handling
+    def _step_label(self, step: object, step_idx: int) -> str:
+        if isinstance(step, (ImagingStep, FluidicsStep)) and step.label:
+            return step.label
+        if isinstance(step, ImagingStep):
+            return step.output_label or step.protocol or f"Imaging {step_idx + 1}"
         if isinstance(step, FluidicsStep):
-            return error_handling.fluidics_failure
-        elif isinstance(step, ImagingStep):
-            return error_handling.imaging_failure
-        return FailureAction.ABORT
+            return step.protocol or f"Fluidics {step_idx + 1}"
+        if isinstance(step, InterventionStep):
+            return f"Intervention {step_idx + 1}"
+        return f"Step {step_idx + 1}"
+
+    def _execute_step_with_retries(
+        self,
+        *,
+        round_idx: int,
+        step_idx: int,
+        step: object,
+        resume_fov: int = 0,
+    ) -> StepResult:
+        policy = getattr(step, "failure_policy", None) or self._protocol.step_failure_policy
+        max_attempts = max(getattr(policy, "max_attempts", 1), 1)
+        retry_delay = max(getattr(policy, "retry_delay_s", 0.0), 0.0)
+        step_type = step.step_type if hasattr(step, "step_type") else "unknown"
+
+        with self._progress_lock:
+            self._progress.current_step_name = self._step_label(step, step_idx)
+
+        for attempt in range(1, max_attempts + 1):
+            self._publish_attempt_update(
+                round_idx,
+                step_idx,
+                step_type,
+                attempt,
+                "started",
+            )
+
+            if isinstance(step, FluidicsStep):
+                result = self._execute_fluidics_step(round_idx, step)
+            elif isinstance(step, ImagingStep):
+                result = self._execute_imaging_step(round_idx, step, resume_fov=resume_fov)
+            elif isinstance(step, InterventionStep):
+                result = self._execute_intervention_step(round_idx, step)
+            else:
+                result = StepResult.skipped("unknown", f"Unknown step type: {type(step)}")
+
+            if result.outcome != StepOutcome.FAILED:
+                self._publish_attempt_update(
+                    round_idx,
+                    step_idx,
+                    step_type,
+                    attempt,
+                    "completed",
+                    result.error_message or "",
+                )
+                return result
+
+            self._publish_attempt_update(
+                round_idx,
+                step_idx,
+                step_type,
+                attempt,
+                "failed",
+                result.error_message or "",
+            )
+
+            if attempt >= max_attempts:
+                return result
+
+            self._retry_overhead_seconds += retry_delay
+            self._publish_attempt_update(
+                round_idx,
+                step_idx,
+                step_type,
+                attempt + 1,
+                "retry_scheduled",
+                result.error_message or "",
+            )
+            if retry_delay > 0:
+                deadline = time.monotonic() + retry_delay
+                while time.monotonic() < deadline:
+                    self._cancel_token.check_point()
+                    time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
+
+        return StepResult.failed(step_type, "Retry loop exhausted")
+
+    def _apply_step_failure_policy(
+        self,
+        round_idx: int,
+        step_idx: int,
+        step: object,
+        result: StepResult,
+    ) -> str:
+        policy = getattr(step, "failure_policy", None) or self._protocol.step_failure_policy
+        action = getattr(policy, "on_fail", "pause")
+        if action == "pause":
+            return self._resolve_failure_intervention(
+                round_idx=round_idx,
+                step_idx=step_idx,
+                step=step,
+                result=result,
+            )
+        if action == "skip_step":
+            return "skip_step"
+        if action == "abort":
+            return "abort"
+        return "skip_step"
+
+    def _resolve_failure_intervention(
+        self,
+        *,
+        round_idx: int,
+        step_idx: int,
+        step: object,
+        result: StepResult,
+    ) -> str:
+        self._on_transition(OrchestratorState.WAITING_INTERVENTION)
+        self._intervention_resolved.clear()
+        started_at = time.monotonic()
+        with self._progress_lock:
+            round_name = self._progress.current_round.round_name if self._progress.current_round else ""
+            current_fov_label = self._progress.current_fov_label
+            attempt = self._progress.current_attempt
+        self._event_bus.publish(
+            OrchestratorInterventionRequired(
+                experiment_id=self._experiment_id,
+                round_index=round_idx,
+                round_name=round_name,
+                message=result.error_message or "Step failed",
+                kind="failure",
+                attempt=attempt,
+                current_step_name=self._step_label(step, step_idx),
+                current_fov_label=current_fov_label,
+                allowed_actions=("retry", "skip", "abort"),
+            )
+        )
+        while not self._intervention_resolved.is_set():
+            self._cancel_token.check_point()
+            self._intervention_resolved.wait(timeout=scale_duration(0.5, min_seconds=0.05))
+        self._intervention_overhead_seconds += max(0.0, time.monotonic() - started_at)
+        action = self._consume_intervention_action()
+        self._on_transition(OrchestratorState.RUNNING)
+        if action == "abort":
+            return "abort"
+        if action == "retry":
+            return "retry"
+        return "skip_step"
 
     def _execute_fluidics_step(self, round_idx: int, step: FluidicsStep) -> StepResult:
         """Execute a fluidics step."""
@@ -534,7 +770,7 @@ class ExperimentRunner:
                 return StepResult.failed(
                     "imaging", f"Imaging protocol '{config_name}' not found in protocol"
                 )
-            imaging_config = self._protocol.imaging_protocols[config_name]
+            imaging_config = self._resolve_imaging_config(step)
 
             # Load FOV set if specified
             if step.fovs not in ("current", "default"):
@@ -589,6 +825,16 @@ class ExperimentRunner:
                     if self._progress.current_round is not None:
                         self._progress.current_round.imaging_fov_index = fov_index
                         self._progress.current_round.total_imaging_fovs = total_fovs
+                    self._progress.current_fov_label = f"FOV {fov_index + 1}" if total_fovs > 0 else ""
+                    self._progress.elapsed_seconds = max(
+                        0.0,
+                        time.monotonic() - self._run_start_time,
+                    )
+                    self._progress.effective_run_seconds = self._effective_run_elapsed()
+                    self._progress.paused_seconds = self._total_paused_seconds
+                    self._progress.retry_overhead_seconds = self._retry_overhead_seconds
+                    self._progress.intervention_overhead_seconds = self._intervention_overhead_seconds
+                    self._progress.subsystem_seconds = dict(self._subsystem_durations)
                     self._latest_eta_seconds = eta_seconds
                     save_ckpt = self._last_checkpoint_fov != fov_index
                     if save_ckpt:
@@ -630,7 +876,8 @@ class ExperimentRunner:
         """Wait for operator intervention."""
         try:
             self._on_transition(OrchestratorState.WAITING_INTERVENTION)
-            self._intervention_acknowledged.clear()
+            self._intervention_resolved.clear()
+            started_at = time.monotonic()
 
             with self._progress_lock:
                 round_name = (
@@ -645,19 +892,54 @@ class ExperimentRunner:
                     round_index=round_idx,
                     round_name=round_name,
                     message=step.message,
+                    kind="acknowledge",
+                    attempt=self._progress.current_attempt,
+                    current_step_name="Intervention",
+                    current_fov_label=self._progress.current_fov_label,
+                    allowed_actions=("acknowledge",),
                 )
             )
 
-            while not self._intervention_acknowledged.is_set():
+            while not self._intervention_resolved.is_set():
                 self._cancel_token.check_point()
-                self._intervention_acknowledged.wait(
+                self._intervention_resolved.wait(
                     timeout=scale_duration(0.5, min_seconds=0.05)
                 )
 
+            self._intervention_overhead_seconds += max(0.0, time.monotonic() - started_at)
+            action = self._consume_intervention_action()
             self._on_transition(OrchestratorState.RUNNING)
+            if action == "abort":
+                return StepResult.cancelled("intervention", "Operator abort")
             return StepResult.ok("intervention")
 
         except CancellationError:
             return StepResult.cancelled("intervention")
         except Exception as e:
             return StepResult.failed("intervention", str(e))
+
+    def _resolve_imaging_config(self, step: ImagingStep) -> ImagingProtocol:
+        """Merge step-level overrides into the referenced imaging protocol."""
+        config_name = step.protocol
+        if config_name not in self._protocol.imaging_protocols:
+            raise KeyError(config_name)
+
+        imaging_config = self._protocol.imaging_protocols[config_name]
+        focus_gate = imaging_config.focus_gate
+        capture_policy = imaging_config.capture_policy
+
+        if step.focus_gate_override is not None:
+            focus_gate = focus_gate.model_copy(
+                update=step.focus_gate_override.model_dump(exclude_none=True)
+            )
+        if step.capture_policy_override is not None:
+            capture_policy = capture_policy.model_copy(
+                update=step.capture_policy_override.model_dump(exclude_none=True)
+            )
+
+        return imaging_config.model_copy(
+            update={
+                "focus_gate": focus_gate,
+                "capture_policy": capture_policy,
+            }
+        )
