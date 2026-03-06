@@ -2742,23 +2742,32 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z before moving the Xeryon objective changer to zero:
-        # - On full shutdown (for_restart is False), always retract Z and, if present, reset Xeryon to zero.
-        # - On restart (for_restart is True), only do this if using Xeryon with an objective changer;
-        #   otherwise the current Z position is preserved.
-        if not for_restart or (USE_XERYON and self.objective_changer):
+        # Retract Z and reset objective changer on full shutdown.
+        # On restart, only retract Z and reset if Xeryon objective changer is present
+        # (Xeryon must be zeroed before re-init; Z must retract first for safety).
+        if not for_restart or USE_XERYON:
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-                if USE_XERYON and self.objective_changer:
-                    self.objective_changer.moveToZero()
             except Exception:
-                self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
+                if for_restart:
+                    self.log.exception(f"Error retracting Z during {context}")
+                else:
+                    raise
+
+            if USE_XERYON and self.objective_changer:
+                try:
+                    self.objective_changer.moveToZero()
+                except Exception:
+                    if for_restart:
+                        self.log.exception(f"Error resetting objective changer during {context}")
+                    else:
+                        raise
 
         if not for_restart:
             try:
                 self.microcontroller.turn_off_all_pid()
             except Exception:
-                self.log.exception(f"Error turning off PID during {context}")
+                raise
 
         # Turn off CellX lasers
         if ENABLE_CELLX:
