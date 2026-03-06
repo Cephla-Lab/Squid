@@ -1365,3 +1365,35 @@ class TestUpdateChannelSettingConfocal:
         obj = repo_with_confocal.get_objective_config("20x")
         assert obj.channels[0].camera_settings.exposure_time_ms == 99.0
         assert obj.channels[0].confocal_override.camera_settings.exposure_time_ms == 50.0
+
+    def test_iris_creates_confocal_hardware_settings_when_none(self, repo_with_confocal):
+        """IlluminationIris lazily creates confocal_hardware_settings when initially None."""
+        # Verify channel starts without confocal_hardware_settings
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].confocal_hardware_settings is None
+
+        result = repo_with_confocal.update_channel_setting(
+            "20x", "488nm", "IlluminationIris", 42.0
+        )
+        assert result is True
+
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].confocal_hardware_settings is not None
+        assert obj.channels[0].confocal_hardware_settings.illumination_iris == 42.0
+
+    def test_iris_update_when_no_objective_config(self, repo_with_confocal):
+        """IlluminationIris auto-creates objective config from general when missing."""
+        # Remove the 20x.yaml so there's no objective config
+        profile_path = repo_with_confocal.get_profile_path("default")
+        (profile_path / "channel_configs" / "20x.yaml").unlink()
+        repo_with_confocal.clear_profile_cache()
+
+        result = repo_with_confocal.update_channel_setting(
+            "20x", "488nm", "IlluminationIris", 55.0
+        )
+        assert result is True
+
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj is not None
+        assert obj.channels[0].confocal_hardware_settings is not None
+        assert obj.channels[0].confocal_hardware_settings.illumination_iris == 55.0

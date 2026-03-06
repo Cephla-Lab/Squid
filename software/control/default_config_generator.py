@@ -124,7 +124,7 @@ def create_general_acquisition_channel(
     )
 
     # Note: confocal_settings removed in v1.0 - filter wheel resolved via hardware_bindings
-    # iris settings only in confocal_override (objective files)
+    # Iris settings in confocal_hardware_settings (objective files), not in general.yaml
 
     return AcquisitionChannel(
         name=illumination_channel.name,
@@ -149,13 +149,14 @@ def create_objective_acquisition_channel(
     Create an acquisition channel for objective-specific YAML files (v1.0 schema).
 
     Objective files define per-objective settings: intensity, exposure, gain,
-    confocal iris settings (in confocal_override). Does NOT include illumination_channel,
+    confocal_hardware_settings and confocal_override. Does NOT include illumination_channel,
     display_color, z_offset_um, filter_wheel, filter_position (those are in general.yaml).
 
     Args:
         illumination_channel: The illumination channel to create from
-        include_confocal: Whether to include confocal_override with iris settings
+        include_confocal: Whether to include confocal_hardware_settings and confocal_override
         camera_id: Camera ID (optional for single-camera systems)
+        confocal_config: Confocal hardware config used to determine which iris properties to include (None = all at defaults)
 
     Returns:
         AcquisitionChannel for objective YAML
@@ -251,13 +252,14 @@ def generate_objective_config(
     Generate an objective-specific configuration (v1.0 schema).
 
     Objective files define per-objective settings: intensity, exposure, gain,
-    confocal iris settings (in confocal_override). Does NOT include
+    confocal_hardware_settings and confocal_override. Does NOT include
     illumination_channel, filter_wheel, filter_position, or z_offset_um (those are in general.yaml).
 
     Args:
         illumination_config: Available illumination channels
-        include_confocal: Whether to include confocal_override with iris settings
+        include_confocal: Whether to include confocal_hardware_settings and confocal_override
         camera_id: Camera ID (optional for single-camera systems)
+        confocal_config: Confocal hardware config used to determine which iris properties to include (None = all at defaults)
 
     Returns:
         ObjectiveChannelConfig with default channels (no illumination_channel)
@@ -284,9 +286,10 @@ def generate_default_configs(
 
     Args:
         illumination_config: Available illumination channels
-        include_confocal: Whether to include confocal_override sections in objective configs
+        include_confocal: Whether to include confocal_hardware_settings and confocal_override in objective configs
         objectives: List of objectives to generate configs for (default: standard set)
         camera_id: Camera ID (optional for single-camera systems)
+        confocal_config: Confocal hardware config used to determine which iris properties to include (None = all at defaults)
 
     Returns:
         Tuple of (general_config, {objective: objective_config})

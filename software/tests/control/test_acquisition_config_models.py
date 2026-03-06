@@ -311,6 +311,25 @@ class TestConfocalConfig:
         assert isinstance(config.version, float)
         assert config.version == 1.0
 
+    def test_confocal_config_get_model_def_known(self):
+        """Test that get_model_def returns definition for known model."""
+        config = ConfocalConfig(model="xlight_v3")
+        model_def = config.get_model_def()
+        assert model_def is not None
+        assert "illumination_iris" in model_def.objective_properties
+
+    def test_confocal_config_get_model_def_none(self):
+        """Test that get_model_def returns None when model is not set."""
+        config = ConfocalConfig()
+        assert config.get_model_def() is None
+
+    def test_confocal_config_get_model_def_unknown_warns(self, caplog):
+        """Test that get_model_def warns for unknown model name."""
+        config = ConfocalConfig(model="xlight_v33")
+        result = config.get_model_def()
+        assert result is None
+        assert "not found in registry" in caplog.text
+
     def test_confocal_config_single_wheel_defaults(self):
         """Test that single confocal wheel gets default id=1 and name from type."""
         # When only one wheel is provided without id/name, defaults should be applied

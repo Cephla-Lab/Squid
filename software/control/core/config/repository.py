@@ -715,11 +715,13 @@ class ConfigRepository:
         - "ExposureTime" -> camera_settings.exposure_time_ms
         - "AnalogGain" -> camera_settings.gain_mode
         - "IlluminationIntensity" -> illumination_settings.intensity
+        - "IlluminationIris" -> confocal_hardware_settings.illumination_iris
+        - "EmissionIris" -> confocal_hardware_settings.emission_iris
 
         Args:
             objective: Objective name
             channel_name: Name of the channel to update
-            setting: Setting name ("ExposureTime", "AnalogGain", "IlluminationIntensity")
+            setting: Setting name (see supported settings above)
             value: New value for the setting
             profile: Profile name (defaults to current profile)
             confocal_mode: If True, write to confocal_override instead of base settings

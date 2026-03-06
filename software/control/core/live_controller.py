@@ -297,7 +297,7 @@ class LiveController:
                         xlight.set_illumination_iris(int(hw_settings.illumination_iris))
                     if hw_settings.emission_iris is not None and xlight.has_emission_iris_diaphragm:
                         xlight.set_emission_iris(int(hw_settings.emission_iris))
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     self._log.warning(f"Not setting iris values: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:

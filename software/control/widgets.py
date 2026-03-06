@@ -3247,7 +3247,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
 
     def update_iris_from_config(self, configuration):
-        """Update iris UI and hardware from a channel's confocal_hardware_settings."""
+        """Update iris UI controls from a channel's confocal_hardware_settings."""
         hw_settings = getattr(configuration, "confocal_hardware_settings", None)
         if hw_settings is None:
             return
@@ -4255,21 +4255,25 @@ class LiveControlWidget(QFrame):
 
     def update_config_illumination_iris(self, new_value):
         if self.currentConfiguration:
-            self.liveController.microscope.config_repo.update_channel_setting(
+            ok = self.liveController.microscope.config_repo.update_channel_setting(
                 self.objectiveStore.current_objective,
                 self.currentConfiguration.name,
                 "IlluminationIris",
                 new_value,
             )
+            if not ok:
+                logger.warning("Failed to persist illumination iris value %.1f", new_value)
 
     def update_config_emission_iris(self, new_value):
         if self.currentConfiguration:
-            self.liveController.microscope.config_repo.update_channel_setting(
+            ok = self.liveController.microscope.config_repo.update_channel_setting(
                 self.objectiveStore.current_objective,
                 self.currentConfiguration.name,
                 "EmissionIris",
                 new_value,
             )
+            if not ok:
+                logger.warning("Failed to persist emission iris value %.1f", new_value)
 
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)

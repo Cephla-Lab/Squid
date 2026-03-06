@@ -5,12 +5,15 @@ These models define confocal-specific hardware settings. This configuration
 file is optional - it only exists on systems with a confocal unit.
 """
 
+import logging
 from typing import Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from control.models.confocal_models import ConfocalModelDef
 
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 from control.models.filter_wheel_config import (
     FilterWheelDefinition,
@@ -124,12 +127,19 @@ class ConfocalConfig(BaseModel):
         """Look up the model definition from the registry.
 
         Returns None if model is not set or not found in the registry.
+        Logs a warning if model is set but not found (possible typo).
         """
         if self.model is None:
             return None
         from control.models.confocal_models import CONFOCAL_MODELS
 
-        return CONFOCAL_MODELS.get(self.model)
+        model_def = CONFOCAL_MODELS.get(self.model)
+        if model_def is None:
+            logger.warning(
+                f"Confocal model '{self.model}' not found in registry. "
+                f"Known models: {sorted(CONFOCAL_MODELS.keys())}"
+            )
+        return model_def
 
     def has_property(self, property_name: str) -> bool:
         """Check if a property is available for configuration."""
