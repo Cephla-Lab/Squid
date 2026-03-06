@@ -409,6 +409,21 @@ class Microscope:
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         self.addons.prepare_for_use(skip_init=skip_init)
 
+        # Configure serial watchdog for illumination safety (requires firmware v1.1+)
+        if self.low_level_drivers.microcontroller:
+            mcu = self.low_level_drivers.microcontroller
+            if mcu.firmware_version >= (1, 1):
+                timeout_s = getattr(control._def, "WATCHDOG_TIMEOUT_S", 5.0)
+                mcu.set_watchdog_timeout(timeout_s)
+                mcu.wait_till_operation_is_completed()
+                mcu.start_heartbeat()
+                self._log.info(f"Illumination watchdog enabled: timeout={timeout_s}s, heartbeat={timeout_s / 2}s")
+            else:
+                self._log.warning(
+                    f"Illumination watchdog not available: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} "
+                    "requires v1.1+"
+                )
+
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
