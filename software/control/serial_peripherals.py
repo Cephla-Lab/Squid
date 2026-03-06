@@ -256,6 +256,8 @@ class XLight:
         self.sleep_time_for_wheel = sleep_time_for_wheel
         self.disable_emission_filter_wheel = disable_emission_filter_wheel
         self.slider_position = 0
+        self.illumination_iris = 0
+        self.emission_iris = 0
 
         # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
         self.protocol_version = self._connect_and_detect(SN)
