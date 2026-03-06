@@ -23,6 +23,8 @@ void process_serial_message()
       {
         checksum_error = false;
       }
+      // Reset watchdog timer on every valid serial message
+      last_serial_message_time = millis();
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
