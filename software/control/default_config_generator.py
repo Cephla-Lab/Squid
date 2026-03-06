@@ -40,7 +40,11 @@ DEFAULT_Z_OFFSET_UM = 0.0
 
 # Confocal iris properties and defaults
 ALL_IRIS_PROPERTIES = {"illumination_iris", "emission_iris"}
-DEFAULT_IRIS_VALUE = 100.0  # Fully open
+# Iris defaults come from _def.py (XLIGHT_ILLUMINATION_IRIS_DEFAULT / XLIGHT_EMISSION_IRIS_DEFAULT)
+# This fallback is used when no confocal_config.yaml or model registry is available
+from control._def import XLIGHT_ILLUMINATION_IRIS_DEFAULT
+
+DEFAULT_IRIS_VALUE = float(XLIGHT_ILLUMINATION_IRIS_DEFAULT)
 
 # Standard objectives
 DEFAULT_OBJECTIVES = ["2x", "4x", "10x", "20x", "40x", "50x", "60x"]

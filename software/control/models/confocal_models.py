@@ -9,6 +9,8 @@ has illumination and emission irises, while V2/Cicero have none).
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
+from control._def import XLIGHT_EMISSION_IRIS_DEFAULT, XLIGHT_ILLUMINATION_IRIS_DEFAULT
+
 
 @dataclass(frozen=True)
 class ConfocalModelDef:
@@ -24,7 +26,10 @@ class ConfocalModelDef:
 
 CONFOCAL_MODELS: Dict[str, ConfocalModelDef] = {
     "xlight_v3": ConfocalModelDef(
-        objective_properties={"illumination_iris": 100.0, "emission_iris": 100.0},
+        objective_properties={
+            "illumination_iris": float(XLIGHT_ILLUMINATION_IRIS_DEFAULT),
+            "emission_iris": float(XLIGHT_EMISSION_IRIS_DEFAULT),
+        },
     ),
     "xlight_v2": ConfocalModelDef(
         objective_properties={},
