@@ -190,7 +190,7 @@ class SimSerial(AbstractCephlaMicroSerial):
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
     ) -> bytes:
         """
         - command ID (1 byte)
@@ -933,6 +933,12 @@ class Microcontroller:
                 A value of 0 tells the firmware to use its default timeout (5s).
         """
         timeout_ms = int(max(0, min(timeout_s * 1000, MAX_WATCHDOG_TIMEOUT_MS)))
+        if timeout_ms != int(timeout_s * 1000):
+            max_s = MAX_WATCHDOG_TIMEOUT_MS / 1000.0
+            self.log.warning(
+                f"[MCU] set_watchdog_timeout: requested {timeout_s}s clamped to "
+                f"{timeout_ms / 1000.0}s (valid range: 0-{max_s}s)"
+            )
         self.log.debug(f"[MCU] set_watchdog_timeout: {timeout_s}s ({timeout_ms}ms)")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_WATCHDOG_TIMEOUT
@@ -954,16 +960,30 @@ class Microcontroller:
         Args:
             interval_s: Seconds between heartbeats. Defaults to WATCHDOG_TIMEOUT_S / 2.
         """
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            self.log.warning("[MCU] Heartbeat already running, stopping before restart")
+            self.stop_heartbeat()
         if interval_s is None:
             interval_s = WATCHDOG_TIMEOUT_S / 2
         self._heartbeat_stop_event.clear()
 
         def _heartbeat_loop():
+            consecutive_failures = 0
             while not self._heartbeat_stop_event.wait(interval_s):
                 try:
                     self.send_heartbeat()
+                    if consecutive_failures > 0:
+                        self.log.info(f"[MCU] Heartbeat recovered after {consecutive_failures} failures")
+                    consecutive_failures = 0
                 except Exception as e:
-                    self.log.debug(f"[MCU] Heartbeat send failed: {e}")
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        self.log.warning(f"[MCU] Heartbeat send failed: {e}")
+                    elif consecutive_failures == 5:
+                        self.log.error(
+                            f"[MCU] Heartbeat has failed {consecutive_failures} times consecutively. "
+                            "Firmware watchdog may fire and disable illumination."
+                        )
 
         self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
@@ -974,6 +994,9 @@ class Microcontroller:
         self._heartbeat_stop_event.set()
         if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=2.0)
+            if self._heartbeat_thread.is_alive():
+                self.log.warning("[MCU] Heartbeat thread did not stop within 2s timeout")
+                return
         self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
@@ -1512,15 +1535,16 @@ class Microcontroller:
 
                 # parse the message
                 """
-                - command ID (1 byte)
-                - execution status (1 byte)
-                - X pos (4 bytes)
-                - Y pos (4 bytes)
-                - Z pos (4 bytes)
-                - Theta (4 bytes)
-                - buttons and switches (1 byte)
-                - reserved (4 bytes)
-                - CRC (1 byte)
+                - byte 0: command ID (1 byte)
+                - byte 1: execution status (1 byte)
+                - bytes 2-5: X pos (4 bytes)
+                - bytes 6-9: Y pos (4 bytes)
+                - bytes 10-13: Z pos (4 bytes)
+                - bytes 14-17: Theta (4 bytes)
+                - byte 18: buttons and switches (1 byte)
+                - bytes 19-21: reserved (3 bytes)
+                - byte 22: firmware version, nibble-encoded (1 byte)
+                - byte 23: CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]

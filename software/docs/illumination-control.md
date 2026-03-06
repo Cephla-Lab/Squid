@@ -195,9 +195,9 @@ For low-level debugging or firmware development:
 
 | Command | Code | Description |
 |---------|------|-------------|
-| SET_ILLUMINATION | 5 | Legacy: set source + intensity |
-| TURN_ON_ILLUMINATION | 6 | Legacy: turn on current source |
-| TURN_OFF_ILLUMINATION | 7 | Legacy: turn off current source |
+| TURN_ON_ILLUMINATION | 10 | Legacy: turn on current source |
+| TURN_OFF_ILLUMINATION | 11 | Legacy: turn off current source |
+| SET_ILLUMINATION | 12 | Legacy: set source + intensity |
 | SET_PORT_INTENSITY | 34 | Multi-port: set DAC for port |
 | TURN_ON_PORT | 35 | Multi-port: turn on GPIO for port |
 | TURN_OFF_PORT | 36 | Multi-port: turn off GPIO for port |

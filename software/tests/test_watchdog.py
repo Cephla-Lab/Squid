@@ -59,6 +59,20 @@ class TestSetWatchdogTimeout:
         mcu.wait_till_operation_is_completed()
         assert mcu._serial.watchdog_timeout_ms == DEFAULT_WATCHDOG_TIMEOUT_MS
 
+    def test_simserial_clamps_above_max(self, mcu):
+        """SimSerial should clamp values above MAX to MAX."""
+        mcu.set_watchdog_timeout(9999.0)
+        mcu.wait_till_operation_is_completed()
+        assert mcu._serial.watchdog_timeout_ms == MAX_WATCHDOG_TIMEOUT_MS
+
+    def test_fractional_seconds_conversion(self, mcu):
+        """Fractional seconds should convert correctly to milliseconds."""
+        mcu.set_watchdog_timeout(2.5)
+        mcu.wait_till_operation_is_completed()
+        cmd = mcu.last_command
+        timeout_ms = struct.unpack(">I", bytes(cmd[2:6]))[0]
+        assert timeout_ms == 2500
+
 
 class TestHeartbeat:
     def test_sends_correct_command_id(self, mcu):
@@ -96,6 +110,19 @@ class TestHeartbeat:
         time.sleep(0.2)
         mcu.stop_heartbeat()
         assert mcu.last_command[1] == CMD_SET.HEARTBEAT
+
+    def test_stop_heartbeat_when_never_started(self, mcu):
+        """stop_heartbeat() should be safe when no heartbeat was started."""
+        mcu.stop_heartbeat()  # Should not raise
+
+    def test_double_start_stops_first(self, mcu):
+        """Starting heartbeat twice should stop the first thread."""
+        mcu.start_heartbeat(interval_s=0.1)
+        first_thread = mcu._heartbeat_thread
+        mcu.start_heartbeat(interval_s=0.1)
+        assert not first_thread.is_alive()
+        assert mcu._heartbeat_thread.is_alive()
+        mcu.stop_heartbeat()
 
 
 class TestFirmwareVersionForWatchdog:
