@@ -3091,19 +3091,13 @@ class SpinningDiskConfocalWidget(QWidget):
             self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
-            illumination_iris = self.xlight.illumination_iris
-            self.slider_illumination_iris.setValue(illumination_iris)
-            self.spinbox_illumination_iris.setValue(illumination_iris)
-
+            # Slider values are set from acquisition config via update_iris_from_config()
+            # after signal connections are established in gui_hcs.py
             self.slider_illumination_iris.sliderReleased.connect(lambda: self.update_illumination_iris(True))
             # Update spinbox + apply on click-to-position (not during drag)
             self.slider_illumination_iris.valueChanged.connect(self._on_illumination_iris_value_changed)
             self.spinbox_illumination_iris.editingFinished.connect(lambda: self.update_illumination_iris(False))
         if self.xlight.has_emission_iris_diaphragm:
-            emission_iris = self.xlight.emission_iris
-            self.slider_emission_iris.setValue(emission_iris)
-            self.spinbox_emission_iris.setValue(emission_iris)
-
             self.slider_emission_iris.sliderReleased.connect(lambda: self.update_emission_iris(True))
             # Update spinbox + apply on click-to-position (not during drag)
             self.slider_emission_iris.valueChanged.connect(self._on_emission_iris_value_changed)

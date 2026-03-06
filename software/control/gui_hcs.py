@@ -1624,11 +1624,9 @@ class HighContentScreeningGui(QMainWindow):
             self.spinningDiskConfocalWidget.signal_emission_iris_changed.connect(
                 self.liveControlWidget.update_config_emission_iris
             )
-            # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
-            # this GUI code runs. The microscope queries hardware state and calls
-            # live_controller.sync_confocal_mode_from_hardware() during init.
-            # The signal connection above handles subsequent user-initiated toggles only.
-            # See Microscope._sync_confocal_mode_from_hardware() for the initial sync logic.
+            # Sync iris UI from the initial channel config (signal wasn't connected during __init__)
+            if self.liveControlWidget.currentConfiguration:
+                self.spinningDiskConfocalWidget.update_iris_from_config(self.liveControlWidget.currentConfiguration)
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
