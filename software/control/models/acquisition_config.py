@@ -256,11 +256,16 @@ class AcquisitionChannel(BaseModel):
         if not confocal_mode or not self.confocal_override:
             return self
 
-        # Copy override settings so the returned channel doesn't share
-        # mutable references with the stored confocal_override.
+        # Merge override fields into base settings, preserving identity fields
+        # (illumination_channel) from the base. The override only contains tunable
+        # values like intensity — illumination_channel is an identity field from
+        # general.yaml that must always come from the base channel.
         merged_illumination = self.illumination_settings.model_copy()
         if self.confocal_override.illumination_settings:
-            merged_illumination = self.confocal_override.illumination_settings.model_copy()
+            override_ill = self.confocal_override.illumination_settings
+            merged_illumination = merged_illumination.model_copy(
+                update={"intensity": override_ill.intensity}
+            )
 
         merged_camera = self.camera_settings.model_copy()
         if self.confocal_override.camera_settings:
