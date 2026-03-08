@@ -260,11 +260,12 @@ class AcquisitionChannel(BaseModel):
         # illumination_channel from the base (the override has it as None since
         # it is only set in the base config).
         # Merge camera: full replacement (all camera fields are tunable).
-        merged_illumination = self.illumination_settings.model_copy()
         if self.confocal_override.illumination_settings:
-            merged_illumination = merged_illumination.model_copy(
+            merged_illumination = self.illumination_settings.model_copy(
                 update={"intensity": self.confocal_override.illumination_settings.intensity}
             )
+        else:
+            merged_illumination = self.illumination_settings.model_copy()
 
         merged_camera = self.camera_settings.model_copy()
         if self.confocal_override.camera_settings:
