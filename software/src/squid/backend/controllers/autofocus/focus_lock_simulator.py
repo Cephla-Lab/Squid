@@ -277,7 +277,7 @@ class FocusLockSimulator(BaseController):
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         """Wait for lock to be achieved."""
         if not self.is_running:
-            return True
+            return False
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if self.status == "locked":

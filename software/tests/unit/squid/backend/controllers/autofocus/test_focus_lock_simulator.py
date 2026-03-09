@@ -150,6 +150,18 @@ def test_mode_command_publishes_mode_changed():
     sim.stop()
 
 
+def test_wait_for_lock_returns_false_when_not_running():
+    """wait_for_lock should return False when simulator isn't running."""
+    bus = EventBus()
+    config = FocusLockConfig(loop_rate_hz=50, metrics_rate_hz=20, buffer_length=3)
+    sim = FocusLockSimulator(bus, config=config)
+    _init_laser_af(bus)
+
+    # Simulator is not started, so is_running is False
+    assert sim.is_running is False
+    assert sim.wait_for_lock(timeout_s=0.1) is False
+
+
 def test_wait_for_lock():
     """wait_for_lock should reflect lock acquisition state."""
     bus = EventBus()
@@ -157,11 +169,8 @@ def test_wait_for_lock():
     sim = FocusLockSimulator(bus, config=config)
     _init_laser_af(bus)
 
-    # When not running, wait_for_lock returns True immediately
-    assert sim.wait_for_lock(timeout_s=0.1) is True
-
     sim.start()
-    # After start, need to explicitly set lock
+    # After start, need to explicitly set lock to achieve locked state
     bus.publish(SetFocusLockReferenceCommand())
     bus.drain()
     # Give time for lock buffer to fill
