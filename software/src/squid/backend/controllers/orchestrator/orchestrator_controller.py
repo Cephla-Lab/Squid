@@ -515,24 +515,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                         f"({start_from_fov} must be >= 0)"
                     )
                     return False
-                if start_from_fov > 0:
-                    step = protocol.rounds[start_from_round].steps[start_from_step]
-                    if not isinstance(step, ImagingStep):
-                        _log.warning(
-                            "Cannot start: start_from_fov requires an imaging start step"
-                        )
-                        return False
-                    if self._scan_coordinates is not None:
-                        region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
-                        known_fov_total = 0
-                        if isinstance(region_fovs, dict):
-                            known_fov_total = sum(len(coords) for coords in region_fovs.values())
-                        if known_fov_total > 0 and start_from_fov >= known_fov_total:
-                            _log.warning(
-                                "Cannot start: start_from_fov out of bounds "
-                                f"({start_from_fov} not in [0, {known_fov_total - 1}])"
-                            )
-                            return False
 
             self._protocol = protocol
             self._protocol_path = protocol_path
@@ -551,6 +533,25 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Auto-load resource files specified in the protocol
             self._auto_load_resources()
+
+            if not resume_from_checkpoint and start_from_fov > 0:
+                step = protocol.rounds[start_from_round].steps[start_from_step]
+                if not isinstance(step, ImagingStep):
+                    _log.warning(
+                        "Cannot start: start_from_fov requires an imaging start step"
+                    )
+                    return False
+                if self._scan_coordinates is not None:
+                    region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                    known_fov_total = 0
+                    if isinstance(region_fovs, dict):
+                        known_fov_total = sum(len(coords) for coords in region_fovs.values())
+                    if known_fov_total > 0 and start_from_fov >= known_fov_total:
+                        _log.warning(
+                            "Cannot start: start_from_fov out of bounds "
+                            f"({start_from_fov} not in [0, {known_fov_total - 1}])"
+                        )
+                        return False
 
             # Run the same preflight used by the Validate flow.
             preflight = self._build_protocol_validator(protocol=self._protocol).validate(
