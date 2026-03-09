@@ -266,6 +266,13 @@ class ProtocolLoader:
             if val and not Path(val).is_absolute():
                 resources[field] = str(protocol_dir / val)
 
+        output_directory = data.get("output_directory")
+        if output_directory:
+            expanded_output = Path(output_directory).expanduser()
+            if not expanded_output.is_absolute():
+                expanded_output = protocol_dir / expanded_output
+            data["output_directory"] = str(expanded_output)
+
         # If imaging_protocol_file is set, load and merge into imaging_protocols
         imaging_file = resources.get("imaging_protocol_file")
         if imaging_file:

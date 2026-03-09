@@ -1,33 +1,16 @@
-# Single Round Imaging with Save (V2 Format)
-# Single-round imaging with saving enabled for e2e output validation
-
 name: "Single Round Imaging (Save)"
-version: "2.0"
-description: "Single-round imaging with saving enabled for e2e output validation"
+version: "3.0"
+description: "Single-plane brightfield acquisition that writes image output."
+output_directory: ../outputs
 
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
-
-imaging_protocols:
-  bf_single_save:
-    description: "Single plane brightfield with saving"
-    channels:
-      - "BF LED matrix full"
-    z_stack:
-      planes: 1
-      step_um: 0.5
-    focus:
-      enabled: false
-    skip_saving: false
-
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
-  - name: "Imaging"
+  - name: "Saved Brightfield"
     steps:
       - step_type: imaging
-        protocol: bf_single_save
-        fovs: main
+        protocol: bf_saved
+        fovs: default

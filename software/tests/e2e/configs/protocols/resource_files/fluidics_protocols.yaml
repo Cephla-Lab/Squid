@@ -1,6 +1,4 @@
-# External fluidics protocol definitions.
-# Referenced via fluidics_protocols_file in experiment protocols.
-# These are loaded into FluidicsController at experiment start.
+# Small external fluidics library used by the self-loading resource-path examples.
 
 protocols:
   resource_test_wash:
@@ -12,7 +10,7 @@ protocols:
         flow_rate_ul_per_min: 100
 
   resource_test_probe:
-    description: "Probe delivery for resource file path testing"
+    description: "Probe delivery followed by a short incubation"
     steps:
       - operation: flow
         solution: probe_1
@@ -20,3 +18,11 @@ protocols:
         flow_rate_ul_per_min: 50
       - operation: incubate
         duration_s: 1
+
+  resource_test_rinse:
+    description: "Short rinse before the final imaging pass"
+    steps:
+      - operation: wash
+        solution: rinse_buffer
+        volume_ul: 100
+        flow_rate_ul_per_min: 100

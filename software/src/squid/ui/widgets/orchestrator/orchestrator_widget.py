@@ -7,6 +7,7 @@ Provides dockable widgets for the orchestrator:
 """
 
 import time as _time
+from collections import deque
 
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
@@ -25,8 +26,9 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QMenu,
     QAction,
+    QSizePolicy,
 )
-from PyQt5.QtGui import QFont, QColor, QBrush
+from PyQt5.QtGui import QFont, QColor, QBrush, QPainter, QPen, QPainterPath
 
 from squid.core.events import handles, LoadScanCoordinatesCommand
 from squid.ui.widgets.base import EventBusWidget
@@ -41,6 +43,7 @@ from squid.backend.controllers.orchestrator import (
     OrchestratorAttemptUpdate,
     OrchestratorInterventionRequired,
     OrchestratorError,
+    OrchestratorTimingSnapshot,
     ResolveInterventionCommand,
     ValidateProtocolCommand,
     ProtocolValidationComplete,
@@ -116,6 +119,171 @@ _CURRENT_STEP_BG = QColor("#1A3A5C")  # Subtle blue tint for dark theme
 _RUNNING_BG = QColor("#1A3A2C")  # Subtle green tint
 
 
+class SparklineWidget(QWidget):
+    """Small single-series line chart for live run telemetry."""
+
+    def __init__(
+        self,
+        color: str,
+        *,
+        max_points: int = 90,
+        y_max: Optional[float] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._line_color = QColor(color)
+        self._fill_color = QColor(color)
+        self._fill_color.setAlpha(55)
+        self._values: deque[float] = deque(maxlen=max_points)
+        self._y_max = y_max
+        self.setMinimumHeight(48)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_values(self, values: List[float]) -> None:
+        self._values.clear()
+        for value in values:
+            self._values.append(float(value))
+        self.update()
+
+    def append_value(self, value: float) -> None:
+        self._values.append(float(value))
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(4, 4, -4, -4)
+        painter.fillRect(rect, QColor("#171b21"))
+
+        painter.setPen(QPen(QColor("#2d3742"), 1))
+        for fraction in (0.25, 0.5, 0.75):
+            y = rect.top() + rect.height() * fraction
+            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+
+        if len(self._values) < 2:
+            painter.setPen(QPen(QColor("#5f6b7a"), 1))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "No live data")
+            return
+
+        y_min = min(self._values)
+        y_max = self._y_max if self._y_max is not None else max(self._values)
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+        x_step = rect.width() / max(1, len(self._values) - 1)
+        path = QPainterPath()
+        fill_path = QPainterPath()
+        values = list(self._values)
+        for index, value in enumerate(values):
+            x = rect.left() + index * x_step
+            normalized = (value - y_min) / (y_max - y_min)
+            y = rect.bottom() - normalized * rect.height()
+            if index == 0:
+                path.moveTo(x, y)
+                fill_path.moveTo(x, rect.bottom())
+                fill_path.lineTo(x, y)
+            else:
+                path.lineTo(x, y)
+                fill_path.lineTo(x, y)
+        fill_path.lineTo(rect.right(), rect.bottom())
+        fill_path.closeSubpath()
+
+        painter.fillPath(fill_path, self._fill_color)
+        painter.setPen(QPen(self._line_color, 2))
+        painter.drawPath(path)
+
+
+class MetricPlotCard(QFrame):
+    """Compact labeled metric card with a sparkline."""
+
+    def __init__(
+        self,
+        title: str,
+        color: str,
+        *,
+        y_max: Optional[float] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.setStyleSheet(
+            "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color: #7f8b99; font-size: 10px;")
+        layout.addWidget(title_label)
+
+        self._value_label = QLabel("--")
+        self._value_label.setStyleSheet("color: #edf2f7; font-size: 16px; font-weight: 600;")
+        layout.addWidget(self._value_label)
+
+        self._sparkline = SparklineWidget(color, y_max=y_max)
+        layout.addWidget(self._sparkline)
+
+    def set_metric(self, value_text: str, values: List[float]) -> None:
+        self._value_label.setText(value_text)
+        self._sparkline.set_values(values)
+
+
+class SubsystemBreakdownWidget(QFrame):
+    """Simple stacked bar showing accumulated subsystem time split."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._values: Dict[str, float] = {}
+        self.setMinimumHeight(72)
+        self.setStyleSheet(
+            "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
+        )
+
+    def set_values(self, values: Dict[str, float]) -> None:
+        self._values = {key: float(value) for key, value in values.items() if float(value) > 0.0}
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(10, 10, -10, -10)
+        painter.fillRect(rect, QColor("#20252b"))
+
+        total = sum(self._values.values())
+        bar_rect = rect.adjusted(0, 4, 0, -24)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#15181d"))
+        painter.drawRoundedRect(bar_rect, 5, 5)
+
+        if total <= 0:
+            painter.setPen(QPen(QColor("#5f6b7a"), 1))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "No subsystem timing yet")
+            return
+
+        palette = {
+            "imaging": QColor("#4FC3F7"),
+            "fluidics": QColor("#81C784"),
+            "intervention": QColor("#FFB74D"),
+            "paused": QColor("#BA68C8"),
+            "waiting": QColor("#90A4AE"),
+        }
+        x = float(bar_rect.left())
+        legend_y = rect.bottom() - 6
+        step = max(88, rect.width() // max(1, len(self._values)))
+        for index, (name, value) in enumerate(sorted(self._values.items())):
+            width = bar_rect.width() * (value / total)
+            color = palette.get(name, QColor("#90A4AE"))
+            painter.setBrush(color)
+            painter.drawRoundedRect(int(x), bar_rect.top(), max(2, int(width)), bar_rect.height(), 4, 4)
+            x += width
+
+            legend_x = rect.left() + index * step
+            painter.setBrush(color)
+            painter.drawRect(legend_x, legend_y - 8, 10, 10)
+            painter.setPen(QPen(QColor("#d7dde5"), 1))
+            painter.drawText(legend_x + 16, legend_y + 1, f"{name}: {_format_duration(value)}")
+
+
 class OrchestratorControlPanel(EventBusWidget):
     """Control panel for experiment orchestration.
 
@@ -130,6 +298,7 @@ class OrchestratorControlPanel(EventBusWidget):
     state_changed = pyqtSignal(str, str)  # old_state, new_state
     progress_updated = pyqtSignal(object)  # OrchestratorProgress
     intervention_required = pyqtSignal(object)  # OrchestratorInterventionRequired
+    timing_snapshot = pyqtSignal(object)  # OrchestratorTimingSnapshot
     error_occurred = pyqtSignal(str, str)  # type, message
     fov_positions_changed = pyqtSignal(dict)  # FOV positions dict
     protocol_loaded = pyqtSignal(dict)  # protocol data
@@ -155,6 +324,11 @@ class OrchestratorControlPanel(EventBusWidget):
         self._start_fov_index: int = 0
         self._run_single_round: bool = False
         self._last_progress: Optional[OrchestratorProgress] = None
+        self._history: Dict[str, deque[float]] = {
+            "progress": deque(maxlen=120),
+            "eta": deque(maxlen=120),
+            "overhead": deque(maxlen=120),
+        }
 
         self._setup_ui()
         self._connect_signals()
@@ -173,6 +347,9 @@ class OrchestratorControlPanel(EventBusWidget):
 
         progress_group = self._create_progress_section()
         layout.addWidget(progress_group)
+
+        metrics_group = self._create_metrics_section()
+        layout.addWidget(metrics_group)
 
         self._intervention_frame = self._create_intervention_section()
         self._intervention_frame.setVisible(False)
@@ -335,35 +512,76 @@ class OrchestratorControlPanel(EventBusWidget):
 
         return group
 
+    def _create_metrics_section(self) -> QGroupBox:
+        group = QGroupBox("Live Metrics")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        cards = QWidget()
+        cards_layout = QHBoxLayout(cards)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(8)
+
+        self._progress_plot = MetricPlotCard("Progress Trend", "#4FC3F7", y_max=100.0)
+        self._eta_plot = MetricPlotCard("ETA Trend", "#81C784")
+        self._overhead_plot = MetricPlotCard("Overhead", "#FFB74D")
+
+        cards_layout.addWidget(self._progress_plot, 1)
+        cards_layout.addWidget(self._eta_plot, 1)
+        cards_layout.addWidget(self._overhead_plot, 1)
+        layout.addWidget(cards)
+
+        self._subsystem_breakdown = SubsystemBreakdownWidget()
+        layout.addWidget(self._subsystem_breakdown)
+
+        return group
+
     def _create_intervention_section(self) -> QFrame:
         frame = QFrame()
-        frame.setFrameStyle(QFrame.Shape.StyledPanel)
         frame.setStyleSheet(
-            "QFrame { background-color: #3E2723; border: 2px solid #F9A825; border-radius: 4px; }"
+            "QFrame { background-color: #1f2329; border: 1px solid #57442e; border-left: 5px solid #F9A825; border-radius: 8px; }"
         )
 
-        layout = QVBoxLayout(frame)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(14)
 
-        header = QLabel("INTERVENTION REQUIRED")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(4)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        self._intervention_badge = QLabel("INTERVENTION")
+        self._intervention_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         font = QFont()
         font.setBold(True)
-        font.setPointSize(12)
-        header.setFont(font)
-        header.setStyleSheet("color: #FDD835; border: none;")
-        layout.addWidget(header)
+        font.setPointSize(10)
+        self._intervention_badge.setFont(font)
+        self._intervention_badge.setStyleSheet(
+            "background-color: #5d4037; color: #ffd54f; padding: 4px 8px; border-radius: 10px;"
+        )
+        header_row.addWidget(self._intervention_badge, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._intervention_title = QLabel("Waiting for operator action")
+        self._intervention_title.setStyleSheet(
+            "color: #f7fafc; font-size: 14px; font-weight: 600; border: none;"
+        )
+        header_row.addWidget(self._intervention_title, 1)
+        header_row.addStretch()
+        info_layout.addLayout(header_row)
 
         self._intervention_message = QLabel("")
-        self._intervention_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._intervention_message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._intervention_message.setWordWrap(True)
-        self._intervention_message.setStyleSheet("color: #FFE082; border: none;")
-        layout.addWidget(self._intervention_message)
+        self._intervention_message.setStyleSheet("color: #edf2f7; border: none; font-size: 13px;")
+        info_layout.addWidget(self._intervention_message)
 
         self._intervention_context = QLabel("")
-        self._intervention_context.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._intervention_context.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._intervention_context.setWordWrap(True)
-        self._intervention_context.setStyleSheet("color: #ffe6a7; border: none;")
-        layout.addWidget(self._intervention_context)
+        self._intervention_context.setStyleSheet("color: #b8c1cc; border: none;")
+        info_layout.addWidget(self._intervention_context)
+        layout.addLayout(info_layout, 1)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(6)
@@ -392,7 +610,7 @@ class OrchestratorControlPanel(EventBusWidget):
         self._abort_intervention_btn.clicked.connect(self._on_intervention_abort_clicked)
         button_row.addWidget(self._abort_intervention_btn)
 
-        layout.addLayout(button_row)
+        layout.addLayout(button_row, 0)
 
         return frame
 
@@ -400,6 +618,7 @@ class OrchestratorControlPanel(EventBusWidget):
         self.state_changed.connect(self._on_state_changed_ui)
         self.progress_updated.connect(self._on_progress_updated_ui)
         self.intervention_required.connect(self._on_intervention_required_ui)
+        self.timing_snapshot.connect(self._on_timing_snapshot_ui)
         self.error_occurred.connect(self._on_error_occurred_ui)
         self.validation_complete.connect(self._on_validation_complete_ui)
 
@@ -418,6 +637,10 @@ class OrchestratorControlPanel(EventBusWidget):
     @handles(OrchestratorInterventionRequired)
     def _on_intervention(self, event: OrchestratorInterventionRequired) -> None:
         self.intervention_required.emit(event)
+
+    @handles(OrchestratorTimingSnapshot)
+    def _on_timing_snapshot(self, event: OrchestratorTimingSnapshot) -> None:
+        self.timing_snapshot.emit(event)
 
     @handles(OrchestratorError)
     def _on_error(self, event: OrchestratorError) -> None:
@@ -467,6 +690,7 @@ class OrchestratorControlPanel(EventBusWidget):
     @pyqtSlot(object)
     def _on_progress_updated_ui(self, event: OrchestratorProgress) -> None:
         self._last_progress = event
+        self._history["progress"].append(float(event.progress_percent))
         self._round_label.setText(f"{event.current_round} / {event.total_rounds}")
         self._round_name_label.setText(event.current_round_name)
         self._progress_bar.setValue(int(event.progress_percent))
@@ -493,6 +717,10 @@ class OrchestratorControlPanel(EventBusWidget):
         self._retry_time_label.setText(
             self._format_time_remaining(event.retry_overhead_seconds)
         )
+        self._progress_plot.set_metric(
+            f"{event.progress_percent:.0f}%",
+            list(self._history["progress"]),
+        )
 
         # Update time remaining display
         if event.eta_seconds is not None and isinstance(event.eta_seconds, (int, float)) and event.eta_seconds > 0:
@@ -513,6 +741,8 @@ class OrchestratorControlPanel(EventBusWidget):
     def _on_intervention_required_ui(self, event: OrchestratorInterventionRequired) -> None:
         self._intervention_message.setText(event.message)
         context_bits = []
+        if event.round_name:
+            context_bits.append(event.round_name)
         if event.current_step_name:
             context_bits.append(event.current_step_name)
         if event.current_fov_label:
@@ -520,12 +750,42 @@ class OrchestratorControlPanel(EventBusWidget):
         if event.attempt > 0:
             context_bits.append(f"attempt {event.attempt}")
         self._intervention_context.setText(" | ".join(context_bits))
+        if event.kind == "failure":
+            self._intervention_badge.setText("RECOVERY REQUIRED")
+            self._intervention_badge.setStyleSheet(
+                "background-color: #5d1f1f; color: #ffb4ab; padding: 4px 8px; border-radius: 10px;"
+            )
+            self._intervention_title.setText("Run needs operator recovery")
+        else:
+            self._intervention_badge.setText("INTERVENTION")
+            self._intervention_badge.setStyleSheet(
+                "background-color: #5d4037; color: #ffd54f; padding: 4px 8px; border-radius: 10px;"
+            )
+            self._intervention_title.setText("Waiting for operator action")
         allowed = set(event.allowed_actions)
         self._acknowledge_btn.setVisible("acknowledge" in allowed)
         self._retry_btn.setVisible("retry" in allowed)
         self._skip_btn.setVisible("skip" in allowed)
         self._abort_intervention_btn.setVisible("abort" in allowed)
         self._intervention_frame.setVisible(True)
+
+    @pyqtSlot(object)
+    def _on_timing_snapshot_ui(self, event: OrchestratorTimingSnapshot) -> None:
+        if event.eta_seconds is not None and event.eta_seconds >= 0:
+            self._history["eta"].append(float(event.eta_seconds))
+        total_overhead = (
+            float(event.paused_seconds)
+            + float(event.retry_overhead_seconds)
+            + float(event.intervention_overhead_seconds)
+        )
+        self._history["overhead"].append(total_overhead)
+        eta_text = "--" if event.eta_seconds is None else self._format_time_remaining(event.eta_seconds)
+        self._eta_plot.set_metric(eta_text, list(self._history["eta"]))
+        self._overhead_plot.set_metric(
+            self._format_time_remaining(total_overhead),
+            list(self._history["overhead"]),
+        )
+        self._subsystem_breakdown.set_values(event.subsystem_seconds)
 
     @pyqtSlot(str, str)
     def _on_error_occurred_ui(self, error_type: str, message: str) -> None:

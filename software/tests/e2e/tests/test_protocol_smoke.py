@@ -34,12 +34,12 @@ def test_protocol_smoke(
 ):
     """Run each protocol end-to-end and validate outputs."""
     sim = e2e_orchestrator
-    center = e2e_backend_ctx.get_stage_center()
-
     sim.load_protocol(str(protocol_path))
-    sim.add_single_fov("region_1", x=center[0], y=center[1], z=center[2])
 
     protocol = ProtocolLoader().load(str(protocol_path))
+    if protocol.total_imaging_steps() > 0 and protocol.fov_file is None and not protocol.fov_sets:
+        center = e2e_backend_ctx.get_stage_center()
+        sim.add_single_fov("region_1", x=center[0], y=center[1], z=center[2])
     expected_rounds = len(protocol.rounds)
     expected_round_dirs = protocol.total_imaging_steps()
 

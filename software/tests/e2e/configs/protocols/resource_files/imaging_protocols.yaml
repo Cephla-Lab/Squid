@@ -1,37 +1,137 @@
-# External imaging protocol definitions.
-# Referenced via imaging_protocol_file in experiment protocols.
+# Shared imaging protocol library for E2E orchestrator configs.
 
 bf_quick:
-  description: "Quick brightfield check"
-  channels:
-    - "BF LED matrix full"
-  z_stack:
-    planes: 1
-  focus:
-    enabled: false
-  skip_saving: true
+  description: "Fast brightfield preview for alignment and QC."
+  acquisition:
+    channels:
+      - "BF LED matrix full"
+    z_stack:
+      planes: 1
+      step_um: 0.5
+      direction: from_center
+    acquisition_order: channel_first
+    skip_saving: true
+  focus_gate:
+    mode: none
+    interval_fovs: 1
+    require_in_focus: false
+    max_focus_attempts: 1
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 1
+    retry_delay_s: 0.0
+    on_capture_fail: fail_step
+
+bf_saved:
+  description: "Single-plane brightfield acquisition with image saving enabled."
+  acquisition:
+    channels:
+      - "BF LED matrix full"
+    z_stack:
+      planes: 1
+      step_um: 0.5
+      direction: from_center
+    acquisition_order: channel_first
+    skip_saving: false
+  focus_gate:
+    mode: none
+    interval_fovs: 1
+    require_in_focus: false
+    max_focus_attempts: 1
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 2
+    retry_delay_s: 0.1
+    on_capture_fail: fail_step
 
 fluorescence_405:
-  description: "405 nm fluorescence imaging"
-  channels:
-    - "Fluorescence 405 nm Ex"
-  z_stack:
-    planes: 3
-    step_um: 0.5
-  focus:
-    enabled: true
-    method: laser
-  skip_saving: true
+  description: "Reference 405 nm fluorescence imaging using continuous focus lock."
+  acquisition:
+    channels:
+      - "Fluorescence 405 nm Ex"
+    z_stack:
+      planes: 3
+      step_um: 0.5
+      direction: from_center
+    acquisition_order: channel_first
+    skip_saving: true
+  focus_gate:
+    mode: focus_lock
+    interval_fovs: 1
+    require_in_focus: true
+    max_focus_attempts: 2
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 2
+    retry_delay_s: 0.1
+    on_capture_fail: fail_step
 
 fluorescence_488_561:
-  description: "488 + 561 nm dual-channel imaging"
-  channels:
-    - "Fluorescence 488 nm Ex"
-    - "Fluorescence 561 nm Ex"
-  z_stack:
-    planes: 3
-    step_um: 0.5
-  focus:
-    enabled: true
-    method: laser
-  skip_saving: true
+  description: "Two-color 488/561 acquisition using continuous focus lock."
+  acquisition:
+    channels:
+      - "Fluorescence 488 nm Ex"
+      - "Fluorescence 561 nm Ex"
+    z_stack:
+      planes: 3
+      step_um: 0.5
+      direction: from_center
+    acquisition_order: channel_first
+    skip_saving: true
+  focus_gate:
+    mode: focus_lock
+    interval_fovs: 1
+    require_in_focus: true
+    max_focus_attempts: 2
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 2
+    retry_delay_s: 0.1
+    on_capture_fail: fail_step
+
+fish_multichannel:
+  description: "Three-channel z-stack used for interleaved rounds with continuous focus lock."
+  acquisition:
+    channels:
+      - "Fluorescence 405 nm Ex"
+      - "Fluorescence 638 nm Ex"
+      - "Fluorescence 730 nm Ex"
+    z_stack:
+      planes: 5
+      step_um: 0.5
+      direction: from_center
+    acquisition_order: channel_first
+    skip_saving: true
+  focus_gate:
+    mode: focus_lock
+    interval_fovs: 1
+    require_in_focus: true
+    max_focus_attempts: 2
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 2
+    retry_delay_s: 0.1
+    on_capture_fail: fail_step
+
+tiled_multichannel:
+  description: "Grid-friendly brightfield plus fluorescence z-stack."
+  acquisition:
+    channels:
+      - "BF LED matrix full"
+      - "Fluorescence 488 nm Ex"
+    z_stack:
+      planes: 5
+      step_um: 1.0
+      direction: from_center
+    acquisition_order: z_first
+    skip_saving: true
+  focus_gate:
+    mode: none
+    interval_fovs: 1
+    require_in_focus: false
+    max_focus_attempts: 1
+    on_focus_gate_fail: skip_fov
+  capture_policy:
+    max_capture_attempts: 1
+    retry_delay_s: 0.0
+    on_capture_fail: fail_step

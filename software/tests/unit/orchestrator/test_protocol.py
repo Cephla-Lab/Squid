@@ -953,6 +953,32 @@ rounds:
             assert Path(protocol.fluidics_config_file).is_absolute()
             assert Path(protocol.fov_file).is_absolute()
 
+    def test_output_directory_resolved_to_absolute(self):
+        """Test that relative output_directory is resolved against the protocol file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_content = """
+name: Output Path Resolution Test
+version: "3.0"
+output_directory: outputs
+
+imaging_protocols:
+  standard:
+    channels: [DAPI]
+
+rounds:
+  - name: Round 1
+    steps:
+      - step_type: imaging
+        protocol: standard
+"""
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(protocol_content)
+
+            loader = ProtocolLoader()
+            protocol = loader.load(protocol_path)
+
+            assert protocol.output_directory == str(Path(tmpdir) / "outputs")
+
     def test_resource_fields_default_to_none(self):
         """Test that resource file fields default to None when not specified."""
         protocol = ExperimentProtocol(

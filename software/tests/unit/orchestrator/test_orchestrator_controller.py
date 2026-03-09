@@ -21,6 +21,8 @@ from squid.backend.controllers.orchestrator import (
     PauseOrchestratorCommand,
     ResumeOrchestratorCommand,
     ClearWarningsCommand,
+    ValidateProtocolCommand,
+    ProtocolValidationComplete,
     WarningCategory,
     WarningSeverity,
 )
@@ -223,6 +225,67 @@ class TestStartExperiment:
             )
             assert result is False
             assert orchestrator.state == OrchestratorState.IDLE
+
+    def test_validate_protocol_uses_protocol_fluidics_resource_file(
+        self,
+        orchestrator,
+        event_bus,
+        tmp_path,
+    ):
+        """Test Validate accepts fluidics protocols declared in the protocol resource file."""
+        fluidics_path = tmp_path / "fluidics.yaml"
+        fluidics_path.write_text(
+            "\n".join(
+                [
+                    "protocols:",
+                    "  wash_a:",
+                    "    description: Test wash",
+                    "    steps:",
+                    "      - operation: incubate",
+                    "        duration_s: 12",
+                ]
+            )
+        )
+        protocol_path = tmp_path / "protocol.yaml"
+        protocol_path.write_text(
+            "\n".join(
+                [
+                    "name: Validate Fluidics Resources",
+                    'version: "3.0"',
+                    "resources:",
+                    "  fluidics_protocols_file: fluidics.yaml",
+                    "rounds:",
+                    "  - name: Round 1",
+                    "    steps:",
+                    "      - step_type: fluidics",
+                    "        protocol: wash_a",
+                ]
+            )
+        )
+
+        events = []
+        event_bus.subscribe(ProtocolValidationComplete, events.append)
+        orchestrator._fluidics_controller.estimate_protocol_duration.return_value = None
+
+        orchestrator._on_validate_protocol(
+            ValidateProtocolCommand(
+                protocol_path=str(protocol_path),
+                base_path=str(tmp_path),
+            )
+        )
+
+        deadline = datetime.now().timestamp() + 1.0
+        while len(events) < 1 and datetime.now().timestamp() < deadline:
+            threading.Event().wait(0.01)
+
+        assert len(events) == 1
+        assert events[0].valid is True
+        assert events[0].errors == ()
+        fluidics_ops = [
+            op for op in events[0].operation_estimates if op.operation_type == "fluidics"
+        ]
+        assert len(fluidics_ops) == 1
+        assert fluidics_ops[0].estimated_seconds == pytest.approx(12.0)
 
     def test_start_experiment_rejects_start_step_out_of_bounds(
         self, orchestrator, protocol_file

@@ -384,10 +384,18 @@ class ProtocolLoaderDialog(QDialog):
         3. If protocol has imaging rounds, FOV positions must be loaded
         """
         output_path = self._output_edit.text().strip()
+        output_dir = Path(output_path).expanduser() if output_path else None
+        output_valid = False
+        if output_dir is not None:
+            if output_dir.exists():
+                output_valid = output_dir.is_dir()
+            else:
+                parent_dir = output_dir.parent
+                output_valid = parent_dir.exists() and parent_dir.is_dir()
         valid = (
             self._current_protocol is not None
             and bool(output_path)
-            and Path(output_path).exists()
+            and output_valid
         )
 
         # Check FOV requirement for imaging protocols
@@ -425,6 +433,17 @@ class ProtocolLoaderDialog(QDialog):
         if self._current_protocol is None:
             return
 
+        output_path = Path(self._output_edit.text().strip()).expanduser()
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Output Directory Error",
+                f"Could not create output directory:\n{output_path}\n\n{exc}",
+            )
+            return
+
         experiment_id = (
             self._id_edit.text().strip()
             or self._current_protocol.name
@@ -432,7 +451,7 @@ class ProtocolLoaderDialog(QDialog):
 
         self.protocol_selected.emit(
             self._current_protocol,
-            self._output_edit.text(),
+            str(output_path),
             experiment_id,
         )
         self.accept()

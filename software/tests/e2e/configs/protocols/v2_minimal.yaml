@@ -1,26 +1,16 @@
-# V2 Minimal Protocol
-# Simple protocol with one round, one imaging step for basic testing.
+name: "V2 Minimal Imaging"
+version: "3.0"
+description: "Minimal self-loading imaging-only protocol."
+output_directory: ../outputs
 
-name: "V2 Minimal Test"
-version: "2.0"
-description: "Minimal V2 protocol for basic testing"
-
-imaging_protocols:
-  standard:
-    description: "Single channel imaging"
-    channels:
-      - "Fluorescence 405 nm Ex"
-    z_stack:
-      planes: 1
-    focus:
-      enabled: false
-
-fov_sets:
-  main: ../fov_positions/test_2fov_simple.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_2fov_simple.csv
 
 rounds:
-  - name: "Round 1"
+  - name: "Reference Imaging"
     steps:
       - step_type: imaging
-        protocol: standard
-        fovs: main
+        protocol: fluorescence_405
+        fovs: default

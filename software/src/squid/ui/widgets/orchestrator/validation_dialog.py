@@ -212,6 +212,7 @@ class ValidationResultDialog(QDialog):
         for estimate in self._summary.operation_estimates:
             for error in estimate.validation_errors:
                 all_errors.append(f"[{estimate.round_name}] {error}")
+        all_errors = self._dedupe_messages(all_errors)
 
         # Display in text area
         text = QTextEdit()
@@ -237,6 +238,7 @@ class ValidationResultDialog(QDialog):
         for estimate in self._summary.operation_estimates:
             for warning in estimate.validation_warnings:
                 all_warnings.append(f"[{estimate.round_name}] {warning}")
+        all_warnings = self._dedupe_messages(all_warnings)
 
         # Display in text area
         text = QTextEdit()
@@ -247,6 +249,18 @@ class ValidationResultDialog(QDialog):
         layout.addWidget(text)
 
         return group
+
+    @staticmethod
+    def _dedupe_messages(messages: list[str]) -> list[str]:
+        """Deduplicate validation messages while preserving first-seen order."""
+        seen: set[str] = set()
+        unique: list[str] = []
+        for message in messages:
+            if message in seen:
+                continue
+            seen.add(message)
+            unique.append(message)
+        return unique
 
     def _create_buttons(self) -> QDialogButtonBox:
         """Create the button box."""

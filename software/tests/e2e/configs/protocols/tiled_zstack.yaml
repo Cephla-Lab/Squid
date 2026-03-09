@@ -1,35 +1,16 @@
-# Tiled Z-Stack Imaging (V2 Format)
-# Grid imaging with z-stacks for comprehensive e2e validation
-
 name: "Tiled Z-Stack Imaging"
-version: "2.0"
-description: "Grid imaging with z-stacks for comprehensive e2e validation"
+version: "3.0"
+description: "Grid-friendly z-stack imaging over a 4-FOV test layout."
+output_directory: ../outputs
 
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
-
-imaging_protocols:
-  tiled_zstack:
-    description: "Multi-channel tiled z-stack"
-    channels:
-      - "BF LED matrix full"
-      - "Fluorescence 488 nm Ex"
-    z_stack:
-      planes: 5
-      step_um: 1.0
-      direction: from_center
-    focus:
-      enabled: false
-    skip_saving: true
-
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
   - name: "Tiled Acquisition"
     steps:
       - step_type: imaging
-        protocol: tiled_zstack
-        fovs: main
+        protocol: tiled_multichannel
+        fovs: default

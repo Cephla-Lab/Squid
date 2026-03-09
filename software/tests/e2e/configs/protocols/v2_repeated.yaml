@@ -1,35 +1,22 @@
-# V2 Repeated Rounds Protocol
-# Protocol using repeat: 5 with {i} substitution to test round expansion.
+name: "Repeated Probe Rounds"
+version: "3.0"
+description: "Three repeated fluidics/imaging rounds with automatic resource loading."
+output_directory: ../outputs
 
-name: "V2 Repeated Rounds Test"
-version: "2.0"
-description: "Tests round expansion with {i} substitution"
-
-imaging_protocols:
-  fish_standard:
-    description: "FISH imaging"
-    channels:
-      - "Fluorescence 405 nm Ex"
-      - "Fluorescence 638 nm Ex"
-    z_stack:
-      planes: 5
-      step_um: 0.5
-    focus:
-      enabled: true
-      method: laser
-      interval_fovs: 1
-
-fov_sets:
-  main: ../fov_positions/test_2fov_simple.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_2fov_simple.csv
 
 rounds:
-  - name: "Round {i}"
-    repeat: 5
+  - name: "Probe Round {i}"
+    repeat: 3
     steps:
       - step_type: fluidics
         protocol: probe_{i}
       - step_type: imaging
-        protocol: fish_standard
-        fovs: main
+        protocol: fluorescence_405
+        fovs: default
       - step_type: fluidics
         protocol: wash

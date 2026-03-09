@@ -10,6 +10,7 @@ import pytest
 from squid.core.events import (
     EventBus,
     AcquisitionWorkerFinished,
+    AutofocusMode,
 )
 from squid.core.mode_gate import GlobalModeGate, GlobalMode
 from squid.backend.controllers.multipoint import multi_point_controller
@@ -60,6 +61,20 @@ class _FakeCameraService:
 
 class _FakePeripheralService:
     pass
+
+
+class _FakeLaserAFController:
+    def __init__(self, *, has_reference: bool) -> None:
+        self.laser_af_properties = type(
+            "_LaserAFProps",
+            (),
+            {"has_reference": has_reference},
+        )()
+
+
+class _FakeFocusLockController:
+    def __init__(self, status: str = "ready") -> None:
+        self.status = status
 
 
 class _FakeLiveController:
@@ -253,9 +268,36 @@ def test_reflection_af_requires_laser_controller() -> None:
             scan_coordinates=_FakeScanCoordinates(),
             laser_autofocus_controller=None,
         )
-        controller.set_reflection_af_flag(True)
+        controller.set_autofocus_mode(AutofocusMode.LASER_REFLECTION)
 
         assert controller.validate_acquisition_settings() is False
+    finally:
+        bus.stop()
+
+
+def test_focus_lock_allows_locked_run_without_laser_reference() -> None:
+    bus = EventBus()
+    bus.start()
+    try:
+        scan_coordinates = _FakeScanCoordinates()
+        scan_coordinates.region_fov_coordinates = {"region_1": [(0.0, 0.0, 0.0)]}
+        controller = MultiPointController(
+            live_controller=_FakeLiveController(),
+            autofocus_controller=_FakeAutoFocusController(),
+            objective_store=_FakeObjectiveStore(),
+            channel_configuration_manager=_FakeChannelConfigurationManager(),
+            camera_service=_FakeCameraService(),
+            stage_service=_FakeStageService(),
+            peripheral_service=_FakePeripheralService(),
+            event_bus=bus,
+            scan_coordinates=scan_coordinates,
+            laser_autofocus_controller=_FakeLaserAFController(has_reference=False),
+            focus_lock_controller=_FakeFocusLockController(status="locked"),
+            piezo_service=type("_Piezo", (), {"is_available": True})(),
+        )
+        controller.set_autofocus_mode(AutofocusMode.FOCUS_LOCK)
+
+        assert controller.validate_acquisition_settings() is True
     finally:
         bus.stop()
 

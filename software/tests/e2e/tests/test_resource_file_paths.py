@@ -144,7 +144,7 @@ class TestResourceFilePathsE2E:
         result = sim.run_and_wait(timeout_s=60)
 
         assert result.success, f"Experiment failed: {result.error}"
-        assert result.completed_rounds == 1
+        assert result.completed_rounds == 2
         assert result.final_state == "COMPLETED"
 
     def test_imaging_only_resource_paths_experiment(
@@ -160,10 +160,7 @@ class TestResourceFilePathsE2E:
         This verifies the merged protocol runs correctly end-to-end.
         """
         sim = e2e_orchestrator
-        center = e2e_backend_ctx.get_stage_center()
-
         sim.load_protocol(resource_file_paths_imaging_only_protocol)
-        sim.add_single_fov("region_1", x=center[0], y=center[1], z=center[2])
 
         result = sim.run_and_wait(timeout_s=60)
 

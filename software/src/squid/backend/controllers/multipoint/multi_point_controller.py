@@ -1367,12 +1367,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     "Laser Autofocus Not Ready - Laser AF controller not configured."
                 )
                 return False
-            laser_props = getattr(self.laserAutoFocusController, "laser_af_properties", None)
-            if laser_props is None or not getattr(laser_props, "has_reference", False):
-                self._log.error(
-                    "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
-                )
-                return False
         if self._config.focus.mode == AutofocusMode.FOCUS_LOCK:
             if self._focus_lock_controller is None:
                 self._log.error(
@@ -1382,6 +1376,22 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             if self._piezo_service is None or not self._piezo_service.is_available:
                 self._log.error(
                     "Focus Lock Not Ready - piezo stage is required for focus lock."
+                )
+                return False
+            focus_lock_status = getattr(self._focus_lock_controller, "status", None)
+            focus_lock_is_locked = focus_lock_status == "locked"
+            if not focus_lock_is_locked:
+                laser_props = getattr(self.laserAutoFocusController, "laser_af_properties", None)
+                if laser_props is None or not getattr(laser_props, "has_reference", False):
+                    self._log.error(
+                        "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
+                    )
+                    return False
+        elif self._config.focus.mode == AutofocusMode.LASER_REFLECTION:
+            laser_props = getattr(self.laserAutoFocusController, "laser_af_properties", None)
+            if laser_props is None or not getattr(laser_props, "has_reference", False):
+                self._log.error(
+                    "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
                 )
                 return False
         return True

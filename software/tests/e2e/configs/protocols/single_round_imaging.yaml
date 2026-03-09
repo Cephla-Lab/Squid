@@ -1,33 +1,16 @@
-# Single Round Imaging (V2 Format)
-# Minimal single-round imaging protocol for e2e validation
-
 name: "Single Round Imaging"
-version: "2.0"
-description: "Minimal single-round imaging protocol for e2e validation"
+version: "3.0"
+description: "Quick brightfield preview using a preloaded 4-FOV grid."
+output_directory: ../outputs
 
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
-
-imaging_protocols:
-  bf_single:
-    description: "Single plane brightfield imaging"
-    channels:
-      - "BF LED matrix full"
-    z_stack:
-      planes: 1
-      step_um: 0.5
-    focus:
-      enabled: false
-    skip_saving: true
-
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
-  - name: "Imaging"
+  - name: "Brightfield Preview"
     steps:
       - step_type: imaging
-        protocol: bf_single
-        fovs: main
+        protocol: bf_quick
+        fovs: default

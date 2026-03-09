@@ -1,74 +1,48 @@
-# V2 Full-Featured Protocol
-# Demonstrates all V2 protocol capabilities.
+name: "V2 Full Workflow"
+version: "3.0"
+description: "Comprehensive self-loading workflow covering fluidics, imaging, repeats, overrides, and intervention."
+output_directory: ../outputs
 
-name: "V2 Full Feature Test"
-version: "2.0"
-description: "Full-featured protocol demonstrating all V2 capabilities"
-
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_2fov_simple.csv
 
 imaging_protocols:
-  dapi_only:
-    description: "DAPI reference imaging"
-    channels:
-      - "Fluorescence 405 nm Ex"
-    z_stack:
-      planes: 1
-    focus:
-      enabled: true
-      method: laser
-
-  fish_multichannel:
-    description: "Multi-channel FISH imaging with overrides"
-    channels:
-      - "Fluorescence 405 nm Ex"
-      - name: "Fluorescence 561 nm Ex"
-        exposure_time_ms: 150
-        illumination_intensity: 60
-      - name: "Fluorescence 638 nm Ex"
-        exposure_time_ms: 200
-        illumination_intensity: 80
-      - name: "Fluorescence 730 nm Ex"
-        exposure_time_ms: 300
-        illumination_intensity: 90
-    z_stack:
-      planes: 7
-      step_um: 0.5
-      direction: from_center
-    focus:
-      enabled: true
-      method: laser
-      interval_fovs: 5
-
-  quick_check:
-    description: "Quick QC imaging without saving"
-    channels:
-      - "Fluorescence 405 nm Ex"
-    z_stack:
-      planes: 1
-    focus:
-      enabled: false
-    skip_saving: true
-
-fov_sets:
-  main: ../fov_positions/test_2fov_simple.csv
+  qc_single_plane:
+    description: "Fast one-plane QC snapshot."
+    acquisition:
+      channels:
+        - "Fluorescence 405 nm Ex"
+      z_stack:
+        planes: 1
+        step_um: 0.5
+        direction: from_center
+      acquisition_order: channel_first
+      skip_saving: true
+    focus_gate:
+      mode: none
+      interval_fovs: 1
+      require_in_focus: false
+      max_focus_attempts: 1
+      on_focus_gate_fail: skip_fov
+    capture_policy:
+      max_capture_attempts: 1
+      retry_delay_s: 0.0
+      on_capture_fail: fail_step
 
 rounds:
-  # Initial setup
   - name: "Setup"
     steps:
       - step_type: fluidics
         protocol: initial_wash
       - step_type: intervention
-        message: "Verify sample is properly mounted and in focus"
+        message: "Verify the sample is mounted, centered, and safe to continue."
       - step_type: imaging
-        protocol: dapi_only
-        fovs: main
-
-  # Hybridization rounds with repeat
+        protocol: fluorescence_405
+        fovs: default
+        output_label: setup_reference
   - name: "Hybridization Round {i}"
     repeat: 2
     steps:
@@ -78,15 +52,18 @@ rounds:
         protocol: stringent_wash
       - step_type: imaging
         protocol: fish_multichannel
-        fovs: main
+        fovs: default
+        focus_gate_override:
+          max_focus_attempts: 3
+        capture_policy_override:
+          max_capture_attempts: 2
+          retry_delay_s: 0.1
       - step_type: fluidics
         protocol: strip
-
-  # Final QC
   - name: "Final QC"
     steps:
       - step_type: imaging
-        protocol: quick_check
-        fovs: main
+        protocol: qc_single_plane
+        fovs: default
       - step_type: intervention
-        message: "Review acquisition quality before completing experiment"
+        message: "Review the run summary and image quality before closing out the session."

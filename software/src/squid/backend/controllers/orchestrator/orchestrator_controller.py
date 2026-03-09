@@ -15,7 +15,7 @@ from datetime import datetime
 import json
 import os
 import threading
-from typing import Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.events import EventBus, FocusLockPiezoLimitCritical, handles
@@ -23,6 +23,7 @@ from squid.core.state_machine import StateMachine
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
     ExperimentProtocol,
+    FluidicsProtocolFile,
     ProtocolLoader,
     ImagingStep,
 )
@@ -393,7 +394,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
 
-            validator = self._build_protocol_validator()
+            validator = self._build_protocol_validator(protocol=protocol)
 
             fov_count = self._current_fov_count(cmd.fov_count)
 
@@ -552,7 +553,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._auto_load_resources()
 
             # Run the same preflight used by the Validate flow.
-            preflight = self._build_protocol_validator().validate(
+            preflight = self._build_protocol_validator(protocol=self._protocol).validate(
                 self._protocol,
                 fov_count=self._current_fov_count(),
             )
@@ -828,19 +829,51 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     def _build_protocol_validator(
         self,
         *,
+        protocol: Optional[ExperimentProtocol] = None,
         available_fluidics: Optional[set[str]] = None,
         available_channels: Optional[set[str]] = None,
-        fluidics_duration_lookup=None,
+        fluidics_duration_lookup: Optional[Callable[[str], Optional[float]]] = None,
     ) -> ProtocolValidator:
         """Build the shared validator used by both Validate and Start."""
-        if available_fluidics is None and self._fluidics_controller is not None:
-            available_fluidics = set(self._fluidics_controller.list_protocols())
+        if protocol is None:
+            protocol = self._protocol
+        file_protocols: Optional[FluidicsProtocolFile] = None
+        if available_fluidics is None:
+            available_fluidics = set()
+            if self._fluidics_controller is not None:
+                available_fluidics.update(self._fluidics_controller.list_protocols())
+            if protocol is not None and protocol.fluidics_protocols_file:
+                file_protocols = FluidicsProtocolFile.load_from_yaml(
+                    protocol.fluidics_protocols_file
+                )
+                available_fluidics.update(file_protocols.list_protocols())
         if available_channels is None:
             raw_channels = self._planner.get_available_channel_names()
             if isinstance(raw_channels, (list, tuple, set, frozenset)):
                 available_channels = set(raw_channels)
-        if fluidics_duration_lookup is None and self._fluidics_controller is not None:
-            fluidics_duration_lookup = self._fluidics_controller.estimate_protocol_duration
+        if fluidics_duration_lookup is None:
+            controller_lookup = None
+            if self._fluidics_controller is not None:
+                controller_lookup = self._fluidics_controller.estimate_protocol_duration
+
+            if file_protocols is None and protocol is not None and protocol.fluidics_protocols_file:
+                file_protocols = FluidicsProtocolFile.load_from_yaml(
+                    protocol.fluidics_protocols_file
+                )
+
+            def _lookup(protocol_name: str) -> Optional[float]:
+                if controller_lookup is not None:
+                    duration = controller_lookup(protocol_name)
+                    if duration is not None:
+                        return duration
+                if file_protocols is None:
+                    return None
+                protocol_definition = file_protocols.get_protocol(protocol_name)
+                if protocol_definition is None:
+                    return None
+                return protocol_definition.estimated_duration_s()
+
+            fluidics_duration_lookup = _lookup
 
         return ProtocolValidator(
             available_fluidics_protocols=available_fluidics,

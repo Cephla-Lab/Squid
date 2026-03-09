@@ -1,35 +1,25 @@
-# Fluidics Only Protocol (V2 Format)
-# Fluidics-only workflow for testing pump and valve control
-
 name: "Fluidics Only Protocol"
-version: "2.0"
-description: "Fluidics-only workflow for testing pump and valve control"
+version: "3.0"
+description: "Pure fluidics workflow with self-loaded protocol and hardware config."
+output_directory: ../outputs
 
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
+resources:
+  fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
 
 rounds:
-  # Prime the system
   - name: "System Prime"
     steps:
       - step_type: fluidics
         protocol: system_prime
-
-  # Staining sequence
-  - name: "Stain Application"
+  - name: "Primary Stain"
     steps:
       - step_type: fluidics
         protocol: stain_application
-
-  # Second stain
   - name: "Secondary Stain"
     steps:
       - step_type: fluidics
         protocol: secondary_stain
-
-  # Final rinse
   - name: "Final Rinse"
     steps:
       - step_type: fluidics

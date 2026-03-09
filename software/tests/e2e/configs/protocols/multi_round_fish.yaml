@@ -1,67 +1,33 @@
-# 4-Round FISH Protocol (V2 Format)
-# Multi-round FISH experiment with fluidics and imaging for e2e validation
+name: "Multi-Round FISH"
+version: "3.0"
+description: "Two hybridization rounds with stripping and final wash."
+output_directory: ../outputs
 
-name: "4-Round FISH Protocol"
-version: "2.0"
-description: "Multi-round FISH experiment with fluidics and imaging for e2e validation"
-
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
-
-imaging_protocols:
-  fish_405:
-    description: "FISH imaging with 405nm channel"
-    channels:
-      - "Fluorescence 405 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 0.5
-    focus:
-      enabled: false
-    skip_saving: true
-
-  fish_488:
-    description: "FISH imaging with 488nm channel"
-    channels:
-      - "Fluorescence 488 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 0.5
-    focus:
-      enabled: false
-    skip_saving: true
-
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
-  # Round 1: Hybridization with probe set 1
-  - name: "Round 1 - Hybridization"
+  - name: "Round 1 Hybridization"
     steps:
       - step_type: fluidics
         protocol: probe_1_hybridization
       - step_type: imaging
-        protocol: fish_405
-        fovs: main
-
-  # Round 1: Strip fluorophores
-  - name: "Round 1 - Strip"
+        protocol: fluorescence_405
+        fovs: default
+  - name: "Strip After Round 1"
     steps:
       - step_type: fluidics
         protocol: strip_fluorophores
-
-  # Round 2: Hybridization with probe set 2
-  - name: "Round 2 - Hybridization"
+  - name: "Round 2 Hybridization"
     steps:
       - step_type: fluidics
         protocol: probe_2_hybridization
       - step_type: imaging
-        protocol: fish_488
-        fovs: main
-
-  # Final wash and storage
+        protocol: fluorescence_488_561
+        fovs: default
   - name: "Final Wash"
     steps:
       - step_type: fluidics

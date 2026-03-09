@@ -204,3 +204,23 @@ def test_run_passes_start_from_fov_to_imaging_executor():
     assert result.outcome == StepOutcome.SUCCESS
     kwargs = imaging_executor.execute_with_config.call_args.kwargs
     assert kwargs["resume_fov_index"] == 2
+
+
+def test_execute_imaging_step_surfaces_executor_error_message():
+    protocol = ExperimentProtocol(
+        name="imaging_test",
+        imaging_protocols={"standard": ImagingProtocol(channels=["DAPI"])},
+        rounds=[Round(name="r0", steps=[ImagingStep(protocol="standard")])],
+    )
+    imaging_executor = MagicMock()
+    imaging_executor.execute_with_config.return_value = False
+    imaging_executor.last_error = "Focus lock verification failed before FOV capture"
+    runner = _make_runner(protocol=protocol, imaging_executor=imaging_executor)
+    with runner._progress_lock:
+        runner._progress.current_round = RoundProgress(round_index=0, round_name="r0")
+        runner._progress.current_round_index = 0
+
+    result = runner._execute_imaging_step(0, ImagingStep(protocol="standard"))
+
+    assert result.outcome == StepOutcome.FAILED
+    assert result.error_message == "Focus lock verification failed before FOV capture"

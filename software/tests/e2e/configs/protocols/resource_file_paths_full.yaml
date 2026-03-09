@@ -1,30 +1,28 @@
-# E2E test protocol: Resource File Paths (Full)
-# Tests all 4 resource file path fields:
-#   imaging_protocol_file, fluidics_protocols_file, fluidics_config_file, fov_file
-#
-# Imaging protocols are loaded from the external file. The fov_file is
-# added to fov_sets as "default". Fluidics protocols are auto-loaded
-# into FluidicsController. Fluidics config is validated at start.
-
 name: "Resource File Paths Full Test"
-version: "2.0"
-description: "Tests auto-loading all resource file paths"
+version: "3.0"
+description: "Canonical resource-path example that auto-loads imaging, fluidics, config, and FOVs."
+output_directory: ../outputs
 
-imaging_protocol_file: resource_files/imaging_protocols.yaml
-fluidics_protocols_file: resource_files/fluidics_protocols.yaml
-fluidics_config_file: resource_files/fluidics_config.json
-fov_file: resource_files/fov_positions.csv
-
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_protocols_file: resource_files/fluidics_protocols.yaml
+  fluidics_config_file: resource_files/fluidics_config.json
+  fov_file: resource_files/fov_positions.csv
 
 rounds:
-  - name: "Wash and Image"
+  - name: "Wash and Reference Image"
     steps:
       - step_type: fluidics
         protocol: resource_test_wash
       - step_type: imaging
         protocol: fluorescence_405
+        fovs: default
+  - name: "Probe and Follow-Up Image"
+    steps:
+      - step_type: fluidics
+        protocol: resource_test_probe
+      - step_type: fluidics
+        protocol: resource_test_rinse
+      - step_type: imaging
+        protocol: fluorescence_488_561
         fovs: default

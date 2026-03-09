@@ -855,7 +855,10 @@ class ExperimentRunner:
                     progress_callback=_on_imaging_progress,
                 )
                 if not success:
-                    return StepResult.failed("imaging", f"Imaging failed for round {round_idx}")
+                    error_message = getattr(self._imaging_executor, "last_error", None)
+                    if not error_message:
+                        error_message = f"Imaging failed for round {round_idx}"
+                    return StepResult.failed("imaging", str(error_message))
             else:
                 _log.error(f"No imaging executor configured for config '{config_name}'")
                 return StepResult.failed("imaging", "No imaging executor configured")

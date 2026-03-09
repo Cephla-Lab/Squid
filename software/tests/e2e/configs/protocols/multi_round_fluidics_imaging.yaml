@@ -1,89 +1,45 @@
-# Multi-Round Fluidics + Imaging Protocol (V2 Format)
-# 3-round sequential staining with interleaved fluidics and imaging.
-# Each round: wash -> probe delivery -> imaging with a different channel.
+name: "Multi-Round Fluidics Imaging"
+version: "3.0"
+description: "Three interleaved probe-delivery rounds with updated imaging recipes."
+output_directory: ../outputs
 
-name: "Multi-Round Fluidics-Imaging"
-version: "2.0"
-description: "3-round sequential staining with interleaved fluidics and imaging"
-
-error_handling:
-  focus_failure: skip
-  fluidics_failure: abort
-  imaging_failure: warn
-
-imaging_protocols:
-  round_1_imaging:
-    description: "405 nm imaging after probe 1"
-    channels:
-      - "Fluorescence 405 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 0.5
-    focus:
-      enabled: true
-      method: laser
-    skip_saving: true
-
-  round_2_imaging:
-    description: "488 + 561 nm imaging after probe 2"
-    channels:
-      - "Fluorescence 488 nm Ex"
-      - "Fluorescence 561 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 0.5
-    focus:
-      enabled: true
-      method: laser
-    skip_saving: true
-
-  round_3_imaging:
-    description: "638 + 730 nm imaging after probe 3"
-    channels:
-      - "Fluorescence 638 nm Ex"
-      - "Fluorescence 730 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 0.5
-    focus:
-      enabled: true
-      method: laser
-    skip_saving: true
-
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+resources:
+  imaging_protocol_file: resource_files/imaging_protocols.yaml
+  fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
+  fluidics_config_file: ../fluidics/simulation_fluidics.json
+  fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
-  - name: "Round 1 - Probe 1"
+  - name: "Round 1 Probe 1"
     steps:
       - step_type: fluidics
         protocol: wash
       - step_type: fluidics
         protocol: probe_1
       - step_type: imaging
-        protocol: round_1_imaging
-        fovs: main
-
-  - name: "Round 2 - Probe 2"
+        protocol: fluorescence_405
+        fovs: default
+        output_label: probe_1_reference
+  - name: "Round 2 Probe 2"
     steps:
       - step_type: fluidics
         protocol: strip_fluorophores
       - step_type: fluidics
         protocol: probe_2
       - step_type: imaging
-        protocol: round_2_imaging
-        fovs: main
-
-  - name: "Round 3 - Probe 3"
+        protocol: fluorescence_488_561
+        fovs: default
+        output_label: probe_2_dual_color
+  - name: "Round 3 Probe 3"
     steps:
       - step_type: fluidics
         protocol: strip_fluorophores
       - step_type: fluidics
         protocol: probe_3
       - step_type: imaging
-        protocol: round_3_imaging
-        fovs: main
-
+        protocol: fish_multichannel
+        fovs: default
+        output_label: probe_3_multichannel
   - name: "Final Wash"
     steps:
       - step_type: fluidics

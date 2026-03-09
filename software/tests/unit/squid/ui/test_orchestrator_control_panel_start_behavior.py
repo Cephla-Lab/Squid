@@ -8,6 +8,7 @@ from squid.core.events import EventBus
 from squid.backend.controllers.orchestrator import (
     OrchestratorInterventionRequired,
     OrchestratorProgress,
+    OrchestratorTimingSnapshot,
 )
 from squid.ui.widgets.orchestrator.orchestrator_widget import OrchestratorControlPanel
 
@@ -168,6 +169,31 @@ def test_failure_intervention_shows_retry_skip_abort(panel):
     assert not panel._acknowledge_btn.isVisible()
     assert "Acquire" in panel._intervention_context.text()
     assert "FOV 4" in panel._intervention_context.text()
+    assert panel._intervention_badge.text() == "RECOVERY REQUIRED"
+    assert panel._intervention_title.text() == "Run needs operator recovery"
+
+
+def test_timing_snapshot_updates_live_metric_cards(panel):
+    panel._on_timing_snapshot_ui(
+        OrchestratorTimingSnapshot(
+            experiment_id="exp1",
+            elapsed_seconds=120.0,
+            effective_run_seconds=100.0,
+            paused_seconds=12.0,
+            retry_overhead_seconds=5.0,
+            intervention_overhead_seconds=3.0,
+            eta_seconds=45.0,
+            subsystem_seconds={
+                "fluidics": 30.0,
+                "imaging": 55.0,
+                "intervention": 10.0,
+            },
+        )
+    )
+
+    assert panel._eta_plot._value_label.text() == "45s"
+    assert panel._overhead_plot._value_label.text() == "20s"
+    assert panel._subsystem_breakdown._values["imaging"] == 55.0
 
 
 def test_intervention_buttons_delegate_to_orchestrator(panel):
