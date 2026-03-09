@@ -230,11 +230,17 @@ class ProtocolLoader:
             "fov_sets",
             "fov_file",
         ):
-            if field in data and field not in resources:
-                resources[field] = data[field]
+            if field in data:
+                if field not in resources:
+                    resources[field] = data.pop(field)
+                else:
+                    _log.warning(
+                        f"Ignoring top-level '{field}' — already defined in resources block"
+                    )
+                    data.pop(field)
 
         # Resolve imaging protocols with file: references
-        for name, config in resources.get("imaging_protocols", {}).items():
+        for name, config in list(resources.get("imaging_protocols", {}).items()):
             if isinstance(config, dict) and "file" in config:
                 file_path = protocol_dir / config["file"]
                 if not file_path.exists():
@@ -245,7 +251,7 @@ class ProtocolLoader:
                     resources.setdefault("imaging_protocols", {})[name] = yaml.safe_load(f)
 
         # Resolve fluidics_protocols with file: references
-        for name, proto in resources.get("fluidics_protocols", {}).items():
+        for name, proto in list(resources.get("fluidics_protocols", {}).items()):
             if isinstance(proto, dict) and "file" in proto:
                 file_path = protocol_dir / proto["file"]
                 if not file_path.exists():
@@ -256,7 +262,7 @@ class ProtocolLoader:
                     resources.setdefault("fluidics_protocols", {})[name] = yaml.safe_load(f)
 
         # Make FOV set paths absolute
-        for name, csv_path in resources.get("fov_sets", {}).items():
+        for name, csv_path in list(resources.get("fov_sets", {}).items()):
             if csv_path and not Path(csv_path).is_absolute():
                 resources.setdefault("fov_sets", {})[name] = str(protocol_dir / csv_path)
 
