@@ -57,6 +57,7 @@ from squid.backend.controllers.orchestrator.state import (
     AddWarningCommand,
     ValidateProtocolCommand,
     OrchestratorTimingSnapshot,
+    RunStateUpdated,
     ProtocolValidationStarted,
     ProtocolValidationComplete,
 )  # fmt: skip
@@ -591,7 +592,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._cancel_token = CancelToken()
 
             # Transition to running
-            self._current_operation = "initializing"
+            with self._progress_lock:
+                self._current_operation = "initializing"
             self._transition_to(OrchestratorState.RUNNING)
 
             # Initialize progress
@@ -807,7 +809,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     def _set_operation(self, operation: str) -> None:
         """Set current operation (called by ExperimentRunner)."""
-        self._current_operation = operation
+        with self._progress_lock:
+            self._current_operation = operation
 
     def _consume_intervention_action(self) -> str:
         """Consume the most recent intervention action and reset to acknowledge."""
@@ -1196,6 +1199,15 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 subsystem_seconds=dict(timing["subsystem_seconds"]),
             )
         )
+
+        # Also publish unified RunState snapshot
+        runner = self._runner
+        if runner is not None:
+            try:
+                run_state = runner.snapshot(self.state)
+                self._event_bus.publish(RunStateUpdated(run_state=run_state))
+            except Exception:
+                pass  # Don't let snapshot failures break progress publishing
 
     def _publish_round_started(self, round_idx: int, name: str) -> None:
         """Publish round started event."""
