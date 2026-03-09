@@ -37,6 +37,8 @@ class SequenceItem:
     arguments: Optional[str] = None
     python_path: Optional[str] = None  # e.g., "/usr/bin/python3.10" or "/home/user/venv/bin/python"
     conda_env: Optional[str] = None  # e.g., "fluidics_env" - if set, overrides python_path
+    # For acquisitions only:
+    config_path: Optional[str] = None  # Path to acquisition.yaml file; if None, uses current GUI settings
     # Common:
     included: bool = True
     # Cycle arguments (optional) - pass different values to script for each cycle:
@@ -133,23 +135,29 @@ class Workflow:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary for YAML export."""
-        return {
-            "num_cycles": self.num_cycles,
-            "sequences": [
-                {
-                    "name": s.name,
-                    "type": s.sequence_type.value,
-                    "included": s.included,
-                    "script_path": s.script_path,
-                    "arguments": s.arguments,
-                    "python_path": s.python_path,
-                    "conda_env": s.conda_env,
-                    "cycle_arg_name": s.cycle_arg_name,
-                    "cycle_arg_values": s.cycle_arg_values,
-                }
-                for s in self.sequences
-            ],
-        }
+        sequences = []
+        for s in self.sequences:
+            seq_dict = {
+                "name": s.name,
+                "type": s.sequence_type.value,
+                "included": s.included,
+            }
+            # Only include optional fields if they have values
+            optional_fields = [
+                "script_path",
+                "arguments",
+                "python_path",
+                "conda_env",
+                "config_path",
+                "cycle_arg_name",
+                "cycle_arg_values",
+            ]
+            for field in optional_fields:
+                value = getattr(s, field)
+                if value is not None:
+                    seq_dict[field] = value
+            sequences.append(seq_dict)
+        return {"num_cycles": self.num_cycles, "sequences": sequences}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Workflow":
@@ -165,12 +173,14 @@ class Workflow:
                     arguments=s.get("arguments"),
                     python_path=s.get("python_path"),
                     conda_env=s.get("conda_env"),
+                    config_path=s.get("config_path"),
                     cycle_arg_name=s.get("cycle_arg_name"),
                     cycle_arg_values=s.get("cycle_arg_values"),
                 )
             )
         workflow = cls(sequences=sequences, num_cycles=data.get("num_cycles", 1))
-        workflow.ensure_acquisition_exists()
+        # Note: ensure_acquisition_exists() is no longer called - workflows can have
+        # zero or multiple acquisition sequences as needed
         return workflow
 
     def save_to_file(self, file_path: str):
@@ -203,7 +213,9 @@ class WorkflowRunner(QObject):
     signal_sequence_finished = Signal(int, str, bool)  # index, name, success
     signal_script_output = Signal(str)  # stdout/stderr line
     signal_error = Signal(str)  # error message
-    signal_request_acquisition = Signal()  # request main window to start acquisition
+    signal_request_acquisition = Signal(
+        str
+    )  # request main window to start acquisition; passes config_path (or empty string)
     signal_acquisition_waiting = Signal()  # waiting for acquisition to complete
 
     def __init__(self, parent=None):
@@ -329,7 +341,7 @@ class WorkflowRunner(QObject):
 
                     seq_success = True
                     if seq.is_acquisition():
-                        seq_success = self._run_acquisition()
+                        seq_success = self._run_acquisition(seq.config_path)
                     else:
                         cycle_value = None
                         if seq.cycle_arg_values:
@@ -372,10 +384,16 @@ class WorkflowRunner(QObject):
             self._log.info(f"Workflow finished, success={success}")
             self.signal_workflow_finished.emit(success)
 
-    def _run_acquisition(self) -> bool:
-        """Request acquisition from main thread and wait for completion."""
+    def _run_acquisition(self, config_path: Optional[str] = None) -> bool:
+        """Request acquisition from main thread and wait for completion.
+
+        Args:
+            config_path: Optional path to acquisition.yaml file. If provided, the main
+                        window will load settings from this file before starting acquisition.
+                        If None or empty, uses current GUI settings.
+        """
         self._acquisition_complete_event.clear()
-        self.signal_request_acquisition.emit()
+        self.signal_request_acquisition.emit(config_path or "")
         self.signal_acquisition_waiting.emit()
 
         # Wait for acquisition to complete

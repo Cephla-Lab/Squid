@@ -1604,7 +1604,8 @@ class TestNDViewerTabPushAPI:
 # WarningErrorWidget Tests
 # ============================================================================
 
-from control.widgets import WarningErrorWidget, QtLoggingHandler
+from control.widgets import WarningErrorWidget
+from squid.logging import BufferingHandler
 import threading
 import time
 
@@ -1891,22 +1892,16 @@ class TestWarningErrorWidgetCleanup:
         assert widget._popup is None
 
 
-class TestQtLoggingHandler:
-    """Tests for QtLoggingHandler.
+class TestBufferingHandler:
+    """Tests for BufferingHandler.
 
     Note: Use handle() instead of emit() to ensure filters run.
     emit() is called by handle() after filters pass.
     """
 
-    def test_handler_emits_signal_on_warning(self, qtbot):
-        """Test that handler emits signal for WARNING level."""
-        handler = QtLoggingHandler()
-        received = []
-
-        def on_message(level, logger_name, message):
-            received.append((level, logger_name, message))
-
-        handler.signal_message_logged.connect(on_message)
+    def test_handler_queues_warning(self, qtbot):
+        """Test that handler queues WARNING level messages."""
+        handler = BufferingHandler()
 
         # Create a log record
         record = logging.LogRecord(
@@ -1921,7 +1916,9 @@ class TestQtLoggingHandler:
 
         # Use handle() to ensure filters run (including thread_id injection)
         handler.handle(record)
-        qtbot.wait(50)  # Allow signal to be processed
+
+        # Get pending messages from queue
+        received = handler.get_pending()
 
         assert len(received) == 1
         assert received[0][0] == logging.WARNING
@@ -1930,12 +1927,9 @@ class TestQtLoggingHandler:
 
         handler.close()
 
-    def test_handler_emits_signal_on_error(self, qtbot):
-        """Test that handler emits signal for ERROR level."""
-        handler = QtLoggingHandler()
-        received = []
-
-        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+    def test_handler_queues_error(self, qtbot):
+        """Test that handler queues ERROR level messages."""
+        handler = BufferingHandler()
 
         record = logging.LogRecord(
             name="test.logger",
@@ -1948,7 +1942,8 @@ class TestQtLoggingHandler:
         )
 
         handler.handle(record)
-        qtbot.wait(50)
+
+        received = handler.get_pending()
 
         assert len(received) == 1
         assert received[0][0] == logging.ERROR
@@ -1961,10 +1956,7 @@ class TestQtLoggingHandler:
         When used via a logger (the normal case), the logger's callHandlers()
         checks handler.level before calling handle(). We test by using a logger.
         """
-        handler = QtLoggingHandler()
-        received = []
-
-        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+        handler = BufferingHandler()
 
         # Use a logger to ensure handler level check is applied
         logger = logging.getLogger("test.filter.below")
@@ -1974,8 +1966,8 @@ class TestQtLoggingHandler:
         try:
             # INFO level should be filtered out by handler's level (WARNING)
             logger.info("Test info - should be filtered")
-            qtbot.wait(50)
 
+            received = handler.get_pending()
             assert len(received) == 0
         finally:
             logger.removeHandler(handler)
@@ -1987,10 +1979,7 @@ class TestQtLoggingHandler:
         When used via a logger (the normal case), the logger's callHandlers()
         checks handler.level before calling handle(). We test by using a logger.
         """
-        handler = QtLoggingHandler(min_level=logging.ERROR)
-        received = []
-
-        handler.signal_message_logged.connect(lambda l, n, m: received.append((l, n, m)))
+        handler = BufferingHandler(min_level=logging.ERROR)
 
         # Use a logger to ensure handler level check is applied
         logger = logging.getLogger("test.custom.level")
@@ -2000,12 +1989,11 @@ class TestQtLoggingHandler:
         try:
             # WARNING should be filtered out by handler's level (ERROR)
             logger.warning("Warning - should be filtered")
-            qtbot.wait(50)
-            assert len(received) == 0
+            assert len(handler.get_pending()) == 0
 
             # ERROR should pass through
             logger.error("Error - should pass")
-            qtbot.wait(50)
+            received = handler.get_pending()
             assert len(received) == 1
         finally:
             logger.removeHandler(handler)
@@ -2013,22 +2001,22 @@ class TestQtLoggingHandler:
 
 
 class TestWarningErrorWidgetThreadSafety:
-    """Tests for WarningErrorWidget thread safety via Qt signals.
+    """Tests for WarningErrorWidget thread safety via queue polling.
 
     Note: Qt widgets are NOT thread-safe. Direct method calls from non-main
-    threads will crash. The thread safety comes from using Qt signals, which
-    marshal calls to the main thread automatically.
+    threads will crash. The thread safety comes from using a queue that is
+    polled by a QTimer in the main thread.
     """
 
     def test_handler_emit_from_multiple_threads(self, warning_widget, qtbot):
         """Test logging handler emission from multiple threads.
 
-        The QtLoggingHandler emits signals which are thread-safe and will
-        be delivered to the main thread where the widget can process them.
+        The BufferingHandler uses a thread-safe queue which is polled
+        by the widget's QTimer in the main thread.
         """
         widget = warning_widget
-        handler = QtLoggingHandler()
-        handler.signal_message_logged.connect(widget.add_message)
+        handler = BufferingHandler()
+        widget.connect_handler(handler)
 
         errors = []
         num_threads = 3
@@ -2048,7 +2036,7 @@ class TestWarningErrorWidgetThreadSafety:
                     )
                     # Use handle() to ensure filters run (thread_id injection)
                     handler.handle(record)
-                    time.sleep(0.01)  # Small delay to allow signal processing
+                    time.sleep(0.01)  # Small delay between messages
             except Exception as e:
                 errors.append(e)
 
@@ -2063,16 +2051,16 @@ class TestWarningErrorWidgetThreadSafety:
         for t in threads:
             t.join()
 
-        # Process Qt events
+        # Process Qt events (wait for QTimer to poll the queue)
         qtbot.wait(200)
 
         # Should not have any errors
         assert len(errors) == 0
 
-        # Widget should have received some messages via signals
-        # (exact count may vary due to Qt signal queuing)
+        # Widget should have received some messages via queue polling
         assert widget.has_messages()
 
+        widget.disconnect_handler()
         handler.close()
 
 
@@ -2082,8 +2070,8 @@ class TestWarningErrorWidgetIntegration:
     def test_integration_with_logging_system(self, warning_widget, qtbot):
         """Test full integration with Python logging system."""
         widget = warning_widget
-        handler = QtLoggingHandler()
-        handler.signal_message_logged.connect(widget.add_message)
+        handler = BufferingHandler()
+        widget.connect_handler(handler)
 
         # Create a logger and add our handler
         logger = logging.getLogger("test.integration")
@@ -2093,7 +2081,7 @@ class TestWarningErrorWidgetIntegration:
         try:
             # Log a warning
             logger.warning("Integration test warning")
-            qtbot.wait(100)
+            qtbot.wait(150)  # Wait for QTimer to poll
 
             # Widget should have the message
             assert widget.has_messages()
@@ -2102,14 +2090,133 @@ class TestWarningErrorWidgetIntegration:
 
             # Log an error
             logger.error("Integration test error")
-            qtbot.wait(100)
+            qtbot.wait(150)  # Wait for QTimer to poll
 
             assert len(widget._messages) == 2
             assert widget._messages[-1]["level"] == logging.ERROR
 
         finally:
             logger.removeHandler(handler)
+            widget.disconnect_handler()
             handler.close()
+
+
+class TestWarningErrorWidgetDoubleConnect:
+    """Tests for connect_handler replacing previous handler."""
+
+    def test_double_connect_stops_first_timer(self, warning_widget, qtbot):
+        """Calling connect_handler twice should stop the first timer."""
+        widget = warning_widget
+
+        first_handler = BufferingHandler()
+        second_handler = BufferingHandler()
+
+        # Connect first handler
+        widget.connect_handler(first_handler)
+        first_timer = widget._poll_timer
+        assert first_timer is not None
+        assert first_timer.isActive()
+
+        # Connect second handler - should stop first timer
+        widget.connect_handler(second_handler)
+        second_timer = widget._poll_timer
+
+        # First timer should have been stopped and replaced
+        assert second_timer is not first_timer
+        assert second_timer.isActive()
+        # First timer should be stopped (may be deleted by Qt)
+        # We can't check first_timer.isActive() because deleteLater was called
+
+        # Verify second handler is the active one
+        assert widget._handler is second_handler
+
+        # Clean up
+        widget.disconnect_handler()
+        first_handler.close()
+        second_handler.close()
+
+    def test_double_connect_uses_second_handler(self, warning_widget, qtbot):
+        """After double connect, messages should come from second handler."""
+        widget = warning_widget
+
+        first_handler = BufferingHandler()
+        second_handler = BufferingHandler()
+
+        # Create loggers that use our handlers
+        first_logger = logging.getLogger("test.doubleconnect.first")
+        first_logger.setLevel(logging.WARNING)
+        first_logger.addHandler(first_handler)
+
+        second_logger = logging.getLogger("test.doubleconnect.second")
+        second_logger.setLevel(logging.WARNING)
+        second_logger.addHandler(second_handler)
+
+        try:
+            # Connect first handler
+            widget.connect_handler(first_handler)
+
+            # Log a message through first handler
+            first_logger.warning("first handler message")
+
+            # Connect second handler (replaces first)
+            widget.connect_handler(second_handler)
+
+            # Log a message through second handler
+            second_logger.error("second handler message")
+
+            # Wait for polling
+            qtbot.wait(150)
+
+            # Widget should have message from second handler (current handler)
+            # First handler's messages should NOT appear (handler was replaced)
+            assert widget.has_messages()
+            messages = [m["message"] for m in widget._messages]
+            assert any("second handler message" in m for m in messages)
+            # First handler message should NOT appear because widget switched
+            assert not any("first handler message" in m for m in messages)
+        finally:
+            first_logger.removeHandler(first_handler)
+            second_logger.removeHandler(second_handler)
+            widget.disconnect_handler()
+            first_handler.close()
+            second_handler.close()
+
+    def test_disconnect_then_connect_new_handler(self, warning_widget, qtbot):
+        """Explicit disconnect then connect should work correctly."""
+        widget = warning_widget
+
+        first_handler = BufferingHandler()
+        second_handler = BufferingHandler()
+
+        # Connect and disconnect first handler
+        widget.connect_handler(first_handler)
+        widget.disconnect_handler()
+
+        assert widget._handler is None
+        assert widget._poll_timer is None
+
+        # Connect second handler
+        widget.connect_handler(second_handler)
+
+        assert widget._handler is second_handler
+        assert widget._poll_timer is not None
+        assert widget._poll_timer.isActive()
+
+        # Create a logger to test with
+        test_logger = logging.getLogger("test.reconnect")
+        test_logger.setLevel(logging.WARNING)
+        test_logger.addHandler(second_handler)
+
+        try:
+            # Verify it works
+            test_logger.warning("test message")
+            qtbot.wait(150)
+            assert widget.has_messages()
+        finally:
+            test_logger.removeHandler(second_handler)
+            widget.disconnect_handler()
+            first_handler.close()
+            second_handler.close()
 
 
 class TestWarningErrorWidgetRateLimitingErrorExemption:

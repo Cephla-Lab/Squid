@@ -1230,3 +1230,154 @@ filter_wheels:
         # Should work because missing cameras.yaml is treated as single-camera system
         assert wheel is not None
         assert wheel.name == "Emission Wheel"
+
+
+class TestUpdateChannelSettingConfocal:
+    """Tests for update_channel_setting with confocal_mode parameter."""
+
+    @pytest.fixture
+    def repo_with_confocal(self, tmp_path):
+        """ConfigRepository with a profile whose 20x.yaml has confocal_override."""
+        machine = tmp_path / "machine_configs"
+        machine.mkdir()
+        (machine / "illumination_channel_config.yaml").write_text(
+            "version: 1\n"
+            "channels:\n"
+            '  - name: "488nm"\n'
+            "    type: epi_illumination\n"
+            "    controller_port: D2\n"
+            "    wavelength_nm: 488\n"
+        )
+
+        profile = tmp_path / "user_profiles" / "default"
+        (profile / "channel_configs").mkdir(parents=True)
+        (profile / "laser_af_configs").mkdir()
+
+        (profile / "channel_configs" / "general.yaml").write_text(
+            "version: 1.0\n"
+            "channels:\n"
+            '  - name: "488nm"\n'
+            '    display_color: "#1FFF00"\n'
+            "    camera_settings:\n"
+            "      exposure_time_ms: 20.0\n"
+            "      gain_mode: 10.0\n"
+            "    illumination_settings:\n"
+            '      illumination_channel: "488nm"\n'
+            "      intensity: 20.0\n"
+            "    z_offset_um: 0.0\n"
+        )
+        (profile / "channel_configs" / "20x.yaml").write_text(
+            "version: 1.0\n"
+            "channels:\n"
+            '  - name: "488nm"\n'
+            '    display_color: "#1FFF00"\n'
+            "    camera_settings:\n"
+            "      exposure_time_ms: 25.0\n"
+            "      gain_mode: 5.0\n"
+            "    illumination_settings:\n"
+            "      intensity: 30.0\n"
+            "    z_offset_um: 0.0\n"
+            "    confocal_override:\n"
+            "      camera_settings:\n"
+            "        exposure_time_ms: 50.0\n"
+            "        gain_mode: 2.0\n"
+            "      illumination_settings:\n"
+            "        intensity: 80.0\n"
+        )
+
+        repo = ConfigRepository(base_path=tmp_path)
+        repo.set_profile("default")
+        return repo
+
+    def test_widefield_updates_base_settings(self, repo_with_confocal):
+        """confocal_mode=False writes to base camera_settings."""
+        repo_with_confocal.update_channel_setting("20x", "488nm", "ExposureTime", 99.0, confocal_mode=False)
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].camera_settings.exposure_time_ms == 99.0
+        # Override unchanged
+        assert obj.channels[0].confocal_override.camera_settings.exposure_time_ms == 50.0
+
+    def test_confocal_updates_override_settings(self, repo_with_confocal):
+        """confocal_mode=True writes to confocal_override.camera_settings."""
+        repo_with_confocal.update_channel_setting("20x", "488nm", "ExposureTime", 99.0, confocal_mode=True)
+        obj = repo_with_confocal.get_objective_config("20x")
+        # Base unchanged
+        assert obj.channels[0].camera_settings.exposure_time_ms == 25.0
+        # Override updated
+        assert obj.channels[0].confocal_override.camera_settings.exposure_time_ms == 99.0
+
+    def test_confocal_updates_override_intensity(self, repo_with_confocal):
+        """confocal_mode=True writes intensity to confocal_override.illumination_settings."""
+        repo_with_confocal.update_channel_setting("20x", "488nm", "IlluminationIntensity", 55.0, confocal_mode=True)
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].illumination_settings.intensity == 30.0  # base unchanged
+        assert obj.channels[0].confocal_override.illumination_settings.intensity == 55.0
+
+    def test_confocal_updates_override_analog_gain(self, repo_with_confocal):
+        """confocal_mode=True writes gain to confocal_override.camera_settings."""
+        result = repo_with_confocal.update_channel_setting("20x", "488nm", "AnalogGain", 8.0, confocal_mode=True)
+        assert result is True
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].camera_settings.gain_mode == 5.0  # base unchanged
+        assert obj.channels[0].confocal_override.camera_settings.gain_mode == 8.0
+
+    def test_confocal_creates_override_if_missing(self, repo_with_confocal):
+        """confocal_mode=True creates confocal_override when channel has none."""
+        # Remove confocal_override by rewriting YAML without it
+        profile_path = repo_with_confocal.get_profile_path("default")
+        (profile_path / "channel_configs" / "20x.yaml").write_text(
+            "version: 1.0\n"
+            "channels:\n"
+            '  - name: "488nm"\n'
+            '    display_color: "#1FFF00"\n'
+            "    camera_settings:\n"
+            "      exposure_time_ms: 25.0\n"
+            "      gain_mode: 5.0\n"
+            "    illumination_settings:\n"
+            "      intensity: 30.0\n"
+            "    z_offset_um: 0.0\n"
+        )
+        repo_with_confocal.clear_profile_cache()
+
+        repo_with_confocal.update_channel_setting("20x", "488nm", "ExposureTime", 99.0, confocal_mode=True)
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].confocal_override is not None
+        assert obj.channels[0].confocal_override.camera_settings.exposure_time_ms == 99.0
+        # Other override fields should copy from base as starting values
+        assert obj.channels[0].confocal_override.camera_settings.gain_mode == 5.0
+        assert obj.channels[0].confocal_override.illumination_settings.intensity == 30.0
+
+    def test_default_confocal_mode_false(self, repo_with_confocal):
+        """Default confocal_mode=False preserves backward compatibility."""
+        repo_with_confocal.update_channel_setting("20x", "488nm", "ExposureTime", 99.0)
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].camera_settings.exposure_time_ms == 99.0
+        assert obj.channels[0].confocal_override.camera_settings.exposure_time_ms == 50.0
+
+    def test_iris_creates_confocal_hardware_settings_when_none(self, repo_with_confocal):
+        """IlluminationIris lazily creates confocal_hardware_settings when initially None."""
+        # Verify channel starts without confocal_hardware_settings
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].confocal_hardware_settings is None
+
+        result = repo_with_confocal.update_channel_setting("20x", "488nm", "IlluminationIris", 42.0)
+        assert result is True
+
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj.channels[0].confocal_hardware_settings is not None
+        assert obj.channels[0].confocal_hardware_settings.illumination_iris == 42.0
+
+    def test_iris_update_when_no_objective_config(self, repo_with_confocal):
+        """IlluminationIris auto-creates objective config from general when missing."""
+        # Remove the 20x.yaml so there's no objective config
+        profile_path = repo_with_confocal.get_profile_path("default")
+        (profile_path / "channel_configs" / "20x.yaml").unlink()
+        repo_with_confocal.clear_profile_cache()
+
+        result = repo_with_confocal.update_channel_setting("20x", "488nm", "IlluminationIris", 55.0)
+        assert result is True
+
+        obj = repo_with_confocal.get_objective_config("20x")
+        assert obj is not None
+        assert obj.channels[0].confocal_hardware_settings is not None
+        assert obj.channels[0].confocal_hardware_settings.illumination_iris == 55.0

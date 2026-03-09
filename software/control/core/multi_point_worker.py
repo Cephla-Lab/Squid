@@ -54,8 +54,11 @@ from control.core.downsampled_views import (
     parse_well_id,
     ensure_plate_resolution_in_well_resolutions,
 )
-from control.core.backpressure import BackpressureController
+from control.core.backpressure import BackpressureController, BackpressureValues
 from squid.config import CameraPixelFormat
+
+# Module-level logger for static methods
+_log = squid.logging.get_logger(__name__)
 
 
 class SummarizeResult(NamedTuple):
@@ -81,6 +84,8 @@ class MultiPointWorker:
         abort_on_failed_jobs: bool = True,
         alignment_widget=None,
         slack_notifier=None,
+        prewarmed_job_runner: Optional[JobRunner] = None,
+        prewarmed_bp_values: Optional["BackpressureValues"] = None,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
@@ -243,13 +248,18 @@ class MultiPointWorker:
                 f"Downsampled view generation enabled ({mode}). Resolutions: {self._downsampled_well_resolutions_um} um"
             )
 
-        # Initialize backpressure controller for throttling acquisition when queue fills up
-        self._backpressure = BackpressureController(
-            max_jobs=control._def.ACQUISITION_MAX_PENDING_JOBS,
-            max_mb=control._def.ACQUISITION_MAX_PENDING_MB,
-            timeout_s=control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
-            enabled=control._def.ACQUISITION_THROTTLING_ENABLED,
-        )
+        # Initialize backpressure controller for throttling acquisition when queue fills up.
+        # If pre-warmed values are provided, use them for consistent tracking with the
+        # pre-warmed job runner. Otherwise, BackpressureController creates its own values.
+        bp_kwargs = {
+            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
+            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
+            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
+            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
+        }
+        if prewarmed_bp_values is not None:
+            bp_kwargs["bp_values"] = prewarmed_bp_values
+        self._backpressure = BackpressureController(**bp_kwargs)
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
@@ -311,27 +321,57 @@ class MultiPointWorker:
                 mode_str = "per-FOV 5D (OME-NGFF compliant)"
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
 
+        # Use pre-warmed job runner if available, otherwise create new ones.
+        # IMPORTANT: Only use pre-warmed runner if BOTH runner AND backpressure values
+        # are available. Using a runner without matching backpressure values would cause
+        # the BackpressureController to track different counters than the JobRunner.
+        can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
+        used_prewarmed = False
         for job_class in job_classes:
-            self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-            job_runner = (
-                control.core.job_processing.JobRunner(
-                    self.acquisition_info,
-                    cleanup_stale_ome_files=use_ome_tiff,
-                    log_file_path=log_file_path,
-                    # Pass backpressure shared values for cross-process tracking
-                    bp_pending_jobs=self._backpressure.pending_jobs_value,
-                    bp_pending_bytes=self._backpressure.pending_bytes_value,
-                    bp_capacity_event=self._backpressure.capacity_event,
-                    # Pass zarr writer info for ZARR_V3 format
-                    zarr_writer_info=zarr_writer_info,
-                )
-                if Acquisition.USE_MULTIPROCESSING
-                else None
-            )
-            if job_runner:
-                job_runner.start()
+            job_runner = None
+            if Acquisition.USE_MULTIPROCESSING:
+                # Try to use pre-warmed runner for the first job class
+                if can_use_prewarmed and not used_prewarmed:
+                    if prewarmed_job_runner.is_ready():
+                        self._log.info(f"Using pre-warmed job runner for {job_class.__name__} jobs")
+                        job_runner = prewarmed_job_runner
+                        # Configure it with current acquisition settings
+                        job_runner.set_acquisition_info(self.acquisition_info)
+                        if zarr_writer_info:
+                            job_runner.set_zarr_writer_info(zarr_writer_info)
+                        used_prewarmed = True
+                    else:
+                        self._log.warning(
+                            f"Pre-warmed job runner not ready (possibly hung during warmup), "
+                            f"shutting it down and creating new one for {job_class.__name__}"
+                        )
+                        # Shutdown the hung pre-warmed runner to avoid resource leak
+                        try:
+                            prewarmed_job_runner.shutdown(timeout_s=1.0)
+                        except Exception as e:
+                            self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
+                        # Don't try to use pre-warmed runner again for subsequent job classes
+                        can_use_prewarmed = False
+
+                if job_runner is None:
+                    self._log.info(f"Creating job runner for {job_class.__name__} jobs")
+                    job_runner = control.core.job_processing.JobRunner(
+                        self.acquisition_info,
+                        cleanup_stale_ome_files=use_ome_tiff,
+                        log_file_path=log_file_path,
+                        # Pass backpressure shared values for cross-process tracking
+                        bp_pending_jobs=self._backpressure.pending_jobs_value,
+                        bp_pending_bytes=self._backpressure.pending_bytes_value,
+                        bp_capacity_event=self._backpressure.capacity_event,
+                        # Pass zarr writer info for ZARR_V3 format
+                        zarr_writer_info=zarr_writer_info,
+                    )
+                    job_runner.start()
+                    # Subprocess starts warming up in background - don't block here
+
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
+        self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
 
     def update_use_piezo(self, value):
         self.use_piezo = value
@@ -436,6 +476,10 @@ class MultiPointWorker:
                     # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
                     self.fluidics.run_before_imaging()
                     self.fluidics.wait_for_completion()
+                    # Check for abort after fluidics completes (user may have stopped during fluidics)
+                    if self.abort_requested_fn():
+                        self._log.debug("Abort requested after fluidics, skipping imaging")
+                        break
 
                 with self._timing.get_timer("run_single_time_point"):
                     self.run_single_time_point()
@@ -523,9 +567,11 @@ class MultiPointWorker:
         # Drain and summarize all currently available job results before waiting for completion
         self._summarize_runner_outputs(drain_all=True)
 
-        self._log.info(
-            f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down..."
-        )
+        active_runners = [
+            (job_class, job_runner) for job_class, job_runner in self._job_runners if job_runner is not None
+        ]
+
+        self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
         timeout_time = time.time() + timeout_s
 
         def timed_out():
@@ -534,33 +580,58 @@ class MultiPointWorker:
         def time_left():
             return max(timeout_time - time.time(), 0)
 
-        for job_class, job_runner in self._job_runners:
-            if job_runner is not None:
-                while job_runner.has_pending():
-                    # Process any available results while waiting
-                    self._summarize_runner_outputs(drain_all=True)
-                    if not timed_out():
-                        time.sleep(0.1)
-                    else:
-                        self._log.error(
-                            f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!"
-                        )
-                        job_runner.kill()
-                        break
+        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
+        while not timed_out():
+            any_pending = False
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    any_pending = True
+                    break
+            if not any_pending:
+                break
+            # Process any available results while waiting
+            self._summarize_runner_outputs(drain_all=True)
+            time.sleep(0.1)
+        else:
+            # Timed out - kill any runners that still have pending jobs
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    self._log.error(
+                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
+                    )
+                    job_runner.kill()
 
-                # Give worker a moment to put results in queue after processing
-                time.sleep(0.2)
-                # Drain results before shutdown
-                self._summarize_runner_outputs(drain_all=True)
-
-                self._log.info("Trying to shut down job runner...")
-                job_runner.shutdown(time_left())
-
-        # Final drain of all output queues
+        # Drain results before shutdown
         self._summarize_runner_outputs(drain_all=True)
 
-        # Release backpressure resources now that all job runners are shut down
-        self._backpressure.close()
+        # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
+        # Using daemon threads is safe here because:
+        # 1. All jobs are complete and results are already drained
+        # 2. The subprocess termination is best-effort cleanup only
+        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
+        # 4. This prevents slow subprocess termination from blocking acquisition completion
+        log = self._log  # Capture for closure
+
+        def shutdown_runner(job_runner, timeout):
+            try:
+                job_runner.shutdown(timeout)
+            except Exception as e:
+                log.error(f"Error shutting down job runner in background: {e}")
+
+        self._log.info("Shutting down job runners (non-blocking)...")
+        remaining_time = time_left()
+        for job_class, job_runner in active_runners:
+            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
+            t.start()
+
+        # Final drain of all output queues (should be empty, but check anyway)
+        self._summarize_runner_outputs(drain_all=True)
+
+        # Release backpressure resources now that all jobs are complete
+        try:
+            self._backpressure.close()
+        except Exception as e:
+            self._log.error(f"Error closing backpressure controller: {e}")
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -709,7 +780,7 @@ class MultiPointWorker:
             self.move_to_z_level(z_mm)
 
     def move_to_z_level(self, z_mm):
-        print("moving z")
+        self._log.debug("moving z")
         self.stage.move_z_to(z_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
@@ -1340,6 +1411,20 @@ class MultiPointWorker:
                 self.image_count += 1
 
                 with self._timing.get_timer("job creation and dispatch"):
+                    # Wait for subprocess to be ready before first dispatch
+                    if not self._first_job_dispatched:
+                        for job_class, job_runner in self._job_runners:
+                            if job_runner is not None:
+                                t_wait_start = time.perf_counter()
+                                if job_runner.wait_ready(timeout_s=10.0):
+                                    t_wait_end = time.perf_counter()
+                                    wait_ms = (t_wait_end - t_wait_start) * 1000
+                                    if wait_ms > 10:  # Only log if we actually had to wait
+                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
+                                else:
+                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
+                        self._first_job_dispatched = True
+
                     for job_class, job_runner in self._job_runners:
                         job = self._create_job(job_class, info, image)
                         if job is None:
@@ -1488,7 +1573,7 @@ class MultiPointWorker:
                 self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
                 image = self.camera.read_frame()
                 if image is None:
-                    print("self.camera.read_frame() returned None")
+                    self._log.warning("self.camera.read_frame() returned None")
                     continue
 
                 # TODO(imo): use illum controller
@@ -1518,22 +1603,21 @@ class MultiPointWorker:
 
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
-            print("writing R, G, B channels")
+            self._log.debug("writing R, G, B channels")
             self.handle_rgb_channels(images, current_capture_info)
         else:
             # If monochrome, reconstruct RGB image
-            print("constructing RGB image")
+            self._log.debug("constructing RGB image")
             self.construct_rgb_image(images, current_capture_info)
 
     @staticmethod
     def handle_rgb_generation(current_round_images, capture_info: CaptureInfo):
         keys_to_check = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         if all(key in current_round_images for key in keys_to_check):
-            print("constructing RGB image")
-            print(current_round_images["BF LED matrix full_R"].dtype)
+            _log.debug(f"constructing RGB image: dtype={current_round_images['BF LED matrix full_R'].dtype}")
             size = current_round_images["BF LED matrix full_R"].shape
             rgb_image = np.zeros((*size, 3), dtype=current_round_images["BF LED matrix full_R"].dtype)
-            print(rgb_image.shape)
+            _log.debug(f"RGB image shape: {rgb_image.shape}")
             rgb_image[:, :, 0] = current_round_images["BF LED matrix full_R"]
             rgb_image[:, :, 1] = current_round_images["BF LED matrix full_G"]
             rgb_image[:, :, 2] = current_round_images["BF LED matrix full_B"]
@@ -1542,7 +1626,7 @@ class MultiPointWorker:
 
             # write the image
             if len(rgb_image.shape) == 3:
-                print("writing RGB image")
+                _log.debug("writing RGB image")
                 if rgb_image.dtype == np.uint16:
                     iio.imwrite(
                         os.path.join(
@@ -1610,7 +1694,7 @@ class MultiPointWorker:
         )
 
         # write the RGB image
-        print("writing RGB image")
+        self._log.debug("writing RGB image")
         file_name = (
             capture_info.file_id
             + "_BF_LED_matrix_full_RGB"

@@ -1,0 +1,37 @@
+# Test Workflow for Workflow Runner
+# This workflow demonstrates script sequencing with acquisition
+
+num_cycles: 1
+sequences:
+  - name: Pre-Acquisition Setup
+    type: script
+    included: true
+    script_path: tests/files/test_workflow_script.py
+    arguments: --duration 2 --name "Pre-Setup"
+    python_path: null
+    conda_env: null
+    config_path: null
+    cycle_arg_name: null
+    cycle_arg_values: null
+
+  - name: Acquisition
+    type: acquisition
+    included: true
+    script_path: null
+    arguments: null
+    python_path: null
+    conda_env: null
+    config_path: null
+    cycle_arg_name: null
+    cycle_arg_values: null
+
+  - name: Post-Acquisition Processing
+    type: script
+    included: true
+    script_path: tests/files/test_workflow_script.py
+    arguments: --duration 3 --name "Post-Process"
+    python_path: null
+    conda_env: null
+    config_path: null
+    cycle_arg_name: null
+    cycle_arg_values: null

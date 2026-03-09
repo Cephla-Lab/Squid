@@ -89,32 +89,23 @@ class Fluidics:
 
     def _initialize_hardware(self):
         """Initialize hardware controllers based on simulation mode"""
-        if self.simulation:
-            self.controller = FluidControllerSimulation(self.config["microcontroller"]["serial_number"])
-            self.syringe_pump = SyringePumpSimulation(
-                sn=self.config["syringe_pump"]["serial_number"],
-                syringe_ul=self.config["syringe_pump"]["volume_ul"],
-                speed_code_limit=self.config["syringe_pump"]["speed_code_limit"],
-                waste_port=3,
-            )
-            if (
-                "temperature_controller" in self.config
-                and self.config["temperature_controller"]["use_temperature_controller"]
-            ):
+        controller_cls = FluidControllerSimulation if self.simulation else FluidController
+        pump_cls = SyringePumpSimulation if self.simulation else SyringePump
+
+        self.controller = controller_cls(self.config["microcontroller"]["serial_number"])
+        self.syringe_pump = pump_cls(
+            sn=self.config["syringe_pump"]["serial_number"],
+            syringe_ul=self.config["syringe_pump"]["volume_ul"],
+            speed_code_limit=self.config["syringe_pump"]["speed_code_limit"],
+            waste_port=3,
+        )
+
+        temp_config = self.config.get("temperature_controller", {})
+        if temp_config.get("use_temperature_controller"):
+            if self.simulation:
                 self.temperature_controller = TCMControllerSimulation()
-        else:
-            self.controller = FluidController(self.config["microcontroller"]["serial_number"])
-            self.syringe_pump = SyringePump(
-                sn=self.config["syringe_pump"]["serial_number"],
-                syringe_ul=self.config["syringe_pump"]["volume_ul"],
-                speed_code_limit=self.config["syringe_pump"]["speed_code_limit"],
-                waste_port=3,
-            )
-            if (
-                "temperature_controller" in self.config
-                and self.config["temperature_controller"]["use_temperature_controller"]
-            ):
-                self.temperature_controller = TCMController(self.config["temperature_controller"]["serial_number"])
+            else:
+                self.temperature_controller = TCMController(temp_config["serial_number"])
 
         self.controller.begin()
         self.controller.send_command(CMD_SET.CLEAR)
@@ -163,13 +154,16 @@ class Fluidics:
         return self.sequences.copy()
 
     def _validate_sequences(self):
-        valid_sequence_names = ["Imaging", "Priming", "Clean Up"]
-        for idx, sequence_name in enumerate(self.sequences["sequence_name"]):
-            if sequence_name not in valid_sequence_names and not sequence_name.startswith("Flow "):
-                raise ValueError(
-                    f"Invalid sequence name at row {idx+1}: '{sequence_name}'. "
-                    f"Must be one of {valid_sequence_names} or start with 'Flow '"
-                )
+        is_open_chamber = self.config.get("application") == "Open Chamber"
+        valid_names = ["Imaging", "Priming", "Clean Up"]
+        if is_open_chamber:
+            valid_names += ["Add Reagent", "Clear Tubings and Add Reagent", "Wash with Constant Flow"]
+
+        for idx, name in enumerate(self.sequences["sequence_name"]):
+            is_valid = name in valid_names or (not is_open_chamber and name.startswith("Flow "))
+            if not is_valid:
+                hint = f"Must be one of {valid_names}" + ("" if is_open_chamber else " or start with 'Flow '")
+                raise ValueError(f"Invalid sequence name at row {idx+1}: '{name}'. {hint}")
 
         imaging_count = (self.sequences["sequence_name"] == "Imaging").sum()
         if imaging_count == 0:
@@ -179,42 +173,32 @@ class Fluidics:
         elif imaging_count > 1:
             raise ValueError("Multiple 'Imaging' sequences found. There should be exactly one 'Imaging' sequence.")
 
+        num_ports = len(self.available_port_names)
         for idx, row in self.sequences[self.sequences["sequence_name"] != "Imaging"].iterrows():
-            if not (
-                isinstance(row["fluidic_port"], (int, pd.Int64Dtype))
-                and 1 <= row["fluidic_port"] <= len(self.available_port_names)
-            ):
-                raise ValueError(
-                    f"Invalid fluidic_port at row {idx+1}: {row['fluidic_port']}. "
-                    f"Must be an integer in range [1, {len(self.available_port_names)}]."
-                )
+            self._validate_int_field(row, idx, "fluidic_port", min_val=1, max_val=num_ports)
+            self._validate_int_field(row, idx, "flow_rate", min_val=1)
+            self._validate_int_field(row, idx, "volume", min_val=1, max_val=self.syringe_pump.volume - 1)
+            self._validate_int_field(row, idx, "incubation_time", min_val=0)
+            self._validate_int_field(row, idx, "repeat", min_val=0)
+            self._validate_int_field(row, idx, "fill_tubing_with", min_val=0, max_val=num_ports)
+            self._validate_int_field(row, idx, "include", allowed_values=[0, 1])
 
-            if not (isinstance(row["flow_rate"], (int, pd.Int64Dtype)) and row["flow_rate"] > 0):
-                raise ValueError(
-                    f"Invalid flow_rate at row {idx+1}: {row['flow_rate']}. " f"Must be a positive integer."
-                )
+    def _validate_int_field(
+        self, row, idx: int, field: str, min_val: int = None, max_val: int = None, allowed_values: list = None
+    ):
+        """Validate that a field contains a valid integer within constraints."""
+        value = row[field]
+        is_int = isinstance(value, (int, pd.Int64Dtype))
 
-            if not (isinstance(row["volume"], (int, pd.Int64Dtype)) and 0 < row["volume"] < self.syringe_pump.volume):
-                raise ValueError(
-                    f"Invalid volume at row {idx+1}: {row['volume']}. "
-                    f"Must be an integer in range (0, {self.syringe_pump.volume})."
-                )
-
-            for field in ["incubation_time", "repeat"]:
-                if not (isinstance(row[field], (int, pd.Int64Dtype)) and row[field] >= 0):
-                    raise ValueError(f"Invalid {field} at row {idx+1}: {row[field]}. " f"Must be an integer >= 0.")
-
-            if not (
-                isinstance(row["fill_tubing_with"], (int, pd.Int64Dtype))
-                and 0 <= row["fill_tubing_with"] <= len(self.available_port_names)
-            ):
-                raise ValueError(
-                    f"Invalid fill_tubing_with at row {idx+1}: {row['fill_tubing_with']}. "
-                    f"Must be an integer in range [0, {len(self.available_port_names)}]."
-                )
-
-            if not (isinstance(row["include"], (int, pd.Int64Dtype)) and row["include"] in [0, 1]):
-                raise ValueError(f"Invalid include at row {idx+1}: {row['include']}. " f"Must be either 0 or 1.")
+        if allowed_values is not None:
+            if not (is_int and value in allowed_values):
+                raise ValueError(f"Invalid {field} at row {idx+1}: {value}. Must be one of {allowed_values}.")
+        elif min_val is not None and max_val is not None:
+            if not (is_int and min_val <= value <= max_val):
+                raise ValueError(f"Invalid {field} at row {idx+1}: {value}. Must be in range [{min_val}, {max_val}].")
+        elif min_val is not None:
+            if not (is_int and value >= min_val):
+                raise ValueError(f"Invalid {field} at row {idx+1}: {value}. Must be >= {min_val}.")
 
     def priming(self, ports: list, last_port: int, volume_ul: int, flow_rate: int = 5000):
         """Priming the fluidics system"""
@@ -295,8 +279,10 @@ class Fluidics:
 
     def emergency_stop(self):
         """Stop syringe pump operation immediately"""
-        self.syringe_pump.abort()
-        self.worker.abort()
+        if self.syringe_pump:
+            self.syringe_pump.abort()
+        if self.worker:
+            self.worker.abort()
         self.emergency_stop_called = True
 
     def reset_abort(self):

@@ -33,6 +33,8 @@ void init_callbacks()
     cmd_map[SET_PORT_ILLUMINATION] = &callback_set_port_illumination;
     cmd_map[SET_MULTI_PORT_MASK] = &callback_set_multi_port_mask;
     cmd_map[TURN_OFF_ALL_PORTS] = &callback_turn_off_all_ports;
+    cmd_map[SET_WATCHDOG_TIMEOUT] = &callback_set_watchdog_timeout;
+    cmd_map[HEARTBEAT] = &callback_heartbeat;
     cmd_map[ACK_JOYSTICK_BUTTON_PRESSED] = &callback_ack_joystick_button_pressed;
     cmd_map[ANALOG_WRITE_ONBOARD_DAC] = &callback_analog_write_onboard_dac;
     cmd_map[SET_DAC80508_REFDIV_GAIN] = &callback_set_dac80508_defdiv_gain;
@@ -89,6 +91,13 @@ void callback_send_hardware_trigger()
     // doesn't get partially written values.
     noInterrupts();
     int camera_channel = buffer_rx[2] & 0x0f;
+
+    // For level trigger mode, ignore new triggers while one is already active
+    if (trigger_mode != 0 && trigger_output_level[camera_channel] == LOW) {
+        interrupts();
+        return;
+    }
+
     control_strobe[camera_channel] = buffer_rx[2] >> 7;
     illumination_on_time[camera_channel] = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
     digitalWrite(camera_trigger_pins[camera_channel], LOW);

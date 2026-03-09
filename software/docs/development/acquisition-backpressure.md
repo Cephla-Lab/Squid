@@ -76,14 +76,14 @@ This location ensures:
 - Camera doesn't capture images that can't be processed
 - No blocking in the camera callback (which must return quickly)
 
-### Special Handling for DownsampledViewJob
+### Immediate Byte Release
 
-`DownsampledViewJob` accumulates tiles in memory until a well completes, then generates stitched images. The backpressure tracking handles this specially:
+All jobs (including `DownsampledViewJob`) release their bytes immediately when the job completes. This design prevents deadlock scenarios with z-stack acquisitions where many FOVs × z-levels × channels could exceed the byte limit before any well finishes.
 
-- **Intermediate FOVs**: Job count decrements, but bytes stay tracked (image held in accumulator). Capacity event IS signaled (allows wait loop to re-check).
-- **Final FOV**: ALL accumulated bytes for the well are decremented. Capacity event signaled.
-
-The byte tracking accurately reflects memory usage - bytes aren't freed until the well's accumulator is cleared on final FOV.
+The bytes tracked represent data in the **main process queue**, not subprocess memory. When a job completes:
+- Job is removed from the queue (main process memory freed)
+- Image data moves to subprocess memory (not tracked by backpressure)
+- Capacity event is signaled to wake any throttled acquisition
 
 ## Logging
 
@@ -141,7 +141,25 @@ See [Simulated Disk I/O](simulated-disk-io.md) for details.
 | `control/core/backpressure.py` | `BackpressureController` class |
 | `control/core/job_processing.py` | `JobRunner` tracking integration |
 | `control/core/multi_point_worker.py` | Throttle check in acquisition loop |
+| `control/core/multi_point_controller.py` | Pre-warming management |
 | `control/_def.py` | Configuration constants |
+
+### JobRunner Pre-warming
+
+To reduce acquisition start delay, the `MultiPointController` pre-warms a JobRunner subprocess in the background. When the user clicks "Start Acquisition", the subprocess is already running and ready to accept jobs.
+
+```
+Timeline (with pre-warming):
+  [Acquisition N starts] → [Handoff pre-warmed runner] → [Start new pre-warm]
+                                    ↓                            ↓
+                           [Acquisition N runs]            [~1.2s warmup]
+                                    ↓                            ↓
+                           [Acquisition N+1 starts] ← [Runner ready for N+1]
+```
+
+The pre-warmed runner and its backpressure values are handed off to the worker thread. A new pre-warming cycle starts immediately after handoff (i.e., when the current acquisition begins, not when it completes).
+
+**Known limitation**: Pre-warming for acquisition N+1 starts when acquisition N begins (when `get_prewarmed_job_runner()` is called). If the user starts acquisition N+1 before pre-warming finishes (~1.2s after N started), the worker waits for the subprocess. This only affects rapid-fire manual testing; real workloads (full plate scans, time-lapse with intervals >2s) start instantly.
 
 ### Counter Lifecycle
 
@@ -152,13 +170,12 @@ dispatch():
   └─ Put job in queue (with rollback on failure)
 
 run() finally block:
-  ├─ Decrement pending_jobs (always)
-  ├─ For normal jobs: decrement pending_bytes immediately
-  ├─ For DownsampledViewJob:
-  │     ├─ Intermediate FOV: accumulate bytes (don't decrement)
-  │     └─ Final FOV: decrement ALL accumulated bytes for the well
-  └─ Signal capacity_event (always, for all job types)
+  ├─ Decrement pending_jobs
+  ├─ Decrement pending_bytes
+  └─ Signal capacity_event
 ```
+
+All counters are decremented immediately when a job completes, regardless of job type. This ensures capacity is freed promptly and prevents deadlocks with large acquisitions.
 
 ### Thread Safety
 

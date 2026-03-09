@@ -119,6 +119,43 @@ controller.turn_off_all_ports()
 | Custom light mixing experiments | Multi-port | Independent control of each port |
 | Backward compatibility required | Legacy | Works with older firmware |
 
+## Serial Watchdog (Illumination Auto-Shutoff Safety)
+
+**Requires firmware v1.1 or later.**
+
+The firmware includes a serial watchdog that monitors communication with the control software. If no serial messages are received within the timeout period (e.g., due to software crash or USB disconnect), the firmware automatically turns off all illumination.
+
+### How It Works
+
+1. Software enables the watchdog at startup via `SET_WATCHDOG_TIMEOUT` command
+2. Software sends periodic `HEARTBEAT` commands (every timeout/2 seconds)
+3. Any valid serial message resets the watchdog timer (not just heartbeats)
+4. If the timer expires, firmware calls `turn_off_all_ports()` and disables the watchdog (one-shot)
+
+### Configuration
+
+The timeout is configured in `control/_def.py`:
+
+```python
+WATCHDOG_TIMEOUT_S = 5.0  # seconds (default)
+```
+
+To change at runtime (before creating Microscope):
+
+```python
+microcontroller.set_watchdog_timeout(10.0)  # 10 seconds
+microcontroller.wait_till_operation_is_completed()
+microcontroller.start_heartbeat()
+```
+
+### Timeout Values
+
+| Value | Behavior |
+|-------|----------|
+| 0 | Use firmware default (5 seconds) |
+| 0.001 - 3600 | Set timeout in seconds |
+| > 3600 | Clamped to 3600 seconds |
+
 ## Firmware Version Detection
 
 The software automatically detects firmware version from MCU responses:
@@ -158,15 +195,17 @@ For low-level debugging or firmware development:
 
 | Command | Code | Description |
 |---------|------|-------------|
-| SET_ILLUMINATION | 5 | Legacy: set source + intensity |
-| TURN_ON_ILLUMINATION | 6 | Legacy: turn on current source |
-| TURN_OFF_ILLUMINATION | 7 | Legacy: turn off current source |
+| TURN_ON_ILLUMINATION | 10 | Legacy: turn on current source |
+| TURN_OFF_ILLUMINATION | 11 | Legacy: turn off current source |
+| SET_ILLUMINATION | 12 | Legacy: set source + intensity |
 | SET_PORT_INTENSITY | 34 | Multi-port: set DAC for port |
 | TURN_ON_PORT | 35 | Multi-port: turn on GPIO for port |
 | TURN_OFF_PORT | 36 | Multi-port: turn off GPIO for port |
 | SET_PORT_ILLUMINATION | 37 | Multi-port: combined intensity + on/off |
 | SET_MULTI_PORT_MASK | 38 | Multi-port: control multiple ports |
 | TURN_OFF_ALL_PORTS | 39 | Multi-port: turn off all ports |
+| SET_WATCHDOG_TIMEOUT | 40 | Set serial watchdog timeout and enable (v1.1+) |
+| HEARTBEAT | 42 | No-op keepalive for serial watchdog (v1.1+) |
 
 ## Troubleshooting
 

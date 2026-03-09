@@ -277,25 +277,36 @@ class LiveController:
                     if self.microscope.addons.cellx and ENABLE_CELLX:
                         self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
 
-        # set emission filter position
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            if self.microscope.addons.xlight and not USE_DRAGONFLY:
-                try:
+        # set emission filter position and iris values
+        if ENABLE_SPINNING_DISK_CONFOCAL and self.microscope.addons.xlight and not USE_DRAGONFLY:
+            try:
+                if self.currentConfiguration.emission_filter_position:
                     self.microscope.addons.xlight.set_emission_filter(
-                        XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
+                        self.currentConfiguration.emission_filter_position,
                         extraction=False,
                         validate=XLIGHT_VALIDATE_WHEEL_POS,
                     )
-                except Exception as e:
-                    self._log.warning(f"Not setting emission filter position: {e}")
-            elif USE_DRAGONFLY and self.microscope.addons.dragonfly:
+            except Exception as e:
+                self._log.warning(f"Not setting emission filter position: {e}")
+            # Apply per-channel iris values
+            hw_settings = self.currentConfiguration.confocal_hardware_settings
+            if hw_settings is not None:
+                xlight = self.microscope.addons.xlight
                 try:
-                    self.microscope.addons.dragonfly.set_emission_filter(
-                        self.microscope.addons.dragonfly.get_camera_port(),
-                        self.currentConfiguration.emission_filter_position,
-                    )
-                except Exception as e:
-                    self._log.warning(f"Not setting emission filter position: {e}")
+                    if hw_settings.illumination_iris is not None and xlight.has_illumination_iris_diaphragm:
+                        xlight.set_illumination_iris(int(hw_settings.illumination_iris))
+                    if hw_settings.emission_iris is not None and xlight.has_emission_iris_diaphragm:
+                        xlight.set_emission_iris(int(hw_settings.emission_iris))
+                except (OSError, ValueError) as e:
+                    self._log.warning(f"Not setting iris values: {e}")
+        elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
+            try:
+                self.microscope.addons.dragonfly.set_emission_filter(
+                    self.microscope.addons.dragonfly.get_camera_port(),
+                    self.currentConfiguration.emission_filter_position,
+                )
+            except Exception as e:
+                self._log.warning(f"Not setting emission filter position: {e}")
 
         if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
             try:

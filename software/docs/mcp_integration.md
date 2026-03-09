@@ -27,14 +27,20 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 ### Option A: Launch from GUI (Recommended)
 
 1. Start the Squid GUI
-2. Go to **Settings → Launch Claude Code**
-3. If Claude Code is not installed, you'll be prompted to install it automatically
-4. A terminal will open with Claude Code running in the correct directory
+2. *(Optional)* Go to **Settings → Set Anthropic API Key...** and enter your API key (get one from [console.anthropic.com](https://console.anthropic.com/settings/keys)). If you are already logged into claude.ai, you can skip this step.
+3. Go to **Settings → Launch Claude Code**
+4. If Claude Code is not installed, you'll be prompted to install it automatically
+5. A terminal will open with Claude Code running in the correct directory
 
 This automatically:
 - Starts the MCP control server (on-demand)
+- Passes the API key if one is set (via a temporary launcher script that keeps it out of command-line arguments; the key is set as an environment variable for the Claude Code process)
 - Configures the MCP connection
 - Pre-approves all microscope commands
+
+**Authentication:** Claude Code supports two authentication methods:
+- **claude.ai login** (OAuth) — If you are already logged in via `claude login`, no API key is needed
+- **API key** — Set via **Settings → Set Anthropic API Key...**; cached locally in `cache/claude_api_key.yaml` and persists across restarts
 
 ### On-Demand Control Server
 
@@ -265,6 +271,15 @@ The TCP protocol uses newline-delimited JSON:
 ```
 
 ## Troubleshooting
+
+### "API Key Not Set" when launching Claude Code
+- Go to **Settings → Set Anthropic API Key...** to enter your key
+- Get a key from [console.anthropic.com](https://console.anthropic.com/settings/keys)
+- The key is cached locally and persists across restarts
+
+### "Auth conflict" warning in Claude Code
+- This occurs when you have both an API key and an existing claude.ai login
+- Claude Code will use the API key; the warning is informational and can be ignored
 
 ### "Cannot connect to microscope"
 - Ensure the Squid GUI is running

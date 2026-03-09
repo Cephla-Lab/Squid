@@ -96,3 +96,36 @@ void callback_turn_off_all_ports()
 {
     turn_off_all_ports();
 }
+
+// Command byte layout: [cmd_id, 40, timeout_b3, timeout_b2, timeout_b1, timeout_b0, 0, crc]
+// timeout is 32-bit unsigned milliseconds (max 3,600,000 = 1 hour)
+// Setting timeout enables the watchdog. Value of 0 means use default.
+void callback_set_watchdog_timeout()
+{
+    uint32_t requested_timeout = ((uint32_t)buffer_rx[2] << 24)
+                                | ((uint32_t)buffer_rx[3] << 16)
+                                | ((uint32_t)buffer_rx[4] << 8)
+                                | (uint32_t)buffer_rx[5];
+
+    // Clamp to max allowed timeout
+    if (requested_timeout > MAX_WATCHDOG_TIMEOUT_MS)
+    {
+        requested_timeout = MAX_WATCHDOG_TIMEOUT_MS;
+    }
+
+    // Treat 0 as "use default"
+    if (requested_timeout == 0)
+    {
+        requested_timeout = DEFAULT_WATCHDOG_TIMEOUT_MS;
+    }
+
+    watchdog_timeout_ms = requested_timeout;
+    watchdog_enabled = true;
+}
+
+// No-op heartbeat command - watchdog timer is reset by serial message
+// receipt in process_serial_message(), not here.
+void callback_heartbeat()
+{
+    // Intentionally empty
+}

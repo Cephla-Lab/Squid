@@ -145,4 +145,9 @@ extern bool illumination_is_on;
 extern bool illumination_port_is_on[NUM_ILLUMINATION_PORTS];
 extern uint16_t illumination_port_intensity[NUM_ILLUMINATION_PORTS];
 
+// Serial watchdog (illumination auto-shutoff safety)
+extern uint32_t last_serial_message_time;
+extern uint32_t watchdog_timeout_ms;
+extern bool watchdog_enabled;
+
 #endif // GLOBALS_H

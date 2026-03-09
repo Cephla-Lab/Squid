@@ -23,6 +23,8 @@ void process_serial_message()
       {
         checksum_error = false;
       }
+      // Reset watchdog timer on every valid serial message
+      last_serial_message_time = millis();
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
@@ -71,6 +73,11 @@ void send_position_update()
 
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
+
+    // Clear reserved bytes to avoid stale data affecting the checksum
+    buffer_tx[19] = 0;
+    buffer_tx[20] = 0;
+    buffer_tx[21] = 0;
 
     // Firmware version in byte 22: high nibble = major, low nibble = minor
     buffer_tx[22] = (FIRMWARE_VERSION_MAJOR << 4) | (FIRMWARE_VERSION_MINOR & 0x0F);

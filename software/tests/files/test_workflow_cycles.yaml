@@ -1,0 +1,26 @@
+# Test Workflow with Cycle Arguments
+# This workflow demonstrates per-cycle script arguments (e.g., for fluidics ports)
+
+num_cycles: 5
+sequences:
+  - name: Fluidics
+    type: script
+    included: true
+    script_path: tests/files/test_workflow_script.py
+    arguments: --duration 1 --name "Fluidics"
+    python_path: null
+    conda_env: null
+    config_path: null
+    cycle_arg_name: port
+    cycle_arg_values: "1,2,3,4,5"
+
+  - name: Acquisition
+    type: acquisition
+    included: true
+    script_path: null
+    arguments: null
+    python_path: null
+    conda_env: null
+    config_path: null
+    cycle_arg_name: null
+    cycle_arg_values: null

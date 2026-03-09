@@ -443,6 +443,9 @@ void set_port_intensity(int port_index, uint16_t intensity)
   illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
 }
 
+// Safety shutdown: turns off ALL illumination (discrete ports + LED matrix).
+// Called by the serial watchdog and TURN_OFF_ALL_PORTS command.
+// Intentionally broad: when this fires, everything should go dark.
 void turn_off_all_ports()
 {
   for (int i = 0; i < NUM_ILLUMINATION_PORTS; i++)
@@ -454,7 +457,6 @@ void turn_off_all_ports()
       illumination_port_is_on[i] = false;
     }
   }
-  // Also turn off LED matrix if it was on
   clear_matrix(matrix);
   illumination_is_on = false;
 }
@@ -471,9 +473,11 @@ void ISR_strobeTimer()
         // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
+          strobe_output_level[camera_channel] = HIGH;
           turn_on_illumination();
           delayMicroseconds(illumination_on_time[camera_channel]);
           turn_off_illumination();
+          strobe_output_level[camera_channel] = LOW;
           control_strobe[camera_channel] = false;
         }
       }

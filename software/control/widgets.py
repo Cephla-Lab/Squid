@@ -1024,15 +1024,19 @@ class AcquisitionYAMLDropMixin:
             return "Flexible Multipoint"
         return "Wellplate Multipoint"
 
-    def _load_acquisition_yaml(self, file_path: str):
-        """Load acquisition settings from YAML file."""
+    def _load_acquisition_yaml(self, file_path: str) -> bool:
+        """Load acquisition settings from YAML file.
+
+        Returns:
+            True if settings were loaded successfully, False otherwise.
+        """
         from control.acquisition_yaml_loader import parse_acquisition_yaml, validate_hardware
 
         try:
             yaml_data = parse_acquisition_yaml(file_path)
         except Exception as e:
             QMessageBox.warning(self, "Load Error", f"Failed to parse YAML file:\n{e}")
-            return
+            return False
 
         # Check widget type
         expected_type = self._get_expected_widget_type()
@@ -1043,7 +1047,7 @@ class AcquisitionYAMLDropMixin:
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
                 f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
             )
-            return
+            return False
 
         # Validate hardware
         current_binning = (1, 1)
@@ -1063,11 +1067,12 @@ class AcquisitionYAMLDropMixin:
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
             dialog.exec_()
-            return
+            return False
 
         # Apply settings with signal blocking
         self._apply_yaml_settings(yaml_data)
         self._log.info(f"Loaded acquisition settings from: {file_path}")
+        return True
 
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
@@ -3171,21 +3176,25 @@ class LaserAutofocusSettingWidget(QWidget):
 class SpinningDiskConfocalWidget(QWidget):
 
     signal_toggle_confocal_widefield = Signal(bool)
+    signal_illumination_iris_changed = Signal(float)
+    signal_emission_iris_changed = Signal(float)
 
     def __init__(self, xlight):
         super(SpinningDiskConfocalWidget, self).__init__()
 
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.xlight = xlight
 
         self.init_ui()
 
-        self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
-        self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+        if self.xlight.has_emission_filters_wheel:
+            self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
+            self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
+        if self.xlight.has_dichroic_filters_wheel:
+            self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
+            self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
         if self.xlight.has_dichroic_filter_slider:
             self.filter_slider.setValue(self.xlight.get_filter_slider())
-
-        self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
-        self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
 
         self.disk_position_state = self.xlight.get_disk_position()
 
@@ -3201,37 +3210,30 @@ class SpinningDiskConfocalWidget(QWidget):
             self.filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self.xlight.has_illumination_iris_diaphragm:
-            illumination_iris = self.xlight.illumination_iris
-            self.slider_illumination_iris.setValue(illumination_iris)
-            self.spinbox_illumination_iris.setValue(illumination_iris)
-
+            # Slider values are set from acquisition config via update_iris_from_config()
+            # after signal connections are established in gui_hcs.py
             self.slider_illumination_iris.sliderReleased.connect(lambda: self.update_illumination_iris(True))
-            # Update spinbox values during sliding without sending to hardware
-            self.slider_illumination_iris.valueChanged.connect(self.spinbox_illumination_iris.setValue)
+            # Update spinbox + apply on click-to-position (not during drag)
+            self.slider_illumination_iris.valueChanged.connect(self._on_illumination_iris_value_changed)
             self.spinbox_illumination_iris.editingFinished.connect(lambda: self.update_illumination_iris(False))
         if self.xlight.has_emission_iris_diaphragm:
-            emission_iris = self.xlight.emission_iris
-            self.slider_emission_iris.setValue(emission_iris)
-            self.spinbox_emission_iris.setValue(emission_iris)
-
             self.slider_emission_iris.sliderReleased.connect(lambda: self.update_emission_iris(True))
-            # Update spinbox values during sliding without sending to hardware
-            self.slider_emission_iris.valueChanged.connect(self.spinbox_emission_iris.setValue)
+            # Update spinbox + apply on click-to-position (not during drag)
+            self.slider_emission_iris.valueChanged.connect(self._on_emission_iris_value_changed)
             self.spinbox_emission_iris.editingFinished.connect(lambda: self.update_emission_iris(False))
 
     def init_ui(self):
 
-        emissionFilterLayout = QHBoxLayout()
-        emissionFilterLayout.addWidget(QLabel("Emission Position"))
-        self.dropdown_emission_filter = QComboBox(self)
-        self.dropdown_emission_filter.addItems([str(i + 1) for i in range(8)])
-        emissionFilterLayout.addWidget(self.dropdown_emission_filter)
+        # Only create widgets if hardware supports them
+        self.dropdown_emission_filter = None
+        if self.xlight.has_emission_filters_wheel:
+            self.dropdown_emission_filter = QComboBox(self)
+            self.dropdown_emission_filter.addItems([str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)])
 
-        dichroicLayout = QHBoxLayout()
-        dichroicLayout.addWidget(QLabel("Dichroic Position"))
-        self.dropdown_dichroic = QComboBox(self)
-        self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
-        dichroicLayout.addWidget(self.dropdown_dichroic)
+        self.dropdown_dichroic = None
+        if self.xlight.has_dichroic_filters_wheel:
+            self.dropdown_dichroic = QComboBox(self)
+            self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
 
         illuminationIrisLayout = QHBoxLayout()
         illuminationIrisLayout.addWidget(QLabel("Illumination Iris"))
@@ -3296,8 +3298,10 @@ class SpinningDiskConfocalWidget(QWidget):
 
     @Slot(bool)
     def enable_all_buttons(self, enable: bool):
-        self.dropdown_emission_filter.setEnabled(enable)
-        self.dropdown_dichroic.setEnabled(enable)
+        if self.dropdown_emission_filter:
+            self.dropdown_emission_filter.setEnabled(enable)
+        if self.dropdown_dichroic:
+            self.dropdown_dichroic.setEnabled(enable)
         self.btn_toggle_widefield.setEnabled(enable)
         self.btn_toggle_motor.setEnabled(enable)
         self.slider_illumination_iris.setEnabled(enable)
@@ -3355,29 +3359,80 @@ class SpinningDiskConfocalWidget(QWidget):
         self.xlight.set_dichroic(selected_pos)
         self.enable_all_buttons(True)
 
-    def update_illumination_iris(self, from_slider: bool):
-        self.block_iris_control_signals(True)  # avoid signals triggered by enable/disable buttons
+    def _set_iris_ui(self, slider, spinbox, value):
+        """Set an iris slider+spinbox pair to the given value."""
+        slider.setValue(value)
+        spinbox.setValue(value)
+
+    def update_iris_from_config(self, configuration):
+        """Update iris UI controls from a channel's confocal_hardware_settings."""
+        hw_settings = getattr(configuration, "confocal_hardware_settings", None)
+        self.block_iris_control_signals(True)
+        try:
+            for has_iris, iris_val, slider, spinbox in (
+                (
+                    self.xlight.has_illumination_iris_diaphragm,
+                    getattr(hw_settings, "illumination_iris", None) if hw_settings else None,
+                    self.slider_illumination_iris,
+                    self.spinbox_illumination_iris,
+                ),
+                (
+                    self.xlight.has_emission_iris_diaphragm,
+                    getattr(hw_settings, "emission_iris", None) if hw_settings else None,
+                    self.slider_emission_iris,
+                    self.spinbox_emission_iris,
+                ),
+            ):
+                if not has_iris:
+                    continue
+                value = int(iris_val) if iris_val is not None else slider.minimum()
+                self._set_iris_ui(slider, spinbox, value)
+        finally:
+            self.block_iris_control_signals(False)
+
+    def _on_illumination_iris_value_changed(self, value):
+        """Handle illumination iris slider valueChanged — sync spinbox, apply on click-to-position."""
+        self.spinbox_illumination_iris.setValue(value)
+        if not self.slider_illumination_iris.isSliderDown():
+            self.update_illumination_iris(True)
+
+    def _on_emission_iris_value_changed(self, value):
+        """Handle emission iris slider valueChanged — sync spinbox, apply on click-to-position."""
+        self.spinbox_emission_iris.setValue(value)
+        if not self.slider_emission_iris.isSliderDown():
+            self.update_emission_iris(True)
+
+    def _update_iris_hardware(self, from_slider, slider, spinbox, hw_setter, signal):
+        """Shared logic for updating an iris value from UI interaction."""
+        self.block_iris_control_signals(True)
         self.enable_all_buttons(False)
         if from_slider:
-            value = self.slider_illumination_iris.value()
+            value = slider.value()
         else:
-            value = self.spinbox_illumination_iris.value()
-            self.slider_illumination_iris.setValue(value)
-        self.xlight.set_illumination_iris(value)
+            value = spinbox.value()
+            slider.setValue(value)
+        hw_setter(value)
+        signal.emit(float(value))
         self.enable_all_buttons(True)
         self.block_iris_control_signals(False)
 
+    def update_illumination_iris(self, from_slider: bool):
+        self._update_iris_hardware(
+            from_slider,
+            self.slider_illumination_iris,
+            self.spinbox_illumination_iris,
+            self.xlight.set_illumination_iris,
+            self.signal_illumination_iris_changed,
+        )
+
     def update_emission_iris(self, from_slider: bool):
-        self.block_iris_control_signals(True)  # avoid signals triggered by enable/disable buttons
-        self.enable_all_buttons(False)
-        if from_slider:
-            value = self.slider_emission_iris.value()
-        else:
-            value = self.spinbox_emission_iris.value()
-            self.slider_emission_iris.setValue(value)
-        self.xlight.set_emission_iris(value)
-        self.enable_all_buttons(True)
-        self.block_iris_control_signals(False)
+        self._update_iris_hardware(
+            from_slider,
+            self.slider_emission_iris,
+            self.spinbox_emission_iris,
+            self.xlight.set_emission_iris,
+            self.signal_emission_iris_changed,
+        )
 
     def set_filter_slider(self, index):
         self.enable_all_buttons(False)
@@ -4310,7 +4365,11 @@ class LiveControlWidget(QFrame):
         if self.is_switching_mode == False:
             self.currentConfiguration.exposure_time = new_value
             self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "ExposureTime", new_value
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "ExposureTime",
+                new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newExposureTime.emit(new_value)
 
@@ -4318,7 +4377,11 @@ class LiveControlWidget(QFrame):
         if self.is_switching_mode == False:
             self.currentConfiguration.analog_gain = new_value
             self.liveController.microscope.config_repo.update_channel_setting(
-                self.objectiveStore.current_objective, self.currentConfiguration.name, "AnalogGain", new_value
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                "AnalogGain",
+                new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newAnalogGain.emit(new_value)
 
@@ -4330,8 +4393,26 @@ class LiveControlWidget(QFrame):
                 self.currentConfiguration.name,
                 "IlluminationIntensity",
                 new_value,
+                confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.liveController.update_illumination()
+
+    def _persist_iris_config(self, setting_name, new_value):
+        if self.currentConfiguration:
+            ok = self.liveController.microscope.config_repo.update_channel_setting(
+                self.objectiveStore.current_objective,
+                self.currentConfiguration.name,
+                setting_name,
+                new_value,
+            )
+            if not ok:
+                logger.warning("Failed to persist %s value %.1f", setting_name, new_value)
+
+    def update_config_illumination_iris(self, new_value):
+        self._persist_iris_config("IlluminationIris", new_value)
+
+    def update_config_emission_iris(self, new_value):
+        self._persist_iris_config("EmissionIris", new_value)
 
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
@@ -9457,6 +9538,9 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.multipointController.run_acquisition()
         else:
             self.multipointController.request_abort_aquisition()
+            # Also stop fluidics operations
+            if self.multipointController.fluidics:
+                self.multipointController.fluidics.emergency_stop()
 
     def set_saving_dir(self):
         """Open dialog to set saving directory"""
@@ -9785,35 +9869,37 @@ class FluidicsWidget(QWidget):
         fluidics_control_group.setLayout(fluidics_control_layout)
         left_panel.addWidget(fluidics_control_group)
 
-        # Manual Control panel
-        manual_control_group = QGroupBox("Manual Control")
-        manual_control_layout = QVBoxLayout()
+        # Manual Control panel (MERFISH only, not for Open Chamber)
+        self.is_open_chamber = self.fluidics.config.get("application") == "Open Chamber"
+        if not self.is_open_chamber:
+            manual_control_group = QGroupBox("Manual Control")
+            manual_control_layout = QVBoxLayout()
 
-        # First row - Port, Flow Rate, Volume, Flow button
-        manual_row1 = QHBoxLayout()
-        manual_row1.addWidget(QLabel("Port"))
-        self.manual_port_combo = QComboBox()
-        self.manual_port_combo.addItems(self.fluidics.available_port_names)
-        manual_row1.addWidget(self.manual_port_combo)
-        manual_row1.addWidget(QLabel("Flow Rate (µL/min)"))
-        self.txt_manual_flow_rate = QLineEdit()
-        self.txt_manual_flow_rate.setText("500")
-        manual_row1.addWidget(self.txt_manual_flow_rate)
-        manual_row1.addWidget(QLabel("Volume (µL)"))
-        self.txt_manual_volume = QLineEdit()
-        manual_row1.addWidget(self.txt_manual_volume)
-        self.btn_manual_flow = QPushButton("Flow")
-        manual_row1.addWidget(self.btn_manual_flow)
-        manual_control_layout.addLayout(manual_row1)
+            # First row - Port, Flow Rate, Volume, Flow button
+            manual_row1 = QHBoxLayout()
+            manual_row1.addWidget(QLabel("Port"))
+            self.manual_port_combo = QComboBox()
+            self.manual_port_combo.addItems(self.fluidics.available_port_names)
+            manual_row1.addWidget(self.manual_port_combo)
+            manual_row1.addWidget(QLabel("Flow Rate (µL/min)"))
+            self.txt_manual_flow_rate = QLineEdit()
+            self.txt_manual_flow_rate.setText("500")
+            manual_row1.addWidget(self.txt_manual_flow_rate)
+            manual_row1.addWidget(QLabel("Volume (µL)"))
+            self.txt_manual_volume = QLineEdit()
+            manual_row1.addWidget(self.txt_manual_volume)
+            self.btn_manual_flow = QPushButton("Flow")
+            manual_row1.addWidget(self.btn_manual_flow)
+            manual_control_layout.addLayout(manual_row1)
 
-        # Second row - Empty Syringe Pump button
-        manual_row2 = QHBoxLayout()
-        self.btn_empty_syringe_pump = QPushButton("Empty Syringe Pump To Waste")
-        manual_row2.addWidget(self.btn_empty_syringe_pump)
-        manual_control_layout.addLayout(manual_row2)
+            # Second row - Empty Syringe Pump button
+            manual_row2 = QHBoxLayout()
+            self.btn_empty_syringe_pump = QPushButton("Empty Syringe Pump To Waste")
+            manual_row2.addWidget(self.btn_empty_syringe_pump)
+            manual_control_layout.addLayout(manual_row2)
 
-        manual_control_group.setLayout(manual_control_layout)
-        left_panel.addWidget(manual_control_group)
+            manual_control_group.setLayout(manual_control_layout)
+            left_panel.addWidget(manual_control_group)
 
         # Status panel
         status_group = QGroupBox("Status")
@@ -9822,6 +9908,9 @@ class FluidicsWidget(QWidget):
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
         status_layout.addWidget(self.status_text)
+
+        self.btn_save_log = QPushButton("Save Log")
+        status_layout.addWidget(self.btn_save_log)
 
         status_group.setLayout(status_layout)
         left_panel.addWidget(status_group)
@@ -9855,9 +9944,11 @@ class FluidicsWidget(QWidget):
         self.btn_load_sequences.clicked.connect(self.load_sequences)
         self.btn_prime_start.clicked.connect(self.start_prime)
         self.btn_cleanup_start.clicked.connect(self.start_cleanup)
-        self.btn_manual_flow.clicked.connect(self.start_manual_flow)
-        self.btn_empty_syringe_pump.clicked.connect(self.empty_syringe_pump)
+        if not self.is_open_chamber:
+            self.btn_manual_flow.clicked.connect(self.start_manual_flow)
+            self.btn_empty_syringe_pump.clicked.connect(self.empty_syringe_pump)
         self.btn_emergency_stop.clicked.connect(self.emergency_stop)
+        self.btn_save_log.clicked.connect(self.save_log)
 
         self.enable_controls(False)
         self.btn_emergency_stop.setEnabled(False)
@@ -9899,13 +9990,15 @@ class FluidicsWidget(QWidget):
         if file_path:
             self.log_status(f"Loading sequences from {file_path}")
             try:
-                self.sequence_df = self.fluidics.load_sequences(file_path)
-                self.sequence_df.drop("include", axis=1, inplace=True)
-                model = PandasTableModel(self.sequence_df, self.fluidics.available_port_names)
+                self.fluidics.load_sequences(file_path)
+                model = PandasTableModel(self.fluidics.sequences, self.fluidics.available_port_names)
                 self.sequences_table.setModel(model)
+                # Hide the "include" column
+                if "include" in self.fluidics.sequences.columns:
+                    self.sequences_table.hideColumn(self.fluidics.sequences.columns.get_loc("include"))
                 self.sequences_table.resizeColumnsToContents()
                 self.sequences_table.horizontalHeader().setStretchLastSection(True)
-                self.log_status(f"Loaded {len(self.sequence_df)} sequences")
+                self.log_status(f"Loaded {len(self.fluidics.sequences)} sequences")
             except Exception as e:
                 self.log_status(f"Error loading sequences: {str(e)}")
 
@@ -10009,14 +10102,13 @@ class FluidicsWidget(QWidget):
 
     def update_progress(self, idx, seq_num, status):
         self.sequences_table.model().set_current_row(idx)
-        self.log_message_signal.emit(f"Sequence {self.sequence_df.iloc[idx]['sequence_name']} {status}")
+        self.log_message_signal.emit(f"Sequence {self.fluidics.sequences.iloc[idx]['sequence_name']} {status}")
 
     def on_finish(self, status=None):
         self.enable_controls(True)
-        try:
-            self.sequences_table.model().set_current_row(-1)
-        except:
-            pass
+        model = self.sequences_table.model()
+        if model is not None:
+            model.set_current_row(-1)
         if status is None:
             status = "Sequence section completed"
         self.fluidics.reset_abort()
@@ -10029,8 +10121,19 @@ class FluidicsWidget(QWidget):
         self.btn_load_sequences.setEnabled(enabled)
         self.btn_prime_start.setEnabled(enabled)
         self.btn_cleanup_start.setEnabled(enabled)
-        self.btn_manual_flow.setEnabled(enabled)
-        self.btn_empty_syringe_pump.setEnabled(enabled)
+        if not self.is_open_chamber:
+            self.btn_manual_flow.setEnabled(enabled)
+            self.btn_empty_syringe_pump.setEnabled(enabled)
+        # Enable/disable sequence table editing
+        model = self.sequences_table.model()
+        if model and hasattr(model, "set_editable"):
+            model.set_editable(enabled)
+
+    def set_acquisition_running(self, running: bool):
+        """Disable table editing when acquisition is running."""
+        model = self.sequences_table.model()
+        if model and hasattr(model, "set_editable"):
+            model.set_editable(not running)
 
     def log_status(self, message):
         current_time = QDateTime.currentDateTime().toString("hh:mm:ss")
@@ -10041,9 +10144,20 @@ class FluidicsWidget(QWidget):
         # Also log to console
         self._log.info(message)
 
+    def save_log(self):
+        """Save the log content to a file"""
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Fluidics Log", "", "Text Files (*.txt);;All Files (*)")
+        if file_path:
+            try:
+                with open(file_path, "w") as f:
+                    f.write(self.status_text.toPlainText())
+                self.log_status(f"Log saved to {file_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save log: {str(e)}")
+
 
 class PandasTableModel(QAbstractTableModel):
-    """Model for displaying pandas DataFrame in a QTableView"""
+    """Model for displaying and editing pandas DataFrame in a QTableView"""
 
     def __init__(self, data, port_names=None):
         super().__init__()
@@ -10059,6 +10173,8 @@ class PandasTableModel(QAbstractTableModel):
             "incubation_time": "Incubation (min)",
             "repeat": "Repeat",
         }
+        self._editable_columns = ["flow_rate", "volume", "incubation_time", "repeat"]
+        self._editable = True  # Can be disabled during acquisition
 
     def rowCount(self, parent=None):
         return len(self._data)
@@ -10067,31 +10183,42 @@ class PandasTableModel(QAbstractTableModel):
         return len(self._data.columns)
 
     def data(self, index, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole:
-            value = self._data.iloc[index.row(), index.column()]
-            if pd.isna(value):
-                return ""
+        if not index.isValid():
+            return None
 
-            # Map port numbers to names for specific columns
-            column_name = self._data.columns[index.column()]
-            if column_name in ["fluidic_port", "fill_tubing_with"] and self._port_names:
-                try:
-                    # Convert value to integer and get corresponding name
-                    port_num = int(value)
-                    if 1 <= port_num <= len(self._port_names):
-                        return self._port_names[port_num - 1]
-                except (ValueError, TypeError):
-                    pass
+        if role == Qt.BackgroundRole:
+            color = QColor(173, 216, 230) if index.row() == self._current_row else QColor(255, 255, 255)
+            return QBrush(color)
 
-            return str(value)
+        if role not in (Qt.DisplayRole, Qt.EditRole):
+            return None
 
-        elif role == Qt.BackgroundRole:
-            # Highlight the current row
-            if index.row() == self._current_row:
-                return QBrush(QColor(173, 216, 230))  # Light blue
-            else:
-                return QBrush(QColor(255, 255, 255))  # White
-        return None
+        value = self._data.iloc[index.row(), index.column()]
+        if pd.isna(value):
+            return "" if role == Qt.DisplayRole else None
+
+        column_name = self._data.columns[index.column()]
+
+        if role == Qt.EditRole:
+            return int(value) if column_name in self._editable_columns else str(value)
+
+        # DisplayRole: map port numbers to names for port columns
+        if column_name in ["fluidic_port", "fill_tubing_with"] and self._port_names:
+            port_name = self._get_port_name(value)
+            if port_name:
+                return port_name
+
+        return str(value)
+
+    def _get_port_name(self, value) -> str:
+        """Return port name for a port number, or empty string if invalid."""
+        try:
+            port_num = int(value)
+            if 1 <= port_num <= len(self._port_names):
+                return self._port_names[port_num - 1]
+        except (ValueError, TypeError):
+            pass
+        return ""
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
@@ -10104,6 +10231,46 @@ class PandasTableModel(QAbstractTableModel):
     def set_current_row(self, row_index):
         self._current_row = row_index
         self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1))
+
+    def flags(self, index):
+        base_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        if not self._editable:
+            return base_flags
+        column_name = self._data.columns[index.column()]
+        # Skip Imaging rows for editing
+        if self._data.iloc[index.row()]["sequence_name"] == "Imaging":
+            return base_flags
+        if column_name in self._editable_columns:
+            return base_flags | Qt.ItemIsEditable
+        return base_flags
+
+    def set_editable(self, editable):
+        """Enable or disable editing of the table."""
+        self._editable = editable
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if role != Qt.EditRole or not self._editable:
+            return False
+        column_name = self._data.columns[index.column()]
+        if column_name not in self._editable_columns:
+            return False
+        try:
+            int_value = int(value)
+            if not self._is_valid_column_value(column_name, int_value):
+                return False
+            self._data.iloc[index.row(), index.column()] = int_value
+            self.dataChanged.emit(index, index)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def _is_valid_column_value(self, column_name: str, value: int) -> bool:
+        """Check if the value is valid for the given column."""
+        if column_name in ["flow_rate", "volume"]:
+            return value > 0
+        if column_name in ["incubation_time", "repeat"]:
+            return value >= 0
+        return True
 
 
 class FocusMapWidget(QFrame):
@@ -11334,7 +11501,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.exposure_time = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "ExposureTime", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "ExposureTime",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.signal_newExposureTime.emit(new_value)
 
@@ -11343,7 +11514,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.analog_gain = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "AnalogGain", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "AnalogGain",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.signal_newAnalogGain.emit(new_value)
 
@@ -11352,7 +11527,11 @@ class NapariLiveWidget(QWidget):
             return
         self.live_configuration.illumination_intensity = new_value
         self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective, self.live_configuration.name, "IlluminationIntensity", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.name,
+            "IlluminationIntensity",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
         )
         self.liveController.update_illumination()
 
@@ -13259,11 +13438,14 @@ class WellplateCalibration(QDialog):
         self.liveController: LiveController = liveController
         self.was_live = self.liveController.is_live
         self.corners = [None, None, None]
+        self.center_point = None  # For center point calibration method
         self.show_virtual_joystick = True  # FLAG
         self.initUI()
         # Initially allow click-to-move and hide the joystick controls
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)
+        # Set minimum height to accommodate all UI configurations
+        self.setMinimumHeight(580)
 
     def initUI(self):
         layout = QHBoxLayout(self)  # Change to QHBoxLayout to have two columns
@@ -13286,13 +13468,17 @@ class WellplateCalibration(QDialog):
         self.existing_format_combo = QComboBox(self)
         self.populate_existing_formats()
         self.existing_format_combo.hide()
+        self.existing_format_combo.currentIndexChanged.connect(self.on_existing_format_changed)
         left_layout.addWidget(self.existing_format_combo)
 
         # Connect radio buttons to toggle visibility
         self.new_format_radio.toggled.connect(self.toggle_input_mode)
         self.calibrate_format_radio.toggled.connect(self.toggle_input_mode)
 
-        self.form_layout = QFormLayout()
+        # New format inputs container (hidden when calibrating existing format)
+        self.new_format_widget = QWidget()
+        self.form_layout = QFormLayout(self.new_format_widget)
+        self.form_layout.setContentsMargins(0, 0, 0, 0)
 
         self.nameInput = QLineEdit(self)
         self.nameInput.setPlaceholderText("custom well plate")
@@ -13334,15 +13520,66 @@ class WellplateCalibration(QDialog):
         self.wellSpacingInput.setSuffix(" mm")
         self.form_layout.addRow("Well Spacing:", self.wellSpacingInput)
 
-        left_layout.addLayout(self.form_layout)
+        left_layout.addWidget(self.new_format_widget)
 
-        points_layout = QGridLayout()
+        # Existing format parameters section (initially hidden)
+        self.existing_params_group = QGroupBox("Format Parameters")
+        existing_params_layout = QFormLayout()
+
+        self.existing_spacing_input = QDoubleSpinBox(self)
+        self.existing_spacing_input.setKeyboardTracking(False)
+        self.existing_spacing_input.setRange(0.1, 100)
+        self.existing_spacing_input.setSingleStep(0.1)
+        self.existing_spacing_input.setDecimals(3)
+        self.existing_spacing_input.setSuffix(" mm")
+        existing_params_layout.addRow("Well Spacing:", self.existing_spacing_input)
+
+        self.existing_well_size_input = QDoubleSpinBox(self)
+        self.existing_well_size_input.setKeyboardTracking(False)
+        self.existing_well_size_input.setRange(0.1, 50)
+        self.existing_well_size_input.setSingleStep(0.1)
+        self.existing_well_size_input.setDecimals(3)
+        self.existing_well_size_input.setSuffix(" mm")
+        existing_params_layout.addRow("Well Size:", self.existing_well_size_input)
+
+        self.existing_params_group.setLayout(existing_params_layout)
+
+        self.update_params_button = QPushButton("Update Parameters")
+        self.update_params_button.clicked.connect(self.update_existing_parameters)
+
+        self.existing_params_group.hide()
+        self.update_params_button.hide()
+        left_layout.addWidget(self.existing_params_group)
+        left_layout.addWidget(self.update_params_button)
+
+        # Calibration method selection
+        self.calibration_method_group = QGroupBox("Calibration Method")
+        calibration_method_layout = QVBoxLayout()
+
+        self.method_button_group = QButtonGroup(self)
+        self.edge_points_radio = QRadioButton("3 Edge Points (recommended for large wells)")
+        self.center_point_radio = QRadioButton("Center Point (recommended for small wells)")
+        self.method_button_group.addButton(self.edge_points_radio)
+        self.method_button_group.addButton(self.center_point_radio)
+        self.edge_points_radio.setChecked(True)
+
+        calibration_method_layout.addWidget(self.edge_points_radio)
+        calibration_method_layout.addWidget(self.center_point_radio)
+        self.calibration_method_group.setLayout(calibration_method_layout)
+        left_layout.addWidget(self.calibration_method_group)
+
+        # Only connect one radio button to avoid double-calls (both emit toggled when selection changes)
+        self.edge_points_radio.toggled.connect(self.toggle_calibration_method)
+
+        # 3 Edge Points UI
+        self.points_widget = QWidget()
+        points_layout = QGridLayout(self.points_widget)
+        points_layout.setContentsMargins(0, 0, 0, 0)
         self.cornerLabels = []
         self.setPointButtons = []
-        navigate_label = QLabel("Navigate to and Select\n3 Points on the Edge of Well A1")
-        navigate_label.setAlignment(Qt.AlignCenter)
-        # navigate_label.setStyleSheet("font-weight: bold;")
-        points_layout.addWidget(navigate_label, 0, 0, 1, 2)
+        self.edge_points_label = QLabel("Navigate to and Select\n3 Points on the Edge of Well A1")
+        self.edge_points_label.setAlignment(Qt.AlignCenter)
+        points_layout.addWidget(self.edge_points_label, 0, 0, 1, 2)
         for i in range(1, 4):
             label = QLabel(f"Point {i}: N/A")
             button = QPushButton("Set Point")
@@ -13354,7 +13591,40 @@ class WellplateCalibration(QDialog):
             self.setPointButtons.append(button)
 
         points_layout.setColumnStretch(0, 1)
-        left_layout.addLayout(points_layout)
+        left_layout.addWidget(self.points_widget)
+
+        # Center Point UI
+        self.center_point_widget = QWidget()
+        center_point_layout = QGridLayout(self.center_point_widget)
+        center_point_layout.setContentsMargins(0, 0, 0, 0)
+
+        center_point_label = QLabel("Navigate to the Center of Well A1")
+        center_point_label.setAlignment(Qt.AlignCenter)
+        center_point_layout.addWidget(center_point_label, 0, 0, 1, 2)
+
+        self.center_point_status_label = QLabel("Center: Not set")
+        self.set_center_button = QPushButton("Set Center")
+        self.set_center_button.setFixedWidth(self.set_center_button.sizeHint().width())
+        self.set_center_button.clicked.connect(self.setCenterPoint)
+        center_point_layout.addWidget(self.center_point_status_label, 1, 0)
+        center_point_layout.addWidget(self.set_center_button, 1, 1)
+
+        # Well size input for center point method (since we can't calculate it)
+        # Hidden when calibrating existing formats (Format Parameters section has well size)
+        self.center_well_size_label = QLabel("Well Size:")
+        self.center_well_size_input = QDoubleSpinBox(self)
+        self.center_well_size_input.setKeyboardTracking(False)
+        self.center_well_size_input.setRange(0.1, 50)
+        self.center_well_size_input.setSingleStep(0.1)
+        self.center_well_size_input.setDecimals(3)
+        self.center_well_size_input.setValue(3.0)  # Default for small wells
+        self.center_well_size_input.setSuffix(" mm")
+        center_point_layout.addWidget(self.center_well_size_label, 2, 0)
+        center_point_layout.addWidget(self.center_well_size_input, 2, 1)
+
+        center_point_layout.setColumnStretch(0, 1)
+        self.center_point_widget.hide()  # Initially hidden
+        left_layout.addWidget(self.center_point_widget)
 
         # Add 'Click to Move' checkbox
         self.clickToMoveCheckbox = QCheckBox("Click to Move")
@@ -13489,122 +13759,303 @@ class WellplateCalibration(QDialog):
                 return
 
             self.corners[index] = (x, y)
-            self.cornerLabels[index].setText(f"Point {index+1}: ({x:.2f}, {y:.2f})")
+            self.cornerLabels[index].setText(f"Point {index+1}: ({x:.3f}, {y:.3f})")
             self.setPointButtons[index].setText("Clear Point")
         else:
             self.corners[index] = None
             self.cornerLabels[index].setText(f"Point {index+1}: Not set")
             self.setPointButtons[index].setText("Set Point")
 
-        self.calibrateButton.setEnabled(all(corner is not None for corner in self.corners))
+        self.update_calibrate_button_state()
+
+    def _format_display_name(self, format_id) -> str:
+        """Return a display name for a wellplate format, adding 'well plate' suffix if not present."""
+        name = str(format_id)
+        if "well plate" not in name.lower():
+            return f"{format_id} well plate"
+        return name
 
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
-            self.existing_format_combo.addItem(f"{format_} well plate", format_)
+            self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self):
-        if self.new_format_radio.isChecked():
-            self.existing_format_combo.hide()
-            for i in range(self.form_layout.rowCount()):
-                self.form_layout.itemAt(i, QFormLayout.FieldRole).widget().show()
-                self.form_layout.itemAt(i, QFormLayout.LabelRole).widget().show()
+        is_new_format = self.new_format_radio.isChecked()
+
+        self.new_format_widget.setVisible(is_new_format)
+        self.center_well_size_label.setVisible(is_new_format)
+        self.center_well_size_input.setVisible(is_new_format)
+
+        self.existing_format_combo.setVisible(not is_new_format)
+        self.existing_params_group.setVisible(not is_new_format)
+        self.update_params_button.setVisible(not is_new_format)
+
+        if not is_new_format:
+            self.load_existing_format_values()
+
+    def load_existing_format_values(self):
+        """Load current values from selected existing format into the parameter inputs."""
+        selected_format = self.existing_format_combo.currentData()
+        if selected_format is None:
+            return
+
+        settings = WELLPLATE_FORMAT_SETTINGS.get(selected_format, {})
+        self.existing_spacing_input.setValue(settings.get("well_spacing_mm", 9.0))
+
+        # Use consistent well size for both inputs
+        well_size = settings.get("well_size_mm", 6.0)
+        self.existing_well_size_input.setValue(well_size)
+        self.center_well_size_input.setValue(well_size)
+
+        # Auto-select center point method for 384 and 1536 well plates because their
+        # small well diameters make it difficult to reliably set 3 distinct points
+        # on the well edge under a microscope
+        if selected_format in ("384 well plate", "1536 well plate"):
+            self.center_point_radio.setChecked(True)
         else:
-            self.existing_format_combo.show()
-            for i in range(self.form_layout.rowCount()):
-                self.form_layout.itemAt(i, QFormLayout.FieldRole).widget().hide()
-                self.form_layout.itemAt(i, QFormLayout.LabelRole).widget().hide()
+            self.edge_points_radio.setChecked(True)
 
-    def calibrate(self):
-        try:
-            if self.new_format_radio.isChecked():
-                if not self.nameInput.text() or not all(self.corners):
-                    QMessageBox.warning(
-                        self,
-                        "Incomplete Information",
-                        "Please fill in all fields and set 3 corner points before calibrating.",
-                    )
-                    return
+    def on_existing_format_changed(self):
+        """Handle existing format combo box selection change."""
+        if self.calibrate_format_radio.isChecked():
+            self.load_existing_format_values()
+            # Reset calibration points when format changes
+            self.reset_calibration_points()
 
-                name = self.nameInput.text()
-                rows = self.rowsInput.value()
-                cols = self.colsInput.value()
-                well_spacing_mm = self.wellSpacingInput.value()
-                plate_width_mm = self.plateWidthInput.value()
-                plate_height_mm = self.plateHeightInput.value()
+    def reset_calibration_points(self):
+        """Reset all calibration points to unset state."""
+        # Reset edge points
+        for i in range(3):
+            self.corners[i] = None
+            self.cornerLabels[i].setText(f"Point {i+1}: Not set")
+            self.setPointButtons[i].setText("Set Point")
 
-                center, radius = self.calculate_circle(self.corners)
-                well_size_mm = radius * 2
-                a1_x_mm, a1_y_mm = center
-                scale = 1 / 0.084665
-                a1_x_pixel = round(a1_x_mm * scale)
-                a1_y_pixel = round(a1_y_mm * scale)
+        # Reset center point
+        self.center_point = None
+        self.center_point_status_label.setText("Center: Not set")
+        self.set_center_button.setText("Set Center")
 
-                new_format = {
-                    "a1_x_mm": a1_x_mm,
-                    "a1_y_mm": a1_y_mm,
-                    "a1_x_pixel": a1_x_pixel,
-                    "a1_y_pixel": a1_y_pixel,
-                    "well_size_mm": well_size_mm,
-                    "well_spacing_mm": well_spacing_mm,
-                    "number_of_skip": 0,
-                    "rows": rows,
-                    "cols": cols,
-                }
+        self.update_calibrate_button_state()
 
-                self.wellplateFormatWidget.add_custom_format(name, new_format)
-                self.wellplateFormatWidget.save_formats_to_csv()
-                self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
-                self.wellplateFormatWidget.setWellplateSettings(name)
-                success_message = f"New format '{name}' has been successfully created and calibrated."
+    def toggle_calibration_method(self):
+        """Toggle between 3 edge points and center point calibration methods."""
+        if self.edge_points_radio.isChecked():
+            self.points_widget.show()
+            self.center_point_widget.hide()
+        else:
+            self.points_widget.hide()
+            self.center_point_widget.show()
+        self.update_calibrate_button_state()
 
+    def setCenterPoint(self):
+        """Set or clear the center point for center point calibration method."""
+        if self.center_point is None:
+            pos = self.stage.get_pos()
+            x = pos.x_mm
+            y = pos.y_mm
+            self.center_point = (x, y)
+            self.center_point_status_label.setText(f"Center: ({x:.3f}, {y:.3f})")
+            self.set_center_button.setText("Clear Center")
+        else:
+            self.center_point = None
+            self.center_point_status_label.setText("Center: Not set")
+            self.set_center_button.setText("Set Center")
+        self.update_calibrate_button_state()
+
+    def update_calibrate_button_state(self):
+        """Update the calibrate button enabled state based on current calibration method."""
+        if self.center_point_radio.isChecked():
+            self.calibrateButton.setEnabled(self.center_point is not None)
+        else:
+            self.calibrateButton.setEnabled(all(corner is not None for corner in self.corners))
+
+    def _get_calibration_data(self):
+        """Extract calibration data based on current calibration method.
+
+        Returns:
+            tuple: (a1_x_mm, a1_y_mm, well_size_mm) or None if validation fails.
+            Displays appropriate warning message if validation fails.
+        """
+        if self.center_point_radio.isChecked():
+            if self.center_point is None:
+                QMessageBox.warning(self, "Incomplete Information", "Please set the center point before calibrating.")
+                return None
+            a1_x_mm, a1_y_mm = self.center_point
+            # Use appropriate well size input based on mode
+            if self.calibrate_format_radio.isChecked():
+                well_size_mm = self.existing_well_size_input.value()
             else:
-                selected_format = self.existing_format_combo.currentData()
-                if not all(self.corners):
-                    QMessageBox.warning(
-                        self, "Incomplete Information", "Please set 3 corner points before calibrating."
-                    )
-                    return
+                well_size_mm = self.center_well_size_input.value()
+        else:
+            if not all(self.corners):
+                QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
+                return None
+            center, radius = self.calculate_circle(self.corners)
+            well_size_mm = radius * 2
+            a1_x_mm, a1_y_mm = center
+        return a1_x_mm, a1_y_mm, well_size_mm
 
-                center, radius = self.calculate_circle(self.corners)
-                well_size_mm = radius * 2
-                a1_x_mm, a1_y_mm = center
+    def update_existing_parameters(self):
+        """Update parameters for an existing format without recalibrating the position."""
+        selected_format = self.existing_format_combo.currentData()
+        if selected_format is None:
+            QMessageBox.warning(self, "No Format Selected", "Please select a format to update.")
+            return
 
-                # Get the existing format settings
-                existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        try:
+            # Get the new values
+            new_spacing = self.existing_spacing_input.value()
+            new_well_size = self.existing_well_size_input.value()
 
-                print(f"Updating existing format {selected_format} well plate")
-                print(
-                    f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, 'well_size_mm': {existing_settings['well_size_mm']}"
-                )
-                print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
+            # Get existing settings
+            existing_settings = WELLPLATE_FORMAT_SETTINGS.get(selected_format)
+            if existing_settings is None:
+                QMessageBox.critical(self, "Update Failed", f"Format '{selected_format}' not found in settings.")
+                return
 
-                updated_settings = {
-                    "a1_x_mm": a1_x_mm,
-                    "a1_y_mm": a1_y_mm,
-                    "well_size_mm": well_size_mm,
-                }
-
-                WELLPLATE_FORMAT_SETTINGS[selected_format].update(updated_settings)
-
-                self.wellplateFormatWidget.save_formats_to_csv()
-                self.wellplateFormatWidget.setWellplateSettings(selected_format)
-                success_message = f"Format '{selected_format} well plate' has been successfully recalibrated."
-
-            # Update the WellplateFormatWidget's combo box to reflect the newly calibrated format
-            self.wellplateFormatWidget.populate_combo_box()
-            index = self.wellplateFormatWidget.comboBox.findData(
-                selected_format if self.calibrate_format_radio.isChecked() else name
+            print(f"Updating parameters for {self._format_display_name(selected_format)}")
+            print(
+                f"OLD: spacing={existing_settings.get('well_spacing_mm')}, well_size={existing_settings.get('well_size_mm')}"
             )
+            print(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
+
+            # Update the settings
+            WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+                {
+                    "well_spacing_mm": new_spacing,
+                    "well_size_mm": new_well_size,
+                }
+            )
+
+            # Save and refresh
+            self.wellplateFormatWidget.save_formats_to_csv()
+            self.wellplateFormatWidget.populate_combo_box()
+
+            # Re-select the format (triggers wellplateChanged which calls setWellplateSettings)
+            index = self.wellplateFormatWidget.comboBox.findData(selected_format)
             if index >= 0:
                 self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
 
-            # Display success message
-            QMessageBox.information(self, "Calibration Successful", success_message)
-            self.accept()
+            QMessageBox.information(
+                self,
+                "Parameters Updated",
+                f"Parameters for '{self._format_display_name(selected_format)}' have been updated successfully.",
+            )
 
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            QMessageBox.critical(self, "Update Failed", f"An error occurred while updating parameters: {str(e)}")
+
+    def calibrate(self):
+        """Execute wellplate calibration based on current settings.
+
+        Supports two modes:
+        - New format: Creates a new custom wellplate format with all parameters
+        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_mm
+
+        Supports two calibration methods:
+        - 3 Edge Points: Calculates well center and diameter from 3 points on well edge
+        - Center Point: Uses directly-specified center position with manual well size
+        """
+        try:
+            if self.new_format_radio.isChecked():
+                self._calibrate_new_format()
+            else:
+                self._calibrate_existing_format()
+        except np.linalg.LinAlgError:
+            import traceback
+
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                "Calibration Error",
+                "Unable to calculate well center from the provided points.\n"
+                "The 3 points may be nearly collinear (in a straight line).\n"
+                "Please choose points that are more spread out around the well edge.",
+            )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             QMessageBox.critical(self, "Calibration Error", f"An error occurred during calibration: {str(e)}")
+
+    def _calibrate_new_format(self):
+        """Create and calibrate a new wellplate format."""
+        if not self.nameInput.text():
+            QMessageBox.warning(self, "Incomplete Information", "Please enter a name for the format.")
+            return
+
+        calibration_data = self._get_calibration_data()
+        if calibration_data is None:
+            return
+        a1_x_mm, a1_y_mm, well_size_mm = calibration_data
+
+        name = self.nameInput.text()
+        plate_width_mm = self.plateWidthInput.value()
+        plate_height_mm = self.plateHeightInput.value()
+
+        scale = 1 / 0.084665
+        new_format = {
+            "a1_x_mm": a1_x_mm,
+            "a1_y_mm": a1_y_mm,
+            "a1_x_pixel": round(a1_x_mm * scale),
+            "a1_y_pixel": round(a1_y_mm * scale),
+            "well_size_mm": well_size_mm,
+            "well_spacing_mm": self.wellSpacingInput.value(),
+            "number_of_skip": 0,
+            "rows": self.rowsInput.value(),
+            "cols": self.colsInput.value(),
+        }
+
+        self.wellplateFormatWidget.add_custom_format(name, new_format)
+        self.wellplateFormatWidget.save_formats_to_csv()
+        self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
+
+        self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
+
+    def _calibrate_existing_format(self):
+        """Recalibrate an existing wellplate format."""
+        selected_format = self.existing_format_combo.currentData()
+
+        calibration_data = self._get_calibration_data()
+        if calibration_data is None:
+            return
+        a1_x_mm, a1_y_mm, well_size_mm = calibration_data
+
+        existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        display_name = self._format_display_name(selected_format)
+
+        print(f"Updating existing format {display_name}")
+        print(
+            f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, "
+            f"'well_size_mm': {existing_settings['well_size_mm']}"
+        )
+        print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
+
+        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+            {
+                "a1_x_mm": a1_x_mm,
+                "a1_y_mm": a1_y_mm,
+                "well_size_mm": well_size_mm,
+            }
+        )
+
+        self.wellplateFormatWidget.save_formats_to_csv()
+
+        self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
+
+    def _finish_calibration(self, format_id, success_message: str):
+        """Complete calibration by updating UI and showing success message."""
+        self.wellplateFormatWidget.populate_combo_box()
+        index = self.wellplateFormatWidget.comboBox.findData(format_id)
+        if index >= 0:
+            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+
+        QMessageBox.information(self, "Calibration Successful", success_message)
+        self.accept()
 
     def create_wellplate_image(self, name, format_data, plate_width_mm, plate_height_mm):
 
@@ -16333,10 +16784,10 @@ class AddAcquisitionChannelDialog(QDialog):
             camera=camera,
             filter_wheel=filter_wheel,
             filter_position=filter_position,
+            z_offset_um=0.0,
             illumination_settings=IlluminationSettings(
                 illumination_channel=illum_name,
                 intensity=20.0,
-                z_offset_um=0.0,
             ),
             camera_settings=CameraSettings(
                 exposure_time_ms=20.0,
@@ -16598,6 +17049,7 @@ class WarningErrorWidget(QWidget):
     MAX_MESSAGES = 100  # Prevent unbounded memory growth
     RATE_LIMIT_WINDOW_MS = 1000  # 1 second window
     RATE_LIMIT_MAX_MESSAGES = 10  # Max messages per window
+    POLL_INTERVAL_MS = 100  # How often to poll handler for new messages
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -16607,10 +17059,52 @@ class WarningErrorWidget(QWidget):
         self._rate_limit_timestamps = []  # For rate limiting
         self._dropped_count = 0  # Track rate-limited messages
         self._popup = None
+        self._handler = None
+        self._poll_timer = None
         self._setup_ui()
 
+    def connect_handler(self, handler: "BufferingHandler"):
+        """Connect to a logging handler and start polling for messages.
+
+        Must be called from the GUI thread (creates QTimer which is not thread-safe).
+
+        Args:
+            handler: The BufferingHandler to poll for messages.
+        """
+        # Disconnect any existing handler first to avoid orphaned timers
+        self.disconnect_handler()
+
+        self._handler = handler
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_messages)
+        self._poll_timer.start(self.POLL_INTERVAL_MS)
+
+    def disconnect_handler(self):
+        """Disconnect from the logging handler and stop polling.
+
+        Must be called from the GUI thread (QTimer operations are not thread-safe).
+        """
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer.deleteLater()
+            self._poll_timer = None
+        self._handler = None
+
+    def _poll_messages(self):
+        """Poll the handler for new messages."""
+        if self._handler is None:
+            return
+        try:
+            for level, logger_name, message in self._handler.get_pending():
+                self.add_message(level, logger_name, message)
+        except Exception as e:
+            # Log but don't crash the timer - allow recovery on next poll.
+            # Qt silently swallows exceptions in timer callbacks, so we must log explicitly.
+            squid.logging.get_logger(__name__).error(f"Error polling warning/error messages: {e}", exc_info=True)
+
     def closeEvent(self, event):
-        """Clean up popup when widget is closed."""
+        """Clean up popup and timer when widget is closed."""
+        self.disconnect_handler()
         self._cleanup_popup()
         super().closeEvent(event)
 
@@ -16637,6 +17131,7 @@ class WarningErrorWidget(QWidget):
 
         # Message text
         self.label_text = QLabel()
+        self.label_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # Expand button (shows when multiple messages or dropped messages)
         self.btn_expand = QPushButton()
@@ -16802,6 +17297,7 @@ class WarningErrorWidget(QWidget):
         msg_label.setWordWrap(True)
         msg_label.setStyleSheet("font-size: 12px; color: #333;")
         msg_label.setTextFormat(Qt.RichText)
+        msg_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # Dismiss button - use message ID for stable reference
         btn_dismiss = QPushButton("✕")

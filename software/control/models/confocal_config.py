@@ -5,9 +5,15 @@ These models define confocal-specific hardware settings. This configuration
 file is optional - it only exists on systems with a confocal unit.
 """
 
-from typing import Any, List, Optional
+import logging
+from typing import Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from control.models.confocal_models import ConfocalModelDef
 
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 from control.models.filter_wheel_config import (
     FilterWheelDefinition,
@@ -30,6 +36,9 @@ class ConfocalConfig(BaseModel):
     """
 
     version: float = Field(1.0, description="Configuration format version")
+
+    # Confocal model name (e.g. "xlight_v3", "cicero") — drives which properties are generated
+    model: Optional[str] = Field(None, description="Confocal model (e.g. 'xlight_v3', 'cicero')")
 
     # Filter wheels that are part of the confocal unit
     filter_wheels: List[FilterWheelDefinition] = Field(
@@ -113,6 +122,24 @@ class ConfocalConfig(BaseModel):
     def get_excitation_wheels(self) -> List[FilterWheelDefinition]:
         """Get all confocal excitation filter wheels."""
         return self.get_wheels_by_type(FilterWheelType.EXCITATION)
+
+    def get_model_def(self) -> Optional["ConfocalModelDef"]:
+        """Look up the model definition from the registry.
+
+        Returns None if model is not set or not found in the registry.
+        Logs a warning if model is set but not found (possible typo).
+        """
+        if self.model is None:
+            return None
+        from control.models.confocal_models import CONFOCAL_MODELS
+
+        model_def = CONFOCAL_MODELS.get(self.model)
+        if model_def is None:
+            logger.warning(
+                f"Confocal model '{self.model}' not found in registry. "
+                f"Known models: {sorted(CONFOCAL_MODELS.keys())}"
+            )
+        return model_def
 
     def has_property(self, property_name: str) -> bool:
         """Check if a property is available for configuration."""

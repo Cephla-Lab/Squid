@@ -71,8 +71,9 @@ static const int SET_PORT_ILLUMINATION = 37;   // Set intensity + on/off in one 
 // Multi-port commands
 static const int SET_MULTI_PORT_MASK = 38;     // Set on/off for multiple ports (partial update)
 static const int TURN_OFF_ALL_PORTS = 39;      // Turn off all illumination ports
-
+static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and enable
 static const int SET_PIN_LEVEL = 41;
+static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

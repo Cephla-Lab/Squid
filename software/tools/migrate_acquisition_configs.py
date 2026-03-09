@@ -58,6 +58,7 @@ from control.models import (
     LaserAFConfig,
     ObjectiveChannelConfig,
 )
+from control.models.confocal_config import ConfocalConfig
 from control.models.illumination_config import IlluminationType
 
 # Use squid logging when imported as module, standalone basicConfig when run directly
@@ -68,6 +69,20 @@ try:
 except ImportError:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     logger = logging.getLogger(__name__)
+
+
+def load_confocal_config(software_path: Path) -> Optional[ConfocalConfig]:
+    """Load confocal_config.yaml if it exists. Returns None on missing/invalid file."""
+    confocal_yaml = software_path / "machine_configs" / "confocal_config.yaml"
+    if not confocal_yaml.exists():
+        return None
+    try:
+        with open(confocal_yaml, "r") as f:
+            data = yaml.safe_load(f)
+        return ConfocalConfig(**data)
+    except Exception as e:
+        logger.warning(f"Failed to load confocal_config.yaml: {e}")
+        return None
 
 
 def extract_wavelength_from_name(channel_name: str) -> Optional[int]:
@@ -275,6 +290,7 @@ def convert_xml_channels_to_acquisition_config(
     illumination_config: IlluminationChannelConfig,
     include_confocal: bool = False,
     confocal_channels: Optional[List[Dict[str, Any]]] = None,
+    confocal_config: Optional[ConfocalConfig] = None,
     include_illumination_channels: bool = False,
 ) -> ObjectiveChannelConfig:
     """
@@ -331,13 +347,12 @@ def convert_xml_channels_to_acquisition_config(
         # z_offset_um at channel level in v1.0
         z_offset_um = xml_ch["z_offset"] if include_illumination_channels else 0.0
 
-        # Create confocal_override if needed (v1.0 format - iris settings only)
+        # Create confocal_override if needed
         confocal_override = None
+        confocal_hardware_settings = None
 
         if include_confocal and name in confocal_by_name:
             conf_ch = confocal_by_name[name]
-            # v1.0: confocal_override contains only iris settings (objective-specific)
-            # Filter wheel resolved via hardware_bindings, not stored in config
             confocal_override = AcquisitionChannelOverride(
                 illumination_settings=IlluminationSettings(
                     illumination_channel=None,  # Overrides don't need illumination_channel
@@ -347,11 +362,11 @@ def convert_xml_channels_to_acquisition_config(
                     exposure_time_ms=conf_ch["exposure_time_ms"],
                     gain_mode=conf_ch["analog_gain"],
                 ),
-                confocal_settings=ConfocalSettings(
-                    illumination_iris=None,  # No iris data in legacy XML
-                    emission_iris=None,  # No iris data in legacy XML
-                ),
             )
+            # Generate default iris values from confocal config
+            from control.default_config_generator import build_confocal_settings_from_config
+
+            confocal_hardware_settings = build_confocal_settings_from_config(confocal_config)
 
         # Create acquisition channel (v1.0 format)
         acq_channel = AcquisitionChannel(
@@ -362,6 +377,7 @@ def convert_xml_channels_to_acquisition_config(
             filter_wheel=filter_wheel,
             filter_position=filter_position,
             z_offset_um=z_offset_um,  # v1.0: at channel level
+            confocal_hardware_settings=confocal_hardware_settings,
             confocal_override=confocal_override,
         )
         acq_channels.append(acq_channel)
@@ -461,6 +477,7 @@ def migrate_profile(
     profile_name: str,
     dry_run: bool = False,
     force: bool = False,
+    confocal_config: Optional[ConfocalConfig] = None,
 ) -> bool:
     """
     Migrate a single profile from old format to new format.
@@ -493,12 +510,25 @@ def migrate_profile(
     all_channels_by_name: Dict[str, Dict[str, Any]] = {}
     objective_channels: Dict[str, List[Dict[str, Any]]] = {}
 
-    for objective in objectives:
-        channel_xml = source_path / objective / "channel_configurations.xml"
-        xml_channels = parse_xml_config(channel_xml)
+    objective_confocal_channels: Dict[str, List[Dict[str, Any]]] = {}
+    has_confocal = False
 
-        if not xml_channels and channel_xml.exists():
-            logger.warning(f"  No channels extracted from {channel_xml} - file may be corrupt or empty")
+    for objective in objectives:
+        # Non-confocal systems use channel_configurations.xml
+        # Confocal systems use widefield_configurations.xml + confocal_configurations.xml
+        widefield_xml = source_path / objective / "widefield_configurations.xml"
+        channel_xml = source_path / objective / "channel_configurations.xml"
+        confocal_xml = source_path / objective / "confocal_configurations.xml"
+
+        if widefield_xml.exists():
+            base_xml = widefield_xml
+        else:
+            base_xml = channel_xml
+
+        xml_channels = parse_xml_config(base_xml)
+
+        if not xml_channels and base_xml.exists():
+            logger.warning(f"  No channels extracted from {base_xml} - file may be corrupt or empty")
 
         if xml_channels:
             objective_channels[objective] = xml_channels
@@ -506,6 +536,12 @@ def migrate_profile(
                 ch_name = xml_ch["name"]
                 if ch_name not in all_channels_by_name:
                     all_channels_by_name[ch_name] = xml_ch
+
+        # Parse confocal overrides if present
+        confocal_channels = parse_xml_config(confocal_xml)
+        if confocal_channels:
+            objective_confocal_channels[objective] = confocal_channels
+            has_confocal = True
 
     # Create general.yaml from union of all channels (v1.0 schema)
     if all_channels_by_name:
@@ -547,11 +583,15 @@ def migrate_profile(
     for objective in objectives:
         obj_source = source_path / objective
         xml_channels = objective_channels.get(objective, [])
+        confocal_channels = objective_confocal_channels.get(objective, [])
 
         if xml_channels:
             obj_config = convert_xml_channels_to_acquisition_config(
                 xml_channels,
                 illumination_config,
+                include_confocal=bool(confocal_channels),
+                confocal_channels=confocal_channels or None,
+                confocal_config=confocal_config,
                 include_illumination_channels=False,
             )
             save_yaml(target_path / "channel_configs" / f"{objective}.yaml", obj_config, dry_run)
@@ -692,6 +732,9 @@ def run_auto_migration(software_path: Optional[Path] = None, force: bool = False
     # Create backup
     create_backup(source_path, dry_run=False)
 
+    # Load confocal config if available
+    confocal_config = load_confocal_config(software_path)
+
     # Migrate each profile
     success_count = 0
     for profile in profiles:
@@ -705,6 +748,7 @@ def run_auto_migration(software_path: Optional[Path] = None, force: bool = False
             profile,
             dry_run=False,
             force=force,
+            confocal_config=confocal_config,
         ):
             success_count += 1
 
@@ -813,6 +857,9 @@ def main():
 
     logger.info(f"Profiles to migrate: {', '.join(profiles)}")
 
+    # Load confocal config if available
+    confocal_config = load_confocal_config(software_path)
+
     # Migrate each profile
     success_count = 0
     for profile in profiles:
@@ -826,6 +873,7 @@ def main():
             profile,
             args.dry_run,
             args.force,
+            confocal_config=confocal_config,
         ):
             success_count += 1
 

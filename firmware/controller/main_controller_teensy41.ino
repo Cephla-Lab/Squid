@@ -26,6 +26,13 @@ void loop() {
     digitalWrite(PIN_ILLUMINATION_D5, LOW);
   }
 
+  // Serial watchdog - auto-shutoff illumination if software stops communicating
+  if (watchdog_enabled && (millis() - last_serial_message_time >= watchdog_timeout_ms))
+  {
+    turn_off_all_ports();
+    watchdog_enabled = false;  // One-shot: don't keep firing every loop iteration
+  }
+
   joystick_packetSerial.update();
 
   process_serial_message();

@@ -8,7 +8,7 @@ These models define user-facing acquisition settings. They are organized as:
 The merge logic combines these two configs:
 - From general.yaml: name, enabled, display_color, camera (ID), illumination_channel, filter_wheel,
                      filter_position, z_offset_um
-- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override (iris settings)
+- From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_hardware_settings, confocal_override
 
 Filter wheel resolution:
 - hardware_bindings.yaml maps camera ID → filter wheel reference (confocal or standalone)
@@ -50,10 +50,10 @@ class CameraSettings(BaseModel):
 
 
 class ConfocalSettings(BaseModel):
-    """Confocal-specific settings for objective-specific tuning.
+    """Confocal iris aperture settings for objective-specific tuning.
 
-    These settings are used in confocal_override (objective.yaml) to provide
-    iris aperture settings when confocal mode is active.
+    Stored in AcquisitionChannel.confocal_hardware_settings (at the channel level)
+    and applied regardless of confocal mode.
 
     Note: Filter wheel selection is handled via hardware_bindings.yaml, not here.
     The camera's bound filter wheel (confocal or standalone) is resolved at runtime.
@@ -87,14 +87,15 @@ class AcquisitionChannelOverride(BaseModel):
     """
     Override settings for confocal mode (objective-specific).
 
-    When confocal mode is active, these settings override the base settings.
+    When confocal mode is active, these settings override the base camera
+    and illumination settings. Confocal hardware settings (iris) are at
+    the channel level in confocal_hardware_settings, not here.
     """
 
     illumination_settings: Optional[IlluminationSettings] = Field(
         None, description="Override illumination settings for confocal mode"
     )
     camera_settings: Optional[CameraSettings] = Field(None, description="Override camera settings for confocal mode")
-    confocal_settings: Optional[ConfocalSettings] = Field(None, description="Override confocal settings")
 
     model_config = {"extra": "forbid"}
 
@@ -106,7 +107,8 @@ class AcquisitionChannel(BaseModel):
     - camera field is integer ID (references cameras.yaml), null for single-camera
     - filter_wheel resolved via hardware_bindings.yaml based on camera ID
     - z_offset_um at channel level (not in illumination_settings)
-    - confocal_settings removed (iris settings in confocal_override only)
+    - confocal_hardware_settings: iris settings at channel level (applies in both modes)
+    - confocal_override: camera/illumination differences for confocal mode only
     """
 
     name: str = Field(..., min_length=1, description="Display name for this acquisition channel")
@@ -136,9 +138,14 @@ class AcquisitionChannel(BaseModel):
     # Illumination
     illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
 
-    # Objective-specific override for confocal mode (iris settings)
+    # Confocal hardware settings (iris, etc.) — applies in both confocal and widefield modes
+    confocal_hardware_settings: Optional[ConfocalSettings] = Field(
+        None, description="Confocal hardware settings (iris, etc.) — applies in both confocal and widefield modes"
+    )
+
+    # Objective-specific override for confocal mode (camera/illumination differences)
     confocal_override: Optional[AcquisitionChannelOverride] = Field(
-        None, description="Confocal iris settings (objective-specific)"
+        None, description="Camera/illumination overrides for confocal mode (objective-specific)"
     )
 
     model_config = {"extra": "forbid"}
@@ -241,19 +248,28 @@ class AcquisitionChannel(BaseModel):
 
         If confocal_mode is True and confocal_override exists, merge the
         override settings with the base settings.
+
+        When confocal_mode is True and confocal_override exists, returns a NEW
+        AcquisitionChannel with copied settings so that mutations don't corrupt
+        the stored override. Otherwise returns self (no copy).
         """
         if not confocal_mode or not self.confocal_override:
             return self
 
-        # Create a copy with overrides applied
-        merged_illumination = self.illumination_settings
+        # Merge illumination: take only intensity from the override, preserving
+        # illumination_channel from the base (the override has it as None since
+        # it is only set in the base config).
+        # Merge camera: full replacement (all camera fields are tunable).
         if self.confocal_override.illumination_settings:
-            merged_illumination = self.confocal_override.illumination_settings
+            merged_illumination = self.illumination_settings.model_copy(
+                update={"intensity": self.confocal_override.illumination_settings.intensity}
+            )
+        else:
+            merged_illumination = self.illumination_settings.model_copy()
 
-        # For v1.0, camera_settings is a single object
-        merged_camera = self.camera_settings
+        merged_camera = self.camera_settings.model_copy()
         if self.confocal_override.camera_settings:
-            merged_camera = self.confocal_override.camera_settings
+            merged_camera = self.confocal_override.camera_settings.model_copy()
 
         return AcquisitionChannel(
             name=self.name,
@@ -265,7 +281,10 @@ class AcquisitionChannel(BaseModel):
             filter_position=self.filter_position,
             z_offset_um=self.z_offset_um,
             illumination_settings=merged_illumination,
-            confocal_override=self.confocal_override,  # Keep for iris settings access
+            confocal_hardware_settings=(
+                self.confocal_hardware_settings.model_copy() if self.confocal_hardware_settings else None
+            ),
+            confocal_override=self.confocal_override.model_copy(deep=True) if self.confocal_override else None,
         )
 
 
@@ -341,7 +360,7 @@ def merge_channel_configs(
     The merge takes:
     - From general: name, display_color, camera (ID), illumination_channel, filter_wheel,
                     filter_position, z_offset_um
-    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override
+    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_hardware_settings, confocal_override
 
     Args:
         general: General channel configuration (defines channel identity)
@@ -388,7 +407,8 @@ def merge_channel_configs(
             filter_position=gen_channel.filter_position,  # From general
             z_offset_um=gen_channel.z_offset_um,  # From general
             illumination_settings=merged_illumination,
-            confocal_override=obj_channel.confocal_override,  # From objective (iris settings)
+            confocal_hardware_settings=obj_channel.confocal_hardware_settings,  # From objective
+            confocal_override=obj_channel.confocal_override,  # From objective
         )
         merged_channels.append(merged_channel)
 

@@ -67,6 +67,8 @@ _CMD_NAMES = {
     CMD_SET.SET_PORT_ILLUMINATION: "SET_PORT_ILLUMINATION",
     CMD_SET.SET_MULTI_PORT_MASK: "SET_MULTI_PORT_MASK",
     CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
+    CMD_SET.SET_WATCHDOG_TIMEOUT: "SET_WATCHDOG_TIMEOUT",
+    CMD_SET.HEARTBEAT: "HEARTBEAT",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -180,24 +182,27 @@ class AbstractCephlaMicroSerial(abc.ABC):
 class SimSerial(AbstractCephlaMicroSerial):
     # Number of illumination ports for simulation
     NUM_ILLUMINATION_PORTS = 16
-    # Simulated firmware version (1.0 supports multi-port illumination)
+    # Simulated firmware version
+    # v1.0: multi-port illumination support
+    # v1.1: serial watchdog for illumination auto-shutoff
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 0
+    FIRMWARE_VERSION_MINOR = 1
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 0)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
     ) -> bytes:
         """
-        - command ID (1 byte)
-        - execution status (1 byte)
-        - X pos (4 bytes)
-        - Y pos (4 bytes)
-        - Z pos (4 bytes)
-        - Theta (4 bytes)
-        - buttons and switches (1 byte)
-        - reserved (4 bytes) - byte 22 contains firmware version
-        - CRC (1 byte)
+        - byte 0: command ID (1 byte)
+        - byte 1: execution status (1 byte)
+        - bytes 2-5: X pos (4 bytes)
+        - bytes 6-9: Y pos (4 bytes)
+        - bytes 10-13: Z pos (4 bytes)
+        - bytes 14-17: Theta (4 bytes)
+        - byte 18: buttons and switches (1 byte)
+        - bytes 19-21: reserved (3 bytes)
+        - byte 22: firmware version, nibble-encoded (1 byte)
+        - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
@@ -232,6 +237,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         # Multi-port illumination state for simulation
         self.port_is_on = [False] * SimSerial.NUM_ILLUMINATION_PORTS
         self.port_intensity = [0] * SimSerial.NUM_ILLUMINATION_PORTS
+
+        # Serial watchdog (firmware v1.1+)
+        self.watchdog_timeout_ms = DEFAULT_WATCHDOG_TIMEOUT_MS
 
         # Legacy illumination state tracking (for backward compatibility)
         # Maps legacy source codes (11-15) to port indices (0-4)
@@ -320,6 +328,15 @@ class SimSerial(AbstractCephlaMicroSerial):
         elif command_byte == CMD_SET.TURN_OFF_ALL_PORTS:
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
+        elif command_byte == CMD_SET.SET_WATCHDOG_TIMEOUT:
+            requested_timeout = (write_bytes[2] << 24) | (write_bytes[3] << 16) | (write_bytes[4] << 8) | write_bytes[5]
+            if requested_timeout > MAX_WATCHDOG_TIMEOUT_MS:
+                requested_timeout = MAX_WATCHDOG_TIMEOUT_MS
+            if requested_timeout == 0:
+                requested_timeout = DEFAULT_WATCHDOG_TIMEOUT_MS
+            self.watchdog_timeout_ms = requested_timeout
+        elif command_byte == CMD_SET.HEARTBEAT:
+            pass  # No-op, just triggers a response
         # Legacy illumination commands - sync with multi-port state
         elif command_byte == CMD_SET.SET_ILLUMINATION:
             source = write_bytes[2]
@@ -352,6 +369,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.theta,
                 self.joystick_button,
                 self.switch,
+                firmware_version=(SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR),
             )
         )
 
@@ -626,6 +644,13 @@ class Microcontroller:
         # (0, 0) indicates legacy firmware without version reporting
         self.firmware_version = (0, 0)
 
+        # Heartbeat thread for serial watchdog keepalive
+        self._heartbeat_thread = None
+        self._heartbeat_stop_event = threading.Event()
+
+        # Lock to serialize all outgoing serial commands (heartbeat thread + main thread)
+        self._cmd_lock = threading.Lock()
+
         self.last_command = None
         self.last_command_send_timestamp = time.time()
         self.last_command_aborted_error = None
@@ -666,6 +691,7 @@ class Microcontroller:
             )
 
     def close(self):
+        self.stop_heartbeat()
         self.terminate_reading_received_packet_thread = True
         self.thread_read_received_packet.join()
         self._serial.close()
@@ -894,6 +920,92 @@ class Microcontroller:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
         self.send_command(cmd)
+
+    def set_watchdog_timeout(self, timeout_s: float) -> None:
+        """Set firmware serial watchdog timeout and enable the watchdog.
+
+        The firmware will automatically turn off all illumination if it stops
+        receiving serial messages for longer than this timeout. This is a safety
+        feature to protect against software crashes or USB disconnects.
+
+        Note: Non-blocking. Call wait_till_operation_is_completed() before
+        sending another command if ordering matters.
+
+        Args:
+            timeout_s: Timeout in seconds. Valid range is 0 to 3600 (1 hour).
+                Values below 0 are clamped to 0. Values above 3600 are clamped to 3600.
+                A value of 0 tells the firmware to use its default timeout (5s).
+        """
+        timeout_ms = int(max(0, min(timeout_s * 1000, MAX_WATCHDOG_TIMEOUT_MS)))
+        if timeout_ms != int(timeout_s * 1000):
+            max_s = MAX_WATCHDOG_TIMEOUT_MS / 1000.0
+            self.log.warning(
+                f"[MCU] set_watchdog_timeout: requested {timeout_s}s clamped to "
+                f"{timeout_ms / 1000.0}s (valid range: 0-{max_s}s)"
+            )
+        self.log.debug(f"[MCU] set_watchdog_timeout: {timeout_s}s ({timeout_ms}ms)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_WATCHDOG_TIMEOUT
+        cmd[2] = (timeout_ms >> 24) & 0xFF
+        cmd[3] = (timeout_ms >> 16) & 0xFF
+        cmd[4] = (timeout_ms >> 8) & 0xFF
+        cmd[5] = timeout_ms & 0xFF
+        self.send_command(cmd)
+
+    def send_heartbeat(self) -> None:
+        """Send a no-op heartbeat command to reset the firmware watchdog timer."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HEARTBEAT
+        self.send_command(cmd)
+
+    def start_heartbeat(self, interval_s: float = None) -> None:
+        """Start a daemon thread that sends periodic heartbeat commands.
+
+        Args:
+            interval_s: Seconds between heartbeats. Defaults to WATCHDOG_TIMEOUT_S / 2.
+        """
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            self.log.warning("[MCU] Heartbeat already running, stopping before restart")
+            self.stop_heartbeat()
+        if interval_s is None:
+            interval_s = WATCHDOG_TIMEOUT_S / 2
+        self._heartbeat_stop_event.clear()
+
+        def _heartbeat_loop():
+            consecutive_failures = 0
+            while not self._heartbeat_stop_event.wait(interval_s):
+                try:
+                    self.send_heartbeat()
+                    if consecutive_failures > 0:
+                        self.log.info(f"[MCU] Heartbeat recovered after {consecutive_failures} failures")
+                    consecutive_failures = 0
+                except Exception as e:
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        self.log.warning(f"[MCU] Heartbeat send failed: {e}")
+                    elif consecutive_failures == 5:
+                        self.log.error(
+                            f"[MCU] Heartbeat has failed {consecutive_failures} times consecutively. "
+                            "Firmware watchdog may fire and disable illumination."
+                        )
+                    elif consecutive_failures % 50 == 0:
+                        self.log.error(f"[MCU] Heartbeat still failing: {consecutive_failures} consecutive failures")
+
+        self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+        self.log.debug(f"[MCU] Heartbeat started: interval={interval_s}s")
+
+    def stop_heartbeat(self) -> None:
+        """Stop the heartbeat thread."""
+        self._heartbeat_stop_event.set()
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=2.0)
+            if self._heartbeat_thread.is_alive():
+                self.log.warning("[MCU] Heartbeat thread did not stop within 2s timeout")
+                self._heartbeat_thread = None
+                return
+        self._heartbeat_thread = None
+        self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
         illumination_on_time_us = int(illumination_on_time_us)
@@ -1327,25 +1439,26 @@ class Microcontroller:
         self.set_pin_level(MCU_PINS.AF_LASER, 0)
 
     def send_command(self, command):
-        self._cmd_id = (self._cmd_id + 1) % 256
-        command[0] = self._cmd_id
-        command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
-        cmd_type = command[1]
-        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
-        self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
-        self.mcu_cmd_execution_in_progress = True
-        self.last_command = command
-        self.last_command_send_timestamp = time.time()
-        self.retry = 0
+        with self._cmd_lock:
+            self._cmd_id = (self._cmd_id + 1) % 256
+            command[0] = self._cmd_id
+            command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
+            cmd_type = command[1]
+            cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+            self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
+            self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+            self.mcu_cmd_execution_in_progress = True
+            self.last_command = command
+            self.last_command_send_timestamp = time.time()
+            self.retry = 0
 
-        if self.last_command_aborted_error is not None:
-            self.log.warning(
-                "Last command aborted and not cleared before new command sent!", self.last_command_aborted_error
-            )
-        self.last_command_aborted_error = None
+            if self.last_command_aborted_error is not None:
+                self.log.warning(
+                    "Last command aborted and not cleared before new command sent!", self.last_command_aborted_error
+                )
+            self.last_command_aborted_error = None
 
-        self._warn_if_reads_stale()
+            self._warn_if_reads_stale()
 
     def abort_current_command(self, reason):
         cmd_type = self.last_command[1] if self.last_command is not None else -1
@@ -1361,16 +1474,17 @@ class Microcontroller:
         self.last_command_aborted_error = None
 
     def resend_last_command(self):
-        if self.last_command is not None:
-            self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
-            self.mcu_cmd_execution_in_progress = True
-            # We use the retry count for both checksum errors, and to keep track of
-            # timeout re-attempts.
-            self.last_command_send_timestamp = time.time()
-            self.retry = self.retry + 1
-        else:
-            self.log.warning("resend requested with no last_command, something is wrong!")
-            self.abort_current_command("Resend last requested with no last command")
+        with self._cmd_lock:
+            if self.last_command is not None:
+                self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+                self.mcu_cmd_execution_in_progress = True
+                # We use the retry count for both checksum errors, and to keep track of
+                # timeout re-attempts.
+                self.last_command_send_timestamp = time.time()
+                self.retry = self.retry + 1
+            else:
+                self.log.warning("resend requested with no last_command, something is wrong!")
+                self.abort_current_command("Resend last requested with no last command")
 
     def read_received_packet(self):
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
@@ -1431,15 +1545,16 @@ class Microcontroller:
 
                 # parse the message
                 """
-                - command ID (1 byte)
-                - execution status (1 byte)
-                - X pos (4 bytes)
-                - Y pos (4 bytes)
-                - Z pos (4 bytes)
-                - Theta (4 bytes)
-                - buttons and switches (1 byte)
-                - reserved (4 bytes)
-                - CRC (1 byte)
+                - byte 0: command ID (1 byte)
+                - byte 1: execution status (1 byte)
+                - bytes 2-5: X pos (4 bytes)
+                - bytes 6-9: Y pos (4 bytes)
+                - bytes 10-13: Z pos (4 bytes)
+                - bytes 14-17: Theta (4 bytes)
+                - byte 18: buttons and switches (1 byte)
+                - bytes 19-21: reserved (3 bytes)
+                - byte 22: firmware version, nibble-encoded (1 byte)
+                - byte 23: CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
@@ -1523,7 +1638,7 @@ class Microcontroller:
 
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[22]
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:

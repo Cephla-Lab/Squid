@@ -85,7 +85,10 @@ class MicroscopeAddons:
             # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
             # This needs to be changed when we figure out better machine configuration structure.
             xlight = (
-                serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
+                serial_peripherals.XLight(
+                    control._def.XLIGHT_SERIAL_NUMBER,
+                    control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL,
+                )
                 if not spinning_disk_simulated
                 else serial_peripherals.XLight_Simulation()
             )
@@ -405,6 +408,21 @@ class Microscope:
     def _prepare_for_use(self, skip_init: bool = False):
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         self.addons.prepare_for_use(skip_init=skip_init)
+
+        # Configure serial watchdog for illumination safety (requires firmware v1.1+)
+        if self.low_level_drivers.microcontroller:
+            mcu = self.low_level_drivers.microcontroller
+            if mcu.firmware_version >= (1, 1):
+                timeout_s = control._def.WATCHDOG_TIMEOUT_S
+                mcu.set_watchdog_timeout(timeout_s)
+                mcu.wait_till_operation_is_completed()
+                mcu.start_heartbeat(interval_s=timeout_s / 2)
+                self._log.info(f"Illumination watchdog enabled: timeout={timeout_s}s, heartbeat={timeout_s / 2}s")
+            else:
+                self._log.warning(
+                    f"Illumination watchdog not available: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} "
+                    "requires v1.1+"
+                )
 
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)

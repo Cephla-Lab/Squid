@@ -4,6 +4,8 @@ These tests verify the BackpressureController and JobRunner integration for
 preventing RAM exhaustion when acquisition speed exceeds disk write speed.
 """
 
+import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -11,7 +13,11 @@ import numpy as np
 import pytest
 
 import squid.abc
-from control.core.backpressure import BackpressureController, BackpressureStats
+from control.core.backpressure import (
+    BackpressureController,
+    BackpressureStats,
+    create_backpressure_values,
+)
 from control.core.job_processing import (
     Job,
     JobRunner,
@@ -324,6 +330,194 @@ class TestBackpressureController:
 
         # Third close should also be safe
         controller.close()
+
+    def test_is_closed_property(self):
+        """is_closed tracks lifecycle state."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+
+        # Initially not closed
+        assert controller.is_closed is False
+
+        # After close, is_closed is True
+        controller.close()
+        assert controller.is_closed is True
+
+        # Remains True after multiple closes
+        controller.close()
+        assert controller.is_closed is True
+
+    def test_properties_return_none_after_close(self):
+        """Shared value properties return None after close()."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+
+        # Verify not None before close
+        assert controller.pending_jobs_value is not None
+        assert controller.pending_bytes_value is not None
+        assert controller.capacity_event is not None
+
+        controller.close()
+
+        assert controller.pending_jobs_value is None
+        assert controller.pending_bytes_value is None
+        assert controller.capacity_event is None
+
+    def test_constructor_with_bp_values_uses_provided_values(self):
+        """Constructor uses pre-created bp_values instead of creating new ones."""
+        bp_values = create_backpressure_values()
+        jobs, bytes_, event = bp_values
+
+        controller = BackpressureController(max_jobs=10, max_mb=500.0, bp_values=bp_values)
+
+        # Should be using the same objects (not copies)
+        assert controller.pending_jobs_value is jobs
+        assert controller.pending_bytes_value is bytes_
+        assert controller.capacity_event is event
+
+        controller.close()
+
+    def test_should_throttle_on_closed_controller_returns_false(self):
+        """should_throttle() returns False on closed controller."""
+        controller = BackpressureController(max_jobs=1, max_mb=0.001)
+        controller.job_dispatched(10000)  # Exceed limits
+        assert controller.should_throttle() is True
+
+        controller.close()
+
+        assert controller.should_throttle() is False
+
+    def test_wait_for_capacity_returns_immediately_when_closed(self):
+        """wait_for_capacity() returns True immediately on closed controller."""
+        controller = BackpressureController(max_jobs=1, max_mb=0.001, timeout_s=30.0)
+        controller.job_dispatched(10000)  # Exceed limits
+        controller.close()
+
+        start = time.time()
+        result = controller.wait_for_capacity()
+        elapsed = time.time() - start
+
+        assert result is True  # Should not block
+        assert elapsed < 0.5  # Should return immediately
+
+    def test_reset_on_closed_controller_is_noop(self):
+        """reset() on closed controller is a no-op (no crash)."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.close()
+
+        # Should not raise
+        controller.reset()
+
+    def test_get_pending_jobs_on_closed_controller_returns_zero(self):
+        """get_pending_jobs() returns 0 on closed controller."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.job_dispatched(1000)
+        assert controller.get_pending_jobs() == 1
+
+        controller.close()
+
+        assert controller.get_pending_jobs() == 0
+
+    def test_get_pending_mb_on_closed_controller_returns_zero(self):
+        """get_pending_mb() returns 0.0 on closed controller."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.job_dispatched(1024 * 1024)  # 1 MiB
+        assert controller.get_pending_mb() >= 1.0
+
+        controller.close()
+
+        assert controller.get_pending_mb() == 0.0
+
+    def test_get_stats_on_closed_controller_returns_zeroed_stats(self):
+        """get_stats() returns zeroed stats on closed controller."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.job_dispatched(5 * 1024 * 1024)
+
+        # Verify stats before close
+        stats_before = controller.get_stats()
+        assert stats_before.pending_jobs == 1
+        assert stats_before.pending_bytes_mb > 0
+
+        controller.close()
+
+        stats_after = controller.get_stats()
+        assert stats_after.pending_jobs == 0
+        assert stats_after.pending_bytes_mb == 0.0
+        assert stats_after.is_throttled is False
+        # Config values should still be available
+        assert stats_after.max_pending_jobs == 10
+        assert stats_after.max_pending_mb == 500.0
+
+    def test_job_dispatched_on_closed_controller_is_noop(self):
+        """job_dispatched() on closed controller is a no-op."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.close()
+
+        # Should not raise
+        controller.job_dispatched(1000)
+
+        # Should remain at 0 (closed returns early)
+        assert controller.get_pending_jobs() == 0
+
+    def test_reset_warns_when_jobs_pending(self, caplog):
+        """reset() logs warning when called with pending jobs."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        controller.job_dispatched(1000)
+        controller.job_dispatched(1000)
+
+        with caplog.at_level(logging.WARNING):
+            controller.reset()
+
+        assert "2 jobs pending" in caplog.text
+        # Should still reset
+        assert controller.get_pending_jobs() == 0
+
+        controller.close()
+
+    def test_close_is_thread_safe(self):
+        """close() handles concurrent calls safely."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        errors = []
+
+        def close_worker():
+            try:
+                for _ in range(100):
+                    controller.close()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=close_worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        assert controller.is_closed is True
+
+    def test_close_wakes_blocked_wait_for_capacity(self):
+        """close() wakes threads blocked in wait_for_capacity()."""
+        controller = BackpressureController(max_jobs=1, max_mb=500.0, timeout_s=30.0)
+        controller.job_dispatched(1000)
+        controller.job_dispatched(1000)  # Exceed limit
+
+        result = [None]
+        elapsed = [None]
+
+        def wait_worker():
+            start = time.time()
+            result[0] = controller.wait_for_capacity()
+            elapsed[0] = time.time() - start
+
+        thread = threading.Thread(target=wait_worker)
+        thread.start()
+
+        time.sleep(0.2)  # Let thread start waiting
+        controller.close()  # Should wake the thread
+
+        thread.join(timeout=2.0)
+
+        assert not thread.is_alive(), "Thread should have been woken by close()"
+        assert result[0] is True  # closed controller returns True
+        assert elapsed[0] < 5.0  # Should not have waited full 30s timeout
 
 
 def _create_runner_with_backpressure(controller: BackpressureController) -> JobRunner:
@@ -760,6 +954,8 @@ class TestMultiPointControllerCloseMethod:
         controller.multiPointWorker = None
         controller.thread = None
         controller._memory_monitor = None
+        controller._prewarmed_job_runner = None
+        controller._prewarmed_bp_values = None
         controller._log = MagicMock()
         controller._PROCESS_TERMINATE_TIMEOUT_S = 1.0
         return controller

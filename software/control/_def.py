@@ -200,7 +200,9 @@ class CMD_SET:
     SET_PORT_ILLUMINATION = 37  # Set intensity + on/off in one command
     SET_MULTI_PORT_MASK = 38  # Set on/off for multiple ports (partial update)
     TURN_OFF_ALL_PORTS = 39  # Turn off all illumination ports
+    SET_WATCHDOG_TIMEOUT = 40  # Set serial watchdog timeout and enable
     SET_PIN_LEVEL = 41
+    HEARTBEAT = 42  # No-op keepalive for watchdog
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -354,6 +356,16 @@ def port_index_to_source_code(port_index: int) -> int:
         4: ILLUMINATION_CODE.ILLUMINATION_D5,  # 4 -> 15
     }
     return mapping.get(port_index, -1)
+
+
+# Response byte positions for MCU protocol (24-byte response)
+RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Nibble-encoded: high=major, low=minor
+
+# Serial watchdog (illumination auto-shutoff safety)
+# Must match firmware constants in constants.h
+DEFAULT_WATCHDOG_TIMEOUT_MS = 5000  # 5 seconds (matches firmware)
+MAX_WATCHDOG_TIMEOUT_MS = 3600000  # 1 hour (matches firmware)
+WATCHDOG_TIMEOUT_S = DEFAULT_WATCHDOG_TIMEOUT_MS / 1000.0
 
 
 class VOLUMETRIC_IMAGING:
@@ -702,7 +714,7 @@ LED_MATRIX_R_FACTOR = 0
 LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
-DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
+DEFAULT_SAVING_PATH = str(Path.home() / "Downloads")
 ACQUISITION_CONFIGURATIONS_PATH = Path("user_profiles")
 FILE_ID_PADDING = 0
 
@@ -943,16 +955,10 @@ USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
 
-XLIGHT_EMISSION_FILTER_MAPPING = {
-    405: 1,
-    470: 1,
-    555: 1,
-    640: 1,
-    730: 1,
-}  # TODO: This is not being used. Need to map wavelength to illumination source in LiveController
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False
+XLIGHT_EMISSION_FILTER_POSITIONS = 8  # 5 for Cicero, 8 for XLight V3
 XLIGHT_ILLUMINATION_IRIS_DEFAULT = 100
 XLIGHT_EMISSION_IRIS_DEFAULT = 100
 
@@ -1260,6 +1266,7 @@ USE_JUPYTER_CONSOLE = False
 ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
+ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
 
 
 # Slack Notifications - send real-time notifications during acquisition
@@ -1377,7 +1384,7 @@ DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
-    DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
+    DEFAULT_SAVING_PATH = str(Path.home() / DEFAULT_SAVING_PATH.strip("/").strip("\\"))
 
 # Load Views settings from config file at startup
 # These values override the defaults above and are accessed via control._def.XXX

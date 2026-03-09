@@ -294,8 +294,12 @@ class QtMultiPointController(MultiPointController, QObject):
                 self._ndviewer_fov_labels.append(f"{region_name}:{i}")
                 fov_idx += 1
 
-        # Get image dimensions from camera (after binning)
-        width, height = self.microscope.camera.get_resolution()
+        # Get image dimensions from camera (after binning and software crop)
+        crop_width, crop_height = self.microscope.camera.get_crop_size()
+        if crop_width is not None and crop_height is not None:
+            width, height = crop_width, crop_height
+        else:
+            width, height = self.microscope.camera.get_resolution()
 
         # Check save format to determine which API to use
         if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
@@ -676,9 +680,17 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize Slack notifier
         self._setup_slack_notifier()
 
-        # Skip cached position restoration on restart (hardware position hasn't changed)
+        # Skip cached position restoration on restart (hardware position hasn't changed),
+        # except Z when using Xeryon (Z was retracted during cleanup).
         if self._skip_init:
-            self.log.info("Skipping cached position restoration (--skip-init flag set)")
+            if USE_XERYON and self.objective_changer:
+                if cached_pos := squid.stage.utils.get_cached_position():
+                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                    target_z_mm = max(cached_pos.z_mm, safety_z_mm)
+                    self.log.info(f"Restoring cached Z position after Xeryon restart: {target_z_mm} mm")
+                    self.stage.move_z_to(target_z_mm)
+            else:
+                self.log.info("Skipping cached position restoration (--skip-init flag set)")
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             if cached_pos := squid.stage.utils.get_cached_position():
@@ -841,6 +853,7 @@ class HighContentScreeningGui(QMainWindow):
         if DEFAULT_TRIGGER_MODE == TriggerMode.HARDWARE:
             print("Setting acquisition mode to HARDWARE_TRIGGER")
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER)
+            self.microcontroller.set_trigger_mode(HARDWARE_TRIGGER_MODE)
         else:
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
@@ -1434,6 +1447,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(
+                self.fluidicsWidget.set_acquisition_running
+            )
             self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
             self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
@@ -1597,11 +1613,20 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
-            # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
-            # this GUI code runs. The microscope queries hardware state and calls
-            # live_controller.sync_confocal_mode_from_hardware() during init.
-            # The signal connection above handles subsequent user-initiated toggles only.
-            # See Microscope._sync_confocal_mode_from_hardware() for the initial sync logic.
+            # Update iris UI when channel changes
+            self.liveControlWidget.signal_live_configuration.connect(
+                self.spinningDiskConfocalWidget.update_iris_from_config
+            )
+            # Save iris values to config when changed (persistence through LiveControlWidget)
+            self.spinningDiskConfocalWidget.signal_illumination_iris_changed.connect(
+                self.liveControlWidget.update_config_illumination_iris
+            )
+            self.spinningDiskConfocalWidget.signal_emission_iris_changed.connect(
+                self.liveControlWidget.update_config_emission_iris
+            )
+            # Sync iris UI from the initial channel config (signal wasn't connected during __init__)
+            if self.liveControlWidget.currentConfiguration:
+                self.spinningDiskConfocalWidget.update_iris_from_config(self.liveControlWidget.currentConfiguration)
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
@@ -1969,6 +1994,24 @@ class HighContentScreeningGui(QMainWindow):
         """Start executing a workflow."""
         from control.workflow_runner import WorkflowRunner
 
+        # Validate: if any acquisition has config_path, current widget must support YAML loading
+        has_config_path = any(seq.is_acquisition() and seq.config_path for seq in workflow.get_included_sequences())
+        if has_config_path:
+            widget = self.recordTabWidget.currentWidget()
+            if not hasattr(widget, "_load_acquisition_yaml"):
+                from qtpy.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    self,
+                    "Incompatible Tab",
+                    f"This workflow has acquisition sequences with config files, but the current "
+                    f"tab ({type(widget).__name__}) does not support loading YAML settings.\n\n"
+                    f"Either:\n"
+                    f"• Switch to Wellplate or Flexible Multipoint tab, or\n"
+                    f"• Edit the acquisition sequences to remove config file paths",
+                )
+                return
+
         # Create runner if needed
         if self.workflowRunner is None:
             self.workflowRunner = WorkflowRunner(self)
@@ -2016,8 +2059,13 @@ class HighContentScreeningGui(QMainWindow):
         """Handle sequence completion."""
         self.log.info(f"Sequence finished: {name}, success={success}")
 
-        # Disable acquisition widget again after acquisition completes (if workflow still running)
-        if name == "Acquisition" and self.workflowRunner and self.workflowRunner.is_running():
+        # Disable acquisition widget after acquisition completes (if workflow still running)
+        if not (self.workflowRunner and self.workflowRunner.is_running()):
+            return
+        workflow = self.workflowRunner._workflow
+        if not workflow or index >= len(workflow.sequences):
+            return
+        if workflow.sequences[index].is_acquisition():
             widget = self.recordTabWidget.currentWidget()
             if widget:
                 widget.setEnabled(False)
@@ -2082,9 +2130,21 @@ class HighContentScreeningGui(QMainWindow):
             if current_widget:
                 current_widget.setEnabled(enabled)
 
-    def _run_acquisition_for_workflow(self):
-        """Called by workflow runner to start acquisition."""
-        self.log.info("Workflow requesting acquisition start")
+    def _fail_workflow_acquisition(self, error_msg: str):
+        """Fail the current workflow acquisition step with an error."""
+        self.log.error(error_msg)
+        if self.workflowRunner:
+            self.workflowRunner.signal_error.emit(error_msg)
+            self.workflowRunner.on_acquisition_finished()
+
+    def _run_acquisition_for_workflow(self, config_path: str = ""):
+        """Called by workflow runner to start acquisition.
+
+        Args:
+            config_path: Optional path to acquisition.yaml file. If provided,
+                        settings are loaded from the file before starting acquisition.
+        """
+        self.log.info(f"Workflow requesting acquisition start (config_path={config_path or 'None'})")
         widget = self.recordTabWidget.currentWidget()
 
         # Check if current tab supports acquisition
@@ -2092,6 +2152,22 @@ class HighContentScreeningGui(QMainWindow):
         if not has_acquisition:
             self._handle_acquisition_tab_error()
             return
+
+        # Load settings from YAML if provided
+        if config_path:
+            if not hasattr(widget, "_load_acquisition_yaml"):
+                self._fail_workflow_acquisition(
+                    f"Widget {type(widget).__name__} does not support loading YAML settings."
+                )
+                return
+            try:
+                self.log.info(f"Loading acquisition settings from: {config_path}")
+                if not widget._load_acquisition_yaml(config_path):
+                    self._fail_workflow_acquisition(f"Failed to load settings from '{config_path}'")
+                    return
+            except Exception as e:
+                self._fail_workflow_acquisition(f"Error loading '{config_path}': {e}")
+                return
 
         # Re-enable widget and start acquisition
         widget.setEnabled(True)
@@ -2451,9 +2527,9 @@ class HighContentScreeningGui(QMainWindow):
         if self.warningErrorWidget is None:
             return
 
-        self._warning_handler = widgets.QtLoggingHandler()
-        self._warning_handler.signal_message_logged.connect(self.warningErrorWidget.add_message)
+        self._warning_handler = squid.logging.BufferingHandler()
         squid.logging.get_logger().addHandler(self._warning_handler)
+        self.warningErrorWidget.connect_handler(self._warning_handler)
         self.log.debug("Warning/error widget: connected logging handler")
 
     def _disconnect_warning_handler(self):
@@ -2462,6 +2538,9 @@ class HighContentScreeningGui(QMainWindow):
         Uses robust error handling to ensure cleanup completes even if
         individual operations fail (e.g., handler already removed).
         """
+        if self.warningErrorWidget is not None:
+            self.warningErrorWidget.disconnect_handler()
+
         if self._warning_handler is not None:
             try:
                 squid.logging.get_logger().removeHandler(self._warning_handler)
@@ -2575,8 +2654,9 @@ class HighContentScreeningGui(QMainWindow):
         """Common cleanup logic shared between closeEvent and restart.
 
         Args:
-            for_restart: If True, skip Z retraction and objective reset (preserving position),
-                        and wrap operations in try-except to ensure cleanup completes.
+            for_restart: If True, wrap operations in try-except to ensure cleanup completes.
+                        Z retraction and objective reset still run when using Xeryon
+                        (Xeryon must be zeroed before re-init), but are skipped otherwise.
         """
         context = "restart" if for_restart else "shutdown"
 
@@ -2680,20 +2760,31 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z, reset objective changer, and turn off PIDs only on full shutdown
-        # (for restart, preserve hardware state since new process will use --skip-init)
-        if not for_restart:
+        # Retract Z and reset objective changer on full shutdown.
+        # On restart, only retract Z and reset if Xeryon objective changer is present
+        # (Xeryon must be zeroed before re-init; Z must retract first for safety).
+        if not for_restart or USE_XERYON:
+            z_retracted = False
             try:
                 self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-                if USE_XERYON:
-                    self.objective_changer.moveToZero()
+                z_retracted = True
             except Exception:
-                self.log.exception(f"Error retracting Z / resetting objective changer during {context}")
+                if for_restart:
+                    self.log.exception(f"Error retracting Z during {context}")
+                else:
+                    raise
 
-            try:
-                self.microcontroller.turn_off_all_pid()
-            except Exception:
-                self.log.exception(f"Error turning off PID during {context}")
+            if USE_XERYON and self.objective_changer and z_retracted:
+                try:
+                    self.objective_changer.moveToZero()
+                except Exception:
+                    if for_restart:
+                        self.log.exception(f"Error resetting objective changer during {context}")
+                    else:
+                        raise
+
+        if not for_restart:
+            self.microcontroller.turn_off_all_pid()
 
         # Turn off CellX lasers
         if ENABLE_CELLX:
@@ -2737,7 +2828,7 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
     def _cleanup_for_restart(self):
-        """Clean up hardware and resources for restart (preserves Z position)."""
+        """Clean up hardware and resources for restart. Retracts Z and resets Xeryon if present."""
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):

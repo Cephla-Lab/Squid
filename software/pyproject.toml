@@ -11,5 +11,6 @@ extend-exclude = '''
 | ^/control/dcamapi4.py 
 | ^/control/toupcam.py 
 | ^/control/toupcam_exceptions.py
+| ^/control/ndviewer_light/
 | ^/fluidics_v2/
 )'''

@@ -294,6 +294,7 @@ class TestWorkflow:
             assert rest_seq.arguments == orig_seq.arguments
             assert rest_seq.python_path == orig_seq.python_path
             assert rest_seq.conda_env == orig_seq.conda_env
+            assert rest_seq.config_path == orig_seq.config_path
             assert rest_seq.cycle_arg_name == orig_seq.cycle_arg_name
             assert rest_seq.cycle_arg_values == orig_seq.cycle_arg_values
 
@@ -331,8 +332,38 @@ class TestWorkflow:
         finally:
             os.unlink(temp_path)
 
-    def test_load_file_ensures_acquisition(self):
-        """Test loading file without Acquisition adds one."""
+    def test_acquisition_with_config_path(self):
+        """Test acquisition sequence with config_path."""
+        workflow = Workflow(
+            num_cycles=1,
+            sequences=[
+                SequenceItem(
+                    name="Pre-scan",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path="/path/to/prescan.yaml",
+                    included=True,
+                ),
+                SequenceItem(
+                    name="Main Acquisition",
+                    sequence_type=SequenceType.ACQUISITION,
+                    config_path=None,  # Uses current settings
+                    included=True,
+                ),
+            ],
+        )
+
+        # Test serialization roundtrip
+        data = workflow.to_dict()
+        assert data["sequences"][0]["config_path"] == "/path/to/prescan.yaml"
+        # Second sequence has no config_path (key not present or None)
+        assert data["sequences"][1].get("config_path") is None
+
+        restored = Workflow.from_dict(data)
+        assert restored.sequences[0].config_path == "/path/to/prescan.yaml"
+        assert restored.sequences[1].config_path is None
+
+    def test_load_file_without_acquisition(self):
+        """Test loading file without Acquisition preserves original sequences (no auto-add)."""
         import yaml
 
         data = {
@@ -358,7 +389,10 @@ class TestWorkflow:
 
         try:
             loaded = Workflow.load_from_file(temp_path)
-            assert loaded.has_acquisition()
+            # Workflows can now have zero acquisition sequences
+            assert not loaded.has_acquisition()
+            assert len(loaded.sequences) == 1
+            assert loaded.sequences[0].name == "Script Only"
         finally:
             os.unlink(temp_path)
 
