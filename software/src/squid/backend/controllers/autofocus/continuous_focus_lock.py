@@ -837,7 +837,8 @@ class ContinuousFocusLockController(BaseController):
             if self._search_position_index < len(self._search_positions):
                 self._search_position = self._search_positions[self._search_position_index]
             else:
-                # Search failed
+                # Search failed — restore piezo to last known good position
+                self._piezo_service.move_to(self._locked_piezo_um)
                 self._lock_buffer_fill = 0
                 self._set_status("lost")
 

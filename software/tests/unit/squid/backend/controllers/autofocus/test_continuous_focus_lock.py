@@ -1482,3 +1482,40 @@ def test_nan_snr_publishes_snr_low_warning():
 
     snr_warnings = [w for w in warning_events if w.warning_type == "snr_low"]
     assert len(snr_warnings) == 1, f"Expected snr_low warning for NaN SNR, got: {warning_events}"
+
+
+def test_search_exhausted_restores_piezo_to_locked_position():
+    """When the search sweep is exhausted without finding focus, the piezo should
+    be restored to the last known locked position so manual recovery is easier."""
+    bus = EventBus()
+    piezo = _DummyPiezoService()
+    # All readings return NaN displacement so search never succeeds
+    laser_af = _DummyLaserAF()
+    laser_af._displacement_um = float("nan")
+
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=piezo,
+        event_bus=bus,
+        config=FocusLockConfig(search_range_um=20.0, search_step_um=10.0),
+    )
+    controller._running = True
+    controller._should_run = True
+    controller._target_um = 0.0
+    controller._lock_reference_active = True
+    controller._locked_piezo_um = 150.0
+
+    controller._start_search()
+    controller._set_status("searching")
+
+    # Force search index past end to simulate exhausted sweep
+    controller._search_position_index = len(controller._search_positions)
+    controller._search_phase = "sweep"
+
+    # Move piezo away to simulate search having moved it
+    piezo.move_to(180.0)
+
+    controller._search_step()
+
+    assert controller.status == "lost"
+    assert piezo.get_position() == pytest.approx(150.0, abs=0.1)

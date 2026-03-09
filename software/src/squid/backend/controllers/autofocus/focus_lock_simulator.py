@@ -521,7 +521,9 @@ class FocusLockSimulator(BaseController):
             # Continue sweep
             self._search_position += self._config.search_step_um
             if self._search_position > search_max:
-                # Search failed
+                # Search failed — restore piezo to last known good position
+                if self._piezo_service is not None:
+                    self._piezo_service.move_to(self._locked_piezo_um)
                 self._status = "lost"
                 self._lock_buffer_fill = 0
                 self._log.warning("Focus lock lost - search sweep completed without finding lock")
