@@ -336,7 +336,6 @@ class ContinuousFocusLockController(BaseController):
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
-        pass
 
     @handles(SetFocusLockParamsCommand)
     def _on_set_params(self, cmd: SetFocusLockParamsCommand) -> None:
@@ -414,7 +413,9 @@ class ContinuousFocusLockController(BaseController):
         if math.isnan(target_um):
             target_um = self._latest_valid_displacement_um
             if not math.isnan(target_um):
-                pass
+                self._log.info(
+                    "Using last valid displacement (%.3f um) as lock reference", target_um
+                )
         if math.isnan(target_um):
             self._log.warning("Cannot set focus lock reference: no valid displacement reading")
             return
@@ -674,11 +675,9 @@ class ContinuousFocusLockController(BaseController):
                         else:
                             new_status = "lost"
                             self._lock_buffer_fill = 0
-                            pass
                     else:
                         # Reset timer for next attempt
                         self._recovery_start_time = time.monotonic()
-                        pass
 
         elif self._status == "ready":
             # Building up to lock
@@ -689,7 +688,6 @@ class ContinuousFocusLockController(BaseController):
                 if self._lock_buffer_fill >= self._config.buffer_length:
                     new_status = "locked"
                     self._locked_piezo_um = self._piezo_service.get_position()
-                    pass
             else:
                 self._lock_buffer_fill = max(0, self._lock_buffer_fill - 1)
 
@@ -700,7 +698,6 @@ class ContinuousFocusLockController(BaseController):
                 if self._lock_buffer_fill >= self._config.buffer_length:
                     new_status = "locked"
                     self._locked_piezo_um = self._piezo_service.get_position()
-                    pass
             else:
                 self._lock_buffer_fill = 0
 
