@@ -1830,9 +1830,6 @@ class MultiPointWorker:
                     )
                 )
 
-        if self.NZ > 1:
-            self.prepare_z_stack()
-
         if self.use_piezo:
             self.z_piezo_um: float = self._piezo_service.get_position() if self._piezo_service else 0.0
             # Sync piezo position to ZStackExecutor for coordinated z-stack movement
@@ -1845,6 +1842,15 @@ class MultiPointWorker:
         if focus_lock_active:
             focus_lock_settings = getattr(self, "focus_lock_settings", None)
             timeout_s = float(getattr(focus_lock_settings, "lock_timeout_s", 5.0))
+            focus_lock_controller = getattr(self, "_focus_lock_controller", None)
+            focus_lock_status = getattr(focus_lock_controller, "status", "unknown")
+            self._log.info(
+                "Verifying focus lock before FOV capture: region=%s fov=%s status=%s piezo=%s",
+                region_id,
+                fov,
+                focus_lock_status,
+                f"{self.z_piezo_um:.2f} um" if self.use_piezo else "stage-z",
+            )
             verify_focus_lock = getattr(self._autofocus_executor, "verify_focus_lock_before_capture", None)
             if callable(verify_focus_lock):
                 focus_lock_ok, reason = verify_focus_lock(timeout_s=timeout_s)
@@ -1864,6 +1870,19 @@ class MultiPointWorker:
         focus_lock_paused = False
         if focus_lock_active:
             focus_lock_paused = self._autofocus_executor.pause_focus_lock()
+            self._log.info(
+                "Focus lock capture state: region=%s fov=%s paused=%s status=%s",
+                region_id,
+                fov,
+                focus_lock_paused,
+                getattr(getattr(self, "_focus_lock_controller", None), "status", "unknown"),
+            )
+
+        if self.NZ > 1:
+            self.prepare_z_stack()
+            if self.use_piezo and self._piezo_service is not None:
+                self.z_piezo_um = self._piezo_service.get_position()
+                self._zstack_executor.z_piezo_um = self.z_piezo_um
 
         try:
             if self.acquisition_order == "z_first":
@@ -1878,6 +1897,12 @@ class MultiPointWorker:
                 self.move_z_back_after_stack()
             if focus_lock_paused:
                 self._autofocus_executor.resume_focus_lock()
+                self._log.info(
+                    "Focus lock resumed after FOV capture: region=%s fov=%s status=%s",
+                    region_id,
+                    fov,
+                    getattr(getattr(self, "_focus_lock_controller", None), "status", "unknown"),
+                )
 
     def _acquire_channel_first(
         self,
@@ -2168,10 +2193,28 @@ class MultiPointWorker:
 
     def prepare_z_stack(self) -> None:
         """Prepare for z-stack by moving to start position (FROM CENTER mode)."""
-        # For FROM CENTER mode, move to bottom of z-stack
-        if self.z_stacking_config == "FROM CENTER":
-            z_delta_mm = -(self.deltaZ / 1000.0) * round((self.NZ - 1) / 2.0)
-            self._position_controller.move_z_relative(z_delta_mm)
+        # For FROM CENTER mode, move to bottom of z-stack.
+        if self.z_stacking_config != "FROM CENTER":
+            return
+
+        z_delta_um = -float(self.deltaZ) * round((self.NZ - 1) / 2.0)
+        if z_delta_um == 0:
+            return
+
+        if self.use_piezo and self._piezo_service is not None:
+            start_piezo_um = self._piezo_service.get_position() + z_delta_um
+            self._zstack_executor.reset_piezo(start_piezo_um)
+            self.z_piezo_um = self._zstack_executor.z_piezo_um
+            self._log.info(
+                "Prepared z-stack start on piezo: delta=%+.2f um start=%+.2f um",
+                z_delta_um,
+                self.z_piezo_um,
+            )
+            return
+
+        z_delta_mm = z_delta_um / 1000.0
+        self._position_controller.move_z_relative(z_delta_mm)
+        self._log.info("Prepared z-stack start on stage: delta=%+.4f mm", z_delta_mm)
 
     def handle_z_offset(self, config: AcquisitionChannel, not_offset: bool) -> None:
         if (

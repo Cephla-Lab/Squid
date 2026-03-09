@@ -11,6 +11,7 @@ from squid.backend.controllers.orchestrator.imaging_executor import (
 )
 from squid.backend.controllers.orchestrator.state import AddWarningCommand
 from squid.core.events import (
+    AutofocusMode,
     EventBus,
     FocusLockMetricsUpdated,
     FocusLockPiezoLimitCritical,
@@ -50,6 +51,42 @@ def test_execute_with_config_resets_start_fov_index():
     # Resume index should be set for this run and reset afterwards.
     assert multipoint.set_start_fov_index.call_args_list[0][0][0] == 3
     assert multipoint.set_start_fov_index.call_args_list[-1][0][0] == 0
+
+
+def test_execute_with_focus_lock_enables_piezo_zstack():
+    event_bus = MagicMock()
+    multipoint = MagicMock()
+    multipoint.update_config = MagicMock()
+    multipoint.run_acquisition = MagicMock(return_value=False)
+    multipoint.set_start_fov_index = MagicMock()
+    multipoint.set_current_round_index = MagicMock()
+    multipoint._autofocus_executor = None
+
+    executor = ImagingExecutor(
+        event_bus=event_bus,
+        multipoint_controller=multipoint,
+        scan_coordinates=None,
+        channel_config_manager=None,
+    )
+
+    protocol = ImagingProtocol(
+        acquisition={
+            "channels": ["DAPI"],
+            "z_stack": {"planes": 3, "step_um": 0.5, "direction": "from_center"},
+        },
+        focus_gate={"mode": AutofocusMode.FOCUS_LOCK},
+    )
+
+    executor.execute_with_config(
+        imaging_config=protocol,
+        output_path="/tmp",
+        cancel_token=MagicMock(),
+        round_index=0,
+        resume_fov_index=0,
+        experiment_id="round_000",
+    )
+
+    assert multipoint.update_config.call_args_list[0].kwargs["zstack.use_piezo"] is True
 
 
 def test_focus_lock_run_monitor_writes_qc_artifacts_and_warning_commands(tmp_path):

@@ -45,6 +45,24 @@ class _FakeFocusLockController:
         self.set_lock_reference_calls += 1
 
 
+class _FakePiezoService:
+    def __init__(self, position_um: float = 150.0) -> None:
+        self._position_um = position_um
+
+    def get_position(self) -> float:
+        return self._position_um
+
+
+class _FakeZStackExecutor:
+    def __init__(self) -> None:
+        self.z_piezo_um = 0.0
+        self.reset_calls: list[float] = []
+
+    def reset_piezo(self, position_um: float) -> None:
+        self.reset_calls.append(position_um)
+        self.z_piezo_um = position_um
+
+
 def _build_worker_for_acquire_test(
     *,
     autofocus_mode: AutofocusMode,
@@ -141,3 +159,42 @@ def test_prepare_focus_lock_skips_relock_when_already_locked() -> None:
     assert worker._focus_lock_controller.start_calls == 0
     assert worker._focus_lock_controller.set_lock_reference_calls == 0
     assert worker._focus_lock_started_by_acquisition is False
+
+
+def test_prepare_z_stack_uses_piezo_when_enabled() -> None:
+    worker = MultiPointWorker.__new__(MultiPointWorker)
+    worker.z_stacking_config = "FROM CENTER"
+    worker.deltaZ = 0.5
+    worker.NZ = 3
+    worker.use_piezo = True
+    worker._piezo_service = _FakePiezoService(position_um=150.0)
+    worker._zstack_executor = _FakeZStackExecutor()
+    worker._position_controller = MagicMock()
+    worker._log = MagicMock()
+    worker.z_piezo_um = 150.0
+
+    worker.prepare_z_stack()
+
+    assert worker._zstack_executor.reset_calls == [149.5]
+    assert worker.z_piezo_um == pytest.approx(149.5)
+    worker._position_controller.move_z_relative.assert_not_called()
+
+
+def test_acquire_at_position_pauses_focus_lock_before_preparing_z_stack() -> None:
+    call_order: list[str] = []
+    worker = _build_worker_for_acquire_test(
+        autofocus_mode=AutofocusMode.FOCUS_LOCK,
+        focus_lock_active=True,
+        wait_for_lock_result=True,
+    )
+    worker.NZ = 3
+    worker.use_piezo = True
+    worker._piezo_service = _FakePiezoService(position_um=150.0)
+    worker._zstack_executor = SimpleNamespace(z_piezo_um=150.0)
+    worker._autofocus_executor.pause_focus_lock = lambda: call_order.append("pause") or True
+    worker.prepare_z_stack = lambda: call_order.append("prepare")
+    worker.move_z_back_after_stack = MagicMock()
+
+    worker.acquire_at_position(region_id="A1", current_path="/tmp", fov=0)
+
+    assert call_order[:2] == ["pause", "prepare"]

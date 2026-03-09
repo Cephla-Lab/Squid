@@ -447,6 +447,11 @@ class ImagingExecutor:
         if hasattr(self._multipoint, "request_abort_aquisition"):
             self._multipoint.request_abort_aquisition()
 
+    @property
+    def last_error(self) -> Optional[str]:
+        """Return the most recent acquisition error, if any."""
+        return self._acquisition_error
+
     def execute_with_config(
         self,
         imaging_config: ImagingProtocol,
@@ -516,6 +521,7 @@ class ImagingExecutor:
                     "zstack.nz": imaging_config.z_stack.planes,
                     "zstack.delta_z_um": imaging_config.z_stack.step_um,
                     "zstack.stacking_direction": direction_map[imaging_config.z_stack.direction],
+                    "zstack.use_piezo": imaging_config.focus.mode == AutofocusMode.FOCUS_LOCK,
                 }
             )
 
