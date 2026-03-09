@@ -925,7 +925,10 @@ class ExperimentRunner:
         """Merge step-level overrides into the referenced imaging protocol."""
         config_name = step.protocol
         if config_name not in self._protocol.imaging_protocols:
-            raise KeyError(config_name)
+            raise ValueError(
+                f"Imaging protocol '{config_name}' not found in protocol. "
+                f"Available: {list(self._protocol.imaging_protocols.keys())}"
+            )
 
         imaging_config = self._protocol.imaging_protocols[config_name]
         focus_gate = imaging_config.focus_gate
