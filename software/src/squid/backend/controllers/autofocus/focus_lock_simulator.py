@@ -128,6 +128,7 @@ class FocusLockSimulator(BaseController):
         self._auto_search_enabled = self._config.auto_search_enabled
         self._search_phase: str = ""  # "last_position" or "sweep"
         self._search_position: float = 0.0
+        self._search_start_time: Optional[float] = None
 
     @handles(LaserAFInitialized)
     def _on_laser_af_initialized(self, event: LaserAFInitialized) -> None:
@@ -442,12 +443,14 @@ class FocusLockSimulator(BaseController):
         # Reset search state
         self._search_phase = ""
         self._search_position = 0.0
+        self._search_start_time = None
 
     def _start_search(self) -> None:
         """Start the piezo sweep search to re-find focus."""
         self._status = "searching"
         self._search_phase = "last_position"
         self._search_position = self._locked_piezo_um
+        self._search_start_time = time.monotonic()
 
     def _get_piezo_range(self) -> Tuple[float, float]:
         """Get the piezo range from service or defaults."""
@@ -476,6 +479,17 @@ class FocusLockSimulator(BaseController):
         """
         if self._status != "searching":
             return
+
+        if self._search_start_time is not None:
+            elapsed = time.monotonic() - self._search_start_time
+            if elapsed >= self._config.search_timeout_s:
+                self._log.warning("Focus search timed out after %.1fs", elapsed)
+                if self._piezo_service is not None:
+                    self._piezo_service.move_to(self._locked_piezo_um)
+                self._lock_buffer_fill = 0
+                self._status = "lost"
+                self._publish_status_if_needed()
+                return
 
         if self._piezo_service is None:
             # Can't search without piezo control

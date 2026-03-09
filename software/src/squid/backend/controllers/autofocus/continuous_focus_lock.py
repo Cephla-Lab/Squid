@@ -106,6 +106,9 @@ class ContinuousFocusLockController(BaseController):
         self._search_position_index: int = 0
         self._search_candidate_confirmations: int = 0
 
+        # Search timeout tracking
+        self._search_start_time: Optional[float] = None
+
         # Reference piezo position when lock was set (for search recovery)
         self._locked_piezo_um: float = 0.0
         self._locked_spot_x_px: float = float("nan")
@@ -715,6 +718,7 @@ class ContinuousFocusLockController(BaseController):
         self._search_phase = "last_position"
         self._search_candidate_confirmations = 0
         self._integral_accumulator = 0.0
+        self._search_start_time = time.monotonic()
 
     def _get_search_bounds(self) -> tuple[float, float]:
         """Get the search bounds: ±search_range_um around last position, clamped to safe range."""
@@ -795,6 +799,15 @@ class ContinuousFocusLockController(BaseController):
         """Perform one step of the piezo sweep search."""
         if self._status != "searching":
             return
+
+        if self._search_start_time is not None:
+            elapsed = time.monotonic() - self._search_start_time
+            if elapsed >= self._config.search_timeout_s:
+                self._log.warning("Focus search timed out after %.1fs", elapsed)
+                self._piezo_service.move_to(self._locked_piezo_um)
+                self._lock_buffer_fill = 0
+                self._set_status("lost")
+                return
 
         # Move piezo to current search position
         self._piezo_service.move_to(self._search_position)
@@ -1068,6 +1081,7 @@ class ContinuousFocusLockController(BaseController):
         self._search_positions = []
         self._search_position_index = 0
         self._search_candidate_confirmations = 0
+        self._search_start_time = None
         # Reset PI controller state
         self._integral_accumulator = 0.0
         # Reset NaN holdover state

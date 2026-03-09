@@ -1079,6 +1079,7 @@ FOCUS_LOCK_SEARCH_MIN_PERCENT = 15.0  # Lower limit as % of piezo range (safety 
 FOCUS_LOCK_SEARCH_MAX_PERCENT = 85.0  # Upper limit as % of piezo range (safety clamp)
 FOCUS_LOCK_SEARCH_STEP_UM = 5.0  # Step size during sweep
 FOCUS_LOCK_SEARCH_SETTLE_MS = 200.0  # Settling time per step (ms)
+FOCUS_LOCK_SEARCH_TIMEOUT_S = 30.0  # Maximum duration for a single search sweep
 
 # Napari integration
 USE_NAPARI_FOR_LIVE_VIEW = False

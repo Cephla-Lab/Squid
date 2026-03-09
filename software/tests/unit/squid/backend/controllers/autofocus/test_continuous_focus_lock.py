@@ -1519,3 +1519,35 @@ def test_search_exhausted_restores_piezo_to_locked_position():
 
     assert controller.status == "lost"
     assert piezo.get_position() == pytest.approx(150.0, abs=0.1)
+
+
+def test_search_timeout_transitions_to_lost():
+    """When the search sweep exceeds search_timeout_s, it should abort and go to 'lost'."""
+    bus = EventBus()
+    piezo = _DummyPiezoService()
+    laser_af = _DummyLaserAF()
+    laser_af._displacement_um = float("nan")
+
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=piezo,
+        event_bus=bus,
+        config=FocusLockConfig(search_timeout_s=1e-9, search_range_um=20.0, search_step_um=5.0),
+    )
+    controller._running = True
+    controller._should_run = True
+    controller._target_um = 0.0
+    controller._lock_reference_active = True
+    controller._locked_piezo_um = 150.0
+
+    controller._start_search()
+    controller._set_status("searching")
+
+    # Move piezo away to verify it gets restored
+    piezo.move_to(180.0)
+
+    # search_timeout_s=0.0 means immediate timeout on next _search_step
+    controller._search_step()
+
+    assert controller.status == "lost"
+    assert piezo.get_position() == pytest.approx(150.0, abs=0.1)

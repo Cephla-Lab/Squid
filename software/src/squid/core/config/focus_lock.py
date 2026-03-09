@@ -94,6 +94,7 @@ class FocusLockConfig(BaseModel):
     search_max_percent: float = _def.FOCUS_LOCK_SEARCH_MAX_PERCENT
     search_step_um: float = _def.FOCUS_LOCK_SEARCH_STEP_UM
     search_settle_ms: float = _def.FOCUS_LOCK_SEARCH_SETTLE_MS
+    search_timeout_s: float = _def.FOCUS_LOCK_SEARCH_TIMEOUT_S
 
     @field_validator("default_mode")
     @classmethod
@@ -196,4 +197,6 @@ class FocusLockConfig(BaseModel):
             raise ValueError(
                 f"max_nan_holdover_cycles must be non-negative, got {self.max_nan_holdover_cycles}"
             )
+        if self.search_timeout_s <= 0:
+            raise ValueError(f"search_timeout_s must be positive, got {self.search_timeout_s}")
         return self
