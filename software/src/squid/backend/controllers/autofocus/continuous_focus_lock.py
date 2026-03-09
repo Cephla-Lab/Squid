@@ -667,8 +667,6 @@ class ContinuousFocusLockController(BaseController):
             else:
                 # Bad reading during recovery - reset good count
                 self._recovery_good_count = 0
-                if self._recovery_start_time is None:
-                    self._recovery_start_time = time.monotonic()
                 elapsed = time.monotonic() - self._recovery_start_time
                 if elapsed >= self._config.recovery_delay_s:
                     # Recovery delay elapsed, try next attempt
