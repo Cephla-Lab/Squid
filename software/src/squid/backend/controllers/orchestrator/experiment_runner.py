@@ -33,9 +33,11 @@ from squid.backend.controllers.orchestrator.state import (
     OrchestratorState,
     ExperimentProgress,
     RoundProgress,
+    RunState,
     StepResult,
     StepOutcome,
     Checkpoint,
+    ThroughputTracker,
     OrchestratorAttemptUpdate,
     OrchestratorInterventionRequired,
     OrchestratorStepStarted,
@@ -152,6 +154,11 @@ class ExperimentRunner:
         self._latest_eta_seconds: Optional[float] = None
         self._last_checkpoint_fov: Optional[int] = None
 
+        # RunState / throughput tracking
+        self._throughput = ThroughputTracker()
+        self._focus_status: Optional[str] = None
+        self._focus_error_um: Optional[float] = None
+
     def compute_eta(self) -> Optional[float]:
         """Compute estimated time remaining based on estimates and actuals.
 
@@ -240,6 +247,55 @@ class ExperimentRunner:
             "eta_seconds": eta,
             "subsystem_seconds": dict(self._subsystem_durations),
         }
+
+    def snapshot(self, state: "OrchestratorState") -> "RunState":
+        """Produce an immutable RunState from current mutable state.
+
+        Thread-safe: acquires _progress_lock internally.
+        """
+        with self._progress_lock:
+            rp = self._progress.current_round
+            round_index = self._progress.current_round_index
+            total_rounds = self._progress.total_rounds
+            round_name = rp.round_name if rp else ""
+            step_index = self._progress.current_step_index
+            total_steps = rp.total_steps if rp else 0
+            step_type = rp.current_step_type if rp else ""
+            step_label = self._progress.current_step_name
+            fov_index = rp.imaging_fov_index if rp else 0
+            total_fovs = rp.total_imaging_fovs if rp else 0
+            attempt = self._progress.current_attempt
+            started_at = self._progress.started_at
+
+        elapsed = max(0.0, time.monotonic() - self._run_start_time) if self._run_start_time > 0 else 0.0
+        active = self._effective_run_elapsed()
+        paused = self._total_paused_seconds
+        eta = self.compute_eta()
+        throughput = self._throughput.fovs_per_minute()
+
+        return RunState(
+            experiment_id=self._experiment_id,
+            state=state,
+            round_index=round_index,
+            total_rounds=total_rounds,
+            round_name=round_name,
+            step_index=step_index,
+            total_steps=total_steps,
+            step_type=step_type,
+            step_label=step_label,
+            fov_index=fov_index,
+            total_fovs=total_fovs,
+            elapsed_s=elapsed,
+            active_s=active,
+            paused_s=paused,
+            eta_s=eta,
+            attempt=attempt,
+            focus_status=self._focus_status,
+            focus_error_um=self._focus_error_um,
+            throughput_fov_per_min=throughput,
+            subsystem_seconds=dict(self._subsystem_durations),
+            started_at=started_at,
+        )
 
     def _set_operation(self, operation: str) -> None:
         """Track active subsystem duration accounting."""
@@ -840,9 +896,13 @@ class ExperimentRunner:
                     if save_ckpt:
                         self._last_checkpoint_fov = fov_index
 
+                self._throughput.record_fov(fov_index)
+
                 if save_ckpt:
                     self._on_checkpoint()
                 self._on_progress()
+
+            self._throughput.reset()
 
             if self._imaging_executor is not None:
                 success = self._imaging_executor.execute_with_config(
