@@ -125,6 +125,7 @@ class ContinuousFocusLockController(BaseController):
         self._stale_measurement_limit: int = 5
         self._last_measurement_signature: Optional[tuple[float, float, float, float]] = None
         self._stale_measurement_count: int = 0
+        self._last_published_status: Optional[str] = None
 
     @property
     def mode(self) -> FocusLockMode:
@@ -274,6 +275,7 @@ class ContinuousFocusLockController(BaseController):
         if auto_search_enabled is not None:
             with self._lock:
                 self._auto_search_enabled = bool(auto_search_enabled)
+        self._last_published_status = None  # Force publish to refresh UI
         self._set_status(self._status)
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
@@ -360,6 +362,7 @@ class ContinuousFocusLockController(BaseController):
                     maxlen=max(10, self._config.buffer_length * 3),
                 )
             # Refresh UI-visible lock bar length even if status value is unchanged.
+            self._last_published_status = None  # Force publish to refresh UI
             self._set_status(self._status)
 
     def acquire_lock_reference(
@@ -1074,10 +1077,14 @@ class ContinuousFocusLockController(BaseController):
         self._latest_spot_x_px = float("nan")
         self._last_measurement_signature = None
         self._stale_measurement_count = 0
+        self._last_published_status = None
 
     def _set_status(self, status: str) -> None:
         with self._lock:
             self._status = status
+            if status == self._last_published_status:
+                return
+            self._last_published_status = status
             buffer_fill = self._lock_buffer_fill
             buffer_length = self._config.buffer_length
         self._event_bus.publish(

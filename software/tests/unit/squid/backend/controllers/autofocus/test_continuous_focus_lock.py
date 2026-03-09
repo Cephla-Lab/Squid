@@ -409,8 +409,8 @@ def test_resume_when_not_paused():
     assert controller.status == "locked"
 
 
-def test_set_status_always_publishes_event():
-    """Verify _set_status publishes even when called with same status value."""
+def test_set_status_deduplicates_same_status():
+    """Verify _set_status suppresses duplicate publishes for the same status."""
     bus = EventBus()
     controller = ContinuousFocusLockController(
         laser_af=_DummyLaserAF(),
@@ -422,12 +422,11 @@ def test_set_status_always_publishes_event():
     bus.subscribe(FocusLockStatusChanged, events.append)
 
     controller._set_status("ready")
-    controller._set_status("ready")  # Same status again
+    controller._set_status("ready")  # Same status again — should be suppressed
     bus.drain()
 
-    # Both calls should have published events (no dedup guard)
-    assert len(events) == 2
-    assert all(e.status == "ready" for e in events)
+    assert len(events) == 1
+    assert events[0].status == "ready"
 
 
 def test_crash_clears_running_flags():
@@ -1423,3 +1422,32 @@ def test_publish_frame_uses_full_camera_frame_dimensions():
     assert event.spot_x_px == 45.0
     assert event.spot_y_px == 30.0
     assert event.spot_valid is True
+
+
+def test_set_status_deduplicates_events():
+    """Calling _set_status with the same status should not publish again."""
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+        config=FocusLockConfig(),
+    )
+
+    events: list[FocusLockStatusChanged] = []
+    bus.subscribe(FocusLockStatusChanged, events.append)
+
+    # First call should publish
+    controller._set_status("ready")
+    bus.drain()
+    assert len(events) == 1
+
+    # Second call with same status should be suppressed
+    controller._set_status("ready")
+    bus.drain()
+    assert len(events) == 1  # No new event
+
+    # Different status should publish
+    controller._set_status("locked")
+    bus.drain()
+    assert len(events) == 2
