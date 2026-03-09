@@ -199,6 +199,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._config = AcquisitionConfig()
         self.experiment_ID: Optional[str] = None
         self.base_path: Optional[str] = None
+        self.recording_start_time: Optional[float] = None
 
         # NDViewer mode tracking for zarr 5D/6D display
         self._ndviewer_mode: str = "inactive"  # "inactive", "tiff", "zarr_5d", "zarr_6d"
@@ -829,6 +830,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
             # Ensure we have an experiment ID before publishing any acquisition events
             self._require_experiment_id()
+            if self.recording_start_time is None:
+                self.recording_start_time = time.time()
 
             # Start per-acquisition logging if enabled
             self._start_per_acquisition_log()
@@ -1241,9 +1244,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self._acquisition_context = None
                 self._start_position = None
 
-            self._log.info(
-                f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}"
-            )
+            elapsed_start_time = self.recording_start_time
+            if elapsed_start_time is None:
+                elapsed_start_time = getattr(self, "timestamp_acquisition_started", None)
+            if elapsed_start_time is not None:
+                self._log.info(
+                    f"total time for acquisition + processing + reset: {time.time() - elapsed_start_time}"
+                )
             utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
 
             if self.run_acquisition_current_fov:
