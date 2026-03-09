@@ -1015,7 +1015,7 @@ class ContinuousFocusLockController(BaseController):
 
         if self._status == "lost":
             self._publish_warning("signal_lost", "Focus lock signal lost")
-        if result.spot_snr < self._config.min_spot_snr:
+        if math.isnan(result.spot_snr) or result.spot_snr < self._config.min_spot_snr:
             self._publish_warning("snr_low", "Spot SNR below threshold")
         if self._stale_measurement_count >= self._stale_measurement_limit:
             self._publish_warning("measurement_stale", "Focus lock measurements appear stale")

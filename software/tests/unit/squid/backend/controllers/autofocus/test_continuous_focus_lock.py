@@ -1451,3 +1451,34 @@ def test_set_status_deduplicates_events():
     controller._set_status("locked")
     bus.drain()
     assert len(events) == 2
+
+
+def test_nan_snr_publishes_snr_low_warning():
+    """NaN spot_snr must trigger snr_low warning (NaN comparisons are always False)."""
+    bus = EventBus()
+    piezo = _DummyPiezoService()
+    laser_af = _DummyLaserAF()
+    controller = ContinuousFocusLockController(
+        laser_af=laser_af,
+        piezo_service=piezo,
+        event_bus=bus,
+        config=FocusLockConfig(),
+    )
+
+    warning_events: list[FocusLockWarning] = []
+    bus.subscribe(FocusLockWarning, warning_events.append)
+
+    result = LaserAFResult(
+        displacement_um=0.0,
+        spot_intensity=0.0,
+        spot_snr=float("nan"),
+        correlation=0.95,
+        spot_x_px=100.0,
+        spot_y_px=50.0,
+        timestamp=time.monotonic(),
+    )
+    controller._check_warnings(result, error_um=0.0)
+    bus.drain()
+
+    snr_warnings = [w for w in warning_events if w.warning_type == "snr_low"]
+    assert len(snr_warnings) == 1, f"Expected snr_low warning for NaN SNR, got: {warning_events}"
