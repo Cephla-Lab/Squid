@@ -480,7 +480,7 @@ class ContinuousFocusLockController(BaseController):
         scale = self._config.gain_max - self._config.gain
         return self._config.gain + scale * math.exp(-dx)
 
-    def _control_fn(self, error_um: float, dt: float) -> float:
+    def _control_fn(self, error_um: float, dt: float, *, update_integral: bool = True) -> float:
         """PI controller with anti-windup.
 
         Args:
@@ -502,7 +502,7 @@ class ContinuousFocusLockController(BaseController):
             near_limit = (
                 piezo_pos <= min_um + 5.0 or piezo_pos >= max_um - 5.0
             )
-            if not near_limit:
+            if not near_limit and update_integral:
                 self._integral_accumulator += error_um * dt
                 # Clamp (anti-windup)
                 limit = self._config.integral_limit_um
@@ -574,9 +574,9 @@ class ContinuousFocusLockController(BaseController):
                             self._consecutive_nan_count += 1
                             decay = self._config.nan_holdover_decay ** self._consecutive_nan_count
                             # Don't update integral during holdover — save and restore
-                            saved_integral = self._integral_accumulator
-                            correction = self._control_fn(self._last_good_error_um, period) * decay
-                            self._integral_accumulator = saved_integral
+                            correction = self._control_fn(
+                                self._last_good_error_um, period, update_integral=False
+                            ) * decay
                             current_pos = self._piezo_service.get_position()
                             new_pos = self._clamp_to_range(current_pos + correction)
                             self._piezo_service.move_to_fast(new_pos)
@@ -667,6 +667,7 @@ class ContinuousFocusLockController(BaseController):
             else:
                 # Bad reading during recovery - reset good count
                 self._recovery_good_count = 0
+                assert self._recovery_start_time is not None  # Set on entering recovery
                 elapsed = time.monotonic() - self._recovery_start_time
                 if elapsed >= self._config.recovery_delay_s:
                     # Recovery delay elapsed, try next attempt

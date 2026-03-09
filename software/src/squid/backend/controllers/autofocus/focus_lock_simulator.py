@@ -776,6 +776,7 @@ class FocusLockSimulator(BaseController):
                 else:
                     # Bad reading during recovery - reset good count
                     self._recovery_good_count = 0
+                    assert self._recovery_start_time is not None  # Set on entering recovery
                     elapsed = time.monotonic() - self._recovery_start_time
                     if elapsed >= self._config.recovery_delay_s:
                         # Recovery delay elapsed, try next attempt
