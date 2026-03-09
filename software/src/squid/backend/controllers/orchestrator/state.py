@@ -4,6 +4,7 @@ Orchestrator state definitions and management.
 Defines the state machine for experiment orchestration.
 """
 
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -238,6 +239,109 @@ class Checkpoint:
     effective_run_seconds: float = 0.0
 
 
+class ThroughputTracker:
+    """Tracks FOV completion timestamps to compute rolling throughput."""
+
+    def __init__(self):
+        self._timestamps: list[float] = []
+
+    def record_fov(self, fov_index: int) -> None:
+        self._timestamps.append(_time.monotonic())
+
+    def fovs_per_minute(self, window_seconds: float = 120.0) -> Optional[float]:
+        if len(self._timestamps) < 2:
+            return None
+        now = _time.monotonic()
+        cutoff = now - window_seconds
+        recent = [t for t in self._timestamps if t >= cutoff]
+        if len(recent) < 2:
+            return None
+        elapsed = recent[-1] - recent[0]
+        if elapsed <= 0:
+            return None
+        fovs_completed = len(recent) - 1
+        return (fovs_completed / elapsed) * 60.0
+
+    def reset(self) -> None:
+        self._timestamps.clear()
+
+
+@dataclass(frozen=True)
+class RunState:
+    """Immutable snapshot of the entire experiment state at a point in time."""
+
+    # Identity
+    experiment_id: str
+    state: OrchestratorState
+
+    # Position
+    round_index: int
+    total_rounds: int
+    round_name: str
+    step_index: int
+    total_steps: int
+    step_type: str  # "imaging", "fluidics", "intervention", ""
+    step_label: str
+    fov_index: int
+    total_fovs: int
+
+    # Timing
+    elapsed_s: float
+    active_s: float
+    paused_s: float
+    eta_s: Optional[float]
+
+    # Health
+    attempt: int
+    focus_status: Optional[str] = None
+    focus_error_um: Optional[float] = None
+    throughput_fov_per_min: Optional[float] = None
+
+    # Subsystem timing
+    subsystem_seconds: Dict[str, float] = field(default_factory=dict)
+
+    # Timestamps
+    started_at: Optional[datetime] = None
+    snapshot_at: datetime = field(default_factory=datetime.now)
+
+    @property
+    def progress_percent(self) -> float:
+        """Calculate overall progress percentage."""
+        if self.total_rounds == 0:
+            return 0.0
+        round_progress = self.round_index / self.total_rounds
+        if self.round_index < self.total_rounds and self.total_steps > 0:
+            round_frac = 1.0 / self.total_rounds
+            step_frac = round_frac / self.total_steps
+            completed_steps = min(self.step_index, self.total_steps)
+            round_progress += completed_steps * step_frac
+            if completed_steps < self.total_steps:
+                sub = 0.0
+                if self.step_type == "imaging" and self.total_fovs > 0:
+                    sub = min(self.fov_index / self.total_fovs, 1.0)
+                elif self.step_type == "fluidics" and self.total_fovs > 0:
+                    sub = min(self.fov_index / self.total_fovs, 1.0)
+                round_progress += sub * step_frac
+        return round_progress * 100.0
+
+    def to_checkpoint(self, protocol_name: str, protocol_version: str, experiment_path: str) -> "Checkpoint":
+        """Create a Checkpoint from this RunState."""
+        return Checkpoint(
+            protocol_name=protocol_name,
+            protocol_version=protocol_version,
+            experiment_id=self.experiment_id,
+            experiment_path=experiment_path,
+            round_index=self.round_index,
+            step_index=self.step_index,
+            imaging_fov_index=self.fov_index,
+            created_at=self.snapshot_at,
+            current_attempt=self.attempt,
+            elapsed_seconds=self.elapsed_s,
+            paused_seconds=self.paused_s,
+            effective_run_seconds=self.active_s,
+        )
+
+
 # ============================================================================
 # Orchestrator Events
 # ============================================================================
@@ -251,6 +355,13 @@ class OrchestratorStateChanged(Event):
     new_state: str  # OrchestratorState.name
     experiment_id: str
     reason: str = ""
+
+
+@dataclass
+class RunStateUpdated(Event):
+    """Published when run state changes."""
+
+    run_state: RunState
 
 
 @dataclass
