@@ -25,7 +25,6 @@ class AcquisitionContext:
         if self.start_position is not None:
             self.stage_service.move_x_to(self.start_position.x_mm)
             self.stage_service.move_y_to(self.start_position.y_mm)
-            self.stage_service.move_z_to(self.start_position.z_mm)
 
         self.camera_service.enable_callbacks(self.callbacks_enabled)
 

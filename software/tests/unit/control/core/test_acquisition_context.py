@@ -21,7 +21,7 @@ def test_acquisition_context_restores_state() -> None:
 
     stage.move_x_to.assert_called_once_with(1.0)
     stage.move_y_to.assert_called_once_with(2.0)
-    stage.move_z_to.assert_called_once_with(3.0)
+    stage.move_z_to.assert_not_called()
     camera.enable_callbacks.assert_any_call(False)
     live.start_live.assert_called_once()
 
