@@ -1878,7 +1878,14 @@ class MultiPointWorker:
                 getattr(getattr(self, "_focus_lock_controller", None), "status", "unknown"),
             )
 
+        # Save piezo position before z-stack offset so we can restore it after.
+        # This is critical for focus lock: the lock's reference is the pre-offset
+        # position, and return_to_start only undoes the z-stack steps, not the
+        # prepare_z_stack offset (FROM CENTER mode).
+        pre_zstack_piezo_um = None
         if self.NZ > 1:
+            if self.use_piezo and self._piezo_service is not None:
+                pre_zstack_piezo_um = self._piezo_service.get_position()
             self.prepare_z_stack()
             if self.use_piezo and self._piezo_service is not None:
                 self.z_piezo_um = self._piezo_service.get_position()
@@ -1895,6 +1902,10 @@ class MultiPointWorker:
         finally:
             if self.NZ > 1:
                 self.move_z_back_after_stack()
+                # Restore piezo to pre-z-stack position (undo FROM CENTER offset)
+                if pre_zstack_piezo_um is not None and self._piezo_service is not None:
+                    self._piezo_service.move_to(pre_zstack_piezo_um)
+                    self.z_piezo_um = pre_zstack_piezo_um
             if focus_lock_paused:
                 self._autofocus_executor.resume_focus_lock()
                 self._log.info(
