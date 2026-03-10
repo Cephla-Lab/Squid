@@ -919,6 +919,24 @@ class OrchestratorControlPanel(EventBusWidget):
             self._validate_btn.setEnabled(True)
             _log.info(f"Protocol loaded: {protocol_path}")
 
+            # Add focus threshold reference lines if protocol uses focus lock
+            for config in protocol_obj.imaging_protocols.values():
+                fg = getattr(config, "focus_gate", None)
+                if fg is not None:
+                    fl = getattr(fg, "focus_lock", None)
+                    if fl is not None:
+                        acquire = getattr(fl, "acquire_threshold_um", None)
+                        maintain = getattr(fl, "maintain_threshold_um", None)
+                        if acquire is not None:
+                            self._focus_plot.add_horizontal_line(
+                                acquire, "#66BB6A", "acquire"
+                            )
+                        if maintain is not None:
+                            self._focus_plot.add_horizontal_line(
+                                maintain, "#FFA726", "maintain"
+                            )
+                        break
+
         except Exception as e:
             _log.error(f"Failed to load protocol: {e}")
             self._experiment_label.setText(f"Error: {e}")
