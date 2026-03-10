@@ -107,7 +107,7 @@ class ValidationResultDialog(QDialog):
         else:
             header.setText(f"Protocol: {self._summary.protocol_name} - INVALID")
             header.setStyleSheet(
-                "font-size: 16px; font-weight: bold; color: #f44336;"
+                "font-size: 16px; font-weight: bold; color: #ff6b6b;"
             )
 
         return header
@@ -193,7 +193,7 @@ class ValidationResultDialog(QDialog):
                 for col in range(5):
                     item = table.item(row, col)
                     if item:
-                        item.setBackground(QColor("#FFEBEE"))
+                        item.setBackground(QColor("#2d1a1a"))
 
         layout.addWidget(table)
         return group
@@ -202,8 +202,8 @@ class ValidationResultDialog(QDialog):
         """Create the errors section."""
         group = QGroupBox("Errors")
         group.setStyleSheet(
-            "QGroupBox { color: #f44336; font-weight: bold; }"
-            "QGroupBox::title { color: #f44336; }"
+            "QGroupBox { color: #ff6b6b; font-weight: bold; }"
+            "QGroupBox::title { color: #ff6b6b; }"
         )
         layout = QVBoxLayout(group)
 
@@ -218,7 +218,7 @@ class ValidationResultDialog(QDialog):
         text = QTextEdit()
         text.setReadOnly(True)
         text.setMaximumHeight(100)
-        text.setStyleSheet("background-color: #FFEBEE; color: #f44336;")
+        text.setStyleSheet("background-color: #2d1a1a; color: #ff6b6b;")
         text.setPlainText("\n".join(all_errors))
         layout.addWidget(text)
 
@@ -244,7 +244,7 @@ class ValidationResultDialog(QDialog):
         text = QTextEdit()
         text.setReadOnly(True)
         text.setMaximumHeight(100)
-        text.setStyleSheet("background-color: #FFF3E0; color: #E65100;")
+        text.setStyleSheet("background-color: #2d2213; color: #ffb74d;")
         text.setPlainText("\n".join(all_warnings))
         layout.addWidget(text)
 
@@ -275,7 +275,7 @@ class ValidationResultDialog(QDialog):
             )
         else:
             close_btn.setStyleSheet(
-                "background-color: #f44336; color: white; "
+                "background-color: #ff6b6b; color: white; "
                 "font-weight: bold; padding: 8px 16px;"
             )
         close_btn.clicked.connect(self.accept)
