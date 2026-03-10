@@ -5,7 +5,7 @@ Protocol Loader Dialog for selecting and validating experiment protocols.
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -38,8 +38,6 @@ class ProtocolLoaderDialog(QDialog):
     - Channel validation
     - Output path selection
     """
-
-    protocol_selected = pyqtSignal(object, str, str)  # protocol, base_path, experiment_id
 
     def __init__(
         self,
@@ -289,15 +287,13 @@ class ProtocolLoaderDialog(QDialog):
 
             # Auto-load FOV positions from protocol if specified (V2: fov_sets)
             if self._current_protocol.fov_sets:
-                # Use the first FOV set as default
-                first_fov_name = next(iter(self._current_protocol.fov_sets))
-                fov_file = self._current_protocol.fov_sets[first_fov_name]
-                # fov_sets paths are already resolved by the loader
-                if Path(fov_file).exists():
-                    self._load_fov_positions(fov_file)
-                else:
-                    self._fov_status_label.setText(f"FOV file not found: {fov_file}")
-                    self._fov_status_label.setStyleSheet("color: #f44336;")
+                for fov_name, fov_file in self._current_protocol.fov_sets.items():
+                    # fov_sets paths are already resolved by the loader
+                    if fov_file and Path(fov_file).exists():
+                        self._load_fov_positions(fov_file)
+                    else:
+                        self._fov_status_label.setText(f"FOV file not found: {fov_file}")
+                        self._fov_status_label.setStyleSheet("color: #f44336;")
 
             self._validate_inputs()
 
@@ -449,11 +445,6 @@ class ProtocolLoaderDialog(QDialog):
             or self._current_protocol.name
         )
 
-        self.protocol_selected.emit(
-            self._current_protocol,
-            str(output_path),
-            experiment_id,
-        )
         self.accept()
 
     def get_protocol(self) -> Optional[ExperimentProtocol]:
