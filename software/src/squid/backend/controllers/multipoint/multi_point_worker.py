@@ -1425,8 +1425,7 @@ class MultiPointWorker:
 
     def initialize_z_stack(self) -> None:
         """Initialize z-stack using ZStackExecutor."""
-        # Use ZStackExecutor for z-stack initialization
-        self.z_pos = self._zstack_executor.initialize()
+        self._zstack_executor.initialize()
 
         # Keep deltaZ in sync for other code that uses it
         if self.z_stacking_config == "FROM TOP":
@@ -1473,22 +1472,8 @@ class MultiPointWorker:
         else:
             self._log.info(f"moving to coordinate {coordinate_mm}")
 
-        # Use PositionController for X/Y movement with stabilization
+        # Use PositionController for X/Y movement with stabilization (Z is piezo-only)
         self._position_controller.move_to_coordinate(x_mm=x_mm, y_mm=y_mm)
-
-        # Handle Z positioning based on autofocus mode and timepoint
-        if self.autofocus_mode != AutofocusMode.NONE and self.time_point > 0:
-            if (region_id, fov) in self._last_time_point_z_pos:
-                last_z_mm: float = self._last_time_point_z_pos[(region_id, fov)]
-                self._position_controller.move_to_z(last_z_mm)
-                self._log.info(f"Moved to last z position {last_z_mm} [mm]")
-            else:
-                self._log.warning(
-                    f"No last z position found for region {region_id}, fov {fov}"
-                )
-        elif len(coordinate_mm) >= 3:
-            z_mm: float = coordinate_mm[2]
-            self._position_controller.move_to_z(z_mm)
 
         # Register FOV position via ProgressTracker (use actual moved-to position)
         fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
@@ -2221,21 +2206,14 @@ class MultiPointWorker:
                 z_delta_um,
                 self.z_piezo_um,
             )
-            return
-
-        z_delta_mm = z_delta_um / 1000.0
-        self._position_controller.move_z_relative(z_delta_mm)
-        self._log.info("Prepared z-stack start on stage: delta=%+.4f mm", z_delta_mm)
 
     def handle_z_offset(self, config: AcquisitionChannel, not_offset: bool) -> None:
-        if (
-            config.z_offset is not None
-        ):  # perform z offset for config, assume z_offset is in um
-            if config.z_offset != 0.0:
-                direction: int = 1 if not_offset else -1
-                self._log.info("Moving Z offset" + str(config.z_offset * direction))
-                z_delta = config.z_offset / 1000 * direction
-                self._position_controller.move_z_relative(z_delta)
+        if config.z_offset is not None and config.z_offset != 0.0:
+            direction: int = 1 if not_offset else -1
+            z_delta_um = config.z_offset * direction
+            self._log.info(f"Moving Z offset {z_delta_um} um via piezo")
+            if self._piezo_service is not None:
+                self._piezo_service.move_relative(z_delta_um)
 
     def _image_callback(self, camera_frame: CameraFrame) -> None:
         """

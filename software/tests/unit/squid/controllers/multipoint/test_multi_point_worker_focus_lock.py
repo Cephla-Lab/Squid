@@ -52,6 +52,12 @@ class _FakePiezoService:
     def get_position(self) -> float:
         return self._position_um
 
+    def move_to(self, position_um: float) -> None:
+        self._position_um = position_um
+
+    def move_relative(self, delta_um: float) -> None:
+        self._position_um += delta_um
+
 
 class _FakeZStackExecutor:
     def __init__(self) -> None:
@@ -94,6 +100,43 @@ def _build_worker_for_acquire_test(
     worker.move_z_back_after_stack = MagicMock()
 
     return worker
+
+
+def test_move_to_coordinate_does_not_move_stage_z() -> None:
+    """move_to_coordinate should only move X/Y, never stage Z."""
+    worker = MultiPointWorker.__new__(MultiPointWorker)
+    worker._position_controller = MagicMock()
+    worker._alignment_widget = None
+    worker._log = MagicMock()
+    worker.autofocus_mode = AutofocusMode.NONE
+    worker.time_point = 0
+    worker._last_time_point_z_pos = {}
+    worker._progress_tracker = MagicMock()
+    worker._get_current_fov_dimensions = lambda: (0.5, 0.5)
+
+    # Coordinate with Z value
+    worker.move_to_coordinate((1.0, 2.0, 0.05), region_id="A1", fov=0)
+
+    # Should only move X/Y
+    worker._position_controller.move_to_coordinate.assert_called_once_with(x_mm=1.0, y_mm=2.0)
+    # Should NOT move Z via position controller
+    worker._position_controller.move_to_z.assert_not_called()
+
+
+def test_handle_z_offset_uses_piezo() -> None:
+    """handle_z_offset should route through piezo, not stage."""
+    worker = MultiPointWorker.__new__(MultiPointWorker)
+    worker._log = MagicMock()
+    worker._piezo_service = MagicMock()
+    worker._position_controller = MagicMock()
+
+    config = SimpleNamespace(z_offset=5.0)
+    worker.handle_z_offset(config, not_offset=True)
+
+    # Should use piezo
+    worker._piezo_service.move_relative.assert_called_once_with(5.0)
+    # Should NOT use stage
+    worker._position_controller.move_z_relative.assert_not_called()
 
 
 def test_acquire_at_position_aborts_when_focus_lock_mode_cannot_lock() -> None:
