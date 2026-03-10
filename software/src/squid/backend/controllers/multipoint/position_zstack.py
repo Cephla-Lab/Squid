@@ -190,8 +190,8 @@ class ZStackExecutor:
 
     def __init__(
         self,
-        stage_service: "StageService",
-        config: ZStackConfig,
+        stage_service: Optional["StageService"] = None,
+        config: Optional[ZStackConfig] = None,
         piezo_service: Optional["PiezoService"] = None,
         trigger_mode: str = TriggerMode.SOFTWARE,
         piezo_delay_ms: float = MULTIPOINT_PIEZO_DELAY_MS,
@@ -201,14 +201,13 @@ class ZStackExecutor:
         Initialize the z-stack executor.
 
         Args:
-            stage_service: Stage service for z-movement
+            stage_service: Unused, kept for caller compatibility (will be removed)
             config: Z-stack configuration
-            piezo_service: Optional piezo service for piezo-based z-movement
+            piezo_service: Piezo service for z-movement
             trigger_mode: Trigger mode (affects piezo delay behavior)
             piezo_delay_ms: Delay after piezo movement in ms
             stabilization_time_z_ms: Delay after stage z-movement in ms
         """
-        self._stage = stage_service
         self._piezo = piezo_service
         self._config = config
         self._trigger_mode = trigger_mode
@@ -216,9 +215,9 @@ class ZStackExecutor:
         self._stab_z_s = stabilization_time_z_ms / 1000.0
 
         # State
-        self._z_start_mm: Optional[float] = None
+        self._z_home_um: float = 0.0
         self._z_piezo_um: float = 0.0
-        self._delta_z_mm: float = config.delta_z_um / 1000.0
+        self._delta_z_mm: float = config.delta_z_um / 1000.0 if config else 0.0
         self._current_z_level: int = 0
 
     @property
@@ -251,85 +250,56 @@ class ZStackExecutor:
         """Set piezo z position (for external updates)."""
         self._z_piezo_um = value
 
-    def initialize(self) -> float:
+    def initialize(self) -> None:
         """
-        Initialize z-stack by moving to start position.
+        Initialize z-stack by recording the current piezo position as home.
 
-        Returns:
-            Z position at start of stack in mm
+        Does NOT move stage Z — Z control is piezo-only.
         """
-        import time
-
         # Adjust delta direction based on stacking config
         if self._config.stacking_direction == "FROM TOP":
             self._delta_z_mm = -abs(self._delta_z_mm)
-            start_z_mm = self._config.z_range[1]
         else:
             self._delta_z_mm = abs(self._delta_z_mm)
-            start_z_mm = self._config.z_range[0]
 
-        # Move to start position
-        _log.debug(f"Initializing z-stack, moving to z={start_z_mm} mm")
-        self._stage.move_z_to(start_z_mm)
-        self._stage.wait_for_idle()
-        time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
-
-        # Record start position
-        self._z_start_mm = self._stage.get_position().z_mm
+        # Record current piezo position as home
+        if self._piezo is not None:
+            self._z_home_um = self._piezo.get_position()
+        else:
+            self._z_home_um = 0.0
+        self._z_piezo_um = self._z_home_um
         self._current_z_level = 0
-
-        return self._z_start_mm if self._z_start_mm is not None else start_z_mm
 
     def step(self) -> None:
         """
-        Move to next z-level in stack.
+        Move to next z-level in stack using piezo.
 
         Should be called between image captures within a z-stack.
         """
         import time
 
-        if self.use_piezo and self._piezo is not None:
-            self._z_piezo_um += self._delta_z_mm * 1000  # Convert mm to um
-            self._piezo.move_to(self._z_piezo_um)
-            # Only add delay for software trigger mode
-            if self._trigger_mode == TriggerMode.SOFTWARE:
-                time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
-        else:
-            self._stage.move_z(self._delta_z_mm)
-            self._stage.wait_for_idle()
-            time.sleep(scale_duration(self._stab_z_s, min_seconds=1e-6))
-
+        if self._piezo is None:
+            raise RuntimeError("Piezo service required for z-stack stepping")
+        self._z_piezo_um += self._delta_z_mm * 1000  # Convert mm to um
+        self._piezo.move_to(self._z_piezo_um)
+        if self._trigger_mode == TriggerMode.SOFTWARE:
+            time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
         self._current_z_level += 1
 
     def return_to_start(self) -> None:
         """
-        Return to z-stack start position after acquisition.
+        Return piezo to home position recorded during initialize().
 
         Should be called after completing all z-levels in a stack.
         """
         import time
 
-        nz = self._config.num_z_levels
-        direction = self._config.stacking_direction
-
-        if self.use_piezo and self._piezo is not None:
-            # Return piezo to start position
-            self._z_piezo_um = self._z_piezo_um - self._delta_z_mm * 1000 * (nz - 1)
-            self._piezo.move_to(self._z_piezo_um)
-            if self._trigger_mode == TriggerMode.SOFTWARE:
-                time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
-        else:
-            # Calculate relative movement back to start
-            if direction == "FROM CENTER":
-                rel_z_to_start = -self._delta_z_mm * (nz - 1) + self._delta_z_mm * round(
-                    (nz - 1) / 2
-                )
-            else:
-                rel_z_to_start = -self._delta_z_mm * (nz - 1)
-
-            self._stage.move_z(rel_z_to_start)
-            self._stage.wait_for_idle()
-
+        if self._piezo is None:
+            raise RuntimeError("Piezo service required for z-stack return")
+        self._z_piezo_um = self._z_home_um
+        self._piezo.move_to(self._z_piezo_um)
+        if self._trigger_mode == TriggerMode.SOFTWARE:
+            time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))
         self._current_z_level = 0
 
     def reset_piezo(self, initial_position_um: float = 0.0) -> None:
@@ -340,5 +310,5 @@ class ZStackExecutor:
             initial_position_um: Initial piezo position in um
         """
         self._z_piezo_um = initial_position_um
-        if self.use_piezo and self._piezo is not None:
+        if self._piezo is not None:
             self._piezo.move_to(self._z_piezo_um)

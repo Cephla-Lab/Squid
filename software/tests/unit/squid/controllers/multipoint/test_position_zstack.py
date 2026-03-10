@@ -60,8 +60,8 @@ class FakeStageService:
 class FakePiezoService:
     """Fake PiezoService for testing."""
 
-    def __init__(self):
-        self._position_um = 0.0
+    def __init__(self, position_um: float = 0.0):
+        self._position_um = position_um
         self.move_calls = []
 
     def move_to(self, position_um: float) -> None:
@@ -194,68 +194,137 @@ class TestZStackExecutor:
     def test_init(self):
         """Test ZStackExecutor initialization."""
         stage = FakeStageService()
+        piezo = FakePiezoService()
         config = ZStackConfig(
             num_z_levels=10,
             delta_z_um=1.0,
             z_range=(0.04, 0.05),
+            use_piezo=True,
         )
-        executor = ZStackExecutor(stage, config)
+        executor = ZStackExecutor(stage, config, piezo_service=piezo)
 
         assert executor.num_z_levels == 10
         assert executor.delta_z_um == 1.0
-        assert executor.use_piezo is False
 
-    def test_initialize_from_bottom(self):
-        """Test z-stack initialization from bottom."""
+    def test_initialize_records_piezo_home(self):
+        """initialize() should NOT call stage.move_z_to, and should record piezo position as home."""
         stage = FakeStageService()
+        piezo = FakePiezoService(position_um=100.0)
         config = ZStackConfig(
             num_z_levels=5,
             delta_z_um=2.0,
             z_range=(0.04, 0.05),
             stacking_direction="FROM BOTTOM",
+            use_piezo=True,
         )
-        executor = ZStackExecutor(stage, config, stabilization_time_z_ms=0)
+        executor = ZStackExecutor(stage, config, piezo_service=piezo, stabilization_time_z_ms=0)
 
-        z_start = executor.initialize()
+        executor.initialize()
 
-        # Should move to z_range[0] for FROM BOTTOM
-        assert ("move_z_to", 0.04) in stage.move_calls
-        assert z_start == 0.04
+        # Should NOT touch stage Z
+        assert not any(call[0] in ("move_z_to", "move_z") for call in stage.move_calls)
+        # Should record piezo home position
+        assert executor._z_home_um == 100.0
+        assert executor._z_piezo_um == 100.0
+        assert executor.current_z_level == 0
 
-    def test_initialize_from_top(self):
-        """Test z-stack initialization from top."""
+    def test_initialize_from_top_sets_negative_delta(self):
+        """initialize() with FROM TOP should set negative delta."""
         stage = FakeStageService()
+        piezo = FakePiezoService(position_um=50.0)
         config = ZStackConfig(
             num_z_levels=5,
             delta_z_um=2.0,
             z_range=(0.04, 0.05),
             stacking_direction="FROM TOP",
+            use_piezo=True,
         )
-        executor = ZStackExecutor(stage, config, stabilization_time_z_ms=0)
+        executor = ZStackExecutor(stage, config, piezo_service=piezo, stabilization_time_z_ms=0)
 
-        z_start = executor.initialize()
+        executor.initialize()
 
-        # Should move to z_range[1] for FROM TOP
-        assert ("move_z_to", 0.05) in stage.move_calls
-        assert z_start == 0.05
+        assert executor._delta_z_mm < 0
+        assert executor._z_home_um == 50.0
 
-    def test_step_with_stage(self):
-        """Test z-stack step using stage."""
+    def test_step_only_uses_piezo(self):
+        """step() should move piezo by delta_z_um and never touch stage."""
         stage = FakeStageService()
+        piezo = FakePiezoService(position_um=100.0)
         config = ZStackConfig(
             num_z_levels=5,
             delta_z_um=2.0,
             z_range=(0.04, 0.05),
-            use_piezo=False,
+            stacking_direction="FROM BOTTOM",
+            use_piezo=True,
         )
-        executor = ZStackExecutor(stage, config, stabilization_time_z_ms=0)
+        executor = ZStackExecutor(stage, config, piezo_service=piezo, piezo_delay_ms=0, stabilization_time_z_ms=0)
         executor.initialize()
         stage.move_calls.clear()
+        piezo.move_calls.clear()
 
         executor.step()
 
-        assert ("move_z", 0.002) in stage.move_calls  # 2.0um = 0.002mm
+        # Piezo should move by +2.0 um
+        assert piezo.move_calls == [102.0]
+        assert executor.z_piezo_um == 102.0
         assert executor.current_z_level == 1
+        # Stage should NOT be touched
+        assert len(stage.move_calls) == 0
+
+    def test_return_to_start_restores_home(self):
+        """return_to_start() should move piezo back to the home recorded during initialize()."""
+        stage = FakeStageService()
+        piezo = FakePiezoService(position_um=100.0)
+        config = ZStackConfig(
+            num_z_levels=5,
+            delta_z_um=2.0,
+            z_range=(0.04, 0.05),
+            stacking_direction="FROM BOTTOM",
+            use_piezo=True,
+        )
+        executor = ZStackExecutor(stage, config, piezo_service=piezo, piezo_delay_ms=0, stabilization_time_z_ms=0)
+        executor.initialize()
+
+        # Step through all levels
+        for _ in range(4):
+            executor.step()
+
+        assert executor.z_piezo_um == pytest.approx(108.0)  # 100 + 4*2
+        piezo.move_calls.clear()
+
+        executor.return_to_start()
+
+        # Should return to home (100.0), not arithmetic reversal
+        assert executor.z_piezo_um == pytest.approx(100.0)
+        assert piezo.move_calls == [100.0]
+        assert executor.current_z_level == 0
+
+    def test_return_to_start_after_from_center_offset(self):
+        """FROM CENTER: piezo at 140um, initialize, step, return — should go back to 140."""
+        stage = FakeStageService()
+        piezo = FakePiezoService(position_um=140.0)
+        config = ZStackConfig(
+            num_z_levels=3,
+            delta_z_um=2.0,
+            z_range=(0.04, 0.05),
+            stacking_direction="FROM BOTTOM",
+            use_piezo=True,
+        )
+        executor = ZStackExecutor(stage, config, piezo_service=piezo, piezo_delay_ms=0, stabilization_time_z_ms=0)
+        executor.initialize()
+
+        assert executor._z_home_um == 140.0
+
+        # Step through
+        for _ in range(2):
+            executor.step()
+
+        assert executor.z_piezo_um == pytest.approx(144.0)
+
+        executor.return_to_start()
+
+        assert executor.z_piezo_um == pytest.approx(140.0)
+        assert executor.current_z_level == 0
 
     def test_step_with_piezo(self):
         """Test z-stack step using piezo."""
@@ -277,30 +346,6 @@ class TestZStackExecutor:
 
         assert 2.0 in piezo.move_calls  # Should move piezo by 2um
         assert executor.z_piezo_um == 2.0
-
-    def test_return_to_start_stage(self):
-        """Test returning to start position with stage."""
-        stage = FakeStageService()
-        config = ZStackConfig(
-            num_z_levels=5,
-            delta_z_um=2.0,
-            z_range=(0.04, 0.05),
-            stacking_direction="FROM BOTTOM",
-            use_piezo=False,
-        )
-        executor = ZStackExecutor(stage, config, stabilization_time_z_ms=0)
-        executor.initialize()
-
-        # Simulate stepping through z-stack
-        for _ in range(4):
-            executor.step()
-
-        stage.move_calls.clear()
-        executor.return_to_start()
-
-        # Should move back by -(nz-1) * delta = -4 * 0.002 = -0.008
-        assert ("move_z", pytest.approx(-0.008)) in stage.move_calls
-        assert executor.current_z_level == 0
 
     def test_return_to_start_piezo(self):
         """Test returning to start position with piezo."""
@@ -357,3 +402,33 @@ class TestZStackExecutor:
 
         # Should return False because piezo_service is None
         assert executor.use_piezo is False
+
+    def test_step_raises_without_piezo(self):
+        """step() should raise RuntimeError when no piezo service."""
+        stage = FakeStageService()
+        config = ZStackConfig(
+            num_z_levels=5,
+            delta_z_um=2.0,
+            z_range=(0.04, 0.05),
+            use_piezo=True,
+        )
+        executor = ZStackExecutor(stage, config, piezo_service=None)
+        executor.initialize()
+
+        with pytest.raises(RuntimeError, match="Piezo service required"):
+            executor.step()
+
+    def test_return_to_start_raises_without_piezo(self):
+        """return_to_start() should raise RuntimeError when no piezo service."""
+        stage = FakeStageService()
+        config = ZStackConfig(
+            num_z_levels=5,
+            delta_z_um=2.0,
+            z_range=(0.04, 0.05),
+            use_piezo=True,
+        )
+        executor = ZStackExecutor(stage, config, piezo_service=None)
+        executor.initialize()
+
+        with pytest.raises(RuntimeError, match="Piezo service required"):
+            executor.return_to_start()
