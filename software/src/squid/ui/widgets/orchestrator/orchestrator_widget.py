@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QColor, QBrush, QPainter, QPen, QPainterPath
+import pyqtgraph as pg
 
 from squid.core.events import handles, LoadScanCoordinatesCommand
 from squid.ui.widgets.base import EventBusWidget
@@ -44,6 +45,7 @@ from squid.backend.controllers.orchestrator import (
     OrchestratorInterventionRequired,
     OrchestratorError,
     OrchestratorTimingSnapshot,
+    RunStateUpdated,
     ResolveInterventionCommand,
     ValidateProtocolCommand,
     ProtocolValidationComplete,
@@ -119,113 +121,88 @@ _CURRENT_STEP_BG = QColor("#1A3A5C")  # Subtle blue tint for dark theme
 _RUNNING_BG = QColor("#1A3A2C")  # Subtle green tint
 
 
-class SparklineWidget(QWidget):
-    """Small single-series line chart for live run telemetry."""
+class TimeAxisItem(pg.AxisItem):
+    """X-axis that shows elapsed time as human-readable labels."""
 
-    def __init__(
-        self,
-        color: str,
-        *,
-        max_points: int = 90,
-        y_max: Optional[float] = None,
-        parent: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self._line_color = QColor(color)
-        self._fill_color = QColor(color)
-        self._fill_color.setAlpha(55)
-        self._values: deque[float] = deque(maxlen=max_points)
-        self._y_max = y_max
-        self.setMinimumHeight(48)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def set_values(self, values: List[float]) -> None:
-        self._values.clear()
-        for value in values:
-            self._values.append(float(value))
-        self.update()
-
-    def append_value(self, value: float) -> None:
-        self._values.append(float(value))
-        self.update()
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = self.rect().adjusted(4, 4, -4, -4)
-        painter.fillRect(rect, QColor("#171b21"))
-
-        painter.setPen(QPen(QColor("#2d3742"), 1))
-        for fraction in (0.25, 0.5, 0.75):
-            y = rect.top() + rect.height() * fraction
-            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
-
-        if len(self._values) < 2:
-            painter.setPen(QPen(QColor("#5f6b7a"), 1))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "No live data")
-            return
-
-        y_min = min(self._values)
-        y_max = self._y_max if self._y_max is not None else max(self._values)
-        if y_max <= y_min:
-            y_max = y_min + 1.0
-
-        x_step = rect.width() / max(1, len(self._values) - 1)
-        path = QPainterPath()
-        fill_path = QPainterPath()
-        values = list(self._values)
-        for index, value in enumerate(values):
-            x = rect.left() + index * x_step
-            normalized = (value - y_min) / (y_max - y_min)
-            y = rect.bottom() - normalized * rect.height()
-            if index == 0:
-                path.moveTo(x, y)
-                fill_path.moveTo(x, rect.bottom())
-                fill_path.lineTo(x, y)
+    def tickStrings(self, values, scale, spacing):
+        result = []
+        for v in values:
+            seconds = int(v)
+            if seconds < 60:
+                result.append(f"{seconds}s")
+            elif seconds < 3600:
+                result.append(f"{seconds // 60}m")
             else:
-                path.lineTo(x, y)
-                fill_path.lineTo(x, y)
-        fill_path.lineTo(rect.right(), rect.bottom())
-        fill_path.closeSubpath()
-
-        painter.fillPath(fill_path, self._fill_color)
-        painter.setPen(QPen(self._line_color, 2))
-        painter.drawPath(path)
+                h = seconds // 3600
+                m = (seconds % 3600) // 60
+                result.append(f"{h}h{m:02d}m" if m else f"{h}h")
+        return result
 
 
-class MetricPlotCard(QFrame):
-    """Compact labeled metric card with a sparkline."""
+class AccumulatingPlot(QWidget):
+    """A pyqtgraph plot that accumulates data over the full experiment run."""
 
-    def __init__(
-        self,
-        title: str,
-        color: str,
-        *,
-        y_max: Optional[float] = None,
-        parent: Optional[QWidget] = None,
-    ):
+    def __init__(self, title: str, y_label: str, line_color: str = "#4FC3F7",
+                 y_range: tuple = None, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(
-            "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
-        )
+        self._x_data: list = []
+        self._y_data: list = []
+        self._run_start: float = 0.0
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("color: #7f8b99; font-size: 10px;")
-        layout.addWidget(title_label)
+        time_axis = TimeAxisItem(orientation="bottom")
+        self._plot_widget = pg.PlotWidget(axisItems={"bottom": time_axis})
+        self._plot_widget.setBackground("#171b21")
+        self._plot_widget.setTitle(title, color="#b8c1cc", size="10pt")
+        self._plot_widget.setLabel("left", y_label, color="#7f8b99")
+        self._plot_widget.setLabel("bottom", "Time", color="#7f8b99")
+        self._plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self._plot_widget.setMinimumHeight(120)
 
-        self._value_label = QLabel("--")
-        self._value_label.setStyleSheet("color: #edf2f7; font-size: 16px; font-weight: 600;")
-        layout.addWidget(self._value_label)
+        if y_range is not None:
+            self._plot_widget.setYRange(y_range[0], y_range[1])
 
-        self._sparkline = SparklineWidget(color, y_max=y_max)
-        layout.addWidget(self._sparkline)
+        pen = pg.mkPen(color=line_color, width=2)
+        self._curve = self._plot_widget.plot(pen=pen)
 
-    def set_metric(self, value_text: str, values: List[float]) -> None:
-        self._value_label.setText(value_text)
-        self._sparkline.set_values(values)
+        self._marker = pg.ScatterPlotItem(
+            size=8, pen=pg.mkPen(None), brush=pg.mkBrush(line_color)
+        )
+        self._plot_widget.addItem(self._marker)
+
+        self._value_text = pg.TextItem(color=line_color, anchor=(1, 1))
+        self._plot_widget.addItem(self._value_text)
+
+        layout.addWidget(self._plot_widget)
+
+    def set_run_start(self, t: float):
+        self._run_start = t
+        self._x_data.clear()
+        self._y_data.clear()
+
+    def append(self, timestamp: float, value: float):
+        elapsed = timestamp - self._run_start if self._run_start > 0 else 0.0
+        self._x_data.append(elapsed)
+        self._y_data.append(value)
+        self._curve.setData(self._x_data, self._y_data)
+        if self._x_data:
+            self._marker.setData([self._x_data[-1]], [self._y_data[-1]])
+            self._value_text.setPos(self._x_data[-1], self._y_data[-1])
+            self._value_text.setText(f"{value:.1f}")
+
+    def add_horizontal_line(self, y: float, color: str = "#ff6b6b", label: str = ""):
+        pen = pg.mkPen(color=color, width=1, style=Qt.DashLine)
+        line = pg.InfiniteLine(pos=y, angle=0, pen=pen, label=label,
+                               labelOpts={"color": color, "position": 0.95})
+        self._plot_widget.addItem(line)
+
+    def clear_data(self):
+        self._x_data.clear()
+        self._y_data.clear()
+        self._curve.setData([], [])
+        self._marker.setData([], [])
 
 
 class SubsystemBreakdownWidget(QFrame):
@@ -234,7 +211,7 @@ class SubsystemBreakdownWidget(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._values: Dict[str, float] = {}
-        self.setMinimumHeight(72)
+        self.setMinimumHeight(90)
         self.setStyleSheet(
             "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
         )
@@ -268,20 +245,30 @@ class SubsystemBreakdownWidget(QFrame):
             "waiting": QColor("#90A4AE"),
         }
         x = float(bar_rect.left())
-        legend_y = rect.bottom() - 6
-        step = max(88, rect.width() // max(1, len(self._values)))
-        for index, (name, value) in enumerate(sorted(self._values.items())):
+        for name, value in sorted(self._values.items()):
             width = bar_rect.width() * (value / total)
             color = palette.get(name, QColor("#90A4AE"))
             painter.setBrush(color)
             painter.drawRoundedRect(int(x), bar_rect.top(), max(2, int(width)), bar_rect.height(), 4, 4)
             x += width
 
-            legend_x = rect.left() + index * step
+        # Legend — wrap to multiple rows if needed
+        max_item_width = 100
+        items_per_row = max(1, rect.width() // max_item_width)
+        legend_y = bar_rect.bottom() + 14
+        for i, (name, secs) in enumerate(self._values.items()):
+            col = i % items_per_row
+            row = i // items_per_row
+            lx = rect.left() + col * max_item_width
+            ly = legend_y + row * 16
+            color = palette.get(name, QColor("#90A4AE"))
             painter.setBrush(color)
-            painter.drawRect(legend_x, legend_y - 8, 10, 10)
-            painter.setPen(QPen(QColor("#d7dde5"), 1))
-            painter.drawText(legend_x + 16, legend_y + 1, f"{name}: {_format_duration(value)}")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(lx, ly, 8, 8)
+            painter.setPen(QPen(QColor("#b8c1cc"), 1))
+            mins = int(secs) // 60
+            sec = int(secs) % 60
+            painter.drawText(lx + 12, ly + 8, f"{name}: {mins}m{sec:02d}s")
 
 
 class OrchestratorControlPanel(EventBusWidget):
@@ -299,6 +286,7 @@ class OrchestratorControlPanel(EventBusWidget):
     progress_updated = pyqtSignal(object)  # OrchestratorProgress
     intervention_required = pyqtSignal(object)  # OrchestratorInterventionRequired
     timing_snapshot = pyqtSignal(object)  # OrchestratorTimingSnapshot
+    run_state_updated = pyqtSignal(object)  # RunStateUpdated
     error_occurred = pyqtSignal(str, str)  # type, message
     fov_positions_changed = pyqtSignal(dict)  # FOV positions dict
     protocol_loaded = pyqtSignal(dict)  # protocol data
@@ -357,59 +345,77 @@ class OrchestratorControlPanel(EventBusWidget):
 
         layout.addStretch()
 
-    def _create_status_section(self) -> QGroupBox:
-        group = QGroupBox("Run Overview")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+    def _create_status_section(self) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet("background-color: #20252b; border-radius: 6px;")
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(6)
 
-        self._status_label = QLabel("IDLE")
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        font = QFont()
-        font.setPointSize(18)
-        font.setBold(True)
-        self._status_label.setFont(font)
-        self._status_label.setStyleSheet("color: #888;")
-        layout.addWidget(self._status_label)
-
+        # Experiment label (shown above the health strip)
         self._experiment_label = QLabel("No protocol loaded")
         self._experiment_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._experiment_label.setWordWrap(True)
         self._experiment_label.setStyleSheet("color: #b8c1cc;")
-        layout.addWidget(self._experiment_label)
+        outer.addWidget(self._experiment_label)
 
-        metrics = QWidget()
-        metrics_layout = QHBoxLayout(metrics)
-        metrics_layout.setContentsMargins(0, 2, 0, 0)
-        metrics_layout.setSpacing(8)
-        self._overview_labels: Dict[str, QLabel] = {}
-        for key, title in (
-            ("step", "Step"),
-            ("fov", "FOV"),
-            ("operation", "Subsystem"),
-            ("attempt", "Attempt"),
-            ("elapsed", "Elapsed"),
-            ("effective", "Active"),
-            ("eta", "ETA"),
-        ):
-            card = QFrame()
-            card.setFrameShape(QFrame.Shape.StyledPanel)
-            card.setStyleSheet(
-                "QFrame { background-color: #20252b; border: 1px solid #303841; border-radius: 6px; }"
-            )
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 6, 8, 6)
-            title_label = QLabel(title)
-            title_label.setStyleSheet("color: #7f8b99; font-size: 10px;")
-            value_label = QLabel("--")
-            value_label.setStyleSheet("color: #edf2f7; font-weight: 600;")
-            value_label.setWordWrap(True)
-            card_layout.addWidget(title_label)
-            card_layout.addWidget(value_label)
-            metrics_layout.addWidget(card, 1)
-            self._overview_labels[key] = value_label
-        layout.addWidget(metrics)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        return group
+        # -- State Zone --
+        state_zone = QVBoxLayout()
+        self._status_label = QLabel("IDLE")
+        self._status_label.setStyleSheet(
+            "font-size: 18px; font-weight: 700; color: #edf2f7;"
+        )
+        self._time_label = QLabel("")
+        self._time_label.setStyleSheet("font-size: 11px; color: #7f8b99;")
+        state_zone.addWidget(self._status_label)
+        state_zone.addWidget(self._time_label)
+        layout.addLayout(state_zone, 2)
+
+        # -- Position Zone --
+        pos_zone = QVBoxLayout()
+        self._round_label = QLabel("Round: -")
+        self._round_label.setStyleSheet("font-size: 12px; color: #b8c1cc;")
+        self._step_label = QLabel("Step: -")
+        self._step_label.setStyleSheet("font-size: 12px; color: #b8c1cc;")
+        self._fov_label = QLabel("FOV: -")
+        self._fov_label.setStyleSheet("font-size: 12px; color: #b8c1cc;")
+        self._attempt_label = QLabel("")
+        self._attempt_label.setStyleSheet("font-size: 11px; color: #FFB74D;")
+        self._attempt_label.hide()
+        pos_zone.addWidget(self._round_label)
+        pos_zone.addWidget(self._step_label)
+        pos_zone.addWidget(self._fov_label)
+        pos_zone.addWidget(self._attempt_label)
+        layout.addLayout(pos_zone, 3)
+
+        # -- Health Zone --
+        health_zone = QVBoxLayout()
+
+        focus_row = QHBoxLayout()
+        self._focus_dot = QLabel("\u25cf")
+        self._focus_dot.setStyleSheet("font-size: 14px; color: #888888;")
+        self._focus_label = QLabel("Focus: -")
+        self._focus_label.setStyleSheet("font-size: 12px; color: #b8c1cc;")
+        focus_row.addWidget(self._focus_dot)
+        focus_row.addWidget(self._focus_label)
+        focus_row.addStretch()
+
+        self._throughput_label = QLabel("Throughput: -")
+        self._throughput_label.setStyleSheet("font-size: 12px; color: #b8c1cc;")
+        self._warnings_label = QLabel("")
+        self._warnings_label.setStyleSheet("font-size: 11px; color: #7f8b99;")
+
+        health_zone.addLayout(focus_row)
+        health_zone.addWidget(self._throughput_label)
+        health_zone.addWidget(self._warnings_label)
+        layout.addLayout(health_zone, 2)
+
+        outer.addLayout(layout)
+        return frame
 
     def _create_controls_section(self) -> QWidget:
         widget = QWidget()
@@ -512,29 +518,31 @@ class OrchestratorControlPanel(EventBusWidget):
 
         return group
 
-    def _create_metrics_section(self) -> QGroupBox:
-        group = QGroupBox("Live Metrics")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+    def _create_metrics_section(self) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet("background-color: #20252b; border-radius: 6px;")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
-        cards = QWidget()
-        cards_layout = QHBoxLayout(cards)
-        cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(8)
-
-        self._progress_plot = MetricPlotCard("Progress Trend", "#4FC3F7", y_max=100.0)
-        self._eta_plot = MetricPlotCard("ETA Trend", "#81C784")
-        self._overhead_plot = MetricPlotCard("Overhead", "#FFB74D")
-
-        cards_layout.addWidget(self._progress_plot, 1)
-        cards_layout.addWidget(self._eta_plot, 1)
-        cards_layout.addWidget(self._overhead_plot, 1)
-        layout.addWidget(cards)
+        self._progress_plot = AccumulatingPlot(
+            "Progress", "Complete %", line_color="#4FC3F7", y_range=(0, 100)
+        )
+        self._throughput_plot = AccumulatingPlot(
+            "Throughput", "FOVs / min", line_color="#81C784"
+        )
+        self._focus_plot = AccumulatingPlot(
+            "Focus Error", "Error (\u00b5m)", line_color="#FFB74D"
+        )
 
         self._subsystem_breakdown = SubsystemBreakdownWidget()
+
+        layout.addWidget(self._progress_plot)
+        layout.addWidget(self._throughput_plot)
+        layout.addWidget(self._focus_plot)
         layout.addWidget(self._subsystem_breakdown)
 
-        return group
+        return frame
 
     def _create_intervention_section(self) -> QFrame:
         frame = QFrame()
@@ -619,6 +627,7 @@ class OrchestratorControlPanel(EventBusWidget):
         self.progress_updated.connect(self._on_progress_updated_ui)
         self.intervention_required.connect(self._on_intervention_required_ui)
         self.timing_snapshot.connect(self._on_timing_snapshot_ui)
+        self.run_state_updated.connect(self._on_run_state_ui)
         self.error_occurred.connect(self._on_error_occurred_ui)
         self.validation_complete.connect(self._on_validation_complete_ui)
 
@@ -645,6 +654,10 @@ class OrchestratorControlPanel(EventBusWidget):
     @handles(OrchestratorError)
     def _on_error(self, event: OrchestratorError) -> None:
         self.error_occurred.emit(event.error_type, event.message)
+
+    @handles(RunStateUpdated)
+    def _on_run_state(self, event: RunStateUpdated) -> None:
+        self.run_state_updated.emit(event.run_state)
 
     @handles(ProtocolValidationComplete)
     def _on_validation_complete(self, event: ProtocolValidationComplete) -> None:
@@ -680,61 +693,48 @@ class OrchestratorControlPanel(EventBusWidget):
         # Reset time remaining on terminal states
         if new_state == "COMPLETED":
             self._time_remaining_label.setText("Complete")
-            self._overview_labels["eta"].setText("Complete")
             self._time_remaining_label.setStyleSheet("color: #66BB6A;")
+            self._time_label.setText("Complete")
         elif new_state in ("FAILED", "ABORTED", "IDLE"):
             self._time_remaining_label.setText("--")
-            self._overview_labels["eta"].setText("--")
             self._time_remaining_label.setStyleSheet("color: #aaa;")
+            self._time_label.setText("")
+
+        # Initialize plots on new run
+        if new_state == "RUNNING":
+            now = _time.monotonic()
+            self._progress_plot.set_run_start(now)
+            self._throughput_plot.set_run_start(now)
+            self._focus_plot.set_run_start(now)
+            self._progress_plot.clear_data()
+            self._throughput_plot.clear_data()
+            self._focus_plot.clear_data()
 
     @pyqtSlot(object)
     def _on_progress_updated_ui(self, event: OrchestratorProgress) -> None:
         self._last_progress = event
         self._history["progress"].append(float(event.progress_percent))
-        self._round_label.setText(f"{event.current_round} / {event.total_rounds}")
+        # Update progress section widgets (round label, progress bar, time remaining)
+        self._round_label.setText(
+            f"Round: {event.current_round} / {event.total_rounds}  ({event.current_round_name})"
+        )
         self._round_name_label.setText(event.current_round_name)
         self._progress_bar.setValue(int(event.progress_percent))
-        self._overview_labels["step"].setText(
-            event.current_step_name or f"Step {event.current_step_index + 1}"
-        )
-        if event.current_fov_label:
-            fov_text = event.current_fov_label
-        elif event.total_fovs > 0:
-            fov_text = f"{event.current_fov_index + 1} / {event.total_fovs}"
-        else:
-            fov_text = "--"
-        self._overview_labels["fov"].setText(fov_text)
-        self._overview_labels["operation"].setText(event.current_operation or "--")
-        attempt_text = str(event.attempt)
-        if event.attempt > 1:
-            attempt_text = f"{event.attempt} (retry)"
-        self._overview_labels["attempt"].setText(attempt_text)
-        self._overview_labels["elapsed"].setText(self._format_time_remaining(event.elapsed_seconds))
-        self._overview_labels["effective"].setText(
-            self._format_time_remaining(event.effective_run_seconds)
-        )
         self._paused_time_label.setText(self._format_time_remaining(event.paused_seconds))
         self._retry_time_label.setText(
             self._format_time_remaining(event.retry_overhead_seconds)
-        )
-        self._progress_plot.set_metric(
-            f"{event.progress_percent:.0f}%",
-            list(self._history["progress"]),
         )
 
         # Update time remaining display
         if event.eta_seconds is not None and isinstance(event.eta_seconds, (int, float)) and event.eta_seconds > 0:
             eta_text = self._format_time_remaining(float(event.eta_seconds))
             self._time_remaining_label.setText(eta_text)
-            self._overview_labels["eta"].setText(eta_text)
             self._time_remaining_label.setStyleSheet("color: #ddd;")
         elif event.progress_percent >= 100.0:
             self._time_remaining_label.setText("Complete")
-            self._overview_labels["eta"].setText("Complete")
             self._time_remaining_label.setStyleSheet("color: #66BB6A;")
         else:
             self._time_remaining_label.setText("--")
-            self._overview_labels["eta"].setText("--")
             self._time_remaining_label.setStyleSheet("color: #aaa;")
 
     @pyqtSlot(object)
@@ -779,13 +779,63 @@ class OrchestratorControlPanel(EventBusWidget):
             + float(event.intervention_overhead_seconds)
         )
         self._history["overhead"].append(total_overhead)
-        eta_text = "--" if event.eta_seconds is None else self._format_time_remaining(event.eta_seconds)
-        self._eta_plot.set_metric(eta_text, list(self._history["eta"]))
-        self._overhead_plot.set_metric(
-            self._format_time_remaining(total_overhead),
-            list(self._history["overhead"]),
-        )
         self._subsystem_breakdown.set_values(event.subsystem_seconds)
+
+    @pyqtSlot(object)
+    def _on_run_state_ui(self, rs) -> None:
+        """Update plots and health strip from RunState snapshot."""
+        now = _time.monotonic()
+
+        # Feed plots
+        self._progress_plot.append(now, rs.progress_percent)
+
+        if rs.throughput_fov_per_min is not None:
+            self._throughput_plot.append(now, rs.throughput_fov_per_min)
+
+        if rs.focus_error_um is not None:
+            self._focus_plot.append(now, rs.focus_error_um)
+
+        # Update subsystem breakdown
+        if rs.subsystem_seconds:
+            self._subsystem_breakdown.set_values(rs.subsystem_seconds)
+
+        # -- Health strip updates --
+        elapsed_str = _format_duration(rs.elapsed_s)
+        eta_str = f"~{_format_duration(rs.eta_s)} remaining" if rs.eta_s else ""
+        self._time_label.setText(f"{elapsed_str} elapsed  {eta_str}")
+
+        # Position
+        self._round_label.setText(
+            f"Round: {rs.round_index + 1} / {rs.total_rounds}  ({rs.round_name})"
+        )
+        self._step_label.setText(
+            f"Step: {rs.step_index + 1} / {rs.total_steps}  ({rs.step_type}: {rs.step_label})"
+        )
+        self._fov_label.setText(
+            f"FOV: {rs.fov_index + 1} / {rs.total_fovs}" if rs.total_fovs > 0 else "FOV: -"
+        )
+
+        if rs.attempt > 1:
+            self._attempt_label.setText(f"Attempt {rs.attempt} (retry)")
+            self._attempt_label.show()
+        else:
+            self._attempt_label.hide()
+
+        # Health
+        focus_colors = {"locked": "#66BB6A", "searching": "#FFA726", "lost": "#EF5350"}
+        if rs.focus_status:
+            color = focus_colors.get(rs.focus_status, "#888888")
+            self._focus_dot.setStyleSheet(f"font-size: 14px; color: {color};")
+            err = f" ({rs.focus_error_um:.2f} \u00b5m)" if rs.focus_error_um is not None else ""
+            self._focus_label.setText(f"Focus: {rs.focus_status}{err}")
+        else:
+            self._focus_dot.setStyleSheet("font-size: 14px; color: #888888;")
+            self._focus_label.setText("Focus: -")
+
+        if rs.throughput_fov_per_min is not None:
+            self._throughput_label.setText(f"Throughput: {rs.throughput_fov_per_min:.1f} FOVs/min")
+        else:
+            self._throughput_label.setText("Throughput: -")
 
     @pyqtSlot(str, str)
     def _on_error_occurred_ui(self, error_type: str, message: str) -> None:
