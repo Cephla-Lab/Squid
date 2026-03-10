@@ -654,3 +654,43 @@ def test_preview_publish_uses_full_frame_dimensions():
     # Simulator adds small preview jitter when spot is valid.
     assert abs(event.spot_x_px - 12.0) < 15.0
     assert abs(event.spot_y_px - 20.0) < 15.0
+
+
+def test_resume_grace_readings_absorb_bad_readings():
+    """After resume, bad readings within grace period should not break lock."""
+    bus = EventBus()
+    laser_af = _FakeLaserAF(_make_good_result(displacement_um=0.0))
+    piezo = _FakePiezoService()
+    config = FocusLockConfig(loop_rate_hz=60, metrics_rate_hz=10, buffer_length=3)
+    sim = FocusLockSimulator(
+        bus, config=config, laser_autofocus=laser_af, piezo_service=piezo,
+    )
+    _init_laser_af(bus)
+
+    # 1. Achieve lock
+    sim.start()
+    sim.set_lock()
+    time.sleep(0.15)
+    assert sim.status == "locked"
+
+    # 2. Pause
+    sim.pause()
+    assert sim.status == "paused"
+
+    # 3. Switch laser AF to return bad readings (no spot)
+    laser_af.result = _make_no_spot_result()
+
+    # 4. Resume — grace period of 5 readings should keep lock
+    sim.resume()
+    # Give time for a couple cycles but within grace (5 readings at 60Hz = ~83ms)
+    time.sleep(0.04)
+    assert sim.status == "locked", (
+        f"Expected 'locked' during grace period but got '{sim.status}'"
+    )
+
+    # 5. After grace expires, bad readings should trigger recovery
+    time.sleep(0.4)
+    assert sim.status != "locked", (
+        f"Expected lock to be lost after grace period with bad readings, got '{sim.status}'"
+    )
+    sim.stop()

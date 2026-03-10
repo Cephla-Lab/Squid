@@ -124,6 +124,9 @@ class FocusLockSimulator(BaseController):
         self._recovery_start_time: Optional[float] = None
         self._recovery_good_count = 0
 
+        # Grace period after resume: skip state degradation for N readings
+        self._resume_grace_readings = 0
+
         # Auto-search state (runtime toggle, can differ from config default)
         self._auto_search_enabled = self._config.auto_search_enabled
         self._search_phase: str = ""  # "last_position" or "sweep"
@@ -218,6 +221,8 @@ class FocusLockSimulator(BaseController):
 
         Resumes piezo corrections without resetting lock state.
         The lock continues from where it was before pause.
+        A brief grace period prevents immediate lock degradation
+        from stale/transient readings right after resume.
         """
         with self._lock:
             if not self._should_run:
@@ -226,6 +231,10 @@ class FocusLockSimulator(BaseController):
                 # Not paused, nothing to resume
                 return
             self._paused = False
+            # Grace period: tolerate bad readings for a few cycles after resume.
+            # The first measurement(s) after pause may use a stale camera frame
+            # or catch the piezo mid-settle, producing a transient bad reading.
+            self._resume_grace_readings = 5
             # Restore status based on lock state
             if self._lock_buffer_fill >= self._buffer_length:
                 self._status = "locked"
@@ -743,6 +752,11 @@ class FocusLockSimulator(BaseController):
                     except Exception:
                         pass
                     self._is_good_reading = self._correlation >= corr_threshold
+
+            # Consume grace period: treat reading as good during post-resume grace
+            if self._resume_grace_readings > 0:
+                self._resume_grace_readings -= 1
+                self._is_good_reading = True
 
             status_changed = False
 
