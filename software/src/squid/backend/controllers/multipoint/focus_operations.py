@@ -359,6 +359,18 @@ class AutofocusExecutor:
         acquire_lock_reference = getattr(self._focus_lock, "acquire_lock_reference", None)
         if callable(acquire_lock_reference):
             return bool(acquire_lock_reference(timeout_s=timeout_s))
+
+        # Engage lock reference if not already locked
+        status = getattr(self._focus_lock, "status", None)
+        if status != "locked":
+            set_lock_ref = getattr(self._focus_lock, "set_lock_reference", None)
+            if callable(set_lock_ref):
+                set_lock_ref()
+            else:
+                set_lock = getattr(self._focus_lock, "set_lock", None)
+                if callable(set_lock):
+                    set_lock()
+
         return self.wait_for_focus_lock(timeout_s=timeout_s)
 
     def verify_focus_lock_before_capture(self, timeout_s: float = 5.0) -> tuple[bool, Optional[str]]:

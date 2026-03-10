@@ -162,7 +162,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.liveController: LiveController = live_controller
         self.autofocusController: AutoFocusController = autofocus_controller
         self._autofocus_executor = AutofocusExecutor(
-            autofocus_controller=self.autofocusController
+            autofocus_controller=self.autofocusController,
+            focus_lock_controller=focus_lock_controller,
         )
         self.laserAutoFocusController: LaserAutofocusController = (
             laser_autofocus_controller

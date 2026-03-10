@@ -352,6 +352,7 @@ class BackendContext:
         if self._multipoint_controller is None:
             # Get or create fake laser AF controller
             laser_af = self._get_fake_laser_af_controller()
+            focus_lock = self._get_focus_lock_simulator(laser_af)
 
             self._multipoint_controller = MultiPointController(
                 live_controller=self.live_controller,
@@ -360,6 +361,7 @@ class BackendContext:
                 scan_coordinates=self.scan_coordinates,
                 objective_store=self.objective_store,
                 laser_autofocus_controller=laser_af,
+                focus_lock_controller=focus_lock,
                 camera_service=self.camera_service,
                 stage_service=self.stage_service,
                 peripheral_service=self.peripheral_service,
@@ -385,6 +387,34 @@ class BackendContext:
             np.zeros((10, 10), dtype=np.uint8)
         )
         return controller
+
+    def _get_focus_lock_simulator(self, laser_af=None):
+        """Get a FocusLockSimulator for testing focus lock protocols.
+
+        Uses a FakeLaserAF that provides measure_displacement_continuous()
+        so the simulator's control loop can actually achieve lock.
+        """
+        from squid.core.config.focus_lock import FocusLockConfig
+        from squid.core.events import LaserAFInitialized
+        from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
+        from tests.e2e.harness.focus_lock_context import FakeLaserAF
+
+        # Create a FakeLaserAF that the simulator can use for measurements
+        fake_laser_af = FakeLaserAF()
+        fake_laser_af.is_initialized = True
+
+        simulator = FocusLockSimulator(
+            event_bus=event_bus,
+            config=FocusLockConfig(),
+            laser_autofocus=fake_laser_af,
+            piezo_service=self.piezo_service,
+        )
+
+        # Mark laser AF as initialized directly (event subscription may
+        # not be wired yet when publishing during construction)
+        simulator._laser_af_initialized = True
+
+        return simulator
 
     # =========================================================================
     # Convenience Methods
