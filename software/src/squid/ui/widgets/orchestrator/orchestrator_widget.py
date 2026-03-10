@@ -159,7 +159,9 @@ class AccumulatingPlot(QWidget):
         self._plot_widget.setLabel("left", y_label, color="#7f8b99")
         self._plot_widget.setLabel("bottom", "Time", color="#7f8b99")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.15)
-        self._plot_widget.setMinimumHeight(120)
+        self._plot_widget.setMinimumHeight(140)
+        # Disable SI prefix scaling on Y-axis (prevents ×0.001 display)
+        self._plot_widget.getAxis("left").enableAutoSIPrefix(False)
 
         if y_range is not None:
             self._plot_widget.setYRange(y_range[0], y_range[1])
