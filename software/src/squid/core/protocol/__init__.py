@@ -52,6 +52,8 @@ from squid.core.protocol.fluidics_protocol import (
 from squid.core.protocol.loader import (
     ProtocolLoader,
     ProtocolValidationError,
+    load_imaging_protocol,
+    save_imaging_protocol,
 )
 
 __all__ = [
@@ -88,4 +90,6 @@ __all__ = [
     # Loader
     "ProtocolLoader",
     "ProtocolValidationError",
+    "load_imaging_protocol",
+    "save_imaging_protocol",
 ]

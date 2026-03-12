@@ -1,10 +1,9 @@
 name: "Resource File Paths Full Test"
 version: "3.0"
-description: "Canonical resource-path example that auto-loads imaging, fluidics, config, and FOVs."
+description: "Canonical resource-path example that auto-loads fluidics, config, and FOVs."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_protocols_file: resource_files/fluidics_protocols.yaml
   fluidics_config_file: resource_files/fluidics_config.json
   fov_file: resource_files/fov_positions.csv
@@ -15,7 +14,7 @@ rounds:
       - step_type: fluidics
         protocol: resource_test_wash
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405.yaml
         fovs: default
   - name: "Probe and Follow-Up Image"
     steps:
@@ -24,5 +23,5 @@ rounds:
       - step_type: fluidics
         protocol: resource_test_rinse
       - step_type: imaging
-        protocol: fluorescence_488_561
+        protocol: resource_files/protocols/fluorescence_488_561.yaml
         fovs: default

@@ -62,6 +62,7 @@ def test_start_failure_preserves_selected_start_position(panel):
     panel._protocol_path = "/tmp/protocol.yaml"
     panel._base_path = "/tmp"
     panel._validated = True
+    panel._fov_positions = {"region0": [(0.0, 0.0, 0.0)]}
     panel._start_round_index = 1
     panel._start_step_index = 2
     panel._start_fov_index = 3
@@ -89,6 +90,7 @@ def test_start_success_resets_start_position(panel):
     panel._protocol_path = "/tmp/protocol.yaml"
     panel._base_path = "/tmp"
     panel._validated = True
+    panel._fov_positions = {"region0": [(0.0, 0.0, 0.0)]}
     panel._start_round_index = 2
     panel._start_step_index = 1
     panel._start_fov_index = 4
@@ -112,7 +114,7 @@ def test_start_requires_validation(panel):
     panel._orchestrator.start_experiment.assert_not_called()
 
 
-def test_progress_update_populates_overview_metrics(panel):
+def test_progress_update_populates_progress_section(panel):
     panel._on_progress_updated_ui(
         OrchestratorProgress(
             experiment_id="exp1",
@@ -137,13 +139,12 @@ def test_progress_update_populates_overview_metrics(panel):
         )
     )
 
-    assert panel._overview_labels["step"].text() == "Acquire"
-    assert panel._overview_labels["fov"].text() == "FOV 2"
-    assert panel._overview_labels["operation"].text() == "imaging"
-    assert panel._overview_labels["attempt"].text() == "2 (retry)"
-    assert panel._overview_labels["eta"].text() == "2m 00s"
+    # Progress bar and time labels should be updated
+    assert panel._progress_bar.value() == 25
     assert panel._paused_time_label.text() == "10s"
     assert panel._retry_time_label.text() == "4s"
+    assert "Round 1" in panel._round_label.text()
+    assert panel._time_remaining_label.text() == "2m 00s"
 
 
 def test_failure_intervention_shows_retry_skip_abort(panel):
@@ -173,7 +174,7 @@ def test_failure_intervention_shows_retry_skip_abort(panel):
     assert panel._intervention_title.text() == "Run needs operator recovery"
 
 
-def test_timing_snapshot_updates_live_metric_cards(panel):
+def test_timing_snapshot_updates_subsystem_breakdown(panel):
     panel._on_timing_snapshot_ui(
         OrchestratorTimingSnapshot(
             experiment_id="exp1",
@@ -191,9 +192,8 @@ def test_timing_snapshot_updates_live_metric_cards(panel):
         )
     )
 
-    assert panel._eta_plot._value_label.text() == "45s"
-    assert panel._overhead_plot._value_label.text() == "20s"
     assert panel._subsystem_breakdown._values["imaging"] == 55.0
+    assert 45.0 in panel._history["eta"]
 
 
 def test_intervention_buttons_delegate_to_orchestrator(panel):

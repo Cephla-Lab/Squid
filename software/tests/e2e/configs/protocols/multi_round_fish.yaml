@@ -4,7 +4,6 @@ description: "Two hybridization rounds with stripping and final wash."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_4fov_grid.csv
@@ -15,7 +14,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_1_hybridization
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405.yaml
         fovs: default
   - name: "Strip After Round 1"
     steps:
@@ -26,7 +25,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_2_hybridization
       - step_type: imaging
-        protocol: fluorescence_488_561
+        protocol: resource_files/protocols/fluorescence_488_561.yaml
         fovs: default
   - name: "Final Wash"
     steps:

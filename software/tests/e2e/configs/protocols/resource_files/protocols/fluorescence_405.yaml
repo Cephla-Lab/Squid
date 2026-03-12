@@ -1,0 +1,20 @@
+description: "Reference 405 nm fluorescence imaging using continuous focus lock."
+acquisition:
+  channels:
+    - "Fluorescence 405 nm Ex"
+  z_stack:
+    planes: 3
+    step_um: 0.5
+    direction: from_center
+  acquisition_order: channel_first
+  skip_saving: true
+focus_gate:
+  mode: focus_lock
+  interval_fovs: 1
+  require_in_focus: true
+  max_focus_attempts: 2
+  on_focus_gate_fail: skip_fov
+capture_policy:
+  max_capture_attempts: 2
+  retry_delay_s: 0.1
+  on_capture_fail: fail_step

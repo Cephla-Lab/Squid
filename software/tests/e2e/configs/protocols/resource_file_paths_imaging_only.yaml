@@ -1,44 +1,20 @@
 name: "Resource File Paths Imaging Only Test"
 version: "3.0"
-description: "Imaging-only config that auto-loads FOVs and overrides one shared imaging protocol."
+description: "Imaging-only config that auto-loads FOVs and uses individual protocol files."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_2fov_simple.csv
-
-imaging_protocols:
-  fluorescence_405:
-    description: "Inline override of the shared 405 nm protocol for a single-plane fast pass."
-    acquisition:
-      channels:
-        - "Fluorescence 405 nm Ex"
-      z_stack:
-        planes: 1
-        step_um: 0.5
-        direction: from_center
-      acquisition_order: channel_first
-      skip_saving: true
-    focus_gate:
-      mode: none
-      interval_fovs: 1
-      require_in_focus: false
-      max_focus_attempts: 1
-      on_focus_gate_fail: skip_fov
-    capture_policy:
-      max_capture_attempts: 1
-      retry_delay_s: 0.0
-      on_capture_fail: fail_step
 
 rounds:
   - name: "Brightfield Check"
     steps:
       - step_type: imaging
-        protocol: bf_quick
+        protocol: resource_files/protocols/bf_quick.yaml
         fovs: default
   - name: "Override Imaging Pass"
     steps:
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405_fast.yaml
         fovs: default

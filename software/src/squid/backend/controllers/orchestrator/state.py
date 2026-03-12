@@ -8,9 +8,12 @@ import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import Any, Dict, Literal, Optional, Set
+from typing import Any, Dict, Literal, Optional, Set, TYPE_CHECKING
 
 from squid.core.events import Event
+
+if TYPE_CHECKING:
+    from squid.core.protocol.imaging_protocol import ImagingProtocol
 
 
 class StepOutcome(Enum):
@@ -419,6 +422,7 @@ class OrchestratorStepStarted(Event):
     step_index: int
     step_type: str  # "fluidics", "imaging", "intervention"
     estimated_seconds: float = 0.0  # Estimated duration from validation
+    imaging_protocol: Optional["ImagingProtocol"] = None  # Resolved protocol for imaging steps
 
 
 @dataclass
@@ -505,6 +509,7 @@ class StartOrchestratorCommand(Event):
     start_from_step: int = 0
     start_from_fov: int = 0
     run_single_round: bool = False
+    acquire_current_fov: bool = False
 
 
 @dataclass

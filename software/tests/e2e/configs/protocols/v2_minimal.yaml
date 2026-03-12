@@ -4,7 +4,6 @@ description: "Minimal self-loading imaging-only protocol."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_2fov_simple.csv
 
@@ -12,5 +11,5 @@ rounds:
   - name: "Reference Imaging"
     steps:
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405.yaml
         fovs: default

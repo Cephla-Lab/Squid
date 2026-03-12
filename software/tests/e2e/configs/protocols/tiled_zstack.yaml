@@ -4,7 +4,6 @@ description: "Grid-friendly z-stack imaging over a 4-FOV test layout."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_4fov_grid.csv
 
@@ -12,5 +11,5 @@ rounds:
   - name: "Tiled Acquisition"
     steps:
       - step_type: imaging
-        protocol: tiled_multichannel
+        protocol: resource_files/protocols/tiled_multichannel.yaml
         fovs: default

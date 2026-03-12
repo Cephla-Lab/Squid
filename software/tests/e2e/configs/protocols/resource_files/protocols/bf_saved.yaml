@@ -1,0 +1,20 @@
+description: "Single-plane brightfield acquisition with image saving enabled."
+acquisition:
+  channels:
+    - "BF LED matrix full"
+  z_stack:
+    planes: 1
+    step_um: 0.5
+    direction: from_center
+  acquisition_order: channel_first
+  skip_saving: false
+focus_gate:
+  mode: none
+  interval_fovs: 1
+  require_in_focus: false
+  max_focus_attempts: 1
+  on_focus_gate_fail: skip_fov
+capture_policy:
+  max_capture_attempts: 2
+  retry_delay_s: 0.1
+  on_capture_fail: fail_step

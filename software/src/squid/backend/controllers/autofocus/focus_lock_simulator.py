@@ -710,7 +710,7 @@ class FocusLockSimulator(BaseController):
             ):
                 # No AF reference: track offset relative to lock spot.
                 spot_offset_um = (result.spot_x_px - self._locked_spot_x) * self._pixel_to_um()
-                self._z_error_um = self._target_displacement_um + spot_offset_um
+                self._z_error_um = spot_offset_um
             elif self._status in ("ready", "lost"):
                 # During acquisition without reference, treat current reading as baseline.
                 self._z_error_um = 0.0

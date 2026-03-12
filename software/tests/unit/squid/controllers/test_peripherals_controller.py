@@ -10,8 +10,6 @@ from squid.core.events import (
     SetSpinningDiskSpinningCommand,
     SetDiskDichroicCommand,
     SetDiskEmissionFilterCommand,
-    SetPiezoPositionCommand,
-    MovePiezoRelativeCommand,
     ObjectiveChanged,
     SpinningDiskStateChanged,
     PiezoPositionChanged,
@@ -229,8 +227,8 @@ class TestPeripheralsController:
 
     # --- Piezo Tests ---
 
-    def test_handles_set_piezo_command(self, event_bus, mock_piezo_service):
-        """Controller should handle SetPiezoPositionCommand."""
+    def test_tracks_piezo_position_from_events(self, event_bus, mock_piezo_service):
+        """Controller should update internal state from PiezoPositionChanged events."""
         controller = PeripheralsController(
             objective_service=None,
             spinning_disk_service=None,
@@ -239,17 +237,13 @@ class TestPeripheralsController:
             event_bus=event_bus,
         )
 
-        events_received = []
-        event_bus.subscribe(PiezoPositionChanged, events_received.append)
-
-        event_bus.publish(SetPiezoPositionCommand(position_um=75.0))
+        event_bus.publish(PiezoPositionChanged(position_um=75.0))
         event_bus.drain()
 
-        mock_piezo_service.move_to.assert_called_with(75.0)
-        assert len(events_received) == 1
+        assert controller.state.piezo_position_um == 75.0
 
-    def test_piezo_position_clamped_to_range(self, event_bus, mock_piezo_service):
-        """Piezo position should be clamped to valid range."""
+    def test_tracks_piezo_position_updates(self, event_bus, mock_piezo_service):
+        """Controller should track multiple piezo position updates."""
         controller = PeripheralsController(
             objective_service=None,
             spinning_disk_service=None,
@@ -258,30 +252,13 @@ class TestPeripheralsController:
             event_bus=event_bus,
         )
 
-        # Request position beyond max (100.0)
-        event_bus.publish(SetPiezoPositionCommand(position_um=150.0))
+        event_bus.publish(PiezoPositionChanged(position_um=25.0))
         event_bus.drain()
+        assert controller.state.piezo_position_um == 25.0
 
-        mock_piezo_service.move_to.assert_called_with(100.0)
-
-    def test_handles_move_piezo_relative_command(self, event_bus, mock_piezo_service):
-        """Controller should handle MovePiezoRelativeCommand."""
-        controller = PeripheralsController(
-            objective_service=None,
-            spinning_disk_service=None,
-            piezo_service=mock_piezo_service,
-            objective_store=None,
-            event_bus=event_bus,
-        )
-
-        events_received = []
-        event_bus.subscribe(PiezoPositionChanged, events_received.append)
-
-        event_bus.publish(MovePiezoRelativeCommand(delta_um=10.0))
+        event_bus.publish(PiezoPositionChanged(position_um=80.0))
         event_bus.drain()
-
-        mock_piezo_service.move_relative.assert_called_with(10.0)
-        assert len(events_received) == 1
+        assert controller.state.piezo_position_um == 80.0
 
     # --- Convenience Method Tests ---
 

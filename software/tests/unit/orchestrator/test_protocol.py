@@ -736,35 +736,28 @@ rounds:
 
 
 class TestResourceFilePaths:
-    """Tests for resource file path fields (imaging_protocol_file, etc.)."""
+    """Tests for file-path protocol references and resource file paths."""
 
-    def test_imaging_protocol_file_merged_into_imaging_protocols(self):
-        """Test that imaging_protocol_file contents are merged into imaging_protocols."""
+    def test_file_path_protocol_resolved_from_step(self):
+        """Test that protocol file paths in ImagingStep are loaded and registered."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create external imaging protocols file
-            imaging_file = Path(tmpdir) / "imaging_protos.yaml"
-            imaging_file.write_text(
-                """
-fish_standard:
-  channels: [DAPI, Cy5]
-  z_stack:
-    planes: 5
-brightfield:
-  channels: [BF]
-"""
+            # Create individual protocol files
+            proto_dir = Path(tmpdir) / "protocols"
+            proto_dir.mkdir()
+            (proto_dir / "fish_standard.yaml").write_text(
+                "channels: [DAPI, Cy5]\nz_stack:\n  planes: 5\n"
             )
 
-            protocol_content = f"""
-name: Imaging File Test
-version: "2.0"
-
-imaging_protocol_file: imaging_protos.yaml
+            protocol_content = """
+name: File Path Test
+version: "3.0"
 
 rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        protocol: fish_standard
+        protocol: protocols/fish_standard.yaml
+        fovs: current
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -772,28 +765,15 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            assert "fish_standard" in protocol.imaging_protocols
-            assert "brightfield" in protocol.imaging_protocols
-            assert protocol.imaging_protocols["fish_standard"].z_stack.planes == 5
+            assert "protocols/fish_standard.yaml" in protocol.imaging_protocols
+            assert protocol.imaging_protocols["protocols/fish_standard.yaml"].z_stack.planes == 5
 
-    def test_imaging_protocol_file_inline_takes_precedence(self):
-        """Test that inline imaging_protocols override file definitions."""
+    def test_inline_imaging_protocols_still_work(self):
+        """Test that inline imaging_protocols dict entries still work."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            imaging_file = Path(tmpdir) / "imaging_protos.yaml"
-            imaging_file.write_text(
-                """
-standard:
-  channels: [DAPI]
-  z_stack:
-    planes: 3
-"""
-            )
-
-            protocol_content = f"""
-name: Inline Precedence Test
-version: "2.0"
-
-imaging_protocol_file: imaging_protos.yaml
+            protocol_content = """
+name: Inline Protocol Test
+version: "3.0"
 
 imaging_protocols:
   standard:
@@ -813,34 +793,28 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            # Inline (10 planes) should win over file (3 planes)
             assert protocol.imaging_protocols["standard"].z_stack.planes == 10
             assert len(protocol.imaging_protocols["standard"].get_channel_names()) == 2
 
-    def test_imaging_protocol_file_not_found_raises_error(self):
-        """Test that missing imaging_protocol_file raises error."""
+    def test_missing_protocol_file_raises_error(self):
+        """Test that missing protocol file path raises error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             protocol_content = """
-name: Missing Imaging File Test
-version: "2.0"
-
-imaging_protocol_file: nonexistent.yaml
-
-imaging_protocols:
-  standard:
-    channels: [DAPI]
+name: Missing File Test
+version: "3.0"
 
 rounds:
   - name: Round 1
     steps:
       - step_type: imaging
-        protocol: standard
+        protocol: nonexistent/proto.yaml
+        fovs: current
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
 
             loader = ProtocolLoader()
-            with pytest.raises(ProtocolValidationError, match="Imaging protocol file not found"):
+            with pytest.raises(ProtocolValidationError, match="not found"):
                 loader.load(protocol_path)
 
     def test_fov_file_added_to_fov_sets_as_default(self):
@@ -918,16 +892,14 @@ rounds:
         """Test that all resource file paths are resolved to absolute paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create required files
-            (Path(tmpdir) / "imaging.yaml").write_text("standard:\n  channels: [DAPI]\n")
             (Path(tmpdir) / "fluidics.yaml").write_text("{}\n")
             (Path(tmpdir) / "config.json").write_text("{}\n")
             (Path(tmpdir) / "fovs.csv").write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
 
             protocol_content = """
 name: Path Resolution Test
-version: "2.0"
+version: "3.0"
 
-imaging_protocol_file: imaging.yaml
 fluidics_protocols_file: fluidics.yaml
 fluidics_config_file: config.json
 fov_file: fovs.csv
@@ -948,7 +920,6 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            assert Path(protocol.imaging_protocol_file).is_absolute()
             assert Path(protocol.fluidics_protocols_file).is_absolute()
             assert Path(protocol.fluidics_config_file).is_absolute()
             assert Path(protocol.fov_file).is_absolute()
@@ -986,7 +957,6 @@ rounds:
             imaging_protocols={"a": ImagingProtocol(channels=["DAPI"])},
             rounds=[Round(name="R1", steps=[ImagingStep(protocol="a")])],
         )
-        assert protocol.imaging_protocol_file is None
         assert protocol.fluidics_protocols_file is None
         assert protocol.fluidics_config_file is None
         assert protocol.fov_file is None
@@ -994,15 +964,12 @@ rounds:
     def test_resource_fields_roundtrip_through_save_load(self):
         """Test that resource file fields survive save/load cycle."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create the files so path resolution works
-            (Path(tmpdir) / "imaging.yaml").write_text("extra:\n  channels: [Cy5]\n")
             (Path(tmpdir) / "fovs.csv").write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
 
             protocol_content = """
 name: Roundtrip Test
-version: "2.0"
+version: "3.0"
 
-imaging_protocol_file: imaging.yaml
 fov_file: fovs.csv
 
 imaging_protocols:
@@ -1025,40 +992,9 @@ rounds:
             save_path = Path(tmpdir) / "saved_protocol.yaml"
             loader.save(protocol, save_path)
 
-            # The saved file should contain the absolute paths
             reloaded = loader.load(save_path)
-            assert reloaded.imaging_protocol_file is not None
             assert reloaded.fov_file is not None
-            assert reloaded.fluidics_protocols_file is None  # Not set originally
-
-    def test_imaging_protocol_file_invalid_format_raises_error(self):
-        """Test that non-dict imaging_protocol_file raises error."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            imaging_file = Path(tmpdir) / "bad_imaging.yaml"
-            imaging_file.write_text("- item1\n- item2\n")
-
-            protocol_content = """
-name: Bad Format Test
-version: "2.0"
-
-imaging_protocol_file: bad_imaging.yaml
-
-imaging_protocols:
-  standard:
-    channels: [DAPI]
-
-rounds:
-  - name: Round 1
-    steps:
-      - step_type: imaging
-        protocol: standard
-"""
-            protocol_path = Path(tmpdir) / "protocol.yaml"
-            protocol_path.write_text(protocol_content)
-
-            loader = ProtocolLoader()
-            with pytest.raises(ProtocolValidationError, match="YAML mapping"):
-                loader.load(protocol_path)
+            assert reloaded.fluidics_protocols_file is None
 
 
 class TestResolveProtocolChannels:

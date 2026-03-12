@@ -196,6 +196,11 @@ class MultiPointWorker:
                 "MultiPointWorker requires CameraService, StageService, and PeripheralService"
             )
 
+        self._log.info(
+            f"MultiPointWorker init: piezo_service={'available' if self._piezo_service else 'None'}, "
+            f"use_piezo={acquisition_parameters.use_piezo}"
+        )
+
         # Track acquisition timing for ETA calculation
         self._acquisition_start_time: Optional[float] = None
         self._total_images_to_acquire: int = 0
@@ -1426,6 +1431,12 @@ class MultiPointWorker:
     def initialize_z_stack(self) -> None:
         """Initialize z-stack using ZStackExecutor."""
         self._zstack_executor.initialize()
+        self._log.info(
+            f"initialize_z_stack: NZ={self.NZ}, deltaZ={self.deltaZ}, "
+            f"use_piezo={self.use_piezo}, "
+            f"piezo_service={'available' if self._piezo_service else 'None'}, "
+            f"executor.use_piezo={self._zstack_executor.use_piezo}"
+        )
 
         # Keep deltaZ in sync for other code that uses it
         if self.z_stacking_config == "FROM TOP":
@@ -1815,9 +1826,12 @@ class MultiPointWorker:
                     )
                 )
 
+        self._log.info(f"acquire_at_position: use_piezo={self.use_piezo}, NZ={self.NZ}")
         if self.use_piezo:
             self.z_piezo_um: float = self._piezo_service.get_position() if self._piezo_service else 0.0
-            # Sync piezo position to ZStackExecutor for coordinated z-stack movement
+            # Initialize ZStackExecutor with current piezo position as home
+            # (sets direction sign and records home for return_to_start)
+            self._zstack_executor.initialize()
             self._zstack_executor.z_piezo_um = self.z_piezo_um
 
         # Check if focus lock is active (handles focus continuously)
@@ -2757,6 +2771,10 @@ class MultiPointWorker:
 
     def move_z_for_stack(self) -> None:
         """Move to next z-level in stack using ZStackExecutor."""
+        self._log.info(
+            f"move_z_for_stack: before={self._zstack_executor.z_piezo_um:.2f} um, "
+            f"delta_z_mm={self._zstack_executor._delta_z_mm}"
+        )
         self._zstack_executor.step()
         # Keep z_piezo_um in sync for backward compatibility
         if self.use_piezo:

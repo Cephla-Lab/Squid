@@ -98,6 +98,8 @@ class ExperimentRunner:
         # Time estimation
         step_time_estimates: Optional[Dict[Tuple[int, int], float]] = None,
         total_estimated_seconds: float = 0.0,
+        # Acquire at current FOV only (no scan coordinates)
+        acquire_current_fov: bool = False,
     ):
         self._protocol = protocol
         self._experiment_path = experiment_path
@@ -133,6 +135,8 @@ class ExperimentRunner:
         # Time estimation: per-step estimates from validation
         self._step_time_estimates: Dict[Tuple[int, int], float] = step_time_estimates or {}
         self._total_estimated_seconds = total_estimated_seconds
+
+        self._acquire_current_fov = acquire_current_fov
 
         # Time tracking (populated during execution)
         self._run_start_time: float = 0.0
@@ -497,6 +501,9 @@ class ExperimentRunner:
 
             # Publish step started event
             step_estimate = self._step_time_estimates.get((round_idx, step_idx), 0.0)
+            resolved_protocol = None
+            if isinstance(step, ImagingStep):
+                resolved_protocol = self._protocol.imaging_protocols.get(step.protocol)
             self._event_bus.publish(
                 OrchestratorStepStarted(
                     experiment_id=self._experiment_id,
@@ -504,6 +511,7 @@ class ExperimentRunner:
                     step_index=step_idx,
                     step_type=step_type,
                     estimated_seconds=step_estimate,
+                    imaging_protocol=resolved_protocol,
                 )
             )
 
@@ -828,20 +836,24 @@ class ExperimentRunner:
                 )
             imaging_config = self._resolve_imaging_config(step)
 
-            # Load FOV set if specified
-            if step.fovs not in ("current", "default"):
-                if step.fovs not in self._protocol.fov_sets:
-                    return StepResult.failed(
-                        "imaging", f"FOV set '{step.fovs}' not found in protocol"
-                    )
-                csv_path = self._protocol.fov_sets[step.fovs]
-                protocol_helpers.load_fov_set(csv_path, self._scan_coordinates, self._event_bus)
+            if self._acquire_current_fov:
+                # Skip FOV loading — acquire at current stage position
+                total_fovs = 1
+            else:
+                # Load FOV set if specified
+                if step.fovs not in ("current", "default"):
+                    if step.fovs not in self._protocol.fov_sets:
+                        return StepResult.failed(
+                            "imaging", f"FOV set '{step.fovs}' not found in protocol"
+                        )
+                    csv_path = self._protocol.fov_sets[step.fovs]
+                    protocol_helpers.load_fov_set(csv_path, self._scan_coordinates, self._event_bus)
 
-            total_fovs = 0
-            if self._scan_coordinates is not None:
-                region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
-                if isinstance(region_fovs, dict):
-                    total_fovs = sum(len(coords) for coords in region_fovs.values())
+                total_fovs = 0
+                if self._scan_coordinates is not None:
+                    region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                    if isinstance(region_fovs, dict):
+                        total_fovs = sum(len(coords) for coords in region_fovs.values())
 
             if total_fovs > 0 and resume_fov >= total_fovs:
                 return StepResult.failed(
@@ -913,6 +925,7 @@ class ExperimentRunner:
                     resume_fov_index=resume_fov,
                     experiment_id=round_dir_name,
                     progress_callback=_on_imaging_progress,
+                    acquire_current_fov=self._acquire_current_fov,
                 )
                 if not success:
                     error_message = getattr(self._imaging_executor, "last_error", None)

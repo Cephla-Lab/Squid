@@ -13,12 +13,64 @@ import yaml
 from pydantic import ValidationError
 
 import squid.core.logging
+from squid.core.protocol.imaging_protocol import ImagingProtocol
 from squid.core.protocol.schema import ExperimentProtocol
 
 if TYPE_CHECKING:
     from squid.core.config.repository import ConfigRepository
 
 _log = squid.core.logging.get_logger(__name__)
+
+
+def load_imaging_protocol(path: Union[str, Path]) -> ImagingProtocol:
+    """Load a single ImagingProtocol from a YAML file.
+
+    The file should contain a bare ImagingProtocol dict (no wrapper).
+    The existing ``upgrade_legacy_shape`` validator handles old flat formats.
+
+    Args:
+        path: Path to the YAML file.
+
+    Returns:
+        Validated ImagingProtocol.
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist.
+        ProtocolValidationError: If validation fails.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Imaging protocol file not found: {path}")
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ProtocolValidationError(f"Invalid YAML in {path}: {e}")
+    if not isinstance(data, dict):
+        raise ProtocolValidationError(
+            f"Imaging protocol file must contain a YAML mapping, got {type(data).__name__}"
+        )
+    try:
+        return ImagingProtocol.model_validate(data)
+    except ValidationError as e:
+        raise ProtocolValidationError(f"Imaging protocol validation failed: {e}")
+
+
+def save_imaging_protocol(protocol: ImagingProtocol, path: Union[str, Path]) -> None:
+    """Save a single ImagingProtocol to a YAML file.
+
+    Serializes with ``exclude_defaults=True`` to keep files minimal.
+
+    Args:
+        protocol: Protocol to save.
+        path: Output file path.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = protocol.model_dump(exclude_defaults=True, mode="json")
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    _log.info(f"Saved imaging protocol to {path}")
 
 
 class ProtocolValidationError(Exception):
@@ -200,19 +252,17 @@ class ProtocolLoader:
                     _log.info(f"Resolved imaging protocol '{name}' from user profile")
 
     def _resolve_resources(self, data: Dict[str, Any], protocol_dir: Path) -> Dict[str, Any]:
-        """Resolve file: references and make FOV paths absolute.
+        """Resolve file-path protocol references and make resource paths absolute.
 
-        Handles patterns like:
-            imaging_protocols:
-              fish_standard:
-                file: configs/fish.yaml
-
-            fov_sets:
-              main_grid: positions/main.csv  # relative path made absolute
+        Imaging protocols are referenced by file path in each ImagingStep's
+        ``protocol`` field (e.g. ``protocols/fluorescence_405.yaml``).  This
+        method scans all imaging steps, loads each referenced file with
+        ``load_imaging_protocol()``, and registers the result in the
+        ``imaging_protocols`` dict keyed by the original path string.
 
         Args:
             data: Raw protocol data
-            protocol_dir: Directory containing the protocol file
+            protocol_dir: Directory containing the experiment protocol file
 
         Returns:
             Data with file references resolved
@@ -224,7 +274,6 @@ class ProtocolLoader:
         for field in (
             "imaging_protocols",
             "fluidics_protocols",
-            "imaging_protocol_file",
             "fluidics_protocols_file",
             "fluidics_config_file",
             "fov_sets",
@@ -239,7 +288,7 @@ class ProtocolLoader:
                     )
                     data.pop(field)
 
-        # Resolve imaging protocols with file: references
+        # Resolve imaging_protocols with file: references (inline dict with file key)
         for name, config in list(resources.get("imaging_protocols", {}).items()):
             if isinstance(config, dict) and "file" in config:
                 file_path = protocol_dir / config["file"]
@@ -267,7 +316,7 @@ class ProtocolLoader:
                 resources.setdefault("fov_sets", {})[name] = str(protocol_dir / csv_path)
 
         # Resolve resource file paths to absolute
-        for field in ("imaging_protocol_file", "fluidics_protocols_file", "fluidics_config_file", "fov_file"):
+        for field in ("fluidics_protocols_file", "fluidics_config_file", "fov_file"):
             val = resources.get(field)
             if val and not Path(val).is_absolute():
                 resources[field] = str(protocol_dir / val)
@@ -279,31 +328,37 @@ class ProtocolLoader:
                 expanded_output = protocol_dir / expanded_output
             data["output_directory"] = str(expanded_output)
 
-        # If imaging_protocol_file is set, load and merge into imaging_protocols
-        imaging_file = resources.get("imaging_protocol_file")
-        if imaging_file:
-            imaging_path = Path(imaging_file)
-            if not imaging_path.exists():
-                raise ProtocolValidationError(
-                    f"Imaging protocol file not found: {imaging_path}"
-                )
-            with open(imaging_path, "r") as f:
-                file_protocols = yaml.safe_load(f) or {}
-            if not isinstance(file_protocols, dict):
-                raise ProtocolValidationError(
-                    f"Imaging protocol file must contain a YAML mapping, got {type(file_protocols).__name__}"
-                )
-            # Merge: inline definitions take precedence over file definitions
-            inline = resources.get("imaging_protocols", {})
-            merged = {**file_protocols, **inline}
-            resources["imaging_protocols"] = merged
-
         # If fov_file is set, add to fov_sets as "default" (without overwriting existing entries)
         fov_file = resources.get("fov_file")
         if fov_file:
             fov_sets = resources.setdefault("fov_sets", {})
             if "default" not in fov_sets:
                 fov_sets["default"] = fov_file
+
+        # Resolve imaging protocol file-path references from ImagingStep.protocol fields.
+        # Each imaging step's ``protocol`` value is a relative file path (e.g.
+        # ``protocols/fluorescence_405.yaml``).  We load the file, register it
+        # in the resources dict keyed by the original path string, then leave
+        # the step's ``protocol`` field unchanged so validate_references matches.
+        imaging_protocols = resources.setdefault("imaging_protocols", {})
+        for round_def in data.get("rounds", []):
+            for step in round_def.get("steps", []):
+                if step.get("step_type") != "imaging":
+                    continue
+                proto_ref = step.get("protocol")
+                if not proto_ref or proto_ref in imaging_protocols:
+                    continue
+                # Check if it looks like a file path (contains . or /)
+                if "." not in proto_ref and "/" not in proto_ref:
+                    continue
+                proto_path = protocol_dir / proto_ref
+                if not proto_path.exists():
+                    raise ProtocolValidationError(
+                        f"Imaging protocol file not found: {proto_path} "
+                        f"(referenced as '{proto_ref}')"
+                    )
+                loaded = load_imaging_protocol(proto_path)
+                imaging_protocols[proto_ref] = loaded.model_dump(mode="json")
 
         data["resources"] = resources
         return data

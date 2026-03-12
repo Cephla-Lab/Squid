@@ -4,33 +4,9 @@ description: "Comprehensive self-loading workflow covering fluidics, imaging, re
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_2fov_simple.csv
-
-imaging_protocols:
-  qc_single_plane:
-    description: "Fast one-plane QC snapshot."
-    acquisition:
-      channels:
-        - "Fluorescence 405 nm Ex"
-      z_stack:
-        planes: 1
-        step_um: 0.5
-        direction: from_center
-      acquisition_order: channel_first
-      skip_saving: true
-    focus_gate:
-      mode: none
-      interval_fovs: 1
-      require_in_focus: false
-      max_focus_attempts: 1
-      on_focus_gate_fail: skip_fov
-    capture_policy:
-      max_capture_attempts: 1
-      retry_delay_s: 0.0
-      on_capture_fail: fail_step
 
 rounds:
   - name: "Setup"
@@ -40,7 +16,7 @@ rounds:
       - step_type: intervention
         message: "Verify the sample is mounted, centered, and safe to continue."
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405.yaml
         fovs: default
         output_label: setup_reference
   - name: "Hybridization Round {i}"
@@ -51,7 +27,7 @@ rounds:
       - step_type: fluidics
         protocol: stringent_wash
       - step_type: imaging
-        protocol: fish_multichannel
+        protocol: resource_files/protocols/fish_multichannel.yaml
         fovs: default
         focus_gate_override:
           max_focus_attempts: 3
@@ -63,7 +39,7 @@ rounds:
   - name: "Final QC"
     steps:
       - step_type: imaging
-        protocol: qc_single_plane
+        protocol: resource_files/protocols/qc_single_plane.yaml
         fovs: default
       - step_type: intervention
         message: "Review the run summary and image quality before closing out the session."

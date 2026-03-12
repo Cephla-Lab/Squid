@@ -1,0 +1,19 @@
+# Movement validation test protocol
+# Uses fovs: default so it respects pre-configured ScanCoordinates
+# (does NOT load FOVs from CSV - uses whatever the test sets up)
+
+name: "Movement Test"
+version: "2.0"
+description: "Validates stage X/Y movement and piezo Z-stepping"
+
+error_handling:
+  focus_failure: skip
+  fluidics_failure: abort
+  imaging_failure: warn
+
+rounds:
+  - name: "Movement Validation"
+    steps:
+      - step_type: imaging
+        protocol: protocols/zstack_5plane.yaml
+        fovs: default

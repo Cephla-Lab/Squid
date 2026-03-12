@@ -4,39 +4,14 @@ description: "Imaging workflow with explicit operator checkpoints between acquis
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_2fov_simple.csv
-
-imaging_protocols:
-  multichannel_quick:
-    description: "Quick two-channel review after operator intervention."
-    acquisition:
-      channels:
-        - "BF LED matrix full"
-        - "Fluorescence 488 nm Ex"
-      z_stack:
-        planes: 1
-        step_um: 0.5
-        direction: from_center
-      acquisition_order: channel_first
-      skip_saving: true
-    focus_gate:
-      mode: none
-      interval_fovs: 1
-      require_in_focus: false
-      max_focus_attempts: 1
-      on_focus_gate_fail: skip_fov
-    capture_policy:
-      max_capture_attempts: 1
-      retry_delay_s: 0.0
-      on_capture_fail: fail_step
 
 rounds:
   - name: "Pre-Change Imaging"
     steps:
       - step_type: imaging
-        protocol: bf_quick
+        protocol: resource_files/protocols/bf_quick.yaml
         fovs: default
   - name: "Sample Change"
     steps:
@@ -45,12 +20,12 @@ rounds:
   - name: "Post-Change Imaging"
     steps:
       - step_type: imaging
-        protocol: bf_quick
+        protocol: resource_files/protocols/bf_quick.yaml
         fovs: default
   - name: "Final Review"
     steps:
       - step_type: intervention
         message: "Inspect the preview data before the final multichannel pass."
       - step_type: imaging
-        protocol: multichannel_quick
+        protocol: resource_files/protocols/multichannel_quick.yaml
         fovs: default

@@ -4,7 +4,6 @@ description: "Single-plane brightfield acquisition that writes image output."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_4fov_grid.csv
 
@@ -12,5 +11,5 @@ rounds:
   - name: "Saved Brightfield"
     steps:
       - step_type: imaging
-        protocol: bf_saved
+        protocol: resource_files/protocols/bf_saved.yaml
         fovs: default

@@ -1,9 +1,9 @@
 """
 E2E tests for resource file path auto-loading.
 
-Verifies that protocols with imaging_protocol_file, fluidics_protocols_file,
-fluidics_config_file, and fov_file correctly auto-load resources at
-experiment start.
+Verifies that protocols with file-path protocol references,
+fluidics_protocols_file, fluidics_config_file, and fov_file correctly
+auto-load resources at experiment start.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from squid.core.events import AutofocusMode
 from squid.core.protocol import ProtocolLoader
 from tests.harness import BackendContext
 from tests.e2e.harness import OrchestratorSimulator
@@ -23,15 +22,15 @@ from tests.e2e.harness import OrchestratorSimulator
 class TestResourceFilePathsLoading:
     """Tests that resource file path fields load correctly at protocol load time."""
 
-    def test_imaging_protocol_file_resolves_to_absolute(
+    def test_imaging_protocols_resolved_from_file_paths(
         self, resource_file_paths_full_protocol: str
     ):
-        """Verify imaging_protocol_file is resolved to absolute path."""
+        """Verify imaging protocols are resolved from file-path step references."""
         loader = ProtocolLoader()
         protocol = loader.load(resource_file_paths_full_protocol)
 
-        assert protocol.imaging_protocol_file is not None
-        assert Path(protocol.imaging_protocol_file).is_absolute()
+        # Protocols referenced by file path in steps should be resolved
+        assert len(protocol.imaging_protocols) >= 2
 
     def test_fluidics_protocols_file_resolves_to_absolute(
         self, resource_file_paths_full_protocol: str
@@ -63,18 +62,6 @@ class TestResourceFilePathsLoading:
         assert protocol.fov_file is not None
         assert Path(protocol.fov_file).is_absolute()
 
-    def test_imaging_protocols_merged_from_file(
-        self, resource_file_paths_full_protocol: str
-    ):
-        """Verify imaging protocols from external file are merged in."""
-        loader = ProtocolLoader()
-        protocol = loader.load(resource_file_paths_full_protocol)
-
-        # These come from the external imaging_protocols.yaml
-        assert "bf_quick" in protocol.imaging_protocols
-        assert "fluorescence_405" in protocol.imaging_protocols
-        assert "fluorescence_488_561" in protocol.imaging_protocols
-
     def test_fov_file_creates_default_fov_set(
         self, resource_file_paths_full_protocol: str
     ):
@@ -85,24 +72,6 @@ class TestResourceFilePathsLoading:
         assert "default" in protocol.fov_sets
         assert Path(protocol.fov_sets["default"]).exists()
 
-    def test_imaging_protocol_file_inline_takes_precedence(
-        self, resource_file_paths_imaging_only_protocol: str
-    ):
-        """Verify inline imaging_protocols override external file definitions."""
-        loader = ProtocolLoader()
-        protocol = loader.load(resource_file_paths_imaging_only_protocol)
-
-        # fluorescence_405 is defined in both the file (3 z-planes) and inline (1 z-plane)
-        # Inline should win
-        assert protocol.imaging_protocols["fluorescence_405"].z_stack.planes == 1
-        assert (
-            protocol.imaging_protocols["fluorescence_405"].focus.mode
-            == AutofocusMode.NONE
-        )
-
-        # bf_quick comes only from the file and should still be present
-        assert "bf_quick" in protocol.imaging_protocols
-
     def test_all_resource_files_exist(
         self, resource_file_paths_full_protocol: str
     ):
@@ -110,10 +79,19 @@ class TestResourceFilePathsLoading:
         loader = ProtocolLoader()
         protocol = loader.load(resource_file_paths_full_protocol)
 
-        assert Path(protocol.imaging_protocol_file).exists()
         assert Path(protocol.fluidics_protocols_file).exists()
         assert Path(protocol.fluidics_config_file).exists()
         assert Path(protocol.fov_file).exists()
+
+    def test_imaging_only_protocols_resolved(
+        self, resource_file_paths_imaging_only_protocol: str
+    ):
+        """Verify file-path imaging protocols are resolved in imaging-only config."""
+        loader = ProtocolLoader()
+        protocol = loader.load(resource_file_paths_imaging_only_protocol)
+
+        # bf_quick and fluorescence_405_fast referenced by file path
+        assert len(protocol.imaging_protocols) >= 2
 
 
 @pytest.mark.e2e
@@ -130,7 +108,7 @@ class TestResourceFilePathsE2E:
         """Run a full experiment using all resource file path fields.
 
         This protocol uses:
-        - imaging_protocol_file: external imaging protocol definitions
+        - file-path imaging protocol references in step protocol fields
         - fluidics_protocols_file: external fluidics protocols (auto-loaded)
         - fluidics_config_file: fluidics hardware config (validated)
         - fov_file: FOV positions CSV (auto-loaded as 'default' fov_set)
@@ -153,11 +131,10 @@ class TestResourceFilePathsE2E:
         e2e_backend_ctx: BackendContext,
         resource_file_paths_imaging_only_protocol: str,
     ):
-        """Run experiment with imaging_protocol_file and inline override.
+        """Run experiment with file-path imaging protocol references.
 
-        The external file defines bf_quick, fluorescence_405, fluorescence_488_561.
-        The protocol overrides fluorescence_405 inline (1 z-plane, no focus).
-        This verifies the merged protocol runs correctly end-to-end.
+        The protocol references bf_quick.yaml and fluorescence_405_fast.yaml
+        by file path. This verifies the resolved protocols run correctly.
         """
         sim = e2e_orchestrator
         sim.load_protocol(resource_file_paths_imaging_only_protocol)

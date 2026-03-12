@@ -461,6 +461,7 @@ class ImagingExecutor:
         resume_fov_index: int = 0,
         experiment_id: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None,
+        acquire_current_fov: bool = False,
     ) -> bool:
         """Execute imaging using a V2 ImagingProtocol.
 
@@ -521,7 +522,7 @@ class ImagingExecutor:
                     "zstack.nz": imaging_config.z_stack.planes,
                     "zstack.delta_z_um": imaging_config.z_stack.step_um,
                     "zstack.stacking_direction": direction_map[imaging_config.z_stack.direction],
-                    "zstack.use_piezo": imaging_config.focus.mode == AutofocusMode.FOCUS_LOCK,
+                    "zstack.use_piezo": True,
                 }
             )
 
@@ -568,7 +569,7 @@ class ImagingExecutor:
                 f"acquisition_order={acquisition_order}, "
                 f"focus={imaging_config.focus.mode.value}"
             )
-            started = self._multipoint.run_acquisition(acquire_current_fov=False)
+            started = self._multipoint.run_acquisition(acquire_current_fov=acquire_current_fov)
             if not started:
                 _log.error("run_acquisition() returned False — acquisition did not start")
                 return False

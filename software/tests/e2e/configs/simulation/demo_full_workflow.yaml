@@ -12,19 +12,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_protocols:
-  main_acquisition:
-    description: "Main acquisition configuration"
-    channels:
-      - "BF LED matrix full"
-      - "Fluorescence 488 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 1.0
-    focus:
-      enabled: false
-    skip_saving: true
-
 fov_sets:
   main: ../fov_positions/test_2fov_simple.csv
 
@@ -39,7 +26,7 @@ rounds:
   - name: "Main Acquisition"
     steps:
       - step_type: imaging
-        protocol: main_acquisition
+        protocol: protocols/main_acquisition.yaml
         fovs: main
 
   # Cleanup

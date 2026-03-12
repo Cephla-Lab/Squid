@@ -4,7 +4,6 @@ description: "Three interleaved probe-delivery rounds with updated imaging recip
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_4fov_grid.csv
@@ -17,7 +16,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_1
       - step_type: imaging
-        protocol: fluorescence_405
+        protocol: resource_files/protocols/fluorescence_405.yaml
         fovs: default
         output_label: probe_1_reference
   - name: "Round 2 Probe 2"
@@ -27,7 +26,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_2
       - step_type: imaging
-        protocol: fluorescence_488_561
+        protocol: resource_files/protocols/fluorescence_488_561.yaml
         fovs: default
         output_label: probe_2_dual_color
   - name: "Round 3 Probe 3"
@@ -37,7 +36,7 @@ rounds:
       - step_type: fluidics
         protocol: probe_3
       - step_type: imaging
-        protocol: fish_multichannel
+        protocol: resource_files/protocols/fish_multichannel.yaml
         fovs: default
         output_label: probe_3_multichannel
   - name: "Final Wash"

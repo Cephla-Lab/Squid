@@ -4,7 +4,6 @@ description: "Single wash followed by a two-color imaging pass."
 output_directory: ../outputs
 
 resources:
-  imaging_protocol_file: resource_files/imaging_protocols.yaml
   fluidics_protocols_file: ../fluidics/test_fluidics_protocols.yaml
   fluidics_config_file: ../fluidics/simulation_fluidics.json
   fov_file: ../fov_positions/test_2fov_simple.csv
@@ -15,5 +14,5 @@ rounds:
       - step_type: fluidics
         protocol: wash
       - step_type: imaging
-        protocol: fluorescence_488_561
+        protocol: resource_files/protocols/fluorescence_488_561.yaml
         fovs: default

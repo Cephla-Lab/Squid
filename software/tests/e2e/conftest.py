@@ -159,7 +159,7 @@ def resource_file_paths_full_protocol(protocols_dir: Path) -> str:
 
 @pytest.fixture
 def resource_file_paths_imaging_only_protocol(protocols_dir: Path) -> str:
-    """Path to protocol using imaging_protocol_file with inline override."""
+    """Path to protocol using file-path imaging protocol references."""
     return str(protocols_dir / "resource_file_paths_imaging_only.yaml")
 
 

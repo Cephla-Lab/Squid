@@ -21,6 +21,7 @@ from PyQt5.QtGui import QFont
 
 if TYPE_CHECKING:
     from squid.backend.controllers.multipoint.fov_task import FovTask
+    from squid.core.protocol.imaging_protocol import ImagingProtocol, ChannelConfigOverride
 
 import squid.core.logging
 
@@ -379,6 +380,67 @@ class ParameterInspectionPanel(QWidget):
         self._add_row("Y (mm)", f"{y_mm:.4f}")
         self._add_row("Z (mm)", f"{z_mm:.4f}")
         self._add_row("Status", status)
+
+    def show_imaging_protocol(self, name: str, protocol: "ImagingProtocol") -> None:
+        """Show resolved ImagingProtocol parameters.
+
+        Args:
+            name: Protocol name or file path
+            protocol: Resolved ImagingProtocol object
+        """
+        self._header_label.setText(f"Imaging Protocol: {name}")
+        self._table.setRowCount(0)
+
+        if protocol.description:
+            self._add_row("Description", protocol.description)
+
+        # Channels
+        channel_names = protocol.get_channel_names()
+        self._add_row("Channels", ", ".join(channel_names))
+
+        # Per-channel overrides
+        for ch in protocol.acquisition.channels:
+            if not isinstance(ch, str):
+                override_parts = []
+                if ch.exposure_time_ms is not None:
+                    override_parts.append(f"exp={ch.exposure_time_ms}ms")
+                if ch.analog_gain is not None:
+                    override_parts.append(f"gain={ch.analog_gain}")
+                if ch.illumination_intensity is not None:
+                    override_parts.append(f"intensity={ch.illumination_intensity}%")
+                if ch.z_offset_um != 0.0:
+                    override_parts.append(f"z_offset={ch.z_offset_um}um")
+                if override_parts:
+                    self._add_row(f"  {ch.name}", ", ".join(override_parts))
+
+        # Z-stack
+        z = protocol.z_stack
+        self._add_row("Z Planes", str(z.planes))
+        self._add_row("Z Step (um)", f"{z.step_um:.2f}")
+        self._add_row("Z Direction", z.direction)
+        if z.planes > 1:
+            self._add_row("Total Z Range (um)", f"{(z.planes - 1) * z.step_um:.2f}")
+
+        # Focus gate
+        fg = protocol.focus_gate
+        self._add_row("Focus Mode", fg.mode.value if hasattr(fg.mode, "value") else str(fg.mode))
+        self._add_row("Focus Interval (FOVs)", str(fg.interval_fovs))
+        self._add_row("Require In Focus", str(fg.require_in_focus))
+        self._add_row("Max Focus Attempts", str(fg.max_focus_attempts))
+        self._add_row("On Focus Fail", fg.on_focus_gate_fail)
+
+        # Capture policy
+        cp = protocol.capture_policy
+        self._add_row("Max Capture Attempts", str(cp.max_capture_attempts))
+        if cp.retry_delay_s > 0:
+            self._add_row("Retry Delay (s)", f"{cp.retry_delay_s:.1f}")
+        self._add_row("On Capture Fail", cp.on_capture_fail)
+
+        # Acquisition settings
+        self._add_row("Acquisition Order", protocol.acquisition_order)
+        if protocol.save_format:
+            self._add_row("Save Format", protocol.save_format)
+        self._add_row("Skip Saving", str(protocol.skip_saving))
 
     def _add_row(self, key: str, value: str) -> None:
         """Add a row to the table.

@@ -11,18 +11,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_protocols:
-  fish_imaging:
-    description: "FISH imaging configuration"
-    channels:
-      - "Fluorescence 488 nm Ex"
-    z_stack:
-      planes: 3
-      step_um: 1.0
-    focus:
-      enabled: false
-    skip_saving: true
-
 fov_sets:
   main: ../fov_positions/test_2fov_simple.csv
 
@@ -33,7 +21,7 @@ rounds:
       - step_type: fluidics
         protocol: hybridization_1
       - step_type: imaging
-        protocol: fish_imaging
+        protocol: protocols/fish_imaging.yaml
         fovs: main
 
   # Round 2: Hybridization 2
@@ -42,5 +30,5 @@ rounds:
       - step_type: fluidics
         protocol: hybridization_2
       - step_type: imaging
-        protocol: fish_imaging
+        protocol: protocols/fish_imaging.yaml
         fovs: main

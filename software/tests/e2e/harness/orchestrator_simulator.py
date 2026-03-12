@@ -400,8 +400,11 @@ class OrchestratorSimulator(BaseSimulator):
 
             self.sleep(0.1)
 
-        # Allow time for final events to be delivered
-        self.sleep(0.3)
+        # Allow time for final events to be delivered via EventBus.
+        # Use real time.sleep (not scaled) to ensure the EventBus dispatch
+        # thread has enough wall-clock time to process queued events.
+        import time as _time
+        _time.sleep(0.3)
 
         elapsed = time.time() - start_time
         final_state = self.orchestrator.state

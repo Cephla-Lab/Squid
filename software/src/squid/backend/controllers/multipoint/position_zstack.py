@@ -280,7 +280,11 @@ class ZStackExecutor:
 
         if self._piezo is None:
             raise RuntimeError("Piezo service required for z-stack stepping")
-        self._z_piezo_um += self._delta_z_mm * 1000  # Convert mm to um
+        target_um = self._z_piezo_um + self._delta_z_mm * 1000
+        _log.info(
+            f"ZStackExecutor.step: moving piezo from {self._z_piezo_um:.2f} to {target_um:.2f} um"
+        )
+        self._z_piezo_um = target_um
         self._piezo.move_to(self._z_piezo_um)
         if self._trigger_mode == TriggerMode.SOFTWARE:
             time.sleep(scale_duration(self._piezo_delay_s, min_seconds=1e-6))

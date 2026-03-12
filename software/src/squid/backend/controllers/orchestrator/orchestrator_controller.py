@@ -192,6 +192,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._start_from_step: int = 0
         self._start_from_fov: int = 0
         self._run_single_round: bool = False
+        self._acquire_current_fov: bool = False
 
         # Step time estimates from validation (populated by _on_validate_protocol)
         self._step_time_estimates: Dict[Tuple[int, int], float] = {}
@@ -240,6 +241,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             start_from_step=cmd.start_from_step,
             start_from_fov=cmd.start_from_fov,
             run_single_round=cmd.run_single_round,
+            acquire_current_fov=cmd.acquire_current_fov,
         )
 
     @handles(StopOrchestratorCommand)
@@ -457,6 +459,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         start_from_step: int = 0,
         start_from_fov: int = 0,
         run_single_round: bool = False,
+        acquire_current_fov: bool = False,
     ) -> bool:
         """Start a new orchestrated experiment.
 
@@ -477,6 +480,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._start_from_step = start_from_step
         self._start_from_fov = start_from_fov
         self._run_single_round = run_single_round
+        self._acquire_current_fov = acquire_current_fov
         if not self._is_in_state(OrchestratorState.IDLE):
             if self._is_in_state(
                 OrchestratorState.COMPLETED,
@@ -535,29 +539,30 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Auto-load resource files specified in the protocol
             self._auto_load_resources()
 
-            if not resume_from_checkpoint and start_from_fov > 0:
-                step = protocol.rounds[start_from_round].steps[start_from_step]
-                if not isinstance(step, ImagingStep):
-                    _log.warning(
-                        "Cannot start: start_from_fov requires an imaging start step"
-                    )
-                    return False
-                if self._scan_coordinates is not None:
-                    region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
-                    known_fov_total = 0
-                    if isinstance(region_fovs, dict):
-                        known_fov_total = sum(len(coords) for coords in region_fovs.values())
-                    if known_fov_total > 0 and start_from_fov >= known_fov_total:
+            if not acquire_current_fov:
+                if not resume_from_checkpoint and start_from_fov > 0:
+                    step = protocol.rounds[start_from_round].steps[start_from_step]
+                    if not isinstance(step, ImagingStep):
                         _log.warning(
-                            "Cannot start: start_from_fov out of bounds "
-                            f"({start_from_fov} not in [0, {known_fov_total - 1}])"
+                            "Cannot start: start_from_fov requires an imaging start step"
                         )
                         return False
+                    if self._scan_coordinates is not None:
+                        region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                        known_fov_total = 0
+                        if isinstance(region_fovs, dict):
+                            known_fov_total = sum(len(coords) for coords in region_fovs.values())
+                        if known_fov_total > 0 and start_from_fov >= known_fov_total:
+                            _log.warning(
+                                "Cannot start: start_from_fov out of bounds "
+                                f"({start_from_fov} not in [0, {known_fov_total - 1}])"
+                            )
+                            return False
 
             # Run the same preflight used by the Validate flow.
             preflight = self._build_protocol_validator(protocol=self._protocol).validate(
                 self._protocol,
-                fov_count=self._current_fov_count(),
+                fov_count=1 if acquire_current_fov else self._current_fov_count(),
             )
             self._step_time_estimates = {}
             self._total_estimated_seconds = 0.0
@@ -1066,6 +1071,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 run_single_round=self._run_single_round,
                 step_time_estimates=self._step_time_estimates,
                 total_estimated_seconds=self._total_estimated_seconds,
+                acquire_current_fov=self._acquire_current_fov,
             )
             self._runner = runner
             result = runner.run(resume_checkpoint=self._resume_checkpoint)

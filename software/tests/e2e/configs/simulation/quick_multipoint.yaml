@@ -12,18 +12,6 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-imaging_protocols:
-  multipoint_scan:
-    description: "Multipoint scan configuration"
-    channels:
-      - "BF LED matrix full"
-    z_stack:
-      planes: 2
-      step_um: 2.0
-    focus:
-      enabled: false
-    skip_saving: true
-
 fov_sets:
   main: ../fov_positions/test_4fov_grid.csv
 
@@ -31,5 +19,5 @@ rounds:
   - name: "Multipoint Scan"
     steps:
       - step_type: imaging
-        protocol: multipoint_scan
+        protocol: protocols/multipoint_scan.yaml
         fovs: main

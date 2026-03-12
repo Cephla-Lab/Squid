@@ -533,8 +533,8 @@ class TestProgress:
             import time
             time.sleep(0.5)
 
-        # Should have received at least one progress event
-        assert len(received_events) >= 0  # May be 0 if experiment completes quickly
+        # Should have received at least one progress event (>= 0 is vacuously true)
+        assert len(received_events) >= 1, "Expected at least one progress event"
 
     def test_progress_current_round_clamped(self, orchestrator, event_bus):
         """Test current_round never exceeds total_rounds."""
@@ -577,8 +577,15 @@ class TestExperimentExecution:
             import time
             time.sleep(0.5)
 
-            # Imaging executor should have been called (V2 uses execute_with_config)
-            assert (
-                mock_imaging_executor.execute_with_config.called
-                or orchestrator.state == OrchestratorState.COMPLETED
-            )
+            # Wait for terminal state
+            deadline = time.time() + 2.0
+            while orchestrator.state not in (
+                OrchestratorState.COMPLETED,
+                OrchestratorState.FAILED,
+                OrchestratorState.ABORTED,
+            ) and time.time() < deadline:
+                time.sleep(0.05)
+
+            assert orchestrator.state == OrchestratorState.COMPLETED
+            # Imaging executor must have been called (not vacuously true)
+            assert mock_imaging_executor.execute_with_config.called

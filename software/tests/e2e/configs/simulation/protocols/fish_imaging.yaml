@@ -1,0 +1,9 @@
+description: "FISH imaging configuration"
+channels:
+  - "Fluorescence 488 nm Ex"
+z_stack:
+  planes: 7
+  step_um: 5.0
+focus:
+  enabled: false
+skip_saving: true

@@ -6,6 +6,7 @@ Provides dockable widgets for the orchestrator:
 - OrchestratorWorkflowTree: Hierarchical workflow display
 """
 
+import os
 import time as _time
 from collections import deque
 
@@ -27,6 +28,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QAction,
     QSizePolicy,
+    QMessageBox,
 )
 from PyQt5.QtGui import QFont, QColor, QBrush, QPainter, QPen, QPainterPath
 import pyqtgraph as pg
@@ -63,6 +65,7 @@ from squid.ui.widgets.orchestrator.validation_dialog import ValidationResultDial
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
     from squid.backend.controllers.orchestrator import OrchestratorController
+    from squid.ui.widgets.orchestrator.parameter_panel import ParameterInspectionPanel
 
 import squid.core.logging
 
@@ -442,11 +445,12 @@ class OrchestratorControlPanel(EventBusWidget):
         self._validate_btn.setEnabled(False)
         row1.addWidget(self._validate_btn)
 
-        self._start_btn = QPushButton("Start")
+        self._start_btn = QPushButton("Start Acquisition")
         self._start_btn.setStyleSheet(BTN_STYLES["primary"])
         self._start_btn.clicked.connect(self._on_start_clicked)
         self._start_btn.setEnabled(False)
         row1.addWidget(self._start_btn)
+
         layout.addLayout(row1)
 
         # Row 2: Pause, Resume, Abort
@@ -965,6 +969,16 @@ class OrchestratorControlPanel(EventBusWidget):
             _log.warning("Protocol must be validated before starting")
             return
 
+        fov_count = sum(len(coords) for coords in self._fov_positions.values())
+        if fov_count == 0:
+            QMessageBox.warning(
+                self,
+                "No FOVs Loaded",
+                "Start Acquisition requires FOV positions.\n"
+                "Load FOVs in the protocol loader, or use 'Run Current' to acquire at the current stage position.",
+            )
+            return
+
         if self._fov_positions:
             region_fov_coords: Dict[str, Tuple[Tuple[float, ...], ...]] = {}
             for region_id, coords in self._fov_positions.items():
@@ -1139,7 +1153,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
     # Signals for round/step status (thread-safe bridge from EventBus)
     _round_started_sig = pyqtSignal(int, str)  # round_index, round_name
     _round_completed_sig = pyqtSignal(int, str, bool, str)  # round_index, round_name, success, error
-    _step_started_sig = pyqtSignal(int, int, str, float)  # round_index, step_index, step_type, estimated_seconds
+    _step_started_sig = pyqtSignal(int, int, str, float, object)  # round_index, step_index, step_type, estimated_seconds, imaging_protocol
     _step_completed_sig = pyqtSignal(int, int, str, bool, str, float)  # round_index, step_index, step_type, success, error, duration_seconds
     _attempt_update_sig = pyqtSignal(int, int, int, str, str)  # round_index, step_index, attempt, phase, message
     _state_changed_sig = pyqtSignal(str, str)  # old_state, new_state
@@ -1171,9 +1185,13 @@ class OrchestratorWorkflowTree(EventBusWidget):
         self._current_step_key: Optional[tuple] = None
         self._is_running: bool = False
         self._round_start_times: Dict[int, float] = {}
+        self._param_panel: Optional["ParameterInspectionPanel"] = None
 
         self._setup_ui()
         self._connect_signals()
+
+    def set_param_panel(self, panel: "ParameterInspectionPanel") -> None:
+        self._param_panel = panel
 
     def set_fov_positions(self, positions: Dict[str, List[Tuple[float, float, float]]]) -> None:
         self._fov_positions = positions
@@ -1610,7 +1628,7 @@ class OrchestratorWorkflowTree(EventBusWidget):
     def _on_step_started(self, event: OrchestratorStepStarted) -> None:
         self._step_started_sig.emit(
             event.round_index, event.step_index, event.step_type,
-            event.estimated_seconds,
+            event.estimated_seconds, event.imaging_protocol,
         )
 
     @handles(OrchestratorStepCompleted)
@@ -1677,9 +1695,10 @@ class OrchestratorWorkflowTree(EventBusWidget):
             duration = _time.monotonic() - start
             self.set_time_estimate(key, _format_duration(duration))
 
-    @pyqtSlot(int, int, str, float)
+    @pyqtSlot(int, int, str, float, object)
     def _handle_step_started_ui(
-        self, round_index: int, step_index: int, step_type: str, estimated_seconds: float
+        self, round_index: int, step_index: int, step_type: str,
+        estimated_seconds: float, imaging_protocol: object,
     ) -> None:
         _ = step_type
         key = (round_index, step_index)
@@ -1688,6 +1707,13 @@ class OrchestratorWorkflowTree(EventBusWidget):
         # Show estimated time while running
         if estimated_seconds > 0:
             self.set_time_estimate(key, f"~{_format_duration(estimated_seconds)}")
+        # Show imaging protocol in parameter panel if available
+        if imaging_protocol is not None and self._param_panel is not None:
+            proto_name = str(key)
+            item = self._tree_items.get(key)
+            if item is not None:
+                proto_name = item.text(0)
+            self._param_panel.show_imaging_protocol(proto_name, imaging_protocol)
 
     @pyqtSlot(int, int, str, bool, str, float)
     def _handle_step_completed_ui(

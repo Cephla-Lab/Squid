@@ -36,6 +36,7 @@ from qtpy.QtWidgets import (
 
 from _def import (
     Acquisition,
+    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
     SOFTWARE_POS_LIMIT,
     squid,
 )
@@ -636,11 +637,16 @@ class AcquisitionSetupWidget(EventBusWidget):
         opts.addStretch()
         right.addLayout(opts)
 
-        # Start/Stop button
+        # Start/Stop and Run Current FOV buttons
+        acq_btns = QHBoxLayout()
         self._btn_start_stop = QPushButton("Start Acquisition")
         self._btn_start_stop.setCheckable(True)
         self._btn_start_stop.setMinimumHeight(32)
-        right.addWidget(self._btn_start_stop)
+        acq_btns.addWidget(self._btn_start_stop)
+        self._btn_run_current_fov = QPushButton("Run Current FOV")
+        self._btn_run_current_fov.setMinimumHeight(32)
+        acq_btns.addWidget(self._btn_run_current_fov)
+        right.addLayout(acq_btns)
 
         # Progress bar
         self._progress_bar = QProgressBar()
@@ -670,6 +676,10 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._btn_load_protocol = QPushButton("Load Proto")
         proto.addWidget(self._btn_load_protocol)
         vbox.addLayout(proto)
+        self._protocol_file_label = QLabel("")
+        self._protocol_file_label.setStyleSheet("color: palette(disabled-text); font-size: 10px;")
+        self._protocol_file_label.setWordWrap(True)
+        vbox.addWidget(self._protocol_file_label)
 
 
     # =========================================================================
@@ -725,6 +735,7 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._btn_clear_fovs.clicked.connect(self._on_clear_fovs)
         self._btn_browse_path.clicked.connect(self._on_browse_save_path)
         self._btn_start_stop.clicked.connect(self._on_start_stop_acquisition)
+        self._btn_run_current_fov.clicked.connect(self._on_run_current_fov)
         self._btn_quick_scan.clicked.connect(self._quick_scan)
 
     # =========================================================================
@@ -1024,6 +1035,7 @@ class AcquisitionSetupWidget(EventBusWidget):
             focus_lock_settings=focus_lock_settings,
             skip_saving=self._skip_saving.isChecked(),
             z_stacking_config=z_stacking_config,
+            use_piezo=MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
             widget_type="setup",
         ))
         self._publish(SetAcquisitionChannelsCommand(channel_names=selected))
@@ -1288,6 +1300,7 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._btn_clear_fovs.setEnabled(enabled)
         self._btn_save_protocol.setEnabled(enabled)
         self._btn_load_protocol.setEnabled(enabled)
+        self._btn_run_current_fov.setEnabled(enabled)
         self._skip_saving.setEnabled(enabled)
         self._save_format.setEnabled(enabled)
         self._btn_quick_scan.setEnabled(enabled)
@@ -1409,9 +1422,8 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._update_tab_styles()
 
     def _on_save_protocol(self) -> None:
-        if self._config_repo is None:
-            QMessageBox.warning(self, "No Profile", "No configuration profile is set.")
-            return
+        from squid.core.protocol.loader import save_imaging_protocol
+
         name = self._protocol_name.text().strip()
         if not name:
             QMessageBox.warning(self, "No Name", "Please enter a protocol name.")
@@ -1421,45 +1433,90 @@ class AcquisitionSetupWidget(EventBusWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Validation Error", str(e))
             return
-        profile = self._config_repo.current_profile
-        if not profile:
-            QMessageBox.warning(self, "No Profile", "No active profile.")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Imaging Protocol", f"{name}.yaml", "YAML Files (*.yaml)"
+        )
+        if not path:
             return
-        existing = self._config_repo.get_available_imaging_protocols(profile)
-        if name in existing:
-            reply = QMessageBox.question(
-                self, "Overwrite?", f"Protocol '{name}' already exists. Overwrite?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-        self._config_repo.save_imaging_protocol(profile, name, protocol)
-        _log.info(f"Saved imaging protocol '{name}' to profile '{profile}'")
-        QMessageBox.information(self, "Saved", f"Protocol '{name}' saved.")
+        try:
+            save_imaging_protocol(protocol, path)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", str(e))
+            return
+        from pathlib import Path as _Path
+
+        stem = _Path(path).stem
+        self._protocol_name.setText(stem)
+        self._protocol_file_label.setText(path)
+        _log.info(f"Saved imaging protocol to {path}")
+        QMessageBox.information(self, "Saved", f"Protocol saved to {path}.")
 
     def _on_load_protocol(self) -> None:
-        if self._config_repo is None:
-            QMessageBox.warning(self, "No Profile", "No configuration profile is set.")
+        from squid.core.protocol.loader import load_imaging_protocol
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Imaging Protocol", "", "YAML Files (*.yaml)"
+        )
+        if not path:
             return
-        profile = self._config_repo.current_profile
-        if not profile:
-            QMessageBox.warning(self, "No Profile", "No active profile.")
-            return
-        available = self._config_repo.get_available_imaging_protocols(profile)
-        if not available:
-            QMessageBox.information(self, "Load Protocol", "No saved protocols found.")
-            return
-        from qtpy.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getItem(self, "Load Protocol", "Select protocol:", available, 0, False)
-        if not ok or not name:
-            return
-        protocol = self._config_repo.get_imaging_protocol(name, profile)
-        if protocol is None:
-            QMessageBox.warning(self, "Load Failed", f"Failed to load protocol '{name}'.")
+        try:
+            protocol = load_imaging_protocol(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Load Failed", str(e))
             return
         self.apply_imaging_protocol(protocol)
-        self._protocol_name.setText(name)
-        _log.info(f"Loaded imaging protocol '{name}' from profile '{profile}'")
+        from pathlib import Path as _Path
+
+        self._protocol_name.setText(_Path(path).stem)
+        self._protocol_file_label.setText(path)
+        _log.info(f"Loaded imaging protocol from {path}")
+
+    def _on_run_current_fov(self) -> None:
+        """Run a single-FOV acquisition at the current stage position."""
+        selected = self._channel_order_widget.get_selected_channels_ordered()
+        if not selected:
+            QMessageBox.warning(self, "No Channels", "Select at least one channel.")
+            return
+        if self._is_acquiring or self._active_experiment_id is not None:
+            QMessageBox.warning(self, "Busy", "Stop the current acquisition first.")
+            return
+
+        from datetime import datetime
+
+        experiment_id = f"current_fov_{datetime.now().strftime('%H-%M-%S-%f')}"
+
+        # Push current widget state to controller
+        try:
+            protocol = self.build_imaging_protocol()
+        except ValueError as e:
+            QMessageBox.warning(self, "Validation Error", str(e))
+            return
+
+        self._publish(SetAcquisitionParametersCommand(
+            skip_saving=protocol.skip_saving,
+            n_z=protocol.z_stack.planes,
+            delta_z_um=protocol.z_stack.step_um,
+            autofocus_mode=protocol.focus.mode,
+            autofocus_interval_fovs=protocol.focus.interval_fovs,
+            use_piezo=MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
+            widget_type="setup",
+        ))
+        self._publish(SetAcquisitionChannelsCommand(channel_names=selected))
+        self._publish(SetAcquisitionPathCommand(base_path=tempfile.gettempdir()))
+        self._publish(StartNewExperimentCommand(experiment_id=experiment_id))
+
+        canonical_id = self._normalize_experiment_id(experiment_id)
+        self._active_experiment_id = canonical_id
+        self._start_pending_experiment_id = canonical_id
+        self._acquisition_start_watchdog.start(self._ACQUISITION_START_WATCHDOG_MS)
+        self._btn_start_stop.setText("Stop Acquisition")
+        self._btn_start_stop.setChecked(True)
+        self._btn_start_stop.setEnabled(True)
+        self._set_controls_enabled(False)
+
+        self._publish(StartAcquisitionCommand(
+            acquire_current_fov=True, xy_mode="Current Position",
+        ))
 
     # =========================================================================
     # EventBus handlers

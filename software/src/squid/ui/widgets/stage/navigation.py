@@ -16,7 +16,8 @@ from squid.ui.widgets.stage._common import (
     handles,
     squid,
 )
-from squid.core.events import MoveStageRelativeCommand
+from _def import IS_PIEZO_ONLY
+from squid.core.events import MoveStageRelativeCommand, MovePiezoRelativeCommand
 
 
 class NavigationWidget(EventBusFrame):
@@ -205,14 +206,16 @@ class NavigationWidget(EventBusFrame):
         self._publish(MoveStageRelativeCommand(y_mm=-self.entry_dY.value()))
 
     def move_z_forward(self) -> None:
-        self._publish(
-            MoveStageRelativeCommand(z_mm=self.entry_dZ.value() / 1000)
-        )
+        if IS_PIEZO_ONLY:
+            self._publish(MovePiezoRelativeCommand(delta_um=self.entry_dZ.value()))
+        else:
+            self._publish(MoveStageRelativeCommand(z_mm=self.entry_dZ.value() / 1000))
 
     def move_z_backward(self) -> None:
-        self._publish(
-            MoveStageRelativeCommand(z_mm=-(self.entry_dZ.value() / 1000))
-        )
+        if IS_PIEZO_ONLY:
+            self._publish(MovePiezoRelativeCommand(delta_um=-self.entry_dZ.value()))
+        else:
+            self._publish(MoveStageRelativeCommand(z_mm=-(self.entry_dZ.value() / 1000)))
 
     def set_deltaX(self, value: float) -> None:
         deltaX = round(value / self._x_mm_per_ustep) * self._x_mm_per_ustep

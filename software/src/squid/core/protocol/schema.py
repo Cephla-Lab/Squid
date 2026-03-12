@@ -36,7 +36,6 @@ class ProtocolResources(BaseModel):
     fluidics_protocols: Dict[str, FluidicsProtocol] = Field(default_factory=dict)
     fluidics_protocols_file: Optional[str] = None
     fluidics_config_file: Optional[str] = None
-    imaging_protocol_file: Optional[str] = None
     fov_sets: Dict[str, str] = Field(default_factory=dict)
     fov_file: Optional[str] = None
 
@@ -74,7 +73,6 @@ class ExperimentProtocol(BaseModel):
             "fluidics_protocols",
             "fluidics_protocols_file",
             "fluidics_config_file",
-            "imaging_protocol_file",
             "fov_sets",
             "fov_file",
         ):
@@ -122,10 +120,6 @@ class ExperimentProtocol(BaseModel):
     @property
     def fluidics_config_file(self) -> Optional[str]:
         return self.resources.fluidics_config_file
-
-    @property
-    def imaging_protocol_file(self) -> Optional[str]:
-        return self.resources.imaging_protocol_file
 
     @property
     def fov_file(self) -> Optional[str]:

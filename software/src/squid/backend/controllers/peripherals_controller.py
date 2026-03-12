@@ -17,8 +17,6 @@ from squid.core.events import (
     SetSpinningDiskSpinningCommand,
     SetDiskDichroicCommand,
     SetDiskEmissionFilterCommand,
-    SetPiezoPositionCommand,
-    MovePiezoRelativeCommand,
     ObjectiveChanged,
     SpinningDiskStateChanged,
     PiezoPositionChanged,
@@ -242,36 +240,13 @@ class PeripheralsController(BaseController):
         )
 
     # --- Piezo ---
+    # PiezoService is the single source of truth for piezo movement.
+    # We only track state reactively from PiezoPositionChanged events.
 
-    @handles(SetPiezoPositionCommand)
-    def _on_set_piezo(self, cmd: SetPiezoPositionCommand) -> None:
-        if not self._piezo_service:
-            return
-
+    @handles(PiezoPositionChanged)
+    def _on_piezo_position_changed(self, event: PiezoPositionChanged) -> None:
         with self._lock:
-            min_pos, max_pos = self._piezo_service.get_range()
-            clamped = max(min_pos, min(max_pos, cmd.position_um))
-            self._piezo_service.move_to(clamped)
-            actual = self._piezo_service.get_position()
-            # Update state inside lock
-            self._state = replace(self._state, piezo_position_um=actual)
-
-        # Publish outside lock
-        self._event_bus.publish(PiezoPositionChanged(position_um=actual))
-
-    @handles(MovePiezoRelativeCommand)
-    def _on_move_piezo_relative(self, cmd: MovePiezoRelativeCommand) -> None:
-        if not self._piezo_service:
-            return
-
-        with self._lock:
-            self._piezo_service.move_relative(cmd.delta_um)
-            actual = self._piezo_service.get_position()
-            # Update state inside lock
-            self._state = replace(self._state, piezo_position_um=actual)
-
-        # Publish outside lock
-        self._event_bus.publish(PiezoPositionChanged(position_um=actual))
+            self._state = replace(self._state, piezo_position_um=event.position_um)
 
     # --- Convenience methods ---
 
