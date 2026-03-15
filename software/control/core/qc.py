@@ -112,7 +112,7 @@ class QCJob(Job[QCResult]):
     previous_timepoint_z: Optional[float] = None
 
     def run(self) -> QCResult:
-        image = self.capture_image.image_array
+        image = self.image_array()
         metrics = FOVMetrics(
             fov_id=FOVIdentifier(
                 region_id=str(self.capture_info.region_id),
@@ -229,6 +229,9 @@ class QCPolicy:
         self._config = config
 
     def check_timepoint(self, metrics_store: TimepointMetricsStore) -> PolicyDecision:
+        if not self._config.enabled:
+            return PolicyDecision(flagged_fovs=[], flag_reasons={}, should_pause=False)
+
         flagged_set: set = set()
         reasons: Dict[FOVIdentifier, List[str]] = {}
         all_metrics = metrics_store.get_all()

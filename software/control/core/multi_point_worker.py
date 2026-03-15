@@ -166,6 +166,8 @@ class MultiPointWorker:
         self._last_time_point_z_pos = {}
         self._qc_config = qc_config or QCConfig()
         self._qc_policy_config = qc_policy_config or QCPolicyConfig()
+        if self._qc_policy_config.enabled and not self._qc_config.enabled:
+            self._log.warning("QC policy is enabled but QC metrics collection is disabled — policy checks will not run")
         self._qc_policy = QCPolicy(self._qc_policy_config) if self._qc_policy_config.enabled else None
         self._metrics_store: Optional[TimepointMetricsStore] = None
         self.scan_region_fov_coords_mm = (
@@ -271,7 +273,7 @@ class MultiPointWorker:
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
-        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        self._job_runners: List[Tuple[Type[Job], Optional[JobRunner]]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -942,8 +944,14 @@ class MultiPointWorker:
         else:
             return job_class(capture_info=info, capture_image=JobImage(image_array=image))
 
-    def _create_qc_job(self, info: CaptureInfo, image: np.ndarray) -> QCJob:
-        """Create a QCJob for the given capture."""
+    def _create_qc_job(self, info: CaptureInfo, image: np.ndarray) -> Optional[QCJob]:
+        """Create a QCJob for the given capture.
+
+        Returns None for non-canonical frames to avoid overwriting metrics.
+        Only the first channel (configuration_idx=0) at z_index=0 is used for QC.
+        """
+        if info.z_index != 0 or info.configuration_idx != 0:
+            return None
         previous_z = None
         if self._qc_config.calculate_z_diff_from_last_timepoint and self.time_point > 0:
             fov_key = (info.region_id, info.fov)
