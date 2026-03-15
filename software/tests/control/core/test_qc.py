@@ -5,8 +5,18 @@ import pytest
 
 import squid.abc
 from control.core.job_processing import CaptureInfo, JobImage
-from control.core.qc import FOVIdentifier, FOVMetrics, QCConfig, QCJob, QCPolicyConfig, QCResult, calculate_focus_score
-from control.core.qc import TimepointMetricsStore
+from control.core.qc import (
+    FOVIdentifier,
+    FOVMetrics,
+    PolicyDecision,
+    QCConfig,
+    QCJob,
+    QCPolicy,
+    QCPolicyConfig,
+    QCResult,
+    TimepointMetricsStore,
+    calculate_focus_score,
+)
 from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 
 
@@ -269,3 +279,117 @@ class TestTimepointMetricsStore:
             rows = list(csv.DictReader(f))
         assert len(rows) == 2
         assert set(rows[0].keys()) >= {"region_id", "fov_index", "focus_score", "z_position_um"}
+
+
+class TestQCPolicy:
+    def _store_with(self, metrics_list):
+        store = TimepointMetricsStore(timepoint_index=0)
+        for m in metrics_list:
+            store.add(m)
+        return store
+
+    def test_no_rules_no_flags(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=50.0),
+                    _make_metrics("A1", 1, focus_score=100.0),
+                ]
+            )
+        )
+        assert decision.flagged_fovs == []
+        assert decision.should_pause is False
+
+    def test_focus_score_threshold(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True, focus_score_min=80.0))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=50.0),
+                    _make_metrics("A1", 1, focus_score=100.0),
+                    _make_metrics("A1", 2, focus_score=79.9),
+                ]
+            )
+        )
+        assert len(decision.flagged_fovs) == 2
+        assert FOVIdentifier("A1", 0) in decision.flagged_fovs
+        assert FOVIdentifier("A1", 2) in decision.flagged_fovs
+        assert decision.should_pause is True
+
+    def test_z_drift_threshold(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True, z_drift_max_um=5.0))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, z_diff=2.0),
+                    _make_metrics("A1", 1, z_diff=-6.0),
+                    _make_metrics("A1", 2, z_diff=None),
+                ]
+            )
+        )
+        assert decision.flagged_fovs == [FOVIdentifier("A1", 1)]
+
+    def test_outlier_detection(self):
+        policy = QCPolicy(
+            QCPolicyConfig(
+                enabled=True,
+                detect_outliers=True,
+                outlier_metric="focus_score",
+                outlier_std_threshold=2.0,
+            )
+        )
+        metrics = [_make_metrics("A1", i, focus_score=100.0) for i in range(9)]
+        metrics.append(_make_metrics("A1", 9, focus_score=10.0))
+        decision = policy.check_timepoint(self._store_with(metrics))
+        assert FOVIdentifier("A1", 9) in decision.flagged_fovs
+
+    def test_outlier_needs_minimum_3_fovs(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True, detect_outliers=True))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=100.0),
+                    _make_metrics("A1", 1, focus_score=10.0),
+                ]
+            )
+        )
+        assert decision.flagged_fovs == []
+
+    def test_pause_if_any_flagged_false(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True, focus_score_min=80.0, pause_if_any_flagged=False))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=50.0),
+                ]
+            )
+        )
+        assert len(decision.flagged_fovs) == 1
+        assert decision.should_pause is False
+
+    def test_flag_reasons_populated(self):
+        policy = QCPolicy(QCPolicyConfig(enabled=True, focus_score_min=80.0, z_drift_max_um=5.0))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=50.0, z_diff=10.0),
+                ]
+            )
+        )
+        reasons = decision.flag_reasons[FOVIdentifier("A1", 0)]
+        assert len(reasons) == 2
+        assert any("focus_score" in r for r in reasons)
+        assert any("z_drift" in r for r in reasons)
+
+    def test_fov_not_duplicated_across_rules(self):
+        """An FOV failing multiple rules should appear once in flagged_fovs."""
+        policy = QCPolicy(QCPolicyConfig(enabled=True, focus_score_min=80.0, z_drift_max_um=5.0))
+        decision = policy.check_timepoint(
+            self._store_with(
+                [
+                    _make_metrics("A1", 0, focus_score=50.0, z_diff=10.0),
+                ]
+            )
+        )
+        assert decision.flagged_fovs.count(FOVIdentifier("A1", 0)) == 1
