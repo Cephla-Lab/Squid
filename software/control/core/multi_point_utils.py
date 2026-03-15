@@ -8,6 +8,7 @@ from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 
 if TYPE_CHECKING:
+    from control.core.qc import FOVMetrics, PolicyDecision
     from control.slack_notifier import TimepointStats, AcquisitionStats
 
 
@@ -125,3 +126,6 @@ class MultiPointControllerFunctions:
     # Zarr frame written callback - called when subprocess completes writing a frame
     # Args: (fov, time_point, z_index, channel_name, region_idx)
     signal_zarr_frame_written: Callable[[int, int, int, str, int], None] = lambda *a, **kw: None
+    # QC callbacks
+    signal_qc_metrics_updated: Callable[["FOVMetrics"], None] = lambda *a, **kw: None
+    signal_qc_policy_decision: Callable[["PolicyDecision"], None] = lambda *a, **kw: None
