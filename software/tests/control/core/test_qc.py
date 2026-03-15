@@ -9,9 +9,11 @@ from control.core.multi_point_utils import MultiPointControllerFunctions
 from control.core.qc import (
     FOVIdentifier,
     FOVMetrics,
+    FocusScoreMethod,
     PolicyDecision,
     QCConfig,
     QCJob,
+    QCMetricField,
     QCPolicy,
     QCPolicyConfig,
     QCResult,
@@ -91,7 +93,8 @@ class TestQCConfig:
         assert c.calculate_focus_score is True
         assert c.record_laser_af_displacement is False
         assert c.calculate_z_diff_from_last_timepoint is False
-        assert c.focus_score_method == "laplacian_variance"
+        assert c.focus_score_method == FocusScoreMethod.LAPLACIAN_VARIANCE
+        assert c.qc_channel_index == 0
 
 
 class TestQCPolicyConfig:
@@ -102,7 +105,7 @@ class TestQCPolicyConfig:
         assert c.focus_score_min is None
         assert c.z_drift_max_um is None
         assert c.detect_outliers is False
-        assert c.outlier_metric == "focus_score"
+        assert c.outlier_metric == QCMetricField.FOCUS_SCORE
         assert c.outlier_std_threshold == 2.0
         assert c.pause_if_any_flagged is True
 
@@ -135,7 +138,7 @@ class TestCalculateFocusScore:
         assert calculate_focus_score(self._sharp_image(), method="fft_high_freq") > 0
 
     def test_unknown_method_raises(self):
-        with pytest.raises(ValueError, match="Unknown focus method"):
+        with pytest.raises(ValueError):
             calculate_focus_score(np.zeros((10, 10), dtype=np.uint8), method="nonexistent")
 
     def test_sharp_scores_higher_than_uniform(self):

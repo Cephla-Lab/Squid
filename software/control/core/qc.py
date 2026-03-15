@@ -7,6 +7,7 @@ and applies configurable policies to flag FOVs and optionally pause.
 from __future__ import annotations
 
 import csv
+import enum
 import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -17,13 +18,29 @@ import numpy as np
 from control.core.job_processing import CaptureInfo, Job, JobImage
 
 
-def calculate_focus_score(image: np.ndarray, method: str = "laplacian_variance") -> float:
+class FocusScoreMethod(str, enum.Enum):
+    """Available focus score calculation methods."""
+
+    LAPLACIAN_VARIANCE = "laplacian_variance"
+    NORMALIZED_VARIANCE = "normalized_variance"
+    GRADIENT_MAGNITUDE = "gradient_magnitude"
+    FFT_HIGH_FREQ = "fft_high_freq"
+
+
+class QCMetricField(str, enum.Enum):
+    """Valid metric field names on FOVMetrics for outlier detection."""
+
+    FOCUS_SCORE = "focus_score"
+    LASER_AF_DISPLACEMENT_UM = "laser_af_displacement_um"
+    Z_DIFF_FROM_LAST_TIMEPOINT_UM = "z_diff_from_last_timepoint_um"
+
+
+def calculate_focus_score(image: np.ndarray, method: FocusScoreMethod = FocusScoreMethod.LAPLACIAN_VARIANCE) -> float:
     """Calculate focus score for an image.
 
     Args:
         image: 2D grayscale or multichannel image (first channel used if multichannel).
-        method: One of "laplacian_variance", "normalized_variance",
-                "gradient_magnitude", "fft_high_freq".
+        method: Focus score method to use.
 
     Returns:
         Focus score — higher means more in focus.
@@ -31,23 +48,25 @@ def calculate_focus_score(image: np.ndarray, method: str = "laplacian_variance")
     if image.ndim == 3:
         image = image[:, :, 0]
 
-    if method == "laplacian_variance":
+    method = FocusScoreMethod(method)  # accept string or enum
+
+    if method == FocusScoreMethod.LAPLACIAN_VARIANCE:
         laplacian = cv2.Laplacian(image, cv2.CV_64F)
         return float(laplacian.var())
 
-    elif method == "normalized_variance":
+    elif method == FocusScoreMethod.NORMALIZED_VARIANCE:
         mean = image.mean()
         if mean == 0:
             return 0.0
         return float(image.var() / mean)
 
-    elif method == "gradient_magnitude":
+    elif method == FocusScoreMethod.GRADIENT_MAGNITUDE:
         img_f = image.astype(np.float64)
         gy = np.gradient(img_f, axis=0)
         gx = np.gradient(img_f, axis=1)
         return float(np.sqrt(gx**2 + gy**2).mean())
 
-    elif method == "fft_high_freq":
+    elif method == FocusScoreMethod.FFT_HIGH_FREQ:
         fft = np.fft.fft2(image.astype(np.float64))
         fft_shift = np.fft.fftshift(fft)
         h, w = image.shape[:2]
@@ -89,7 +108,9 @@ class QCConfig:
     calculate_focus_score: bool = True
     record_laser_af_displacement: bool = False
     calculate_z_diff_from_last_timepoint: bool = False
-    focus_score_method: str = "laplacian_variance"
+    focus_score_method: FocusScoreMethod = FocusScoreMethod.LAPLACIAN_VARIANCE
+    # Which channel to run QC on (by configuration_idx). Only z_index=0 is used.
+    qc_channel_index: int = 0
 
 
 @dataclass
@@ -146,7 +167,7 @@ class QCPolicyConfig:
     focus_score_min: Optional[float] = None
     z_drift_max_um: Optional[float] = None
     detect_outliers: bool = False
-    outlier_metric: str = "focus_score"
+    outlier_metric: QCMetricField = QCMetricField.FOCUS_SCORE
     outlier_std_threshold: float = 2.0
     pause_if_any_flagged: bool = True
 
@@ -171,11 +192,12 @@ class TimepointMetricsStore:
         with self._lock:
             return list(self._metrics.values())
 
-    def get_metric_values(self, metric_name: str) -> Dict[FOVIdentifier, float]:
+    def get_metric_values(self, metric: QCMetricField) -> Dict[FOVIdentifier, float]:
+        metric = QCMetricField(metric)  # validate — raises ValueError on bad input
         with self._lock:
             result = {}
             for fov_id, m in self._metrics.items():
-                value = getattr(m, metric_name, None)
+                value = getattr(m, metric.value, None)
                 if value is not None:
                     result[fov_id] = value
             return result
@@ -264,9 +286,9 @@ class QCPolicy:
         return PolicyDecision(flagged_fovs=list(flagged_set), flag_reasons=reasons, should_pause=should_pause)
 
     def _detect_outliers(
-        self, metrics_store: TimepointMetricsStore, metric_name: str, std_threshold: float
+        self, metrics_store: TimepointMetricsStore, metric: QCMetricField, std_threshold: float
     ) -> List[FOVIdentifier]:
-        values = metrics_store.get_metric_values(metric_name)
+        values = metrics_store.get_metric_values(metric)
         if len(values) < 3:
             return []
         arr = np.array(list(values.values()))

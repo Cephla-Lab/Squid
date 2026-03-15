@@ -170,6 +170,8 @@ class MultiPointWorker:
             self._log.warning("QC policy is enabled but QC metrics collection is disabled — policy checks will not run")
         self._qc_policy = QCPolicy(self._qc_policy_config) if self._qc_policy_config.enabled else None
         self._metrics_store: Optional[TimepointMetricsStore] = None
+        self._qc_pause_event = threading.Event()
+        self._qc_pause_event.set()  # starts unpaused
         self.scan_region_fov_coords_mm = (
             acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
         )
@@ -685,9 +687,16 @@ class MultiPointWorker:
                         decision = self._qc_policy.check_timepoint(self._metrics_store)
                         self.callbacks.signal_qc_policy_decision(decision)
                         if decision.should_pause:
-                            # TODO: implement actual pause mechanism — currently advisory only,
-                            # the UI can react via signal_qc_policy_decision callback
-                            self._log.info(f"QC policy flagged {len(decision.flagged_fovs)} FOVs, requesting pause")
+                            self._log.info(
+                                f"QC policy flagged {len(decision.flagged_fovs)} FOVs — "
+                                f"pausing acquisition. Call resume_from_qc_pause() to continue."
+                            )
+                            self._qc_pause_event.clear()
+                            # Block until resumed or aborted
+                            while not self._qc_pause_event.is_set():
+                                if self.abort_requested_fn():
+                                    break
+                                self._qc_pause_event.wait(timeout=0.5)
                     except Exception as e:
                         self._log.error(f"QC policy evaluation failed for timepoint {self.time_point}: {e}")
 
@@ -841,6 +850,11 @@ class MultiPointWorker:
 
         return SummarizeResult(none_failed=none_failed, had_results=had_results)
 
+    def resume_from_qc_pause(self) -> None:
+        """Resume acquisition after QC policy pause. Called by UI."""
+        self._log.info("Resuming acquisition from QC pause")
+        self._qc_pause_event.set()
+
     def _handle_qc_result(self, qc_result: QCResult) -> None:
         """Store QC metrics and emit signal."""
         if qc_result.error:
@@ -948,9 +962,9 @@ class MultiPointWorker:
         """Create a QCJob for the given capture.
 
         Returns None for non-canonical frames to avoid overwriting metrics.
-        Only the first channel (configuration_idx=0) at z_index=0 is used for QC.
+        Only the configured channel at z_index=0 is used for QC.
         """
-        if info.z_index != 0 or info.configuration_idx != 0:
+        if info.z_index != 0 or info.configuration_idx != self._qc_config.qc_channel_index:
             return None
         previous_z = None
         if self._qc_config.calculate_z_diff_from_last_timepoint and self.time_point > 0:
