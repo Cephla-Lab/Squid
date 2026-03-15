@@ -109,8 +109,9 @@ class QCConfig:
     record_laser_af_displacement: bool = False
     calculate_z_diff_from_last_timepoint: bool = False
     focus_score_method: FocusScoreMethod = FocusScoreMethod.LAPLACIAN_VARIANCE
-    # Which channel to run QC on (by configuration_idx). Only z_index=0 is used.
+    # Which channel and z-slice to run QC on
     qc_channel_index: int = 0
+    qc_z_index: int = 0
 
 
 @dataclass

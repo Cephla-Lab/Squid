@@ -962,9 +962,9 @@ class MultiPointWorker:
         """Create a QCJob for the given capture.
 
         Returns None for non-canonical frames to avoid overwriting metrics.
-        Only the configured channel at z_index=0 is used for QC.
+        Only the configured channel and z-slice is used for QC.
         """
-        if info.z_index != 0 or info.configuration_idx != self._qc_config.qc_channel_index:
+        if info.z_index != self._qc_config.qc_z_index or info.configuration_idx != self._qc_config.qc_channel_index:
             return None
         previous_z = None
         if self._qc_config.calculate_z_diff_from_last_timepoint and self.time_point > 0:
