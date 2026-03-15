@@ -17,6 +17,49 @@ import numpy as np
 from control.core.job_processing import CaptureInfo, Job, JobImage
 
 
+def calculate_focus_score(image: np.ndarray, method: str = "laplacian_variance") -> float:
+    """Calculate focus score for an image.
+
+    Args:
+        image: 2D grayscale or multichannel image (first channel used if multichannel).
+        method: One of "laplacian_variance", "normalized_variance",
+                "gradient_magnitude", "fft_high_freq".
+
+    Returns:
+        Focus score — higher means more in focus.
+    """
+    if image.ndim == 3:
+        image = image[:, :, 0]
+
+    if method == "laplacian_variance":
+        laplacian = cv2.Laplacian(image, cv2.CV_64F)
+        return float(laplacian.var())
+
+    elif method == "normalized_variance":
+        mean = image.mean()
+        if mean == 0:
+            return 0.0
+        return float(image.var() / mean)
+
+    elif method == "gradient_magnitude":
+        img_f = image.astype(np.float64)
+        gy = np.gradient(img_f, axis=0)
+        gx = np.gradient(img_f, axis=1)
+        return float(np.sqrt(gx**2 + gy**2).mean())
+
+    elif method == "fft_high_freq":
+        fft = np.fft.fft2(image.astype(np.float64))
+        fft_shift = np.fft.fftshift(fft)
+        h, w = image.shape[:2]
+        cy, cx = h // 2, w // 2
+        mask_size = min(h, w) // 8
+        fft_shift[cy - mask_size : cy + mask_size, cx - mask_size : cx + mask_size] = 0
+        return float(np.abs(fft_shift).mean())
+
+    else:
+        raise ValueError(f"Unknown focus method: {method}")
+
+
 @dataclass(frozen=True)
 class FOVIdentifier:
     """Identifies a single FOV within an acquisition."""
