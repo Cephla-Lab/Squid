@@ -8,6 +8,7 @@ from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 
 if TYPE_CHECKING:
+    from control.core.qc import FOVMetrics, PolicyDecision
     from control.slack_notifier import TimepointStats, AcquisitionStats
 
 

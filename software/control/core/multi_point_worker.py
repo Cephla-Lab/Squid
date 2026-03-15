@@ -679,10 +679,15 @@ class MultiPointWorker:
             # QC policy check
             if self._qc_policy is not None and self._qc_policy_config.check_after_timepoint:
                 if self._metrics_store is not None:
-                    decision = self._qc_policy.check_timepoint(self._metrics_store)
-                    self.callbacks.signal_qc_policy_decision(decision)
-                    if decision.should_pause:
-                        self._log.info(f"QC policy flagged {len(decision.flagged_fovs)} FOVs, requesting pause")
+                    try:
+                        decision = self._qc_policy.check_timepoint(self._metrics_store)
+                        self.callbacks.signal_qc_policy_decision(decision)
+                        if decision.should_pause:
+                            # TODO: implement actual pause mechanism — currently advisory only,
+                            # the UI can react via signal_qc_policy_decision callback
+                            self._log.info(f"QC policy flagged {len(decision.flagged_fovs)} FOVs, requesting pause")
+                    except Exception as e:
+                        self._log.error(f"QC policy evaluation failed for timepoint {self.time_point}: {e}")
 
             # Save plate view for this timepoint
             if self._generate_downsampled_views and self._downsampled_view_manager is not None:
@@ -702,7 +707,10 @@ class MultiPointWorker:
             # Save QC metrics
             if self._qc_config.enabled and self._metrics_store is not None:
                 qc_csv_path = os.path.join(current_path, "qc_metrics.csv")
-                self._metrics_store.save(qc_csv_path)
+                try:
+                    self._metrics_store.save(qc_csv_path)
+                except OSError as e:
+                    self._log.error(f"Failed to save QC metrics to {qc_csv_path}: {e}")
 
             # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
             if self._slack_notifier is not None:
@@ -834,8 +842,11 @@ class MultiPointWorker:
     def _handle_qc_result(self, qc_result: QCResult) -> None:
         """Store QC metrics and emit signal."""
         if qc_result.error:
-            self._log.warning(f"QC error for {qc_result.metrics.fov_id}: {qc_result.error}")
-            return
+            self._log.error(
+                f"QC metric calculation failed for region={qc_result.metrics.fov_id.region_id} "
+                f"fov={qc_result.metrics.fov_id.fov_index}: {qc_result.error}"
+            )
+        # Always store metrics (positional data is valid even on partial failure)
         if self._metrics_store is not None:
             self._metrics_store.add(qc_result.metrics)
         self.callbacks.signal_qc_metrics_updated(qc_result.metrics)
@@ -868,6 +879,9 @@ class MultiPointWorker:
             elif isinstance(job_result.result, ZarrWriteResult):
                 r = job_result.result
                 self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
+            # Handle QCResult - store metrics and emit signal
+            elif isinstance(job_result.result, QCResult):
+                self._handle_qc_result(job_result.result)
             return True
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import threading
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -122,14 +122,17 @@ class QCJob(Job[QCResult]):
             z_position_um=self.capture_info.position.z_mm * 1000,
         )
 
-        if self.qc_config.calculate_focus_score:
-            metrics.focus_score = calculate_focus_score(image, self.qc_config.focus_score_method)
+        try:
+            if self.qc_config.calculate_focus_score:
+                metrics.focus_score = calculate_focus_score(image, self.qc_config.focus_score_method)
 
-        if self.qc_config.record_laser_af_displacement:
-            metrics.laser_af_displacement_um = self.capture_info.z_piezo_um
+            if self.qc_config.record_laser_af_displacement:
+                metrics.laser_af_displacement_um = self.capture_info.z_piezo_um
 
-        if self.previous_timepoint_z is not None:
-            metrics.z_diff_from_last_timepoint_um = metrics.z_position_um - self.previous_timepoint_z
+            if self.previous_timepoint_z is not None:
+                metrics.z_diff_from_last_timepoint_um = metrics.z_position_um - self.previous_timepoint_z
+        except Exception as e:
+            return QCResult(metrics=metrics, error=f"QC metric calculation failed: {e}")
 
         return QCResult(metrics=metrics)
 
@@ -266,6 +269,13 @@ class QCPolicy:
         if len(values) < 3:
             return []
         arr = np.array(list(values.values()))
+        finite_mask = np.isfinite(arr)
+        if not finite_mask.all():
+            arr = arr[finite_mask]
+            # Rebuild values dict keeping only finite entries
+            values = {fov_id: v for fov_id, v in values.items() if np.isfinite(v)}
+            if len(arr) < 3:
+                return []
         mean, std = arr.mean(), arr.std()
         if std == 0:
             return []
