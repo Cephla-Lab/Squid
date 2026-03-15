@@ -5,6 +5,7 @@ import pytest
 
 import squid.abc
 from control.core.job_processing import CaptureInfo, JobImage
+from control.core.multi_point_utils import MultiPointControllerFunctions
 from control.core.qc import (
     FOVIdentifier,
     FOVMetrics,
@@ -393,3 +394,23 @@ class TestQCPolicy:
             )
         )
         assert decision.flagged_fovs.count(FOVIdentifier("A1", 0)) == 1
+
+
+class TestQCSignals:
+    def test_qc_signals_have_noop_defaults(self):
+        """New QC signals must default to no-ops so existing callers don't break."""
+        callbacks = MultiPointControllerFunctions(
+            signal_acquisition_start=lambda *a, **kw: None,
+            signal_acquisition_finished=lambda *a, **kw: None,
+            signal_new_image=lambda *a, **kw: None,
+            signal_current_configuration=lambda *a, **kw: None,
+            signal_current_fov=lambda *a, **kw: None,
+            signal_overall_progress=lambda *a, **kw: None,
+            signal_region_progress=lambda *a, **kw: None,
+        )
+        # Should be callable without error
+        m = FOVMetrics(fov_id=FOVIdentifier("A1", 0), timestamp=0.0, z_position_um=0.0)
+        callbacks.signal_qc_metrics_updated(m)
+
+        d = PolicyDecision(flagged_fovs=[], flag_reasons={}, should_pause=False)
+        callbacks.signal_qc_policy_decision(d)
