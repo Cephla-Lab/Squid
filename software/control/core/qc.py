@@ -186,6 +186,7 @@ class TimepointMetricsStore:
             metrics_list = list(self._metrics.values())
         if not metrics_list:
             return
+        # Keep in sync with FOVMetrics fields (flattening fov_id into region_id + fov_index)
         fieldnames = [
             "region_id",
             "fov_index",
@@ -228,15 +229,14 @@ class QCPolicy:
         self._config = config
 
     def check_timepoint(self, metrics_store: TimepointMetricsStore) -> PolicyDecision:
-        flagged: List[FOVIdentifier] = []
+        flagged_set: set = set()
         reasons: Dict[FOVIdentifier, List[str]] = {}
         all_metrics = metrics_store.get_all()
 
         if self._config.focus_score_min is not None:
             for m in all_metrics:
                 if m.focus_score is not None and m.focus_score < self._config.focus_score_min:
-                    if m.fov_id not in flagged:
-                        flagged.append(m.fov_id)
+                    flagged_set.add(m.fov_id)
                     reasons.setdefault(m.fov_id, []).append(
                         f"focus_score={m.focus_score:.2f} < {self._config.focus_score_min}"
                     )
@@ -245,8 +245,7 @@ class QCPolicy:
             for m in all_metrics:
                 if m.z_diff_from_last_timepoint_um is not None:
                     if abs(m.z_diff_from_last_timepoint_um) > self._config.z_drift_max_um:
-                        if m.fov_id not in flagged:
-                            flagged.append(m.fov_id)
+                        flagged_set.add(m.fov_id)
                         reasons.setdefault(m.fov_id, []).append(
                             f"z_drift={m.z_diff_from_last_timepoint_um:.2f}um > {self._config.z_drift_max_um}"
                         )
@@ -255,12 +254,11 @@ class QCPolicy:
             for fov_id in self._detect_outliers(
                 metrics_store, self._config.outlier_metric, self._config.outlier_std_threshold
             ):
-                if fov_id not in flagged:
-                    flagged.append(fov_id)
+                flagged_set.add(fov_id)
                 reasons.setdefault(fov_id, []).append(f"outlier in {self._config.outlier_metric}")
 
-        should_pause = self._config.pause_if_any_flagged and len(flagged) > 0
-        return PolicyDecision(flagged_fovs=flagged, flag_reasons=reasons, should_pause=should_pause)
+        should_pause = self._config.pause_if_any_flagged and len(flagged_set) > 0
+        return PolicyDecision(flagged_fovs=list(flagged_set), flag_reasons=reasons, should_pause=should_pause)
 
     def _detect_outliers(
         self, metrics_store: TimepointMetricsStore, metric_name: str, std_threshold: float
