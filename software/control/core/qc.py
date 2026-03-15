@@ -146,3 +146,64 @@ class QCPolicyConfig:
     outlier_metric: str = "focus_score"
     outlier_std_threshold: float = 2.0
     pause_if_any_flagged: bool = True
+
+
+class TimepointMetricsStore:
+    """Stores QC metrics for a single timepoint. Thread-safe."""
+
+    def __init__(self, timepoint_index: int):
+        self._timepoint = timepoint_index
+        self._metrics: Dict[FOVIdentifier, FOVMetrics] = {}
+        self._lock = threading.Lock()
+
+    def add(self, metrics: FOVMetrics) -> None:
+        with self._lock:
+            self._metrics[metrics.fov_id] = metrics
+
+    def get(self, fov_id: FOVIdentifier) -> Optional[FOVMetrics]:
+        with self._lock:
+            return self._metrics.get(fov_id)
+
+    def get_all(self) -> List[FOVMetrics]:
+        with self._lock:
+            return list(self._metrics.values())
+
+    def get_metric_values(self, metric_name: str) -> Dict[FOVIdentifier, float]:
+        with self._lock:
+            result = {}
+            for fov_id, m in self._metrics.items():
+                value = getattr(m, metric_name, None)
+                if value is not None:
+                    result[fov_id] = value
+            return result
+
+    def save(self, path: str) -> None:
+        """Save metrics to CSV."""
+        with self._lock:
+            metrics_list = list(self._metrics.values())
+        if not metrics_list:
+            return
+        fieldnames = [
+            "region_id",
+            "fov_index",
+            "timestamp",
+            "z_position_um",
+            "focus_score",
+            "laser_af_displacement_um",
+            "z_diff_from_last_timepoint_um",
+        ]
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for m in metrics_list:
+                writer.writerow(
+                    {
+                        "region_id": m.fov_id.region_id,
+                        "fov_index": m.fov_id.fov_index,
+                        "timestamp": m.timestamp,
+                        "z_position_um": m.z_position_um,
+                        "focus_score": m.focus_score,
+                        "laser_af_displacement_um": m.laser_af_displacement_um,
+                        "z_diff_from_last_timepoint_um": m.z_diff_from_last_timepoint_um,
+                    }
+                )

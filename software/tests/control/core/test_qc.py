@@ -6,6 +6,7 @@ import pytest
 import squid.abc
 from control.core.job_processing import CaptureInfo, JobImage
 from control.core.qc import FOVIdentifier, FOVMetrics, QCConfig, QCJob, QCPolicyConfig, QCResult, calculate_focus_score
+from control.core.qc import TimepointMetricsStore
 from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 
 
@@ -205,3 +206,66 @@ class TestQCJob:
         runner.shutdown(timeout_s=2.0)
         assert result.exception is None
         assert result.result.metrics.focus_score > 0
+
+
+def _make_metrics(region_id="A1", fov_index=0, focus_score=100.0, z_um=1000.0, z_diff=None):
+    return FOVMetrics(
+        fov_id=FOVIdentifier(region_id=region_id, fov_index=fov_index),
+        timestamp=time.time(),
+        z_position_um=z_um,
+        focus_score=focus_score,
+        z_diff_from_last_timepoint_um=z_diff,
+    )
+
+
+class TestTimepointMetricsStore:
+    def test_add_and_get(self):
+        store = TimepointMetricsStore(timepoint_index=0)
+        m = _make_metrics("A1", 0)
+        store.add(m)
+        assert store.get(FOVIdentifier("A1", 0)) is m
+
+    def test_get_missing_returns_none(self):
+        store = TimepointMetricsStore(timepoint_index=0)
+        assert store.get(FOVIdentifier("A1", 99)) is None
+
+    def test_get_all(self):
+        store = TimepointMetricsStore(timepoint_index=0)
+        m1 = _make_metrics("A1", 0)
+        m2 = _make_metrics("A1", 1)
+        store.add(m1)
+        store.add(m2)
+        all_m = store.get_all()
+        assert len(all_m) == 2
+        assert m1 in all_m and m2 in all_m
+
+    def test_get_metric_values_skips_none(self):
+        store = TimepointMetricsStore(timepoint_index=0)
+        store.add(_make_metrics("A1", 0, focus_score=100.0))
+        store.add(_make_metrics("A1", 1, focus_score=200.0))
+        store.add(_make_metrics("A1", 2, focus_score=None))
+        values = store.get_metric_values("focus_score")
+        assert len(values) == 2
+        assert values[FOVIdentifier("A1", 0)] == 100.0
+        assert values[FOVIdentifier("A1", 1)] == 200.0
+
+    def test_overwrite_on_duplicate_fov(self):
+        store = TimepointMetricsStore(timepoint_index=0)
+        store.add(_make_metrics("A1", 0, focus_score=100.0))
+        store.add(_make_metrics("A1", 0, focus_score=200.0))
+        assert store.get(FOVIdentifier("A1", 0)).focus_score == 200.0
+        assert len(store.get_all()) == 1
+
+    def test_save_csv(self, tmp_path):
+        import csv
+
+        store = TimepointMetricsStore(timepoint_index=0)
+        store.add(_make_metrics("A1", 0, focus_score=100.0, z_um=1500.0))
+        store.add(_make_metrics("A1", 1, focus_score=200.0, z_um=1510.0))
+        csv_path = str(tmp_path / "qc_metrics.csv")
+        store.save(csv_path)
+
+        with open(csv_path) as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        assert set(rows[0].keys()) >= {"region_id", "fov_index", "focus_score", "z_position_um"}
