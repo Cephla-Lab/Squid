@@ -3,7 +3,35 @@ import time
 import numpy as np
 import pytest
 
-from control.core.qc import FOVIdentifier, FOVMetrics, QCConfig, QCPolicyConfig, calculate_focus_score
+import squid.abc
+from control.core.job_processing import CaptureInfo, JobImage
+from control.core.qc import FOVIdentifier, FOVMetrics, QCConfig, QCJob, QCPolicyConfig, QCResult, calculate_focus_score
+from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
+
+
+def make_test_capture_info(region_id="A1", fov=0, z_mm=1.0, z_piezo_um=None) -> CaptureInfo:
+    return CaptureInfo(
+        position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=z_mm, theta_rad=None),
+        z_index=0,
+        capture_time=time.time(),
+        configuration=AcquisitionChannel(
+            name="BF LED matrix full",
+            display_color="#FFFFFF",
+            camera=1,
+            illumination_settings=IlluminationSettings(
+                illumination_channel="BF LED matrix full",
+                intensity=50.0,
+            ),
+            camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=1.0),
+            z_offset_um=0.0,
+        ),
+        save_directory="/tmp/test",
+        file_id="test_0_0",
+        region_id=region_id,
+        fov=fov,
+        configuration_idx=0,
+        z_piezo_um=z_piezo_um,
+    )
 
 
 class TestFOVIdentifier:
@@ -106,3 +134,74 @@ class TestCalculateFocusScore:
         rgb[::2, :, 0] = 255
         score = calculate_focus_score(rgb)
         assert score > 0
+
+
+class TestQCJob:
+    def test_run_calculates_focus_score(self):
+        image = np.zeros((100, 100), dtype=np.uint8)
+        image[::2, :] = 255
+        job = QCJob(
+            capture_info=make_test_capture_info(region_id="A1", fov=3, z_mm=1.5),
+            capture_image=JobImage(image_array=image),
+            qc_config=QCConfig(enabled=True, calculate_focus_score=True),
+        )
+        result = job.run()
+        assert isinstance(result, QCResult)
+        assert result.metrics.fov_id == FOVIdentifier(region_id="A1", fov_index=3)
+        assert result.metrics.z_position_um == 1500.0
+        assert result.metrics.focus_score > 0
+        assert result.error is None
+
+    def test_run_without_focus_score(self):
+        job = QCJob(
+            capture_info=make_test_capture_info(),
+            capture_image=JobImage(image_array=np.zeros((10, 10), dtype=np.uint8)),
+            qc_config=QCConfig(enabled=True, calculate_focus_score=False),
+        )
+        assert job.run().metrics.focus_score is None
+
+    def test_run_records_laser_af_displacement(self):
+        job = QCJob(
+            capture_info=make_test_capture_info(z_piezo_um=2.5),
+            capture_image=JobImage(image_array=np.zeros((10, 10), dtype=np.uint8)),
+            qc_config=QCConfig(enabled=True, record_laser_af_displacement=True, calculate_focus_score=False),
+        )
+        assert job.run().metrics.laser_af_displacement_um == 2.5
+
+    def test_run_calculates_z_diff(self):
+        job = QCJob(
+            capture_info=make_test_capture_info(z_mm=1.5),
+            capture_image=JobImage(image_array=np.zeros((10, 10), dtype=np.uint8)),
+            qc_config=QCConfig(enabled=True, calculate_focus_score=False),
+            previous_timepoint_z=1490.0,
+        )
+        assert job.run().metrics.z_diff_from_last_timepoint_um == pytest.approx(10.0)
+
+    def test_run_no_z_diff_without_previous(self):
+        job = QCJob(
+            capture_info=make_test_capture_info(z_mm=1.5),
+            capture_image=JobImage(image_array=np.zeros((10, 10), dtype=np.uint8)),
+            qc_config=QCConfig(enabled=True, calculate_focus_score=False),
+        )
+        assert job.run().metrics.z_diff_from_last_timepoint_um is None
+
+    def test_runs_in_job_runner(self):
+        """QCJob must work through JobRunner subprocess (picklable)."""
+        from control.core.job_processing import JobRunner
+
+        image = np.zeros((50, 50), dtype=np.uint8)
+        image[::2, :] = 255
+        job = QCJob(
+            capture_info=make_test_capture_info(),
+            capture_image=JobImage(image_array=image),
+            qc_config=QCConfig(enabled=True),
+        )
+        runner = JobRunner()
+        runner.daemon = True
+        runner.start()
+        assert runner.wait_ready(timeout_s=5.0)
+        runner.dispatch(job)
+        result = runner.output_queue().get(timeout=5.0)
+        runner.shutdown(timeout_s=2.0)
+        assert result.exception is None
+        assert result.result.metrics.focus_score > 0

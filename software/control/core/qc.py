@@ -93,6 +93,48 @@ class QCConfig:
 
 
 @dataclass
+class QCResult:
+    """Result from QC job."""
+
+    metrics: FOVMetrics
+    error: Optional[str] = None
+
+
+@dataclass
+class QCJob(Job[QCResult]):
+    """Quality control job for a single FOV.
+
+    Calculates configured metrics and returns them as QCResult.
+    Runs in JobRunner subprocess (when multiprocessing enabled) or inline.
+    """
+
+    qc_config: QCConfig = field(default_factory=QCConfig)
+    previous_timepoint_z: Optional[float] = None
+
+    def run(self) -> QCResult:
+        image = self.capture_image.image_array
+        metrics = FOVMetrics(
+            fov_id=FOVIdentifier(
+                region_id=str(self.capture_info.region_id),
+                fov_index=self.capture_info.fov,
+            ),
+            timestamp=self.capture_info.capture_time,
+            z_position_um=self.capture_info.position.z_mm * 1000,
+        )
+
+        if self.qc_config.calculate_focus_score:
+            metrics.focus_score = calculate_focus_score(image, self.qc_config.focus_score_method)
+
+        if self.qc_config.record_laser_af_displacement:
+            metrics.laser_af_displacement_um = self.capture_info.z_piezo_um
+
+        if self.previous_timepoint_z is not None:
+            metrics.z_diff_from_last_timepoint_um = metrics.z_position_um - self.previous_timepoint_z
+
+        return QCResult(metrics=metrics)
+
+
+@dataclass
 class QCPolicyConfig:
     """Configuration for QC policy decisions."""
 
