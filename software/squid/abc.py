@@ -864,6 +864,18 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    def supports_global_reset_mode(self) -> bool:
+        """Whether the camera supports global reset (global shutter) mode."""
+        return False
+
+    def set_global_reset_mode(self, enabled: bool):
+        """Enable or disable global reset (global shutter) mode.
+
+        Override in subclasses that support this feature.
+        """
+        if enabled:
+            self._log.warning(f"{self.__class__.__name__} does not support global reset mode")
+
     @abc.abstractmethod
     def close(self):
         """
