@@ -706,11 +706,23 @@ class MultiPointWorker:
         finally:
             self.microcontroller.enable_joystick(True)
 
+    _VALID_Z_STACKING_CONFIGS = set(Z_STACKING_CONFIG_MAP.values())
+
     def initialize_z_stack(self):
-        # z stacking config
+        if self.z_stacking_config not in self._VALID_Z_STACKING_CONFIGS:
+            self._log.error(
+                f"Invalid z_stacking_config: '{self.z_stacking_config}'. "
+                f"Valid values: {self._VALID_Z_STACKING_CONFIGS}. Defaulting to 'FROM BOTTOM'."
+            )
+            self.z_stacking_config = "FROM BOTTOM"
+
         if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])
+        elif self.z_stacking_config == "FROM CENTER":
+            # Move to center of z-range so autofocus runs at the correct Z level
+            center_z = (self.z_range[0] + self.z_range[1]) / 2
+            self.move_to_z_level(center_z)
         else:
             self.move_to_z_level(self.z_range[0])
 
@@ -1353,7 +1365,7 @@ class MultiPointWorker:
         return True
 
     def prepare_z_stack(self):
-        # move to bottom of the z stack
+        # For FROM CENTER: autofocus ran at center, now move to bottom before imaging
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
