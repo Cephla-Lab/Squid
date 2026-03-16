@@ -1,0 +1,3 @@
+experiment_id,round_index,step_index,step_type,estimated_seconds,attempt,duration_seconds,success,error
+V2_Fluidics_Imaging_2026-03-10_17-01-06.269177,0,0,fluidics,300.0,1,2.154985708068125,True,
+V2_Fluidics_Imaging_2026-03-10_17-01-06.269177,0,1,imaging,7.200000000000001,1,,,

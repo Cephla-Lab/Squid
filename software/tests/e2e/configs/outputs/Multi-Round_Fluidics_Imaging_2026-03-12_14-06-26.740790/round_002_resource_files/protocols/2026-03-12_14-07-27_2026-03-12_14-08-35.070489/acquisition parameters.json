@@ -1,0 +1,1 @@
+{"dx(mm)": 0.9, "Nx": 1, "dy(mm)": 0.9, "Ny": 1, "dz(um)": 0.5, "Nz": 5, "dt(s)": 0.0, "Nt": 1, "autofocus_mode": "focus_lock", "autofocus_interval_fovs": 1, "with manual focus map": false, "objective": {"magnification": 4.0, "NA": 0.13, "tube_lens_f_mm": 180.0, "name": "4x"}, "sensor_pixel_size_um": 6.5, "tube_lens_mm": 180}

@@ -1,0 +1,43 @@
+{
+  "experiment_id": "fish_multichannel.yaml",
+  "round_index": 1,
+  "time_point": 0,
+  "fov_task_list_data": {
+    "cursor": 1,
+    "plan_hash": "156bda3678d3bf13",
+    "tasks": [
+      {
+        "fov_id": "Region1_0000",
+        "region_id": "Region1",
+        "fov_index": 0,
+        "x_mm": 20.0,
+        "y_mm": 20.0,
+        "z_mm": 1.0,
+        "status": "COMPLETED",
+        "attempt": 1,
+        "metadata": {
+          "original_index": 0,
+          "has_z": true
+        },
+        "error_message": null
+      },
+      {
+        "fov_id": "Region1_0001",
+        "region_id": "Region1",
+        "fov_index": 1,
+        "x_mm": 30.0,
+        "y_mm": 20.0,
+        "z_mm": 1.0,
+        "status": "PENDING",
+        "attempt": 1,
+        "metadata": {
+          "original_index": 1,
+          "has_z": true
+        },
+        "error_message": null
+      }
+    ]
+  },
+  "plan_hash": "156bda3678d3bf13",
+  "created_at": "2026-03-12T21:22:12.390851Z"
+}

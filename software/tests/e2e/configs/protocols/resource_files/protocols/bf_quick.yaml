@@ -1,7 +1,8 @@
 description: "Fast brightfield preview for alignment and QC."
 acquisition:
   channels:
-    - "BF LED matrix full"
+    - name: "BF LED matrix full"
+      exposure_time_ms: 200.0
   z_stack:
     planes: 1
     step_um: 0.5

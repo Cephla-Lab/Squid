@@ -17,7 +17,6 @@ rounds:
         message: "Verify the sample is mounted, centered, and safe to continue."
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405.yaml
-        fovs: default
         output_label: setup_reference
   - name: "Hybridization Round {i}"
     repeat: 2
@@ -28,7 +27,6 @@ rounds:
         protocol: stringent_wash
       - step_type: imaging
         protocol: resource_files/protocols/fish_multichannel.yaml
-        fovs: default
         focus_gate_override:
           max_focus_attempts: 3
         capture_policy_override:
@@ -40,6 +38,5 @@ rounds:
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/qc_single_plane.yaml
-        fovs: default
       - step_type: intervention
         message: "Review the run summary and image quality before closing out the session."

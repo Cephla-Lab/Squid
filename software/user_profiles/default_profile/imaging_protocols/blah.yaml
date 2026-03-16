@@ -1,8 +1,11 @@
 description: ''
 channels:
-- Fluorescence 488 nm Ex
-- Fluorescence 638 nm Ex
-- Fluorescence 561 nm Ex
+- name: Fluorescence 488 nm Ex
+  exposure_time_ms: 200.0
+- name: Fluorescence 638 nm Ex
+  exposure_time_ms: 200.0
+- name: Fluorescence 561 nm Ex
+  exposure_time_ms: 200.0
 z_stack:
   planes: 1
   step_um: 1.5

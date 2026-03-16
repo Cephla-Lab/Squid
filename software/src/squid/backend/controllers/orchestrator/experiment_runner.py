@@ -15,7 +15,7 @@ from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
 from squid.core.config.test_timing import scale_duration
-from squid.core.events import EventBus
+from squid.core.events import ApplyImagingProtocolCommand, EventBus
 from squid.core.utils.cancel_token import CancelToken, CancellationError
 from squid.core.protocol import (
     CapturePolicyConfig,
@@ -28,7 +28,6 @@ from squid.core.protocol import (
     ImagingProtocol,
 )
 
-from squid.backend.controllers.orchestrator import protocol_helpers
 from squid.backend.controllers.orchestrator.state import (
     OrchestratorState,
     ExperimentProgress,
@@ -205,39 +204,59 @@ class ExperimentRunner:
         return (remaining_estimated + current_remaining) * scale
 
     def notify_pause(self) -> None:
-        """Record that execution is paused to keep ETA stable."""
-        if self._paused_at is None:
-            self._paused_at = time.monotonic()
+        """Record that execution is paused to keep ETA stable.
+
+        Thread-safe: acquires _progress_lock to synchronize with
+        get_timing_snapshot and _effective_step_elapsed (RC-9).
+        """
+        with self._progress_lock:
+            if self._paused_at is None:
+                self._paused_at = time.monotonic()
 
     def notify_resume(self) -> None:
-        """Record that execution resumed and account for paused time."""
-        if self._paused_at is None:
-            return
-        paused_duration = time.monotonic() - self._paused_at
-        if paused_duration > 0:
-            self._step_paused_total += paused_duration
-            self._total_paused_seconds += paused_duration
-        self._paused_at = None
+        """Record that execution resumed and account for paused time.
+
+        Thread-safe: acquires _progress_lock to synchronize with
+        get_timing_snapshot and _effective_step_elapsed (RC-9).
+        """
+        with self._progress_lock:
+            if self._paused_at is None:
+                return
+            paused_duration = time.monotonic() - self._paused_at
+            if paused_duration > 0:
+                self._step_paused_total += paused_duration
+                self._total_paused_seconds += paused_duration
+            self._paused_at = None
 
     def _effective_step_elapsed(self) -> float:
-        """Elapsed step time excluding pauses."""
+        """Elapsed step time excluding pauses.
+
+        Thread-safe: acquires _progress_lock (reentrant) to read
+        _paused_at and _step_paused_total consistently (RC-9).
+        """
         if self._step_start_time <= 0:
             return 0.0
-        now = time.monotonic()
-        paused_at = self._paused_at
-        if paused_at is not None:
-            now = paused_at
-        elapsed = now - self._step_start_time - self._step_paused_total
+        with self._progress_lock:
+            now = time.monotonic()
+            paused_at = self._paused_at
+            if paused_at is not None:
+                now = paused_at
+            elapsed = now - self._step_start_time - self._step_paused_total
         return max(0.0, elapsed)
 
     def _effective_run_elapsed(self) -> float:
-        """Elapsed experiment time excluding pauses."""
+        """Elapsed experiment time excluding pauses.
+
+        Thread-safe: acquires _progress_lock (reentrant) to read
+        _paused_at and _total_paused_seconds consistently (RC-9).
+        """
         if self._run_start_time <= 0:
             return 0.0
-        now = time.monotonic()
-        if self._paused_at is not None:
-            now = self._paused_at
-        return max(0.0, now - self._run_start_time - self._total_paused_seconds)
+        with self._progress_lock:
+            now = time.monotonic()
+            if self._paused_at is not None:
+                now = self._paused_at
+            return max(0.0, now - self._run_start_time - self._total_paused_seconds)
 
     def get_timing_snapshot(self) -> dict[str, object]:
         """Return a thread-safe timing snapshot for UI and disk logging."""
@@ -302,7 +321,14 @@ class ExperimentRunner:
         )
 
     def _set_operation(self, operation: str) -> None:
-        """Track active subsystem duration accounting."""
+        """Track active subsystem duration accounting.
+
+        Threading: only called from the worker thread. The fields
+        _current_operation, _current_operation_started_at, and
+        _subsystem_durations are single-writer (worker thread only).
+        Readers (timing publisher) see consistent values via GIL for
+        simple attribute reads (RC-5).
+        """
         now = time.monotonic()
         if self._current_operation_started_at is not None:
             previous = self._progress.current_round.current_step_type if self._progress.current_round else self._current_operation
@@ -764,6 +790,42 @@ class ExperimentRunner:
             return "retry"
         return "skip_step"
 
+    def _pause_for_protocol_review(
+        self,
+        round_idx: int,
+        step: ImagingStep,
+    ) -> None:
+        """Pause execution so the user can review/edit the imaging protocol in the GUI."""
+        self._on_transition(OrchestratorState.WAITING_INTERVENTION)
+        self._intervention_resolved.clear()
+        started_at = time.monotonic()
+        with self._progress_lock:
+            round_name = self._progress.current_round.round_name if self._progress.current_round else ""
+            current_fov_label = self._progress.current_fov_label
+            attempt = self._progress.current_attempt
+            step_index = self._progress.current_step_index
+        self._event_bus.publish(
+            OrchestratorInterventionRequired(
+                experiment_id=self._experiment_id,
+                round_index=round_idx,
+                round_name=round_name,
+                message="Review and edit imaging protocol in the Acquisition tab, then click Continue.",
+                kind="protocol_review",
+                attempt=attempt,
+                current_step_name=self._step_label(step, step_index),
+                current_fov_label=current_fov_label,
+                allowed_actions=("acknowledge", "abort"),
+            )
+        )
+        while not self._intervention_resolved.is_set():
+            self._cancel_token.check_point()
+            self._intervention_resolved.wait(timeout=scale_duration(0.5, min_seconds=0.05))
+        self._intervention_overhead_seconds += max(0.0, time.monotonic() - started_at)
+        action = self._consume_intervention_action()
+        self._on_transition(OrchestratorState.RUNNING)
+        if action == "abort":
+            raise CancellationError("Operator abort during protocol review")
+
     def _execute_fluidics_step(self, round_idx: int, step: FluidicsStep) -> StepResult:
         """Execute a fluidics step."""
         if self._progress.current_round is None:
@@ -836,24 +898,33 @@ class ExperimentRunner:
                 )
             imaging_config = self._resolve_imaging_config(step)
 
+            # Push protocol to GUI so the user can see what's about to run
+            self._event_bus.publish(ApplyImagingProtocolCommand(protocol=imaging_config))
+
+            # Pause for user review if requested, then read back edited protocol
+            if step.pause_for_review:
+                self._pause_for_protocol_review(round_idx, step)
+                # Read back the (potentially edited) protocol from the GUI
+                if self._imaging_executor is not None:
+                    readback = self._imaging_executor.request_gui_readback(self._cancel_token)
+                    if readback is not None:
+                        imaging_config = readback
+                        _log.info("Using GUI-edited imaging protocol for step")
+
             if self._acquire_current_fov:
                 # Skip FOV loading — acquire at current stage position
                 total_fovs = 1
             else:
-                # Load FOV set if specified
-                if step.fovs not in ("current", "default"):
-                    if step.fovs not in self._protocol.fov_sets:
-                        return StepResult.failed(
-                            "imaging", f"FOV set '{step.fovs}' not found in protocol"
-                        )
-                    csv_path = self._protocol.fov_sets[step.fovs]
-                    protocol_helpers.load_fov_set(csv_path, self._scan_coordinates, self._event_bus)
+                if self._scan_coordinates is None:
+                    return StepResult.failed(
+                        "imaging",
+                        "No run-level FOV plan is loaded for this orchestrated imaging run",
+                    )
 
                 total_fovs = 0
-                if self._scan_coordinates is not None:
-                    region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
-                    if isinstance(region_fovs, dict):
-                        total_fovs = sum(len(coords) for coords in region_fovs.values())
+                region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                if isinstance(region_fovs, dict):
+                    total_fovs = sum(len(coords) for coords in region_fovs.values())
 
             if total_fovs > 0 and resume_fov >= total_fovs:
                 return StepResult.failed(
@@ -886,6 +957,9 @@ class ExperimentRunner:
             )
 
             # Progress callback for FOV-level updates
+            # Threading: called from MultiPointWorker thread. All writes are
+            # inside _progress_lock. Simple attribute reads (_run_start_time etc.)
+            # are safe via GIL single-word atomicity (RC-12).
             def _on_imaging_progress(
                 fov_index: int, total_fovs: int, eta_seconds: Optional[float]
             ) -> None:
@@ -926,6 +1000,7 @@ class ExperimentRunner:
                     experiment_id=round_dir_name,
                     progress_callback=_on_imaging_progress,
                     acquire_current_fov=self._acquire_current_fov,
+                    scan_coordinates_override=self._scan_coordinates,
                 )
                 if not success:
                     error_message = getattr(self._imaging_executor, "last_error", None)

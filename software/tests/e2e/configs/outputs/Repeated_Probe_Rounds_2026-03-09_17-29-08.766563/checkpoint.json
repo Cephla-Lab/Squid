@@ -1,0 +1,18 @@
+{
+  "protocol_name": "Repeated Probe Rounds",
+  "protocol_version": "3.0",
+  "experiment_id": "Repeated_Probe_Rounds_2026-03-09_17-29-08.766563",
+  "experiment_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs/Repeated_Probe_Rounds_2026-03-09_17-29-08.766563",
+  "round_index": 1,
+  "step_index": 1,
+  "imaging_fov_index": 0,
+  "imaging_z_index": 0,
+  "imaging_channel_index": 0,
+  "created_at": "2026-03-09T17:29:42.803838",
+  "paused_at": null,
+  "metadata": {},
+  "current_attempt": 1,
+  "elapsed_seconds": 33.65355183300562,
+  "paused_seconds": 0.0,
+  "effective_run_seconds": 33.65355266595725
+}

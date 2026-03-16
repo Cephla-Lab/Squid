@@ -6,10 +6,10 @@ These are pure utility functions with no persistent state.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import squid.core.logging
-from squid.core.events import EventBus, LoadScanCoordinatesCommand
+from squid.core.events import ClearScanCoordinatesCommand, EventBus, LoadScanCoordinatesCommand
 from squid.core.protocol import (
     ExperimentProtocol,
     FluidicsStep,
@@ -23,19 +23,18 @@ if TYPE_CHECKING:
 _log = squid.core.logging.get_logger(__name__)
 
 
-def load_fov_set(
+def parse_fov_set(
     csv_path: str,
-    scan_coordinates: Optional["ScanCoordinates"],
-    event_bus: EventBus,
-) -> None:
-    """Load FOV positions from CSV into scan coordinates.
+    ) -> Tuple[Dict[str, Tuple[Tuple[float, ...], ...]], Dict[str, Tuple[float, ...]]]:
+    """Parse FOV positions from CSV.
 
     Expected columns: region, x (mm), y (mm) (optional: z (mm))
 
     Args:
         csv_path: Path to CSV file with FOV positions
-        scan_coordinates: ScanCoordinates manager (or None)
-        event_bus: EventBus for publishing LoadScanCoordinatesCommand
+
+    Returns:
+        Tuple of ``(region_fov_coordinates, region_centers)``.
     """
     import pandas as pd
     from pathlib import Path
@@ -63,8 +62,8 @@ def load_fov_set(
             f"CSV must have region, x (mm), y (mm) columns. Found: {list(df.columns)}"
         )
 
-    region_fov_coordinates: Dict[str, Any] = {}
-    region_centers: Dict[str, Any] = {}
+    region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]] = {}
+    region_centers: Dict[str, Tuple[float, ...]] = {}
 
     for region_id in df[col_map["region"]].unique():
         region_points = df[df[col_map["region"]] == region_id]
@@ -93,6 +92,93 @@ def load_fov_set(
             )
         region_fov_coordinates[str(region_id)] = coords
 
+    _log.info(
+        "Parsed %d FOVs from %d regions in %s",
+        sum(len(c) for c in region_fov_coordinates.values()),
+        len(region_fov_coordinates),
+        csv_path,
+    )
+    return region_fov_coordinates, region_centers
+
+
+def create_detached_scan_coordinates(
+    region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]],
+    region_centers: Dict[str, Tuple[float, ...]],
+    template_scan_coordinates: "ScanCoordinates",
+) -> "ScanCoordinates":
+    """Create an acquisition-local scan-coordinate snapshot."""
+    from squid.backend.managers.scan_coordinates import ScanCoordinates
+
+    detached = ScanCoordinates(
+        objectiveStore=template_scan_coordinates.objectiveStore,
+        stage=template_scan_coordinates.stage,
+        camera=template_scan_coordinates.camera,
+        event_bus=None,
+    )
+    for attr in (
+        "acquisition_pattern",
+        "fov_pattern",
+        "format",
+        "a1_x_mm",
+        "a1_y_mm",
+        "wellplate_offset_x_mm",
+        "wellplate_offset_y_mm",
+        "well_spacing_mm",
+        "well_size_mm",
+        "a1_x_pixel",
+        "a1_y_pixel",
+        "number_of_skip",
+    ):
+        if hasattr(template_scan_coordinates, attr):
+            setattr(detached, attr, getattr(template_scan_coordinates, attr))
+
+    detached.load_coordinates(
+        region_fov_coordinates=region_fov_coordinates,
+        region_centers=region_centers,
+    )
+    return detached
+
+
+def scan_coordinates_payload(
+    scan_coordinates: "ScanCoordinates",
+) -> Tuple[Dict[str, Tuple[Tuple[float, ...], ...]], Dict[str, Tuple[float, ...]]]:
+    """Convert ScanCoordinates to serializable tuple payloads."""
+    region_fov_coordinates = {
+        region_id: tuple(tuple(float(v) for v in coord) for coord in coords)
+        for region_id, coords in scan_coordinates.region_fov_coordinates.items()
+    }
+    region_centers = {
+        region_id: tuple(float(v) for v in center)
+        for region_id, center in scan_coordinates.region_centers.items()
+    }
+    return region_fov_coordinates, region_centers
+
+
+def publish_scan_coordinates(
+    event_bus: EventBus,
+    region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]],
+    region_centers: Dict[str, Tuple[float, ...]],
+    *,
+    clear_existing: bool = False,
+) -> None:
+    """Publish scan-coordinate commands so the live GUI reflects a run plan."""
+    if clear_existing:
+        event_bus.publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+    event_bus.publish(
+        LoadScanCoordinatesCommand(
+            region_fov_coordinates=region_fov_coordinates,
+            region_centers=region_centers,
+        )
+    )
+
+
+def load_fov_set(
+    csv_path: str,
+    scan_coordinates: Optional["ScanCoordinates"],
+    event_bus: EventBus,
+) -> None:
+    """Legacy helper that loads and publishes FOV positions from CSV."""
+    region_fov_coordinates, region_centers = parse_fov_set(csv_path)
     if scan_coordinates is not None and hasattr(scan_coordinates, "load_coordinates"):
         scan_coordinates.load_coordinates(
             region_fov_coordinates=region_fov_coordinates,
@@ -105,17 +191,12 @@ def load_fov_set(
                 apply=False,
             )
         )
-    else:
-        event_bus.publish(
-            LoadScanCoordinatesCommand(
-                region_fov_coordinates=region_fov_coordinates,
-                region_centers=region_centers,
-            )
-        )
-
-    _log.info(
-        f"Loaded {sum(len(c) for c in region_fov_coordinates.values())} FOVs "
-        f"from {len(region_fov_coordinates)} regions"
+        return
+    publish_scan_coordinates(
+        event_bus,
+        region_fov_coordinates,
+        region_centers,
+        clear_existing=False,
     )
 
 

@@ -1,14 +1,12 @@
 xy_enabled: true
 xy_mode: Current Position
-z_enabled: false
+z_enabled: true
 z_mode: From Bottom
 time_enabled: false
 fov_overlap: 10.0
 dt: 0.0
 nt: 1
 dz: 1.5
-nz: 1
-selected_channels:
-- Fluorescence 488 nm Ex
-contrast_af: false
-laser_af: false
+nz: 5
+selected_channels: []
+autofocus_mode: none

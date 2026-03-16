@@ -17,7 +17,6 @@ rounds:
         protocol: probe_1
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405.yaml
-        fovs: default
         output_label: probe_1_reference
   - name: "Round 2 Probe 2"
     steps:
@@ -27,7 +26,6 @@ rounds:
         protocol: probe_2
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_488_561.yaml
-        fovs: default
         output_label: probe_2_dual_color
   - name: "Round 3 Probe 3"
     steps:
@@ -37,7 +35,6 @@ rounds:
         protocol: probe_3
       - step_type: imaging
         protocol: resource_files/protocols/fish_multichannel.yaml
-        fovs: default
         output_label: probe_3_multichannel
   - name: "Final Wash"
     steps:

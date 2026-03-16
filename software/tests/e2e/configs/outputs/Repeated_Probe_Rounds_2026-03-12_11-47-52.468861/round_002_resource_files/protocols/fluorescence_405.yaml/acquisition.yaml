@@ -1,0 +1,84 @@
+# Acquisition Parameters - fluorescence_405.yaml
+# Saved automatically when acquisition started
+
+acquisition:
+  experiment_id: fluorescence_405.yaml
+  start_time: 1773341294.6741278
+  widget_type: wellplate
+  xy_mode: Current Position
+  skip_saving: true
+objective:
+  name: 4x
+  magnification: 4.0
+  NA: 0.13
+  pixel_size_um: 1.625
+  camera_binning:
+  - 1
+  - 1
+  sensor_pixel_size_um: 6.5
+sample:
+  wellplate_format: 30 mm circle
+z_stack:
+  nz: 3
+  delta_z_um: 0.5
+  config: FROM CENTER
+  z_range:
+  - 1.2
+  - 1.2009999999999998
+  use_piezo: true
+time_series:
+  nt: 1
+  delta_t_s: 0.0
+autofocus:
+  mode: focus_lock
+  interval_fovs: 1
+channels:
+- name: Fluorescence 405 nm Ex
+  enabled: true
+  display_color: '#20ADF8'
+  camera: null
+  camera_settings:
+    exposure_time_ms: 25.0
+    gain_mode: 10.0
+    pixel_format: null
+  filter_wheel: null
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 405 nm Ex
+    intensity: 20.0
+  confocal_override: null
+focus_lock:
+  enabled: true
+  buffer_length: 5
+  recovery_attempts: 3
+  min_spot_snr: 10.0
+  acquire_threshold_um: 0.25
+  maintain_threshold_um: 0.5
+  auto_search_enabled: false
+  lock_timeout_s: 5.0
+wellplate_scan:
+  scan_size_mm: 0.0
+  overlap_percent: 10.0
+  regions:
+  - name: Region1
+    center_mm:
+    - 0.25
+    - 0.0
+    - 0.0
+    shape: Loaded
+downsampled_views:
+  enabled: true
+  save_well_images: false
+  well_resolutions_um:
+  - 5.0
+  - 10.0
+  - 20.0
+  plate_resolution_um: 10.0
+  z_projection: mip
+  interpolation_method: inter_area_fast
+plate:
+  num_rows: 1
+  num_cols: 1
+fluidics:
+  enabled: false

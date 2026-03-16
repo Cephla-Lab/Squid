@@ -1,0 +1,22 @@
+{
+  "average_lock_quality": 0.0420676964353948,
+  "fraction_good_readings": 0.010101010101010102,
+  "max_abs_z_error_um": 0.0,
+  "max_drift_rate_um_per_s": 0.059679295950734346,
+  "min_spot_snr": 0.0,
+  "p95_abs_z_error_um": 0.0,
+  "p95_rms_error_um": 0.0,
+  "round_index": 1,
+  "round_name": "Round 2",
+  "status_durations_s": {
+    "lost": 10.049,
+    "recovering": 0.616
+  },
+  "status_transition_counts": {
+    "lost": 1,
+    "recovering": 1
+  },
+  "warning_counts": {
+    "signal_lost": 2
+  }
+}

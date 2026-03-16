@@ -1,0 +1,9 @@
+{
+  "effective_run_seconds": 4.127958875033073,
+  "elapsed_seconds": 4.127958375029266,
+  "eta_seconds": 3.0741445409832533,
+  "intervention_overhead_seconds": 0.0,
+  "paused_seconds": 0.0,
+  "retry_overhead_seconds": 0.0,
+  "subsystem_seconds": {}
+}

@@ -16,6 +16,5 @@ rounds:
         protocol: probe_{i}
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405.yaml
-        fovs: default
       - step_type: fluidics
         protocol: wash

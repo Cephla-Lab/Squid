@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QFont, QColor, QBrush, QPainter, QPen, QPainterPath
 import pyqtgraph as pg
 
-from squid.core.events import handles, LoadScanCoordinatesCommand
+from squid.core.events import ApplyImagingProtocolCommand, handles
 from squid.ui.widgets.base import EventBusWidget
 from squid.backend.controllers.orchestrator import (
     OrchestratorState,
@@ -765,6 +765,12 @@ class OrchestratorControlPanel(EventBusWidget):
                 "background-color: #5d1f1f; color: #ffb4ab; padding: 4px 8px; border-radius: 10px;"
             )
             self._intervention_title.setText("Run needs operator recovery")
+        elif event.kind == "protocol_review":
+            self._intervention_badge.setText("PROTOCOL REVIEW")
+            self._intervention_badge.setStyleSheet(
+                "background-color: #1a3a5c; color: #90caf9; padding: 4px 8px; border-radius: 10px;"
+            )
+            self._intervention_title.setText("Review imaging protocol in Acquisition tab")
         else:
             self._intervention_badge.setText("INTERVENTION")
             self._intervention_badge.setStyleSheet(
@@ -865,7 +871,7 @@ class OrchestratorControlPanel(EventBusWidget):
     def _on_load_clicked(self) -> None:
         from squid.ui.widgets.orchestrator.protocol_loader_dialog import ProtocolLoaderDialog
 
-        dialog = ProtocolLoaderDialog(parent=self)
+        dialog = ProtocolLoaderDialog(parent=self, event_bus=self._bus)
         if dialog.exec_():
             self._protocol_path = dialog.get_protocol_path()
             self._base_path = dialog.get_output_path()
@@ -889,24 +895,21 @@ class OrchestratorControlPanel(EventBusWidget):
             protocol_name = protocol_data.get("name", Path(protocol_path).stem)
 
             rounds = protocol_data.get("rounds", [])
-            has_imaging = False
-            default_fovs_required = False
-            for round_def in rounds:
-                for step in round_def.get("steps", []):
-                    if step.get("step_type") != "imaging":
-                        continue
-                    has_imaging = True
-                    if step.get("fovs", "current") in ("current", "default"):
-                        default_fovs_required = True
+            has_imaging = any(
+                step.get("step_type") == "imaging"
+                for round_def in rounds
+                for step in round_def.get("steps", [])
+            )
+            has_run_fov_file = bool(getattr(protocol_obj, "fov_file", None))
 
             fov_count = sum(len(coords) for coords in self._fov_positions.values())
-            if has_imaging and default_fovs_required:
+            if has_imaging and has_run_fov_file:
                 if fov_count > 0:
-                    fov_status = f"({fov_count} FOVs loaded)"
+                    fov_status = f"({fov_count} FOVs in protocol file)"
                 else:
-                    fov_status = "(FOVs required)"
+                    fov_status = "(protocol FOV file unavailable)"
             elif has_imaging:
-                fov_status = "(no FOVs required)"
+                fov_status = "(run-level FOV file required)"
             else:
                 fov_status = "(no imaging)"
 
@@ -917,6 +920,20 @@ class OrchestratorControlPanel(EventBusWidget):
 
             self.fov_positions_changed.emit(self._fov_positions)
             self.protocol_loaded.emit(protocol_data)
+
+            # Push first imaging protocol to GUI for preview/editing
+            from squid.core.protocol.step import ImagingStep as _ImagingStep
+
+            for round_ in protocol_obj.rounds:
+                for step in round_.steps:
+                    if isinstance(step, _ImagingStep) and step.protocol:
+                        ip = protocol_obj.imaging_protocols.get(step.protocol)
+                        if ip is not None:
+                            self._publish(ApplyImagingProtocolCommand(protocol=ip))
+                            break
+                else:
+                    continue
+                break
 
             # Protocol must be validated before Start is enabled
             self._validated = False
@@ -969,27 +986,37 @@ class OrchestratorControlPanel(EventBusWidget):
             _log.warning("Protocol must be validated before starting")
             return
 
-        fov_count = sum(len(coords) for coords in self._fov_positions.values())
-        if fov_count == 0:
+        rounds = (self._protocol_data or {}).get("rounds", [])
+        has_imaging = any(
+            step.get("step_type") == "imaging"
+            for round_def in rounds
+            for step in round_def.get("steps", [])
+        )
+        resources = (self._protocol_data or {}).get("resources") or {}
+        protocol_fov_file = resources.get("fov_file") or (self._protocol_data or {}).get("fov_file")
+
+        if has_imaging and not protocol_fov_file:
             QMessageBox.warning(
                 self,
-                "No FOVs Loaded",
-                "Start Acquisition requires FOV positions.\n"
-                "Load FOVs in the protocol loader, or use 'Run Current' to acquire at the current stage position.",
+                self.tr("Missing FOV File"),
+                self.tr(
+                    "Start Acquisition requires the protocol to define "
+                    "resources.fov_file.\nUse 'Run Current' to acquire at the "
+                    "current stage position."
+                ),
             )
             return
 
-        if self._fov_positions:
-            region_fov_coords: Dict[str, Tuple[Tuple[float, ...], ...]] = {}
-            for region_id, coords in self._fov_positions.items():
-                region_fov_coords[region_id] = tuple(tuple(c) for c in coords)
-
-            self._publish(
-                LoadScanCoordinatesCommand(
-                    region_fov_coordinates=region_fov_coords,
-                )
+        if has_imaging and not self._fov_positions:
+            QMessageBox.warning(
+                self,
+                self.tr("FOV File Unavailable"),
+                self.tr(
+                    "The protocol FOV file could not be previewed.\n"
+                    "Fix the protocol FOV file path before starting."
+                ),
             )
-            _log.info(f"Loaded {sum(len(c) for c in self._fov_positions.values())} FOV positions")
+            return
 
         success = self._orchestrator.start_experiment(
             protocol_path=self._protocol_path,

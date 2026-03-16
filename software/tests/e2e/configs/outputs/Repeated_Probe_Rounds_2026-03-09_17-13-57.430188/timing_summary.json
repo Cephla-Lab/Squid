@@ -1,0 +1,12 @@
+{
+  "effective_run_seconds": 67.50376395799685,
+  "elapsed_seconds": 67.50376374996267,
+  "eta_seconds": 19.85333603490974,
+  "intervention_overhead_seconds": 27.67385625001043,
+  "paused_seconds": 0.0,
+  "retry_overhead_seconds": 0.0,
+  "subsystem_seconds": {
+    "fluidics": 13.83103233401198,
+    "imaging": 51.543926416081376
+  }
+}

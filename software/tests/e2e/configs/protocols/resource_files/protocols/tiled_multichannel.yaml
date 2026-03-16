@@ -1,11 +1,13 @@
 description: "Grid-friendly brightfield plus fluorescence z-stack."
 acquisition:
   channels:
-    - "BF LED matrix full"
-    - "Fluorescence 488 nm Ex"
+    - name: "BF LED matrix full"
+      exposure_time_ms: 200.0
+    - name: "Fluorescence 488 nm Ex"
+      exposure_time_ms: 200.0
   z_stack:
-    planes: 5
-    step_um: 1.0
+    planes: 15
+    step_um: 1.5
     direction: from_center
   acquisition_order: z_first
   skip_saving: true

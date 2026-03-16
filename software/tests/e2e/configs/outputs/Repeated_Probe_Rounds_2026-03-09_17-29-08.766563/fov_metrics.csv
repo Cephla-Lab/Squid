@@ -1,0 +1,4 @@
+fov_id,round_index,time_point,attempt,fov_index,status,error_message
+Region1_0000,0,0,1,0,FAILED,Focus lock verification failed before FOV capture (focus lock verification timeout after 5.0s)
+Region1_0001,0,0,1,1,FAILED,Focus lock verification failed before FOV capture (focus lock verification timeout after 5.0s)
+Region1_0000,1,0,1,0,FAILED,Focus lock verification failed before FOV capture (focus lock verification timeout after 5.0s)

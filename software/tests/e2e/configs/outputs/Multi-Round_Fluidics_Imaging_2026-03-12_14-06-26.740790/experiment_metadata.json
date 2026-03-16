@@ -1,0 +1,238 @@
+{
+  "experiment_id": "Multi-Round_Fluidics_Imaging_2026-03-12_14-06-26.740790",
+  "protocol": {
+    "author": "",
+    "defaults": {
+      "step_failure_policy": {
+        "max_attempts": 1,
+        "on_fail": "pause",
+        "retry_delay_s": 0.0
+      }
+    },
+    "description": "Three interleaved probe-delivery rounds with updated imaging recipes.",
+    "name": "Multi-Round Fluidics Imaging",
+    "output_directory": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs",
+    "resources": {
+      "fluidics_config_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/simulation_fluidics.json",
+      "fluidics_protocols": {},
+      "fluidics_protocols_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/test_fluidics_protocols.yaml",
+      "fov_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_4fov_grid.csv",
+      "imaging_protocols": {
+        "resource_files/protocols/fish_multichannel.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 405 nm Ex",
+                "z_offset_um": 0.0
+              },
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 638 nm Ex",
+                "z_offset_um": 0.0
+              },
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 730 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 5,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Three-channel z-stack used for interleaved rounds with continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "resource_files/protocols/fluorescence_405.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 405 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Reference 405 nm fluorescence imaging using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "resource_files/protocols/fluorescence_488_561.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 488 nm Ex",
+                "z_offset_um": 0.0
+              },
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 561 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Two-color 488/561 acquisition using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        }
+      }
+    },
+    "rounds": [
+      {
+        "metadata": {},
+        "name": "Round 1 Probe 1",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "wash",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "probe_1",
+            "step_type": "fluidics"
+          },
+          {
+            "output_label": "probe_1_reference",
+            "protocol": "resource_files/protocols/fluorescence_405.yaml",
+            "step_type": "imaging"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Round 2 Probe 2",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "strip_fluorophores",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "probe_2",
+            "step_type": "fluidics"
+          },
+          {
+            "output_label": "probe_2_dual_color",
+            "protocol": "resource_files/protocols/fluorescence_488_561.yaml",
+            "step_type": "imaging"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Round 3 Probe 3",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "strip_fluorophores",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "probe_3",
+            "step_type": "fluidics"
+          },
+          {
+            "output_label": "probe_3_multichannel",
+            "protocol": "resource_files/protocols/fish_multichannel.yaml",
+            "step_type": "imaging"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Final Wash",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "final_wash",
+            "step_type": "fluidics"
+          }
+        ]
+      }
+    ],
+    "version": "3.0"
+  },
+  "protocol_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/multi_round_fluidics_imaging.yaml",
+  "written_at": "2026-03-12T14:06:26.745213"
+}

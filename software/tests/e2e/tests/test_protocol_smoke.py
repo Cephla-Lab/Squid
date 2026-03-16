@@ -37,9 +37,8 @@ def test_protocol_smoke(
     sim.load_protocol(str(protocol_path))
 
     protocol = ProtocolLoader().load(str(protocol_path))
-    if protocol.total_imaging_steps() > 0 and protocol.fov_file is None and not protocol.fov_sets:
-        center = e2e_backend_ctx.get_stage_center()
-        sim.add_single_fov("region_1", x=center[0], y=center[1], z=center[2])
+    if protocol.total_imaging_steps() > 0 and protocol.fov_file is None:
+        pytest.fail(f"{protocol_path.name} is missing required resources.fov_file")
     expected_rounds = len(protocol.rounds)
     expected_round_dirs = protocol.total_imaging_steps()
 

@@ -62,15 +62,15 @@ class TestResourceFilePathsLoading:
         assert protocol.fov_file is not None
         assert Path(protocol.fov_file).is_absolute()
 
-    def test_fov_file_creates_default_fov_set(
+    def test_fov_file_resolves_without_alias(
         self, resource_file_paths_full_protocol: str
     ):
-        """Verify fov_file is added to fov_sets as 'default'."""
+        """Verify fov_file remains the only run-level FOV resource."""
         loader = ProtocolLoader()
         protocol = loader.load(resource_file_paths_full_protocol)
 
-        assert "default" in protocol.fov_sets
-        assert Path(protocol.fov_sets["default"]).exists()
+        assert protocol.fov_file is not None
+        assert Path(protocol.fov_file).exists()
 
     def test_all_resource_files_exist(
         self, resource_file_paths_full_protocol: str
@@ -111,7 +111,7 @@ class TestResourceFilePathsE2E:
         - file-path imaging protocol references in step protocol fields
         - fluidics_protocols_file: external fluidics protocols (auto-loaded)
         - fluidics_config_file: fluidics hardware config (validated)
-        - fov_file: FOV positions CSV (auto-loaded as 'default' fov_set)
+        - fov_file: run-level FOV positions CSV
         """
         sim = e2e_orchestrator
 

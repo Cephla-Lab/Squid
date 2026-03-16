@@ -56,10 +56,14 @@ class TestV2ProtocolSchema:
 
     def test_imaging_step(self):
         """Test V2 imaging step creation (references named config)."""
-        step = ImagingStep(protocol="fish_standard", fovs="main_grid")
+        step = ImagingStep(protocol="fish_standard")
         assert step.step_type == "imaging"
         assert step.protocol == "fish_standard"
-        assert step.fovs == "main_grid"
+
+    def test_imaging_step_rejects_fovs(self):
+        """Step-level FOV selection is no longer supported."""
+        with pytest.raises(ValueError, match="run-level resources\\.fov_file"):
+            ImagingStep(protocol="fish_standard", fovs="main_grid")
 
     def test_intervention_step(self):
         """Test intervention step creation."""
@@ -146,15 +150,11 @@ class TestV2ProtocolSchema:
             imaging_protocols={
                 "existing": ImagingProtocol(channels=["A"]),
             },
-            fov_sets={
-                "grid_a": "/path/to/grid_a.csv",
-            },
             rounds=[
                 Round(
                     name="Round 1",
                     steps=[
                         ImagingStep(protocol="missing_config"),  # Missing
-                        ImagingStep(protocol="existing", fovs="missing_fovs"),  # Missing
                         FluidicsStep(protocol="missing_protocol"),  # Missing
                     ],
                 ),
@@ -164,22 +164,22 @@ class TestV2ProtocolSchema:
         errors = protocol.validate_references()
         # FluidicsStep references are only validated when fluidics_protocols
         # dict is non-empty (they may be resolved externally), so we only
-        # expect the imaging protocol + FOV set errors here.
-        assert len(errors) == 2
+        # expect the missing imaging protocol error here.
+        assert len(errors) == 1
         assert any("missing_config" in e for e in errors)
-        assert any("missing_fovs" in e for e in errors)
 
-    def test_validate_references_allows_default_fovs(self):
-        """The reserved FOV alias 'default' should be accepted."""
+    def test_validate_references_ignore_run_level_fov_file(self):
+        """Run-level FOV selection is outside imaging-step reference validation."""
         protocol = ExperimentProtocol(
-            name="Default FOV Alias",
+            name="Run-Level FOV File",
             imaging_protocols={
                 "existing": ImagingProtocol(channels=["A"]),
             },
+            fov_file="/path/to/fovs.csv",
             rounds=[
                 Round(
                     name="Round 1",
-                    steps=[ImagingStep(protocol="existing", fovs="default")],
+                    steps=[ImagingStep(protocol="existing")],
                 ),
             ],
         )
@@ -557,8 +557,8 @@ rounds:
             with pytest.raises(ProtocolValidationError, match="not found"):
                 loader.load(protocol_path)
 
-    def test_fov_set_relative_path_resolution(self):
-        """Test that relative FOV set paths are made absolute."""
+    def test_fov_file_relative_path_resolution(self):
+        """Test that a relative run-level fov_file path is made absolute."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a dummy CSV file
             csv_path = Path(tmpdir) / "positions" / "main.csv"
@@ -573,15 +573,13 @@ imaging_protocols:
   standard:
     channels: [DAPI]
 
-fov_sets:
-  main_grid: positions/main.csv
+fov_file: positions/main.csv
 
 rounds:
   - name: Round 1
     steps:
       - step_type: imaging
         protocol: standard
-        fovs: main_grid
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -589,9 +587,8 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            # Path should be absolute now
-            assert Path(protocol.fov_sets["main_grid"]).is_absolute()
-            assert protocol.fov_sets["main_grid"] == str(csv_path)
+            assert Path(protocol.fov_file).is_absolute()
+            assert protocol.fov_file == str(csv_path)
 
     def test_repeat_preserves_metadata(self):
         """Test that repeat expansion preserves round metadata."""
@@ -757,7 +754,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: protocols/fish_standard.yaml
-        fovs: current
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -808,7 +804,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: nonexistent/proto.yaml
-        fovs: current
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -817,8 +812,8 @@ rounds:
             with pytest.raises(ProtocolValidationError, match="not found"):
                 loader.load(protocol_path)
 
-    def test_fov_file_added_to_fov_sets_as_default(self):
-        """Test that fov_file is added to fov_sets as 'default'."""
+    def test_fov_file_resolves_to_absolute_path(self):
+        """Test that fov_file is preserved without creating implicit aliases."""
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "positions.csv"
             csv_path.write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
@@ -838,7 +833,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: standard
-        fovs: default
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
@@ -846,24 +840,18 @@ rounds:
             loader = ProtocolLoader()
             protocol = loader.load(protocol_path)
 
-            assert "default" in protocol.fov_sets
-            assert Path(protocol.fov_sets["default"]).is_absolute()
-            assert protocol.fov_sets["default"] == str(csv_path)
+            assert Path(protocol.fov_file).is_absolute()
+            assert protocol.fov_file == str(csv_path)
 
-    def test_fov_file_does_not_overwrite_existing_default(self):
-        """Test that fov_file doesn't overwrite an existing 'default' fov_set."""
+    def test_fov_sets_are_rejected(self):
+        """Named FOV sets should fail validation."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            csv1 = Path(tmpdir) / "existing.csv"
-            csv1.write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
-
-            csv2 = Path(tmpdir) / "new.csv"
-            csv2.write_text("region,x (mm),y (mm)\nB,3.0,4.0\n")
+            csv_path = Path(tmpdir) / "existing.csv"
+            csv_path.write_text("region,x (mm),y (mm)\nA,1.0,2.0\n")
 
             protocol_content = """
-name: FOV No Overwrite Test
+name: Reject FOV Sets
 version: "2.0"
-
-fov_file: new.csv
 
 imaging_protocols:
   standard:
@@ -877,16 +865,13 @@ rounds:
     steps:
       - step_type: imaging
         protocol: standard
-        fovs: default
 """
             protocol_path = Path(tmpdir) / "protocol.yaml"
             protocol_path.write_text(protocol_content)
 
             loader = ProtocolLoader()
-            protocol = loader.load(protocol_path)
-
-            # Existing "default" entry should be preserved
-            assert protocol.fov_sets["default"] == str(csv1)
+            with pytest.raises(ProtocolValidationError, match="run-level .*fov_file"):
+                loader.load(protocol_path)
 
     def test_resource_paths_resolved_to_absolute(self):
         """Test that all resource file paths are resolved to absolute paths."""
@@ -1075,3 +1060,47 @@ class TestResolveProtocolChannels:
         # Original channel should not be mutated
         assert channel.camera_settings.exposure_time_ms == 100
         assert channel.illumination_settings.intensity == 50
+
+    def test_applies_channel_override_to_legacy_channel_mode(self):
+        """Test that overrides also work with legacy ChannelMode configs."""
+        from unittest.mock import MagicMock
+        from squid.backend.controllers.orchestrator.imaging_executor import (
+            resolve_protocol_channels,
+        )
+        from squid.core.utils.config_utils import ChannelMode
+
+        protocol = ImagingProtocol(
+            channels=[
+                ChannelConfigOverride(
+                    name="Cy5",
+                    exposure_time_ms=200,
+                    analog_gain=2,
+                    illumination_intensity=80,
+                    z_offset_um=1.5,
+                ),
+            ],
+        )
+
+        mock_service = MagicMock()
+        channel = ChannelMode(
+            id="5",
+            name="Cy5",
+            exposure_time=100,
+            analog_gain=1,
+            illumination_source=12,
+            illumination_intensity=50,
+            z_offset=0.0,
+        )
+        mock_service.get_channel_configuration_by_name.return_value = channel
+
+        result = resolve_protocol_channels(protocol, mock_service, "10X")
+        assert len(result) == 1
+        assert result[0].exposure_time == 200
+        assert result[0].analog_gain == 2
+        assert result[0].illumination_intensity == 80
+        assert result[0].z_offset == 1.5
+        # Original channel should not be mutated
+        assert channel.exposure_time == 100
+        assert channel.analog_gain == 1
+        assert channel.illumination_intensity == 50
+        assert channel.z_offset == 0.0

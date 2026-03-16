@@ -1,25 +1,17 @@
-"""
-E2E tests validating stage X/Y movement and piezo Z-stepping
-during orchestrator-driven acquisitions.
-
-These tests verify the full orchestrator → ImagingExecutor → MultiPointController
-→ MultiPointWorker → PositionController/ZStackExecutor path by monitoring
-actual hardware service calls.
-
-Key design insight validated here: the ImagingProtocol knows nothing about FOVs.
-FOVs come from ScanCoordinates (either pre-configured or loaded from protocol CSV).
-The protocol with `fovs: default` uses whatever is already in ScanCoordinates.
-"""
+"""E2E tests validating orchestrator-owned FOV plans and piezo z-stacks."""
 
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Sequence, Tuple
 
 import pytest
+import yaml
 
+from squid.core.events import ClearScanCoordinatesCommand, LoadScanCoordinatesCommand
 from tests.harness import BackendContext
 from tests.e2e.harness import OrchestratorSimulator
 
@@ -79,6 +71,59 @@ def install_movement_monitor(ctx: BackendContext) -> MovementRecord:
 
 
 SIMULATION_DIR = Path(__file__).parent.parent / "configs" / "simulation"
+PROTOCOLS_DIR = SIMULATION_DIR / "protocols"
+
+
+def _write_fov_csv(
+    tmp_path: Path,
+    rows: Sequence[Tuple[str, float, float, float]],
+) -> Path:
+    csv_path = tmp_path / "fovs.csv"
+    lines = ["region,x (mm),y (mm),z (mm)"]
+    lines.extend(f"{region},{x},{y},{z}" for region, x, y, z in rows)
+    csv_path.write_text("\n".join(lines) + "\n")
+    return csv_path
+
+
+def _write_protocol(
+    tmp_path: Path,
+    fov_csv_path: Path,
+    *,
+    imaging_protocol: Path = PROTOCOLS_DIR / "zstack_5plane.yaml",
+) -> Path:
+    protocol_path = tmp_path / "movement_protocol.yaml"
+    protocol = {
+        "name": "Movement Test",
+        "version": "3.0",
+        "resources": {"fov_file": str(fov_csv_path)},
+        "rounds": [
+            {
+                "name": "Movement Validation",
+                "steps": [
+                    {
+                        "step_type": "imaging",
+                        "protocol": str(imaging_protocol),
+                    }
+                ],
+            }
+        ],
+    }
+    protocol_path.write_text(yaml.safe_dump(protocol, sort_keys=False))
+    return protocol_path
+
+
+def _wait_for(
+    predicate,
+    *,
+    timeout_s: float = 5.0,
+    interval_s: float = 0.05,
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval_s)
+    return False
 
 
 @pytest.mark.e2e
@@ -90,22 +135,21 @@ class TestOrchestratorMovement:
         self,
         e2e_orchestrator: OrchestratorSimulator,
         e2e_backend_ctx: BackendContext,
+        tmp_path: Path,
     ):
-        """Verify stage moves to distinct X,Y positions for each FOV.
-
-        Uses fovs: default so the protocol respects pre-configured coordinates.
-        """
+        """Verify stage moves to the positions defined by the protocol FOV file."""
         sim = e2e_orchestrator
         record = install_movement_monitor(e2e_backend_ctx)
-
-        # Set up 3 FOVs at well-separated positions (within stage limits)
-        sim.add_single_fov("pos_A", x=20.0, y=20.0, z=0.5)
-        sim.add_single_fov("pos_B", x=30.0, y=20.0, z=0.5)
-        sim.add_single_fov("pos_C", x=20.0, y=30.0, z=0.5)
-
-        # Use protocol with fovs: default (uses ScanCoordinates, no CSV override)
-        protocol_path = str(SIMULATION_DIR / "movement_test.yaml")
-        sim.load_protocol(protocol_path)
+        csv_path = _write_fov_csv(
+            tmp_path,
+            [
+                ("pos_A", 20.0, 20.0, 0.5),
+                ("pos_B", 30.0, 20.0, 0.5),
+                ("pos_C", 20.0, 30.0, 0.5),
+            ],
+        )
+        protocol_path = _write_protocol(tmp_path, csv_path)
+        sim.load_protocol(str(protocol_path))
 
         result = sim.run_and_wait(timeout_s=60)
 
@@ -136,6 +180,7 @@ class TestOrchestratorMovement:
         self,
         e2e_orchestrator: OrchestratorSimulator,
         e2e_backend_ctx: BackendContext,
+        tmp_path: Path,
     ):
         """Verify piezo moves through z-stack levels at each FOV.
 
@@ -147,10 +192,9 @@ class TestOrchestratorMovement:
 
         # Single FOV to isolate z-stack behavior
         center = e2e_backend_ctx.get_stage_center()
-        sim.add_single_fov("center", x=center[0], y=center[1], z=center[2])
-
-        protocol_path = str(SIMULATION_DIR / "movement_test.yaml")
-        sim.load_protocol(protocol_path)
+        csv_path = _write_fov_csv(tmp_path, [("center", center[0], center[1], center[2])])
+        protocol_path = _write_protocol(tmp_path, csv_path)
+        sim.load_protocol(str(protocol_path))
 
         result = sim.run_and_wait(timeout_s=60)
 
@@ -177,17 +221,17 @@ class TestOrchestratorMovement:
         self,
         e2e_orchestrator: OrchestratorSimulator,
         e2e_backend_ctx: BackendContext,
+        tmp_path: Path,
     ):
         """Verify both X,Y movement AND z-stack stepping work together."""
         sim = e2e_orchestrator
         record = install_movement_monitor(e2e_backend_ctx)
-
-        # Two FOVs at different positions
-        sim.add_single_fov("left", x=20.0, y=30.0, z=0.5)
-        sim.add_single_fov("right", x=40.0, y=30.0, z=0.5)
-
-        protocol_path = str(SIMULATION_DIR / "movement_test.yaml")
-        sim.load_protocol(protocol_path)
+        csv_path = _write_fov_csv(
+            tmp_path,
+            [("left", 20.0, 30.0, 0.5), ("right", 40.0, 30.0, 0.5)],
+        )
+        protocol_path = _write_protocol(tmp_path, csv_path)
+        sim.load_protocol(str(protocol_path))
 
         result = sim.run_and_wait(timeout_s=60)
 
@@ -206,34 +250,49 @@ class TestOrchestratorMovement:
             f"got {len(record.piezo_moves)}: {record.piezo_moves}"
         )
 
-    def test_fov_csv_overrides_manual_coordinates(
+    def test_run_uses_detached_fov_snapshot_after_start(
         self,
         e2e_orchestrator: OrchestratorSimulator,
         e2e_backend_ctx: BackendContext,
+        tmp_path: Path,
     ):
-        """Verify that protocol with fov_sets CSV overrides manually set FOVs.
-
-        This documents the current behavior: when a protocol specifies
-        fov_sets and the imaging step references that set, the CSV file
-        is loaded into ScanCoordinates, replacing any manually configured FOVs.
-        """
+        """Mutating live ScanCoordinates after start must not change the run."""
         sim = e2e_orchestrator
         record = install_movement_monitor(e2e_backend_ctx)
+        csv_path = _write_fov_csv(
+            tmp_path,
+            [("left", 20.0, 30.0, 0.5), ("right", 40.0, 30.0, 0.5)],
+        )
+        protocol_path = _write_protocol(tmp_path, csv_path)
+        sim.load_protocol(str(protocol_path))
 
-        # Set manual FOVs at (20, 20) - these should be overridden by CSV
-        sim.add_single_fov("manual", x=20.0, y=20.0, z=0.5)
+        started = sim.start()
+        assert started is True
 
-        # Use protocol with fov_sets that loads a CSV
-        protocol_path = str(SIMULATION_DIR / "quick_multipoint.yaml")
-        sim.load_protocol(protocol_path)
+        assert _wait_for(lambda: bool(record.piezo_moves), timeout_s=10.0), (
+            "Acquisition did not begin z-stack stepping in time"
+        )
 
-        result = sim.run_and_wait(timeout_s=60)
+        e2e_backend_ctx.event_bus.publish(
+            ClearScanCoordinatesCommand(clear_displayed_fovs=True)
+        )
+        e2e_backend_ctx.event_bus.publish(
+            LoadScanCoordinatesCommand(
+                region_fov_coordinates={"mutated": ((55.0, 55.0, 0.5),)},
+                region_centers={"mutated": (55.0, 55.0, 0.5)},
+            )
+        )
 
-        assert result.success, f"Experiment failed: {result.error}"
+        start_time = time.monotonic()
+        while sim.orchestrator.is_running and time.monotonic() - start_time < 60.0:
+            time.sleep(0.1)
 
-        # The CSV has positions at (0,0), (0.5,0), (0,0.5), (0.5,0.5)
-        # These get clamped by simulated stage limits, but the point is
-        # that 20.0 should NOT appear in the moves (CSV overrode manual FOVs)
-        assert 20.0 not in set(round(x, 1) for x in record.stage_x_moves), (
-            "Manual FOV at X=20.0 was used despite protocol CSV override"
+        assert sim.orchestrator.state.name == "COMPLETED"
+
+        unique_x = set(round(x, 1) for x in record.stage_x_moves)
+        assert 20.0 in unique_x and 40.0 in unique_x, (
+            f"Expected the original protocol FOVs to run, got {unique_x}"
+        )
+        assert 55.0 not in unique_x, (
+            "Live ScanCoordinates mutation leaked into the active acquisition"
         )

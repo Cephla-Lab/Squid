@@ -7,7 +7,7 @@ and operator interventions.
 
 V2 Protocol Support:
     - Step-based rounds (FluidicsStep, ImagingStep, InterventionStep)
-    - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
+    - Named resources (fluidics_protocols, imaging_protocols, fov_file)
     - Configurable error handling per failure type
 """
 
@@ -87,7 +87,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
     V2 Protocol Model:
         - Rounds contain ordered steps (fluidics, imaging, intervention)
-        - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
+        - Named resources (fluidics_protocols, imaging_protocols, fov_file)
         - Configurable error handling per failure type
 
     State Machine (7 states):
@@ -186,6 +186,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         self._resume_state: Optional[OrchestratorState] = None
         self._current_operation: str = ""  # "initializing", "fluidics", "imaging", "intervention"
         self._protocol_path: Optional[str] = None
+        self._run_scan_coordinates: Optional["ScanCoordinates"] = None
 
         # Start-from parameters (set before starting experiment)
         self._start_from_round: int = 0
@@ -396,10 +397,20 @@ class OrchestratorController(StateMachine[OrchestratorState]):
 
             # Load protocol
             protocol = self._protocol_loader.load(cmd.protocol_path)
+            validation_scan_coordinates = self._resolve_protocol_scan_coordinates(
+                protocol,
+                require_for_imaging=False,
+            )
 
             validator = self._build_protocol_validator(protocol=protocol)
 
-            fov_count = self._current_fov_count(cmd.fov_count)
+            if cmd.fov_count > 0:
+                fov_count = cmd.fov_count
+            elif validation_scan_coordinates is not None:
+                region_fovs = getattr(validation_scan_coordinates, "region_fov_coordinates", {})
+                fov_count = sum(len(coords) for coords in region_fovs.values())
+            else:
+                fov_count = self._current_fov_count()
 
             # Validate
             summary = validator.validate(protocol, fov_count=fov_count)
@@ -494,8 +505,13 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 return False
 
         try:
+            self._run_scan_coordinates = None
             # Load protocol
             protocol = self._protocol_loader.load(protocol_path)
+            run_scan_coordinates = self._resolve_protocol_scan_coordinates(
+                protocol,
+                require_for_imaging=not acquire_current_fov,
+            )
             total_rounds = len(protocol.rounds)
             if total_rounds == 0:
                 _log.warning("Cannot start: protocol has no rounds")
@@ -536,7 +552,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Load fluidics protocols from protocol into FluidicsController
             self._initialize_fluidics_protocols()
 
-            # Auto-load resource files specified in the protocol
+            # Auto-load non-FOV resource files specified in the protocol
             self._auto_load_resources()
 
             if not acquire_current_fov:
@@ -547,8 +563,10 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                             "Cannot start: start_from_fov requires an imaging start step"
                         )
                         return False
-                    if self._scan_coordinates is not None:
-                        region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+                    if run_scan_coordinates is not None:
+                        region_fovs = getattr(
+                            run_scan_coordinates, "region_fov_coordinates", {}
+                        )
                         known_fov_total = 0
                         if isinstance(region_fovs, dict):
                             known_fov_total = sum(len(coords) for coords in region_fovs.values())
@@ -562,7 +580,16 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             # Run the same preflight used by the Validate flow.
             preflight = self._build_protocol_validator(protocol=self._protocol).validate(
                 self._protocol,
-                fov_count=1 if acquire_current_fov else self._current_fov_count(),
+                fov_count=1
+                if acquire_current_fov
+                else sum(
+                    len(coords)
+                    for coords in getattr(
+                        run_scan_coordinates, "region_fov_coordinates", {}
+                    ).values()
+                )
+                if run_scan_coordinates is not None
+                else self._current_fov_count(),
             )
             self._step_time_estimates = {}
             self._total_estimated_seconds = 0.0
@@ -606,6 +633,8 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 total_rounds=len(self._protocol.rounds),
                 started_at=datetime.now(),
             )
+            self._run_scan_coordinates = run_scan_coordinates
+            self._publish_run_scan_coordinates(self._run_scan_coordinates)
 
             # Start worker thread
             self._worker_thread = threading.Thread(
@@ -779,10 +808,16 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         return self.resolve_intervention("acknowledge")
 
     def resolve_intervention(self, action: str) -> bool:
-        """Resolve an intervention with a fixed operator action."""
-        if not self._is_in_state(OrchestratorState.WAITING_INTERVENTION):
-            return False
-        self._intervention_action = action
+        """Resolve an intervention with a fixed operator action.
+
+        Atomic: checks state and sets action under _lock to prevent a
+        concurrent transition from leaving a stale action on a non-intervention
+        state (RC-8).
+        """
+        with self._lock:
+            if self._state != OrchestratorState.WAITING_INTERVENTION:
+                return False
+            self._intervention_action = action
         self._intervention_resolved.set()
         return True
 
@@ -818,22 +853,75 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._current_operation = operation
 
     def _consume_intervention_action(self) -> str:
-        """Consume the most recent intervention action and reset to acknowledge."""
-        action = self._intervention_action
-        self._intervention_action = "acknowledge"
+        """Consume the most recent intervention action and reset to acknowledge.
+
+        Thread-safe: acquires _lock to synchronize with resolve_intervention
+        which sets _intervention_action on the EventBus thread (RC-1).
+        """
+        with self._lock:
+            action = self._intervention_action
+            self._intervention_action = "acknowledge"
         return action
 
     def _current_fov_count(self, requested_fov_count: int = 0) -> int:
         """Resolve the effective FOV count for validation and ETA."""
         if requested_fov_count > 0:
             return requested_fov_count
-        if self._scan_coordinates is not None:
-            region_fovs = getattr(self._scan_coordinates, "region_fov_coordinates", {})
+        active_scan_coordinates = self._run_scan_coordinates or self._scan_coordinates
+        if active_scan_coordinates is not None:
+            region_fovs = getattr(active_scan_coordinates, "region_fov_coordinates", {})
             if isinstance(region_fovs, dict):
                 total = sum(len(coords) for coords in region_fovs.values())
                 if total > 0:
                     return total
         return 1
+
+    def _resolve_protocol_scan_coordinates(
+        self,
+        protocol: ExperimentProtocol,
+        *,
+        require_for_imaging: bool,
+    ) -> Optional["ScanCoordinates"]:
+        """Resolve the run-level FOV plan into a detached ScanCoordinates snapshot."""
+        if protocol.total_imaging_steps() == 0:
+            return None
+        if not protocol.fov_file:
+            if require_for_imaging:
+                raise RuntimeError(
+                    "Imaging protocols require resources.fov_file unless the run "
+                    "is explicitly started in current-position mode."
+                )
+            return None
+
+        template_scan_coordinates = self._scan_coordinates or getattr(
+            self._multipoint, "scanCoordinates", None
+        )
+        if template_scan_coordinates is None:
+            raise RuntimeError("ScanCoordinates service is unavailable")
+
+        region_fov_coordinates, region_centers = protocol_helpers.parse_fov_set(protocol.fov_file)
+        return protocol_helpers.create_detached_scan_coordinates(
+            region_fov_coordinates,
+            region_centers,
+            template_scan_coordinates,
+        )
+
+    def _publish_run_scan_coordinates(
+        self,
+        scan_coordinates: Optional["ScanCoordinates"],
+    ) -> None:
+        """Publish the active run FOV plan so the GUI mirrors backend state."""
+        if scan_coordinates is None:
+            return
+        region_fov_coordinates, region_centers = protocol_helpers.scan_coordinates_payload(
+            scan_coordinates
+        )
+        protocol_helpers.publish_scan_coordinates(
+            self._event_bus,
+            region_fov_coordinates,
+            region_centers,
+            clear_existing=True,
+        )
 
     def _build_protocol_validator(
         self,
@@ -951,8 +1039,9 @@ class OrchestratorController(StateMachine[OrchestratorState]):
     def _auto_load_resources(self) -> None:
         """Auto-load resource files specified in the protocol.
 
-        Loads fluidics protocols, FOV positions, and validates fluidics config
-        when paths are provided in the protocol YAML.
+        Loads fluidics protocols and validates fluidics config when paths are
+        provided in the protocol YAML. FOV loading is handled separately as a
+        run-local snapshot so execution does not depend on shared GUI state.
         """
         if self._protocol is None:
             return
@@ -978,14 +1067,6 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                     f"Fluidics config file not found: {config_path}"
                 )
             _log.info(f"Fluidics config file validated: {config_path}")
-
-        # Load FOV file into scan coordinates
-        if self._protocol.fov_file:
-            protocol_helpers.load_fov_set(
-                csv_path=self._protocol.fov_file,
-                scan_coordinates=self._scan_coordinates,
-                event_bus=self._event_bus,
-            )
 
     # ========================================================================
     # Worker Thread
@@ -1051,7 +1132,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
                 progress_lock=self._progress_lock,
                 imaging_executor=self._imaging_executor,
                 fluidics_controller=self._fluidics_controller,
-                scan_coordinates=self._scan_coordinates,
+                scan_coordinates=self._run_scan_coordinates,
                 experiment_manager=self._experiment_manager,
                 experiment_context=self._context,
                 protocol_path=self._protocol_path,
@@ -1104,6 +1185,7 @@ class OrchestratorController(StateMachine[OrchestratorState]):
             self._context = None
             self._worker_thread = None
             self._resume_checkpoint = None
+            self._run_scan_coordinates = None
 
     # ========================================================================
     # Progress and Checkpoint
@@ -1135,7 +1217,12 @@ class OrchestratorController(StateMachine[OrchestratorState]):
         ckpt.save_checkpoint(checkpoint, self._experiment_path)
 
     def _publish_progress(self) -> None:
-        """Publish progress event."""
+        """Publish progress event.
+
+        Threading: captures _runner locally to avoid repeated attribute
+        access. The worker thread sets _runner = None in its finally block,
+        but the local reference remains valid until this method returns (RC-10).
+        """
         runner = self._runner
         timing = runner.get_timing_snapshot() if runner is not None else {
             "elapsed_seconds": self._progress.elapsed_seconds,

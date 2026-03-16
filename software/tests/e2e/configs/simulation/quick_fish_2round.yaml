@@ -11,8 +11,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fov_sets:
-  main: ../fov_positions/test_2fov_simple.csv
+fov_file: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   # Round 1: Hybridization 1
@@ -22,7 +21,6 @@ rounds:
         protocol: hybridization_1
       - step_type: imaging
         protocol: protocols/fish_imaging.yaml
-        fovs: main
 
   # Round 2: Hybridization 2
   - name: "Hybridization 2"
@@ -31,4 +29,3 @@ rounds:
         protocol: hybridization_2
       - step_type: imaging
         protocol: protocols/fish_imaging.yaml
-        fovs: main

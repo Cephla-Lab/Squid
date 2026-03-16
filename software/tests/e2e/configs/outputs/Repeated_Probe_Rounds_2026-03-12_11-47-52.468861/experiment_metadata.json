@@ -1,0 +1,131 @@
+{
+  "experiment_id": "Repeated_Probe_Rounds_2026-03-12_11-47-52.468861",
+  "protocol": {
+    "author": "",
+    "defaults": {
+      "step_failure_policy": {
+        "max_attempts": 1,
+        "on_fail": "pause",
+        "retry_delay_s": 0.0
+      }
+    },
+    "description": "Three repeated fluidics/imaging rounds with automatic resource loading.",
+    "name": "Repeated Probe Rounds",
+    "output_directory": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs",
+    "resources": {
+      "fluidics_config_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/simulation_fluidics.json",
+      "fluidics_protocols": {},
+      "fluidics_protocols_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/test_fluidics_protocols.yaml",
+      "fov_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_2fov_simple.csv",
+      "fov_sets": {
+        "default": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_2fov_simple.csv"
+      },
+      "imaging_protocols": {
+        "resource_files/protocols/fluorescence_405.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Reference 405 nm fluorescence imaging using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        }
+      }
+    },
+    "rounds": [
+      {
+        "metadata": {},
+        "name": "Probe Round 1",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_1",
+            "step_type": "fluidics"
+          },
+          {
+            "fovs": "default",
+            "protocol": "resource_files/protocols/fluorescence_405.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "wash",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Probe Round 2",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_2",
+            "step_type": "fluidics"
+          },
+          {
+            "fovs": "default",
+            "protocol": "resource_files/protocols/fluorescence_405.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "wash",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Probe Round 3",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_3",
+            "step_type": "fluidics"
+          },
+          {
+            "fovs": "default",
+            "protocol": "resource_files/protocols/fluorescence_405.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "wash",
+            "step_type": "fluidics"
+          }
+        ]
+      }
+    ],
+    "version": "3.0"
+  },
+  "protocol_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/v2_repeated.yaml",
+  "written_at": "2026-03-12T11:47:52.471617"
+}

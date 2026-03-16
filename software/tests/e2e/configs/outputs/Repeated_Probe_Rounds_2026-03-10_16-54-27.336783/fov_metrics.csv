@@ -1,0 +1,5 @@
+fov_id,round_index,time_point,attempt,fov_index,status,error_message
+Region1_0000,0,0,1,0,COMPLETED,
+Region1_0001,0,0,1,1,COMPLETED,
+Region1_0000,1,0,1,0,COMPLETED,
+Region1_0000,1,0,1,0,RUNNING,

@@ -1,0 +1,14 @@
+{
+  "average_lock_quality": 0.0,
+  "fraction_good_readings": 0.0,
+  "max_abs_z_error_um": 0.0,
+  "max_drift_rate_um_per_s": 0.0,
+  "min_spot_snr": 0.0,
+  "p95_abs_z_error_um": 0.0,
+  "p95_rms_error_um": 0.0,
+  "round_index": 0,
+  "round_name": "Round 1",
+  "status_durations_s": {},
+  "status_transition_counts": {},
+  "warning_counts": {}
+}

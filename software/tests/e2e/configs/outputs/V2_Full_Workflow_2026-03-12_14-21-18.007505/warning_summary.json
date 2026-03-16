@@ -1,0 +1,11 @@
+{
+  "affected_rounds": {
+    "FOCUS": [
+      "Round 1",
+      "Round 2"
+    ]
+  },
+  "warning_counts": {
+    "FOCUS:MEDIUM": 8
+  }
+}

@@ -15,7 +15,6 @@ rounds:
         protocol: probe_1_hybridization
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405.yaml
-        fovs: default
   - name: "Strip After Round 1"
     steps:
       - step_type: fluidics
@@ -26,7 +25,6 @@ rounds:
         protocol: probe_2_hybridization
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_488_561.yaml
-        fovs: default
   - name: "Final Wash"
     steps:
       - step_type: fluidics

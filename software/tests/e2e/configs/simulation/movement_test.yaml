@@ -1,10 +1,11 @@
 # Movement validation test protocol
-# Uses fovs: default so it respects pre-configured ScanCoordinates
-# (does NOT load FOVs from CSV - uses whatever the test sets up)
+# Uses a run-level FOV file so the backend owns the acquisition plan.
 
 name: "Movement Test"
 version: "2.0"
 description: "Validates stage X/Y movement and piezo Z-stepping"
+
+fov_file: ../fov_positions/test_4fov_grid.csv
 
 error_handling:
   focus_failure: skip
@@ -16,4 +17,3 @@ rounds:
     steps:
       - step_type: imaging
         protocol: protocols/zstack_5plane.yaml
-        fovs: default

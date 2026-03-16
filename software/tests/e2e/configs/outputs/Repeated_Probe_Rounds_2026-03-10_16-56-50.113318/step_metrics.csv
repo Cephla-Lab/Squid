@@ -1,0 +1,10 @@
+experiment_id,round_index,step_index,step_type,estimated_seconds,attempt,duration_seconds,success,error
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,0,0,fluidics,121.0,1,3.191782332956791,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,0,1,imaging,5.9,1,4.307677792035975,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,0,2,fluidics,300.0,1,2.14953404199332,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,1,0,fluidics,121.0,1,3.173286582925357,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,1,1,imaging,5.9,1,3.9846324590034783,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,1,2,fluidics,300.0,1,2.1702890830347314,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,2,0,fluidics,121.0,1,3.162612709100358,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,2,1,imaging,5.9,1,3.6917551670921966,True,
+Repeated_Probe_Rounds_2026-03-10_16-56-50.113318,2,2,fluidics,300.0,1,2.151219708030112,True,

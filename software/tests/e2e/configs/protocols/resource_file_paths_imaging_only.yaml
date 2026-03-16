@@ -12,9 +12,7 @@ rounds:
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/bf_quick.yaml
-        fovs: default
   - name: "Override Imaging Pass"
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405_fast.yaml
-        fovs: default

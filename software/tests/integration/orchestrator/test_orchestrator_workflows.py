@@ -125,6 +125,17 @@ def event_collector(backend_ctx: BackendContext):
     yield events
 
 
+def _write_run_fov_file(tmp_path, rows: Optional[list[tuple[str, float, float, float]]] = None) -> str:
+    """Create a run-level FOV CSV for orchestrator imaging tests."""
+    csv_path = tmp_path / "run_fovs.csv"
+    fov_rows = rows or [("region_0", 20.0, 20.0, 1.0)]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["region", "x (mm)", "y (mm)", "z (mm)"])
+        writer.writerows(fov_rows)
+    return str(csv_path)
+
+
 # =============================================================================
 # Protocol Fixtures
 # =============================================================================
@@ -140,6 +151,7 @@ def single_imaging_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Single Imaging",
         "version": "2.0",
         "description": "Single imaging round",
+        "resources": {"fov_file": _write_run_fov_file(tmp_path)},
         "imaging_protocols": {
             "standard": {
                 "channels": [channel],
@@ -175,6 +187,7 @@ def single_imaging_protocol_abort(tmp_path, backend_ctx: BackendContext) -> str:
         "version": "2.0",
         "description": "Single imaging round (abort on imaging failure)",
         "error_handling": {"imaging_failure": "abort"},
+        "resources": {"fov_file": _write_run_fov_file(tmp_path)},
         "imaging_protocols": {
             "standard": {
                 "channels": [channel],
@@ -209,6 +222,7 @@ def multi_round_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Multi Round",
         "version": "2.0",
         "description": "Multi-round experiment",
+        "resources": {"fov_file": _write_run_fov_file(tmp_path)},
         "imaging_protocols": {
             "standard": {
                 "channels": [channel],
@@ -251,6 +265,7 @@ def intervention_protocol(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Intervention Protocol",
         "version": "2.0",
         "description": "Protocol with intervention",
+        "resources": {"fov_file": _write_run_fov_file(tmp_path)},
         "imaging_protocols": {
             "standard": {
                 "channels": [channel],
@@ -336,7 +351,8 @@ def mock_fluidics_controller():
     """Create a mock fluidics controller that completes immediately."""
     mock = MagicMock(spec=FluidicsController)
     mock.run_protocol.return_value = True
-    mock.list_protocols.return_value = []
+    mock.estimate_protocol_duration.return_value = None
+    mock.list_protocols.return_value = ["test_incubate", "test_prime", "test_stain"]
     from squid.backend.controllers.fluidics_controller import FluidicsControllerState
 
     mock.state = FluidicsControllerState.COMPLETED
@@ -394,7 +410,7 @@ def mock_acquisition_planner(backend_ctx: BackendContext):
     mock = MagicMock()
     mock.get_available_channel_names.return_value = set(
         backend_ctx.get_available_channels()
-    )
+    ) | {"BF"}
     return mock
 
 
@@ -434,6 +450,15 @@ def imaging_protocol_skip_saving(tmp_path, backend_ctx: BackendContext) -> str:
         "name": "Fast Imaging",
         "version": "2.0",
         "description": "Single imaging round (skip saving)",
+        "resources": {
+            "fov_file": _write_run_fov_file(
+                tmp_path,
+                rows=[
+                    ("region_0", 20.0, 20.0, 1.0),
+                    ("region_0", 30.0, 20.0, 1.0),
+                ],
+            )
+        },
         "imaging_protocols": {
             "fast": {
                 "channels": [channel],
@@ -475,7 +500,6 @@ def real_orchestrator(backend_ctx: BackendContext):
     imaging_executor = ImagingExecutor(
         event_bus=backend_ctx.event_bus,
         multipoint_controller=backend_ctx.multipoint_controller,
-        scan_coordinates=backend_ctx.scan_coordinates,
     )
     fluidics_controller = FluidicsController(event_bus=backend_ctx.event_bus)
 
@@ -664,11 +688,6 @@ class TestEndToEndImaging:
         """Test real imaging round emits FOV events and writes coordinates with fov_id."""
         orchestrator = real_orchestrator
 
-        x_mm, y_mm, z_mm = backend_ctx.get_stage_center()
-        backend_ctx.scan_coordinates.add_flexible_region(
-            "region_1", x_mm, y_mm, z_mm, Nx=2, Ny=1, overlap_percent=0.0
-        )
-
         monitor = backend_ctx.event_monitor
         monitor.subscribe(FovTaskStarted, FovTaskCompleted, AcquisitionFinished)
 
@@ -725,11 +744,6 @@ class TestEndToEndImaging:
     ):
         """Test that pause requests do not interrupt an active FOV."""
         orchestrator = real_orchestrator
-
-        x_mm, y_mm, z_mm = backend_ctx.get_stage_center()
-        backend_ctx.scan_coordinates.add_flexible_region(
-            "region_1", x_mm, y_mm, z_mm, Nx=2, Ny=1, overlap_percent=0.0
-        )
 
         monitor = backend_ctx.event_monitor
         monitor.subscribe(FovTaskStarted, FovTaskCompleted)
@@ -794,9 +808,6 @@ class TestEndToEndImaging:
     ):
         """Test that autofocus failure raises a warning with FOV context."""
         orchestrator = real_orchestrator
-
-        x_mm, y_mm, z_mm = backend_ctx.get_stage_center()
-        backend_ctx.scan_coordinates.add_single_fov_region("region_1", x_mm, y_mm, z_mm)
 
         from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
 
@@ -1185,6 +1196,7 @@ class TestV2ProtocolIntegration:
         protocol_dict = {
             "name": "Repeat Protocol",
             "version": "2.0",
+            "resources": {"fov_file": _write_run_fov_file(tmp_path)},
             "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],
@@ -1250,6 +1262,7 @@ class TestV2ProtocolIntegration:
         protocol_dict = {
             "name": "File Reference Protocol",
             "version": "2.0",
+            "resources": {"fov_file": _write_run_fov_file(tmp_path)},
             "imaging_protocols": {
                 "standard": {"file": imaging_config_path.name},
             },
@@ -1288,7 +1301,7 @@ class TestV2ProtocolIntegration:
         backend_ctx: BackendContext,
         tmp_path,
     ):
-        """Verify imaging steps with fov_sets load coordinates."""
+        """Verify run-level fov_file is published to the live scan system."""
         csv_path = tmp_path / "fovs.csv"
         csv_path.write_text("region,x (mm),y (mm)\nregion_1,0,0\n")
 
@@ -1302,7 +1315,7 @@ class TestV2ProtocolIntegration:
                     "focus": {"enabled": False},
                 }
             },
-            "fov_sets": {"grid": str(csv_path)},
+            "resources": {"fov_file": str(csv_path)},
             "rounds": [
                 {
                     "name": "Imaging",
@@ -1310,14 +1323,13 @@ class TestV2ProtocolIntegration:
                         {
                             "step_type": "imaging",
                             "protocol": "standard",
-                            "fovs": "grid",
                         }
                     ],
                 }
             ],
         }
 
-        protocol_path = tmp_path / "fov_set_protocol.yaml"
+        protocol_path = tmp_path / "fov_file_protocol.yaml"
         import yaml
 
         with open(protocol_path, "w") as f:
@@ -1354,6 +1366,7 @@ class TestV2ProtocolIntegration:
             "name": "Warn Imaging Failure",
             "version": "2.0",
             "error_handling": {"imaging_failure": "warn"},
+            "resources": {"fov_file": _write_run_fov_file(tmp_path)},
             "imaging_protocols": {
                 "standard": {
                     "channels": ["BF"],

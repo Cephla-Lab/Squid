@@ -1,0 +1,9 @@
+timestamp_monotonic,event_type,round_index,round_name,fov_index,total_fovs,status,lock_buffer_fill,lock_buffer_length,warning_type,message,z_error_um,z_position_um,spot_snr,z_error_rms_um,drift_rate_um_per_s,correlation,lock_quality,direction,position_um,limit_um,margin_um
+811658.10316925,metrics,2,Round 3,,0,,,,,,0.0,150.0,98.387838001791,0.0,0.04123896178809698,nan,1.0,,,,
+811658.123659291,status,2,Round 3,,0,paused,5,5,,,,,,,,,,,,,
+811658.883867625,status,2,Round 3,0,2,locked,5,5,,,,,,,,,,,,,
+811658.943129791,status,2,Round 3,0,2,paused,5,5,,,,,,,,,,,,,
+811659.106221833,metrics,2,Round 3,1,2,,,,,,0.0,150.0,98.387838001791,0.0,0.04816390024072506,nan,1.0,,,,
+811659.369886166,status,2,Round 3,1,2,locked,5,5,,,,,,,,,,,,,
+811660.233608458,metrics,2,Round 3,1,2,,,,,,0.0,150.0,98.387838001791,0.0,0.046695421350970316,nan,1.0,,,,
+811661.28616125,metrics,2,Round 3,1,2,,,,,,0.0,150.0,98.387838001791,0.0,0.046154505412163115,nan,1.0,,,,

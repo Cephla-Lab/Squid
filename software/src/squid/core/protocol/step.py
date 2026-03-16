@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from squid.core.protocol.imaging_protocol import CapturePolicyConfig, FocusGateConfig, FocusLockConfig
 
@@ -70,16 +70,26 @@ class FluidicsStep(BaseModel):
 
 
 class ImagingStep(BaseModel):
-    """Execute a named imaging protocol on a named FOV set."""
+    """Execute a named imaging protocol."""
 
     step_type: Literal["imaging"] = "imaging"
     protocol: str = ""
-    fovs: str = "current"
     label: Optional[str] = None
     output_label: Optional[str] = None
     focus_gate_override: Optional[PartialFocusGateOverride] = None
     capture_policy_override: Optional[PartialCapturePolicyOverride] = None
     failure_policy: Optional[StepFailurePolicy] = None
+    pause_for_review: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_fovs_field(cls, data: object) -> object:
+        if isinstance(data, dict) and "fovs" in data:
+            raise ValueError(
+                "ImagingStep.fovs is no longer supported; use the orchestrator "
+                "protocol's run-level resources.fov_file instead."
+            )
+        return data
 
 
 class InterventionStep(BaseModel):

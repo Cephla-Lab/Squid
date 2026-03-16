@@ -1459,6 +1459,32 @@ class SetAcquisitionParametersCommand(Event):
 
 
 @dataclass
+class ApplyImagingProtocolCommand(Event):
+    """Command to apply an imaging protocol to the acquisition setup GUI.
+
+    Published by the orchestrator / ImagingExecutor so that the GUI reflects
+    the protocol that the backend is about to execute.
+    """
+
+    protocol: Any  # ImagingProtocol — typed as Any to avoid circular imports
+
+
+@dataclass
+class RequestImagingProtocolReadback(Event):
+    """Request AcquisitionSetupWidget to build and return its current ImagingProtocol."""
+
+    request_id: str
+
+
+@dataclass
+class ImagingProtocolReadbackReady(Event):
+    """Response with the GUI-built ImagingProtocol."""
+
+    request_id: str
+    protocol: Any  # ImagingProtocol
+
+
+@dataclass
 class SetAcquisitionPathCommand(Event):
     """Command to set acquisition save path."""
 

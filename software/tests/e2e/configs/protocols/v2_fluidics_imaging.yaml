@@ -15,4 +15,3 @@ rounds:
         protocol: wash
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_488_561.yaml
-        fovs: default

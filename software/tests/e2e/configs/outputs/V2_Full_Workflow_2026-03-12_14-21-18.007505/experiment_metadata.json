@@ -1,0 +1,259 @@
+{
+  "experiment_id": "V2_Full_Workflow_2026-03-12_14-21-18.007505",
+  "protocol": {
+    "author": "",
+    "defaults": {
+      "step_failure_policy": {
+        "max_attempts": 1,
+        "on_fail": "pause",
+        "retry_delay_s": 0.0
+      }
+    },
+    "description": "Comprehensive self-loading workflow covering fluidics, imaging, repeats, overrides, and intervention.",
+    "name": "V2 Full Workflow",
+    "output_directory": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs",
+    "resources": {
+      "fluidics_config_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/simulation_fluidics.json",
+      "fluidics_protocols": {},
+      "fluidics_protocols_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/test_fluidics_protocols.yaml",
+      "fov_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_2fov_simple.csv",
+      "imaging_protocols": {
+        "resource_files/protocols/fish_multichannel.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 405 nm Ex",
+                "z_offset_um": 0.0
+              },
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 638 nm Ex",
+                "z_offset_um": 0.0
+              },
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 730 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 15,
+              "step_um": 1.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Three-channel z-stack used for interleaved rounds with continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "resource_files/protocols/fluorescence_405.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 405 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 15,
+              "step_um": 1.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Reference 405 nm fluorescence imaging using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "resource_files/protocols/qc_single_plane.yaml": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              {
+                "exposure_time_ms": 200.0,
+                "name": "Fluorescence 405 nm Ex",
+                "z_offset_um": 0.0
+              }
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Fast one-plane QC snapshot.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        }
+      }
+    },
+    "rounds": [
+      {
+        "metadata": {},
+        "name": "Setup",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "initial_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "message": "Verify the sample is mounted, centered, and safe to continue.",
+            "require_ack": true,
+            "step_type": "intervention"
+          },
+          {
+            "output_label": "setup_reference",
+            "protocol": "resource_files/protocols/fluorescence_405.yaml",
+            "step_type": "imaging"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Hybridization Round 1",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_hybridize_1",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "stringent_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "capture_policy_override": {
+              "max_capture_attempts": 2,
+              "retry_delay_s": 0.1
+            },
+            "focus_gate_override": {
+              "max_focus_attempts": 3
+            },
+            "protocol": "resource_files/protocols/fish_multichannel.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "strip",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Hybridization Round 2",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_hybridize_2",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "stringent_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "capture_policy_override": {
+              "max_capture_attempts": 2,
+              "retry_delay_s": 0.1
+            },
+            "focus_gate_override": {
+              "max_focus_attempts": 3
+            },
+            "protocol": "resource_files/protocols/fish_multichannel.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "strip",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Final QC",
+        "steps": [
+          {
+            "protocol": "resource_files/protocols/qc_single_plane.yaml",
+            "step_type": "imaging"
+          },
+          {
+            "message": "Review the run summary and image quality before closing out the session.",
+            "require_ack": true,
+            "step_type": "intervention"
+          }
+        ]
+      }
+    ],
+    "version": "3.0"
+  },
+  "protocol_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/v2_full.yaml",
+  "written_at": "2026-03-12T14:21:18.014012"
+}

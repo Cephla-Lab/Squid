@@ -1,9 +1,10 @@
 description: "FISH imaging configuration"
 channels:
-  - "Fluorescence 488 nm Ex"
+  - name: "Fluorescence 488 nm Ex"
+    exposure_time_ms: 200.0
 z_stack:
-  planes: 7
-  step_um: 5.0
+  planes: 15
+  step_um: 1.5
 focus:
   enabled: false
 skip_saving: true

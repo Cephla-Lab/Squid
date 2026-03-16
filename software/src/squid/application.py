@@ -551,7 +551,6 @@ class ApplicationContext:
         imaging_executor = ImagingExecutor(
             event_bus=event_bus,
             multipoint_controller=multipoint,
-            scan_coordinates=scan_coordinates,
         )
 
         # Create fluidics controller

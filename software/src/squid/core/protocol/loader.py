@@ -85,7 +85,7 @@ class ProtocolLoader:
     """Loads and validates V2 experiment protocols from YAML files.
 
     V2 protocols support:
-    - Named resources (fluidics_protocols, imaging_protocols, fov_sets)
+    - Named resources (fluidics_protocols, imaging_protocols)
     - Step-based rounds with discriminated union step types
     - Repeat expansion with {i} substitution
     - External file references for resources
@@ -276,7 +276,6 @@ class ProtocolLoader:
             "fluidics_protocols",
             "fluidics_protocols_file",
             "fluidics_config_file",
-            "fov_sets",
             "fov_file",
         ):
             if field in data:
@@ -287,6 +286,12 @@ class ProtocolLoader:
                         f"Ignoring top-level '{field}' — already defined in resources block"
                     )
                     data.pop(field)
+
+        if "fov_sets" in data or "fov_sets" in resources:
+            raise ProtocolValidationError(
+                "Named FOV sets are no longer supported; use a single run-level "
+                "resources.fov_file."
+            )
 
         # Resolve imaging_protocols with file: references (inline dict with file key)
         for name, config in list(resources.get("imaging_protocols", {}).items()):
@@ -310,11 +315,6 @@ class ProtocolLoader:
                 with open(file_path, "r") as f:
                     resources.setdefault("fluidics_protocols", {})[name] = yaml.safe_load(f)
 
-        # Make FOV set paths absolute
-        for name, csv_path in list(resources.get("fov_sets", {}).items()):
-            if csv_path and not Path(csv_path).is_absolute():
-                resources.setdefault("fov_sets", {})[name] = str(protocol_dir / csv_path)
-
         # Resolve resource file paths to absolute
         for field in ("fluidics_protocols_file", "fluidics_config_file", "fov_file"):
             val = resources.get(field)
@@ -328,13 +328,6 @@ class ProtocolLoader:
                 expanded_output = protocol_dir / expanded_output
             data["output_directory"] = str(expanded_output)
 
-        # If fov_file is set, add to fov_sets as "default" (without overwriting existing entries)
-        fov_file = resources.get("fov_file")
-        if fov_file:
-            fov_sets = resources.setdefault("fov_sets", {})
-            if "default" not in fov_sets:
-                fov_sets["default"] = fov_file
-
         # Resolve imaging protocol file-path references from ImagingStep.protocol fields.
         # Each imaging step's ``protocol`` value is a relative file path (e.g.
         # ``protocols/fluorescence_405.yaml``).  We load the file, register it
@@ -345,6 +338,11 @@ class ProtocolLoader:
             for step in round_def.get("steps", []):
                 if step.get("step_type") != "imaging":
                     continue
+                if "fovs" in step:
+                    raise ProtocolValidationError(
+                        "ImagingStep.fovs is no longer supported; use the "
+                        "orchestrator protocol's run-level resources.fov_file."
+                    )
                 proto_ref = step.get("protocol")
                 if not proto_ref or proto_ref in imaging_protocols:
                     continue
@@ -370,8 +368,7 @@ class ProtocolLoader:
 
         Substitution applies to:
         - Round name field
-        - Step protocol references (FluidicsStep)
-        - Step protocol and fovs references (ImagingStep)
+        - Step protocol references (FluidicsStep and ImagingStep)
 
         Args:
             data: Protocol data with potential repeat fields

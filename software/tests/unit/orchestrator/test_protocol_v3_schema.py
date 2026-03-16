@@ -19,6 +19,7 @@ from squid.core.protocol import (
     FluidicsStep,
     InterventionStep,
     ProtocolLoader,
+    ProtocolValidationError,
     ImagingAcquisitionConfig,
     ZStackConfig,
     FocusGateConfig,
@@ -107,7 +108,7 @@ class TestV3LoaderRoundtrip:
             rounds=[
                 Round(
                     name="Reference",
-                    steps=[ImagingStep(protocol="fish", fovs="default")],
+                    steps=[ImagingStep(protocol="fish")],
                 ),
             ],
         )
@@ -189,7 +190,6 @@ class TestV3ResourcesBlock:
                     steps:
                       - step_type: imaging
                         protocol: protocols/fish_standard.yaml
-                        fovs: current
             """)
             protocol_path = os.path.join(tmpdir, "protocol.yaml")
             with open(protocol_path, "w") as f:
@@ -203,7 +203,7 @@ class TestV3ResourcesBlock:
             assert resolved.get_channel_names() == ["DAPI", "Cy5"]
 
     def test_resources_block_fov_file(self):
-        """fov_file under resources: should be resolved to fov_sets['default']."""
+        """fov_file under resources: should resolve to an absolute run-level path."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create FOV CSV
             fov_csv = "region_id,fov_id,x_mm,y_mm,z_um\nregion_1,fov_1,1.0,2.0,0.0\n"
@@ -225,7 +225,6 @@ class TestV3ResourcesBlock:
                     steps:
                       - step_type: imaging
                         protocol: s
-                        fovs: default
             """)
             protocol_path = os.path.join(tmpdir, "protocol.yaml")
             with open(protocol_path, "w") as f:
@@ -234,8 +233,8 @@ class TestV3ResourcesBlock:
             loader = ProtocolLoader()
             loaded = loader.load(protocol_path)
 
-            assert "default" in loaded.fov_sets
-            assert loaded.fov_sets["default"].endswith("positions.csv")
+            assert loaded.fov_file is not None
+            assert loaded.fov_file.endswith("positions.csv")
 
 
 class TestV3ValidateReferences:
@@ -261,26 +260,6 @@ class TestV3ValidateReferences:
         assert len(errors) >= 1
         assert any("does_not_exist" in e for e in errors)
 
-    def test_missing_fov_set_detected(self):
-        protocol = ExperimentProtocol(
-            name="fov_ref_test",
-            version="3.0",
-            imaging_protocols={
-                "s": ImagingProtocol(
-                    acquisition=ImagingAcquisitionConfig(channels=["DAPI"])
-                ),
-            },
-            fov_sets={"grid_a": "/path/to/grid_a.csv"},
-            rounds=[
-                Round(
-                    name="r0",
-                    steps=[ImagingStep(protocol="s", fovs="grid_b")],
-                ),
-            ],
-        )
-        errors = protocol.validate_references()
-        assert any("grid_b" in e for e in errors)
-
     def test_valid_references_produce_no_errors(self):
         protocol = ExperimentProtocol(
             name="valid_test",
@@ -290,17 +269,82 @@ class TestV3ValidateReferences:
                     acquisition=ImagingAcquisitionConfig(channels=["DAPI"])
                 ),
             },
-            fov_sets={"my_grid": "/path/to/grid.csv"},
+            fov_file="/path/to/grid.csv",
             rounds=[
                 Round(
                     name="r0",
-                    steps=[
-                        ImagingStep(protocol="s", fovs="my_grid"),
-                        ImagingStep(protocol="s", fovs="current"),
-                        ImagingStep(protocol="s", fovs="default"),
-                    ],
+                    steps=[ImagingStep(protocol="s")],
                 ),
             ],
         )
         errors = protocol.validate_references()
         assert len(errors) == 0
+
+    def test_named_fov_sets_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "grid.csv")
+            with open(csv_path, "w") as f:
+                f.write("region,x (mm),y (mm)\nA,1.0,2.0\n")
+
+            protocol_yaml = textwrap.dedent("""\
+                name: "Reject Named FOV Sets"
+                version: "3.0"
+                resources:
+                  fov_sets:
+                    grid_a: grid.csv
+                imaging_protocols:
+                  s:
+                    acquisition:
+                      channels: ["DAPI"]
+                rounds:
+                  - name: "r0"
+                    steps:
+                      - step_type: imaging
+                        protocol: s
+            """)
+            protocol_path = os.path.join(tmpdir, "protocol.yaml")
+            with open(protocol_path, "w") as f:
+                f.write(protocol_yaml)
+
+            loader = ProtocolLoader()
+            with pytest.raises(ProtocolValidationError, match="run-level .*fov_file"):
+                loader.load(protocol_path)
+
+
+class TestImagingStepPauseForReview:
+    """Test the pause_for_review field on ImagingStep."""
+
+    def test_default_is_false(self):
+        step = ImagingStep(protocol="scan")
+        assert step.pause_for_review is False
+
+    def test_explicit_true(self):
+        step = ImagingStep(protocol="scan", pause_for_review=True)
+        assert step.pause_for_review is True
+
+    def test_round_trip_yaml(self):
+        """pause_for_review survives YAML load → model → dump."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_yaml = textwrap.dedent("""\
+                name: "Review Test"
+                version: "3.0"
+                imaging_protocols:
+                  scan:
+                    acquisition:
+                      channels: ["DAPI"]
+                rounds:
+                  - name: "r0"
+                    steps:
+                      - step_type: imaging
+                        protocol: scan
+                        pause_for_review: true
+            """)
+            protocol_path = os.path.join(tmpdir, "protocol.yaml")
+            with open(protocol_path, "w") as f:
+                f.write(protocol_yaml)
+
+            loader = ProtocolLoader()
+            loaded = loader.load(protocol_path)
+            step = loaded.rounds[0].steps[0]
+            assert isinstance(step, ImagingStep)
+            assert step.pause_for_review is True

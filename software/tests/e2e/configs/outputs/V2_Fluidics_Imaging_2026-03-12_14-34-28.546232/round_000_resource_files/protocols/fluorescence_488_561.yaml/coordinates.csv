@@ -1,0 +1,3 @@
+region,fov,fov_id,x (mm),y (mm),z (mm)
+Region1,0,Region1_0000,20.0,20.0,1.0
+Region1,1,Region1_0001,30.0,20.0,1.0

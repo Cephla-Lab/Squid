@@ -1,12 +1,15 @@
 description: "Three-channel z-stack used for interleaved rounds with continuous focus lock."
 acquisition:
   channels:
-    - "Fluorescence 405 nm Ex"
-    - "Fluorescence 638 nm Ex"
-    - "Fluorescence 730 nm Ex"
+    - name: "Fluorescence 405 nm Ex"
+      exposure_time_ms: 200.0
+    - name: "Fluorescence 638 nm Ex"
+      exposure_time_ms: 200.0
+    - name: "Fluorescence 730 nm Ex"
+      exposure_time_ms: 200.0
   z_stack:
-    planes: 5
-    step_um: 0.5
+    planes: 15
+    step_um: 1.5
     direction: from_center
   acquisition_order: channel_first
   skip_saving: true

@@ -15,7 +15,6 @@ rounds:
         protocol: resource_test_wash
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_405.yaml
-        fovs: default
   - name: "Probe and Follow-Up Image"
     steps:
       - step_type: fluidics
@@ -24,4 +23,3 @@ rounds:
         protocol: resource_test_rinse
       - step_type: imaging
         protocol: resource_files/protocols/fluorescence_488_561.yaml
-        fovs: default

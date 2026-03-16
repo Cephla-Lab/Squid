@@ -1,0 +1,11 @@
+{
+  "failed_fovs": 3,
+  "final_state": "PAUSED",
+  "fov_attempts": 3,
+  "retry_burden": 1,
+  "skipped_fovs": 0,
+  "step_attempts": 5,
+  "timing_summary_path": "timing_summary.json",
+  "warning_summary_path": "warning_summary.json",
+  "warning_total": 30
+}

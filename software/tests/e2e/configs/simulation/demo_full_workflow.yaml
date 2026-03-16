@@ -12,8 +12,7 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fov_sets:
-  main: ../fov_positions/test_2fov_simple.csv
+fov_file: ../fov_positions/test_2fov_simple.csv
 
 rounds:
   # Setup: Prime and prepare sample
@@ -27,7 +26,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: protocols/main_acquisition.yaml
-        fovs: main
 
   # Cleanup
   - name: "Sample Cleanup"

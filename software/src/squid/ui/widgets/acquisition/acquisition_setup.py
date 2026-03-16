@@ -47,6 +47,9 @@ from squid.core.events import (
     AcquisitionStateChanged,
     ActiveAcquisitionTabChanged,
     AddFlexibleRegionCommand,
+    ApplyImagingProtocolCommand,
+    ImagingProtocolReadbackReady,
+    RequestImagingProtocolReadback,
     BinningChanged,
     ChannelConfigurationsChanged,
     ClearManualShapesCommand,
@@ -675,6 +678,8 @@ class AcquisitionSetupWidget(EventBusWidget):
         proto.addWidget(self._btn_save_protocol)
         self._btn_load_protocol = QPushButton("Load Proto")
         proto.addWidget(self._btn_load_protocol)
+        self._btn_clear_protocol = QPushButton("Clear Proto")
+        proto.addWidget(self._btn_clear_protocol)
         vbox.addLayout(proto)
         self._protocol_file_label = QLabel("")
         self._protocol_file_label.setStyleSheet("color: palette(disabled-text); font-size: 10px;")
@@ -732,6 +737,7 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._skip_saving.toggled.connect(self._on_skip_saving_toggled)
         self._btn_save_protocol.clicked.connect(self._on_save_protocol)
         self._btn_load_protocol.clicked.connect(self._on_load_protocol)
+        self._btn_clear_protocol.clicked.connect(self._on_clear_protocol)
         self._btn_clear_fovs.clicked.connect(self._on_clear_fovs)
         self._btn_browse_path.clicked.connect(self._on_browse_save_path)
         self._btn_start_stop.clicked.connect(self._on_start_stop_acquisition)
@@ -1471,6 +1477,24 @@ class AcquisitionSetupWidget(EventBusWidget):
         self._protocol_file_label.setText(path)
         _log.info(f"Loaded imaging protocol from {path}")
 
+    def _on_clear_protocol(self) -> None:
+        """Reset all acquisition widgets to defaults and clear protocol label."""
+        self._z_checkbox.setChecked(False)
+        self._z_nz.blockSignals(True)
+        self._z_nz.setValue(1)
+        self._z_nz.blockSignals(False)
+        self._z_delta.setValue(Acquisition.DZ)
+        self._z_direction.setCurrentIndex(1)  # FROM CENTER
+        self._focus_checkbox.setChecked(False)
+        self._skip_saving.blockSignals(True)
+        self._skip_saving.setChecked(False)
+        self._skip_saving.blockSignals(False)
+        self._save_format.setCurrentIndex(0)
+        self._channel_order_widget.set_selected_channels([])
+        self._protocol_name.clear()
+        self._protocol_file_label.setText("")
+        self._update_tab_styles()
+
     def _on_run_current_fov(self) -> None:
         """Run a single-FOV acquisition at the current stage position."""
         selected = self._channel_order_widget.get_selected_channels_ordered()
@@ -1492,10 +1516,12 @@ class AcquisitionSetupWidget(EventBusWidget):
             QMessageBox.warning(self, "Validation Error", str(e))
             return
 
+        z_stacking_config = self._z_direction.currentIndex() if self._z_checkbox.isChecked() else 1
         self._publish(SetAcquisitionParametersCommand(
             skip_saving=protocol.skip_saving,
             n_z=protocol.z_stack.planes,
             delta_z_um=protocol.z_stack.step_um,
+            z_stacking_config=z_stacking_config,
             autofocus_mode=protocol.focus.mode,
             autofocus_interval_fovs=protocol.focus.interval_fovs,
             use_piezo=MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
@@ -1521,6 +1547,25 @@ class AcquisitionSetupWidget(EventBusWidget):
     # =========================================================================
     # EventBus handlers
     # =========================================================================
+
+    @handles(ApplyImagingProtocolCommand)
+    def _on_apply_imaging_protocol(self, cmd: ApplyImagingProtocolCommand) -> None:
+        """Handle ApplyImagingProtocolCommand from the orchestrator / ImagingExecutor."""
+        self.apply_imaging_protocol(cmd.protocol)
+        self._protocol_name.setText("(orchestrator)")
+        self._protocol_file_label.setText("Loaded by orchestrator")
+
+    @handles(RequestImagingProtocolReadback)
+    def _on_readback_request(self, cmd: RequestImagingProtocolReadback) -> None:
+        """Build the current GUI protocol and publish it as a readback response."""
+        try:
+            protocol = self.build_imaging_protocol()
+        except ValueError:
+            protocol = None
+        self._publish(ImagingProtocolReadbackReady(
+            request_id=cmd.request_id,
+            protocol=protocol,
+        ))
 
     @handles(ActiveAcquisitionTabChanged)
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:

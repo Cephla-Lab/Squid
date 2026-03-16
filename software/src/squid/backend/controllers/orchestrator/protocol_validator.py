@@ -183,7 +183,7 @@ class ProtocolValidator:
         """Validate a single V2 round and return operation estimates.
 
         Args:
-            protocol: The full protocol (for accessing named resources).
+        protocol: The full protocol (for accessing named resources).
             round_: The round to validate.
             round_idx: Index of the round (0-based).
             fov_count: Number of FOVs to image.
@@ -333,12 +333,6 @@ class ProtocolValidator:
             )
 
         imaging_config = protocol.imaging_protocols[config_name]
-
-        # Validate FOV set if specified
-        if step.fovs not in ("current", "default") and step.fovs not in protocol.fov_sets:
-            errors.append(
-                f"Round '{round_name}': FOV set '{step.fovs}' not found"
-            )
 
         # Validate channels if we have available channels
         channel_names = imaging_config.get_channel_names()

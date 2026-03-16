@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 
+from squid.core.events import ClearScanCoordinatesCommand, LoadScanCoordinatesCommand
 from squid.core.protocol import ExperimentProtocol, ProtocolLoader, ProtocolValidationError
 
 import squid.core.logging
@@ -44,6 +45,7 @@ class ProtocolLoaderDialog(QDialog):
         available_channels: Optional[List[str]] = None,
         default_path: str = "",
         parent: Optional[QDialog] = None,
+        event_bus: Optional[object] = None,
     ):
         super().__init__(parent)
         self._loader = ProtocolLoader()
@@ -52,6 +54,7 @@ class ProtocolLoaderDialog(QDialog):
         self._current_protocol: Optional[ExperimentProtocol] = None
         self._fov_positions: Dict[str, List[Tuple[float, float, float]]] = {}
         self._fov_path: Optional[str] = None
+        self._event_bus = event_bus if event_bus is not None else getattr(parent, "_bus", None)
 
         self.setWindowTitle("Load Experiment Protocol")
         self.setMinimumSize(600, 500)
@@ -185,6 +188,38 @@ class ProtocolLoaderDialog(QDialog):
         if path:
             self._load_fov_positions(path)
 
+    def _publish_fov_preview(
+        self,
+        positions: Dict[str, List[Tuple[float, float, float]]],
+    ) -> None:
+        """Publish preview FOVs so the navigation window mirrors the loaded protocol."""
+        if self._event_bus is None or not hasattr(self._event_bus, "publish"):
+            return
+
+        self._event_bus.publish(ClearScanCoordinatesCommand(clear_displayed_fovs=True))
+        if not positions:
+            return
+
+        region_fov_coordinates = {
+            region_id: tuple(tuple(float(v) for v in coord) for coord in coords)
+            for region_id, coords in positions.items()
+        }
+        region_centers = {
+            region_id: (
+                float(sum(coord[0] for coord in coords) / len(coords)),
+                float(sum(coord[1] for coord in coords) / len(coords)),
+                float(sum(coord[2] for coord in coords) / len(coords)),
+            )
+            for region_id, coords in positions.items()
+            if coords
+        }
+        self._event_bus.publish(
+            LoadScanCoordinatesCommand(
+                region_fov_coordinates=region_fov_coordinates,
+                region_centers=region_centers,
+            )
+        )
+
     def _load_fov_positions(self, path: str) -> None:
         """Load FOV positions from a CSV file.
 
@@ -252,6 +287,7 @@ class ProtocolLoaderDialog(QDialog):
                 self._fov_positions = {}
                 self._fov_path = None
                 self._fov_path_edit.clear()
+                self._publish_fov_preview({})
             else:
                 self._fov_positions = positions
                 self._fov_path = path
@@ -260,6 +296,7 @@ class ProtocolLoaderDialog(QDialog):
                     f"Loaded {total_fovs} FOVs in {num_regions} region(s)"
                 )
                 self._fov_status_label.setStyleSheet("color: #4CAF50;")
+                self._publish_fov_preview(positions)
 
             self._validate_inputs()
 
@@ -269,6 +306,7 @@ class ProtocolLoaderDialog(QDialog):
             self._fov_status_label.setStyleSheet("color: #f44336;")
             self._fov_positions = {}
             self._fov_path = None
+            self._publish_fov_preview({})
 
     def _load_protocol(self, path: str) -> None:
         """Load and preview a protocol."""
@@ -285,15 +323,14 @@ class ProtocolLoaderDialog(QDialog):
                 if not self._output_edit.text():
                     self._output_edit.setText(output_dir)
 
-            # Auto-load FOV positions from protocol if specified (V2: fov_sets)
-            if self._current_protocol.fov_sets:
-                for fov_name, fov_file in self._current_protocol.fov_sets.items():
-                    # fov_sets paths are already resolved by the loader
-                    if fov_file and Path(fov_file).exists():
-                        self._load_fov_positions(fov_file)
-                    else:
-                        self._fov_status_label.setText(f"FOV file not found: {fov_file}")
-                        self._fov_status_label.setStyleSheet("color: #f44336;")
+            # Auto-load the run-level FOV file for preview if specified.
+            if self._current_protocol.fov_file:
+                fov_file = self._current_protocol.fov_file
+                if Path(fov_file).exists():
+                    self._load_fov_positions(fov_file)
+                else:
+                    self._fov_status_label.setText(f"FOV file not found: {fov_file}")
+                    self._fov_status_label.setStyleSheet("color: #f44336;")
 
             self._validate_inputs()
 
@@ -377,7 +414,8 @@ class ProtocolLoaderDialog(QDialog):
         Requirements for starting:
         1. Protocol must be loaded
         2. Output path must be valid
-        3. If protocol has imaging rounds, FOV positions must be loaded
+        3. If protocol has imaging rounds, the protocol must define a run-level
+           FOV file and it must be previewed successfully
         """
         output_path = self._output_edit.text().strip()
         output_dir = Path(output_path).expanduser() if output_path else None
@@ -402,14 +440,19 @@ class ProtocolLoaderDialog(QDialog):
             from squid.core.protocol import ImagingStep
 
             fov_required = any(
-                isinstance(step, ImagingStep) and step.fovs in ("current", "default")
+                isinstance(step, ImagingStep)
                 for round_ in self._current_protocol.rounds
                 for step in round_.steps
             )
 
-        if fov_required and not fov_loaded:
+        if fov_required and not self._current_protocol.fov_file:
             self._validation_label.setText(
-                '<span style="color: orange;">FOV positions required for imaging rounds</span>'
+                '<span style="color: orange;">Protocol imaging rounds require resources.fov_file</span>'
+            )
+            valid = False
+        elif fov_required and not fov_loaded:
+            self._validation_label.setText(
+                '<span style="color: orange;">Protocol FOV file must load successfully for imaging rounds</span>'
             )
             valid = False
         elif valid and fov_required and fov_loaded:

@@ -1,7 +1,8 @@
 description: "Inline override of the shared 405 nm protocol for a single-plane fast pass."
 acquisition:
   channels:
-    - "Fluorescence 405 nm Ex"
+    - name: "Fluorescence 405 nm Ex"
+      exposure_time_ms: 200.0
   z_stack:
     planes: 1
     step_um: 0.5

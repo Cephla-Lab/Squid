@@ -1,0 +1,13 @@
+{
+  "affected_rounds": {
+    "FOCUS": [
+      "Round 1",
+      "Round 2"
+    ]
+  },
+  "warning_counts": {
+    "FOCUS:HIGH": 2,
+    "FOCUS:LOW": 2,
+    "FOCUS:MEDIUM": 26
+  }
+}

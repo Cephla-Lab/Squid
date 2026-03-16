@@ -36,8 +36,17 @@ class ProtocolResources(BaseModel):
     fluidics_protocols: Dict[str, FluidicsProtocol] = Field(default_factory=dict)
     fluidics_protocols_file: Optional[str] = None
     fluidics_config_file: Optional[str] = None
-    fov_sets: Dict[str, str] = Field(default_factory=dict)
     fov_file: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_fov_sets(cls, data: object) -> object:
+        if isinstance(data, dict) and "fov_sets" in data:
+            raise ValueError(
+                "resources.fov_sets is no longer supported; use a single "
+                "run-level resources.fov_file."
+            )
+        return data
 
 
 class ProtocolDefaults(BaseModel):
@@ -65,6 +74,10 @@ class ExperimentProtocol(BaseModel):
             return data
 
         payload = dict(data)
+        if "fov_sets" in payload:
+            raise ValueError(
+                "Top-level fov_sets is no longer supported; use resources.fov_file."
+            )
         resources = dict(payload.get("resources") or {})
         defaults = dict(payload.get("defaults") or {})
 
@@ -73,7 +86,6 @@ class ExperimentProtocol(BaseModel):
             "fluidics_protocols",
             "fluidics_protocols_file",
             "fluidics_config_file",
-            "fov_sets",
             "fov_file",
         ):
             if field in payload:
@@ -108,10 +120,6 @@ class ExperimentProtocol(BaseModel):
     @property
     def fluidics_protocols(self) -> Dict[str, FluidicsProtocol]:
         return self.resources.fluidics_protocols
-
-    @property
-    def fov_sets(self) -> Dict[str, str]:
-        return self.resources.fov_sets
 
     @property
     def fluidics_protocols_file(self) -> Optional[str]:
@@ -163,10 +171,6 @@ class ExperimentProtocol(BaseModel):
                     if step.protocol not in self.imaging_protocols:
                         errors.append(
                             f"{step_loc}: imaging protocol '{step.protocol}' not found"
-                        )
-                    if step.fovs not in ("current", "default") and step.fovs not in self.fov_sets:
-                        errors.append(
-                            f"{step_loc}: FOV set '{step.fovs}' not found"
                         )
 
         return errors

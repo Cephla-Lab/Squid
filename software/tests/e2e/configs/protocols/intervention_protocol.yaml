@@ -12,7 +12,6 @@ rounds:
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/bf_quick.yaml
-        fovs: default
   - name: "Sample Change"
     steps:
       - step_type: intervention
@@ -21,11 +20,9 @@ rounds:
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/bf_quick.yaml
-        fovs: default
   - name: "Final Review"
     steps:
       - step_type: intervention
         message: "Inspect the preview data before the final multichannel pass."
       - step_type: imaging
         protocol: resource_files/protocols/multichannel_quick.yaml
-        fovs: default

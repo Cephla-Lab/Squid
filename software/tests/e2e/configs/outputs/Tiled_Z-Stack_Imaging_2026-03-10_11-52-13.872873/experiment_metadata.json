@@ -1,0 +1,263 @@
+{
+  "experiment_id": "Tiled_Z-Stack_Imaging_2026-03-10_11-52-13.872873",
+  "protocol": {
+    "author": "",
+    "defaults": {
+      "step_failure_policy": {
+        "max_attempts": 1,
+        "on_fail": "pause",
+        "retry_delay_s": 0.0
+      }
+    },
+    "description": "Grid-friendly z-stack imaging over a 4-FOV test layout.",
+    "name": "Tiled Z-Stack Imaging",
+    "output_directory": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs",
+    "resources": {
+      "fluidics_config_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/simulation_fluidics.json",
+      "fluidics_protocols": {},
+      "fov_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_4fov_grid.csv",
+      "fov_sets": {
+        "default": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_4fov_grid.csv"
+      },
+      "imaging_protocol_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/resource_files/imaging_protocols.yaml",
+      "imaging_protocols": {
+        "bf_quick": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "BF LED matrix full"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Fast brightfield preview for alignment and QC.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        },
+        "bf_saved": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "BF LED matrix full"
+            ],
+            "skip_saving": false,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Single-plane brightfield acquisition with image saving enabled.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        },
+        "fish_multichannel": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex",
+              "Fluorescence 638 nm Ex",
+              "Fluorescence 730 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 5,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Three-channel z-stack used for interleaved rounds with continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "fluorescence_405": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Reference 405 nm fluorescence imaging using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "fluorescence_488_561": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 488 nm Ex",
+              "Fluorescence 561 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Two-color 488/561 acquisition using continuous focus lock.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "focus_lock",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "tiled_multichannel": {
+          "acquisition": {
+            "acquisition_order": "z_first",
+            "channels": [
+              "BF LED matrix full",
+              "Fluorescence 488 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 5,
+              "step_um": 1.0
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Grid-friendly brightfield plus fluorescence z-stack.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        }
+      }
+    },
+    "rounds": [
+      {
+        "metadata": {},
+        "name": "Tiled Acquisition",
+        "steps": [
+          {
+            "fovs": "default",
+            "protocol": "tiled_multichannel",
+            "step_type": "imaging"
+          }
+        ]
+      }
+    ],
+    "version": "3.0"
+  },
+  "protocol_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/tiled_zstack.yaml",
+  "written_at": "2026-03-10T11:52:13.876791"
+}

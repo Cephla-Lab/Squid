@@ -1,0 +1,393 @@
+{
+  "experiment_id": "V2_Full_Workflow_2026-03-06_16-56-49.219581",
+  "protocol": {
+    "author": "",
+    "defaults": {
+      "step_failure_policy": {
+        "max_attempts": 1,
+        "on_fail": "pause",
+        "retry_delay_s": 0.0
+      }
+    },
+    "description": "Comprehensive self-loading workflow covering fluidics, imaging, repeats, overrides, and intervention.",
+    "name": "V2 Full Workflow",
+    "output_directory": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../outputs",
+    "resources": {
+      "fluidics_config_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/simulation_fluidics.json",
+      "fluidics_protocols": {},
+      "fluidics_protocols_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fluidics/test_fluidics_protocols.yaml",
+      "fov_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_2fov_simple.csv",
+      "fov_sets": {
+        "default": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/../fov_positions/test_2fov_simple.csv"
+      },
+      "imaging_protocol_file": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/resource_files/imaging_protocols.yaml",
+      "imaging_protocols": {
+        "bf_quick": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "BF LED matrix full"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Fast brightfield preview for alignment and QC.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        },
+        "bf_saved": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "BF LED matrix full"
+            ],
+            "skip_saving": false,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Single-plane brightfield acquisition with image saving enabled.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        },
+        "fish_multichannel": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex",
+              "Fluorescence 638 nm Ex",
+              "Fluorescence 730 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 5,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Three-channel z-stack used for interleaved fluidics/imaging rounds.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "laser_reflection",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "fluorescence_405": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Reference 405 nm fluorescence imaging with laser autofocus.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "laser_reflection",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "fluorescence_488_561": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 488 nm Ex",
+              "Fluorescence 561 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 3,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 2,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.1
+          },
+          "description": "Two-color 488/561 acquisition for quick stained-sample review.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 2,
+            "mode": "laser_reflection",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": true
+          }
+        },
+        "qc_single_plane": {
+          "acquisition": {
+            "acquisition_order": "channel_first",
+            "channels": [
+              "Fluorescence 405 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 1,
+              "step_um": 0.5
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Fast one-plane QC snapshot.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        },
+        "tiled_multichannel": {
+          "acquisition": {
+            "acquisition_order": "z_first",
+            "channels": [
+              "BF LED matrix full",
+              "Fluorescence 488 nm Ex"
+            ],
+            "skip_saving": true,
+            "z_stack": {
+              "direction": "from_center",
+              "planes": 5,
+              "step_um": 1.0
+            }
+          },
+          "capture_policy": {
+            "max_capture_attempts": 1,
+            "on_capture_fail": "fail_step",
+            "retry_delay_s": 0.0
+          },
+          "description": "Grid-friendly brightfield plus fluorescence z-stack.",
+          "focus_gate": {
+            "focus_lock": {
+              "acquire_threshold_um": 0.25,
+              "auto_search_enabled": false,
+              "buffer_length": 5,
+              "lock_timeout_s": 5.0,
+              "maintain_threshold_um": 0.5,
+              "min_spot_snr": 10.0,
+              "recovery_attempts": 3
+            },
+            "interval_fovs": 1,
+            "max_focus_attempts": 1,
+            "mode": "none",
+            "on_focus_gate_fail": "skip_fov",
+            "require_in_focus": false
+          }
+        }
+      }
+    },
+    "rounds": [
+      {
+        "metadata": {},
+        "name": "Setup",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "initial_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "message": "Verify the sample is mounted, centered, and safe to continue.",
+            "require_ack": true,
+            "step_type": "intervention"
+          },
+          {
+            "fovs": "default",
+            "output_label": "setup_reference",
+            "protocol": "fluorescence_405",
+            "step_type": "imaging"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Hybridization Round 1",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_hybridize_1",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "stringent_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "capture_policy_override": {
+              "max_capture_attempts": 2,
+              "retry_delay_s": 0.1
+            },
+            "focus_gate_override": {
+              "max_focus_attempts": 3
+            },
+            "fovs": "default",
+            "protocol": "fish_multichannel",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "strip",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Hybridization Round 2",
+        "steps": [
+          {
+            "fov_scope": "global",
+            "protocol": "probe_hybridize_2",
+            "step_type": "fluidics"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "stringent_wash",
+            "step_type": "fluidics"
+          },
+          {
+            "capture_policy_override": {
+              "max_capture_attempts": 2,
+              "retry_delay_s": 0.1
+            },
+            "focus_gate_override": {
+              "max_focus_attempts": 3
+            },
+            "fovs": "default",
+            "protocol": "fish_multichannel",
+            "step_type": "imaging"
+          },
+          {
+            "fov_scope": "global",
+            "protocol": "strip",
+            "step_type": "fluidics"
+          }
+        ]
+      },
+      {
+        "metadata": {},
+        "name": "Final QC",
+        "steps": [
+          {
+            "fovs": "default",
+            "protocol": "qc_single_plane",
+            "step_type": "imaging"
+          },
+          {
+            "message": "Review the run summary and image quality before closing out the session.",
+            "require_ack": true,
+            "step_type": "intervention"
+          }
+        ]
+      }
+    ],
+    "version": "3.0"
+  },
+  "protocol_path": "/Users/wea/src/allenlab/Squid/software/tests/e2e/configs/protocols/v2_full.yaml",
+  "written_at": "2026-03-06T16:56:49.223197"
+}

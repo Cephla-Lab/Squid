@@ -146,7 +146,6 @@ class OrchestratorSimulator(BaseSimulator):
         self._imaging_executor = ImagingExecutor(
             event_bus=ctx.event_bus,
             multipoint_controller=ctx.multipoint_controller,
-            scan_coordinates=ctx.scan_coordinates,
         )
 
         # Create fluidics controller (simulated - no fluidics_service)

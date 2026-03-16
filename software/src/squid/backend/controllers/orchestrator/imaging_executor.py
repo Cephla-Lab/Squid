@@ -30,6 +30,8 @@ from squid.core.events import (
     FocusLockSettings,
     FocusLockStatusChanged,
     FocusLockWarning,
+    ImagingProtocolReadbackReady,
+    RequestImagingProtocolReadback,
     handles,
     auto_subscribe,
     auto_unsubscribe,
@@ -349,13 +351,25 @@ def _apply_override_to_channel(
     """
     channel = copy.deepcopy(channel)
     if override.exposure_time_ms is not None:
-        channel.camera_settings.exposure_time_ms = override.exposure_time_ms
+        if hasattr(channel, "camera_settings") and getattr(channel, "camera_settings") is not None:
+            channel.camera_settings.exposure_time_ms = override.exposure_time_ms
+        else:
+            channel.exposure_time = override.exposure_time_ms
     if override.analog_gain is not None:
-        channel.camera_settings.gain_mode = override.analog_gain
+        if hasattr(channel, "camera_settings") and getattr(channel, "camera_settings") is not None:
+            channel.camera_settings.gain_mode = override.analog_gain
+        else:
+            channel.analog_gain = override.analog_gain
     if override.illumination_intensity is not None:
-        channel.illumination_settings.intensity = override.illumination_intensity
+        if hasattr(channel, "illumination_settings") and getattr(channel, "illumination_settings") is not None:
+            channel.illumination_settings.intensity = override.illumination_intensity
+        else:
+            channel.illumination_intensity = override.illumination_intensity
     if "z_offset_um" in override.model_fields_set:
-        channel.z_offset_um = override.z_offset_um
+        if hasattr(channel, "z_offset_um"):
+            channel.z_offset_um = override.z_offset_um
+        else:
+            channel.z_offset = override.z_offset_um
     return channel
 
 
@@ -374,7 +388,6 @@ class ImagingExecutor:
         executor = ImagingExecutor(
             event_bus=event_bus,
             multipoint_controller=multipoint,
-            scan_coordinates=scan_coords,
         )
 
         # V2 style with ImagingProtocol
@@ -390,7 +403,6 @@ class ImagingExecutor:
         self,
         event_bus: EventBus,
         multipoint_controller: "MultiPointController",
-        scan_coordinates: Optional["ScanCoordinates"] = None,
         channel_config_manager: Optional["ChannelConfigService"] = None,
     ):
         """Initialize the imaging executor.
@@ -398,12 +410,10 @@ class ImagingExecutor:
         Args:
             event_bus: EventBus for event communication
             multipoint_controller: MultiPointController for acquisitions
-            scan_coordinates: ScanCoordinates with FOV positions
             channel_config_manager: ChannelConfigService for channel resolution
         """
         self._event_bus = event_bus
         self._multipoint = multipoint_controller
-        self._scan_coordinates = scan_coordinates
         if channel_config_manager is not None:
             self._channel_config_manager = channel_config_manager
         else:
@@ -421,6 +431,12 @@ class ImagingExecutor:
         self._images_per_fov: int = 1
         self._progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None
         self._focus_lock_monitor: Optional[_FocusLockRunMonitor] = None
+
+        # GUI readback synchronization
+        self._readback_lock = threading.Lock()
+        self._readback_event = threading.Event()
+        self._readback_protocol: Optional[ImagingProtocol] = None
+        self._pending_readback_id: str = ""
 
         # Event subscriptions
         self._subscriptions = auto_subscribe(self, event_bus)
@@ -462,6 +478,7 @@ class ImagingExecutor:
         experiment_id: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, Optional[float]], None]] = None,
         acquire_current_fov: bool = False,
+        scan_coordinates_override: Optional["ScanCoordinates"] = None,
     ) -> bool:
         """Execute imaging using a V2 ImagingProtocol.
 
@@ -478,6 +495,7 @@ class ImagingExecutor:
                           auto-generates as "round_{round_index:03d}"
             progress_callback: Optional callback ``(fov_index, total_fovs, eta_seconds)``
                 invoked when FOV progress changes during imaging.
+            scan_coordinates_override: Immutable run-local FOV plan to acquire.
 
         Returns:
             True if imaging completed successfully, False otherwise
@@ -569,7 +587,10 @@ class ImagingExecutor:
                 f"acquisition_order={acquisition_order}, "
                 f"focus={imaging_config.focus.mode.value}"
             )
-            started = self._multipoint.run_acquisition(acquire_current_fov=acquire_current_fov)
+            started = self._multipoint.run_acquisition(
+                acquire_current_fov=acquire_current_fov,
+                scan_coordinates_override=scan_coordinates_override,
+            )
             if not started:
                 _log.error("run_acquisition() returned False — acquisition did not start")
                 return False
@@ -709,3 +730,56 @@ class ImagingExecutor:
         if event.error is not None:
             self._acquisition_error = str(event.error)
         self._acquisition_complete.set()
+
+    @handles(ImagingProtocolReadbackReady)
+    def _on_readback_ready(self, event: ImagingProtocolReadbackReady) -> None:
+        """Receive a readback response from AcquisitionSetupWidget."""
+        with self._readback_lock:
+            if event.request_id == self._pending_readback_id:
+                self._readback_protocol = event.protocol
+                self._readback_event.set()
+
+    def request_gui_readback(
+        self,
+        cancel_token: CancelToken,
+        timeout_s: float = 5.0,
+    ) -> Optional[ImagingProtocol]:
+        """Request the GUI's current ImagingProtocol via readback handshake.
+
+        Publishes RequestImagingProtocolReadback, waits for the widget to
+        respond with ImagingProtocolReadbackReady, and returns the protocol.
+
+        Args:
+            cancel_token: CancelToken for abort support.
+            timeout_s: Maximum time to wait for the GUI response.
+
+        Returns:
+            The GUI-built ImagingProtocol, or None on timeout/error.
+        """
+        from uuid import uuid4
+
+        request_id = uuid4().hex
+        with self._readback_lock:
+            # Clear event BEFORE setting the new request_id to prevent
+            # a stale response from matching and being immediately cleared.
+            self._readback_event.clear()
+            self._readback_protocol = None
+            self._pending_readback_id = request_id
+
+        self._event_bus.publish(RequestImagingProtocolReadback(request_id=request_id))
+
+        deadline = time.monotonic() + timeout_s
+        poll_interval = scale_duration(0.1, min_seconds=0.01)
+        while not self._readback_event.is_set():
+            cancel_token.check_point()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _log.warning("GUI readback timed out after %.1fs", timeout_s)
+                return None
+            self._readback_event.wait(timeout=min(poll_interval, remaining))
+
+        with self._readback_lock:
+            protocol = self._readback_protocol
+            self._pending_readback_id = ""
+            self._readback_protocol = None
+        return protocol

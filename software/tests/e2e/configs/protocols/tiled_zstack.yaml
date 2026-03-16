@@ -12,4 +12,3 @@ rounds:
     steps:
       - step_type: imaging
         protocol: resource_files/protocols/tiled_multichannel.yaml
-        fovs: default

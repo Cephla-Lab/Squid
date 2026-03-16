@@ -1,10 +1,11 @@
 description: "Reference 405 nm fluorescence imaging using continuous focus lock."
 acquisition:
   channels:
-    - "Fluorescence 405 nm Ex"
+    - name: "Fluorescence 405 nm Ex"
+      exposure_time_ms: 200.0
   z_stack:
-    planes: 3
-    step_um: 0.5
+    planes: 15
+    step_um: 1.5
     direction: from_center
   acquisition_order: channel_first
   skip_saving: true

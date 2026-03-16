@@ -1,0 +1,15 @@
+version: 1
+objective: 4x
+confocal_mode: false
+channels:
+- name: Fluorescence 405 nm Ex
+  enabled: true
+  display_color: '#20ADF8'
+  camera_settings:
+    exposure_time_ms: 200.0
+    gain_mode: 10.0
+  filter_position: 1
+  z_offset_um: 0.0
+  illumination_settings:
+    illumination_channel: Fluorescence 405 nm Ex
+    intensity: 20.0

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from squid.core.events import EventBus
+from squid.core.events import LoadScanCoordinatesCommand
 from squid.backend.controllers.orchestrator import (
     OrchestratorInterventionRequired,
     OrchestratorProgress,
@@ -102,6 +103,27 @@ def test_start_success_resets_start_position(panel):
     assert panel._start_step_index == 0
     assert panel._start_fov_index == 0
     assert panel._run_single_round is False
+
+
+def test_start_does_not_publish_scan_coordinates(panel, event_bus):
+    published = []
+    event_bus.subscribe(LoadScanCoordinatesCommand, published.append)
+
+    panel._orchestrator.start_experiment.return_value = True
+    panel._protocol_path = "/tmp/protocol.yaml"
+    panel._base_path = "/tmp"
+    panel._validated = True
+    panel._protocol_data = {
+        "resources": {"fov_file": "/tmp/fovs.csv"},
+        "rounds": [
+            {"steps": [{"step_type": "imaging", "protocol": "standard"}]},
+        ],
+    }
+    panel._fov_positions = {"region0": [(0.0, 0.0, 0.0)]}
+
+    panel._on_start_clicked()
+
+    assert published == []
 
 
 def test_start_requires_validation(panel):

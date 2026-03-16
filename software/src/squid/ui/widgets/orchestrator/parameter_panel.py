@@ -142,11 +142,11 @@ class ParameterInspectionPanel(QWidget):
             # Show config references
             configs = [s.get("config", "unknown") for s in imaging_steps]
             self._add_row("Imaging Configs", ", ".join(set(configs)))
-            # Show FOV set references
-            fov_sets = [s.get("fovs", "default") for s in imaging_steps]
-            unique_fov_sets = set(fov_sets)
-            if unique_fov_sets != {"default"}:
-                self._add_row("FOV Sets", ", ".join(unique_fov_sets))
+
+        resources = protocol_data.get("resources") or {}
+        fov_file = resources.get("fov_file") or protocol_data.get("fov_file")
+        if fov_file:
+            self._add_row("FOV File", str(fov_file))
 
     def _show_legacy_round_params(self, round_data: Dict[str, Any]) -> None:
         """Show legacy format round parameters.

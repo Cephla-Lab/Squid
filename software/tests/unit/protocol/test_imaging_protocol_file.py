@@ -152,7 +152,6 @@ class TestFilePathProtocolResolution:
                 steps:
                   - step_type: imaging
                     protocol: protocols/test_proto.yaml
-                    fovs: current
         """))
 
         loader = ProtocolLoader()
@@ -172,7 +171,6 @@ class TestFilePathProtocolResolution:
                 steps:
                   - step_type: imaging
                     protocol: nonexistent/proto.yaml
-                    fovs: current
         """))
         loader = ProtocolLoader()
         with pytest.raises(ProtocolValidationError, match="not found"):
@@ -195,7 +193,6 @@ class TestFilePathProtocolResolution:
                 steps:
                   - step_type: imaging
                     protocol: my_proto
-                    fovs: current
         """))
         loader = ProtocolLoader()
         protocol = loader.load(experiment)

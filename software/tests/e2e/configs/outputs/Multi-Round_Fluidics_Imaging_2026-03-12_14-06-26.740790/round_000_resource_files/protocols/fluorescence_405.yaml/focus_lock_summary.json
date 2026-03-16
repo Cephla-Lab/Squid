@@ -1,0 +1,20 @@
+{
+  "average_lock_quality": 0.629109763573291,
+  "fraction_good_readings": 1.0,
+  "max_abs_z_error_um": 2.6,
+  "max_drift_rate_um_per_s": 0.059364118884165734,
+  "min_spot_snr": 98.387838001791,
+  "p95_abs_z_error_um": 2.6,
+  "p95_rms_error_um": 0.8276472678623424,
+  "round_index": 0,
+  "round_name": "Round 1",
+  "status_durations_s": {
+    "locked": 0.579,
+    "paused": 4.357
+  },
+  "status_transition_counts": {
+    "locked": 4,
+    "paused": 4
+  },
+  "warning_counts": {}
+}

@@ -1,0 +1,14 @@
+experiment_id,round_index,step_index,step_type,estimated_seconds,attempt,duration_seconds,success,error
+V2_Full_Workflow_2026-03-06_16-53-20.724021,0,0,fluidics,310.0,1,4.179506708984263,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,0,1,intervention,0.0,1,37.15299712505657,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,0,2,imaging,2.9000000000000004,1,38.93609733390622,True,Imaging failed for round 0
+V2_Full_Workflow_2026-03-06_16-53-20.724021,1,0,fluidics,181.0,1,3.1705800839699805,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,1,1,fluidics,900.0,1,6.245678875013255,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,1,2,imaging,7.300000000000001,1,6.993507167091593,True,Imaging failed for round 1
+V2_Full_Workflow_2026-03-06_16-53-20.724021,1,3,fluidics,311.0,1,5.201250832993537,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,2,0,fluidics,181.0,1,3.185848749941215,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,2,1,fluidics,900.0,1,6.23367208300624,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,2,2,imaging,7.300000000000001,1,73.41395287495106,True,Imaging failed for round 2
+V2_Full_Workflow_2026-03-06_16-53-20.724021,2,3,fluidics,311.0,1,5.249320833012462,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,3,0,imaging,1.3,1,10.977484125061892,True,
+V2_Full_Workflow_2026-03-06_16-53-20.724021,3,1,intervention,0.0,1,,,

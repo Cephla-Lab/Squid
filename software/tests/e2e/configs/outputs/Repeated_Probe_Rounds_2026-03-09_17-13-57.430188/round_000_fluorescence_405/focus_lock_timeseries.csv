@@ -1,0 +1,13 @@
+timestamp_monotonic,event_type,round_index,round_name,fov_index,total_fovs,status,lock_buffer_fill,lock_buffer_length,warning_type,message,z_error_um,z_position_um,spot_snr,z_error_rms_um,drift_rate_um_per_s,correlation,lock_quality,direction,position_um,limit_um,margin_um
+785614.8705125,metrics,0,Round 1,,0,,,,,,0.0,150.0,98.387838001791,0.0,0.048383065709148285,nan,1.0,,,,
+785615.034427333,status,0,Round 1,,0,paused,5,5,,,,,,,,,,,,,
+785615.803805916,status,0,Round 1,0,2,locked,5,5,,,,,,,,,,,,,
+785615.822678,status,0,Round 1,0,2,recovering,5,5,,,,,,,,,,,,,
+785615.927117375,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.05868681902907516,nan,0.35411919999999986,,,,
+785616.464102666,status,0,Round 1,0,2,lost,0,5,,,,,,,,,,,,,
+785616.4963865,warning,0,Round 1,0,2,,,,signal_lost,Focus lock signal lost,,,,,,,,,,,
+785616.927514375,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.041821918651585924,nan,0.0,,,,
+785618.00412175,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.05467868013246127,nan,0.0,,,,
+785619.11027625,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.05220928079852866,nan,0.0,,,,
+785620.172078375,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.053226578935257556,nan,0.0,,,,
+785621.243402833,metrics,0,Round 1,0,2,,,,,,0.0,149.5,0.0,0.0,0.054329719072687646,nan,0.0,,,,

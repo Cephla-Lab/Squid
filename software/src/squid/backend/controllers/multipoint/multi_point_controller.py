@@ -816,6 +816,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     def run_acquisition(
         self,
         acquire_current_fov: bool = False,
+        scan_coordinates_override: Optional[ScanCoordinates] = None,
     ) -> bool:
         # Check if in IDLE state
         if not self._is_in_state(AcquisitionControllerState.IDLE):
@@ -837,20 +838,22 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Start per-acquisition logging if enabled
             self._start_per_acquisition_log()
 
-            # Build scan coordinates for validation.
-            # Normal acquisitions use global self.scanCoordinates (already populated
-            # by ClearScanCoordinatesCommand / AddFlexibleRegionCommand before start).
-            # acquire_current_fov creates a one-off single-FOV set (Snap Images).
-            acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
+            # Build scan coordinates for validation and task planning.
+            # Orchestrated runs may provide an immutable override so execution
+            # does not depend on live GUI-owned scan state.
+            template_scan_coordinates = scan_coordinates_override or self.scanCoordinates
+            acquisition_scan_coordinates: ScanCoordinates = template_scan_coordinates
             self.run_acquisition_current_fov: bool = False
             if acquire_current_fov:
+                if template_scan_coordinates is None:
+                    raise RuntimeError("No ScanCoordinates available for current-position run")
                 pos = self._stage_service.get_position()
                 # No callback - we don't want to clobber existing info with this one off fov acquisition
                 # Don't pass event_bus to avoid publishing ClearedScanCoordinates globally
                 acquisition_scan_coordinates = ScanCoordinates(
-                    objectiveStore=self.scanCoordinates.objectiveStore,
-                    stage=self.scanCoordinates.stage,
-                    camera=self.scanCoordinates.camera,
+                    objectiveStore=template_scan_coordinates.objectiveStore,
+                    stage=template_scan_coordinates.stage,
+                    camera=template_scan_coordinates.camera,
                     event_bus=None,
                 )
                 acquisition_scan_coordinates.add_single_fov_region(
@@ -963,7 +966,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 and self._config.focus.mode != AutofocusMode.FOCUS_LOCK
             ):
                 self._log.info("Generating autofocus plane for multipoint grid")
-                bounds = self.scanCoordinates.get_scan_bounds()
+                bounds = acquisition_scan_coordinates.get_scan_bounds()
                 if not bounds:
                     self._publish_acquisition_state(in_progress=False, is_aborting=False, allow_missing_experiment_id=True)
                     if self._event_bus:
@@ -1010,7 +1013,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     raise RuntimeError("Invalid coordinates for autofocus plane") from exc
 
             acquisition_params: AcquisitionParameters = self.build_params(
-                scan_position_information=scan_position_information
+                scan_position_information=scan_position_information,
+                scan_coordinates=acquisition_scan_coordinates,
             )
 
             # Save acquisition parameters to YAML for reproducibility
@@ -1029,8 +1033,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     "camera_binning": list(self._camera_service.get_binning()),
                     "sensor_pixel_size_um": self._camera_service.get_pixel_size_binned_um(),
                 }
-                wellplate_format = getattr(self.scanCoordinates, "format", None)
-                region_shapes = getattr(self.scanCoordinates, "region_shapes", None)
+                wellplate_format = getattr(acquisition_scan_coordinates, "format", None)
+                region_shapes = getattr(acquisition_scan_coordinates, "region_shapes", None)
                 experiment_path = os.path.join(self.base_path, self.experiment_ID)
 
                 save_acquisition_yaml(
@@ -1143,12 +1147,15 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             return False
 
     def build_params(
-        self, scan_position_information: ScanPositionInformation
+        self,
+        scan_position_information: ScanPositionInformation,
+        scan_coordinates: Optional[ScanCoordinates] = None,
     ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
         plate_num_cols = 12
-        wellplate_format = getattr(self.scanCoordinates, "format", None)
+        active_scan_coordinates = scan_coordinates or self.scanCoordinates
+        wellplate_format = getattr(active_scan_coordinates, "format", None)
         self._log.info(f"build_params: wellplate format = {wellplate_format}")
         if wellplate_format:
             from _def import get_wellplate_settings

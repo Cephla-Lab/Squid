@@ -1,11 +1,13 @@
 description: "Two-color 488/561 acquisition using continuous focus lock."
 acquisition:
   channels:
-    - "Fluorescence 488 nm Ex"
-    - "Fluorescence 561 nm Ex"
+    - name: "Fluorescence 488 nm Ex"
+      exposure_time_ms: 200.0
+    - name: "Fluorescence 561 nm Ex"
+      exposure_time_ms: 200.0
   z_stack:
-    planes: 3
-    step_um: 0.5
+    planes: 15
+    step_um: 1.5
     direction: from_center
   acquisition_order: channel_first
   skip_saving: true

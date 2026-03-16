@@ -1,9 +1,10 @@
 description: "5-plane z-stack for movement validation tests"
 channels:
-  - "BF LED matrix full"
+  - name: "BF LED matrix full"
+    exposure_time_ms: 200.0
 z_stack:
-  planes: 5
-  step_um: 3.0
+  planes: 15
+  step_um: 1.5
 focus:
   enabled: false
 skip_saving: true

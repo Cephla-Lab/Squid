@@ -12,12 +12,10 @@ error_handling:
   fluidics_failure: abort
   imaging_failure: warn
 
-fov_sets:
-  main: ../fov_positions/test_4fov_grid.csv
+fov_file: ../fov_positions/test_4fov_grid.csv
 
 rounds:
   - name: "Multipoint Scan"
     steps:
       - step_type: imaging
         protocol: protocols/multipoint_scan.yaml
-        fovs: main
