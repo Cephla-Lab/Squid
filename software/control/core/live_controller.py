@@ -8,6 +8,7 @@ import squid.logging
 from control.microcontroller import Microcontroller
 from squid.abc import CameraAcquisitionMode, AbstractCamera
 
+import control._def
 from control._def import *
 from control.core.config.utils import apply_confocal_override
 from control.models import merge_channel_configs
@@ -439,7 +440,7 @@ class LiveController:
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
 
-            self.microscope.low_level_drivers.microcontroller.set_trigger_mode(HARDWARE_TRIGGER_MODE)
+            self.microscope.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
 
         if mode == TriggerMode.CONTINUOUS:
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
