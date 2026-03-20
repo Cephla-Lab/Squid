@@ -696,17 +696,27 @@ class TestLaserAFConfig:
     """Tests for LaserAFConfig model."""
 
     def test_laser_af_config_defaults(self):
-        """Test LaserAFConfig has correct defaults."""
+        """Test LaserAFConfig defaults match _def.py values."""
+        import control._def as _def
+
         config = LaserAFConfig()
         assert config.version == 1
         assert config.x_offset == 0
         assert config.y_offset == 0
-        assert config.width == 1536
-        assert config.height == 256
+        assert config.width == _def.LASER_AF_CROP_WIDTH
+        assert config.height == _def.LASER_AF_CROP_HEIGHT
         assert config.pixel_to_um == 1.0
         assert config.has_reference is False
-        assert config.laser_af_range == 100.0
-        assert config.spot_detection_mode == SpotDetectionMode.DUAL_RIGHT
+        assert config.laser_af_range == float(_def.LASER_AF_RANGE)
+        assert config.spot_detection_mode == SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE)
+        assert config.laser_af_averaging_n == _def.LASER_AF_AVERAGING_N
+        assert config.correlation_threshold == _def.CORRELATION_THRESHOLD
+        assert config.min_peak_prominence == _def.LASER_AF_MIN_PEAK_PROMINENCE
+        assert config.focus_camera_exposure_time_ms == float(_def.FOCUS_CAMERA_EXPOSURE_TIME_MS)
+        assert config.focus_camera_analog_gain == float(_def.FOCUS_CAMERA_ANALOG_GAIN)
+        assert config.displacement_success_window_um == _def.DISPLACEMENT_SUCCESS_WINDOW_UM
+        assert config.spot_crop_size == _def.SPOT_CROP_SIZE
+        assert config.pixel_to_um_calibration_distance == _def.PIXEL_TO_UM_CALIBRATION_DISTANCE
 
     def test_laser_af_config_custom_values(self):
         """Test LaserAFConfig with custom values."""

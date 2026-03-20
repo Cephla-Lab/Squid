@@ -16845,8 +16845,9 @@ class WarningErrorWidget(QWidget):
         self.label_icon.setFixedSize(20, 20)
         self.label_icon.setAlignment(Qt.AlignCenter)
 
-        # Message text
+        # Message text – fixed height so newlines / long text can't grow the status bar
         self.label_text = QLabel()
+        self.label_text.setFixedHeight(20)
         self.label_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # Expand button (shows when multiple messages or dropped messages)
@@ -17217,6 +17218,8 @@ class WarningErrorWidget(QWidget):
     def _format_display_message(self, message: str) -> str:
         """Format message for single-line display."""
         msg = self._extract_core_message(message)
+        # Collapse newlines to spaces so the status bar height stays fixed
+        msg = " ".join(msg.split())
         if len(msg) > 60:
             msg = msg[:57] + "..."
         return msg
