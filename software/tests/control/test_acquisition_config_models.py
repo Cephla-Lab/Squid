@@ -717,6 +717,14 @@ class TestLaserAFConfig:
         assert config.displacement_success_window_um == _def.DISPLACEMENT_SUCCESS_WINDOW_UM
         assert config.spot_crop_size == _def.SPOT_CROP_SIZE
         assert config.pixel_to_um_calibration_distance == _def.PIXEL_TO_UM_CALIBRATION_DISTANCE
+        assert config.y_window == _def.LASER_AF_Y_WINDOW
+        assert config.x_window == _def.LASER_AF_X_WINDOW
+        assert config.min_peak_width == float(_def.LASER_AF_MIN_PEAK_WIDTH)
+        assert config.min_peak_distance == float(_def.LASER_AF_MIN_PEAK_DISTANCE)
+        assert config.spot_spacing == float(_def.LASER_AF_SPOT_SPACING)
+        assert config.filter_sigma == _def.LASER_AF_FILTER_SIGMA
+        assert config.initialize_crop_width == _def.LASER_AF_INITIALIZE_CROP_WIDTH
+        assert config.initialize_crop_height == _def.LASER_AF_INITIALIZE_CROP_HEIGHT
 
     def test_laser_af_config_custom_values(self):
         """Test LaserAFConfig with custom values."""

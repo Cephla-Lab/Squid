@@ -50,7 +50,7 @@ class LaserAFConfig(BaseModel):
     )
     spot_detection_mode: SpotDetectionMode = Field(
         default_factory=lambda: SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE),
-        description="Spot detection mode (single, dual_left, dual_right)",
+        description="Spot detection mode",
     )
     displacement_success_window_um: float = Field(
         default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
@@ -81,7 +81,7 @@ class LaserAFConfig(BaseModel):
         default_factory=lambda: float(_def.LASER_AF_SPOT_SPACING), description="Expected spot spacing"
     )
     filter_sigma: Optional[float] = Field(
-        default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (-1 to disable)"
+        default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None to disable)"
     )
 
     # Camera settings
