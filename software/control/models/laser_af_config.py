@@ -11,6 +11,7 @@ from typing import List, Optional
 import numpy as np
 from pydantic import BaseModel, Field
 
+import control._def as _def
 from control._def import SpotDetectionMode
 
 
@@ -27,43 +28,78 @@ class LaserAFConfig(BaseModel):
     # Crop region
     x_offset: float = Field(0, description="X offset for crop region")
     y_offset: float = Field(0, description="Y offset for crop region")
-    width: int = Field(1536, description="Width of crop region")
-    height: int = Field(256, description="Height of crop region")
+    width: int = Field(default_factory=lambda: _def.LASER_AF_CROP_WIDTH, description="Width of crop region")
+    height: int = Field(default_factory=lambda: _def.LASER_AF_CROP_HEIGHT, description="Height of crop region")
 
     # Calibration
     pixel_to_um: float = Field(1.0, description="Pixels to micrometers conversion factor")
     x_reference: Optional[float] = Field(None, description="X reference position")
     has_reference: bool = Field(False, description="Whether a reference image exists")
     calibration_timestamp: str = Field("", description="Timestamp of last calibration")
-    pixel_to_um_calibration_distance: float = Field(6.0, description="Distance used for pixel-to-um calibration")
+    pixel_to_um_calibration_distance: float = Field(
+        default_factory=lambda: _def.PIXEL_TO_UM_CALIBRATION_DISTANCE,
+        description="Distance used for pixel-to-um calibration",
+    )
 
     # Detection parameters
-    laser_af_range: float = Field(100.0, description="Autofocus search range in um")
-    laser_af_averaging_n: int = Field(3, description="Number of measurements to average")
-    spot_detection_mode: SpotDetectionMode = Field(
-        SpotDetectionMode.DUAL_RIGHT,
-        description="Spot detection mode (single, dual_left, dual_right)",
+    laser_af_range: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_RANGE), description="Autofocus search range in um"
     )
-    displacement_success_window_um: float = Field(1.0, description="Acceptable displacement window in um")
+    laser_af_averaging_n: int = Field(
+        default_factory=lambda: _def.LASER_AF_AVERAGING_N, description="Number of measurements to average"
+    )
+    spot_detection_mode: SpotDetectionMode = Field(
+        default_factory=lambda: SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE),
+        description="Spot detection mode",
+    )
+    displacement_success_window_um: float = Field(
+        default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
+        description="Acceptable displacement window in um",
+    )
 
     # Spot detection
-    spot_crop_size: int = Field(100, description="Size of spot crop region")
-    correlation_threshold: float = Field(0.9, description="Correlation threshold")
-    y_window: int = Field(96, description="Y window half-height for detection")
-    x_window: int = Field(20, description="X window half-width for detection")
-    min_peak_width: float = Field(10.0, description="Minimum peak width")
-    min_peak_distance: float = Field(10.0, description="Minimum distance between peaks")
-    min_peak_prominence: float = Field(0.25, description="Minimum peak prominence")
-    spot_spacing: float = Field(100.0, description="Expected spot spacing")
-    filter_sigma: Optional[float] = Field(None, description="Gaussian filter sigma (-1 to disable)")
+    spot_crop_size: int = Field(default_factory=lambda: _def.SPOT_CROP_SIZE, description="Size of spot crop region")
+    correlation_threshold: float = Field(
+        default_factory=lambda: _def.CORRELATION_THRESHOLD, description="Correlation threshold"
+    )
+    y_window: int = Field(
+        default_factory=lambda: _def.LASER_AF_Y_WINDOW, description="Y window half-height for detection"
+    )
+    x_window: int = Field(
+        default_factory=lambda: _def.LASER_AF_X_WINDOW, description="X window half-width for detection"
+    )
+    min_peak_width: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_WIDTH), description="Minimum peak width"
+    )
+    min_peak_distance: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_DISTANCE), description="Minimum distance between peaks"
+    )
+    min_peak_prominence: float = Field(
+        default_factory=lambda: _def.LASER_AF_MIN_PEAK_PROMINENCE, description="Minimum peak prominence"
+    )
+    spot_spacing: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_SPOT_SPACING), description="Expected spot spacing"
+    )
+    filter_sigma: Optional[float] = Field(
+        default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None to disable)"
+    )
 
     # Camera settings
-    focus_camera_exposure_time_ms: float = Field(0.2, description="Focus camera exposure time in ms")
-    focus_camera_analog_gain: float = Field(0.0, description="Focus camera analog gain")
+    focus_camera_exposure_time_ms: float = Field(
+        default_factory=lambda: float(_def.FOCUS_CAMERA_EXPOSURE_TIME_MS),
+        description="Focus camera exposure time in ms",
+    )
+    focus_camera_analog_gain: float = Field(
+        default_factory=lambda: float(_def.FOCUS_CAMERA_ANALOG_GAIN), description="Focus camera analog gain"
+    )
 
     # Initialization
-    initialize_crop_width: int = Field(1200, description="Initial crop width")
-    initialize_crop_height: int = Field(800, description="Initial crop height")
+    initialize_crop_width: int = Field(
+        default_factory=lambda: _def.LASER_AF_INITIALIZE_CROP_WIDTH, description="Initial crop width"
+    )
+    initialize_crop_height: int = Field(
+        default_factory=lambda: _def.LASER_AF_INITIALIZE_CROP_HEIGHT, description="Initial crop height"
+    )
 
     # Reference image (base64 encoded)
     reference_image: Optional[str] = Field(None, description="Base64-encoded reference image data")

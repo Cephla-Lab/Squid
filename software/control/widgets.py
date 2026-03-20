@@ -2796,8 +2796,10 @@ class LaserAutofocusSettingWidget(QWidget):
         spot_mode_layout = QHBoxLayout()
         spot_mode_layout.addWidget(QLabel("Spot Detection Mode:"))
         self.spot_mode_combo = QComboBox()
+        _HIDDEN_SPOT_MODES = {SpotDetectionMode.MULTI_SECOND_RIGHT}
         for mode in SpotDetectionMode:
-            self.spot_mode_combo.addItem(mode.value, mode)
+            if mode not in _HIDDEN_SPOT_MODES:
+                self.spot_mode_combo.addItem(mode.value, mode)
         current_index = self.spot_mode_combo.findData(
             self.laserAutofocusController.laser_af_properties.spot_detection_mode
         )
@@ -16849,8 +16851,10 @@ class WarningErrorWidget(QWidget):
         self.label_icon.setFixedSize(20, 20)
         self.label_icon.setAlignment(Qt.AlignCenter)
 
-        # Message text
+        # Message text – fixed height so newlines / long text can't grow the status bar
         self.label_text = QLabel()
+        text_height = self.label_text.fontMetrics().height()
+        self.label_text.setFixedHeight(max(text_height, self.label_icon.sizeHint().height()))
         self.label_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # Expand button (shows when multiple messages or dropped messages)
@@ -17221,6 +17225,8 @@ class WarningErrorWidget(QWidget):
     def _format_display_message(self, message: str) -> str:
         """Format message for single-line display."""
         msg = self._extract_core_message(message)
+        # Collapse newlines to spaces so the status bar height stays fixed
+        msg = " ".join(msg.split())
         if len(msg) > 60:
             msg = msg[:57] + "..."
         return msg
