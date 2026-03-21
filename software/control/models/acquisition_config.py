@@ -215,14 +215,14 @@ class AcquisitionChannel(BaseModel):
             illumination_config: The machine's illumination channel configuration.
 
         Returns:
-            Source code (int) for the primary illumination channel, or 0 if not found.
+            Source code (int) for the primary illumination channel, or -1 if not found.
         """
         ill_channel_name = self.primary_illumination_channel
         if not ill_channel_name:
             return 0
         ill_channel = illumination_config.get_channel_by_name(ill_channel_name)
         if not ill_channel:
-            return 0
+            return -1
         return illumination_config.get_source_code(ill_channel)
 
     def get_illumination_wavelength(self, illumination_config: "IlluminationChannelConfig") -> Optional[int]:
