@@ -141,7 +141,7 @@ class MultiPointWorker:
         except Exception:
             self._pixel_size_um = None
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
-        self._physical_size_z_um = self.deltaZ if self.NZ > 1 else None
+        self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
 
         self.acquisition_info = AcquisitionInfo(
