@@ -73,10 +73,13 @@ sudo usermod -aG dialout $USER
 sudo apt autoremove -y
 
 echo "Holding kernel packages to prevent automatic updates..."
-sudo apt-mark hold \
+if sudo apt-mark hold \
   linux-image-generic linux-headers-generic linux-generic \
-  "linux-image-$(uname -r)" "linux-headers-$(uname -r)" 2>/dev/null || true
-echo "Kernel packages held. Run 'sudo apt-mark unhold linux-image-generic linux-headers-generic linux-generic linux-image-$(uname -r) linux-headers-$(uname -r)' to re-enable."
+  "linux-image-$(uname -r)" "linux-headers-$(uname -r)"; then
+  echo "Kernel packages held. Run 'sudo apt-mark unhold linux-image-generic linux-headers-generic linux-generic linux-image-$(uname -r) linux-headers-$(uname -r)' to re-enable."
+else
+  echo "Warning: Failed to hold kernel packages; automatic kernel updates remain enabled." >&2
+fi
 
 # create desktop shortcut
 mkdir -p "$HOME/Desktop"
