@@ -84,8 +84,8 @@ class LiveController:
         return self.currentConfiguration.get_illumination_wavelength(ill_config)
 
     def _is_led_matrix(self) -> bool:
-        """Check if current configuration is LED matrix (source code < 10)."""
-        return self._get_illumination_source() < 10
+        """Check if current configuration is LED matrix (source code 0-9)."""
+        return 0 <= self._get_illumination_source() < 10
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Confocal mode
