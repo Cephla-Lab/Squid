@@ -72,6 +72,12 @@ sudo usermod -aG dialout $USER
 
 sudo apt autoremove -y
 
+echo "Holding kernel packages to prevent automatic updates..."
+sudo apt-mark hold \
+  linux-image-generic linux-headers-generic linux-generic \
+  "linux-image-$(uname -r)" "linux-headers-$(uname -r)" 2>/dev/null || true
+echo "Kernel packages held. Run 'sudo apt-mark unhold linux-image-generic linux-headers-generic linux-generic linux-image-$(uname -r) linux-headers-$(uname -r)' to re-enable."
+
 # create desktop shortcut
 mkdir -p "$HOME/Desktop"
 DESKTOP_FILE="$HOME/Desktop/Squid_hcs.desktop"
