@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import List, Dict, Optional, Union
 
@@ -41,6 +42,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise Exception("Error, microcontroller is needed by the SquidFilterWheel")
 
         self.microcontroller = microcontroller
+        # Serializes all position-affecting operations (move, home, step) so that
+        # the read-position → send-move → wait → update-position sequence is atomic.
+        # Without this, concurrent calls from the GUI thread and acquisition worker
+        # can read stale positions and issue wrong relative moves.
+        self._lock = threading.Lock()
 
         # Convert single config to dict format for uniform handling
         if isinstance(configs, SquidFilterWheelConfig):
@@ -126,44 +132,46 @@ class SquidFilterWheel(AbstractFilterWheelController):
         Raises:
             TimeoutError: If both the initial move and retry after re-home fail.
         """
-        config = self._configs[wheel_id]
-        current_pos = self._positions[wheel_id]
-
-        if target_pos == current_pos:
-            return
-
-        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
-        delta = (target_pos - current_pos) * step_size
-
-        try:
-            self._move_wheel(wheel_id, delta)
-            self.microcontroller.wait_till_operation_is_completed()
-            self._positions[wheel_id] = target_pos
-        except TimeoutError:
-            _log.warning(f"Filter wheel {wheel_id} movement timed out. " f"Re-homing to re-sync position tracking...")
-            # Re-home to re-synchronize position tracking
-            self._home_wheel(wheel_id)
-
-            # Retry the movement (position is now at min_index after homing)
+        with self._lock:
+            config = self._configs[wheel_id]
             current_pos = self._positions[wheel_id]
+
+            if target_pos == current_pos:
+                return
+
+            step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
             delta = (target_pos - current_pos) * step_size
+
             try:
                 self._move_wheel(wheel_id, delta)
                 self.microcontroller.wait_till_operation_is_completed()
                 self._positions[wheel_id] = target_pos
-                _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
             except TimeoutError:
-                _log.error(
-                    f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
-                )
-                raise
+                _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
+                # Re-home to re-synchronize position tracking
+                self._home_wheel_unlocked(wheel_id)
+
+                # Retry the movement (position is now at min_index after homing)
+                current_pos = self._positions[wheel_id]
+                delta = (target_pos - current_pos) * step_size
+                try:
+                    self._move_wheel(wheel_id, delta)
+                    self.microcontroller.wait_till_operation_is_completed()
+                    self._positions[wheel_id] = target_pos
+                    _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
+                except TimeoutError:
+                    _log.error(
+                        f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
+                    )
+                    raise
 
     def _home_wheel(self, wheel_id: int):
-        """Home a specific wheel.
+        """Home a specific wheel (acquires lock)."""
+        with self._lock:
+            self._home_wheel_unlocked(wheel_id)
 
-        Args:
-            wheel_id: The ID of the wheel to home.
-        """
+    def _home_wheel_unlocked(self, wheel_id: int):
+        """Home a specific wheel. Caller must hold self._lock."""
         config = self._configs[wheel_id]
         motor_slot = config.motor_slot_index
 
@@ -225,14 +233,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
         Args:
             index: Specific wheel index to home. If None, homes all configured wheels.
         """
-        if index is not None:
-            if index not in self._configs:
-                raise ValueError(f"Filter wheel index {index} not found")
-            self._home_wheel(index)
-        else:
-            # Home all wheels
-            for wheel_id in self._configs.keys():
-                self._home_wheel(wheel_id)
+        with self._lock:
+            if index is not None:
+                if index not in self._configs:
+                    raise ValueError(f"Filter wheel index {index} not found")
+                self._home_wheel_unlocked(index)
+            else:
+                for wheel_id in self._configs.keys():
+                    self._home_wheel_unlocked(wheel_id)
 
     def _step_position(self, wheel_id: int, direction: int):
         """Move position by one step in the given direction.
@@ -245,11 +253,15 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise ValueError(f"Filter wheel index {wheel_id} not found")
 
         config = self._configs[wheel_id]
-        current_pos = self._positions[wheel_id]
-        new_pos = current_pos + direction
-
-        if config.min_index <= new_pos <= config.max_index:
-            self._move_to_position(wheel_id, new_pos)
+        with self._lock:
+            current_pos = self._positions[wheel_id]
+            new_pos = current_pos + direction
+            if not (config.min_index <= new_pos <= config.max_index):
+                return
+        # _move_to_position acquires the lock internally; the position is
+        # re-read inside the lock so a stale new_pos just becomes a no-op
+        # if another thread moved to new_pos in the meantime.
+        self._move_to_position(wheel_id, new_pos)
 
     def next_position(self, wheel_id: int = 1):
         """Move to the next position on a wheel.
@@ -290,7 +302,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
         Returns:
             Dict mapping wheel_id -> current position.
         """
-        return dict(self._positions)
+        with self._lock:
+            return dict(self._positions)
 
     def set_delay_offset_ms(self, delay_offset_ms: float):
         """Set delay offset (not used by SQUID filter wheel)."""

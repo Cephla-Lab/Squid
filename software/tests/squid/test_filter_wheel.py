@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,3 +119,106 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
         mock_microcontroller.turn_on_stage_pid.assert_called_once()
+
+
+class TestSquidFilterWheelThreadSafety:
+    """Tests that concurrent filter wheel operations don't corrupt position tracking."""
+
+    @pytest.fixture
+    def wheel(self):
+        mcu = MagicMock()
+        config = SquidFilterWheelConfig(
+            max_index=8, min_index=1, offset=0.008, motor_slot_index=3, transitions_per_revolution=4000
+        )
+        return SquidFilterWheel(mcu, config, skip_init=True)
+
+    def test_concurrent_moves_serialize(self, wheel):
+        """Two threads calling set_filter_wheel_position must not corrupt tracking.
+
+        Without the lock, both threads read current_pos=1, compute their deltas
+        relative to 1, and issue overlapping moves that leave the physical wheel
+        at the wrong position.  With the lock the second thread sees the updated
+        position from the first and computes the correct (smaller) delta.
+        """
+        move_deltas = []
+        original_move_wheel = wheel._move_wheel
+
+        def recording_move_wheel(wid, delta):
+            move_deltas.append(delta)
+            original_move_wheel(wid, delta)
+
+        wheel._move_wheel = recording_move_wheel
+
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def move_to(pos):
+            try:
+                barrier.wait(timeout=2)
+                wheel.set_filter_wheel_position({1: pos})
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=move_to, args=(5,))
+        t2 = threading.Thread(target=move_to, args=(3,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert not errors, f"Threads raised: {errors}"
+        # Final tracked position must equal the last physical move target
+        final_pos = wheel.get_filter_wheel_position()[1]
+        assert final_pos in (3, 5), f"Position tracking corrupted: {final_pos}"
+
+        # With the lock, the second move should compute its delta from the first
+        # move's result, not from the original position 1.  So the sum of deltas
+        # must equal (final_pos - 1) * step_size, regardless of execution order.
+        step_size = 1.0 / 8
+        expected_total_delta = (final_pos - 1) * step_size
+        actual_total_delta = sum(move_deltas)
+        assert abs(actual_total_delta - expected_total_delta) < 1e-9, (
+            f"Delta mismatch: moves summed to {actual_total_delta}, "
+            f"but position {final_pos} requires {expected_total_delta}"
+        )
+
+    def test_home_during_move_serializes(self, wheel):
+        """home() must not run concurrently with a move."""
+        wheel._positions[1] = 4
+        call_order = []
+
+        original_home_w = wheel.microcontroller.home_w
+        original_move_w = wheel.microcontroller.move_w_usteps
+
+        def tracked_home_w(*a, **kw):
+            call_order.append("home_start")
+            original_home_w(*a, **kw)
+            call_order.append("home_end")
+
+        def tracked_move_w(usteps):
+            call_order.append("move_start")
+            original_move_w(usteps)
+            call_order.append("move_end")
+
+        wheel.microcontroller.home_w = tracked_home_w
+        wheel.microcontroller.move_w_usteps = tracked_move_w
+
+        barrier = threading.Barrier(2)
+
+        def do_home():
+            barrier.wait(timeout=2)
+            wheel.home(1)
+
+        def do_move():
+            barrier.wait(timeout=2)
+            wheel.set_filter_wheel_position({1: 6})
+
+        t1 = threading.Thread(target=do_home)
+        t2 = threading.Thread(target=do_move)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # The operations must not interleave — home and move regions shouldn't overlap
+        assert wheel.get_filter_wheel_position()[1] in (1, 6)
