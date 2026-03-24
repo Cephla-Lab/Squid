@@ -836,7 +836,9 @@ class MultiPointWorker:
             # Handle TiffWriteResult - notify viewer that frame is written
             elif isinstance(job_result.result, TiffWriteResult):
                 r = job_result.result
-                self.callbacks.signal_tiff_frame_written(r.filepath, r.fov, r.time_point, r.z_index, r.channel_name, r.region_id)
+                self.callbacks.signal_tiff_frame_written(
+                    r.filepath, r.fov, r.time_point, r.z_index, r.channel_name, r.region_id
+                )
             return True
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
