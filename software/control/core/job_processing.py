@@ -150,13 +150,40 @@ def _acquire_file_lock(lock_path: str, context: str = ""):
         ) from exc
 
 
+@dataclass
+class TiffWriteResult:
+    """Result from a SaveImageJob, containing frame info for viewer notification."""
+
+    filepath: str
+    fov: int
+    time_point: int
+    z_index: int
+    channel_name: str
+    region_id: int = 0
+
+
 class SaveImageJob(Job):
     _log: ClassVar = squid.logging.get_logger("SaveImageJob")
 
-    def run(self) -> bool:
+    def _make_result(self) -> TiffWriteResult:
+        info = self.capture_info
+        filepath = utils_acquisition.get_image_filepath(
+            info.save_directory, info.file_id, info.configuration.name, np.uint16
+        )
+        return TiffWriteResult(
+            filepath=filepath,
+            fov=info.fov,
+            time_point=info.time_point or 0,
+            z_index=info.z_index,
+            channel_name=info.configuration.name,
+            region_id=info.region_id,
+        )
+
+    def run(self) -> TiffWriteResult:
         from control.core.io_simulation import is_simulation_enabled, simulated_tiff_write
 
         image = self.image_array()
+        result = self._make_result()
 
         # Simulated disk I/O mode - encode to buffer, throttle, discard
         if is_simulation_enabled():
@@ -164,10 +191,11 @@ class SaveImageJob(Job):
             self._log.debug(
                 f"SaveImageJob {self.job_id}: simulated write of {bytes_written} bytes " f"(image shape={image.shape})"
             )
-            return True
+            return result
 
         is_color = len(image.shape) > 2
-        return self.save_image(image, self.capture_info, is_color)
+        self.save_image(image, self.capture_info, is_color)
+        return result
 
     def save_image(self, image: np.array, info: CaptureInfo, is_color: bool):
         # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
@@ -235,7 +263,30 @@ class SaveOMETiffJob(Job):
     _log: ClassVar = squid.logging.get_logger("SaveOMETiffJob")
     acquisition_info: Optional[AcquisitionInfo] = field(default=None)
 
-    def run(self) -> bool:
+    def _make_result(self) -> TiffWriteResult:
+        info = self.capture_info
+        # Use the actual OME-TIFF path with page index for correct plane reading
+        # OME-TIFF stack layout: (T, Z, C, Y, X) — page = t * (Z * C) + z * C + c
+        ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, info)
+        base_name = ome_tiff_writer.ome_base_name(info)
+        ome_path = os.path.join(ome_folder, base_name + ".ome.tiff")
+        t = info.time_point or 0
+        z = info.z_index
+        c = info.configuration_idx
+        n_z = self.acquisition_info.total_z_levels
+        n_c = self.acquisition_info.total_channels
+        page_idx = t * (n_z * n_c) + z * n_c + c
+        filepath = f"{ome_path}#{page_idx}"
+        return TiffWriteResult(
+            filepath=filepath,
+            fov=info.fov,
+            time_point=t,
+            z_index=z,
+            channel_name=info.configuration.name,
+            region_id=info.region_id,
+        )
+
+    def run(self) -> TiffWriteResult:
         if self.acquisition_info is None:
             raise ValueError(
                 "SaveOMETiffJob.run() requires acquisition_info but it is None. "
@@ -275,10 +326,10 @@ class SaveOMETiffJob(Job):
                 f"SaveOMETiffJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"(image shape={image.shape})"
             )
-            return True
+            return self._make_result()
 
         self._save_ome_tiff(image, self.capture_info)
-        return True
+        return self._make_result()
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
         # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7

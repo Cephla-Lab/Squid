@@ -252,6 +252,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
+                signal_tiff_frame_written=self._signal_tiff_frame_written_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -362,30 +363,9 @@ class QtMultiPointController(MultiPointController, QObject):
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
-        # NDViewer push-based API: register image
-        # Compute flat FOV index from region and fov within region
-        region_offset = self._ndviewer_region_fov_offset.get(info.region_id)
-        if region_offset is None:
-            # This should not happen if start_acquisition was called correctly
-            self.log.warning(
-                f"Unknown region_id '{info.region_id}' in NDViewer registration. "
-                f"Available: {list(self._ndviewer_region_fov_offset.keys())}. Skipping."
-            )
-            return
-        flat_fov_idx = region_offset + info.fov
-
-        if self._ndviewer_mode in (NDViewerMode.ZARR_6D, NDViewerMode.ZARR_5D):
-            # Zarr modes: notification happens via signal_zarr_frame_written callback
-            # when the subprocess completes writing, not here (too early).
-            pass
-        else:
-            # TIFF mode: register with filepath (synchronous write, notification is correct here)
-            filepath = control.utils_acquisition.get_image_filepath(
-                info.save_directory, info.file_id, info.configuration.name, frame.frame.dtype
-            )
-            self.ndviewer_register_image.emit(
-                info.time_point, flat_fov_idx, info.z_index, info.configuration.name, filepath
-            )
+        # NDViewer notification for both TIFF and Zarr modes happens via post-write
+        # callbacks (signal_tiff_frame_written / signal_zarr_frame_written) to avoid
+        # race conditions with async file writes. Do not emit here.
 
     def _signal_current_configuration_fn(self, config: AcquisitionChannel):
         self.signal_current_configuration.emit(config)
@@ -448,6 +428,19 @@ class QtMultiPointController(MultiPointController, QObject):
             else:
                 flat_fov = fov
             self.ndviewer_notify_zarr_frame.emit(time_point, flat_fov, z_index, channel_name, 0)
+
+    def _signal_tiff_frame_written_fn(
+        self, filepath: str, fov: int, time_point: int, z_index: int, channel_name: str, region_id: int
+    ):
+        """Called when subprocess completes writing a TIFF frame.
+
+        This is the correct time to notify the viewer - after data is on disk.
+        """
+        region_offset = self._ndviewer_region_fov_offset.get(region_id)
+        if region_offset is None:
+            return
+        flat_fov_idx = region_offset + fov
+        self.ndviewer_register_image.emit(time_point, flat_fov_idx, z_index, channel_name, filepath)
 
     # -------------------------------------------------------------------------
     # Helper methods for Zarr FOV path building
