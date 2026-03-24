@@ -116,7 +116,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
-    def _move_to_position_unlocked(self, wheel_id: int, target_pos: int):
+    def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with automatic re-home on failure.
 
         Caller must hold self._lock.
@@ -150,7 +150,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         except TimeoutError:
             _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
             try:
-                self._home_wheel_unlocked(wheel_id)
+                self._home_wheel(wheel_id)
             except Exception as rehome_err:
                 _log.error(
                     f"Filter wheel {wheel_id} re-home also failed: {rehome_err}. "
@@ -174,7 +174,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 )
                 raise
 
-    def _home_wheel_unlocked(self, wheel_id: int):
+    def _home_wheel(self, wheel_id: int):
         """Home a specific wheel. Caller must hold self._lock."""
         config = self._configs[wheel_id]
         motor_slot = config.motor_slot_index
@@ -253,10 +253,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
             if index is not None:
                 if index not in self._configs:
                     raise ValueError(f"Filter wheel index {index} not found")
-                self._home_wheel_unlocked(index)
+                self._home_wheel(index)
             else:
                 for wheel_id in self._configs.keys():
-                    self._home_wheel_unlocked(wheel_id)
+                    self._home_wheel(wheel_id)
 
     def _step_position(self, wheel_id: int, direction: int):
         """Move position by one step in the given direction.
@@ -274,7 +274,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             new_pos = current_pos + direction
             if not (config.min_index <= new_pos <= config.max_index):
                 return
-            self._move_to_position_unlocked(wheel_id, new_pos)
+            self._move_to_position(wheel_id, new_pos)
 
     def next_position(self, wheel_id: int = 1):
         """Move to the next position on a wheel.
@@ -308,7 +308,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 if pos not in range(config.min_index, config.max_index + 1):
                     raise ValueError(f"Filter wheel {wheel_id} position {pos} is out of range")
 
-                self._move_to_position_unlocked(wheel_id, pos)
+                self._move_to_position(wheel_id, pos)
 
     def get_filter_wheel_position(self) -> Dict[int, int]:
         """Get current positions of all configured wheels.
