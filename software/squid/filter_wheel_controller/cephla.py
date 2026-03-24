@@ -181,6 +181,26 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._move_wheel(wheel_id, config.offset)
         self.microcontroller.wait_till_operation_is_completed()
 
+        # Workaround: after homing, the TMC4361A silently rejects the first
+        # negative-direction move (completes in ~5ms without moving the motor).
+        # A forward jog followed by a second home guarantees a known position
+        # regardless of whether the backward-move bug fires.
+        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
+        self._move_wheel(wheel_id, step_size)
+        self.microcontroller.wait_till_operation_is_completed()
+        self._move_wheel(wheel_id, -step_size)  # may be swallowed — that's fine
+        self.microcontroller.wait_till_operation_is_completed()
+
+        # Re-home to guarantee a known position.
+        if motor_slot == 3:
+            self.microcontroller.home_w()
+        elif motor_slot == 4:
+            self.microcontroller.home_w2()
+        self.microcontroller.wait_till_operation_is_completed(15)
+
+        self._move_wheel(wheel_id, config.offset)
+        self.microcontroller.wait_till_operation_is_completed()
+
         # Reset position tracking
         self._positions[wheel_id] = config.min_index
 
