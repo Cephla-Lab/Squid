@@ -117,7 +117,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
     def _move_to_position(self, wheel_id: int, target_pos: int):
+        """Move wheel to target position (acquires lock)."""
+        with self._lock:
+            self._move_to_position_unlocked(wheel_id, target_pos)
+
+    def _move_to_position_unlocked(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with automatic re-home on failure.
+
+        Caller must hold self._lock.
 
         If the movement times out (e.g., motor stall), this method will:
         1. Log a warning
@@ -132,38 +139,37 @@ class SquidFilterWheel(AbstractFilterWheelController):
         Raises:
             TimeoutError: If both the initial move and retry after re-home fail.
         """
-        with self._lock:
-            config = self._configs[wheel_id]
+        config = self._configs[wheel_id]
+        current_pos = self._positions[wheel_id]
+
+        if target_pos == current_pos:
+            return
+
+        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
+        delta = (target_pos - current_pos) * step_size
+
+        try:
+            self._move_wheel(wheel_id, delta)
+            self.microcontroller.wait_till_operation_is_completed()
+            self._positions[wheel_id] = target_pos
+        except TimeoutError:
+            _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
+            # Re-home to re-synchronize position tracking
+            self._home_wheel_unlocked(wheel_id)
+
+            # Retry the movement (position is now at min_index after homing)
             current_pos = self._positions[wheel_id]
-
-            if target_pos == current_pos:
-                return
-
-            step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
             delta = (target_pos - current_pos) * step_size
-
             try:
                 self._move_wheel(wheel_id, delta)
                 self.microcontroller.wait_till_operation_is_completed()
                 self._positions[wheel_id] = target_pos
+                _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
             except TimeoutError:
-                _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
-                # Re-home to re-synchronize position tracking
-                self._home_wheel_unlocked(wheel_id)
-
-                # Retry the movement (position is now at min_index after homing)
-                current_pos = self._positions[wheel_id]
-                delta = (target_pos - current_pos) * step_size
-                try:
-                    self._move_wheel(wheel_id, delta)
-                    self.microcontroller.wait_till_operation_is_completed()
-                    self._positions[wheel_id] = target_pos
-                    _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
-                except TimeoutError:
-                    _log.error(
-                        f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
-                    )
-                    raise
+                _log.error(
+                    f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
+                )
+                raise
 
     def _home_wheel(self, wheel_id: int):
         """Home a specific wheel (acquires lock)."""
@@ -258,10 +264,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             new_pos = current_pos + direction
             if not (config.min_index <= new_pos <= config.max_index):
                 return
-        # _move_to_position acquires the lock internally; the position is
-        # re-read inside the lock so a stale new_pos just becomes a no-op
-        # if another thread moved to new_pos in the meantime.
-        self._move_to_position(wheel_id, new_pos)
+            self._move_to_position_unlocked(wheel_id, new_pos)
 
     def next_position(self, wheel_id: int = 1):
         """Move to the next position on a wheel.
