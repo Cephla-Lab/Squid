@@ -5,6 +5,7 @@ import pytest
 
 import squid.config
 import squid.filter_wheel_controller.utils
+from control._def import SCREW_PITCH_W_MM
 from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidFilterWheelConfig
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
@@ -166,6 +167,8 @@ class TestSquidFilterWheelThreadSafety:
         t1.join(timeout=5)
         t2.join(timeout=5)
 
+        assert not t1.is_alive(), "Thread 1 did not finish (possible deadlock)"
+        assert not t2.is_alive(), "Thread 2 did not finish (possible deadlock)"
         assert not errors, f"Threads raised: {errors}"
         # Final tracked position must equal the last physical move target
         final_pos = wheel.get_filter_wheel_position()[1]
@@ -174,7 +177,8 @@ class TestSquidFilterWheelThreadSafety:
         # With the lock, the second move should compute its delta from the first
         # move's result, not from the original position 1.  So the sum of deltas
         # must equal (final_pos - 1) * step_size, regardless of execution order.
-        step_size = 1.0 / 8
+        config = wheel._configs[1]
+        step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
         expected_total_delta = (final_pos - 1) * step_size
         actual_total_delta = sum(move_deltas)
         assert abs(actual_total_delta - expected_total_delta) < 1e-9, (
@@ -220,5 +224,17 @@ class TestSquidFilterWheelThreadSafety:
         t1.join(timeout=10)
         t2.join(timeout=10)
 
-        # The operations must not interleave — home and move regions shouldn't overlap
+        assert not t1.is_alive(), "Home thread did not finish (possible deadlock)"
+        assert not t2.is_alive(), "Move thread did not finish (possible deadlock)"
+
+        # Verify operations did not interleave.
+        # home() calls home_w (home_start/home_end) then _move_wheel for offset (move_start/move_end).
+        # set_filter_wheel_position calls _move_wheel (move_start/move_end).
+        # With the lock, the two valid orderings are:
+        #   home first: [home_start, home_end, move_start, move_end, move_start, move_end]
+        #   move first: [move_start, move_end, home_start, home_end, move_start, move_end]
+        assert call_order in (
+            ["home_start", "home_end", "move_start", "move_end", "move_start", "move_end"],
+            ["move_start", "move_end", "home_start", "home_end", "move_start", "move_end"],
+        ), f"Operations interleaved: {call_order}"
         assert wheel.get_filter_wheel_position()[1] in (1, 6)
