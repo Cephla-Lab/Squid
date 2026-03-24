@@ -289,15 +289,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
             positions: Dict mapping wheel_id -> target position.
                        Position values are 1-indexed (typically 1-8).
         """
-        for wheel_id, pos in positions.items():
-            if wheel_id not in self._configs:
-                raise ValueError(f"Filter wheel index {wheel_id} not found")
+        with self._lock:
+            for wheel_id, pos in positions.items():
+                if wheel_id not in self._configs:
+                    raise ValueError(f"Filter wheel index {wheel_id} not found")
 
-            config = self._configs[wheel_id]
-            if pos not in range(config.min_index, config.max_index + 1):
-                raise ValueError(f"Filter wheel {wheel_id} position {pos} is out of range")
+                config = self._configs[wheel_id]
+                if pos not in range(config.min_index, config.max_index + 1):
+                    raise ValueError(f"Filter wheel {wheel_id} position {pos} is out of range")
 
-            self._move_to_position(wheel_id, pos)
+                self._move_to_position_unlocked(wheel_id, pos)
 
     def get_filter_wheel_position(self) -> Dict[int, int]:
         """Get current positions of all configured wheels.
@@ -327,8 +328,3 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def close(self):
         """Close the filter wheel controller (no-op for SQUID)."""
         pass
-
-    # Backward compatibility methods
-    def move_w(self, delta: float):
-        """Move the first wheel by delta. For backward compatibility."""
-        self._move_wheel(1, delta)
