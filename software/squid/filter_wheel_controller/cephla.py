@@ -97,7 +97,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
 
     def _move_wheel(self, wheel_id: int, delta: float):
-        """Move a specific wheel by delta distance.
+        """Move a specific wheel by delta distance. Caller must hold self._lock.
 
         Args:
             wheel_id: The ID of the wheel to move.
@@ -115,11 +115,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.move_w2_usteps(usteps)
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
-
-    def _move_to_position(self, wheel_id: int, target_pos: int):
-        """Move wheel to target position (acquires lock)."""
-        with self._lock:
-            self._move_to_position_unlocked(wheel_id, target_pos)
 
     def _move_to_position_unlocked(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with automatic re-home on failure.
@@ -154,8 +149,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self._positions[wheel_id] = target_pos
         except TimeoutError:
             _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
-            # Re-home to re-synchronize position tracking
-            self._home_wheel_unlocked(wheel_id)
+            try:
+                self._home_wheel_unlocked(wheel_id)
+            except Exception as rehome_err:
+                _log.error(
+                    f"Filter wheel {wheel_id} re-home also failed: {rehome_err}. "
+                    f"Position tracking unreliable. Hardware may need attention."
+                )
+                raise
 
             # Retry the movement (position is now at min_index after homing)
             current_pos = self._positions[wheel_id]
@@ -167,14 +168,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
             except TimeoutError:
                 _log.error(
-                    f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
+                    f"Filter wheel {wheel_id} movement failed even after re-home. "
+                    f"Tracked position ({self._positions[wheel_id]}) may not reflect "
+                    f"actual physical position. Hardware may need attention."
                 )
                 raise
-
-    def _home_wheel(self, wheel_id: int):
-        """Home a specific wheel (acquires lock)."""
-        with self._lock:
-            self._home_wheel_unlocked(wheel_id)
 
     def _home_wheel_unlocked(self, wheel_id: int):
         """Home a specific wheel. Caller must hold self._lock."""
@@ -188,14 +186,26 @@ class SquidFilterWheel(AbstractFilterWheelController):
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
-        # Wait for homing to complete (needs longer timeout)
-        self.microcontroller.wait_till_operation_is_completed(15)
+        try:
+            self.microcontroller.wait_till_operation_is_completed(15)
+        except Exception as e:
+            # Physical position is unknown — reset tracking to min_index as
+            # best guess so subsequent moves don't use a stale value.
+            self._positions[wheel_id] = config.min_index
+            _log.error(f"Filter wheel {wheel_id} homing failed: {e}. Position tracking reset to {config.min_index}.")
+            raise
 
-        # Move to offset position
         self._move_wheel(wheel_id, config.offset)
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.wait_till_operation_is_completed()
+        except Exception as e:
+            # Homed but offset move failed — at physical zero, not offset.
+            self._positions[wheel_id] = config.min_index
+            _log.error(
+                f"Filter wheel {wheel_id} offset move failed after homing: {e}. Position reset to {config.min_index}."
+            )
+            raise
 
-        # Reset position tracking
         self._positions[wheel_id] = config.min_index
 
     def initialize(self, filter_wheel_indices: List[int]):
@@ -258,7 +268,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if wheel_id not in self._configs:
             raise ValueError(f"Filter wheel index {wheel_id} not found")
 
-        config = self._configs[wheel_id]
+        config = self._configs[wheel_id]  # _configs is immutable after __init__
         with self._lock:
             current_pos = self._positions[wheel_id]
             new_pos = current_pos + direction

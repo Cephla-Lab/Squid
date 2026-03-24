@@ -1,4 +1,5 @@
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -128,6 +129,9 @@ class TestSquidFilterWheelThreadSafety:
     @pytest.fixture
     def wheel(self):
         mcu = MagicMock()
+        # Simulate real MCU latency so the critical section has a wide enough
+        # window for threads to actually interleave without the lock.
+        mcu.wait_till_operation_is_completed.side_effect = lambda *a, **kw: time.sleep(0.02)
         config = SquidFilterWheelConfig(
             max_index=8, min_index=1, offset=0.008, motor_slot_index=3, transitions_per_revolution=4000
         )
@@ -139,7 +143,8 @@ class TestSquidFilterWheelThreadSafety:
         Without the lock, both threads read current_pos=1, compute their deltas
         relative to 1, and issue overlapping moves that leave the physical wheel
         at the wrong position.  With the lock the second thread sees the updated
-        position from the first and computes the correct (smaller) delta.
+        position from the first and computes the correct delta relative to the
+        actual current position.
         """
         move_deltas = []
         original_move_wheel = wheel._move_wheel
@@ -237,4 +242,5 @@ class TestSquidFilterWheelThreadSafety:
             ["home_start", "home_end", "move_start", "move_end", "move_start", "move_end"],
             ["move_start", "move_end", "home_start", "home_end", "move_start", "move_end"],
         ), f"Operations interleaved: {call_order}"
+        # home-first -> move sets final pos 6; move-first -> home resets to 1
         assert wheel.get_filter_wheel_position()[1] in (1, 6)
