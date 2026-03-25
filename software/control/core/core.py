@@ -1335,8 +1335,11 @@ class NavigationViewer(QFrame):
         self.sample = sample
         self.objectiveStore = objectivestore
         self.camera = camera
-        self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
+        self.well_size_x_mm = WELL_SIZE_X_MM
+        self.well_size_y_mm = WELL_SIZE_Y_MM
+        self.well_spacing_x_mm = WELL_SPACING_X_MM
+        self.well_spacing_y_mm = WELL_SPACING_Y_MM
+        self.well_shape = WELL_SHAPE
         self.number_of_skip = NUMBER_OF_SKIP
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -1492,8 +1495,11 @@ class NavigationViewer(QFrame):
         a1_y_mm,
         a1_x_pixel,
         a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
+        well_size_x_mm,
+        well_size_y_mm,
+        well_spacing_x_mm,
+        well_spacing_y_mm,
+        well_shape,
         number_of_skip,
         rows,
         cols,
@@ -1514,8 +1520,11 @@ class NavigationViewer(QFrame):
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
-        self.well_size_mm = well_size_mm
-        self.well_spacing_mm = well_spacing_mm
+        self.well_size_x_mm = well_size_x_mm
+        self.well_size_y_mm = well_size_y_mm
+        self.well_spacing_x_mm = well_spacing_x_mm
+        self.well_spacing_y_mm = well_spacing_y_mm
+        self.well_shape = well_shape
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols
