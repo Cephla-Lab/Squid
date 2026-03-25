@@ -2280,13 +2280,15 @@ class HighContentScreeningGui(QMainWindow):
             # Work around pyqtgraph DockArea layout bug on Linux (Ubuntu 24.04):
             # When the well selector dock is hidden (tab switch away) then re-shown
             # (tab switch back to Live View), the DockArea's internal QSplitter
-            # doesn't recalculate sizes, corrupting the layout. A deferred resize
-            # nudge forces the recalculation.
+            # doesn't recalculate sizes, corrupting the layout. Suppress painting
+            # during the transition, flush events so the DockArea processes the
+            # visibility change, nudge resize to force correct layout, then re-enable
+            # painting.
             if self.dock_wellSelection.isVisible():
-                # Process pending events first so the DockArea fully applies the
-                # visibility change, then nudge resize to force splitter recalc.
+                self.setUpdatesEnabled(False)
                 QApplication.processEvents()
                 self._nudge_resize()
+                self.setUpdatesEnabled(True)
         else:
             self.toggleWellSelector(False)
 
