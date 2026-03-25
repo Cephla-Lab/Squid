@@ -149,3 +149,42 @@ class TestRectangularWellCoverage:
         """Round well with positional well_size_mm should still work."""
         coverage = calculate_well_coverage(15.0, 3.9, 10, "Circle", 15.54)
         assert coverage > 0
+
+
+class TestScanCoordinatesRectangular:
+    """Tests for ScanCoordinates with asymmetric X/Y spacing."""
+
+    def test_well_position_asymmetric_spacing(self):
+        """Wells should use separate X and Y spacing."""
+        from unittest.mock import MagicMock
+        from control.core.scan_coordinates import ScanCoordinates
+
+        import control._def
+
+        original_x = control._def.WELL_SPACING_X_MM
+        original_y = control._def.WELL_SPACING_Y_MM
+        try:
+            control._def.WELL_SPACING_X_MM = 4.0
+            control._def.WELL_SPACING_Y_MM = 3.0
+
+            sc = ScanCoordinates(MagicMock(), MagicMock(), MagicMock())
+            sc.well_spacing_x_mm = 4.0
+            sc.well_spacing_y_mm = 3.0
+            sc.a1_x_mm = 5.0
+            sc.a1_y_mm = 5.0
+            sc.wellplate_offset_x_mm = 0
+            sc.wellplate_offset_y_mm = 0
+            sc.format = "custom"
+
+            mock_selector = MagicMock()
+            mock_selector.get_selected_cells.return_value = [[1, 2]]
+            sc.well_selector = mock_selector
+
+            wells = sc.get_selected_wells()
+            # x = 5.0 + 2 * 4.0 = 13.0
+            # y = 5.0 + 1 * 3.0 = 8.0
+            well_id = list(wells.keys())[0]
+            assert wells[well_id] == (13.0, 8.0), f"Expected (13.0, 8.0), got {wells[well_id]}"
+        finally:
+            control._def.WELL_SPACING_X_MM = original_x
+            control._def.WELL_SPACING_Y_MM = original_y

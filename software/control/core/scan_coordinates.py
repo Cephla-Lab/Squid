@@ -66,8 +66,11 @@ class ScanCoordinates:
         self.a1_y_mm = control._def.A1_Y_MM
         self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
         self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = control._def.WELL_SPACING_MM
-        self.well_size_mm = control._def.WELL_SIZE_MM
+        self.well_spacing_x_mm = control._def.WELL_SPACING_X_MM
+        self.well_spacing_y_mm = control._def.WELL_SPACING_Y_MM
+        self.well_size_x_mm = control._def.WELL_SIZE_X_MM
+        self.well_size_y_mm = control._def.WELL_SIZE_Y_MM
+        self.well_shape = control._def.WELL_SHAPE
         self.a1_x_pixel = None
         self.a1_y_pixel = None
         self.number_of_skip = None
@@ -81,15 +84,31 @@ class ScanCoordinates:
         self.well_selector = well_selector
 
     def update_wellplate_settings(
-        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
+        self,
+        format_,
+        a1_x_mm,
+        a1_y_mm,
+        a1_x_pixel,
+        a1_y_pixel,
+        size_x_mm,
+        size_y_mm,
+        spacing_x_mm,
+        spacing_y_mm,
+        well_shape,
+        number_of_skip,
+        rows=None,
+        cols=None,
     ):
         self.format = format_
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
-        self.well_size_mm = size_mm
-        self.well_spacing_mm = spacing_mm
+        self.well_size_x_mm = size_x_mm
+        self.well_size_y_mm = size_y_mm
+        self.well_spacing_x_mm = spacing_x_mm
+        self.well_spacing_y_mm = spacing_y_mm
+        self.well_shape = well_shape
         self.number_of_skip = number_of_skip
 
     def _index_to_row(self, index):
@@ -123,8 +142,8 @@ class ScanCoordinates:
             if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
-                x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
-                y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
+                x_mm = self.a1_x_mm + (column * self.well_spacing_x_mm) + self.wellplate_offset_x_mm
+                y_mm = self.a1_y_mm + (row * self.well_spacing_y_mm) + self.wellplate_offset_y_mm
                 well_id = self._index_to_row(row) + str(column + 1)
                 well_centers[well_id] = (x_mm, y_mm)
             _increasing = not _increasing
@@ -681,13 +700,14 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_settings)
 
-        if wellplate_format in ["384 well plate", "1536 well plate"]:
+        well_shape_value = wellplate_settings.get("well_shape", "circular")
+        if well_shape_value == "rectangular":
             well_shape = "Square"
         else:
             well_shape = "Circle"
 
         if scan_size_mm is None:
-            scan_size_mm = wellplate_settings["well_size_mm"]
+            scan_size_mm = wellplate_settings["well_size_x_mm"]
 
         for k, v in self.region_centers.items():
             coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
@@ -734,24 +754,24 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                         for col in cols:
                             x_mm = (
                                 wellplate_settings["a1_x_mm"]
-                                + col * wellplate_settings["well_spacing_mm"]
+                                + col * wellplate_settings["well_spacing_x_mm"]
                                 + control._def.WELLPLATE_OFFSET_X_mm
                             )
                             y_mm = (
                                 wellplate_settings["a1_y_mm"]
-                                + row * wellplate_settings["well_spacing_mm"]
+                                + row * wellplate_settings["well_spacing_y_mm"]
                                 + control._def.WELLPLATE_OFFSET_Y_mm
                             )
                             self.region_centers[index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
-                        + start_col_index * wellplate_settings["well_spacing_mm"]
+                        + start_col_index * wellplate_settings["well_spacing_x_mm"]
                         + control._def.WELLPLATE_OFFSET_X_mm
                     )
                     y_mm = (
                         wellplate_settings["a1_y_mm"]
-                        + start_row_index * wellplate_settings["well_spacing_mm"]
+                        + start_row_index * wellplate_settings["well_spacing_y_mm"]
                         + control._def.WELLPLATE_OFFSET_Y_mm
                     )
                     self.region_centers[start_row + start_col] = (x_mm, y_mm)
