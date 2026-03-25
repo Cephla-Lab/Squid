@@ -2277,8 +2277,37 @@ class HighContentScreeningGui(QMainWindow):
         # Only show well selector in Live View tab if it was previously shown
         if self.imageDisplayTabs.tabText(index) == "Live View":
             self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
+            # Work around a Qt/pyqtgraph QSplitter bug on Linux (seen on Ubuntu 24.04):
+            # When a tab containing QSplitters is hidden and re-shown, the splitters may
+            # lose their sizes and reset to equal-split. Force correct sizes after the
+            # event loop processes the tab switch.
+            if self.imageDisplayWindow is not None:
+                QTimer.singleShot(0, self._fix_live_view_splitters)
         else:
             self.toggleWellSelector(False)
+
+    def _fix_live_view_splitters(self):
+        """Force correct splitter sizes for the pyqtgraph-based Live View.
+
+        On Linux (Ubuntu 24.04+), QSplitters inside hidden-then-reshown tabs can
+        lose their configured sizes and revert to an equal split. This nudges the
+        splitters back to their intended proportions.
+        """
+        idw = self.imageDisplayWindow
+        if idw is None:
+            return
+        # Fix ImageDisplayWindow's own splitter (line profiler should be collapsed)
+        if not idw.line_profiler_widget.isVisible():
+            idw.splitter.setSizes([idw.splitter.height(), 0])
+        # Fix pg.ImageView's internal splitter (roiPlot should be 35px).
+        # Only applies when show_LUT=True, which creates a pg.ImageView with an
+        # internal vertical QSplitter. When show_LUT=False (ENABLE_TRACKING path),
+        # a plain ViewBox is used with no internal splitter.
+        if idw.show_LUT:
+            iv = idw.graphics_widget.view  # pg.ImageView
+            h = iv.height()
+            if h > 35:
+                iv.ui.splitter.setSizes([h - 35, 35])
 
     def onWellplateChanged(self, format_):
         if isinstance(format_, QVariant):
