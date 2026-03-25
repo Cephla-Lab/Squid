@@ -2267,6 +2267,10 @@ class HighContentScreeningGui(QMainWindow):
         # Stop focus camera live if not on laser focus tab
         if SUPPORT_LASER_AUTOFOCUS:
             is_laser_focus_tab = self.imageDisplayTabs.tabText(index) == self.LASER_BASED_FOCUS_TAB_NAME
+
+            if hasattr(self, "dock_wellSelection"):
+                self.dock_wellSelection.setVisible(not is_laser_focus_tab)
+
             if not is_laser_focus_tab:
                 self.laserAutofocusSettingWidget.stop_live()
 
