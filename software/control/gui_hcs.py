@@ -2276,16 +2276,18 @@ class HighContentScreeningGui(QMainWindow):
 
         # Only show well selector in Live View tab if it was previously shown
         if self.imageDisplayTabs.tabText(index) == "Live View":
-            self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
             # Work around pyqtgraph DockArea layout bug on Linux (Ubuntu 24.04):
-            # When the well selector dock is hidden (tab switch away) then re-shown
-            # (tab switch back to Live View), the DockArea's internal QSplitter
-            # doesn't recalculate sizes, corrupting the layout. Suppress painting
-            # during the transition, flush events so the DockArea processes the
-            # visibility change, nudge resize to force correct layout, then re-enable
-            # painting.
-            if self.dock_wellSelection.isVisible():
-                QTimer.singleShot(50, self._nudge_resize)
+            # When the well selector dock is hidden then re-shown, the DockArea's
+            # internal QSplitter doesn't recalculate sizes. Freeze painting on the
+            # image display area before visibility changes, then nudge resize to
+            # force correct layout before re-enabling painting.
+            needs_nudge = not self.dock_wellSelection.isVisible() and self.well_selector_visible
+            if needs_nudge:
+                self.imageDisplayTabs.setUpdatesEnabled(False)
+            self.toggleWellSelector(self.well_selector_visible)
+            if needs_nudge:
+                self._nudge_resize()
+                self.imageDisplayTabs.setUpdatesEnabled(True)
         else:
             self.toggleWellSelector(False)
 
