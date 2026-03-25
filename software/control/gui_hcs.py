@@ -997,8 +997,6 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
                 )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
-            self.imageDisplayWindow.setCentralWidget(None)
-            self.imageDisplayWindow.hide()
             self.napariMosaicDisplayWidget = None
         else:
             self.setupImageDisplayTabs()
@@ -1145,12 +1143,6 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
                 )
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
-            # The ImageDisplayWindow inherits QMainWindow but we only use its .widget
-            # (embedded in the tab above). On Ubuntu 24.04, the orphaned QMainWindow
-            # shell can appear as a visible top-level window. Prevent this by clearing
-            # its central widget reference and hiding it.
-            self.imageDisplayWindow.setCentralWidget(None)
-            self.imageDisplayWindow.hide()
 
         if not self.live_only_mode:
             self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
@@ -1213,8 +1205,6 @@ class HighContentScreeningGui(QMainWindow):
             dock_laserfocus_image_display = dock.Dock("Focus Camera Image Display", autoOrientation=False)
             dock_laserfocus_image_display.showTitleBar()
             dock_laserfocus_image_display.addWidget(self.imageDisplayWindow_focus.widget)
-            self.imageDisplayWindow_focus.setCentralWidget(None)
-            self.imageDisplayWindow_focus.hide()
             dock_laserfocus_image_display.setStretch(x=100, y=100)
 
             dock_laserfocus_liveController = dock.Dock("Laser Autofocus Settings", autoOrientation=False)
@@ -2376,10 +2366,18 @@ class HighContentScreeningGui(QMainWindow):
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
     def toggleWellSelector(self, show, remember_state=True):
+        was_visible = self.dock_wellSelection.isVisible()
         if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
             self.dock_wellSelection.setVisible(True)
         else:
             self.dock_wellSelection.setVisible(False)
+
+        # Work around pyqtgraph DockArea layout bug on Linux (Ubuntu 24.04):
+        # When a dock inside a DockArea SplitContainer is hidden then re-shown,
+        # the QSplitter doesn't recalculate sizes, corrupting the layout.
+        # A resize nudge forces the recalculation.
+        if not was_visible and self.dock_wellSelection.isVisible():
+            QTimer.singleShot(0, self._nudge_resize)
 
         # Only update visibility state if we're in Live View tab and we want to remember the state
         # remember_state is False when we're toggling the well selector for starting/stopping an acquisition
@@ -2389,6 +2387,12 @@ class HighContentScreeningGui(QMainWindow):
         # Update button text
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):
             self.imageDisplayWindow.btn_well_selector.setText("Hide Well Selector" if show else "Show Well Selector")
+
+    def _nudge_resize(self):
+        """Force the DockArea to recalculate layout by briefly resizing the window."""
+        size = self.size()
+        self.resize(size.width() + 1, size.height())
+        self.resize(size)
 
     def toggleAcquisitionStart(self, acquisition_started):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
