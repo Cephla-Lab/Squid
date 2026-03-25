@@ -997,6 +997,8 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
                 )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
+            self.imageDisplayWindow.setCentralWidget(None)
+            self.imageDisplayWindow.hide()
             self.napariMosaicDisplayWidget = None
         else:
             self.setupImageDisplayTabs()
@@ -1143,6 +1145,12 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
                 )
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
+            # The ImageDisplayWindow inherits QMainWindow but we only use its .widget
+            # (embedded in the tab above). On Ubuntu 24.04, the orphaned QMainWindow
+            # shell can appear as a visible top-level window. Prevent this by clearing
+            # its central widget reference and hiding it.
+            self.imageDisplayWindow.setCentralWidget(None)
+            self.imageDisplayWindow.hide()
 
         if not self.live_only_mode:
             self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
@@ -1205,6 +1213,8 @@ class HighContentScreeningGui(QMainWindow):
             dock_laserfocus_image_display = dock.Dock("Focus Camera Image Display", autoOrientation=False)
             dock_laserfocus_image_display.showTitleBar()
             dock_laserfocus_image_display.addWidget(self.imageDisplayWindow_focus.widget)
+            self.imageDisplayWindow_focus.setCentralWidget(None)
+            self.imageDisplayWindow_focus.hide()
             dock_laserfocus_image_display.setStretch(x=100, y=100)
 
             dock_laserfocus_liveController = dock.Dock("Laser Autofocus Settings", autoOrientation=False)
@@ -2277,37 +2287,8 @@ class HighContentScreeningGui(QMainWindow):
         # Only show well selector in Live View tab if it was previously shown
         if self.imageDisplayTabs.tabText(index) == "Live View":
             self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
-            # Work around a Qt/pyqtgraph QSplitter bug on Linux (seen on Ubuntu 24.04):
-            # When a tab containing QSplitters is hidden and re-shown, the splitters may
-            # lose their sizes and reset to equal-split. Force correct sizes after the
-            # event loop processes the tab switch.
-            if self.imageDisplayWindow is not None:
-                QTimer.singleShot(0, self._fix_live_view_splitters)
         else:
             self.toggleWellSelector(False)
-
-    def _fix_live_view_splitters(self):
-        """Force correct splitter sizes for the pyqtgraph-based Live View.
-
-        On Linux (Ubuntu 24.04+), QSplitters inside hidden-then-reshown tabs can
-        lose their configured sizes and revert to an equal split. This nudges the
-        splitters back to their intended proportions.
-        """
-        idw = self.imageDisplayWindow
-        if idw is None:
-            return
-        # Fix ImageDisplayWindow's own splitter (line profiler should be collapsed)
-        if not idw.line_profiler_widget.isVisible():
-            idw.splitter.setSizes([idw.splitter.height(), 0])
-        # Fix pg.ImageView's internal splitter (roiPlot should be 35px).
-        # Only applies when show_LUT=True, which creates a pg.ImageView with an
-        # internal vertical QSplitter. When show_LUT=False (ENABLE_TRACKING path),
-        # a plain ViewBox is used with no internal splitter.
-        if idw.show_LUT:
-            iv = idw.graphics_widget.view  # pg.ImageView
-            h = iv.height()
-            if h > 35:
-                iv.ui.splitter.setSizes([h - 35, 35])
 
     def onWellplateChanged(self, format_):
         if isinstance(format_, QVariant):
