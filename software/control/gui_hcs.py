@@ -2283,7 +2283,10 @@ class HighContentScreeningGui(QMainWindow):
             # doesn't recalculate sizes, corrupting the layout. A deferred resize
             # nudge forces the recalculation.
             if self.dock_wellSelection.isVisible():
-                QTimer.singleShot(0, self._nudge_resize)
+                # Process pending events first so the DockArea fully applies the
+                # visibility change, then nudge resize to force splitter recalc.
+                QApplication.processEvents()
+                self._nudge_resize()
         else:
             self.toggleWellSelector(False)
 
@@ -2391,6 +2394,7 @@ class HighContentScreeningGui(QMainWindow):
         """Force the DockArea to recalculate layout by briefly resizing the window."""
         size = self.size()
         self.resize(size.width() + 1, size.height())
+        QApplication.processEvents()
         self.resize(size)
 
     def toggleAcquisitionStart(self, acquisition_started):
