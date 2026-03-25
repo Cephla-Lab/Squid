@@ -89,3 +89,63 @@ class TestGetWellplateSettings:
         assert "well_size_x_mm" in settings
         assert "well_size_y_mm" in settings
         assert settings["well_shape"] == "circular"
+
+
+import math
+
+from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
+
+
+class TestRectangularEffectiveWellSize:
+    """Tests for get_effective_well_size with rectangular wells."""
+
+    def test_rectangular_well_square_scan(self):
+        """Rectangular well with Square scan returns (size_x, size_y) tuple."""
+        result = get_effective_well_size(2.0, 1.5, 0.5, "Square", is_round_well=False)
+        assert result == (2.0, 1.5)
+
+    def test_rectangular_well_rectangle_scan(self):
+        """Rectangular well with Rectangle scan returns (size_x, size_y) tuple."""
+        result = get_effective_well_size(2.0, 1.5, 0.5, "Rectangle", is_round_well=False)
+        assert result == (2.0, 1.5)
+
+    def test_square_well_returns_tuple(self):
+        """Square wells (384/1536) return tuple with equal values."""
+        result = get_effective_well_size(3.3, 3.3, 0.5, "Square", is_round_well=False)
+        assert result == (3.3, 3.3)
+
+    def test_circular_well_unchanged(self):
+        """Circular well (equal X/Y) should work as before."""
+        result = get_effective_well_size(6.21, 6.21, 0.5, "Square", is_round_well=True)
+        expected = 6.21 / math.sqrt(2)
+        assert abs(result - expected) < 0.001
+
+    def test_rectangular_well_circle_scan(self):
+        """Rectangular well with Circle scan returns circumscribing circle."""
+        size_x, size_y, fov = 2.0, 1.5, 0.5
+        result = get_effective_well_size(size_x, size_y, fov, "Circle", is_round_well=False)
+        expected = math.sqrt(size_x**2 + size_y**2) + fov * (1 + math.sqrt(2))
+        assert abs(result - expected) < 0.001
+
+
+class TestRectangularWellCoverage:
+    """Tests for calculate_well_coverage with rectangular wells."""
+
+    def test_rectangular_well_full_coverage(self):
+        """Large scan over small rectangular well should give ~100% coverage."""
+        coverage = calculate_well_coverage(
+            5.0, 0.5, 10, "Square", well_size_x_mm=2.0, well_size_y_mm=1.5, is_round_well=False
+        )
+        assert coverage > 90
+
+    def test_rectangular_well_partial_coverage(self):
+        """Small scan over rectangular well gives partial coverage."""
+        coverage = calculate_well_coverage(
+            1.0, 0.5, 10, "Square", well_size_x_mm=2.0, well_size_y_mm=1.5, is_round_well=False
+        )
+        assert 0 < coverage < 100
+
+    def test_round_well_backward_compat(self):
+        """Round well with positional well_size_mm should still work."""
+        coverage = calculate_well_coverage(15.0, 3.9, 10, "Circle", 15.54)
+        assert coverage > 0
