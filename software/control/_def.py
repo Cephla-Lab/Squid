@@ -1129,16 +1129,33 @@ def read_sample_formats_csv(file_path):
     sample_formats = {}
     with open(file_path, "r") as csvfile:
         reader = csv.DictReader(csvfile)
+        fieldnames = reader.fieldnames or []
+        is_old_format = "well_spacing_mm" in fieldnames and "well_spacing_x_mm" not in fieldnames
         for row in reader:
             format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
+            if is_old_format:
+                well_size_x_mm = float(row["well_size_mm"])
+                well_size_y_mm = float(row["well_size_mm"])
+                well_spacing_x_mm = float(row["well_spacing_mm"])
+                well_spacing_y_mm = float(row["well_spacing_mm"])
+                well_shape = "circular"
+            else:
+                well_size_x_mm = float(row["well_size_x_mm"])
+                well_size_y_mm = float(row["well_size_y_mm"])
+                well_spacing_x_mm = float(row["well_spacing_x_mm"])
+                well_spacing_y_mm = float(row["well_spacing_y_mm"])
+                well_shape = str(row["well_shape"])
             sample_formats[format_key] = {
                 "a1_x_mm": float(row["a1_x_mm"]),
                 "a1_y_mm": float(row["a1_y_mm"]),
                 "a1_x_pixel": int(row["a1_x_pixel"]),
                 "a1_y_pixel": int(row["a1_y_pixel"]),
-                "well_size_mm": float(row["well_size_mm"]),
-                "well_spacing_mm": float(row["well_spacing_mm"]),
+                "well_size_x_mm": well_size_x_mm,
+                "well_size_y_mm": well_size_y_mm,
+                "well_spacing_x_mm": well_spacing_x_mm,
+                "well_spacing_y_mm": well_spacing_y_mm,
+                "well_shape": well_shape,
                 "number_of_skip": int(row["number_of_skip"]),
                 "rows": int(row["rows"]),
                 "cols": int(row["cols"]),
@@ -1184,8 +1201,11 @@ def get_wellplate_settings(wellplate_format):
             "a1_y_mm": 0,
             "a1_x_pixel": 0,
             "a1_y_pixel": 0,
-            "well_size_mm": 0,
-            "well_spacing_mm": 0,
+            "well_size_x_mm": 0,
+            "well_size_y_mm": 0,
+            "well_spacing_x_mm": 0,
+            "well_spacing_y_mm": 0,
+            "well_shape": "circular",
             "number_of_skip": 0,
             "rows": 1,
             "cols": 1,
@@ -1358,8 +1378,11 @@ except (FileNotFoundError, json.JSONDecodeError):
 NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
     "number_of_skip"
 ]  # num rows/cols to skip on wellplate edge
-WELL_SIZE_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_size_mm"]
-WELL_SPACING_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_spacing_mm"]
+WELL_SIZE_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_size_x_mm"]
+WELL_SIZE_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_size_y_mm"]
+WELL_SPACING_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_spacing_x_mm"]
+WELL_SPACING_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_spacing_y_mm"]
+WELL_SHAPE = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_shape"]
 A1_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_mm"]  # measured stage position - to update
 A1_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_mm"]  # measured stage position - to update
 A1_X_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_pixel"]  # coordinate on the png
