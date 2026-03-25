@@ -2277,6 +2277,13 @@ class HighContentScreeningGui(QMainWindow):
         # Only show well selector in Live View tab if it was previously shown
         if self.imageDisplayTabs.tabText(index) == "Live View":
             self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
+            # Work around pyqtgraph DockArea layout bug on Linux (Ubuntu 24.04):
+            # When the well selector dock is hidden (tab switch away) then re-shown
+            # (tab switch back to Live View), the DockArea's internal QSplitter
+            # doesn't recalculate sizes, corrupting the layout. A deferred resize
+            # nudge forces the recalculation.
+            if self.dock_wellSelection.isVisible():
+                QTimer.singleShot(0, self._nudge_resize)
         else:
             self.toggleWellSelector(False)
 
@@ -2366,18 +2373,10 @@ class HighContentScreeningGui(QMainWindow):
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
     def toggleWellSelector(self, show, remember_state=True):
-        was_visible = self.dock_wellSelection.isVisible()
         if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
             self.dock_wellSelection.setVisible(True)
         else:
             self.dock_wellSelection.setVisible(False)
-
-        # Work around pyqtgraph DockArea layout bug on Linux (Ubuntu 24.04):
-        # When a dock inside a DockArea SplitContainer is hidden then re-shown,
-        # the QSplitter doesn't recalculate sizes, corrupting the layout.
-        # A resize nudge forces the recalculation.
-        if not was_visible and self.dock_wellSelection.isVisible():
-            QTimer.singleShot(0, self._nudge_resize)
 
         # Only update visibility state if we're in Live View tab and we want to remember the state
         # remember_state is False when we're toggling the well selector for starting/stopping an acquisition
