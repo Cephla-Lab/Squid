@@ -2285,10 +2285,7 @@ class HighContentScreeningGui(QMainWindow):
             # visibility change, nudge resize to force correct layout, then re-enable
             # painting.
             if self.dock_wellSelection.isVisible():
-                self.setUpdatesEnabled(False)
-                QApplication.processEvents()
-                self._nudge_resize()
-                self.setUpdatesEnabled(True)
+                QTimer.singleShot(50, self._nudge_resize)
         else:
             self.toggleWellSelector(False)
 
@@ -2396,7 +2393,6 @@ class HighContentScreeningGui(QMainWindow):
         """Force the DockArea to recalculate layout by briefly resizing the window."""
         size = self.size()
         self.resize(size.width() + 1, size.height())
-        QApplication.processEvents()
         self.resize(size)
 
     def toggleAcquisitionStart(self, acquisition_started):
