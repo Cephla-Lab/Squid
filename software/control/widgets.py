@@ -5129,13 +5129,16 @@ class WellSelectionWidget(QTableWidget):
         settings = self.wellplateFormatWidget.getWellplateSettings(self.format)
         self.rows = settings["rows"]
         self.columns = settings["cols"]
-        self.spacing_mm = settings["well_spacing_mm"]
+        self.spacing_x_mm = settings["well_spacing_x_mm"]
+        self.spacing_y_mm = settings["well_spacing_y_mm"]
         self.number_of_skip = settings["number_of_skip"]
         self.a1_x_mm = settings["a1_x_mm"]
         self.a1_y_mm = settings["a1_y_mm"]
         self.a1_x_pixel = settings["a1_x_pixel"]
         self.a1_y_pixel = settings["a1_y_pixel"]
-        self.well_size_mm = settings["well_size_mm"]
+        self.well_size_x_mm = settings["well_size_x_mm"]
+        self.well_size_y_mm = settings["well_size_y_mm"]
+        self.well_shape = settings["well_shape"]
 
         self.setRowCount(self.rows)
         self.setColumnCount(self.columns)
@@ -5245,8 +5248,8 @@ class WellSelectionWidget(QTableWidget):
         if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
             col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
         ):
-            x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-            y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+            x_mm = col * self.spacing_x_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
+            y_mm = row * self.spacing_y_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
             self.signal_wellSelectedPos.emit(x_mm, y_mm)
             print("well location:", (x_mm, y_mm))
             self.signal_wellSelected.emit(True)
@@ -14187,9 +14190,11 @@ class Well1536SelectionWidget(QWidget):
         # defaults
         self.rows = 32
         self.columns = 48
-        self.spacing_mm = 2.25
+        self.spacing_x_mm = 2.25
+        self.spacing_y_mm = 2.25
         self.number_of_skip = 0
-        self.well_size_mm = 1.5
+        self.well_size_x_mm = 1.5
+        self.well_size_y_mm = 1.5
         self.a1_x_mm = 11.0  # measured stage position - to update
         self.a1_y_mm = 7.86  # measured stage position - to update
         self.a1_x_pixel = 144  # coordinate on the png - to update
@@ -14199,13 +14204,15 @@ class Well1536SelectionWidget(QWidget):
             s = self.wellplateFormatWidget.getWellplateSettings(self.format)
             self.rows = s["rows"]
             self.columns = s["cols"]
-            self.spacing_mm = s["well_spacing_mm"]
+            self.spacing_x_mm = s["well_spacing_x_mm"]
+            self.spacing_y_mm = s["well_spacing_y_mm"]
             self.number_of_skip = s["number_of_skip"]
             self.a1_x_mm = s["a1_x_mm"]
             self.a1_y_mm = s["a1_y_mm"]
             self.a1_x_pixel = s["a1_x_pixel"]
             self.a1_y_pixel = s["a1_y_pixel"]
-            self.well_size_mm = s["well_size_mm"]
+            self.well_size_x_mm = s["well_size_x_mm"]
+            self.well_size_y_mm = s["well_size_y_mm"]
 
         self.initUI()
 
@@ -14565,8 +14572,8 @@ class Well1536SelectionWidget(QWidget):
         # Update cell_input with the correct label (e.g., A1, B2, AA1, etc.)
         self.cell_input.setText(self._cell_name(row, col))
 
-        x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-        y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+        x_mm = col * self.spacing_x_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
+        y_mm = row * self.spacing_y_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
         self.signal_wellSelectedPos.emit(x_mm, y_mm)
 
     def redraw_wells(self):
