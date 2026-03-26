@@ -154,7 +154,7 @@ class ScanCoordinates:
             self.clear_regions()
         self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
-    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
+    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape, scan_size_y_mm=None):
         new_region_centers = self.get_selected_wells()
 
         if self.format == "glass slide":
@@ -170,7 +170,7 @@ class ScanCoordinates:
             # Add regions for selected wells
             for well_id, (x, y) in new_region_centers.items():
                 if well_id not in self.region_centers:
-                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape)
+                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape, scan_size_y_mm=scan_size_y_mm)
         else:
             self.clear_regions()
 
@@ -197,13 +197,36 @@ class ScanCoordinates:
         else:
             self._log.info("No Manual ROI found")
 
-    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def add_region(
+        self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square", scan_size_y_mm=None
+    ):
         """add region based on user inputs"""
         fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
-        if shape == "Rectangle":
+        if scan_size_y_mm is not None and scan_size_y_mm != scan_size_mm:
+            # Per-axis scan: X and Y have different sizes (rectangular wells)
+            width_mm = scan_size_mm  # X dimension
+            height_mm = scan_size_y_mm  # Y dimension
+
+            steps_width = max(1, math.floor(width_mm / step_size_mm))
+            steps_height = max(1, math.floor(height_mm / step_size_mm))
+
+            half_steps_width = (steps_width - 1) / 2
+            half_steps_height = (steps_height - 1) / 2
+
+            for i in range(steps_height):
+                row = []
+                y = center_y + (i - half_steps_height) * step_size_mm
+                for j in range(steps_width):
+                    x = center_x + (j - half_steps_width) * step_size_mm
+                    if self.validate_coordinates(x, y):
+                        row.append((x, y))
+                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
+        elif shape == "Rectangle":
             # Use scan_size_mm as height, width is 0.6 * height
             height_mm = scan_size_mm
             width_mm = scan_size_mm * 0.6

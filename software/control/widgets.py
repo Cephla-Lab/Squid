@@ -6901,6 +6901,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_scan_size.setValue(0.1)
         self.entry_scan_size.setSuffix(" mm")
 
+        self.entry_scan_size_y = QDoubleSpinBox()
+        self.entry_scan_size_y.setKeyboardTracking(False)
+        self.entry_scan_size_y.setRange(0.1, 100)
+        self.entry_scan_size_y.setValue(0.1)
+        self.entry_scan_size_y.setSuffix(" mm")
+        self.entry_scan_size_y.setVisible(False)  # Hidden by default; shown for rectangular wells with different X/Y
+
         self.entry_overlap = QDoubleSpinBox()
         self.entry_overlap.setKeyboardTracking(False)
         self.entry_overlap.setRange(0, 99)
@@ -7128,11 +7135,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.row_2_layout.addWidget(self.combobox_shape, 0, 1)
         self.row_2_layout.addWidget(self.scan_size_label, 0, 2)
         self.row_2_layout.addWidget(self.entry_scan_size, 0, 3)
-        self.row_2_layout.addWidget(self.coverage_label, 0, 4)
-        self.row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
+        self.scan_size_y_label = QLabel("Y:")
+        self.scan_size_y_label.setVisible(False)
+        self.row_2_layout.addWidget(self.scan_size_y_label, 0, 4)
+        self.row_2_layout.addWidget(self.entry_scan_size_y, 0, 5)
+        self.row_2_layout.addWidget(self.coverage_label, 0, 6)
+        self.row_2_layout.addWidget(self.entry_well_coverage, 0, 7)
         self.row_2_layout.addWidget(self.fov_overlap_label, 1, 0)
         self.row_2_layout.addWidget(self.entry_overlap, 1, 1)
-        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 4)
+        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 6)
 
         self.xy_controls_frame.setLayout(self.row_2_layout)
         main_layout.addWidget(self.xy_controls_frame)
@@ -7311,6 +7322,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_overlap.valueChanged.connect(self.update_coverage_from_scan_size)
         self.entry_scan_size.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coverage_from_scan_size)
+        self.entry_scan_size_y.valueChanged.connect(self.update_coordinates)
+        self.entry_scan_size_y.valueChanged.connect(self.update_coverage_from_scan_size)
         # Coverage is read-only, derived from scan_size, FOV, and overlap
         self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
@@ -7742,6 +7755,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     self.combobox_shape.setVisible(False)
                     self.scan_size_label.setVisible(False)
                     self.entry_scan_size.setVisible(False)
+                    self._show_per_axis_scan_size(False)
                     self.coverage_label.setVisible(False)
                     self.entry_well_coverage.setVisible(False)
                 elif xy_mode == "Current Position":
@@ -7750,6 +7764,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     self.combobox_shape.setVisible(True)
                     self.scan_size_label.setVisible(True)
                     self.entry_scan_size.setVisible(True)
+                    self._show_per_axis_scan_size(False)  # Per-axis not used in Current Position mode
                     self.coverage_label.setVisible(True)
                     self.entry_well_coverage.setVisible(True)
             elif xy_mode == "Select Wells":
@@ -8142,6 +8157,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self._log.debug(f"Sample Format: {self.navigationViewer.sample}")
             self.combobox_shape.blockSignals(True)
             self.entry_scan_size.blockSignals(True)
+            self.entry_scan_size_y.blockSignals(True)
 
             self.set_default_shape()
 
@@ -8152,8 +8168,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.entry_scan_size.setEnabled(True)
             else:
                 # Set scan_size to effective well size (100% coverage)
-                effective_well_size = self.get_effective_well_size()
-                self.entry_scan_size.setValue(round(effective_well_size, 3))
+                effective = self.get_effective_well_size()
+                if isinstance(effective, tuple):
+                    self.entry_scan_size.setValue(round(effective[0], 3))
+                    self.entry_scan_size_y.setValue(round(effective[1], 3))
+                else:
+                    self.entry_scan_size.setValue(round(effective, 3))
 
             # Coverage is read-only, derive it from scan_size
             self.update_coverage_from_scan_size()
@@ -8161,39 +8181,51 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             self.combobox_shape.blockSignals(False)
             self.entry_scan_size.blockSignals(False)
+            self.entry_scan_size_y.blockSignals(False)
         else:
             # Update stored settings for "Select Wells" mode for use later.
             # Coverage is derived from scan_size, so we only store scan_size and shape.
             if "glass slide" not in self.navigationViewer.sample:
-                effective_well_size = self.get_effective_well_size()
-                scan_size = round(effective_well_size, 3)
+                effective = self.get_effective_well_size()
+                if isinstance(effective, tuple):
+                    scan_size = round(effective[0], 3)
+                else:
+                    scan_size = round(effective, 3)
                 self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
             else:
                 # For glass slide, use default scan size
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
+                "Square" if self.scanCoordinates.well_shape == "rectangular" else "Circle"
             )
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
             self.entry_scan_size.setValue(0.1)
 
+    def _show_per_axis_scan_size(self, show):
+        """Show or hide the per-axis Y scan size spinbox and label."""
+        self.entry_scan_size_y.setVisible(show)
+        self.scan_size_y_label.setVisible(show)
+
     def set_default_shape(self):
-        if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
+        is_rectangular = self.scanCoordinates.well_shape == "rectangular"
+        if is_rectangular:
             self.combobox_shape.setCurrentText("Square")
-        # elif self.scanCoordinates.format in ["4 slide"]:
-        #     self.combobox_shape.setCurrentText("Rectangle")
         elif self.scanCoordinates.format != 0:
             self.combobox_shape.setCurrentText("Circle")
+        # Show per-axis scan size only for non-square rectangular wells
+        show_per_axis = is_rectangular and self.scanCoordinates.well_size_x_mm != self.scanCoordinates.well_size_y_mm
+        self._show_per_axis_scan_size(show_per_axis)
 
     def get_effective_well_size(self):
-        well_size = self.scanCoordinates.well_size_mm
+        well_size_x = self.scanCoordinates.well_size_x_mm
+        well_size_y = self.scanCoordinates.well_size_y_mm
         shape = self.combobox_shape.currentText()
-        is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
+        is_round_well = self.scanCoordinates.well_shape != "rectangular"
         fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
-        return get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
+        return get_effective_well_size(well_size_x, well_size_y, fov_size_mm, shape, is_round_well)
 
     def reset_coordinates(self):
         # Called after acquisition - preserve scan_size, update coverage display
@@ -8231,15 +8263,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def update_coverage_from_scan_size(self):
         self.entry_well_coverage.blockSignals(True)
         if "glass slide" not in self.navigationViewer.sample:
-            well_size_mm = self.scanCoordinates.well_size_mm
+            well_size_x_mm = self.scanCoordinates.well_size_x_mm
+            well_size_y_mm = self.scanCoordinates.well_size_y_mm
             scan_size = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             shape = self.combobox_shape.currentText()
-            is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
+            is_round_well = self.scanCoordinates.well_shape != "rectangular"
 
             coverage = calculate_well_coverage(
-                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
+                scan_size, fov_size_mm, overlap_percent, shape, well_size_x_mm, well_size_y_mm, is_round_well
             )
 
             self.entry_well_coverage.setValue(coverage)
@@ -8327,6 +8360,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return
 
         scan_size_mm = self.entry_scan_size.value()
+        scan_size_y_mm = self.entry_scan_size_y.value() if self.entry_scan_size_y.isVisible() else None
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
 
@@ -8339,7 +8373,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         else:
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
-            self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
+            self.scanCoordinates.set_well_coordinates(
+                scan_size_mm, overlap_percent, shape, scan_size_y_mm=scan_size_y_mm
+            )
 
     def handle_objective_change(self):
         """Handle objective change - update coverage and coordinates.
@@ -8370,9 +8406,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         if selected:
             scan_size_mm = self.entry_scan_size.value()
+            scan_size_y_mm = self.entry_scan_size_y.value() if self.entry_scan_size_y.isVisible() else None
             overlap_percent = self.entry_overlap.value()
             shape = self.combobox_shape.currentText()
-            self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
+            self.scanCoordinates.set_well_coordinates(
+                scan_size_mm, overlap_percent, shape, scan_size_y_mm=scan_size_y_mm
+            )
         elif self.scanCoordinates.has_regions():
             self.scanCoordinates.clear_regions()
 
@@ -8664,6 +8703,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Disable scan controls when coordinates are loaded
             self.combobox_shape.setEnabled(False)
             self.entry_scan_size.setEnabled(False)
+            self.entry_scan_size_y.setEnabled(False)
             self.entry_well_coverage.setEnabled(False)
             self.entry_overlap.setEnabled(False)
             # Disable well selector
