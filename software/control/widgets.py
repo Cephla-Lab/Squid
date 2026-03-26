@@ -8200,7 +8200,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Square" if self.scanCoordinates.well_shape == "rectangular" else "Circle"
+                "Square" if self.scanCoordinates.well_shape != "circular" else "Circle"
             )
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
@@ -8213,20 +8213,23 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.scan_size_y_label.setVisible(show)
 
     def set_default_shape(self):
-        is_rectangular = self.scanCoordinates.well_shape == "rectangular"
-        if is_rectangular:
+        is_non_circular = self.scanCoordinates.well_shape != "circular"
+        if is_non_circular:
             self.combobox_shape.setCurrentText("Square")
         elif self.scanCoordinates.format != 0:
             self.combobox_shape.setCurrentText("Circle")
-        # Show per-axis scan size only for non-square rectangular wells
-        show_per_axis = is_rectangular and self.scanCoordinates.well_size_x_mm != self.scanCoordinates.well_size_y_mm
+        # Show per-axis scan size only for rectangular wells with different X/Y
+        show_per_axis = (
+            self.scanCoordinates.well_shape == "rectangular"
+            and self.scanCoordinates.well_size_x_mm != self.scanCoordinates.well_size_y_mm
+        )
         self._show_per_axis_scan_size(show_per_axis)
 
     def get_effective_well_size(self):
         well_size_x = self.scanCoordinates.well_size_x_mm
         well_size_y = self.scanCoordinates.well_size_y_mm
         shape = self.combobox_shape.currentText()
-        is_round_well = self.scanCoordinates.well_shape != "rectangular"
+        is_round_well = self.scanCoordinates.well_shape == "circular"
         fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
         return get_effective_well_size(well_size_x, well_size_y, fov_size_mm, shape, is_round_well)
 
@@ -8272,7 +8275,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             overlap_percent = self.entry_overlap.value()
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             shape = self.combobox_shape.currentText()
-            is_round_well = self.scanCoordinates.well_shape != "rectangular"
+            is_round_well = self.scanCoordinates.well_shape == "circular"
 
             coverage = calculate_well_coverage(
                 scan_size, fov_size_mm, overlap_percent, shape, well_size_x_mm, well_size_y_mm, is_round_well
@@ -13217,6 +13220,8 @@ class WellplateCalibration(QDialog):
         # Initially allow click-to-move and hide the joystick controls
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)
+        # Set initial calibration method visibility based on default well shape (circular)
+        self._on_well_shape_changed("circular")
         # Set minimum height to accommodate all UI configurations
         self.setMinimumHeight(580)
 
@@ -13303,8 +13308,9 @@ class WellplateCalibration(QDialog):
         self.form_layout.addRow("Well Spacing Y:", self.wellSpacingYInput)
 
         self.wellShapeCombo = QComboBox(self)
-        self.wellShapeCombo.addItems(["circular", "rectangular"])
+        self.wellShapeCombo.addItems(["circular", "square", "rectangular"])
         self.form_layout.addRow("Well Shape:", self.wellShapeCombo)
+        self.wellShapeCombo.currentTextChanged.connect(self._on_well_shape_changed)
 
         left_layout.addWidget(self.new_format_widget)
 
@@ -13345,7 +13351,8 @@ class WellplateCalibration(QDialog):
         existing_params_layout.addRow("Well Size Y:", self.existing_well_size_y_input)
 
         self.existing_well_shape_combo = QComboBox(self)
-        self.existing_well_shape_combo.addItems(["circular", "rectangular"])
+        self.existing_well_shape_combo.addItems(["circular", "square", "rectangular"])
+        self.existing_well_shape_combo.currentTextChanged.connect(self._on_well_shape_changed)
         existing_params_layout.addRow("Well Shape:", self.existing_well_shape_combo)
 
         self.existing_params_group.setLayout(existing_params_layout)
@@ -13703,6 +13710,22 @@ class WellplateCalibration(QDialog):
 
         self.update_calibrate_button_state()
 
+    def _on_well_shape_changed(self, shape):
+        """Update calibration method visibility based on well shape selection."""
+        is_circular = shape == "circular"
+        # Circular: show 3 edge points + center point, hide diagonal corners
+        # Square/Rectangular: show center point + diagonal corners, hide 3 edge points
+        self.edge_points_radio.setVisible(is_circular)
+        self.diagonal_corners_radio.setVisible(not is_circular)
+
+        # Auto-select an appropriate method if the current one is hidden
+        if is_circular and self.diagonal_corners_radio.isChecked():
+            self.edge_points_radio.setChecked(True)
+        elif not is_circular and self.edge_points_radio.isChecked():
+            self.diagonal_corners_radio.setChecked(True)
+
+        self.toggle_calibration_method()
+
     def toggle_calibration_method(self):
         """Toggle between 3 edge points, center point, and diagonal corners calibration methods."""
         self.points_widget.setVisible(self.edge_points_radio.isChecked())
@@ -13873,7 +13896,7 @@ class WellplateCalibration(QDialog):
 
         Supports two modes:
         - New format: Creates a new custom wellplate format with all parameters
-        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_mm
+        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_x/y_mm
 
         Supports two calibration methods:
         - 3 Edge Points: Calculates well center and diameter from 3 points on well edge
@@ -14035,7 +14058,7 @@ class WellplateCalibration(QDialog):
 
         # Function to draw a well (circle or rectangle based on shape)
         def draw_well(x, y, size_x_px, size_y_px):
-            if well_shape == "rectangular":
+            if well_shape != "circular":
                 half_x = size_x_px / 2
                 half_y = size_y_px / 2
                 draw.rectangle([x - half_x, y - half_y, x + half_x, y + half_y], outline="black", width=4, fill="white")

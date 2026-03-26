@@ -724,7 +724,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         self.get_selected_well_coordinates(well_name, wellplate_settings)
 
         well_shape_value = wellplate_settings.get("well_shape", "circular")
-        if well_shape_value == "rectangular":
+        if well_shape_value != "circular":
             well_shape = "Square"
         else:
             well_shape = "Circle"
