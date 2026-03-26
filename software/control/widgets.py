@@ -13089,17 +13089,25 @@ class WellplateFormatWidget(QWidget):
         self.comboBox.setItemData(index, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
-        self.wellplate_format = self.comboBox.itemData(index)
-        if self.wellplate_format == "custom":
+        selected = self.comboBox.itemData(index)
+        if selected == "custom":
+            prev_format = self.wellplate_format  # Remember current format before dialog
             calibration_dialog = WellplateCalibration(
                 self, self.stage, self.navigationViewer, self.streamHandler, self.liveController
             )
             result = calibration_dialog.exec_()
-            if result == QDialog.Rejected:
-                # If the dialog was closed without adding a new format, revert to the previous selection
-                prev_index = self.comboBox.findData(self.wellplate_format)
-                self.comboBox.setCurrentIndex(prev_index)
+            if result == QDialog.Accepted:
+                # Dialog updated the combo box — read the new selection
+                self.wellplate_format = self.comboBox.itemData(self.comboBox.currentIndex())
+                if self.wellplate_format and self.wellplate_format != "custom":
+                    self.setWellplateSettings(self.wellplate_format)
+            else:
+                # Cancelled — revert to previous format
+                prev_index = self.comboBox.findData(prev_format)
+                if prev_index >= 0:
+                    self.comboBox.setCurrentIndex(prev_index)
         else:
+            self.wellplate_format = selected
             self.setWellplateSettings(self.wellplate_format)
 
     def setWellplateSettings(self, wellplate_format):
