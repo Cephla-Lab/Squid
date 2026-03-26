@@ -13045,7 +13045,7 @@ class LaserAutofocusControlWidget(QFrame):
 
 class WellplateFormatWidget(QWidget):
 
-    signalWellplateSettings = Signal(str, float, float, int, int, float, float, int, int, int)
+    signalWellplateSettings = Signal(str, float, float, int, int, float, float, float, float, str, int, int, int)
 
     def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
@@ -13100,7 +13100,7 @@ class WellplateFormatWidget(QWidget):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
+            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 0, "circular", 0, 1, 1)
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
@@ -13112,8 +13112,11 @@ class WellplateFormatWidget(QWidget):
             settings["a1_y_mm"],
             settings["a1_x_pixel"],
             settings["a1_y_pixel"],
-            settings["well_size_mm"],
-            settings["well_spacing_mm"],
+            settings["well_size_x_mm"],
+            settings["well_size_y_mm"],
+            settings["well_spacing_x_mm"],
+            settings["well_spacing_y_mm"],
+            settings["well_shape"],
             settings["number_of_skip"],
             settings["rows"],
             settings["cols"],
@@ -13129,8 +13132,11 @@ class WellplateFormatWidget(QWidget):
                 "a1_y_mm": 0,
                 "a1_x_pixel": 0,
                 "a1_y_pixel": 0,
-                "well_size_mm": 0,
-                "well_spacing_mm": 0,
+                "well_size_x_mm": 0,
+                "well_size_y_mm": 0,
+                "well_spacing_x_mm": 0,
+                "well_spacing_y_mm": 0,
+                "well_shape": "circular",
                 "number_of_skip": 0,
                 "rows": 1,
                 "cols": 1,
@@ -13157,8 +13163,11 @@ class WellplateFormatWidget(QWidget):
             "a1_y_mm",
             "a1_x_pixel",
             "a1_y_pixel",
-            "well_size_mm",
-            "well_spacing_mm",
+            "well_size_x_mm",
+            "well_size_y_mm",
+            "well_spacing_x_mm",
+            "well_spacing_y_mm",
+            "well_shape",
             "number_of_skip",
             "rows",
             "cols",
@@ -13176,8 +13185,11 @@ class WellplateFormatWidget(QWidget):
             "a1_y_mm": float(row["a1_y_mm"]),
             "a1_x_pixel": int(row["a1_x_pixel"]),
             "a1_y_pixel": int(row["a1_y_pixel"]),
-            "well_size_mm": float(row["well_size_mm"]),
-            "well_spacing_mm": float(row["well_spacing_mm"]),
+            "well_size_x_mm": float(row["well_size_x_mm"]),
+            "well_size_y_mm": float(row["well_size_y_mm"]),
+            "well_spacing_x_mm": float(row["well_spacing_x_mm"]),
+            "well_spacing_y_mm": float(row["well_spacing_y_mm"]),
+            "well_shape": str(row["well_shape"]),
             "number_of_skip": int(row["number_of_skip"]),
             "rows": int(row["rows"]),
             "cols": int(row["cols"]),
