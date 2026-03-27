@@ -729,11 +729,17 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         else:
             well_shape = "Circle"
 
+        scan_size_y_mm = None
         if scan_size_mm is None:
             scan_size_mm = wellplate_settings["well_size_x_mm"]
+            scan_size_y_mm = wellplate_settings["well_size_y_mm"]
+            if scan_size_y_mm == scan_size_mm:
+                scan_size_y_mm = None  # No need for per-axis if equal
 
         for k, v in self.region_centers.items():
-            coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
+            coords = self.create_region_coordinates(
+                v[0], v[1], scan_size_mm, overlap_percent, well_shape, scan_size_y_mm=scan_size_y_mm
+            )
             self.region_fov_coordinates[k] = coords
 
     def get_selected_well_coordinates(self, well_names, wellplate_settings):
@@ -801,10 +807,31 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
-    def create_region_coordinates(self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def create_region_coordinates(
+        self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square", scan_size_y_mm=None
+    ):
         fov_size_mm = self.camera.get_fov_size_mm()
         # We are not taking software cropping into account here. Need to fix it when we merge this into ScanCoordinates.
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
+
+        # Per-axis scan for rectangular wells
+        if scan_size_y_mm is not None and scan_size_y_mm != scan_size_mm:
+            steps_x = max(1, math.floor(scan_size_mm / step_size_mm))
+            steps_y = max(1, math.floor(scan_size_y_mm / step_size_mm))
+            half_steps_x = (steps_x - 1) / 2
+            half_steps_y = (steps_y - 1) / 2
+
+            scan_coordinates = []
+            for i in range(steps_y):
+                row = []
+                y = center_y + (i - half_steps_y) * step_size_mm
+                for j in range(steps_x):
+                    x = center_x + (j - half_steps_x) * step_size_mm
+                    row.append((x, y))
+                if control._def.FOV_PATTERN == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
+            return scan_coordinates if scan_coordinates else [(center_x, center_y)]
 
         steps = math.floor(scan_size_mm / step_size_mm)
         if shape == "Circle":

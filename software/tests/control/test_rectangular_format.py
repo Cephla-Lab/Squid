@@ -151,6 +151,84 @@ class TestRectangularWellCoverage:
         assert coverage > 0
 
 
+class TestSquareWellShape:
+    """Tests for 'square' well_shape (384/1536 plates)."""
+
+    def test_square_shape_in_csv(self, tmp_path):
+        """CSV with well_shape='square' should be parsed correctly."""
+        csv_path = tmp_path / "sample_formats.csv"
+        csv_path.write_text(
+            "format,a1_x_mm,a1_y_mm,a1_x_pixel,a1_y_pixel,well_size_x_mm,well_size_y_mm,"
+            "well_spacing_x_mm,well_spacing_y_mm,well_shape,number_of_skip,rows,cols\n"
+            "custom_square,10.0,10.0,100,100,2.0,2.0,4.0,4.0,square,0,8,12\n"
+        )
+        formats = read_sample_formats_csv(str(csv_path))
+        assert formats["custom_square"]["well_shape"] == "square"
+        assert formats["custom_square"]["well_size_x_mm"] == 2.0
+        assert formats["custom_square"]["well_size_y_mm"] == 2.0
+
+    def test_square_well_effective_size(self):
+        """Square wells should return tuple from get_effective_well_size."""
+        result = get_effective_well_size(2.0, 2.0, 0.5, "Square", is_round_well=False)
+        assert result == (2.0, 2.0)
+
+    def test_square_well_coverage(self):
+        """Square wells should use rectangular bounds for coverage."""
+        coverage = calculate_well_coverage(
+            5.0, 0.5, 10, "Square", well_size_x_mm=2.0, well_size_y_mm=2.0, is_round_well=False
+        )
+        assert coverage > 90
+
+
+class TestPerAxisAddRegion:
+    """Tests for add_region with per-axis scan sizes."""
+
+    def test_asymmetric_scan_generates_rectangular_grid(self):
+        """add_region with scan_size_y_mm != scan_size_mm should produce rectangular grid."""
+        from unittest.mock import MagicMock
+        from control.core.scan_coordinates import ScanCoordinates
+
+        sc = ScanCoordinates(MagicMock(), MagicMock(), MagicMock())
+        # Mock FOV size to 1.0mm
+        sc.objectiveStore = MagicMock()
+        sc.objectiveStore.get_pixel_size_factor.return_value = 1.0
+        sc.camera = MagicMock()
+        sc.camera.get_fov_size_mm.return_value = 1.0
+
+        # Use center at 50,50 to be within typical stage limits
+        sc.add_region("test", 50, 50, scan_size_mm=3.0, overlap_percent=0, shape="Square", scan_size_y_mm=2.0)
+
+        coords = sc.region_fov_coordinates.get("test", [])
+        assert len(coords) > 0
+
+        # X should span ~3mm (3 steps), Y should span ~2mm (2 steps)
+        xs = [c[0] for c in coords]
+        ys = [c[1] for c in coords]
+        x_unique = sorted(set(round(x, 3) for x in xs))
+        y_unique = sorted(set(round(y, 3) for y in ys))
+        assert len(x_unique) == 3, f"Expected 3 X positions, got {len(x_unique)}: {x_unique}"
+        assert len(y_unique) == 2, f"Expected 2 Y positions, got {len(y_unique)}: {y_unique}"
+
+    def test_equal_scan_sizes_no_per_axis(self):
+        """When scan_size_y_mm == scan_size_mm, should behave like scalar scan."""
+        from unittest.mock import MagicMock
+        from control.core.scan_coordinates import ScanCoordinates
+
+        sc = ScanCoordinates(MagicMock(), MagicMock(), MagicMock())
+        sc.objectiveStore = MagicMock()
+        sc.objectiveStore.get_pixel_size_factor.return_value = 1.0
+        sc.camera = MagicMock()
+        sc.camera.get_fov_size_mm.return_value = 1.0
+
+        # Use center at 50,50 to be within typical stage limits
+        sc.add_region("a", 50, 50, scan_size_mm=3.0, overlap_percent=0, shape="Square", scan_size_y_mm=3.0)
+        sc.add_region("b", 50, 50, scan_size_mm=3.0, overlap_percent=0, shape="Square", scan_size_y_mm=None)
+
+        coords_a = sc.region_fov_coordinates["a"]
+        coords_b = sc.region_fov_coordinates["b"]
+        assert len(coords_a) == len(coords_b)
+
+
 class TestScanCoordinatesRectangular:
     """Tests for ScanCoordinates with asymmetric X/Y spacing."""
 
