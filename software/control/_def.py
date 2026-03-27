@@ -1135,10 +1135,10 @@ def read_sample_formats_csv(file_path):
             format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
             if is_old_format:
-                well_size_x_mm = float(row["well_size_mm"])
-                well_size_y_mm = float(row["well_size_mm"])
-                well_spacing_x_mm = float(row["well_spacing_mm"])
-                well_spacing_y_mm = float(row["well_spacing_mm"])
+                size = float(row["well_size_mm"])
+                spacing = float(row["well_spacing_mm"])
+                well_size_x_mm = well_size_y_mm = size
+                well_spacing_x_mm = well_spacing_y_mm = spacing
                 well_shape = "circular"
             else:
                 well_size_x_mm = float(row["well_size_x_mm"])

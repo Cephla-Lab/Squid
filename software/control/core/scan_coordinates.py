@@ -207,8 +207,8 @@ class ScanCoordinates:
 
         if scan_size_y_mm is not None and scan_size_y_mm != scan_size_mm:
             # Per-axis scan: X and Y have different sizes (rectangular wells)
-            width_mm = scan_size_mm  # X dimension
-            height_mm = scan_size_y_mm  # Y dimension
+            width_mm = scan_size_mm
+            height_mm = scan_size_y_mm
 
             steps_width = max(1, math.floor(width_mm / step_size_mm))
             steps_height = max(1, math.floor(height_mm / step_size_mm))

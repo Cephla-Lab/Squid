@@ -13233,6 +13233,17 @@ class WellplateCalibration(QDialog):
         # Set minimum height to accommodate all UI configurations
         self.setMinimumHeight(580)
 
+    def _make_mm_spinbox(self, range_min, range_max, value, decimals=2, step=0.1):
+        """Create a QDoubleSpinBox configured for mm values."""
+        sb = QDoubleSpinBox(self)
+        sb.setKeyboardTracking(False)
+        sb.setRange(range_min, range_max)
+        sb.setValue(value)
+        sb.setSingleStep(step)
+        sb.setDecimals(decimals)
+        sb.setSuffix(" mm")
+        return sb
+
     def initUI(self):
         layout = QHBoxLayout(self)  # Change to QHBoxLayout to have two columns
 
@@ -13297,22 +13308,10 @@ class WellplateCalibration(QDialog):
         self.plateHeightInput.setSuffix(" mm")
         self.form_layout.addRow("Plate Height:", self.plateHeightInput)
 
-        self.wellSpacingXInput = QDoubleSpinBox(self)
-        self.wellSpacingXInput.setKeyboardTracking(False)
-        self.wellSpacingXInput.setRange(0.1, 100)
-        self.wellSpacingXInput.setValue(9)
-        self.wellSpacingXInput.setSingleStep(0.1)
-        self.wellSpacingXInput.setDecimals(2)
-        self.wellSpacingXInput.setSuffix(" mm")
+        self.wellSpacingXInput = self._make_mm_spinbox(0.1, 100, 9)
         self.form_layout.addRow("Well Spacing X:", self.wellSpacingXInput)
 
-        self.wellSpacingYInput = QDoubleSpinBox(self)
-        self.wellSpacingYInput.setKeyboardTracking(False)
-        self.wellSpacingYInput.setRange(0.1, 100)
-        self.wellSpacingYInput.setValue(9)
-        self.wellSpacingYInput.setSingleStep(0.1)
-        self.wellSpacingYInput.setDecimals(2)
-        self.wellSpacingYInput.setSuffix(" mm")
+        self.wellSpacingYInput = self._make_mm_spinbox(0.1, 100, 9)
         self.form_layout.addRow("Well Spacing Y:", self.wellSpacingYInput)
 
         self.wellShapeCombo = QComboBox(self)
@@ -13326,36 +13325,16 @@ class WellplateCalibration(QDialog):
         self.existing_params_group = QGroupBox("Format Parameters")
         existing_params_layout = QFormLayout()
 
-        self.existing_spacing_x_input = QDoubleSpinBox(self)
-        self.existing_spacing_x_input.setKeyboardTracking(False)
-        self.existing_spacing_x_input.setRange(0.1, 100)
-        self.existing_spacing_x_input.setSingleStep(0.1)
-        self.existing_spacing_x_input.setDecimals(3)
-        self.existing_spacing_x_input.setSuffix(" mm")
+        self.existing_spacing_x_input = self._make_mm_spinbox(0.1, 100, 9, decimals=3)
         existing_params_layout.addRow("Well Spacing X:", self.existing_spacing_x_input)
 
-        self.existing_spacing_y_input = QDoubleSpinBox(self)
-        self.existing_spacing_y_input.setKeyboardTracking(False)
-        self.existing_spacing_y_input.setRange(0.1, 100)
-        self.existing_spacing_y_input.setSingleStep(0.1)
-        self.existing_spacing_y_input.setDecimals(3)
-        self.existing_spacing_y_input.setSuffix(" mm")
+        self.existing_spacing_y_input = self._make_mm_spinbox(0.1, 100, 9, decimals=3)
         existing_params_layout.addRow("Well Spacing Y:", self.existing_spacing_y_input)
 
-        self.existing_well_size_x_input = QDoubleSpinBox(self)
-        self.existing_well_size_x_input.setKeyboardTracking(False)
-        self.existing_well_size_x_input.setRange(0.1, 50)
-        self.existing_well_size_x_input.setSingleStep(0.1)
-        self.existing_well_size_x_input.setDecimals(3)
-        self.existing_well_size_x_input.setSuffix(" mm")
+        self.existing_well_size_x_input = self._make_mm_spinbox(0.1, 50, 6.0, decimals=3)
         existing_params_layout.addRow("Well Size X:", self.existing_well_size_x_input)
 
-        self.existing_well_size_y_input = QDoubleSpinBox(self)
-        self.existing_well_size_y_input.setKeyboardTracking(False)
-        self.existing_well_size_y_input.setRange(0.1, 50)
-        self.existing_well_size_y_input.setSingleStep(0.1)
-        self.existing_well_size_y_input.setDecimals(3)
-        self.existing_well_size_y_input.setSuffix(" mm")
+        self.existing_well_size_y_input = self._make_mm_spinbox(0.1, 50, 6.0, decimals=3)
         existing_params_layout.addRow("Well Size Y:", self.existing_well_size_y_input)
 
         self.existing_well_shape_combo = QComboBox(self)
@@ -13437,24 +13416,12 @@ class WellplateCalibration(QDialog):
         # Well size inputs for center point method (since we can't calculate it)
         # Hidden when calibrating existing formats (Format Parameters section has well size)
         self.center_well_size_x_label = QLabel("Well Size X:")
-        self.center_well_size_x_input = QDoubleSpinBox(self)
-        self.center_well_size_x_input.setKeyboardTracking(False)
-        self.center_well_size_x_input.setRange(0.1, 50)
-        self.center_well_size_x_input.setSingleStep(0.1)
-        self.center_well_size_x_input.setDecimals(3)
-        self.center_well_size_x_input.setValue(3.0)
-        self.center_well_size_x_input.setSuffix(" mm")
+        self.center_well_size_x_input = self._make_mm_spinbox(0.1, 50, 3.0, decimals=3)
         center_point_layout.addWidget(self.center_well_size_x_label, 2, 0)
         center_point_layout.addWidget(self.center_well_size_x_input, 2, 1)
 
         self.center_well_size_y_label = QLabel("Well Size Y:")
-        self.center_well_size_y_input = QDoubleSpinBox(self)
-        self.center_well_size_y_input.setKeyboardTracking(False)
-        self.center_well_size_y_input.setRange(0.1, 50)
-        self.center_well_size_y_input.setSingleStep(0.1)
-        self.center_well_size_y_input.setDecimals(3)
-        self.center_well_size_y_input.setValue(3.0)
-        self.center_well_size_y_input.setSuffix(" mm")
+        self.center_well_size_y_input = self._make_mm_spinbox(0.1, 50, 3.0, decimals=3)
         center_point_layout.addWidget(self.center_well_size_y_label, 3, 0)
         center_point_layout.addWidget(self.center_well_size_y_input, 3, 1)
 
