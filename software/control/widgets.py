@@ -8200,7 +8200,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Square" if self.scanCoordinates.well_shape != "circular" else "Circle"
+                "Square" if not self.scanCoordinates.well_shape.is_round else "Circle"
             )
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
@@ -8213,14 +8213,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.scan_size_y_label.setVisible(show)
 
     def set_default_shape(self):
-        is_non_circular = self.scanCoordinates.well_shape != "circular"
+        is_non_circular = not self.scanCoordinates.well_shape.is_round
         if is_non_circular:
             self.combobox_shape.setCurrentText("Square")
         elif self.scanCoordinates.format != 0:
             self.combobox_shape.setCurrentText("Circle")
         # Show per-axis scan size only for rectangular wells with different X/Y
         show_per_axis = (
-            self.scanCoordinates.well_shape == "rectangular"
+            self.scanCoordinates.well_shape == WellShape.RECTANGULAR
             and self.scanCoordinates.well_size_x_mm != self.scanCoordinates.well_size_y_mm
         )
         self._show_per_axis_scan_size(show_per_axis)
@@ -8229,7 +8229,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         well_size_x = self.scanCoordinates.well_size_x_mm
         well_size_y = self.scanCoordinates.well_size_y_mm
         shape = self.combobox_shape.currentText()
-        is_round_well = self.scanCoordinates.well_shape == "circular"
+        is_round_well = self.scanCoordinates.well_shape.is_round
         fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
         return get_effective_well_size(well_size_x, well_size_y, fov_size_mm, shape, is_round_well)
 
@@ -8275,7 +8275,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             overlap_percent = self.entry_overlap.value()
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             shape = self.combobox_shape.currentText()
-            is_round_well = self.scanCoordinates.well_shape == "circular"
+            is_round_well = self.scanCoordinates.well_shape.is_round
 
             coverage = calculate_well_coverage(
                 scan_size, fov_size_mm, overlap_percent, shape, well_size_x_mm, well_size_y_mm, is_round_well
@@ -13114,7 +13114,7 @@ class WellplateFormatWidget(QWidget):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 0, "circular", 0, 1, 1)
+            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 0, WellShape.CIRCULAR.value, 0, 1, 1)
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
@@ -13130,7 +13130,7 @@ class WellplateFormatWidget(QWidget):
             settings["well_size_y_mm"],
             settings["well_spacing_x_mm"],
             settings["well_spacing_y_mm"],
-            settings["well_shape"],
+            settings["well_shape"].value if hasattr(settings["well_shape"], "value") else settings["well_shape"],
             settings["number_of_skip"],
             settings["rows"],
             settings["cols"],
@@ -13150,7 +13150,7 @@ class WellplateFormatWidget(QWidget):
                 "well_size_y_mm": 0,
                 "well_spacing_x_mm": 0,
                 "well_spacing_y_mm": 0,
-                "well_shape": "circular",
+                "well_shape": WellShape.CIRCULAR,
                 "number_of_skip": 0,
                 "rows": 1,
                 "cols": 1,
@@ -13190,7 +13190,11 @@ class WellplateFormatWidget(QWidget):
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
-                writer.writerow({**{"format": format_}, **settings})
+                row = {**{"format": format_}, **settings}
+                # Convert enum to string value for CSV
+                if hasattr(row.get("well_shape"), "value"):
+                    row["well_shape"] = row["well_shape"].value
+                writer.writerow(row)
 
     @staticmethod
     def parse_csv_row(row):
@@ -13203,7 +13207,7 @@ class WellplateFormatWidget(QWidget):
             "well_size_y_mm": float(row["well_size_y_mm"]),
             "well_spacing_x_mm": float(row["well_spacing_x_mm"]),
             "well_spacing_y_mm": float(row["well_spacing_y_mm"]),
-            "well_shape": str(row["well_shape"]),
+            "well_shape": WellShape.from_str(row["well_shape"]),
             "number_of_skip": int(row["number_of_skip"]),
             "rows": int(row["rows"]),
             "cols": int(row["cols"]),
@@ -13229,7 +13233,7 @@ class WellplateCalibration(QDialog):
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)
         # Set initial calibration method visibility based on default well shape (circular)
-        self._on_well_shape_changed("circular")
+        self._on_well_shape_changed(WellShape.CIRCULAR.value)
         # Set minimum height to accommodate all UI configurations
         self.setMinimumHeight(580)
 
@@ -13315,7 +13319,7 @@ class WellplateCalibration(QDialog):
         self.form_layout.addRow("Well Spacing Y:", self.wellSpacingYInput)
 
         self.wellShapeCombo = QComboBox(self)
-        self.wellShapeCombo.addItems(["circular", "square", "rectangular"])
+        self.wellShapeCombo.addItems([s.value for s in WellShape])
         self.form_layout.addRow("Well Shape:", self.wellShapeCombo)
         self.wellShapeCombo.currentTextChanged.connect(self._on_well_shape_changed)
 
@@ -13338,7 +13342,7 @@ class WellplateCalibration(QDialog):
         existing_params_layout.addRow("Well Size Y:", self.existing_well_size_y_input)
 
         self.existing_well_shape_combo = QComboBox(self)
-        self.existing_well_shape_combo.addItems(["circular", "square", "rectangular"])
+        self.existing_well_shape_combo.addItems([s.value for s in WellShape])
         self.existing_well_shape_combo.currentTextChanged.connect(self._on_well_shape_changed)
         existing_params_layout.addRow("Well Shape:", self.existing_well_shape_combo)
 
@@ -13644,8 +13648,9 @@ class WellplateCalibration(QDialog):
         self.center_well_size_y_input.setValue(well_size_y)
 
         # Set well shape combo
-        well_shape = settings.get("well_shape", "circular")
-        idx = self.existing_well_shape_combo.findText(well_shape)
+        well_shape = settings.get("well_shape", WellShape.CIRCULAR)
+        well_shape_str = well_shape.value if hasattr(well_shape, "value") else well_shape
+        idx = self.existing_well_shape_combo.findText(well_shape_str)
         if idx >= 0:
             self.existing_well_shape_combo.setCurrentIndex(idx)
 
@@ -13687,7 +13692,7 @@ class WellplateCalibration(QDialog):
 
     def _on_well_shape_changed(self, shape):
         """Update calibration method visibility based on well shape selection."""
-        is_circular = shape == "circular"
+        is_circular = shape == WellShape.CIRCULAR.value
         # Circular: show 3 edge points + center point, hide diagonal corners
         # Square/Rectangular: show center point + diagonal corners, hide 3 edge points
         self.edge_points_radio.setVisible(is_circular)
@@ -13812,7 +13817,7 @@ class WellplateCalibration(QDialog):
             new_spacing_y = self.existing_spacing_y_input.value()
             new_well_size_x = self.existing_well_size_x_input.value()
             new_well_size_y = self.existing_well_size_y_input.value()
-            new_well_shape = self.existing_well_shape_combo.currentText()
+            new_well_shape = WellShape.from_str(self.existing_well_shape_combo.currentText())
 
             # Get existing settings
             existing_settings = WELLPLATE_FORMAT_SETTINGS.get(selected_format)
@@ -13924,7 +13929,7 @@ class WellplateCalibration(QDialog):
             "well_size_y_mm": well_size_y_mm,
             "well_spacing_x_mm": self.wellSpacingXInput.value(),
             "well_spacing_y_mm": self.wellSpacingYInput.value(),
-            "well_shape": self.wellShapeCombo.currentText(),
+            "well_shape": WellShape.from_str(self.wellShapeCombo.currentText()),
             "number_of_skip": 0,
             "rows": self.rowsInput.value(),
             "cols": self.colsInput.value(),
@@ -14033,7 +14038,7 @@ class WellplateCalibration(QDialog):
 
         # Function to draw a well (circle or rectangle based on shape)
         def draw_well(x, y, size_x_px, size_y_px):
-            if well_shape != "circular":
+            if well_shape != WellShape.CIRCULAR.value:
                 half_x = size_x_px / 2
                 half_y = size_y_px / 2
                 draw.rectangle([x - half_x, y - half_y, x + half_x, y + half_y], outline="black", width=4, fill="white")

@@ -108,7 +108,7 @@ class ScanCoordinates:
         self.well_size_y_mm = size_y_mm
         self.well_spacing_x_mm = spacing_x_mm
         self.well_spacing_y_mm = spacing_y_mm
-        self.well_shape = well_shape
+        self.well_shape = control._def.WellShape.from_str(well_shape) if isinstance(well_shape, str) else well_shape
         self.number_of_skip = number_of_skip
 
     def _index_to_row(self, index):
@@ -723,8 +723,10 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_settings)
 
-        well_shape_value = wellplate_settings.get("well_shape", "circular")
-        if well_shape_value != "circular":
+        well_shape_value = wellplate_settings.get("well_shape", control._def.WellShape.CIRCULAR)
+        if isinstance(well_shape_value, str):
+            well_shape_value = control._def.WellShape.from_str(well_shape_value)
+        if not well_shape_value.is_round:
             well_shape = "Square"
         else:
             well_shape = "Circle"

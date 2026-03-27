@@ -4,7 +4,7 @@ import csv
 import os
 import tempfile
 
-from control._def import read_sample_formats_csv
+from control._def import read_sample_formats_csv, WellShape
 
 
 class TestReadSampleFormatsCSV:
@@ -26,14 +26,14 @@ class TestReadSampleFormatsCSV:
         assert formats["96 well plate"]["well_spacing_y_mm"] == 9.0
         assert formats["96 well plate"]["well_size_x_mm"] == 6.21
         assert formats["96 well plate"]["well_size_y_mm"] == 6.21
-        assert formats["96 well plate"]["well_shape"] == "circular"
+        assert formats["96 well plate"]["well_shape"] == WellShape.CIRCULAR
 
         assert "custom_chip" in formats
         assert formats["custom_chip"]["well_spacing_x_mm"] == 4.0
         assert formats["custom_chip"]["well_spacing_y_mm"] == 3.0
         assert formats["custom_chip"]["well_size_x_mm"] == 2.0
         assert formats["custom_chip"]["well_size_y_mm"] == 1.5
-        assert formats["custom_chip"]["well_shape"] == "rectangular"
+        assert formats["custom_chip"]["well_shape"] == WellShape.RECTANGULAR
 
     def test_backward_compat_old_csv(self, tmp_path):
         """Old CSV with single well_size_mm and well_spacing_mm should be auto-upgraded."""
@@ -49,7 +49,7 @@ class TestReadSampleFormatsCSV:
         assert formats["96 well plate"]["well_spacing_y_mm"] == 9.0
         assert formats["96 well plate"]["well_size_x_mm"] == 6.21
         assert formats["96 well plate"]["well_size_y_mm"] == 6.21
-        assert formats["96 well plate"]["well_shape"] == "circular"
+        assert formats["96 well plate"]["well_shape"] == WellShape.CIRCULAR
 
     def test_glass_slide_format(self, tmp_path):
         """Glass slide should have all zeros and circular shape."""
@@ -88,7 +88,7 @@ class TestGetWellplateSettings:
         assert "well_spacing_y_mm" in settings
         assert "well_size_x_mm" in settings
         assert "well_size_y_mm" in settings
-        assert settings["well_shape"] == "circular"
+        assert settings["well_shape"] == WellShape.CIRCULAR
 
 
 import math
@@ -163,7 +163,7 @@ class TestSquareWellShape:
             "custom_square,10.0,10.0,100,100,2.0,2.0,4.0,4.0,square,0,8,12\n"
         )
         formats = read_sample_formats_csv(str(csv_path))
-        assert formats["custom_square"]["well_shape"] == "square"
+        assert formats["custom_square"]["well_shape"] == WellShape.SQUARE
         assert formats["custom_square"]["well_size_x_mm"] == 2.0
         assert formats["custom_square"]["well_size_y_mm"] == 2.0
 

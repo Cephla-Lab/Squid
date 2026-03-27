@@ -1524,7 +1524,7 @@ class NavigationViewer(QFrame):
         self.well_size_y_mm = well_size_y_mm
         self.well_spacing_x_mm = well_spacing_x_mm
         self.well_spacing_y_mm = well_spacing_y_mm
-        self.well_shape = well_shape
+        self.well_shape = WellShape.from_str(well_shape) if isinstance(well_shape, str) else well_shape
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols

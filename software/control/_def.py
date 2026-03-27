@@ -577,6 +577,26 @@ class ZMotorConfig(Enum):
         return self == ZMotorConfig.PIEZO
 
 
+class WellShape(Enum):
+    """Well shape for sample format definitions."""
+
+    CIRCULAR = "circular"
+    SQUARE = "square"
+    RECTANGULAR = "rectangular"
+
+    @property
+    def is_round(self):
+        return self == WellShape.CIRCULAR
+
+    @staticmethod
+    def from_str(value):
+        """Convert string to WellShape, defaulting to CIRCULAR."""
+        for member in WellShape:
+            if member.value == value:
+                return member
+        return WellShape.CIRCULAR
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -1139,13 +1159,13 @@ def read_sample_formats_csv(file_path):
                 spacing = float(row["well_spacing_mm"])
                 well_size_x_mm = well_size_y_mm = size
                 well_spacing_x_mm = well_spacing_y_mm = spacing
-                well_shape = "circular"
+                well_shape = WellShape.CIRCULAR
             else:
                 well_size_x_mm = float(row["well_size_x_mm"])
                 well_size_y_mm = float(row["well_size_y_mm"])
                 well_spacing_x_mm = float(row["well_spacing_x_mm"])
                 well_spacing_y_mm = float(row["well_spacing_y_mm"])
-                well_shape = str(row["well_shape"])
+                well_shape = WellShape.from_str(row["well_shape"])
             sample_formats[format_key] = {
                 "a1_x_mm": float(row["a1_x_mm"]),
                 "a1_y_mm": float(row["a1_y_mm"]),
@@ -1205,7 +1225,7 @@ def get_wellplate_settings(wellplate_format):
             "well_size_y_mm": 0,
             "well_spacing_x_mm": 0,
             "well_spacing_y_mm": 0,
-            "well_shape": "circular",
+            "well_shape": WellShape.CIRCULAR,
             "number_of_skip": 0,
             "rows": 1,
             "cols": 1,
