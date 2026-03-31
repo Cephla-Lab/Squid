@@ -96,7 +96,7 @@ class LaserAutofocusController(QObject):
 
         # Update cache if objective store and profile is available
         if self.objectiveStore and self._current_profile and self.objectiveStore.current_objective:
-            updated_config = LaserAFConfig(**config.model_dump())
+            updated_config = LaserAFConfig(**config.model_dump(warnings=False))
             self._config_repo.save_laser_af_config(
                 self._current_profile, self.objectiveStore.current_objective, updated_config
             )
