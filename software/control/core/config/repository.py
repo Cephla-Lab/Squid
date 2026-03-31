@@ -159,7 +159,7 @@ class ConfigRepository:
 
             # Convert model to dict, using mode="json" to ensure Enums are serialized as strings
             # exclude_none=True omits optional fields when None (cleaner YAML files)
-            data = model.model_dump(exclude_none=True, mode="json")
+            data = model.model_dump(exclude_none=True, mode="json", warnings=False)
 
             with open(path, "w") as f:
                 yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
