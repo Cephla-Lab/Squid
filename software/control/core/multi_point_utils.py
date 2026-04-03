@@ -125,3 +125,6 @@ class MultiPointControllerFunctions:
     # Zarr frame written callback - called when subprocess completes writing a frame
     # Args: (fov, time_point, z_index, channel_name, region_idx)
     signal_zarr_frame_written: Callable[[int, int, int, str, int], None] = lambda *a, **kw: None
+    # TIFF frame written callback - called when subprocess completes writing a frame
+    # Args: (filepath, fov, time_point, z_index, channel_name, region_id)
+    signal_tiff_frame_written: Callable[[str, int, int, int, str, int], None] = lambda *a, **kw: None

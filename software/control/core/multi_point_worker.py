@@ -33,7 +33,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import ZarrWriteResult
+from control.core.job_processing import TiffWriteResult, ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
@@ -833,6 +833,12 @@ class MultiPointWorker:
             elif isinstance(job_result.result, ZarrWriteResult):
                 r = job_result.result
                 self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
+            # Handle TiffWriteResult - notify viewer that frame is written
+            elif isinstance(job_result.result, TiffWriteResult):
+                r = job_result.result
+                self.callbacks.signal_tiff_frame_written(
+                    r.filepath, r.fov, r.time_point, r.z_index, r.channel_name, r.region_id
+                )
             return True
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
