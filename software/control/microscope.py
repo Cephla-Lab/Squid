@@ -637,6 +637,7 @@ class Microscope:
         p = Path(path)
         if not p.suffix:
             p = p.with_suffix(f".{extension}")
+        p.parent.mkdir(parents=True, exist_ok=True)
         imageio.imwrite(str(p), image)
         self._log.info(f"Image saved to {p}")
         return str(p)
@@ -690,6 +691,8 @@ class Microscope:
             self._log.warning(f"Laser AF failed (target={target_um} µm)")
         return success
 
+    # TODO: Move to MultiPointController in the future.
+
     def acquire_single_fov(
         self,
         channel_names: List[str],
@@ -702,7 +705,7 @@ class Microscope:
 
         Iterates over z-planes and channels, saving each image to save_path.
         File naming follows the acquisition pipeline convention:
-        ``0_000000_{z}_{channel_name}.{ext}``
+        ``0_0_{z}_{channel_name}.{ext}``
 
         Args:
             channel_names: List of illumination channel names to acquire.
@@ -743,7 +746,7 @@ class Microscope:
                 image = self.acquire_image()
 
                 channel_name_safe = config.name.replace(" ", "_")
-                file_id = f"0_000000_{z_level}_{channel_name_safe}"
+                file_id = f"0_0_{z_level}_{channel_name_safe}"
                 saved = self.save_image(image, os.path.join(save_path, file_id))
                 saved_paths.append(saved)
 
