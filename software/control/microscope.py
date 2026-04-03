@@ -1,4 +1,3 @@
-import os
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -367,6 +366,7 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
+        self._laser_af_controller = None
 
         # Centralized config management
         self.config_repo: ConfigRepository = ConfigRepository()
@@ -620,6 +620,13 @@ class Microscope:
             if using_software_trigger:
                 self.live_controller.turn_off_illumination()
 
+    def _get_channel_or_raise(self, objective: str, channel_name: str):
+        config = self.live_controller.get_channel_by_name(objective, channel_name)
+        if config is None:
+            available = [ch.name for ch in self.live_controller.get_channels(objective)]
+            raise ValueError(f"Channel '{channel_name}' not found for objective '{objective}'. Available: {available}")
+        return config
+
     def save_image(self, image: np.ndarray, path: str) -> str:
         """Save an image using the configured image format.
 
@@ -649,7 +656,7 @@ class Microscope:
     # acquisition API layer, move this there.
 
     def _ensure_laser_af_controller(self):
-        if not hasattr(self, "_laser_af_controller") or self._laser_af_controller is None:
+        if self._laser_af_controller is None:
             if not control._def.SUPPORT_LASER_AUTOFOCUS:
                 raise RuntimeError("Laser autofocus is not enabled (SUPPORT_LASER_AUTOFOCUS=False)")
             if not self.addons.camera_focus:
@@ -718,19 +725,13 @@ class Microscope:
             List of saved file paths.
         """
         objective = self.objective_store.current_objective
-        configs = []
-        for name in channel_names:
-            config = self.live_controller.get_channel_by_name(objective, name)
-            if config is None:
-                available = [ch.name for ch in self.live_controller.get_channels(objective)]
-                raise ValueError(f"Channel '{name}' not found. Available: {available}")
-            configs.append(config)
+        configs = [self._get_channel_or_raise(objective, name) for name in channel_names]
 
         VALID_Z_STACKING_CONFIGS = {"FROM BOTTOM", "FROM CENTER", "FROM TOP"}
         if z_stacking_config not in VALID_Z_STACKING_CONFIGS:
             raise ValueError(f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}")
 
-        os.makedirs(save_path, exist_ok=True)
+        Path(save_path).mkdir(parents=True, exist_ok=True)
 
         deltaZ = deltaZ_mm
         if z_stacking_config == "FROM TOP":
@@ -754,7 +755,7 @@ class Microscope:
 
                     channel_name_safe = config.name.replace(" ", "_")
                     file_id = f"0_0_{z_level}_{channel_name_safe}"
-                    saved = self.save_image(image, os.path.join(save_path, file_id))
+                    saved = self.save_image(image, str(Path(save_path) / file_id))
                     saved_paths.append(saved)
 
                 if z_level < NZ - 1:
@@ -958,7 +959,7 @@ class Microscope:
         self.config_repo.load_profile(profile)
         self._log.info(f"Loaded user profile '{profile}'")
         # Reload laser AF config for the new profile
-        if hasattr(self, "_laser_af_controller") and self._laser_af_controller is not None:
+        if self._laser_af_controller is not None:
             self._laser_af_controller.on_settings_changed()
 
     def get_available_profiles(self) -> List[str]:
@@ -973,7 +974,7 @@ class Microscope:
         """
         self.objective_store.set_current_objective(objective)
         # Reload laser AF config for the new objective
-        if hasattr(self, "_laser_af_controller") and self._laser_af_controller is not None:
+        if self._laser_af_controller is not None:
             self._laser_af_controller.on_settings_changed()
 
     def set_illumination_intensity(self, channel: str, intensity: float, objective: Optional[str] = None) -> None:
@@ -986,10 +987,7 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config is None:
-            available = [ch.name for ch in self.live_controller.get_channels(objective)]
-            raise ValueError(f"Channel '{channel}' not found for objective '{objective}'. Available: {available}")
+        channel_config = self._get_channel_or_raise(objective, channel)
         channel_config.illumination_intensity = intensity
         self.live_controller.set_microscope_mode(channel_config)
 
@@ -1003,9 +1001,6 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config is None:
-            available = [ch.name for ch in self.live_controller.get_channels(objective)]
-            raise ValueError(f"Channel '{channel}' not found for objective '{objective}'. Available: {available}")
+        channel_config = self._get_channel_or_raise(objective, channel)
         channel_config.exposure_time = exposure_time
         self.live_controller.set_microscope_mode(channel_config)
