@@ -729,7 +729,9 @@ class Microscope:
 
         VALID_Z_STACKING_CONFIGS = {"FROM BOTTOM", "FROM CENTER", "FROM TOP"}
         if z_stacking_config not in VALID_Z_STACKING_CONFIGS:
-            raise ValueError(f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}")
+            raise ValueError(
+                f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}"
+            )
 
         Path(save_path).mkdir(parents=True, exist_ok=True)
 
