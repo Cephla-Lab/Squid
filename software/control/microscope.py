@@ -1,6 +1,8 @@
+import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
+import imageio
 import numpy as np
 
 import control._def
@@ -364,6 +366,7 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
+        self._laser_af_controller = None
 
         # Centralized config management
         self.config_repo: ConfigRepository = ConfigRepository()
@@ -427,11 +430,52 @@ class Microscope:
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
-        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
+            if not self.low_level_drivers.microcontroller:
+                raise RuntimeError("Hardware trigger mode requires a microcontroller, but none is configured.")
+            self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+            self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
+        else:
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+        if not skip_init:
+            try:
+                stage_config = self.stage.get_config()
+                x_config = stage_config.X_AXIS
+                y_config = stage_config.Y_AXIS
+                z_config = stage_config.Z_AXIS
+                self._log.info(
+                    f"Setting stage limits: x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}], "
+                    f"y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}], "
+                    f"z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
+                )
+                self.stage.set_limits(
+                    x_pos_mm=x_config.MAX_POSITION,
+                    x_neg_mm=x_config.MIN_POSITION,
+                    y_pos_mm=y_config.MAX_POSITION,
+                    y_neg_mm=y_config.MIN_POSITION,
+                    z_pos_mm=z_config.MAX_POSITION,
+                    z_neg_mm=z_config.MIN_POSITION,
+                )
+                self.home_xyz()
+            except TimeoutError:
+                self._log.error("Hardware setup timed out, resetting microcontroller")
+                if self.low_level_drivers.microcontroller:
+                    self.low_level_drivers.microcontroller.reset()
+                raise
+
+        if self.addons.objective_changer:
+            self.addons.objective_changer.home()
+            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+            if control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_1:
+                self.addons.objective_changer.moveToPosition1(move_z=False)
+            elif control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
+                self.addons.objective_changer.moveToPosition2(move_z=False)
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.
@@ -577,6 +621,157 @@ class Microscope:
             # always turn off illumination when using software trigger
             if using_software_trigger:
                 self.live_controller.turn_off_illumination()
+
+    def _get_channel_or_raise(self, objective: str, channel_name: str):
+        config = self.live_controller.get_channel_by_name(objective, channel_name)
+        if config is None:
+            available = [ch.name for ch in self.live_controller.get_channels(objective)]
+            raise ValueError(f"Channel '{channel_name}' not found for objective '{objective}'. Available: {available}")
+        return config
+
+    def save_image(self, image: np.ndarray, path: str) -> str:
+        """Save an image to the given path.
+
+        Extension is determined by dtype: tiff for uint16, otherwise
+        Acquisition.IMAGE_FORMAT. Any existing extension in path is replaced.
+
+        Args:
+            image: Image array to save.
+            path: Output file path (extension is overridden).
+
+        Returns:
+            The actual path the image was saved to.
+        """
+        extension = "tiff" if image.dtype == np.uint16 else control._def.Acquisition.IMAGE_FORMAT
+        p = Path(path).with_suffix(f".{extension}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        imageio.imwrite(str(p), image)
+        self._log.info(f"Image saved to {p}")
+        return str(p)
+
+    # TODO: LaserAutofocusController is a higher-level controller that orchestrates
+    # hardware primitives. It should not live on Microscope long-term. It's here
+    # temporarily so headless scripts get laser AF without manually wiring up the
+    # controller and handling objective-change reloads. Once we have a proper
+    # acquisition API layer, move this there.
+
+    def _ensure_laser_af_controller(self):
+        if self._laser_af_controller is None:
+            if not control._def.SUPPORT_LASER_AUTOFOCUS:
+                raise RuntimeError("Laser autofocus is not enabled (SUPPORT_LASER_AUTOFOCUS=False)")
+            if not self.addons.camera_focus:
+                raise RuntimeError("No focus camera available for laser autofocus")
+            from control.core.laser_auto_focus_controller import LaserAutofocusController
+
+            self._laser_af_controller = LaserAutofocusController(
+                microcontroller=self.low_level_drivers.microcontroller,
+                camera=self.addons.camera_focus,
+                liveController=self.live_controller_focus,
+                stage=self.stage,
+                piezo=self.addons.piezo_stage,
+                objectiveStore=self.objective_store,
+            )
+
+    def perform_laser_af(self, target_um: float = 0.0) -> bool:
+        """Perform laser autofocus at the current position.
+
+        Args:
+            target_um: Target displacement from reference in micrometers.
+                0.0 means move to the reference focal plane.
+
+        Returns:
+            True if autofocus succeeded, False otherwise.
+
+        Raises:
+            RuntimeError: If laser autofocus is not configured or not initialized.
+        """
+        self._ensure_laser_af_controller()
+        if not self._laser_af_controller.is_initialized:
+            raise RuntimeError(
+                "Laser autofocus is not initialized. "
+                "Call initialize_auto() and set_reference() first, or ensure a cached configuration exists."
+            )
+        success = self._laser_af_controller.move_to_target(target_um)
+        if success:
+            self._log.info(f"Laser AF succeeded (target={target_um} µm)")
+        else:
+            self._log.warning(f"Laser AF failed (target={target_um} µm)")
+        return success
+
+    # TODO: Move to MultiPointController in the future.
+
+    def acquire_single_fov(
+        self,
+        channel_names: List[str],
+        save_path: str,
+        NZ: int = 1,
+        deltaZ_mm: float = 0.0,
+        z_stacking_config: str = "FROM BOTTOM",
+    ) -> List[str]:
+        """Acquire a C+Z stack at the current position.
+
+        Iterates over z-planes and channels, saving each image to save_path.
+        File naming follows the acquisition pipeline convention:
+        ``0_0_{z}_{channel_name}.{ext}``
+
+        Args:
+            channel_names: List of illumination channel names to acquire.
+            save_path: Directory to save images into (created if needed).
+            NZ: Number of z-planes.
+            deltaZ_mm: Z step size in mm (positive = upward).
+            z_stacking_config: "FROM BOTTOM", "FROM CENTER", or "FROM TOP".
+
+        Returns:
+            List of saved file paths.
+        """
+        objective = self.objective_store.current_objective
+        configs = [self._get_channel_or_raise(objective, name) for name in channel_names]
+
+        VALID_Z_STACKING_CONFIGS = {"FROM BOTTOM", "FROM CENTER", "FROM TOP"}
+        if z_stacking_config not in VALID_Z_STACKING_CONFIGS:
+            raise ValueError(
+                f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}"
+            )
+
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+
+        deltaZ = deltaZ_mm
+        if z_stacking_config == "FROM TOP":
+            deltaZ = -abs(deltaZ_mm)
+
+        z_start = self.stage.get_pos().z_mm
+
+        # Move to start of z-stack
+        if NZ > 1 and z_stacking_config == "FROM CENTER":
+            self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
+            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+        saved_paths = []
+        try:
+            for z_level in range(NZ):
+                for config in configs:
+                    self.live_controller.set_microscope_mode(config)
+                    self._wait_for_microcontroller()
+
+                    image = self.acquire_image()
+
+                    channel_name_safe = config.name.replace(" ", "_")
+                    file_id = f"0_0_{z_level}_{channel_name_safe}"
+                    saved = self.save_image(image, str(Path(save_path) / file_id))
+                    saved_paths.append(saved)
+
+                if z_level < NZ - 1:
+                    self.stage.move_z(deltaZ)
+                    time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        finally:
+            # Always return Z to starting position
+            try:
+                self.stage.move_z_to(z_start)
+            except Exception as e:
+                self._log.error(f"Failed to return Z to start position {z_start} mm: {e}")
+
+        self._log.info(f"Acquired {len(saved_paths)} images ({len(configs)} channels x {NZ} z-planes)")
+        return saved_paths
 
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
@@ -746,6 +941,33 @@ class Microscope:
         self.move_y_to(y)
         self.move_z_to(z)
 
+    # TODO: Profile management is application-level config I/O, not hardware control.
+    # It lives here temporarily because ConfigRepository was inherited from the legacy
+    # ConfigurationManager/ChannelConfigurationManager that were on Microscope from the
+    # start. Move to a proper application layer when one exists.
+
+    def load_user_profile(self, profile: str) -> None:
+        """Load a user profile, switching channel configs and laser AF configs.
+
+        Args:
+            profile: Profile name (must exist under user_profiles/).
+
+        Raises:
+            ValueError: If profile doesn't exist.
+        """
+        available = self.config_repo.get_available_profiles()
+        if profile not in available:
+            raise ValueError(f"Profile '{profile}' not found. Available: {available}")
+        self.config_repo.load_profile(profile)
+        self._log.info(f"Loaded user profile '{profile}'")
+        # Reload laser AF config for the new profile
+        if self._laser_af_controller is not None:
+            self._laser_af_controller.on_settings_changed()
+
+    def get_available_profiles(self) -> List[str]:
+        """Get list of available user profiles."""
+        return self.config_repo.get_available_profiles()
+
     def set_objective(self, objective: str) -> None:
         """Set the current objective lens.
 
@@ -753,6 +975,9 @@ class Microscope:
             objective: Name of the objective to set as current.
         """
         self.objective_store.set_current_objective(objective)
+        # Reload laser AF config for the new objective
+        if self._laser_af_controller is not None:
+            self._laser_af_controller.on_settings_changed()
 
     def set_illumination_intensity(self, channel: str, intensity: float, objective: Optional[str] = None) -> None:
         """Set the illumination intensity for a channel.
@@ -764,10 +989,9 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config:
-            channel_config.illumination_intensity = intensity
-            self.live_controller.set_microscope_mode(channel_config)
+        channel_config = self._get_channel_or_raise(objective, channel)
+        channel_config.illumination_intensity = intensity
+        self.live_controller.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel: str, exposure_time: float, objective: Optional[str] = None) -> None:
         """Set the exposure time for a channel.
@@ -779,7 +1003,6 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config:
-            channel_config.exposure_time = exposure_time
-            self.live_controller.set_microscope_mode(channel_config)
+        channel_config = self._get_channel_or_raise(objective, channel)
+        channel_config.exposure_time = exposure_time
+        self.live_controller.set_microscope_mode(channel_config)

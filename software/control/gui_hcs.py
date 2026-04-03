@@ -621,7 +621,7 @@ class HighContentScreeningGui(QMainWindow):
         load_slack_settings_from_cache()
 
         self.load_objects(is_simulation=is_simulation)
-        self.setup_hardware(skip_init=self._skip_init)
+        self.setup_hardware()
 
         self.setup_movement_updater()
 
@@ -813,67 +813,14 @@ class HighContentScreeningGui(QMainWindow):
             fluidics=self.fluidics,
         )
 
-    def setup_hardware(self, skip_init: bool = False):
-        # Setup hardware components
-        if not self.microcontroller:
-            raise ValueError("Microcontroller must be none-None for hardware setup.")
-
-        try:
-            x_config = self.stage.get_config().X_AXIS
-            y_config = self.stage.get_config().Y_AXIS
-            z_config = self.stage.get_config().Z_AXIS
-
-            if skip_init:
-                self.log.info("Skipping hardware initialization (--skip-init flag set)")
-            else:
-                self.log.info(
-                    f"Setting stage limits to:"
-                    f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
-                    f" y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}],"
-                    f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
-                )
-
-                self.stage.set_limits(
-                    x_pos_mm=x_config.MAX_POSITION,
-                    x_neg_mm=x_config.MIN_POSITION,
-                    y_pos_mm=y_config.MAX_POSITION,
-                    y_neg_mm=y_config.MIN_POSITION,
-                    z_pos_mm=z_config.MAX_POSITION,
-                    z_neg_mm=z_config.MIN_POSITION,
-                )
-
-                self.microscope.home_xyz()
-
-        except TimeoutError as e:
-            # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
-            # and restartable state.
-            self.log.error("Setup timed out, resetting microcontroller before failing gui setup")
-            self.microcontroller.reset()
-            raise e
-        if DEFAULT_TRIGGER_MODE == TriggerMode.HARDWARE:
-            print("Setting acquisition mode to HARDWARE_TRIGGER")
-            self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.microcontroller.set_trigger_mode(HARDWARE_TRIGGER_MODE)
-        else:
-            self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    def setup_hardware(self):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
         self.camera.enable_callbacks(enabled=True)
 
         if self.camera_focus:
-            self.camera_focus.set_acquisition_mode(
-                squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
-            )  # self.camera.set_continuous_acquisition()
             self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.get_frame_callback())
             self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
-
-        if self.objective_changer:
-            self.objective_changer.home()
-            self.objective_changer.setSpeed(XERYON_SPEED)
-            if DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_1:
-                self.objective_changer.moveToPosition1(move_z=False)
-            elif DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_2:
-                self.objective_changer.moveToPosition2(move_z=False)
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:
