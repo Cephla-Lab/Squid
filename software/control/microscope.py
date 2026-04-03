@@ -682,7 +682,7 @@ class Microscope:
         if not self._laser_af_controller.is_initialized:
             raise RuntimeError(
                 "Laser autofocus is not initialized. "
-                "Call set_reference() first or ensure a cached configuration exists."
+                "Call initialize_auto() and set_reference() first, or ensure a cached configuration exists."
             )
         success = self._laser_af_controller.move_to_target(target_um)
         if success:
@@ -726,11 +726,17 @@ class Microscope:
                 raise ValueError(f"Channel '{name}' not found. Available: {available}")
             configs.append(config)
 
+        VALID_Z_STACKING_CONFIGS = {"FROM BOTTOM", "FROM CENTER", "FROM TOP"}
+        if z_stacking_config not in VALID_Z_STACKING_CONFIGS:
+            raise ValueError(f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}")
+
         os.makedirs(save_path, exist_ok=True)
 
         deltaZ = deltaZ_mm
         if z_stacking_config == "FROM TOP":
             deltaZ = -abs(deltaZ_mm)
+
+        z_start = self.stage.get_pos().z_mm
 
         # Move to start of z-stack
         if NZ > 1 and z_stacking_config == "FROM CENTER":
@@ -738,29 +744,28 @@ class Microscope:
             time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
         saved_paths = []
-        for z_level in range(NZ):
-            for config in configs:
-                self.live_controller.set_microscope_mode(config)
-                self._wait_for_microcontroller()
+        try:
+            for z_level in range(NZ):
+                for config in configs:
+                    self.live_controller.set_microscope_mode(config)
+                    self._wait_for_microcontroller()
 
-                image = self.acquire_image()
+                    image = self.acquire_image()
 
-                channel_name_safe = config.name.replace(" ", "_")
-                file_id = f"0_0_{z_level}_{channel_name_safe}"
-                saved = self.save_image(image, os.path.join(save_path, file_id))
-                saved_paths.append(saved)
+                    channel_name_safe = config.name.replace(" ", "_")
+                    file_id = f"0_0_{z_level}_{channel_name_safe}"
+                    saved = self.save_image(image, os.path.join(save_path, file_id))
+                    saved_paths.append(saved)
 
-            if z_level < NZ - 1:
-                self.stage.move_z(deltaZ)
-                time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
-
-        # Move z back to starting position
-        if NZ > 1:
-            if z_stacking_config == "FROM CENTER":
-                rel_z = -deltaZ * (NZ - 1) + deltaZ * round((NZ - 1) / 2)
-            else:
-                rel_z = -deltaZ * (NZ - 1)
-            self.stage.move_z(rel_z)
+                if z_level < NZ - 1:
+                    self.stage.move_z(deltaZ)
+                    time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        finally:
+            # Always return Z to starting position
+            try:
+                self.stage.move_z_to(z_start)
+            except Exception as e:
+                self._log.error(f"Failed to return Z to start position {z_start} mm: {e}")
 
         self._log.info(f"Acquired {len(saved_paths)} images ({len(configs)} channels x {NZ} z-planes)")
         return saved_paths
@@ -982,9 +987,11 @@ class Microscope:
         if objective is None:
             objective = self.objective_store.current_objective
         channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config:
-            channel_config.illumination_intensity = intensity
-            self.live_controller.set_microscope_mode(channel_config)
+        if channel_config is None:
+            available = [ch.name for ch in self.live_controller.get_channels(objective)]
+            raise ValueError(f"Channel '{channel}' not found for objective '{objective}'. Available: {available}")
+        channel_config.illumination_intensity = intensity
+        self.live_controller.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel: str, exposure_time: float, objective: Optional[str] = None) -> None:
         """Set the exposure time for a channel.
@@ -997,6 +1004,8 @@ class Microscope:
         if objective is None:
             objective = self.objective_store.current_objective
         channel_config = self.live_controller.get_channel_by_name(objective, channel)
-        if channel_config:
-            channel_config.exposure_time = exposure_time
-            self.live_controller.set_microscope_mode(channel_config)
+        if channel_config is None:
+            available = [ch.name for ch in self.live_controller.get_channels(objective)]
+            raise ValueError(f"Channel '{channel}' not found for objective '{objective}'. Available: {available}")
+        channel_config.exposure_time = exposure_time
+        self.live_controller.set_microscope_mode(channel_config)
