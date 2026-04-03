@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
+import imageio
 import numpy as np
 
 import control._def
@@ -427,11 +428,50 @@ class Microscope:
         self.camera.set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
-        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
+            self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+            self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
+        else:
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+        if not skip_init:
+            try:
+                stage_config = self.stage.get_config()
+                x_config = stage_config.X_AXIS
+                y_config = stage_config.Y_AXIS
+                z_config = stage_config.Z_AXIS
+                self._log.info(
+                    f"Setting stage limits: x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}], "
+                    f"y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}], "
+                    f"z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
+                )
+                self.stage.set_limits(
+                    x_pos_mm=x_config.MAX_POSITION,
+                    x_neg_mm=x_config.MIN_POSITION,
+                    y_pos_mm=y_config.MAX_POSITION,
+                    y_neg_mm=y_config.MIN_POSITION,
+                    z_pos_mm=z_config.MAX_POSITION,
+                    z_neg_mm=z_config.MIN_POSITION,
+                )
+                self.home_xyz()
+            except TimeoutError:
+                self._log.error("Hardware setup timed out, resetting microcontroller")
+                if self.low_level_drivers.microcontroller:
+                    self.low_level_drivers.microcontroller.reset()
+                raise
+
+        if self.addons.objective_changer:
+            self.addons.objective_changer.home()
+            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+            if control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_1:
+                self.addons.objective_changer.moveToPosition1(move_z=False)
+            elif control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
+                self.addons.objective_changer.moveToPosition2(move_z=False)
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.
@@ -577,6 +617,27 @@ class Microscope:
             # always turn off illumination when using software trigger
             if using_software_trigger:
                 self.live_controller.turn_off_illumination()
+
+    def save_image(self, image: np.ndarray, path: str) -> str:
+        """Save an image using the configured image format.
+
+        Uses tiff for uint16 images, otherwise Acquisition.IMAGE_FORMAT.
+        If path has no extension, the appropriate one is appended.
+
+        Args:
+            image: Image array to save.
+            path: Output file path (with or without extension).
+
+        Returns:
+            The actual path the image was saved to.
+        """
+        extension = "tiff" if image.dtype == np.uint16 else control._def.Acquisition.IMAGE_FORMAT
+        p = Path(path)
+        if not p.suffix:
+            p = p.with_suffix(f".{extension}")
+        imageio.imwrite(str(p), image)
+        self._log.info(f"Image saved to {p}")
+        return str(p)
 
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.

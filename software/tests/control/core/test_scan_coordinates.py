@@ -33,9 +33,9 @@ def test_scan_coordinates_basic_operation():
 
     scan_coordinates = ScanCoordinates(scope.objective_store, scope.stage, scope.camera, update_callback=test_callback)
 
-    single_fov_center = (6.0, 7.0, 3.0)
-    flexible_center = (8.0, 9.0, 0.5)
-    well_center = (6.5, 8.5, scope.stage.get_pos().z_mm)
+    single_fov_center = (20.0, 20.0, 3.0)
+    flexible_center = (30.0, 30.0, 0.5)
+    well_center = (25.0, 25.0, scope.stage.get_pos().z_mm)
     scan_coordinates.add_single_fov_region("single_fov", *single_fov_center)
     scan_coordinates.add_flexible_region("flexible_region", *flexible_center, 2, 2, 10)
     scan_coordinates.add_region("well_region", well_center[0], well_center[1], 4, 10, "Circle")
