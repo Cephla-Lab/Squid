@@ -1,5 +1,7 @@
+import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import imageio
 import numpy as np
@@ -638,6 +640,78 @@ class Microscope:
         imageio.imwrite(str(p), image)
         self._log.info(f"Image saved to {p}")
         return str(p)
+
+    def acquire_single_fov(
+        self,
+        channel_names: List[str],
+        save_path: str,
+        NZ: int = 1,
+        deltaZ_mm: float = 0.0,
+        z_stacking_config: str = "FROM BOTTOM",
+    ) -> List[str]:
+        """Acquire a C+Z stack at the current position.
+
+        Iterates over z-planes and channels, saving each image to save_path.
+        File naming follows the acquisition pipeline convention:
+        ``0_000000_{z}_{channel_name}.{ext}``
+
+        Args:
+            channel_names: List of illumination channel names to acquire.
+            save_path: Directory to save images into (created if needed).
+            NZ: Number of z-planes.
+            deltaZ_mm: Z step size in mm (positive = upward).
+            z_stacking_config: "FROM BOTTOM", "FROM CENTER", or "FROM TOP".
+
+        Returns:
+            List of saved file paths.
+        """
+        objective = self.objective_store.current_objective
+        configs = []
+        for name in channel_names:
+            config = self.live_controller.get_channel_by_name(objective, name)
+            if config is None:
+                available = [ch.name for ch in self.live_controller.get_channels(objective)]
+                raise ValueError(f"Channel '{name}' not found. Available: {available}")
+            configs.append(config)
+
+        os.makedirs(save_path, exist_ok=True)
+
+        deltaZ = deltaZ_mm
+        if z_stacking_config == "FROM TOP":
+            deltaZ = -abs(deltaZ_mm)
+
+        # Move to start of z-stack
+        if NZ > 1 and z_stacking_config == "FROM CENTER":
+            self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
+            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+        saved_paths = []
+        for z_level in range(NZ):
+            for config in configs:
+                self.live_controller.set_microscope_mode(config)
+                self._wait_for_microcontroller()
+
+                image = self.acquire_image()
+
+                channel_name_safe = config.name.replace(" ", "_")
+                file_id = f"0_000000_{z_level}_{channel_name_safe}"
+                saved = self.save_image(image, os.path.join(save_path, file_id))
+                saved_paths.append(saved)
+
+            if z_level < NZ - 1:
+                self.stage.move_z(deltaZ)
+                time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+        # Move z back to starting position
+        if NZ > 1:
+            if z_stacking_config == "FROM CENTER":
+                rel_z = -deltaZ * (NZ - 1) + deltaZ * round((NZ - 1) / 2)
+            else:
+                rel_z = -deltaZ * (NZ - 1)
+            self.stage.move_z(rel_z)
+
+        self._log.info(f"Acquired {len(saved_paths)} images ({len(configs)} channels x {NZ} z-planes)")
+        return saved_paths
 
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
