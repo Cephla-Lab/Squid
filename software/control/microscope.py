@@ -641,6 +641,55 @@ class Microscope:
         self._log.info(f"Image saved to {p}")
         return str(p)
 
+    # TODO: LaserAutofocusController is a higher-level controller that orchestrates
+    # hardware primitives. It should not live on Microscope long-term. It's here
+    # temporarily so headless scripts get laser AF without manually wiring up the
+    # controller and handling objective-change reloads. Once we have a proper
+    # acquisition API layer, move this there.
+
+    def _ensure_laser_af_controller(self):
+        if not hasattr(self, "_laser_af_controller") or self._laser_af_controller is None:
+            if not control._def.SUPPORT_LASER_AUTOFOCUS:
+                raise RuntimeError("Laser autofocus is not enabled (SUPPORT_LASER_AUTOFOCUS=False)")
+            if not self.addons.camera_focus:
+                raise RuntimeError("No focus camera available for laser autofocus")
+            from control.core.laser_auto_focus_controller import LaserAutofocusController
+
+            self._laser_af_controller = LaserAutofocusController(
+                microcontroller=self.low_level_drivers.microcontroller,
+                camera=self.addons.camera_focus,
+                liveController=self.live_controller_focus,
+                stage=self.stage,
+                piezo=self.addons.piezo_stage,
+                objectiveStore=self.objective_store,
+            )
+
+    def perform_laser_af(self, target_um: float = 0.0) -> bool:
+        """Perform laser autofocus at the current position.
+
+        Args:
+            target_um: Target displacement from reference in micrometers.
+                0.0 means move to the reference focal plane.
+
+        Returns:
+            True if autofocus succeeded, False otherwise.
+
+        Raises:
+            RuntimeError: If laser autofocus is not configured or not initialized.
+        """
+        self._ensure_laser_af_controller()
+        if not self._laser_af_controller.is_initialized:
+            raise RuntimeError(
+                "Laser autofocus is not initialized. "
+                "Call set_reference() first or ensure a cached configuration exists."
+            )
+        success = self._laser_af_controller.move_to_target(target_um)
+        if success:
+            self._log.info(f"Laser AF succeeded (target={target_um} µm)")
+        else:
+            self._log.warning(f"Laser AF failed (target={target_um} µm)")
+        return success
+
     def acquire_single_fov(
         self,
         channel_names: List[str],
@@ -888,6 +937,9 @@ class Microscope:
             objective: Name of the objective to set as current.
         """
         self.objective_store.set_current_objective(objective)
+        # Reload laser AF config for the new objective
+        if hasattr(self, "_laser_af_controller") and self._laser_af_controller is not None:
+            self._laser_af_controller.on_settings_changed()
 
     def set_illumination_intensity(self, channel: str, intensity: float, objective: Optional[str] = None) -> None:
         """Set the illumination intensity for a channel.
