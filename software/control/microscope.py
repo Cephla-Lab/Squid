@@ -930,6 +930,33 @@ class Microscope:
         self.move_y_to(y)
         self.move_z_to(z)
 
+    # TODO: Profile management is application-level config I/O, not hardware control.
+    # It lives here temporarily because ConfigRepository was inherited from the legacy
+    # ConfigurationManager/ChannelConfigurationManager that were on Microscope from the
+    # start. Move to a proper application layer when one exists.
+
+    def load_user_profile(self, profile: str) -> None:
+        """Load a user profile, switching channel configs and laser AF configs.
+
+        Args:
+            profile: Profile name (must exist under user_profiles/).
+
+        Raises:
+            ValueError: If profile doesn't exist.
+        """
+        available = self.config_repo.get_available_profiles()
+        if profile not in available:
+            raise ValueError(f"Profile '{profile}' not found. Available: {available}")
+        self.config_repo.load_profile(profile)
+        self._log.info(f"Loaded user profile '{profile}'")
+        # Reload laser AF config for the new profile
+        if hasattr(self, "_laser_af_controller") and self._laser_af_controller is not None:
+            self._laser_af_controller.on_settings_changed()
+
+    def get_available_profiles(self) -> List[str]:
+        """Get list of available user profiles."""
+        return self.config_repo.get_available_profiles()
+
     def set_objective(self, objective: str) -> None:
         """Set the current objective lens.
 
