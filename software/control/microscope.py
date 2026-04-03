@@ -431,6 +431,8 @@ class Microscope:
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
         if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
+            if not self.low_level_drivers.microcontroller:
+                raise RuntimeError("Hardware trigger mode requires a microcontroller, but none is configured.")
             self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
             self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
             self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
@@ -628,22 +630,20 @@ class Microscope:
         return config
 
     def save_image(self, image: np.ndarray, path: str) -> str:
-        """Save an image using the configured image format.
+        """Save an image to the given path.
 
-        Uses tiff for uint16 images, otherwise Acquisition.IMAGE_FORMAT.
-        If path has no extension, the appropriate one is appended.
+        Extension is determined by dtype: tiff for uint16, otherwise
+        Acquisition.IMAGE_FORMAT. Any existing extension in path is replaced.
 
         Args:
             image: Image array to save.
-            path: Output file path (with or without extension).
+            path: Output file path (extension is overridden).
 
         Returns:
             The actual path the image was saved to.
         """
         extension = "tiff" if image.dtype == np.uint16 else control._def.Acquisition.IMAGE_FORMAT
-        p = Path(path)
-        if not p.suffix:
-            p = p.with_suffix(f".{extension}")
+        p = Path(path).with_suffix(f".{extension}")
         p.parent.mkdir(parents=True, exist_ok=True)
         imageio.imwrite(str(p), image)
         self._log.info(f"Image saved to {p}")
