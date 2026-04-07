@@ -813,7 +813,9 @@ class MicroscopeControlServer:
 
         Args:
             wells: Well selection string (e.g., 'A1:B3' or 'A1,A2,B1').
-            wellplate_settings: Dict with 'a1_x_mm', 'a1_y_mm', 'well_spacing_mm'.
+            wellplate_settings: Dict with 'a1_x_mm', 'a1_y_mm', 'well_spacing_x_mm',
+                'well_spacing_y_mm'. Old keys 'well_spacing_mm' and 'well_size_mm' are
+                accepted for backward compatibility.
 
         Returns:
             Dict mapping well IDs to (x_mm, y_mm) coordinates.
@@ -835,9 +837,18 @@ class MicroscopeControlServer:
                 index //= 26
             return row
 
+        # Backward compat for old API clients
+        if "well_spacing_mm" in wellplate_settings and "well_spacing_x_mm" not in wellplate_settings:
+            wellplate_settings["well_spacing_x_mm"] = wellplate_settings["well_spacing_mm"]
+            wellplate_settings["well_spacing_y_mm"] = wellplate_settings["well_spacing_mm"]
+        if "well_size_mm" in wellplate_settings and "well_size_x_mm" not in wellplate_settings:
+            wellplate_settings["well_size_x_mm"] = wellplate_settings["well_size_mm"]
+            wellplate_settings["well_size_y_mm"] = wellplate_settings["well_size_mm"]
+
         a1_x = wellplate_settings.get("a1_x_mm", 0)
         a1_y = wellplate_settings.get("a1_y_mm", 0)
-        spacing = wellplate_settings.get("well_spacing_mm", 9)
+        spacing_x = wellplate_settings.get("well_spacing_x_mm", 9)
+        spacing_y = wellplate_settings.get("well_spacing_y_mm", 9)
 
         well_coords = {}
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
@@ -859,14 +870,14 @@ class MicroscopeControlServer:
                 for row_idx in range(start_row_idx, end_row_idx + 1):
                     for col_idx in range(start_col_idx, end_col_idx + 1):
                         well_id = index_to_row(row_idx) + str(col_idx + 1)
-                        x_mm = a1_x + col_idx * spacing
-                        y_mm = a1_y + row_idx * spacing
+                        x_mm = a1_x + col_idx * spacing_x
+                        y_mm = a1_y + row_idx * spacing_y
                         well_coords[well_id] = (x_mm, y_mm)
             else:
                 # Single well like A1
                 well_id = start_row.upper() + start_col
-                x_mm = a1_x + start_col_idx * spacing
-                y_mm = a1_y + start_row_idx * spacing
+                x_mm = a1_x + start_col_idx * spacing_x
+                y_mm = a1_y + start_row_idx * spacing_y
                 well_coords[well_id] = (x_mm, y_mm)
 
         return well_coords
