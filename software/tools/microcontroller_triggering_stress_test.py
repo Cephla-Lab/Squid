@@ -129,8 +129,14 @@ class Stats:
         self.per_command_counts[name] += 1
 
 
-def _send(micro: mc.Microcontroller, stats: Stats, counter: _LogCounter,
-          name: str, fn: Callable[[], None], wait_timeout_s: float) -> None:
+def _send(
+    micro: mc.Microcontroller,
+    stats: Stats,
+    counter: _LogCounter,
+    name: str,
+    fn: Callable[[], None],
+    wait_timeout_s: float,
+) -> None:
     """Send one command, wait for completion, update stats. Never raises."""
     t0 = time.time()
     try:
@@ -165,7 +171,9 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
 
     log.info(
         "Starting stress loop: channels=%s intensity=%.1f%% illum_on_time=%dus",
-        [name for name, _ in DEFAULT_CHANNELS], args.intensity, args.illum_on_time_us,
+        [name for name, _ in DEFAULT_CHANNELS],
+        args.intensity,
+        args.illum_on_time_us,
     )
 
     now = time.time()
@@ -177,14 +185,18 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
             iteration += 1
 
             _send(
-                micro, stats, counter,
+                micro,
+                stats,
+                counter,
                 name=f"set_illumination[{ch_name}]",
                 fn=lambda sc=source_code: micro.set_illumination(sc, args.intensity),
                 wait_timeout_s=args.wait_timeout,
             )
 
             _send(
-                micro, stats, counter,
+                micro,
+                stats,
+                counter,
                 name="send_hardware_trigger",
                 fn=lambda: micro.send_hardware_trigger(
                     control_illumination=True,
@@ -201,8 +213,13 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
                 log.info(
                     "progress: iter=%d sent=%d completed=%d wait_timeouts=%d aborts=%d "
                     "resends=%d mcu_aborts=%d (%.1fs remaining)",
-                    iteration, stats.sent, stats.completed, stats.wait_timeouts,
-                    stats.aborts, counter.counts[_RESEND_KEY], counter.counts[_ABORT_KEY],
+                    iteration,
+                    stats.sent,
+                    stats.completed,
+                    stats.wait_timeouts,
+                    stats.aborts,
+                    counter.counts[_RESEND_KEY],
+                    counter.counts[_ABORT_KEY],
                     max(0.0, end_time - now),
                 )
                 last_report_at = now
@@ -270,17 +287,34 @@ def main() -> int:
         description="Stress test the MCU by replaying the acquisition command pattern on D1-D5."
     )
     ap.add_argument("--runtime", type=float, default=60.0, help="Duration in seconds (default: 60)")
-    ap.add_argument("--intensity", type=float, default=10.0,
-                    help="Illumination intensity percent passed to set_illumination (default: 10)")
-    ap.add_argument("--illum-on-time-us", type=int, default=100_000,
-                    help="Illumination on-time passed to send_hardware_trigger in microseconds "
-                         "(default: 100000, matches the log)")
-    ap.add_argument("--wait-timeout", type=float, default=5.0,
-                    help="Per-command wait_till_operation_is_completed timeout (default: 5s)")
-    ap.add_argument("--inter-command-sleep", type=float, default=0.0,
-                    help="Optional sleep between channel iterations in seconds (default: 0)")
-    ap.add_argument("--report-interval-s", type=float, default=5.0,
-                    help="Progress report cadence in seconds (default: 5)")
+    ap.add_argument(
+        "--intensity",
+        type=float,
+        default=10.0,
+        help="Illumination intensity percent passed to set_illumination (default: 10)",
+    )
+    ap.add_argument(
+        "--illum-on-time-us",
+        type=int,
+        default=100_000,
+        help="Illumination on-time passed to send_hardware_trigger in microseconds "
+        "(default: 100000, matches the log)",
+    )
+    ap.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=5.0,
+        help="Per-command wait_till_operation_is_completed timeout (default: 5s)",
+    )
+    ap.add_argument(
+        "--inter-command-sleep",
+        type=float,
+        default=0.0,
+        help="Optional sleep between channel iterations in seconds (default: 0)",
+    )
+    ap.add_argument(
+        "--report-interval-s", type=float, default=5.0, help="Progress report cadence in seconds (default: 5)"
+    )
     ap.add_argument("--verbose", action="store_true", help="Enable debug-level stdout logging")
 
     args = ap.parse_args()
@@ -305,8 +339,11 @@ def main() -> int:
     print_report(stats, counter, elapsed)
 
     failures = (
-        stats.wait_timeouts + stats.aborts + stats.other_errors
-        + counter.counts[_RESEND_KEY] + counter.counts[_ABORT_KEY]
+        stats.wait_timeouts
+        + stats.aborts
+        + stats.other_errors
+        + counter.counts[_RESEND_KEY]
+        + counter.counts[_ABORT_KEY]
     )
     return 0 if failures == 0 else 1
 
