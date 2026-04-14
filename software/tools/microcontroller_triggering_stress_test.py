@@ -62,8 +62,9 @@ import re
 import statistics
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Callable, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import control.microcontroller as mc
 import squid.logging
@@ -84,9 +85,10 @@ DEFAULT_CHANNELS: List[Tuple[str, int]] = [
 ]
 
 
-# The MCU logs this at debug level every time it resends a command because
-# an ack did not arrive in time. We sniff the logger since there's no public
-# counter for it.
+# We sniff the squid logger to count MCU resends and aborts since there is no
+# public counter in Microcontroller. The regexes match the exact strings it logs.
+_RESEND_KEY = "resend"
+_ABORT_KEY = "abort"
 _RESEND_RE = re.compile(r"command timed out without ack")
 _ABORT_RE = re.compile(r"Command\s+\d+\s+\(.*?\)\s+ABORTED")
 
@@ -120,11 +122,11 @@ class Stats:
     aborts: int = 0
     other_errors: int = 0
     latencies_ms: List[float] = field(default_factory=list)
-    per_command_counts: dict = field(default_factory=dict)
+    per_command_counts: Dict[str, int] = field(default_factory=Counter)
 
     def record_latency(self, name: str, ms: float) -> None:
         self.latencies_ms.append(ms)
-        self.per_command_counts[name] = self.per_command_counts.get(name, 0) + 1
+        self.per_command_counts[name] += 1
 
 
 def _send(micro: mc.Microcontroller, stats: Stats, counter: _LogCounter,
@@ -166,13 +168,14 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
         [name for name, _ in DEFAULT_CHANNELS], args.intensity, args.illum_on_time_us,
     )
 
-    while time.time() < end_time:
+    now = time.time()
+    while now < end_time:
         for ch_name, source_code in DEFAULT_CHANNELS:
-            if time.time() >= end_time:
+            now = time.time()
+            if now >= end_time:
                 break
             iteration += 1
 
-            # 1. Set illumination source + intensity for this channel.
             _send(
                 micro, stats, counter,
                 name=f"set_illumination[{ch_name}]",
@@ -180,7 +183,6 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
                 wait_timeout_s=args.wait_timeout,
             )
 
-            # 2. Send hardware trigger holding illumination on for illum_on_time_us.
             _send(
                 micro, stats, counter,
                 name="send_hardware_trigger",
@@ -200,7 +202,7 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
                     "progress: iter=%d sent=%d completed=%d wait_timeouts=%d aborts=%d "
                     "resends=%d mcu_aborts=%d (%.1fs remaining)",
                     iteration, stats.sent, stats.completed, stats.wait_timeouts,
-                    stats.aborts, counter.counts["resend"], counter.counts["abort"],
+                    stats.aborts, counter.counts[_RESEND_KEY], counter.counts[_ABORT_KEY],
                     max(0.0, end_time - now),
                 )
                 last_report_at = now
@@ -226,8 +228,8 @@ def print_report(stats: Stats, counter: _LogCounter, elapsed_s: float) -> None:
     print(f"wait-timeouts:          {stats.wait_timeouts}")
     print(f"aborts (caller):        {stats.aborts}")
     print(f"other errors:           {stats.other_errors}")
-    print(f"resends (from MCU log): {counter.counts['resend']}")
-    print(f"aborts  (from MCU log): {counter.counts['abort']}")
+    print(f"resends (from MCU log): {counter.counts[_RESEND_KEY]}")
+    print(f"aborts  (from MCU log): {counter.counts[_ABORT_KEY]}")
     if stats.sent:
         print(f"effective rate:         {stats.sent / elapsed_s:.1f} cmd/s")
 
@@ -258,8 +260,7 @@ def print_report(stats: Stats, counter: _LogCounter, elapsed_s: float) -> None:
 
 
 def install_log_counter() -> _LogCounter:
-    counter = _LogCounter({"resend": _RESEND_RE, "abort": _ABORT_RE})
-    # Attach to the squid root logger so we catch the MCU logger regardless of name.
+    counter = _LogCounter({_RESEND_KEY: _RESEND_RE, _ABORT_KEY: _ABORT_RE})
     logging.getLogger("squid").addHandler(counter)
     return counter
 
@@ -305,7 +306,7 @@ def main() -> int:
 
     failures = (
         stats.wait_timeouts + stats.aborts + stats.other_errors
-        + counter.counts["resend"] + counter.counts["abort"]
+        + counter.counts[_RESEND_KEY] + counter.counts[_ABORT_KEY]
     )
     return 0 if failures == 0 else 1
 
