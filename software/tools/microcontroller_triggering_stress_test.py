@@ -132,7 +132,6 @@ class Stats:
 def _send(
     micro: mc.Microcontroller,
     stats: Stats,
-    counter: _LogCounter,
     name: str,
     fn: Callable[[], None],
     wait_timeout_s: float,
@@ -147,6 +146,12 @@ def _send(
     except TimeoutError as e:
         stats.wait_timeouts += 1
         log.warning("wait timed out on %s: %s", name, e)
+        # Abort the stalled command so the next send starts from a clean state.
+        micro.abort_current_command(reason=f"wait timeout in stress test on {name}")
+        try:
+            micro.acknowledge_aborted_command()
+        except Exception:
+            pass
         return
     except mc.CommandAborted as e:
         stats.aborts += 1
@@ -187,7 +192,6 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
             _send(
                 micro,
                 stats,
-                counter,
                 name=f"set_illumination[{ch_name}]",
                 fn=lambda sc=source_code: micro.set_illumination(sc, args.intensity),
                 wait_timeout_s=args.wait_timeout,
@@ -196,7 +200,6 @@ def run_stress(micro: mc.Microcontroller, args, counter: _LogCounter) -> Stats:
             _send(
                 micro,
                 stats,
-                counter,
                 name="send_hardware_trigger",
                 fn=lambda: micro.send_hardware_trigger(
                     control_illumination=True,
@@ -278,7 +281,7 @@ def print_report(stats: Stats, counter: _LogCounter, elapsed_s: float) -> None:
 
 def install_log_counter() -> _LogCounter:
     counter = _LogCounter({_RESEND_KEY: _RESEND_RE, _ABORT_KEY: _ABORT_RE})
-    logging.getLogger("squid").addHandler(counter)
+    logging.getLogger("squid.Microcontroller").addHandler(counter)
     return counter
 
 
@@ -331,9 +334,12 @@ def main() -> int:
     started_at = time.time()
     stats = Stats()
     try:
-        stats = run_stress(micro, args, counter)
-    except KeyboardInterrupt:
-        log.warning("Interrupted — reporting partial results")
+        try:
+            stats = run_stress(micro, args, counter)
+        except KeyboardInterrupt:
+            log.warning("Interrupted — reporting partial results")
+    finally:
+        micro.close()
     elapsed = time.time() - started_at
 
     print_report(stats, counter, elapsed)
