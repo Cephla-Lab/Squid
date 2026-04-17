@@ -370,8 +370,18 @@ class MultiPointWorker:
                     # Subprocess starts warming up in background - don't block here
 
             self._job_runners.append((job_class, job_runner))
+            if job_runner is not None:
+                job_runner.set_unexpected_exit_handler(self._on_job_runner_died)
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
+
+    def _on_job_runner_died(self, exitcode: Optional[int]) -> None:
+        """Invoked by JobRunner's watchdog when a subprocess dies unexpectedly."""
+        self._log.error(
+            f"JobRunner subprocess died unexpectedly (exitcode={exitcode}); aborting acquisition."
+        )
+        self._acquisition_error_count += 1
+        self.request_abort_fn()
 
     def update_use_piezo(self, value):
         self.use_piezo = value

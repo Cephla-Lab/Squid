@@ -1,12 +1,14 @@
 import abc
 import multiprocessing
+import multiprocessing.connection
 import queue
 import os
+import threading
 import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Callable, ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -1064,12 +1066,63 @@ class JobRunner(multiprocessing.Process):
         self._bp_pending_bytes = bp_pending_bytes
         self._bp_capacity_event = bp_capacity_event
 
+        # Watchdog for detecting unexpected subprocess death (segfault, OOM kill, etc.).
+        # Without this, a dead JobRunner silently rots the acquisition: the parent keeps
+        # queuing save jobs that no one consumes.
+        self._on_unexpected_exit: Optional[Callable[[Optional[int]], None]] = None
+        self._watchdog: Optional[threading.Thread] = None
+
         # Clean up stale metadata files from previous crashed acquisitions
         # Only run when explicitly requested (i.e., when OME-TIFF saving is being used)
         if cleanup_stale_ome_files:
             removed = ome_tiff_writer.cleanup_stale_metadata_files()
             if removed:
                 self._log.info(f"Cleaned up {len(removed)} stale OME-TIFF metadata files")
+
+    def set_unexpected_exit_handler(self, handler: Optional[Callable[[Optional[int]], None]]) -> None:
+        """Register a callback to invoke if the subprocess dies without a clean shutdown.
+
+        The handler is called from the watchdog thread with the subprocess exitcode
+        (which may be None, a positive int, or a negative signal number on POSIX).
+        """
+        self._on_unexpected_exit = handler
+
+    def start(self):
+        super().start()
+        # Watchdog must start after super().start() so self.pid and self.sentinel are set.
+        self._watchdog = threading.Thread(
+            target=self._watch_subprocess,
+            daemon=True,
+            name=f"JobRunner-watchdog[{self.pid}]",
+        )
+        self._watchdog.start()
+
+    def kill(self):
+        # Mark as expected so the watchdog treats the exit as intentional.
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+        super().kill()
+
+    def _watch_subprocess(self) -> None:
+        """Block until the subprocess exits, then distinguish expected vs. unexpected death."""
+        # Capture references; shutdown() clears self._shutdown_event after join().
+        shutdown_event = self._shutdown_event
+        pid = self.pid
+        multiprocessing.connection.wait([self.sentinel])
+        exitcode = self.exitcode
+        if shutdown_event is not None and shutdown_event.is_set():
+            self._log.info(f"JobRunner PID={pid} exited cleanly (exitcode={exitcode})")
+            return
+        self._log.error(
+            f"JobRunner PID={pid} died UNEXPECTEDLY (exitcode={exitcode}). "
+            f"Pending save jobs will not complete."
+        )
+        handler = self._on_unexpected_exit
+        if handler is not None:
+            try:
+                handler(exitcode)
+            except Exception:
+                self._log.exception("JobRunner unexpected-exit handler raised")
 
     def dispatch(self, job: Job):
         # Inject acquisition_info into SaveOMETiffJob instances before serialization.
