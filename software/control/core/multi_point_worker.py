@@ -377,9 +377,7 @@ class MultiPointWorker:
 
     def _on_job_runner_died(self, exitcode: Optional[int]) -> None:
         """Invoked by JobRunner's watchdog when a subprocess dies unexpectedly."""
-        self._log.error(
-            f"JobRunner subprocess died unexpectedly (exitcode={exitcode}); aborting acquisition."
-        )
+        self._log.error(f"JobRunner subprocess died unexpectedly (exitcode={exitcode}); aborting acquisition.")
         self._acquisition_error_count += 1
         self.request_abort_fn()
 

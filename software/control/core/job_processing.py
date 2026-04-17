@@ -1114,8 +1114,7 @@ class JobRunner(multiprocessing.Process):
             self._log.info(f"JobRunner PID={pid} exited cleanly (exitcode={exitcode})")
             return
         self._log.error(
-            f"JobRunner PID={pid} died UNEXPECTEDLY (exitcode={exitcode}). "
-            f"Pending save jobs will not complete."
+            f"JobRunner PID={pid} died UNEXPECTEDLY (exitcode={exitcode}). " f"Pending save jobs will not complete."
         )
         handler = self._on_unexpected_exit
         if handler is not None:
