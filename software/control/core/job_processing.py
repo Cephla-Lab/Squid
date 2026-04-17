@@ -1103,6 +1103,12 @@ class JobRunner(multiprocessing.Process):
             self._shutdown_event.set()
         super().kill()
 
+    def terminate(self):
+        # Mark as expected so the watchdog treats the exit as intentional.
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+        super().terminate()
+
     def _watch_subprocess(self) -> None:
         """Block until the subprocess exits, then distinguish expected vs. unexpected death."""
         # Capture references; shutdown() clears self._shutdown_event after join().
