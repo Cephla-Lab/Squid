@@ -335,10 +335,8 @@ class MultiPointWorker:
                     if prewarmed_job_runner.is_ready():
                         self._log.info(f"Using pre-warmed job runner for {job_class.__name__} jobs")
                         job_runner = prewarmed_job_runner
-                        # Register abort handler as early as possible on adoption. The
-                        # window between controller-side start() and this point remains
-                        # uncovered for pre-warmed runners, but beyond here any
-                        # unexpected death triggers an abort.
+                        # Pre-warmed runners were started by the controller without a
+                        # handler; the pre-handoff window stays uncovered by design.
                         job_runner.set_unexpected_exit_handler(self._on_job_runner_died)
                         # Configure it with current acquisition settings
                         job_runner.set_acquisition_info(self.acquisition_info)
@@ -371,8 +369,7 @@ class MultiPointWorker:
                         # Pass zarr writer info for ZARR_V3 format
                         zarr_writer_info=zarr_writer_info,
                     )
-                    # Register abort handler before start() so the watchdog always has
-                    # a handler available, even if the subprocess dies during warmup.
+                    # Must precede start() so the watchdog covers warmup-time deaths.
                     job_runner.set_unexpected_exit_handler(self._on_job_runner_died)
                     job_runner.start()
                     # Subprocess starts warming up in background - don't block here
