@@ -7,12 +7,11 @@ the public API for CI and offline development.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Optional
 
 from serial.tools import list_ports
 
-from control.modbus_rtu import ModbusRTUClient
+import squid.abc
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +110,7 @@ class ObjectiveTurret4PosControllerSimulation:
         baudrate: int = 115200,
         timeout: float = 0.5,
         positions: Optional[dict] = None,
-        stage=None,
+        stage: Optional[squid.abc.AbstractStage] = None,
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
@@ -159,7 +158,7 @@ class ObjectiveTurret4PosControllerSimulation:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
     @property
