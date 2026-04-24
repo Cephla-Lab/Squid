@@ -7,9 +7,11 @@ the public API for CI and offline development.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from serial.tools import list_ports
+from control.modbus_rtu import ModbusRTUClient
 
 import squid.abc
 
@@ -187,3 +189,262 @@ class ObjectiveTurret4PosControllerSimulation:
         if captured_z is None or self._stage is None:
             return
         self._stage.move_z_to(captured_z)
+
+
+class ObjectiveTurret4PosController:
+    """Synchronous controller for a 4-position objective turret over Modbus-RTU."""
+
+    def __init__(
+        self,
+        serial_number: str,
+        slave_id: int = 1,
+        baudrate: int = 115200,
+        timeout: float = 0.5,
+        positions: Optional[dict] = None,
+        stage: Optional[squid.abc.AbstractStage] = None,
+    ) -> None:
+        from control._def import OBJECTIVE_TURRET_POSITIONS
+
+        self._slave_id = slave_id
+        self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
+        self._stage = stage
+        self._current_objective: Optional[str] = None
+        self._is_open = False
+
+        port = _find_port(serial_number)
+        self._modbus = ModbusRTUClient(port=port, baudrate=baudrate, timeout=timeout)
+        self._modbus.connect()
+        try:
+            self.clear_alarm()
+
+            microstep_raw = self._modbus.read_register(self._slave_id, REG_MICROSTEP)
+            if not 0 <= microstep_raw <= 7:
+                raise ValueError(f"Invalid microstep register value {microstep_raw} (expected 0..7)")
+            self._microstep = 2**microstep_raw
+            self._pulses_per_position = int(MOTOR_STEPS_PER_REV * self._microstep * GEAR_RATIO / POSITIONS_PER_REV)
+
+            changed = [self._calibrate_motion_params(), self._calibrate_homing_config()]
+            if any(changed):
+                self._save_to_eeprom()
+
+            logger.info(
+                "Turret controller ready: port=%s microstep=%d pulses/position=%d calibrated=%s",
+                port,
+                self._microstep,
+                self._pulses_per_position,
+                any(changed),
+            )
+
+            self.enable()
+            self._is_open = True
+        except Exception:
+            self._modbus.disconnect()
+            raise
+
+    def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        self._require_open()
+        self._write_control(CW_DISABLE)
+        self._write_holding(REG_RUN_MODE, MODE_HOMING)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_ABSOLUTE)
+        self._write_control(CW_TRIGGER_ABSOLUTE)
+        self._wait_until_idle(timeout_s)
+        self._current_objective = None
+
+    def enable(self) -> None:
+        """Run the disable -> startup -> enable state-machine cycle."""
+        self._write_control(CW_DISABLE)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+
+    def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
+        self._require_open()
+        _resolve_position(objective_name, self._positions)
+        if self._current_objective == objective_name:
+            return
+
+        captured_z = self._retract_z_if_possible()
+        self._rotate_to(objective_name, timeout_s)
+        self._current_objective = objective_name
+        self._restore_z_if_captured(captured_z)
+
+    def clear_alarm(self) -> None:
+        self._write_control(CW_CLEAR_FAULT)
+        self._write_holding(REG_CLEAR_ERROR_STORAGE, CLEAR_ERROR_STORAGE_MAGIC)
+
+    def close(self) -> None:
+        if not self._is_open and not self._modbus.is_connected:
+            return
+        if self._modbus.is_connected:
+            try:
+                self._write_control(CW_DISABLE)
+            except Exception as exc:
+                logger.warning("Failed to disable motor during close: %s", exc)
+            self._modbus.disconnect()
+        self._is_open = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    @property
+    def pulses_per_position(self) -> int:
+        return self._pulses_per_position
+
+    @property
+    def current_position_pulses(self) -> int:
+        return self._modbus.read_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
+
+    @property
+    def current_objective(self) -> Optional[str]:
+        return self._current_objective
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    # --- internal helpers ---
+
+    def _require_open(self) -> None:
+        if not self._is_open:
+            raise RuntimeError("Turret controller is closed")
+
+    def _rotate_to(self, objective_name: str, timeout_s: float) -> None:
+        position_index = _resolve_position(objective_name, self._positions)
+        target_pulses = (position_index - 1) * self._pulses_per_position
+
+        self._write_control(CW_DISABLE)
+        self._write_holding(REG_RUN_MODE, MODE_POSITION)
+        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, target_pulses, signed=True)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_ABSOLUTE)
+        self._write_control(CW_TRIGGER_ABSOLUTE)
+        self._wait_for_position(target_pulses, timeout_s)
+
+    def _retract_z_if_possible(self) -> Optional[float]:
+        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
+
+        if self._stage is None or not HOMING_ENABLED_Z:
+            return None
+        z_mm = self._stage.get_pos().z_mm
+        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+        return z_mm
+
+    def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
+        if captured_z is None or self._stage is None:
+            return
+        self._stage.move_z_to(captured_z)
+
+    def _calibrate_one(
+        self,
+        addr: int,
+        expected: int,
+        label: str,
+        *,
+        is_32bit: bool = False,
+        signed: bool = False,
+        mask: Optional[int] = None,
+    ) -> bool:
+        if is_32bit:
+            current = self._modbus.read_register_32bit(self._slave_id, addr, signed=signed)
+        else:
+            current = self._modbus.read_register(self._slave_id, addr)
+        desired = (current & ~mask) | expected if mask is not None else expected
+        if current == desired:
+            return False
+        if is_32bit:
+            self._modbus.write_register_32bit(self._slave_id, addr, desired, signed=signed)
+        else:
+            self._modbus.write_register(self._slave_id, addr, desired)
+        fmt = "0x%08X" if mask is not None else "%d"
+        logger.info(f"Calibrated %s: {fmt} -> {fmt}", label, current, desired)
+        return True
+
+    def _calibrate_motion_params(self) -> bool:
+        return any(
+            [
+                self._calibrate_one(REG_ACCEL, EXPECTED_ACCEL, "accel", is_32bit=True),
+                self._calibrate_one(REG_DECEL, EXPECTED_DECEL, "decel", is_32bit=True),
+                self._calibrate_one(REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", is_32bit=True),
+            ]
+        )
+
+    def _calibrate_homing_config(self) -> bool:
+        return any(
+            [
+                self._calibrate_one(REG_HOMING_METHOD, HOMING_METHOD, "homing_method"),
+                self._calibrate_one(
+                    REG_HOMING_OFFSET,
+                    HOMING_ORIGIN_OFFSET,
+                    "homing_offset",
+                    is_32bit=True,
+                    signed=True,
+                ),
+                self._calibrate_one(REG_ZERO_RETURN, HOMING_ZERO_RETURN, "zero_return"),
+                self._calibrate_one(
+                    REG_DI_FUNCTION,
+                    DI1_FUNCTION_NEG_LIMIT,
+                    "DI1_function",
+                    is_32bit=True,
+                    mask=0xF,
+                ),
+            ]
+        )
+
+    def _save_to_eeprom(self) -> None:
+        self._write_holding(REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC)
+        logger.info("Saved parameters to EEPROM")
+
+    def _write_control(self, value: int) -> None:
+        self._modbus.write_register(self._slave_id, REG_CONTROL_WORD, value)
+
+    def _write_holding(self, address: int, value: int) -> None:
+        self._modbus.write_register(self._slave_id, address, value)
+
+    def _read_status_word(self) -> int:
+        return self._modbus.read_register(self._slave_id, REG_STATUS_WORD)
+
+    @staticmethod
+    def _check_fault(status_word: int) -> None:
+        if status_word & STATUS_BIT_FAULT:
+            raise RuntimeError(f"Motor reported fault (status word=0x{status_word:04X})")
+
+    def _wait_until_idle(self, timeout_s: float) -> None:
+        deadline = time.monotonic() + timeout_s
+        time.sleep(POLL_INTERVAL_S)
+        while time.monotonic() < deadline:
+            status = self._read_status_word()
+            self._check_fault(status)
+            if not (status & STATUS_BIT_RUNNING):
+                return
+            time.sleep(POLL_INTERVAL_S)
+        raise TimeoutError(f"Motion did not finish within {timeout_s:.1f}s")
+
+    def _wait_for_position(self, target_pulses: int, timeout_s: float) -> None:
+        deadline = time.monotonic() + timeout_s
+        seen_running = False
+        last_pos: Optional[int] = None
+        while time.monotonic() < deadline:
+            status = self._read_status_word()
+            self._check_fault(status)
+            running = bool(status & STATUS_BIT_RUNNING)
+            last_pos = self.current_position_pulses
+            in_tolerance = abs(last_pos - target_pulses) <= POSITION_TOLERANCE_PULSES
+
+            if running:
+                seen_running = True
+            if in_tolerance and not running:
+                return
+            if seen_running and not running and not in_tolerance:
+                raise RuntimeError(
+                    f"Motor stopped at {last_pos} pulses, target {target_pulses} "
+                    f"(tolerance ±{POSITION_TOLERANCE_PULSES})"
+                )
+            time.sleep(POLL_INTERVAL_S)
+        raise TimeoutError(
+            f"Move to {target_pulses} pulses timed out after {timeout_s:.1f}s " f"(last position={last_pos})"
+        )
