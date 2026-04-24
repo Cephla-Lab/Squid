@@ -1936,7 +1936,9 @@ class HighContentScreeningGui(QMainWindow):
             # Re-home so the position tracker matches the physical slot: avoids short-circuiting the
             # rotate in move_to_objective if the tracker is stale from a fault mid-rotation.
             self.objective_changer.home()
-            self.objective_changer.move_to_objective(self.objectiveStore.current_objective)
+            current = self.objectiveStore.current_objective
+            if current:
+                self.objective_changer.move_to_objective(current)
         except Exception as exc:
             self.log.exception("Reset of objective turret failed")
             QMessageBox.warning(
@@ -2725,10 +2727,8 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z and tear down the objective changer on full shutdown.
-        # On restart, this runs only for Xeryon (which must be zeroed before re-init);
-        # the turret is skipped because it re-inits cleanly from any position.
-        # Xeryon gets moveToZero(); turret gets close() (disables motor + disconnects serial).
+        # Z-retract + Xeryon zero: needed on full shutdown, and on Xeryon restart
+        # (Xeryon must be zeroed before re-init).
         if not for_restart or USE_XERYON:
             z_retracted = False
             try:
@@ -2740,17 +2740,26 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-            if self.objective_changer and z_retracted:
+            if USE_XERYON and self.objective_changer and z_retracted:
                 try:
-                    if USE_XERYON:
-                        self.objective_changer.moveToZero()
-                    elif USE_OBJECTIVE_TURRET:
-                        self.objective_changer.close()
+                    self.objective_changer.moveToZero()
                 except Exception:
                     if for_restart:
-                        self.log.exception(f"Error resetting objective changer during {context}")
+                        self.log.exception(f"Error resetting Xeryon during {context}")
                     else:
                         raise
+
+        # Turret close: always release the serial port so the new process (on restart)
+        # can acquire it, and so the motor is de-energized on full shutdown. Independent
+        # of Z-retract success — the close path must run even if Z retract failed.
+        if USE_OBJECTIVE_TURRET and self.objective_changer:
+            try:
+                self.objective_changer.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing turret during {context}")
+                else:
+                    raise
 
         if not for_restart:
             self.microcontroller.turn_off_all_pid()

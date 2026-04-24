@@ -491,7 +491,11 @@ class Microscope:
                 raise
 
         if self.addons.objective_changer:
-            self.addons.objective_changer.home()
+            # Xeryon always re-homes (findIndex is fast and required). The turret skips
+            # homing on a software restart: the motor stays powered across close()/re-init
+            # and retains its position register, so a re-home would just be wasted motion.
+            if control._def.USE_XERYON or not skip_init:
+                self.addons.objective_changer.home()
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
