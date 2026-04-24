@@ -1925,6 +1925,25 @@ class HighContentScreeningGui(QMainWindow):
         self.workflowRunnerDialog.raise_()
         self.workflowRunnerDialog.activateWindow()
 
+    def resetObjectiveTurret(self):
+        """Clear faults, re-enable the motor, and rotate back to the current objective."""
+        if self.objective_changer is None:
+            return
+        self.log.info("Resetting objective turret")
+        try:
+            self.objective_changer.clear_alarm()
+            self.objective_changer.enable()
+            self.objective_changer.move_to_objective(self.objectiveStore.current_objective)
+        except Exception as exc:
+            self.log.exception("Reset of objective turret failed")
+            from qtpy.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                self,
+                "Reset Objective Turret",
+                f"Failed to reset objective turret:\n{exc}",
+            )
+
     def _get_actual_acquisition_path(self) -> str:
         """Get the actual acquisition path (base_path + experiment_ID with timestamp)."""
         if hasattr(self, "multipointController") and self.multipointController:
