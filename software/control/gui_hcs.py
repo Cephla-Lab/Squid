@@ -878,10 +878,7 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
-        if USE_XERYON:
-            self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
-        else:
-            self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
+        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
