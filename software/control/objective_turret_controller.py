@@ -414,21 +414,12 @@ class ObjectiveTurret4PosController:
             raise RuntimeError(f"Motor reported fault (status word=0x{status_word:04X})")
 
     def _wait_until_idle(self, timeout_s: float) -> None:
-        # Require RUNNING to go high at least once before accepting not-running as "idle".
-        # Without this, a slow command spin-up (the motor hasn't asserted RUNNING yet when we
-        # first poll) causes an early return, and the next Modbus write hits SLAVE_BUSY because
-        # the motor is still processing the previous command. The grace period falls back to
-        # accepting not-running for trivially-short moves or no-op commands.
         deadline = time.monotonic() + timeout_s
-        grace_deadline = time.monotonic() + POLL_INTERVAL_S * 10
-        seen_running = False
+        time.sleep(POLL_INTERVAL_S)
         while time.monotonic() < deadline:
             status = self._read_status_word()
             self._check_fault(status)
-            running = bool(status & STATUS_BIT_RUNNING)
-            if running:
-                seen_running = True
-            elif seen_running or time.monotonic() >= grace_deadline:
+            if not (status & STATUS_BIT_RUNNING):
                 return
             time.sleep(POLL_INTERVAL_S)
         raise TimeoutError(f"Motion did not finish within {timeout_s:.1f}s")

@@ -272,6 +272,13 @@ CRC16_TABLE = [
 
 FRAME_INTERVAL = 0.003
 
+# Modbus exception codes treated as transient — "slave is busy, ask again later".
+# Per Modbus spec: 0x05 = ACKNOWLEDGE (slave accepted the request, still processing),
+# 0x06 = SLAVE_DEVICE_BUSY (slave is engaged in a long-duration command).
+TRANSIENT_EXCEPTION_CODES = {0x05, 0x06}
+TRANSIENT_RETRIES = 20
+TRANSIENT_BASE_DELAY_S = 0.1
+
 
 def calculate_crc(data: bytes | bytearray) -> int:
     crc = 0xFFFF
@@ -407,7 +414,9 @@ class ModbusRTUClient:
     def _send_receive(self, frame: bytes, expected_response_len: int) -> bytes:
         with self._lock:
             last_error: Optional[Exception] = None
-            for attempt in range(self._retries + 1):
+            transient_attempts = 0
+            attempt = 0
+            while attempt <= self._retries:
                 try:
                     self._serial.reset_input_buffer()
                     self._serial.write(frame)
@@ -418,11 +427,28 @@ class ModbusRTUClient:
                     logger.warning(f"Modbus request failed (attempt {attempt + 1}/" f"{self._retries + 1}): {e}")
                     if attempt < self._retries:
                         time.sleep(FRAME_INTERVAL * 2)
+                    attempt += 1
                     continue
 
                 # Exception responses are 5 bytes — check before incomplete check
                 if len(response) >= 5 and (response[1] & 0x80) and _verify_crc(response[:5]):
                     exception_code = response[2]
+                    # Transient "slave busy / acknowledge" responses: back off and retry per
+                    # Modbus spec. Doesn't consume a normal retry slot — the slave is working,
+                    # not failing. Capped at TRANSIENT_RETRIES total.
+                    if exception_code in TRANSIENT_EXCEPTION_CODES and transient_attempts < TRANSIENT_RETRIES:
+                        backoff = TRANSIENT_BASE_DELAY_S * (2 ** min(transient_attempts, 4))
+                        logger.debug(
+                            "Modbus slave busy (FC=0x%02X, code=0x%02X); retry %d/%d after %.2fs",
+                            response[1],
+                            exception_code,
+                            transient_attempts + 1,
+                            TRANSIENT_RETRIES,
+                            backoff,
+                        )
+                        transient_attempts += 1
+                        time.sleep(backoff)
+                        continue  # redrive without incrementing `attempt`
                     raise ModbusError(
                         f"Modbus exception response: FC=0x{response[1]:02X}, " f"code=0x{exception_code:02X}",
                         slave_id=response[0],
@@ -438,6 +464,7 @@ class ModbusRTUClient:
                     )
                     if attempt < self._retries:
                         time.sleep(FRAME_INTERVAL * 2)
+                    attempt += 1
                     continue
 
                 if not _verify_crc(response):
@@ -447,6 +474,7 @@ class ModbusRTUClient:
                     )
                     if attempt < self._retries:
                         time.sleep(FRAME_INTERVAL * 2)
+                    attempt += 1
                     continue
 
                 return response
