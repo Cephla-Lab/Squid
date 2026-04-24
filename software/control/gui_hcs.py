@@ -2718,9 +2718,12 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-            if USE_XERYON and self.objective_changer and z_retracted:
+            if self.objective_changer and z_retracted:
                 try:
-                    self.objective_changer.moveToZero()
+                    if USE_XERYON:
+                        self.objective_changer.moveToZero()
+                    elif USE_OBJECTIVE_TURRET:
+                        self.objective_changer.close()
                 except Exception:
                     if for_restart:
                         self.log.exception(f"Error resetting objective changer during {context}")
