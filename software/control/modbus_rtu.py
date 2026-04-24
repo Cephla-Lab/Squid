@@ -305,6 +305,11 @@ def build_read_registers_frame(slave_id: int, address: int, count: int) -> bytes
     return _append_crc(frame)
 
 
+def build_read_input_registers_frame(slave_id: int, address: int, count: int) -> bytes:
+    frame = struct.pack(">BBHH", slave_id, 0x04, address, count)
+    return _append_crc(frame)
+
+
 def build_write_register_frame(slave_id: int, address: int, value: int) -> bytes:
     frame = struct.pack(">BBHH", slave_id, 0x06, address, value)
     return _append_crc(frame)
@@ -387,6 +392,32 @@ class ModbusRTUClient:
         self._require_connected()
         frame = build_read_registers_frame(slave_id, address, 2)
         # Response: slave(1) + fc(1) + byte_count(1) + data(4) + crc(2) = 9
+        response = self._send_receive(frame, expected_response_len=9)
+        high = (response[3] << 8) | response[4]
+        low = (response[5] << 8) | response[6]
+        value = (high << 16) | low
+        if signed and value >= 0x80000000:
+            value -= 0x100000000
+        return value
+
+    def read_input_register(self, slave_id: int, address: int) -> int:
+        """Read a single 16-bit input register (FC 0x04).
+
+        Input registers are a distinct address space from holding registers — the
+        same numeric address may refer to different data depending on FC. Some
+        devices (like the NiMotion stepper) place the status word and current
+        position in the input-register space, so FC 0x03 would return unrelated
+        holding-register data.
+        """
+        self._require_connected()
+        frame = build_read_input_registers_frame(slave_id, address, 1)
+        response = self._send_receive(frame, expected_response_len=7)
+        return (response[3] << 8) | response[4]
+
+    def read_input_register_32bit(self, slave_id: int, address: int, signed: bool = False) -> int:
+        """Read a 32-bit input register pair via FC 0x04 (see read_input_register)."""
+        self._require_connected()
+        frame = build_read_input_registers_frame(slave_id, address, 2)
         response = self._send_receive(frame, expected_response_len=9)
         high = (response[3] << 8) | response[4]
         low = (response[5] << 8) | response[6]

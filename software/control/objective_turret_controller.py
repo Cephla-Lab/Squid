@@ -217,7 +217,7 @@ class ObjectiveTurret4PosController:
         try:
             self.clear_alarm()
 
-            microstep_raw = self._modbus.read_register(self._slave_id, REG_MICROSTEP)
+            microstep_raw = self._modbus.read_input_register(self._slave_id, REG_MICROSTEP)
             if not 0 <= microstep_raw <= 7:
                 raise ValueError(f"Invalid microstep register value {microstep_raw} (expected 0..7)")
             self._microstep = 2**microstep_raw
@@ -296,7 +296,7 @@ class ObjectiveTurret4PosController:
 
     @property
     def current_position_pulses(self) -> int:
-        return self._modbus.read_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
+        return self._modbus.read_input_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
 
     @property
     def current_objective(self) -> Optional[str]:
@@ -406,7 +406,7 @@ class ObjectiveTurret4PosController:
         self._modbus.write_register(self._slave_id, address, value)
 
     def _read_status_word(self) -> int:
-        return self._modbus.read_register(self._slave_id, REG_STATUS_WORD)
+        return self._modbus.read_input_register(self._slave_id, REG_STATUS_WORD)
 
     @staticmethod
     def _check_fault(status_word: int) -> None:
