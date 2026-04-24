@@ -414,19 +414,27 @@ class ObjectiveTurret4PosController:
             raise RuntimeError(f"Motor reported fault (status word=0x{status_word:04X})")
 
     def _wait_until_idle(self, timeout_s: float) -> None:
+        # Require RUNNING to go high at least once before accepting not-running as "idle".
+        # Without this, a slow command spin-up (the motor hasn't asserted RUNNING yet when we
+        # first poll) causes an early return, and the next Modbus write hits SLAVE_BUSY because
+        # the motor is still processing the previous command. The grace period falls back to
+        # accepting not-running for trivially-short moves or no-op commands.
         deadline = time.monotonic() + timeout_s
-        time.sleep(POLL_INTERVAL_S)
+        grace_deadline = time.monotonic() + POLL_INTERVAL_S * 10
+        seen_running = False
         while time.monotonic() < deadline:
             status = self._read_status_word()
             self._check_fault(status)
-            if not (status & STATUS_BIT_RUNNING):
+            running = bool(status & STATUS_BIT_RUNNING)
+            if running:
+                seen_running = True
+            elif seen_running or time.monotonic() >= grace_deadline:
                 return
             time.sleep(POLL_INTERVAL_S)
         raise TimeoutError(f"Motion did not finish within {timeout_s:.1f}s")
 
     def _wait_for_position(self, target_pulses: int, timeout_s: float) -> None:
         # No leading sleep: seen_running prevents stall detection before the motor asserts RUNNING.
-        # (Contrast _wait_until_idle which has a leading sleep because it lacks a seen_running guard.)
         deadline = time.monotonic() + timeout_s
         seen_running = False
         last_pos: Optional[int] = None
