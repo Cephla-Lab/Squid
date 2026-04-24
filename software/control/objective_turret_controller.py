@@ -425,6 +425,8 @@ class ObjectiveTurret4PosController:
         raise TimeoutError(f"Motion did not finish within {timeout_s:.1f}s")
 
     def _wait_for_position(self, target_pulses: int, timeout_s: float) -> None:
+        # No leading sleep: seen_running prevents stall detection before the motor asserts RUNNING.
+        # (Contrast _wait_until_idle which has a leading sleep because it lacks a seen_running guard.)
         deadline = time.monotonic() + timeout_s
         seen_running = False
         last_pos: Optional[int] = None
