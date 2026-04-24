@@ -1926,13 +1926,16 @@ class HighContentScreeningGui(QMainWindow):
         self.workflowRunnerDialog.activateWindow()
 
     def resetObjectiveTurret(self):
-        """Clear faults, re-enable the motor, and rotate back to the current objective."""
+        """Clear faults, re-enable the motor, re-home, and rotate back to the current objective."""
         if self.objective_changer is None:
             return
         self.log.info("Resetting objective turret")
         try:
             self.objective_changer.clear_alarm()
             self.objective_changer.enable()
+            # Re-home so the position tracker matches the physical slot: avoids short-circuiting the
+            # rotate in move_to_objective if the tracker is stale from a fault mid-rotation.
+            self.objective_changer.home()
             self.objective_changer.move_to_objective(self.objectiveStore.current_objective)
         except Exception as exc:
             self.log.exception("Reset of objective turret failed")
@@ -2616,8 +2619,9 @@ class HighContentScreeningGui(QMainWindow):
 
         Args:
             for_restart: If True, wrap operations in try-except to ensure cleanup completes.
-                        Z retraction and objective reset still run when using Xeryon
-                        (Xeryon must be zeroed before re-init), but are skipped otherwise.
+                        Z retraction and objective-changer teardown still run when using Xeryon
+                        (Xeryon must be zeroed before re-init). For a turret or a manual setup,
+                        restart skips this block (turret re-inits cleanly from any position).
         """
         context = "restart" if for_restart else "shutdown"
 
@@ -2721,9 +2725,10 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z and reset objective changer on full shutdown.
-        # On restart, only retract Z and reset if Xeryon objective changer is present
-        # (Xeryon must be zeroed before re-init; Z must retract first for safety).
+        # Retract Z and tear down the objective changer on full shutdown.
+        # On restart, this runs only for Xeryon (which must be zeroed before re-init);
+        # the turret is skipped because it re-inits cleanly from any position.
+        # Xeryon gets moveToZero(); turret gets close() (disables motor + disconnects serial).
         if not for_restart or USE_XERYON:
             z_retracted = False
             try:
@@ -2792,7 +2797,8 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
     def _cleanup_for_restart(self):
-        """Clean up hardware and resources for restart. Retracts Z and resets Xeryon if present."""
+        """Clean up hardware and resources for restart. Retracts Z and zeros Xeryon if present
+        (skipped for turret or manual setups; the turret re-inits cleanly from any position)."""
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
