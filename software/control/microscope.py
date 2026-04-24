@@ -492,11 +492,9 @@ class Microscope:
 
         if self.addons.objective_changer:
             self.addons.objective_changer.home()
-            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            if control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_1:
-                self.addons.objective_changer.moveToPosition1(move_z=False)
-            elif control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
-                self.addons.objective_changer.moveToPosition2(move_z=False)
+            if control._def.USE_XERYON:
+                self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+            self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.
