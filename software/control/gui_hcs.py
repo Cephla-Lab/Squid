@@ -1936,8 +1936,6 @@ class HighContentScreeningGui(QMainWindow):
             self.objective_changer.move_to_objective(self.objectiveStore.current_objective)
         except Exception as exc:
             self.log.exception("Reset of objective turret failed")
-            from qtpy.QtWidgets import QMessageBox
-
             QMessageBox.warning(
                 self,
                 "Reset Objective Turret",
