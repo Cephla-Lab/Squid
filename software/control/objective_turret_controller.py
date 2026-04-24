@@ -217,7 +217,7 @@ class ObjectiveTurret4PosController:
         try:
             self.clear_alarm()
 
-            microstep_raw = self._modbus.read_input_register(self._slave_id, REG_MICROSTEP)
+            microstep_raw = self._modbus.read_register(self._slave_id, REG_MICROSTEP)
             if not 0 <= microstep_raw <= 7:
                 raise ValueError(f"Invalid microstep register value {microstep_raw} (expected 0..7)")
             self._microstep = 2**microstep_raw
