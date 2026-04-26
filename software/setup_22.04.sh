@@ -53,9 +53,9 @@ fi
 cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
-# Ubuntu 22.04 ships pip 22.0.2, whose resolver can't handle the napari
-# dependency graph on current PyPI (hits ResolutionTooDeep after hours of
-# backtracking). Upgrade pip before installing libraries.
+# Ubuntu 22.04 ships pip 22.0.2, whose resolver can't handle the
+# napari==0.5.4 dependency graph on current PyPI (hits ResolutionTooDeep
+# after hours of backtracking). Upgrade pip before installing libraries.
 python3 -m pip install --upgrade pip
 
 # install libraries
