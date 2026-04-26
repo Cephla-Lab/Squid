@@ -53,7 +53,12 @@ fi
 cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
-# install libraries 
+# Ubuntu 22.04 ships pip 22.0.2, whose resolver can't handle the napari
+# dependency graph on current PyPI (hits ResolutionTooDeep after hours of
+# backtracking). Upgrade pip before installing libraries.
+python3 -m pip install --upgrade pip
+
+# install libraries
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
 pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
