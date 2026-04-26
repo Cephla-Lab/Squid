@@ -38,6 +38,14 @@ if control._def.USE_XERYON:
 else:
     ObjectiveChanger2PosController = None
 
+if control._def.USE_OBJECTIVE_TURRET:
+    from control.objective_turret_controller import (
+        ObjectiveTurret4PosController,
+        ObjectiveTurret4PosControllerSimulation,
+    )
+else:
+    ObjectiveTurret4PosController = None
+
 if control._def.RUN_FLUIDICS:
     from control.fluidics import Fluidics
 else:
@@ -129,6 +137,19 @@ class MicroscopeAddons:
                 if not objective_changer_simulated
                 else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
             )
+        elif control._def.USE_OBJECTIVE_TURRET:
+            turret_kwargs = dict(
+                serial_number=control._def.OBJECTIVE_TURRET_SERIAL_NUMBER,
+                slave_id=control._def.OBJECTIVE_TURRET_SLAVE_ID,
+                baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
+                positions=control._def.OBJECTIVE_TURRET_POSITIONS,
+                stage=stage,
+            )
+            objective_changer = (
+                ObjectiveTurret4PosController(**turret_kwargs)
+                if not objective_changer_simulated
+                else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
+            )
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
@@ -184,7 +205,7 @@ class MicroscopeAddons:
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
-        objective_changer: Optional[ObjectiveChanger2PosController] = None,
+        objective_changer: Optional[object] = None,
         camera_focus: Optional[AbstractCamera] = None,
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,
@@ -470,12 +491,14 @@ class Microscope:
                 raise
 
         if self.addons.objective_changer:
-            self.addons.objective_changer.home()
-            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            if control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_1:
-                self.addons.objective_changer.moveToPosition1(move_z=False)
-            elif control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
-                self.addons.objective_changer.moveToPosition2(move_z=False)
+            # Xeryon always re-homes (findIndex is fast and required). The turret skips
+            # homing on a software restart: the motor stays powered across close()/re-init
+            # and retains its position register, so a re-home would just be wasted motion.
+            if control._def.USE_XERYON or not skip_init:
+                self.addons.objective_changer.home()
+            if control._def.USE_XERYON:
+                self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+            self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.

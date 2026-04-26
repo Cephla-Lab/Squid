@@ -878,10 +878,7 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
-        if USE_XERYON:
-            self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
-        else:
-            self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
+        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
@@ -1928,6 +1925,28 @@ class HighContentScreeningGui(QMainWindow):
         self.workflowRunnerDialog.raise_()
         self.workflowRunnerDialog.activateWindow()
 
+    def resetObjectiveTurret(self):
+        """Clear faults, re-enable the motor, re-home, and rotate back to the current objective."""
+        if self.objective_changer is None:
+            return
+        self.log.info("Resetting objective turret")
+        try:
+            self.objective_changer.clear_alarm()
+            self.objective_changer.enable()
+            # Re-home so the position tracker matches the physical slot: avoids short-circuiting the
+            # rotate in move_to_objective if the tracker is stale from a fault mid-rotation.
+            self.objective_changer.home()
+            current = self.objectiveStore.current_objective
+            if current:
+                self.objective_changer.move_to_objective(current)
+        except Exception as exc:
+            self.log.exception("Reset of objective turret failed")
+            QMessageBox.warning(
+                self,
+                "Reset Objective Turret",
+                f"Failed to reset objective turret:\n{exc}",
+            )
+
     def _get_actual_acquisition_path(self) -> str:
         """Get the actual acquisition path (base_path + experiment_ID with timestamp)."""
         if hasattr(self, "multipointController") and self.multipointController:
@@ -2602,8 +2621,9 @@ class HighContentScreeningGui(QMainWindow):
 
         Args:
             for_restart: If True, wrap operations in try-except to ensure cleanup completes.
-                        Z retraction and objective reset still run when using Xeryon
-                        (Xeryon must be zeroed before re-init), but are skipped otherwise.
+                        Z retraction and objective-changer teardown still run when using Xeryon
+                        (Xeryon must be zeroed before re-init). For a turret or a manual setup,
+                        restart skips this block (turret re-inits cleanly from any position).
         """
         context = "restart" if for_restart else "shutdown"
 
@@ -2707,9 +2727,8 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Retract Z and reset objective changer on full shutdown.
-        # On restart, only retract Z and reset if Xeryon objective changer is present
-        # (Xeryon must be zeroed before re-init; Z must retract first for safety).
+        # Z-retract + Xeryon zero: needed on full shutdown, and on Xeryon restart
+        # (Xeryon must be zeroed before re-init).
         if not for_restart or USE_XERYON:
             z_retracted = False
             try:
@@ -2726,9 +2745,21 @@ class HighContentScreeningGui(QMainWindow):
                     self.objective_changer.moveToZero()
                 except Exception:
                     if for_restart:
-                        self.log.exception(f"Error resetting objective changer during {context}")
+                        self.log.exception(f"Error resetting Xeryon during {context}")
                     else:
                         raise
+
+        # Turret close: always release the serial port so the new process (on restart)
+        # can acquire it, and so the motor is de-energized on full shutdown. Independent
+        # of Z-retract success — the close path must run even if Z retract failed.
+        if USE_OBJECTIVE_TURRET and self.objective_changer:
+            try:
+                self.objective_changer.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing turret during {context}")
+                else:
+                    raise
 
         if not for_restart:
             self.microcontroller.turn_off_all_pid()
@@ -2775,7 +2806,8 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
     def _cleanup_for_restart(self):
-        """Clean up hardware and resources for restart. Retracts Z and resets Xeryon if present."""
+        """Clean up hardware and resources for restart. Retracts Z and zeros Xeryon if present
+        (skipped for turret or manual setups; the turret re-inits cleanly from any position)."""
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):

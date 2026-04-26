@@ -88,6 +88,11 @@ if __name__ == "__main__":
     stage_utils_action.triggered.connect(win.stageUtils.show)
     microscope_utils_menu.addAction(stage_utils_action)
 
+    if control._def.USE_OBJECTIVE_TURRET:
+        reset_turret_action = QAction("Reset Objective Turret", win)
+        reset_turret_action.triggered.connect(win.resetObjectiveTurret)
+        microscope_utils_menu.addAction(reset_turret_action)
+
     workflow_runner_action = QAction("Workflow Runner...", win)
     workflow_runner_action.triggered.connect(win.openWorkflowRunner)
     microscope_utils_menu.addAction(workflow_runner_action)
