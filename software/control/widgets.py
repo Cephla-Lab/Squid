@@ -1346,6 +1346,10 @@ class PreferencesDialog(QDialog):
         self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
+        self.global_reset_checkbox = QCheckBox()
+        self.global_reset_checkbox.setChecked(self._get_config_bool("GENERAL", "use_global_reset_mode", False))
+        hw_layout.addRow("Use Global Reset Mode *:", self.global_reset_checkbox)
+
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
@@ -1837,6 +1841,11 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+        self.config.set(
+            "GENERAL",
+            "use_global_reset_mode",
+            "true" if self.global_reset_checkbox.isChecked() else "false",
+        )
 
         # Advanced - Development Settings
         self.config.set(
@@ -2201,6 +2210,11 @@ class PreferencesDialog(QDialog):
         new_val = self.illumination_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "use_global_reset_mode", False)
+        new_val = self.global_reset_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Use Global Reset Mode", str(old_val), str(new_val), True))
 
         # Advanced - Development Settings
         # Enable/disable requires restart (for warning banner/dialog), but speed/compression

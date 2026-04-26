@@ -31,6 +31,7 @@ class ToupCamCapabilities(pydantic.BaseModel):
     has_TEC: bool
     has_low_noise_mode: bool
     has_black_level: bool
+    has_global_shutter: bool
 
 
 class StrobeInfo(pydantic.BaseModel):
@@ -66,9 +67,14 @@ class ToupcamCamera(AbstractCamera):
 
     @staticmethod
     def _calculate_strobe_info(
-        camera: toupcam.Toupcam, pixel_size: int, exposure_time_ms: float, capabilities: ToupCamCapabilities
+        camera: toupcam.Toupcam,
+        pixel_size: int,
+        exposure_time_ms: float,
+        capabilities: ToupCamCapabilities,
+        is_global_reset: bool = False,
     ) -> StrobeInfo:
         log = squid.logging.get_logger("ToupcamCamera._calculate_strobe_delay")
+
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
 
         pixel_bits = pixel_size * 8
@@ -156,6 +162,16 @@ class ToupcamCamera(AbstractCamera):
         trigger_delay_us = (shr * line_length) / 72
         strobe_time = int(vheight * row_time)
 
+        if is_global_reset:
+            # Global reset: all rows expose simultaneously, so no rolling readout delay.
+            # trigger_delay_us is kept as-is — TODO: verify against Toupcam global reset docs,
+            # the actual trigger delay in global reset mode may differ from rolling shutter.
+            log.debug(
+                f"Global reset mode: strobe_time_us=0, trigger_delay_us={trigger_delay_us}. "
+                f"{resolution_width=}, {resolution_height=}, {pixel_bits=}, {line_length=}, {low_noise=}, {vheight=}"
+            )
+            return StrobeInfo(strobe_time_us=0, trigger_delay_us=trigger_delay_us)
+
         log.debug(
             f"New strobe time calculated as {strobe_time} [us]. {resolution_width=}, {resolution_height=}, {pixel_bits=}, {line_length=}, {low_noise=}, {vheight=}, {trigger_delay_us=}"
         )
@@ -215,6 +231,7 @@ class ToupcamCamera(AbstractCamera):
             has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
             has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
             has_black_level=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0,
+            has_global_shutter=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_GLOBALSHUTTER) > 0,
         )
 
         return camera, capabilities
@@ -238,6 +255,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
+        self._is_global_reset = False
         self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
 
@@ -354,6 +372,7 @@ class ToupcamCamera(AbstractCamera):
             pixel_size=self._get_pixel_size_in_bytes(),
             exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
+            is_global_reset=self._is_global_reset,
         )
         if self._hw_set_strobe_delay_ms_fn and self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
@@ -393,6 +412,10 @@ class ToupcamCamera(AbstractCamera):
         else:
             self.set_temperature(self._config.default_temperature)
 
+        # Configure global reset mode if requested
+        if self._config.use_global_reset_mode:
+            self.set_global_reset_mode(True)
+
         self._raw_set_frame_format(CameraFrameFormat.RAW)
         self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
         try:
@@ -406,6 +429,31 @@ class ToupcamCamera(AbstractCamera):
         self._raw_set_resolution(width, height)
 
         # TODO: Do hardware cropping here (set ROI)
+
+    def supports_global_reset_mode(self) -> bool:
+        return self._capabilities.has_global_shutter
+
+    def set_global_reset_mode(self, enabled: bool):
+        if enabled:
+            if not self._capabilities.has_global_shutter:
+                self._log.warning("Global reset mode requested but camera does not support global shutter")
+                return
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
+                self._is_global_reset = True
+                self._log.info("Global reset mode enabled")
+            except toupcam.HRESULTException as ex:
+                self._log.error(f"Failed to enable global reset mode: hr=0x{ex.hr:x}")
+                return
+        else:
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 0)
+                self._is_global_reset = False
+                self._log.info("Global reset mode disabled")
+            except toupcam.HRESULTException as ex:
+                self._log.error(f"Failed to disable global reset mode: hr=0x{ex.hr:x}")
+                return
+        self._update_internal_settings()
 
     def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
