@@ -5,12 +5,10 @@ widget that supports two display modes sharing one canvas per channel.
 """
 
 import enum
-import gc
 import math
 import sys
 from typing import Dict, List, Tuple
 
-import cv2
 import numpy as np
 
 from qtpy.QtCore import Signal
@@ -22,12 +20,16 @@ from napari.utils.colormaps import AVAILABLE_COLORMAPS
 
 import control._def
 from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
+from control.core.downsampled_views import downsample_tile
+from control.utils_channel import extract_wavelength_from_config_name
 import squid.logging
 
 
-# Zoom limit constants (ported from NapariPlateViewWidget)
 PLATE_VIEW_MIN_VISIBLE_PIXELS = 50
 PLATE_VIEW_MAX_ZOOM_FACTOR = 50.0
+PLATE_BOUNDARIES_LAYER = "_plate_boundaries"
+MANUAL_ROI_LAYER = "Manual ROI"
+NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
 
 
 class DisplayMode(enum.Enum):
@@ -77,33 +79,29 @@ class UnifiedMosaicWidget(QWidget):
         self.camera = camera
         self.contrastManager = contrastManager
 
-        # Display state
         self.mode = DisplayMode.MOSAIC
         self.layers_initialized = False
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
 
-        # Mosaic mode state — tracks canvas origin and extents (same as existing updateMosaic)
+        # Cached after first tile so the hot-path doesn't repeat objective/camera lookups.
+        self._pixel_size_um: float = 0.0
+        self._downsample_factor: int = 1
+
         self.viewer_extents = None  # [min_y, max_y, min_x, max_x] in mm
         self.top_left_coordinate = None  # [y_mm, x_mm] of canvas origin
 
-        # Plate mode state — per-well origins for FOV offset calculation
         self._well_origins: Dict[str, Tuple[float, float]] = {}
 
-        # Plate layout info (set when starting a well-based acquisition)
         self.num_rows = 0
         self.num_cols = 0
         self.well_slot_shape: Tuple[int, int] = (0, 0)
         self.fov_grid_shape: Tuple[int, int] = (1, 1)
 
-        # Per-well TIFF saving is deferred — see plan R2/R7.
-
-        # Manual ROI shape drawing (mosaic mode only; no-op in plate mode)
         self.shapes_mm: list = []
         self.shape_layer = None
         self.is_drawing_shape = False
 
-        # Zoom limits (plate mode)
         self.min_zoom = 0.1
         self.max_zoom = None
         self._clamping_zoom = False
@@ -151,13 +149,9 @@ class UnifiedMosaicWidget(QWidget):
                 PLATE_VIEW_MAX_ZOOM_FACTOR,
             )
 
-    # --- Signal compatibility stubs ---
-
-    def initChannels(self, channels):
-        """Accept channel list from acquisition widget (compatibility stub)."""
-
-    def initLayersShape(self, shape):
-        """Accept layer shape from acquisition widget (compatibility stub)."""
+    def _image_layers(self):
+        """Iterate napari image layers, skipping shape/boundary overlays."""
+        return [lyr for lyr in self.viewer.layers if lyr.name not in NON_IMAGE_LAYERS and hasattr(lyr, "data")]
 
     def enable_shape_drawing(self, enable):
         """Enable or disable manual ROI shape drawing (mosaic mode only)."""
@@ -175,13 +169,13 @@ class UnifiedMosaicWidget(QWidget):
         """Internal toggle invoked by ``enable_shape_drawing(True)``."""
         self.is_drawing_shape = not self.is_drawing_shape
 
-        if "Manual ROI" not in self.viewer.layers:
+        if MANUAL_ROI_LAYER not in self.viewer.layers:
             self.shape_layer = self.viewer.add_shapes(
-                name="Manual ROI", edge_width=40, edge_color="red", face_color="transparent"
+                name=MANUAL_ROI_LAYER, edge_width=40, edge_color="red", face_color="transparent"
             )
             self.shape_layer.events.data.connect(self._on_shape_change)
         else:
-            self.shape_layer = self.viewer.layers["Manual ROI"]
+            self.shape_layer = self.viewer.layers[MANUAL_ROI_LAYER]
 
         if self.is_drawing_shape:
             if len(self.shape_layer.data) > 0:
@@ -270,30 +264,20 @@ class UnifiedMosaicWidget(QWidget):
         Single-arg signature so the widget receives a ``Signal(object)`` payload.
         Position is computed inline for the active mode only.
         """
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return
+
         image = update.image
         x_mm = update.x_mm
         y_mm = update.y_mm
         channel_name = update.channel_name
-        well_id = update.well_id
-        well_row = update.well_row
-        well_col = update.well_col
-        # update.channel_index and update.fov_index are unused after R2 dropped
-        # well-completion tracking. Kept on the dataclass for the deferred save.
 
-        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
-            return
+        if self._pixel_size_um == 0.0:
+            self._pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+            self._downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um))
 
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
-        image_pixel_size_mm = (pixel_size_um * downsample_factor) / 1000
-
-        if downsample_factor != 1:
-            image = cv2.resize(
-                image,
-                (image.shape[1] // downsample_factor, image.shape[0] // downsample_factor),
-                interpolation=cv2.INTER_AREA,
-            )
-
+        image = downsample_tile(image, self._pixel_size_um, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
+        image_pixel_size_mm = (self._pixel_size_um * self._downsample_factor) / 1000
         tl_x_mm = x_mm - (image.shape[1] * image_pixel_size_mm) / 2
         tl_y_mm = y_mm - (image.shape[0] * image_pixel_size_mm) / 2
 
@@ -325,59 +309,33 @@ class UnifiedMosaicWidget(QWidget):
             self._update_mosaic_layer(self.viewer.layers[channel_name], image, tl_x_mm, tl_y_mm, prev_top_left)
         else:
             slot_h, slot_w = self.well_slot_shape
-            grid_y = well_row * slot_h
-            grid_x = well_col * slot_w
-            if well_id not in self._well_origins:
-                self._well_origins[well_id] = (tl_x_mm, tl_y_mm)
-            else:
-                ox, oy = self._well_origins[well_id]
-                self._well_origins[well_id] = (min(ox, tl_x_mm), min(oy, tl_y_mm))
-            origin_x, origin_y = self._well_origins[well_id]
+            origin_x, origin_y = self._well_origins.setdefault(update.well_id, (tl_x_mm, tl_y_mm))
             fov_offset_x = int(round((tl_x_mm - origin_x) / self.viewer_pixel_size_mm))
             fov_offset_y = int(round((tl_y_mm - origin_y) / self.viewer_pixel_size_mm))
-            y_px = grid_y + fov_offset_y
-            x_px = grid_x + fov_offset_x
+            y_px = update.well_row * slot_h + fov_offset_y
+            x_px = update.well_col * slot_w + fov_offset_x
 
             layer = self.viewer.layers[channel_name]
-            needed_h = y_px + image.shape[0]
-            needed_w = x_px + image.shape[1]
-            canvas_h, canvas_w = layer.data.shape[:2]
-            if needed_h > canvas_h or needed_w > canvas_w:
-                new_h = max(canvas_h, needed_h)
-                new_w = max(canvas_w, needed_w)
-                for lyr in self.viewer.layers:
-                    if lyr.name in ("_plate_boundaries", "Manual ROI") or not hasattr(lyr, "data"):
-                        continue
-                    old = lyr.data
-                    expanded = np.zeros((new_h, new_w), dtype=old.dtype)
-                    expanded[: old.shape[0], : old.shape[1]] = old
-                    lyr.data = expanded
             blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
             layer.refresh()
-
-        min_val, max_val = self.contrastManager.get_limits(channel_name)
-        if self.mosaic_dtype != self.contrastManager.acquisition_dtype:
-            min_val = self._convert_value(min_val, self.contrastManager.acquisition_dtype, self.mosaic_dtype)
-            max_val = self._convert_value(max_val, self.contrastManager.acquisition_dtype, self.mosaic_dtype)
-        self.viewer.layers[channel_name].contrast_limits = (min_val, max_val)
-
-        if self.mode == DisplayMode.PLATE:
             self._draw_plate_boundaries()
 
-    def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left):
-        """Place tile on mosaic canvas, expanding and shifting if needed.
+        # Update contrast only if it actually changed; the napari setter triggers
+        # a GPU re-upload even on a no-op, which compounds across thousands of tiles.
+        new_limits = self.contrastManager.get_scaled_limits(channel_name, self.mosaic_dtype)
+        layer = self.viewer.layers[channel_name]
+        if tuple(layer.contrast_limits) != tuple(new_limits):
+            layer.contrast_limits = new_limits
 
-        Ported from NapariMosaicDisplayWidget.updateLayer.
-        """
+    def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left):
+        """Place tile on the mosaic canvas, expanding and shifting if extents grew."""
         mosaic_height = int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
         mosaic_width = int(math.ceil((self.viewer_extents[3] - self.viewer_extents[2]) / self.viewer_pixel_size_mm))
 
         if layer.data.shape[:2] != (mosaic_height, mosaic_width):
             y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
             x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
-            for lyr in self.viewer.layers:
-                if lyr.name in ("_plate_boundaries", "Manual ROI") or not hasattr(lyr, "data"):
-                    continue
+            for lyr in self._image_layers():
                 new_data = np.zeros((mosaic_height, mosaic_width), dtype=lyr.data.dtype)
                 y_end = min(y_offset + lyr.data.shape[0], new_data.shape[0])
                 x_end = min(x_offset + lyr.data.shape[1], new_data.shape[1])
@@ -392,24 +350,29 @@ class UnifiedMosaicWidget(QWidget):
         blit_tiles_to_canvas(layer.data, [(image, y_pos, x_pos)])
         layer.refresh()
 
-    # --- Channel layer creation ---
-
     def _create_channel_layer(self, channel_name, reference_image):
-        """Create a new napari image layer for a channel."""
-        wavelength = self._extract_wavelength(channel_name)
-        channel_info = (
-            CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
-            if wavelength
-            else {"hex": 0xFFFFFF, "name": "gray"}
-        )
+        """Create a new napari image layer for a channel.
+
+        In plate mode the canvas is pre-allocated to the full plate dimensions
+        — known up front from setPlateLayout — so no per-tile resizing is needed.
+        Mosaic mode starts at one tile and grows as canvas extents expand.
+        """
+        wavelength = extract_wavelength_from_config_name(channel_name)
+        channel_info = CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
         if channel_info["name"] in AVAILABLE_COLORMAPS:
             color = AVAILABLE_COLORMAPS[channel_info["name"]]
         else:
             color = self._generate_colormap(channel_info)
 
+        if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
+            slot_h, slot_w = self.well_slot_shape
+            initial_data = np.zeros((self.num_rows * slot_h, self.num_cols * slot_w), dtype=reference_image.dtype)
+        else:
+            initial_data = np.zeros_like(reference_image)
+
         scale_um = self.viewer_pixel_size_mm * 1000
         layer = self.viewer.add_image(
-            np.zeros_like(reference_image),
+            initial_data,
             name=channel_name,
             colormap=color,
             visible=True,
@@ -418,8 +381,6 @@ class UnifiedMosaicWidget(QWidget):
         )
         layer.mouse_double_click_callbacks.append(self._on_double_click)
         layer.events.contrast_limits.connect(self._on_contrast_change)
-
-    # --- Dtype conversion (ported from NapariMosaicDisplayWidget) ---
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""
@@ -435,29 +396,9 @@ class UnifiedMosaicWidget(QWidget):
             out_min, out_max = info.min, info.max
         else:
             out_min, out_max = 0.0, 1.0
-        normalized = (image.astype(np.float64) - in_min) / max(in_max - in_min, 1)
+        normalized = (image.astype(np.float32) - in_min) / max(in_max - in_min, 1)
         scaled = normalized * (out_max - out_min) + out_min
         return scaled.astype(target_dtype)
-
-    def _convert_value(self, value, from_dtype, to_dtype):
-        """Convert a scalar value between dtype ranges."""
-        from_info = np.iinfo(from_dtype)
-        to_info = np.iinfo(to_dtype)
-        normalized = (value - from_info.min) / max(from_info.max - from_info.min, 1)
-        return normalized * (to_info.max - to_info.min) + to_info.min
-
-    # --- Colormap helpers ---
-
-    def _extract_wavelength(self, name):
-        parts = name.split()
-        if "Fluorescence" in parts:
-            index = parts.index("Fluorescence") + 1
-            if index < len(parts):
-                return parts[index].split()[0]
-        for color in ["R", "G", "B"]:
-            if color in parts or f"full_{color}" in parts:
-                return color
-        return None
 
     def _generate_colormap(self, channel_info):
         c0 = (0, 0, 0)
@@ -561,7 +502,7 @@ class UnifiedMosaicWidget(QWidget):
             return
         if self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
             return
-        if "_plate_boundaries" in self.viewer.layers:
+        if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             return
 
         lines = []
@@ -583,34 +524,29 @@ class UnifiedMosaicWidget(QWidget):
             shape_type="line",
             edge_color="white",
             edge_width=2,
-            name="_plate_boundaries",
+            name=PLATE_BOUNDARIES_LAYER,
         )
-        boundaries = self.viewer.layers["_plate_boundaries"]
+        boundaries = self.viewer.layers[PLATE_BOUNDARIES_LAYER]
         boundaries.mouse_pan = False
         boundaries.mouse_zoom = False
         self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
         for layer in reversed(self.viewer.layers):
-            if layer.name != "_plate_boundaries":
+            if layer.name != PLATE_BOUNDARIES_LAYER:
                 self.viewer.layers.selection.active = layer
                 break
 
-    # --- Public API ---
-
-    # Per-well save (`_on_well_complete`, `set_job_runner`, `get_well_crop`) is
-    # deferred — see plan R2/R7.
-
     def clearAllLayers(self):
         """Clear all layers and reset state. Preserves the Manual ROI layer."""
-        layers_to_remove = [layer for layer in self.viewer.layers if layer.name != "Manual ROI"]
-        for layer in layers_to_remove:
+        for layer in [lyr for lyr in self.viewer.layers if lyr.name != MANUAL_ROI_LAYER]:
             self.viewer.layers.remove(layer)
         self._well_origins.clear()
         self.viewer_extents = None
         self.top_left_coordinate = None
         self.layers_initialized = False
         self.mosaic_dtype = None
+        self._pixel_size_um = 0.0
+        self._downsample_factor = 1
         self.signal_clear_viewer.emit()
-        gc.collect()
 
     def resetView(self):
         self.viewer.reset_view()
