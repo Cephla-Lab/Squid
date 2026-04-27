@@ -332,24 +332,26 @@ class MultiPointWorker:
             if Acquisition.USE_MULTIPROCESSING:
                 # Try to use pre-warmed runner for the first job class
                 if can_use_prewarmed and not used_prewarmed:
-                    if prewarmed_job_runner.is_ready():
+                    # is_alive() must be checked alongside is_ready(): the subprocess sets
+                    # _ready_event early in run() and the Event survives in shared memory
+                    # after death, so is_ready() alone can't detect a corpse.
+                    if prewarmed_job_runner.is_alive() and prewarmed_job_runner.is_ready():
                         self._log.info(f"Using pre-warmed job runner for {job_class.__name__} jobs")
                         job_runner = prewarmed_job_runner
-                        # Configure it with current acquisition settings
+                        job_runner.set_unexpected_exit_handler(self._on_job_runner_died)
                         job_runner.set_acquisition_info(self.acquisition_info)
                         if zarr_writer_info:
                             job_runner.set_zarr_writer_info(zarr_writer_info)
                         used_prewarmed = True
                     else:
                         self._log.warning(
-                            f"Pre-warmed job runner not ready (possibly hung during warmup), "
+                            f"Pre-warmed job runner unavailable (died or hung during warmup); "
                             f"shutting it down and creating new one for {job_class.__name__}"
                         )
-                        # Shutdown the hung pre-warmed runner to avoid resource leak
                         try:
                             prewarmed_job_runner.shutdown(timeout_s=1.0)
                         except Exception as e:
-                            self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
+                            self._log.error(f"Error shutting down unusable pre-warmed runner: {e}")
                         # Don't try to use pre-warmed runner again for subsequent job classes
                         can_use_prewarmed = False
 
@@ -366,12 +368,20 @@ class MultiPointWorker:
                         # Pass zarr writer info for ZARR_V3 format
                         zarr_writer_info=zarr_writer_info,
                     )
+                    # Must precede start() so the watchdog covers warmup-time deaths.
+                    job_runner.set_unexpected_exit_handler(self._on_job_runner_died)
                     job_runner.start()
                     # Subprocess starts warming up in background - don't block here
 
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
+
+    def _on_job_runner_died(self, exitcode: Optional[int]) -> None:
+        """Invoked by JobRunner's watchdog when a subprocess dies unexpectedly."""
+        self._log.error(f"JobRunner subprocess died unexpectedly (exitcode={exitcode}); aborting acquisition.")
+        self._acquisition_error_count += 1
+        self.request_abort_fn()
 
     def update_use_piezo(self, value):
         self.use_piezo = value
