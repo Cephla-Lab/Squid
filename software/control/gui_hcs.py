@@ -264,6 +264,9 @@ class QtMultiPointController(MultiPointController, QObject):
         # Cache of region_id → (well_row, well_col) so the per-tile parse_well_id
         # call doesn't repeat across thousands of FOVs in a scan.
         self._well_id_index_cache: Dict[str, Tuple[int, int]] = {}
+        # Per-well top-left origin (mm) populated on acquisition start so
+        # mosaic_tile_update can carry a stable anchor independent of scan order.
+        self._well_origins_mm: Dict[str, Tuple[float, float]] = {}
         # NDViewer push-based API state
         self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
         self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
@@ -304,6 +307,18 @@ class QtMultiPointController(MultiPointController, QObject):
             width, height = crop_width, crop_height
         else:
             width, height = self.microscope.camera.get_resolution()
+
+        # Compute deterministic per-well origins (top-left, mm) for the unified
+        # mosaic widget so tiles arriving in any scan order land at non-negative
+        # offsets within their well slot.
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.microscope.camera.get_pixel_size_binned_um()
+        half_w_mm = width * pixel_size_um / 2000.0
+        half_h_mm = height * pixel_size_um / 2000.0
+        self._well_origins_mm = {
+            name: (min(c[0] for c in coords) - half_w_mm, min(c[1] for c in coords) - half_h_mm)
+            for name, coords in scan_info.scan_region_fov_coords_mm.items()
+            if coords
+        }
 
         # Check save format to determine which API to use
         if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
@@ -386,6 +401,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 well_id=region_id,
                 well_row=well_row,
                 well_col=well_col,
+                well_origin_mm=self._well_origins_mm.get(region_id),
             )
         )
 

@@ -28,6 +28,24 @@ class TestCanvasBlit:
         assert canvas[50, 50] == 10
         assert canvas[50, 250] == 20
 
+    def test_blit_negative_offset_clips(self):
+        """Negative offsets must clip both src+dst, not wrap via NumPy slicing."""
+        canvas = np.zeros((100, 100), dtype=np.uint16)
+        tile = np.ones((50, 50), dtype=np.uint16) * 7
+        # Tile would extend from (-20, -20) to (30, 30); only [0:30, 0:30] should land.
+        blit_tiles_to_canvas(canvas, [(tile, -20, -20)])
+        assert canvas[0, 0] == 7
+        assert canvas[29, 29] == 7
+        assert canvas[30, 30] == 0  # outside the visible portion
+        # The far end of the canvas must be untouched (no NumPy wrap-around).
+        assert canvas[99, 99] == 0
+
+    def test_blit_fully_outside_is_noop(self):
+        canvas = np.zeros((100, 100), dtype=np.uint16)
+        tile = np.ones((50, 50), dtype=np.uint16) * 7
+        blit_tiles_to_canvas(canvas, [(tile, -100, -100), (tile, 200, 200)])
+        assert canvas.sum() == 0
+
     def test_display_mode_values(self):
         assert DisplayMode.MOSAIC.value == "mosaic"
         assert DisplayMode.PLATE.value == "plate"

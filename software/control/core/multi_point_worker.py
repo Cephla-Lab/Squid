@@ -825,7 +825,10 @@ class MultiPointWorker:
         height, width = image.shape[:2]
         pixel_size_um = self._pixel_size_um or 1.0
         target_um = float(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
-        downsample_factor = max(1, int(target_um / pixel_size_um))
+        # Must match downsample_tile's `int(round(...))` so the slot pixel
+        # space exactly equals what the widget renders (any disagreement under-
+        # or over-sizes slots and tiles spill into neighbors).
+        downsample_factor = max(1, int(round(target_um / pixel_size_um)))
         effective_um_per_px = pixel_size_um * downsample_factor
 
         tile_w_mm = width * pixel_size_um / 1000.0

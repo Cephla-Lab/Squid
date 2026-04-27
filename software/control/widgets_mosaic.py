@@ -7,7 +7,7 @@ widget that supports two display modes sharing one canvas per channel.
 import enum
 import math
 import sys
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -41,17 +41,23 @@ def blit_tiles_to_canvas(
     canvas: np.ndarray,
     tiles: List[Tuple[np.ndarray, int, int]],
 ) -> None:
-    """Blit tiles into canvas at given positions. Clips to canvas bounds."""
+    """Blit tiles into canvas at given positions. Clips both negative and
+    out-of-bounds offsets so a misplaced tile is dropped, never wrapped via
+    NumPy negative slicing."""
     canvas_h, canvas_w = canvas.shape[:2]
     for tile, y_px, x_px in tiles:
         tile_h, tile_w = tile.shape[:2]
-        y_end = min(y_px + tile_h, canvas_h)
-        x_end = min(x_px + tile_w, canvas_w)
-        src_h = y_end - y_px
-        src_w = x_end - x_px
-        if src_h <= 0 or src_w <= 0:
+        dst_y_start = max(y_px, 0)
+        dst_x_start = max(x_px, 0)
+        dst_y_end = min(y_px + tile_h, canvas_h)
+        dst_x_end = min(x_px + tile_w, canvas_w)
+        if dst_y_start >= dst_y_end or dst_x_start >= dst_x_end:
             continue
-        canvas[y_px:y_end, x_px:x_end] = tile[:src_h, :src_w]
+        src_y_start = max(-y_px, 0)
+        src_x_start = max(-x_px, 0)
+        src_y_end = src_y_start + (dst_y_end - dst_y_start)
+        src_x_end = src_x_start + (dst_x_end - dst_x_start)
+        canvas[dst_y_start:dst_y_end, dst_x_start:dst_x_end] = tile[src_y_start:src_y_end, src_x_start:src_x_end]
 
 
 class UnifiedMosaicWidget(QWidget):
@@ -90,8 +96,6 @@ class UnifiedMosaicWidget(QWidget):
 
         self.viewer_extents = None  # [min_y, max_y, min_x, max_x] in mm
         self.top_left_coordinate = None  # [y_mm, x_mm] of canvas origin
-
-        self._well_origins: Dict[str, Tuple[float, float]] = {}
 
         self.num_rows = 0
         self.num_cols = 0
@@ -312,7 +316,10 @@ class UnifiedMosaicWidget(QWidget):
             self._update_mosaic_layer(self.viewer.layers[channel_name], image, tl_x_mm, tl_y_mm, prev_top_left)
         else:
             slot_h, slot_w = self.well_slot_shape
-            origin_x, origin_y = self._well_origins.setdefault(update.well_id, (tl_x_mm, tl_y_mm))
+            # Origin comes from the scan plan (gui_hcs._well_origins_mm) so it's
+            # stable regardless of which tile arrives first. Fallback to the
+            # current tile's top-left for degenerate paths (single-FOV well).
+            origin_x, origin_y = update.well_origin_mm if update.well_origin_mm is not None else (tl_x_mm, tl_y_mm)
             fov_offset_x = int(round((tl_x_mm - origin_x) / self.viewer_pixel_size_mm))
             fov_offset_y = int(round((tl_y_mm - origin_y) / self.viewer_pixel_size_mm))
             y_px = update.well_row * slot_h + fov_offset_y
@@ -323,12 +330,14 @@ class UnifiedMosaicWidget(QWidget):
             layer.refresh()
             self._draw_plate_boundaries()
 
-        # Update contrast only if it actually changed; the napari setter triggers
-        # a GPU re-upload even on a no-op, which compounds across thousands of tiles.
-        new_limits = self.contrastManager.get_scaled_limits(channel_name, self.mosaic_dtype)
-        layer = self.viewer.layers[channel_name]
-        if tuple(layer.contrast_limits) != tuple(new_limits):
-            layer.contrast_limits = new_limits
+        # Contrast is per-monochrome-channel; RGB layers display the colour
+        # image directly and don't go through the channel ContrastManager.
+        # Skip the no-op-guarded update for them.
+        if image.ndim != 3 or image.shape[2] != 3:
+            new_limits = self.contrastManager.get_scaled_limits(channel_name, self.mosaic_dtype)
+            layer = self.viewer.layers[channel_name]
+            if tuple(layer.contrast_limits) != tuple(new_limits):
+                layer.contrast_limits = new_limits
 
     def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left):
         """Place tile on the mosaic canvas, expanding and shifting if extents grew."""
@@ -339,7 +348,9 @@ class UnifiedMosaicWidget(QWidget):
             y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
             x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
             for lyr in self._image_layers():
-                new_data = np.zeros((mosaic_height, mosaic_width), dtype=lyr.data.dtype)
+                # Preserve trailing dims (RGB layers carry shape (H, W, 3)).
+                new_shape = (mosaic_height, mosaic_width) + lyr.data.shape[2:]
+                new_data = np.zeros(new_shape, dtype=lyr.data.dtype)
                 y_end = min(y_offset + lyr.data.shape[0], new_data.shape[0])
                 x_end = min(x_offset + lyr.data.shape[1], new_data.shape[1])
                 new_data[y_offset:y_end, x_offset:x_end] = lyr.data[: y_end - y_offset, : x_end - x_offset]
@@ -359,31 +370,35 @@ class UnifiedMosaicWidget(QWidget):
         In plate mode the canvas is pre-allocated to the full plate dimensions
         — known up front from setPlateLayout — so no per-tile resizing is needed.
         Mosaic mode starts at one tile and grows as canvas extents expand.
-        """
-        wavelength = extract_wavelength_from_config_name(channel_name)
-        channel_info = CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
-        if channel_info["name"] in AVAILABLE_COLORMAPS:
-            color = AVAILABLE_COLORMAPS[channel_info["name"]]
-        else:
-            color = self._generate_colormap(channel_info)
 
+        RGB tiles (e.g. from MultiPointWorker.construct_rgb_image) get a
+        ``(H, W, 3)`` canvas and ``rgb=True`` on the napari layer so it renders
+        the colour image directly instead of running a colormap over channel-0.
+        """
+        is_rgb = reference_image.ndim == 3 and reference_image.shape[2] == 3
         if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
             slot_h, slot_w = self.well_slot_shape
-            initial_data = np.zeros((self.num_rows * slot_h, self.num_cols * slot_w), dtype=reference_image.dtype)
+            shape = (self.num_rows * slot_h, self.num_cols * slot_w)
+            if is_rgb:
+                shape = shape + (3,)
+            initial_data = np.zeros(shape, dtype=reference_image.dtype)
         else:
             initial_data = np.zeros_like(reference_image)
 
         scale_um = self.viewer_pixel_size_mm * 1000
-        layer = self.viewer.add_image(
-            initial_data,
-            name=channel_name,
-            colormap=color,
-            visible=True,
-            blending="additive",
-            scale=(scale_um, scale_um),
-        )
+        layer_kwargs = dict(name=channel_name, visible=True, scale=(scale_um, scale_um))
+        if is_rgb:
+            layer = self.viewer.add_image(initial_data, rgb=True, **layer_kwargs)
+        else:
+            wavelength = extract_wavelength_from_config_name(channel_name)
+            channel_info = CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
+            if channel_info["name"] in AVAILABLE_COLORMAPS:
+                color = AVAILABLE_COLORMAPS[channel_info["name"]]
+            else:
+                color = self._generate_colormap(channel_info)
+            layer = self.viewer.add_image(initial_data, colormap=color, blending="additive", **layer_kwargs)
+            layer.events.contrast_limits.connect(self._on_contrast_change)
         layer.mouse_double_click_callbacks.append(self._on_double_click)
-        layer.events.contrast_limits.connect(self._on_contrast_change)
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""
@@ -551,7 +566,6 @@ class UnifiedMosaicWidget(QWidget):
         """Clear all layers and reset state. Preserves the Manual ROI layer."""
         for layer in [lyr for lyr in self.viewer.layers if lyr.name != MANUAL_ROI_LAYER]:
             self.viewer.layers.remove(layer)
-        self._well_origins.clear()
         self.viewer_extents = None
         self.top_left_coordinate = None
         self.layers_initialized = False
