@@ -98,9 +98,10 @@ class UnifiedMosaicWidget(QWidget):
 
         # Per-well TIFF saving is deferred — see plan R2/R7.
 
-        # Shape drawing state (for manual ROI in mosaic mode; impl follows in Task 8)
+        # Manual ROI shape drawing (mosaic mode only; no-op in plate mode)
         self.shapes_mm: list = []
         self.shape_layer = None
+        self.is_drawing_shape = False
 
         # Zoom limits (plate mode)
         self.min_zoom = 0.1
@@ -159,22 +160,105 @@ class UnifiedMosaicWidget(QWidget):
         """Accept layer shape from acquisition widget (compatibility stub)."""
 
     def enable_shape_drawing(self, enable):
-        """Enable/disable manual ROI shape drawing.
+        """Enable or disable manual ROI shape drawing (mosaic mode only)."""
+        if self.mode != DisplayMode.MOSAIC:
+            # Plate mode has no concept of stage-coordinate ROIs.
+            return
+        if enable:
+            self._toggle_draw_mode()
+        else:
+            self.is_drawing_shape = False
+            if self.shape_layer is not None:
+                self.shape_layer.mode = "pan_zoom"
 
-        Compatibility stub; the full implementation is added in Task 8 (Chunk 5).
-        Without this stub the gui_hcs signal connections would fail at startup.
-        """
+    def _toggle_draw_mode(self):
+        """Internal toggle invoked by ``enable_shape_drawing(True)``."""
+        self.is_drawing_shape = not self.is_drawing_shape
+
+        if "Manual ROI" not in self.viewer.layers:
+            self.shape_layer = self.viewer.add_shapes(
+                name="Manual ROI", edge_width=40, edge_color="red", face_color="transparent"
+            )
+            self.shape_layer.events.data.connect(self._on_shape_change)
+        else:
+            self.shape_layer = self.viewer.layers["Manual ROI"]
+
+        if self.is_drawing_shape:
+            if len(self.shape_layer.data) > 0:
+                self.shape_layer.mode = "select"
+                self.shape_layer.select_mode = "vertex"
+            else:
+                self.shape_layer.mode = "add_polygon"
+        else:
+            self.shape_layer.mode = "pan_zoom"
+
+        self._on_shape_change()
+
+    def _on_shape_change(self, event=None):
+        if self.shape_layer is not None and len(self.shape_layer.data) > 0:
+            # Only convert shapes once we have a coordinate system.
+            if self.layers_initialized and self.top_left_coordinate is not None:
+                self.shapes_mm = [self._convert_shape_to_mm(shape) for shape in self.shape_layer.data]
+        else:
+            self.shapes_mm = []
+        self.signal_shape_drawn.emit(self.shapes_mm)
+
+    def _convert_shape_to_mm(self, shape_data):
+        """Pixel-coords-on-canvas → mm in stage coordinate frame."""
+        result = []
+        scale = self.viewer_pixel_size_mm * 1000  # napari layer scale is in um
+        for point in shape_data:
+            y_data = point[0] / scale
+            x_data = point[1] / scale
+            x_mm = self.top_left_coordinate[1] + x_data * self.viewer_pixel_size_mm
+            y_mm = self.top_left_coordinate[0] + y_data * self.viewer_pixel_size_mm
+            result.append([x_mm, y_mm])
+        return np.array(result)
+
+    def _convert_mm_to_viewer_shapes(self, shapes_mm):
+        """mm in stage coordinate frame → world coordinates (um) for napari."""
+        viewer_shapes = []
+        scale = self.viewer_pixel_size_mm * 1000
+        for shape_mm in shapes_mm:
+            viewer_shape = []
+            for point_mm in shape_mm:
+                x_data = (point_mm[0] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm
+                y_data = (point_mm[1] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm
+                viewer_shape.append([y_data * scale, x_data * scale])
+            viewer_shapes.append(viewer_shape)
+        return viewer_shapes
+
+    def _update_shape_layer_position(self):
+        """Re-render shapes after the canvas origin shifts (mosaic mode canvas growth)."""
+        if self.shape_layer is None or not self.shapes_mm:
+            return
+        try:
+            self.shape_layer.data = self._convert_mm_to_viewer_shapes(self.shapes_mm)
+        except Exception as e:
+            self._log.warning(f"Failed to reposition shape layer after canvas shift: {e}")
+
+    def _clear_shape(self):
+        if self.shape_layer is not None:
+            try:
+                self.viewer.layers.remove(self.shape_layer)
+            except Exception:
+                pass
+            self.shape_layer = None
+            self.is_drawing_shape = False
+            self.signal_shape_drawn.emit([])
 
     # --- Mode toggle ---
 
     def _toggle_mode(self):
-        """Toggle between mosaic and plate mode. Clears canvas."""
+        """Toggle between mosaic and plate mode. Clears canvas and ROI shapes."""
         if self.mode == DisplayMode.MOSAIC:
             self.mode = DisplayMode.PLATE
             self.toggle_button.setText("Switch to Mosaic View")
         else:
             self.mode = DisplayMode.MOSAIC
             self.toggle_button.setText("Switch to Plate View")
+        # ROI shapes are stage-coord-based and only meaningful in mosaic mode.
+        self._clear_shape()
         self.clearAllLayers()
 
     # --- Tile ingestion ---
@@ -262,7 +346,7 @@ class UnifiedMosaicWidget(QWidget):
                 new_h = max(canvas_h, needed_h)
                 new_w = max(canvas_w, needed_w)
                 for lyr in self.viewer.layers:
-                    if lyr.name == "_plate_boundaries" or not hasattr(lyr, "data"):
+                    if lyr.name in ("_plate_boundaries", "Manual ROI") or not hasattr(lyr, "data"):
                         continue
                     old = lyr.data
                     expanded = np.zeros((new_h, new_w), dtype=old.dtype)
@@ -292,7 +376,7 @@ class UnifiedMosaicWidget(QWidget):
             y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
             x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
             for lyr in self.viewer.layers:
-                if lyr.name == "_plate_boundaries" or not hasattr(lyr, "data"):
+                if lyr.name in ("_plate_boundaries", "Manual ROI") or not hasattr(lyr, "data"):
                     continue
                 new_data = np.zeros((mosaic_height, mosaic_width), dtype=lyr.data.dtype)
                 y_end = min(y_offset + lyr.data.shape[0], new_data.shape[0])
@@ -300,6 +384,8 @@ class UnifiedMosaicWidget(QWidget):
                 new_data[y_offset:y_end, x_offset:x_end] = lyr.data[: y_end - y_offset, : x_end - x_offset]
                 lyr.data = new_data
             self.resetView()
+            # Keep ROI vertices anchored to their stage-coordinate positions after the shift.
+            self._update_shape_layer_position()
 
         y_pos = int(math.floor((tl_y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
         x_pos = int(math.floor((tl_x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
@@ -514,8 +600,9 @@ class UnifiedMosaicWidget(QWidget):
     # deferred — see plan R2/R7.
 
     def clearAllLayers(self):
-        """Clear all layers and reset state."""
-        for layer in list(self.viewer.layers):
+        """Clear all layers and reset state. Preserves the Manual ROI layer."""
+        layers_to_remove = [layer for layer in self.viewer.layers if layer.name != "Manual ROI"]
+        for layer in layers_to_remove:
             self.viewer.layers.remove(layer)
         self._well_origins.clear()
         self.viewer_extents = None
