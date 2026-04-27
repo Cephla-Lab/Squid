@@ -264,7 +264,7 @@ class UnifiedMosaicWidget(QWidget):
         Single-arg signature so the widget receives a ``Signal(object)`` payload.
         Position is computed inline for the active mode only.
         """
-        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+        if not (control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY or control._def.DISPLAY_PLATE_VIEW):
             return
 
         image = update.image
@@ -293,6 +293,9 @@ class UnifiedMosaicWidget(QWidget):
                 tl_x_mm + image.shape[1] * image_pixel_size_mm,
             ]
             self.top_left_coordinate = [tl_y_mm, tl_x_mm]
+            # Manual ROI survives clearAllLayers but its pixel-coord data is
+            # stale relative to the freshly-initialized coordinate system.
+            self._update_shape_layer_position()
         else:
             image = self._convert_image_dtype(image, self.mosaic_dtype)
 
@@ -458,7 +461,11 @@ class UnifiedMosaicWidget(QWidget):
     # --- Zoom limits (active in plate mode) ---
 
     def _custom_wheel_event(self, event):
-        """Custom wheel event handler that enforces zoom limits in plate mode."""
+        """Wheel handler that enforces zoom limits in plate mode only.
+
+        max_zoom may have been set by setPlateLayout from a previous plate-based
+        config — we ignore it in mosaic mode so mosaic zooming stays unrestricted.
+        """
         event.accept()
         delta = event.angleDelta().y()
         if delta == 0:
@@ -467,7 +474,7 @@ class UnifiedMosaicWidget(QWidget):
         zoom_factor = 1.1 ** (delta / 120.0)
         new_zoom = zoom * zoom_factor
 
-        if self.mode == DisplayMode.MOSAIC and self.max_zoom is None:
+        if self.mode == DisplayMode.MOSAIC:
             self.viewer.camera.zoom = new_zoom
             return
 
@@ -519,12 +526,17 @@ class UnifiedMosaicWidget(QWidget):
 
         if not lines:
             return
+        # Image layers carry scale=(um, um) so their world coords are µm. The
+        # boundary lines were generated in canvas-pixel coordinates — match the
+        # image-layer scale so they align in world space.
+        scale_um = (self.viewer_pixel_size_mm or 0.0) * 1000
         self.viewer.add_shapes(
             lines,
             shape_type="line",
             edge_color="white",
             edge_width=2,
             name=PLATE_BOUNDARIES_LAYER,
+            scale=(scale_um, scale_um) if scale_um else (1, 1),
         )
         boundaries = self.viewer.layers[PLATE_BOUNDARIES_LAYER]
         boundaries.mouse_pan = False

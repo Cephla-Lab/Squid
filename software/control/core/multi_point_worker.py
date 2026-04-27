@@ -807,9 +807,15 @@ class MultiPointWorker:
     def _emit_plate_layout(self, image: np.ndarray) -> None:
         """Emit plate_view_init for the unified mosaic widget on the first image.
 
-        Computes well_slot_shape in pixels at the unified widget's display
-        resolution (MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM) so the widget can lay out
-        the plate grid. Only fires on plate-based scans, only once per run.
+        Slot dimensions must match what UnifiedMosaicWidget actually renders:
+          - effective µm/px is ``pixel_size_um * int(target_um / pixel_size_um)``
+            (integer downsample factor, can be smaller than target_um)
+          - tile dims are full (the widget does not crop overlap; adjacent tiles
+            simply overlap on the canvas)
+        Mismatching either of these can under-size slots and cause tiles to spill
+        into neighboring wells.
+
+        Only fires on plate-based scans, only once per run.
         """
         if self._plate_layout_emitted or not self._is_plate_based_scan:
             return
@@ -819,15 +825,11 @@ class MultiPointWorker:
         height, width = image.shape[:2]
         pixel_size_um = self._pixel_size_um or 1.0
         target_um = float(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
+        downsample_factor = max(1, int(target_um / pixel_size_um))
+        effective_um_per_px = pixel_size_um * downsample_factor
 
-        if self._overlap_pixels:
-            top, bottom, left, right = self._overlap_pixels
-            cropped_w = width - left - right
-            cropped_h = height - top - bottom
-        else:
-            cropped_w, cropped_h = width, height
-        cropped_tile_w_mm = cropped_w * pixel_size_um / 1000.0
-        cropped_tile_h_mm = cropped_h * pixel_size_um / 1000.0
+        tile_w_mm = width * pixel_size_um / 1000.0
+        tile_h_mm = height * pixel_size_um / 1000.0
 
         well_extent_x_mm = 0.0
         well_extent_y_mm = 0.0
@@ -836,13 +838,13 @@ class MultiPointWorker:
                 continue
             x_coords = [c[0] for c in coords]
             y_coords = [c[1] for c in coords]
-            well_extent_x_mm = max(well_extent_x_mm, max(x_coords) - min(x_coords) + cropped_tile_w_mm)
-            well_extent_y_mm = max(well_extent_y_mm, max(y_coords) - min(y_coords) + cropped_tile_h_mm)
+            well_extent_x_mm = max(well_extent_x_mm, max(x_coords) - min(x_coords) + tile_w_mm)
+            well_extent_y_mm = max(well_extent_y_mm, max(y_coords) - min(y_coords) + tile_h_mm)
 
-        well_slot_w = int(round(well_extent_x_mm * 1000.0 / target_um))
-        well_slot_h = int(round(well_extent_y_mm * 1000.0 / target_um))
-        min_slot_w = int(round(cropped_tile_w_mm * 1000.0 / target_um))
-        min_slot_h = int(round(cropped_tile_h_mm * 1000.0 / target_um))
+        well_slot_w = int(round(well_extent_x_mm * 1000.0 / effective_um_per_px))
+        well_slot_h = int(round(well_extent_y_mm * 1000.0 / effective_um_per_px))
+        min_slot_w = int(round(tile_w_mm * 1000.0 / effective_um_per_px))
+        min_slot_h = int(round(tile_h_mm * 1000.0 / effective_um_per_px))
         well_slot_w = max(well_slot_w, min_slot_w)
         well_slot_h = max(well_slot_h, min_slot_h)
 
@@ -868,7 +870,7 @@ class MultiPointWorker:
         self._plate_layout_emitted = True
         self._log.info(
             f"Emitted plate layout: {self._plate_num_rows}x{self._plate_num_cols} wells, "
-            f"slot shape ({well_slot_h}, {well_slot_w}) px @ {target_um}µm/px, "
+            f"slot shape ({well_slot_h}, {well_slot_w}) px @ {effective_um_per_px:.3f}µm/px, "
             f"well extent ({well_extent_x_mm:.2f}x{well_extent_y_mm:.2f} mm)"
         )
 
