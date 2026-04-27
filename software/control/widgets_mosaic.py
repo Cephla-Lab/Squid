@@ -287,6 +287,36 @@ class UnifiedMosaicWidget(QWidget):
         target = DisplayMode.PLATE if self.mode == DisplayMode.MOSAIC else DisplayMode.MOSAIC
         return f"Switch to {DISPLAY_MODE_LABELS[target]}"
 
+    def maybe_switch_to_full_view(self, scan_label: str = "") -> None:
+        """If currently in Plate View, prompt the user to switch to Full View
+        and clear the canvas. Intended for acquisitions that don't produce a
+        plate layout (everything except Select Wells), where Plate View would
+        otherwise stack every tile at the origin.
+
+        No-op when the widget is already in Full View. Stays in Plate View if
+        the user declines.
+        """
+        if self.mode != DisplayMode.PLATE:
+            return
+        label_suffix = f" ('{scan_label}')" if scan_label else ""
+        reply = QMessageBox.question(
+            self,
+            "Switch to Full View?",
+            (
+                f"This acquisition{label_suffix} doesn't produce a plate layout, "
+                "so tiles would stack at the origin in Plate View.\n\n"
+                "Switch to Full View and clear the current canvas?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.mode = DisplayMode.MOSAIC
+        self.toggle_button.setText(self._toggle_button_label())
+        self._clear_shape()
+        self.clearAllLayers()
+
     def _toggle_mode(self):
         """Toggle between full-stage and plate-grid layout. Clears the canvas
         and ROI shapes — confirms with the user first when there's something

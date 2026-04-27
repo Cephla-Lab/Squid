@@ -1819,11 +1819,21 @@ class HighContentScreeningGui(QMainWindow):
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
-        elif not self.live_only_mode:
-            if Nz == 1 and self.unifiedMosaicWidget is not None:
-                self.imageDisplayTabs.setCurrentWidget(self.unifiedMosaicWidget)
-            else:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
+            return
+        if self.live_only_mode:
+            return
+
+        # Only "Select Wells" produces a plate layout. Other scan modes (Current
+        # Position, Manual, Load Coordinates without a plate format) would stack
+        # tiles at the origin if the widget is in Plate View — prompt the user
+        # to switch to Full View and clear before tiles arrive.
+        if self.unifiedMosaicWidget is not None and xy_mode != "Select Wells":
+            self.unifiedMosaicWidget.maybe_switch_to_full_view(xy_mode or "")
+
+        if Nz == 1 and self.unifiedMosaicWidget is not None:
+            self.imageDisplayTabs.setCurrentWidget(self.unifiedMosaicWidget)
+        else:
+            self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
 
     def openLedMatrixSettings(self):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
