@@ -110,6 +110,10 @@ class UnifiedMosaicWidget(QWidget):
         self.num_cols = 0
         self.well_slot_shape: Tuple[int, int] = (0, 0)
         self.fov_grid_shape: Tuple[int, int] = (1, 1)
+        # Well coverage from the most recent setPlateLayout. Used to detect when
+        # a new acquisition scans a different set of wells, in which case the
+        # plate canvas is wiped so old tiles don't linger at the wrong slots.
+        self._plate_well_ids: frozenset = frozenset()
 
         self.shapes_mm: list = []
         self.shape_layer = None
@@ -145,8 +149,18 @@ class UnifiedMosaicWidget(QWidget):
 
     # --- Plate layout setup ---
 
-    def setPlateLayout(self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None):
-        """Configure plate layout for plate mode. Called at acquisition start."""
+    def setPlateLayout(
+        self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None, well_ids=None
+    ):
+        """Configure plate layout for plate mode. Called at the start of every
+        plate-based acquisition.
+
+        Existing channel canvases are wiped to fresh zero-filled plate-sized
+        arrays whenever the slot dimensions changed *or* the set of wells being
+        scanned changed — both cases would otherwise leave tiles from the
+        previous run sitting at coordinates that no longer match the current
+        plate grid.
+        """
         self.num_rows = num_rows
         self.num_cols = num_cols
         self.well_slot_shape = tuple(well_slot_shape)
@@ -159,6 +173,20 @@ class UnifiedMosaicWidget(QWidget):
                 max(1.0, min_plate_dim / PLATE_VIEW_MIN_VISIBLE_PIXELS),
                 PLATE_VIEW_MAX_ZOOM_FACTOR,
             )
+
+        if plate_height <= 0 or plate_width <= 0:
+            return
+        target_dims = (plate_height, plate_width)
+        new_well_ids = frozenset(well_ids) if well_ids else frozenset()
+        coverage_changed = new_well_ids != self._plate_well_ids
+        self._plate_well_ids = new_well_ids
+        for layer in self._image_layers():
+            dims_changed = layer.data.shape[:2] != target_dims
+            if dims_changed or coverage_changed:
+                layer.data = np.zeros(target_dims + layer.data.shape[2:], dtype=layer.data.dtype)
+        # Boundaries depend on slot dims — drop so they get redrawn on the next tile.
+        if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""

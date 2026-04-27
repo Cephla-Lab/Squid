@@ -861,6 +861,7 @@ class MultiPointWorker:
             break
 
         channel_names = [cfg.name for cfg in self.selected_configurations]
+        well_ids = [name for name, coords in self.scan_region_fov_coords_mm.items() if coords]
         self.callbacks.signal_plate_view_init(
             PlateViewInit(
                 num_rows=self._plate_num_rows,
@@ -868,6 +869,7 @@ class MultiPointWorker:
                 well_slot_shape=(well_slot_h, well_slot_w),
                 fov_grid_shape=fov_grid_shape,
                 channel_names=channel_names,
+                well_ids=well_ids,
             )
         )
         self._plate_layout_emitted = True

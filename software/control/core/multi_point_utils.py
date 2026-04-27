@@ -122,6 +122,7 @@ class PlateViewInit:
     well_slot_shape: Tuple[int, int]
     fov_grid_shape: Tuple[int, int]
     channel_names: List[str]
+    well_ids: List[str]  # wells scanned this acquisition; used to detect coverage changes
 
 
 @dataclass
