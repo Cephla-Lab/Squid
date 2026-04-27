@@ -974,7 +974,7 @@ class MultiPointController:
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
             # Downsampled view generation parameters
-            generate_downsampled_views=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES or control._def.DISPLAY_PLATE_VIEW,
+            generate_downsampled_views=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             save_downsampled_well_images=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,

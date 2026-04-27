@@ -12,7 +12,7 @@ from typing import List, Tuple
 import numpy as np
 
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 import napari
 from napari.utils import Colormap
@@ -35,6 +35,15 @@ NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
 class DisplayMode(enum.Enum):
     MOSAIC = "mosaic"
     PLATE = "plate"
+
+
+# User-facing labels for the two modes inside the Mosaic View tab. The enum
+# keeps the historical "MOSAIC" name (it's internal); the UI calls it
+# "Full View" since "Mosaic View" is now the umbrella tab title.
+DISPLAY_MODE_LABELS = {
+    DisplayMode.MOSAIC: "Full View",
+    DisplayMode.PLATE: "Plate View",
+}
 
 
 def blit_tiles_to_canvas(
@@ -123,9 +132,8 @@ class UnifiedMosaicWidget(QWidget):
         layout.addWidget(self.viewer.window._qt_window)
 
         button_layout = QHBoxLayout()
-        self.toggle_button = QPushButton("Switch to Plate View")
+        self.toggle_button = QPushButton(self._toggle_button_label())
         self.toggle_button.clicked.connect(self._toggle_mode)
-        self.toggle_button.setEnabled(False)
         button_layout.addWidget(self.toggle_button)
 
         self.clear_button = QPushButton("Clear")
@@ -143,7 +151,6 @@ class UnifiedMosaicWidget(QWidget):
         self.num_cols = num_cols
         self.well_slot_shape = tuple(well_slot_shape)
         self.fov_grid_shape = tuple(fov_grid_shape) if fov_grid_shape else (1, 1)
-        self.toggle_button.setEnabled(True)
         plate_height = num_rows * self.well_slot_shape[0]
         plate_width = num_cols * self.well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
@@ -247,15 +254,32 @@ class UnifiedMosaicWidget(QWidget):
 
     # --- Mode toggle ---
 
+    def _toggle_button_label(self):
+        """Text shown on the toggle button — names the *target* mode."""
+        target = DisplayMode.PLATE if self.mode == DisplayMode.MOSAIC else DisplayMode.MOSAIC
+        return f"Switch to {DISPLAY_MODE_LABELS[target]}"
+
     def _toggle_mode(self):
-        """Toggle between mosaic and plate mode. Clears canvas and ROI shapes."""
-        if self.mode == DisplayMode.MOSAIC:
-            self.mode = DisplayMode.PLATE
-            self.toggle_button.setText("Switch to Mosaic View")
-        else:
-            self.mode = DisplayMode.MOSAIC
-            self.toggle_button.setText("Switch to Plate View")
-        # ROI shapes are stage-coord-based and only meaningful in mosaic mode.
+        """Toggle between full-stage and plate-grid layout. Clears the canvas
+        and ROI shapes — confirms with the user first when there's something
+        on screen to lose.
+        """
+        target = DisplayMode.PLATE if self.mode == DisplayMode.MOSAIC else DisplayMode.MOSAIC
+        target_label = DISPLAY_MODE_LABELS[target]
+        if self.layers_initialized:
+            reply = QMessageBox.question(
+                self,
+                f"Switch to {target_label}",
+                f"Switching to {target_label} clears the current view. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        self.mode = target
+        self.toggle_button.setText(self._toggle_button_label())
+        # ROI shapes are stage-coord-based and only meaningful in MOSAIC mode.
         self._clear_shape()
         self.clearAllLayers()
 
@@ -268,7 +292,7 @@ class UnifiedMosaicWidget(QWidget):
         Single-arg signature so the widget receives a ``Signal(object)`` payload.
         Position is computed inline for the active mode only.
         """
-        if not (control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY or control._def.DISPLAY_PLATE_VIEW):
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
             return
 
         image = update.image

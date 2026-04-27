@@ -992,10 +992,9 @@ MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
 # Downsampled view settings (for Select Well Mode)
 # SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
-# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
-# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
+# Note: per-well TIFF saving is currently not wired up after the unified-mosaic
+# refactor — the flag is a no-op until the save path is re-added.
 SAVE_DOWNSAMPLED_WELL_IMAGES = False
-DISPLAY_PLATE_VIEW = False
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
@@ -1394,8 +1393,6 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
         _views_config.read(CACHED_CONFIG_FILE_PATH)
         if _views_config.has_section("VIEWS"):
             log.info("Loading Views settings from config file")
-            if _views_config.has_option("VIEWS", "display_plate_view"):
-                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
             if _views_config.has_option("VIEWS", "display_mosaic_view"):
                 USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
                     "true",

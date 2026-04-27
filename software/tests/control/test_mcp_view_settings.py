@@ -4,7 +4,6 @@ Tests for MCP view settings commands in microscope_control_server.py.
 These commands allow runtime control of view settings for RAM debugging:
 - get_view_settings: Query current state
 - set_save_downsampled_images: Toggle downsampled well image saving
-- set_display_plate_view: Toggle plate view generation
 - set_display_mosaic_view: Toggle mosaic view updates (immediate effect)
 - set_view_settings: Batch update multiple settings
 """
@@ -35,7 +34,6 @@ def save_and_restore_def_values():
     """Save original control._def values and restore after test."""
     originals = {
         "SAVE_DOWNSAMPLED_WELL_IMAGES": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
-        "DISPLAY_PLATE_VIEW": control._def.DISPLAY_PLATE_VIEW,
         "USE_NAPARI_FOR_MOSAIC_DISPLAY": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
         "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
         "DOWNSAMPLED_WELL_RESOLUTIONS_UM": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
@@ -44,7 +42,6 @@ def save_and_restore_def_values():
     yield
     # Restore original values
     control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = originals["SAVE_DOWNSAMPLED_WELL_IMAGES"]
-    control._def.DISPLAY_PLATE_VIEW = originals["DISPLAY_PLATE_VIEW"]
     control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = originals["USE_NAPARI_FOR_MOSAIC_DISPLAY"]
     control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = originals["MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM"]
     control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = originals["DOWNSAMPLED_WELL_RESOLUTIONS_UM"]
@@ -59,7 +56,6 @@ class TestGetViewSettings:
         result = mcp_server._cmd_get_view_settings()
 
         assert "save_downsampled_well_images" in result
-        assert "display_plate_view" in result
         assert "display_mosaic_view" in result
         assert "mosaic_view_target_pixel_size_um" in result
         assert "downsampled_well_resolutions_um" in result
@@ -70,13 +66,11 @@ class TestGetViewSettings:
         """Test that get_view_settings reflects current control._def values."""
         # Set known values
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
-        control._def.DISPLAY_PLATE_VIEW = False
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 
         result = mcp_server._cmd_get_view_settings()
 
         assert result["save_downsampled_well_images"] is True
-        assert result["display_plate_view"] is False
         assert result["display_mosaic_view"] is True
 
     def test_performance_mode_none_when_no_gui(self, mcp_server, save_and_restore_def_values):
@@ -119,42 +113,6 @@ class TestSetSaveDownsampledImages:
             mcp_server._cmd_set_save_downsampled_images(enabled="true")
         with pytest.raises(TypeError, match="enabled must be a boolean"):
             mcp_server._cmd_set_save_downsampled_images(enabled=1)
-
-
-class TestSetDisplayPlateView:
-    """Tests for set_display_plate_view command."""
-
-    def test_enable_plate_view(self, mcp_server, save_and_restore_def_values):
-        """Test enabling plate view display."""
-        control._def.DISPLAY_PLATE_VIEW = False
-
-        result = mcp_server._cmd_set_display_plate_view(enabled=True)
-
-        assert control._def.DISPLAY_PLATE_VIEW is True
-        assert result["display_plate_view"] is True
-        assert "enabled" in result["message"]
-
-    def test_disable_plate_view(self, mcp_server, save_and_restore_def_values):
-        """Test disabling plate view display."""
-        control._def.DISPLAY_PLATE_VIEW = True
-
-        result = mcp_server._cmd_set_display_plate_view(enabled=False)
-
-        assert control._def.DISPLAY_PLATE_VIEW is False
-        assert result["display_plate_view"] is False
-        assert "disabled" in result["message"]
-
-    def test_message_indicates_next_acquisition(self, mcp_server, save_and_restore_def_values):
-        """Test that message indicates setting takes effect on next acquisition."""
-        result = mcp_server._cmd_set_display_plate_view(enabled=True)
-        assert "next acquisition" in result["message"]
-
-    def test_rejects_non_boolean(self, mcp_server, save_and_restore_def_values):
-        """Test that non-boolean values raise TypeError."""
-        with pytest.raises(TypeError, match="enabled must be a boolean"):
-            mcp_server._cmd_set_display_plate_view(enabled="false")
-        with pytest.raises(TypeError, match="enabled must be a boolean"):
-            mcp_server._cmd_set_display_plate_view(enabled=0)
 
 
 class TestSetDisplayMosaicView:
@@ -200,51 +158,45 @@ class TestSetViewSettings:
     def test_set_all_settings(self, mcp_server, save_and_restore_def_values):
         """Test setting all view settings at once."""
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
-        control._def.DISPLAY_PLATE_VIEW = True
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 
         result = mcp_server._cmd_set_view_settings(
             save_downsampled_well_images=False,
-            display_plate_view=False,
             display_mosaic_view=False,
         )
 
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is False
-        assert control._def.DISPLAY_PLATE_VIEW is False
         assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is False
         assert result["save_downsampled_well_images"] is False
-        assert result["display_plate_view"] is False
         assert result["display_mosaic_view"] is False
 
     def test_set_single_setting_leaves_others_unchanged(self, mcp_server, save_and_restore_def_values):
         """Test that setting one value doesn't affect others."""
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
-        control._def.DISPLAY_PLATE_VIEW = True
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 
-        result = mcp_server._cmd_set_view_settings(display_plate_view=False)
+        result = mcp_server._cmd_set_view_settings(display_mosaic_view=False)
 
-        # Only display_plate_view should change
+        # Only display_mosaic_view should change
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
-        assert control._def.DISPLAY_PLATE_VIEW is False
-        assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is True
+        assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is False
         # Verify return value reflects the change
-        assert result["display_plate_view"] is False
+        assert result["display_mosaic_view"] is False
         assert len(result["changes"]) == 1
 
     def test_none_values_are_ignored(self, mcp_server, save_and_restore_def_values):
         """Test that None values don't modify settings."""
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
-        control._def.DISPLAY_PLATE_VIEW = True
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = True
 
         result = mcp_server._cmd_set_view_settings(
             save_downsampled_well_images=None,
-            display_plate_view=None,
+            display_mosaic_view=None,
         )
 
         # Nothing should change
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
-        assert control._def.DISPLAY_PLATE_VIEW is True
+        assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is True
         # Verify return value shows no changes
         assert result["changes"] == []
 
@@ -265,7 +217,6 @@ class TestSetViewSettings:
 
         assert result["changes"] == []
         assert "save_downsampled_well_images" in result
-        assert "display_plate_view" in result
         assert "display_mosaic_view" in result
 
 
@@ -276,7 +227,6 @@ class TestCommandDiscovery:
         """Test that all view settings commands are auto-discovered."""
         assert "get_view_settings" in mcp_server._commands
         assert "set_save_downsampled_images" in mcp_server._commands
-        assert "set_display_plate_view" in mcp_server._commands
         assert "set_display_mosaic_view" in mcp_server._commands
         assert "set_view_settings" in mcp_server._commands
 
@@ -285,7 +235,6 @@ class TestCommandDiscovery:
         for cmd_name in [
             "get_view_settings",
             "set_save_downsampled_images",
-            "set_display_plate_view",
             "set_display_mosaic_view",
             "set_view_settings",
         ]:

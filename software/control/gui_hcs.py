@@ -1136,9 +1136,9 @@ class HighContentScreeningGui(QMainWindow):
             from control.widgets_mosaic import UnifiedMosaicWidget
 
             self.unifiedMosaicWidget = None
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY or DISPLAY_PLATE_VIEW:
+            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.unifiedMosaicWidget = UnifiedMosaicWidget(self.objectiveStore, self.camera, self.contrastManager)
-                self.imageDisplayTabs.addTab(self.unifiedMosaicWidget, "Acquisition View")
+                self.imageDisplayTabs.addTab(self.unifiedMosaicWidget, "Mosaic View")
 
             # Embedded NDViewer (lightweight) - initialized AFTER napari widgets because
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
@@ -1736,14 +1736,13 @@ class HighContentScreeningGui(QMainWindow):
                     (self.unifiedMosaicWidget.signal_coordinates_clicked, self.move_from_click_mm),
                     (self.unifiedMosaicWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
                 ]
-                if DISPLAY_PLATE_VIEW:
-                    self.napari_connections["unifiedMosaicWidget"].append(
-                        (
-                            self.multipointController.plate_view_init,
-                            self.unifiedMosaicWidget.setPlateLayout,
-                            Qt.QueuedConnection,
-                        )
+                self.napari_connections["unifiedMosaicWidget"].append(
+                    (
+                        self.multipointController.plate_view_init,
+                        self.unifiedMosaicWidget.setPlateLayout,
+                        Qt.QueuedConnection,
                     )
+                )
 
                 # ROI shape drawing in mosaic mode (wellplate flow only).
                 if ENABLE_WELLPLATE_MULTIPOINT:

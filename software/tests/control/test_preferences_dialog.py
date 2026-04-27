@@ -41,7 +41,6 @@ def sample_config():
 
     config.add_section("VIEWS")
     config.set("VIEWS", "save_downsampled_well_images", "false")
-    config.set("VIEWS", "display_plate_view", "true")
     config.set("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
     config.set("VIEWS", "downsampled_plate_resolution_um", "10.0")
     config.set("VIEWS", "downsampled_z_projection", "mip")
@@ -79,7 +78,6 @@ def sync_def_with_config(sample_config):
     # Store original values
     originals = {
         "SAVE_DOWNSAMPLED_WELL_IMAGES": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
-        "DISPLAY_PLATE_VIEW": control._def.DISPLAY_PLATE_VIEW,
         "DOWNSAMPLED_WELL_RESOLUTIONS_UM": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
         "DOWNSAMPLED_PLATE_RESOLUTION_UM": control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
         "DOWNSAMPLED_Z_PROJECTION": control._def.DOWNSAMPLED_Z_PROJECTION,
@@ -94,7 +92,6 @@ def sync_def_with_config(sample_config):
         "1",
         "yes",
     )
-    control._def.DISPLAY_PLATE_VIEW = sample_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
     control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [
         float(x.strip()) for x in sample_config.get("VIEWS", "downsampled_well_resolutions_um").split(",")
     ]
@@ -115,7 +112,6 @@ def sync_def_with_config(sample_config):
 
     # Restore original values
     control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = originals["SAVE_DOWNSAMPLED_WELL_IMAGES"]
-    control._def.DISPLAY_PLATE_VIEW = originals["DISPLAY_PLATE_VIEW"]
     control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = originals["DOWNSAMPLED_WELL_RESOLUTIONS_UM"]
     control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM = originals["DOWNSAMPLED_PLATE_RESOLUTION_UM"]
     control._def.DOWNSAMPLED_Z_PROJECTION = originals["DOWNSAMPLED_Z_PROJECTION"]
@@ -286,12 +282,6 @@ class TestChangeDetection:
         preferences_dialog.save_downsampled_checkbox.setChecked(not current)
         changes = preferences_dialog._get_changes()
         assert any(c[0] == "Save Downsampled Well Images" for c in changes)
-
-    def test_detect_views_display_plate_view_change(self, preferences_dialog):
-        # Config has display_plate_view=true, checkbox should be checked
-        preferences_dialog.display_plate_view_checkbox.setChecked(False)
-        changes = preferences_dialog._get_changes()
-        assert any(c[0] == "Display Plate View *" for c in changes)
 
     def test_detect_views_well_resolutions_change(self, preferences_dialog):
         preferences_dialog.well_resolutions_edit.setText("1.0, 2.0")
@@ -480,9 +470,6 @@ class TestViewsTab:
     def test_save_downsampled_checkbox_initialized(self, preferences_dialog):
         assert preferences_dialog.save_downsampled_checkbox.isChecked() is False
 
-    def test_display_plate_view_checkbox_initialized(self, preferences_dialog):
-        assert preferences_dialog.display_plate_view_checkbox.isChecked() is True
-
     def test_well_resolutions_initialized(self, preferences_dialog):
         assert preferences_dialog.well_resolutions_edit.text() == "5.0, 10.0, 20.0"
 
@@ -500,7 +487,6 @@ class TestViewsTab:
 
     def test_views_settings_saved_to_file(self, preferences_dialog, temp_config_file):
         preferences_dialog.save_downsampled_checkbox.setChecked(True)
-        preferences_dialog.display_plate_view_checkbox.setChecked(False)
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0")
         preferences_dialog.plate_resolution_spinbox.setValue(15.0)
         preferences_dialog.z_projection_combo.setCurrentText("middle")
@@ -515,7 +501,6 @@ class TestViewsTab:
         saved_config.read(temp_config_file)
 
         assert saved_config.get("VIEWS", "save_downsampled_well_images") == "true"
-        assert saved_config.get("VIEWS", "display_plate_view") == "false"
         assert saved_config.get("VIEWS", "downsampled_well_resolutions_um") == "2.5, 5.0"
         assert saved_config.get("VIEWS", "downsampled_plate_resolution_um") == "15.0"
         assert saved_config.get("VIEWS", "downsampled_z_projection") == "middle"
@@ -526,7 +511,6 @@ class TestViewsTab:
         import control._def
 
         preferences_dialog.save_downsampled_checkbox.setChecked(True)
-        preferences_dialog.display_plate_view_checkbox.setChecked(True)
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0, 15.0")
         preferences_dialog.plate_resolution_spinbox.setValue(20.0)
         preferences_dialog.z_projection_combo.setCurrentText("middle")
@@ -536,7 +520,6 @@ class TestViewsTab:
         preferences_dialog._apply_live_settings()
 
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
-        assert control._def.DISPLAY_PLATE_VIEW is True
         assert control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM == [2.5, 5.0, 15.0]
         assert control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM == 20.0
         assert control._def.DOWNSAMPLED_Z_PROJECTION == control._def.ZProjectionMode.MIDDLE
@@ -591,14 +574,12 @@ class TestViewsTabDefIntegration:
 
         # Set control._def values different from config file
         original_save = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES
-        original_plate = control._def.DISPLAY_PLATE_VIEW
         original_mosaic = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
 
         try:
-            # Config has: save=false, display_plate=true, display_mosaic=true
+            # Config has: save=false, display_mosaic=true
             # Set control._def to opposite values
             control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
-            control._def.DISPLAY_PLATE_VIEW = False
             control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = False
 
             # Create dialog - should read from _def, not config
@@ -607,13 +588,11 @@ class TestViewsTabDefIntegration:
 
             # UI should show _def values, not config values
             assert dialog.save_downsampled_checkbox.isChecked() is True  # _def=True, config=false
-            assert dialog.display_plate_view_checkbox.isChecked() is False  # _def=False, config=true
             assert dialog.display_mosaic_view_checkbox.isChecked() is False  # _def=False, config=true
 
         finally:
             # Restore original values
             control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = original_save
-            control._def.DISPLAY_PLATE_VIEW = original_plate
             control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_mosaic
 
     def test_change_detection_compares_against_def(self, qtbot, sample_config, temp_config_file):

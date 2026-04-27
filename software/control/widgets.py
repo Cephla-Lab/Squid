@@ -1537,15 +1537,6 @@ class PreferencesDialog(QDialog):
         )
         plate_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
-        # Display Plate View
-        self.display_plate_view_checkbox = QCheckBox()
-        self.display_plate_view_checkbox.setChecked(control._def.DISPLAY_PLATE_VIEW)
-        self.display_plate_view_checkbox.setToolTip(
-            "Show plate view tab in GUI during acquisition.\n"
-            "Note: Plate view TIFF is always saved when either option is enabled."
-        )
-        plate_layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
-
         # Well Resolutions (comma-separated)
         self.well_resolutions_edit = QLineEdit()
         default_resolutions = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
@@ -1887,11 +1878,6 @@ class PreferencesDialog(QDialog):
             "save_downsampled_well_images",
             "true" if self.save_downsampled_checkbox.isChecked() else "false",
         )
-        self.config.set(
-            "VIEWS",
-            "display_plate_view",
-            "true" if self.display_plate_view_checkbox.isChecked() else "false",
-        )
         self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
         self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
         self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
@@ -2025,7 +2011,6 @@ class PreferencesDialog(QDialog):
 
         # Views settings
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
-        control._def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
         # Parse comma-separated resolutions
         resolutions_str = self.well_resolutions_edit.text()
         try:
@@ -2310,11 +2295,6 @@ class PreferencesDialog(QDialog):
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Save Downsampled Well Images", str(old_val), str(new_val), False))
-
-        old_val = control._def.DISPLAY_PLATE_VIEW
-        new_val = self.display_plate_view_checkbox.isChecked()
-        if old_val != new_val:
-            changes.append(("Display Plate View *", str(old_val), str(new_val), True))
 
         old_val = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
         new_val = self.well_resolutions_edit.text()
