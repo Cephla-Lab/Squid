@@ -180,20 +180,13 @@ class UnifiedMosaicWidget(QWidget):
         new_well_ids = frozenset(well_ids) if well_ids else frozenset()
         coverage_changed = new_well_ids != self._plate_well_ids
         self._plate_well_ids = new_well_ids
-        canvas_changed = False
         for layer in self._image_layers():
             dims_changed = layer.data.shape[:2] != target_dims
             if dims_changed or coverage_changed:
                 layer.data = np.zeros(target_dims + layer.data.shape[2:], dtype=layer.data.dtype)
-                canvas_changed = True
         # Boundaries depend on slot dims — drop so they get redrawn on the next tile.
         if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
-        # Fit the napari view to the new plate so the user can see the full grid
-        # — otherwise an old camera position/zoom from a prior acquisition can
-        # leave only a corner of the plate visible.
-        if canvas_changed and self.mode == DisplayMode.PLATE:
-            self.viewer.reset_view()
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""
@@ -368,10 +361,7 @@ class UnifiedMosaicWidget(QWidget):
 
         if self._pixel_size_um == 0.0:
             self._pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-            # Must match downsample_tile's rounding (and the worker's slot-shape
-            # math in _emit_plate_layout), otherwise viewer_pixel_size_mm and the
-            # plate canvas land in different pixel units and tiles are mispositioned.
-            self._downsample_factor = max(1, int(round(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um)))
+            self._downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um))
 
         image = downsample_tile(image, self._pixel_size_um, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         image_pixel_size_mm = (self._pixel_size_um * self._downsample_factor) / 1000
@@ -473,8 +463,7 @@ class UnifiedMosaicWidget(QWidget):
         the colour image directly instead of running a colormap over channel-0.
         """
         is_rgb = reference_image.ndim == 3 and reference_image.shape[2] == 3
-        plate_canvas = self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0
-        if plate_canvas:
+        if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
             slot_h, slot_w = self.well_slot_shape
             shape = (self.num_rows * slot_h, self.num_cols * slot_w)
             if is_rgb:
@@ -497,10 +486,6 @@ class UnifiedMosaicWidget(QWidget):
             layer = self.viewer.add_image(initial_data, colormap=color, blending="additive", **layer_kwargs)
             layer.events.contrast_limits.connect(self._on_contrast_change)
         layer.mouse_double_click_callbacks.append(self._on_double_click)
-        # Fit the camera to the freshly-sized plate so all wells are visible —
-        # otherwise napari can leave the camera zoomed in on the world origin.
-        if plate_canvas:
-            self.viewer.reset_view()
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""
