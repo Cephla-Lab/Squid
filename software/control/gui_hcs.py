@@ -46,9 +46,11 @@ from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core.downsampled_views import parse_well_id
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
+    MosaicTileUpdate,
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
@@ -206,6 +208,8 @@ class QtMultiPointController(MultiPointController, QObject):
     # Plate view signals
     plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
     plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
+    # Unified mosaic/plate view: single signal carrying full per-tile metadata.
+    mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
@@ -360,6 +364,28 @@ class QtMultiPointController(MultiPointController, QObject):
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+        )
+
+        # Unified mosaic/plate view: derive well indices from region_id; non-plate
+        # scans (manual ROI, current position) won't parse, and plate mode is
+        # unavailable for them anyway, so 0/0 fallbacks are unused.
+        region_id = info.region_id if isinstance(info.region_id, str) else ""
+        try:
+            well_row, well_col = parse_well_id(region_id) if region_id else (0, 0)
+        except (ValueError, TypeError):
+            well_row, well_col = 0, 0
+        self.mosaic_tile_update.emit(
+            MosaicTileUpdate(
+                image=frame.frame,
+                x_mm=info.position.x_mm,
+                y_mm=info.position.y_mm,
+                channel_name=napri_layer_name,
+                channel_index=info.configuration_idx,
+                well_id=region_id,
+                fov_index=info.fov,
+                well_row=well_row,
+                well_col=well_col,
+            )
         )
 
         # NDViewer push-based API: register image

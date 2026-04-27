@@ -87,6 +87,28 @@ class RegionProgressUpdate:
 
 
 @dataclass
+class MosaicTileUpdate:
+    """Data for unified mosaic/plate view tile update.
+
+    Constructed in MultiPointController._signal_new_image_fn from the
+    CameraFrame and CaptureInfo already available there. well_row/well_col
+    are derived from CaptureInfo.region_id via parse_well_id; for non-plate
+    scans where region_id is not a well ID, they default to 0 and plate mode
+    is unavailable anyway.
+    """
+
+    image: "np.ndarray"
+    x_mm: float
+    y_mm: float
+    channel_name: str
+    channel_index: int = 0
+    well_id: str = ""
+    fov_index: int = 0
+    well_row: int = 0
+    well_col: int = 0
+
+
+@dataclass
 class PlateViewUpdate:
     """Data for plate view channel update."""
 
