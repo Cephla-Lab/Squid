@@ -54,7 +54,6 @@ from control.core.multi_point_utils import (
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
-    PlateViewUpdate,
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
@@ -207,7 +206,6 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
     # Plate view signals
     plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
-    plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
@@ -252,7 +250,6 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
-                signal_plate_view_update=self._signal_plate_view_update_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
@@ -434,13 +431,6 @@ class QtMultiPointController(MultiPointController, QObject):
             plate_view_init.well_slot_shape,
             plate_view_init.fov_grid_shape,
             plate_view_init.channel_names,
-        )
-
-    def _signal_plate_view_update_fn(self, plate_view_update: PlateViewUpdate):
-        self.plate_view_update.emit(
-            plate_view_update.channel_idx,
-            plate_view_update.channel_name,
-            plate_view_update.plate_image,
         )
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
