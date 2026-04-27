@@ -312,15 +312,23 @@ class QtMultiPointController(MultiPointController, QObject):
 
         # Compute deterministic per-well origins (top-left, mm) for the unified
         # mosaic widget so tiles arriving in any scan order land at non-negative
-        # offsets within their well slot.
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.microscope.camera.get_pixel_size_binned_um()
-        half_w_mm = width * pixel_size_um / 2000.0
-        half_h_mm = height * pixel_size_um / 2000.0
-        self._well_origins_mm = {
-            name: (min(c[0] for c in coords) - half_w_mm, min(c[1] for c in coords) - half_h_mm)
-            for name, coords in scan_info.scan_region_fov_coords_mm.items()
-            if coords
-        }
+        # offsets within their well slot. Only "Select Wells" produces a real
+        # plate layout; for other scan modes we leave the dict empty, which
+        # makes well_origin_mm=None on every tile and signals the widget to
+        # skip blitting in Plate View instead of stacking tiles at the origin.
+        if parameters.xy_mode == "Select Wells":
+            pixel_size_um = (
+                self.objectiveStore.get_pixel_size_factor() * self.microscope.camera.get_pixel_size_binned_um()
+            )
+            half_w_mm = width * pixel_size_um / 2000.0
+            half_h_mm = height * pixel_size_um / 2000.0
+            self._well_origins_mm = {
+                name: (min(c[0] for c in coords) - half_w_mm, min(c[1] for c in coords) - half_h_mm)
+                for name, coords in scan_info.scan_region_fov_coords_mm.items()
+                if coords
+            }
+        else:
+            self._well_origins_mm = {}
 
         # Check save format to determine which API to use
         if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:

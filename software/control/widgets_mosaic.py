@@ -290,11 +290,11 @@ class UnifiedMosaicWidget(QWidget):
     def maybe_switch_to_full_view(self, scan_label: str = "") -> None:
         """If currently in Plate View, prompt the user to switch to Full View
         and clear the canvas. Intended for acquisitions that don't produce a
-        plate layout (everything except Select Wells), where Plate View would
-        otherwise stack every tile at the origin.
+        plate layout (everything except Select Wells).
 
-        No-op when the widget is already in Full View. Stays in Plate View if
-        the user declines.
+        No-op when the widget is already in Full View. If the user declines,
+        Plate View stays as-is and won't update during this acquisition — see
+        the dialog body for the wording shown to the user.
         """
         if self.mode != DisplayMode.PLATE:
             return
@@ -303,9 +303,10 @@ class UnifiedMosaicWidget(QWidget):
             self,
             "Switch to Full View?",
             (
-                f"This acquisition{label_suffix} doesn't produce a plate layout, "
-                "so tiles would stack at the origin in Plate View.\n\n"
-                "Switch to Full View and clear the current canvas?"
+                f"Plate View only updates for Select Wells acquisitions. "
+                f"This acquisition{label_suffix} won't be shown in Plate View.\n\n"
+                "Switch to Full View now and clear the current canvas?\n"
+                "(Choose No to keep the existing Plate View; it will not update.)"
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -397,11 +398,15 @@ class UnifiedMosaicWidget(QWidget):
             self.top_left_coordinate = [self.viewer_extents[0], self.viewer_extents[2]]
             self._update_mosaic_layer(self.viewer.layers[channel_name], image, tl_x_mm, tl_y_mm, prev_top_left)
         else:
+            # well_origin_mm is None when the source acquisition isn't a plate
+            # scan (anything other than Select Wells). We can't position the
+            # tile in plate-grid space without an origin, so skip the blit
+            # entirely — the user was already warned via the prompt at
+            # acquisition start that Plate View won't update.
+            if update.well_origin_mm is None:
+                return
             slot_h, slot_w = self.well_slot_shape
-            # Origin comes from the scan plan (gui_hcs._well_origins_mm) so it's
-            # stable regardless of which tile arrives first. Fallback to the
-            # current tile's top-left for degenerate paths (single-FOV well).
-            origin_x, origin_y = update.well_origin_mm if update.well_origin_mm is not None else (tl_x_mm, tl_y_mm)
+            origin_x, origin_y = update.well_origin_mm
             fov_offset_x = int(round((tl_x_mm - origin_x) / self.viewer_pixel_size_mm))
             fov_offset_y = int(round((tl_y_mm - origin_y) / self.viewer_pixel_size_mm))
             y_px = update.well_row * slot_h + fov_offset_y
