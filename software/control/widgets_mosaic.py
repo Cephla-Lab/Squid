@@ -180,13 +180,17 @@ class UnifiedMosaicWidget(QWidget):
         new_well_ids = frozenset(well_ids) if well_ids else frozenset()
         coverage_changed = new_well_ids != self._plate_well_ids
         self._plate_well_ids = new_well_ids
+        canvas_changed = False
         for layer in self._image_layers():
             dims_changed = layer.data.shape[:2] != target_dims
             if dims_changed or coverage_changed:
                 layer.data = np.zeros(target_dims + layer.data.shape[2:], dtype=layer.data.dtype)
+                canvas_changed = True
         # Boundaries depend on slot dims — drop so they get redrawn on the next tile.
         if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
+        if canvas_changed and self.mode == DisplayMode.PLATE:
+            self._fit_view_to_plate()
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""
@@ -416,6 +420,8 @@ class UnifiedMosaicWidget(QWidget):
             blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
             layer.refresh()
             self._draw_plate_boundaries()
+            # Always show the full plate while plate mode is updating.
+            self._fit_view_to_plate()
 
         # Contrast is per-monochrome-channel; RGB layers display the colour
         # image directly and don't go through the channel ContrastManager.
@@ -586,6 +592,20 @@ class UnifiedMosaicWidget(QWidget):
         if new_zoom != zoom:
             self._clamping_zoom = True
             self.viewer.camera.zoom = new_zoom
+            self._clamping_zoom = False
+
+    def _fit_view_to_plate(self):
+        """Reset napari's camera to fit the full plate canvas in the viewport.
+
+        Bypasses the plate-mode zoom clamp because the fit-zoom for a typical
+        plate (>10k pixels per side) is well below ``min_zoom``; without the
+        bypass, ``_on_zoom_changed`` would re-clamp the zoom right after
+        ``reset_view`` and the user would see only a fraction of the plate.
+        """
+        self._clamping_zoom = True
+        try:
+            self.viewer.reset_view()
+        finally:
             self._clamping_zoom = False
 
     def _on_zoom_changed(self, event):
