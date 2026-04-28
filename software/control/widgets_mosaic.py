@@ -6,6 +6,7 @@ widget that supports two display modes sharing one canvas per channel.
 
 import enum
 import math
+import os
 import sys
 from typing import List, Tuple
 
@@ -30,11 +31,34 @@ PLATE_VIEW_MAX_ZOOM_FACTOR = 50.0
 PLATE_BOUNDARIES_LAYER = "_plate_boundaries"
 MANUAL_ROI_LAYER = "Manual ROI"
 NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
+# Same cache/ pattern other widget state uses (see e.g. cache/last_saving_path.txt).
+LAST_VIEW_MODE_CACHE = "cache/last_view_mode.txt"
 
 
 class DisplayMode(enum.Enum):
     MOSAIC = "mosaic"
     PLATE = "plate"
+
+
+def _load_last_view_mode() -> "DisplayMode":
+    """Read the persisted display mode from cache/, or default to MOSAIC."""
+    try:
+        with open(LAST_VIEW_MODE_CACHE, "r") as f:
+            value = f.read().strip()
+        return DisplayMode(value)
+    except (OSError, ValueError):
+        return DisplayMode.MOSAIC
+
+
+def _save_last_view_mode(mode: "DisplayMode") -> None:
+    """Persist the display mode so the next session opens in the same view."""
+    try:
+        os.makedirs(os.path.dirname(LAST_VIEW_MODE_CACHE), exist_ok=True)
+        with open(LAST_VIEW_MODE_CACHE, "w") as f:
+            f.write(mode.value)
+    except OSError:
+        # Cache write is best-effort; nothing fatal if the disk is read-only.
+        squid.logging.get_logger(__name__).debug("Failed to persist last view mode", exc_info=True)
 
 
 # User-facing labels for the two modes inside the Mosaic View tab. The enum
@@ -94,7 +118,7 @@ class UnifiedMosaicWidget(QWidget):
         self.camera = camera
         self.contrastManager = contrastManager
 
-        self.mode = DisplayMode.MOSAIC
+        self.mode = _load_last_view_mode()
         self.layers_initialized = False
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
@@ -318,6 +342,7 @@ class UnifiedMosaicWidget(QWidget):
         if reply != QMessageBox.Yes:
             return
         self.mode = DisplayMode.MOSAIC
+        _save_last_view_mode(self.mode)
         self.toggle_button.setText(self._toggle_button_label())
         self._clear_shape()
         self.clearAllLayers()
@@ -341,6 +366,7 @@ class UnifiedMosaicWidget(QWidget):
                 return
 
         self.mode = target
+        _save_last_view_mode(self.mode)
         self.toggle_button.setText(self._toggle_button_label())
         # ROI shapes are stage-coord-based and only meaningful in MOSAIC mode.
         self._clear_shape()
