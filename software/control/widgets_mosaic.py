@@ -11,6 +11,7 @@ import sys
 from typing import List, Tuple
 
 import numpy as np
+import yaml
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
@@ -31,8 +32,8 @@ PLATE_VIEW_MAX_ZOOM_FACTOR = 50.0
 PLATE_BOUNDARIES_LAYER = "_plate_boundaries"
 MANUAL_ROI_LAYER = "Manual ROI"
 NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
-# Same cache/ pattern other widget state uses (see e.g. cache/last_saving_path.txt).
-LAST_VIEW_MODE_CACHE = "cache/last_view_mode.txt"
+# Same cache/ YAML pattern other widget state uses (see e.g. cache/multipoint_widget_config.yaml).
+LAST_VIEW_MODE_CACHE = "cache/last_view_mode.yaml"
 
 
 class DisplayMode(enum.Enum):
@@ -44,9 +45,9 @@ def _load_last_view_mode() -> "DisplayMode":
     """Read the persisted display mode from cache/, or default to MOSAIC."""
     try:
         with open(LAST_VIEW_MODE_CACHE, "r") as f:
-            value = f.read().strip()
-        return DisplayMode(value)
-    except (OSError, ValueError):
+            data = yaml.safe_load(f) or {}
+        return DisplayMode(data.get("mode"))
+    except (OSError, ValueError, yaml.YAMLError):
         return DisplayMode.MOSAIC
 
 
@@ -55,7 +56,7 @@ def _save_last_view_mode(mode: "DisplayMode") -> None:
     try:
         os.makedirs(os.path.dirname(LAST_VIEW_MODE_CACHE), exist_ok=True)
         with open(LAST_VIEW_MODE_CACHE, "w") as f:
-            f.write(mode.value)
+            yaml.safe_dump({"mode": mode.value}, f)
     except OSError:
         # Cache write is best-effort; nothing fatal if the disk is read-only.
         squid.logging.get_logger(__name__).debug("Failed to persist last view mode", exc_info=True)
