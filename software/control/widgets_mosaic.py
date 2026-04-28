@@ -194,10 +194,16 @@ class UnifiedMosaicWidget(QWidget):
         plate_width = num_cols * self.well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
             min_plate_dim = min(plate_height, plate_width)
+            max_plate_dim = max(plate_height, plate_width)
             self.max_zoom = min(
                 max(1.0, min_plate_dim / PLATE_VIEW_MIN_VISIBLE_PIXELS),
                 PLATE_VIEW_MAX_ZOOM_FACTOR,
             )
+            # Let the user zoom out far enough to see the whole plate (and a
+            # bit beyond). Default min_zoom=0.1 was tighter than the fit-zoom
+            # for plates >~6000px on a side, which made wheel-down stop short
+            # of showing the full plate.
+            self.min_zoom = max(0.0001, 150.0 / max_plate_dim)
 
         if plate_height <= 0 or plate_width <= 0:
             return
