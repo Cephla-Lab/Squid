@@ -1313,6 +1313,7 @@ class MicroscopeControlServer:
     def _cmd_get_view_settings(self) -> Dict[str, Any]:
         """Get current view settings for RAM debugging (downsampled images, mosaic view)."""
         return {
+            "save_downsampled_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
             "mosaic_view_target_pixel_size_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
@@ -1322,11 +1323,25 @@ class MicroscopeControlServer:
         }
 
     @schema_method
+    def _cmd_set_save_downsampled_overview(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) saving the downsampled overview TIFF"),
+    ) -> Dict[str, Any]:
+        """Enable or disable saving the whole-canvas downsampled overview (affects next acquisition)."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = enabled
+        return {
+            "save_downsampled_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
+            "message": f"Downsampled overview save {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
     def _cmd_set_save_downsampled_images(
         self,
         enabled: bool = Field(..., description="Enable (true) or disable (false) saving downsampled well images"),
     ) -> Dict[str, Any]:
-        """Enable or disable saving downsampled well images (affects next acquisition)."""
+        """Enable or disable saving per-well downsampled TIFFs (affects next acquisition)."""
         if not isinstance(enabled, bool):
             raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = enabled
@@ -1352,8 +1367,11 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_set_view_settings(
         self,
+        save_downsampled_overview: Optional[bool] = Field(
+            None, description="Enable/disable saving the downsampled overview TIFF"
+        ),
         save_downsampled_well_images: Optional[bool] = Field(
-            None, description="Enable/disable saving downsampled well images"
+            None, description="Enable/disable saving per-well downsampled TIFFs"
         ),
         display_mosaic_view: Optional[bool] = Field(None, description="Enable/disable mosaic view display"),
     ) -> Dict[str, Any]:
@@ -1362,6 +1380,10 @@ class MicroscopeControlServer:
 
         # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
         # returns a FieldInfo object (not None) when called directly without JSON parsing.
+        if isinstance(save_downsampled_overview, bool):
+            control._def.SAVE_DOWNSAMPLED_OVERVIEW = save_downsampled_overview
+            changes.append(f"save_downsampled_overview={'enabled' if save_downsampled_overview else 'disabled'}")
+
         if isinstance(save_downsampled_well_images, bool):
             control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = save_downsampled_well_images
             changes.append(f"save_downsampled_well_images={'enabled' if save_downsampled_well_images else 'disabled'}")
@@ -1371,6 +1393,7 @@ class MicroscopeControlServer:
             changes.append(f"display_mosaic_view={'enabled' if display_mosaic_view else 'disabled'}")
 
         return {
+            "save_downsampled_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
             "changes": changes,

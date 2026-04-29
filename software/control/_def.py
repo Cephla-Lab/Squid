@@ -990,11 +990,14 @@ LIVE_ONLY_MODE = False
 ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled view settings (for Select Well Mode)
-# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
-# Note: per-well TIFF saving is currently not wired up after the unified-mosaic
-# refactor — the flag is a no-op until the save path is re-added.
-SAVE_DOWNSAMPLED_WELL_IMAGES = False
+# Downsampled-view auto-save settings. Each flag independently controls one
+# output of the unified mosaic widget's save path:
+#   SAVE_DOWNSAMPLED_OVERVIEW    → mosaic_view/mosaic_<mode>_<N>um.ome.tiff
+#   SAVE_DOWNSAMPLED_WELL_IMAGES → mosaic_view/wells/<well_id>_<N>um.tiff (plate mode only)
+# Both gate auto-save on acquisition end AND the manual Save View button, so
+# the checkboxes are the single source of truth for what gets written.
+SAVE_DOWNSAMPLED_OVERVIEW = True
+SAVE_DOWNSAMPLED_WELL_IMAGES = True
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
@@ -1395,6 +1398,12 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             log.info("Loading Views settings from config file")
             if _views_config.has_option("VIEWS", "display_mosaic_view"):
                 USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _views_config.has_option("VIEWS", "save_downsampled_overview"):
+                SAVE_DOWNSAMPLED_OVERVIEW = _views_config.get("VIEWS", "save_downsampled_overview").lower() in (
                     "true",
                     "1",
                     "yes",

@@ -177,13 +177,15 @@ class UnifiedMosaicWidget(QWidget):
         self.toggle_button.clicked.connect(self._toggle_mode)
         button_layout.addWidget(self.toggle_button)
 
-        self.save_button = QPushButton("Save View")
-        self.save_button.clicked.connect(self._on_save_clicked)
-        button_layout.addWidget(self.save_button)
-
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clearAllLayers)
         button_layout.addWidget(self.clear_button)
+
+        button_layout.addStretch()
+
+        self.save_button = QPushButton("Save View")
+        self.save_button.clicked.connect(self._on_save_clicked)
+        button_layout.addWidget(self.save_button)
 
         layout.addLayout(button_layout)
         self.setLayout(layout)
@@ -740,9 +742,10 @@ class UnifiedMosaicWidget(QWidget):
         self._acquisition_save_dir = experiment_path
 
     def save_if_auto_enabled(self) -> None:
-        """Hook for acquisition-finish: save iff there's data and the user has
-        SAVE_DOWNSAMPLED_WELL_IMAGES enabled. No-op otherwise."""
-        if not control._def.SAVE_DOWNSAMPLED_WELL_IMAGES:
+        """Hook for acquisition-finish: save iff there's data and at least one
+        of the SAVE_DOWNSAMPLED_* flags is on. Each flag independently gates
+        its respective output (overview TIFF / per-well TIFFs)."""
+        if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
             return
         if not self.layers_initialized:
             return
@@ -752,19 +755,23 @@ class UnifiedMosaicWidget(QWidget):
         self._dispatch_save(os.path.join(self._acquisition_save_dir, "mosaic_view"))
 
     def _on_save_clicked(self) -> None:
-        """Manual Save View button. Defaults to acquisition dir if available,
-        otherwise prompts the user for a directory."""
+        """Manual Save View button: always prompt for a save directory.
+        Honors SAVE_DOWNSAMPLED_OVERVIEW / SAVE_DOWNSAMPLED_WELL_IMAGES so the
+        Preferences checkboxes drive both auto and manual paths."""
         if not self.layers_initialized:
             QMessageBox.information(self, "Nothing to save", "No tiles have been received yet.")
             return
-        target_dir = self._acquisition_save_dir
-        if not target_dir:
-            picked = QFileDialog.getExistingDirectory(self, "Choose save directory")
-            if not picked:
-                return
-            target_dir = os.path.join(picked, f"mosaic_view_{int(time.time())}")
-        else:
-            target_dir = os.path.join(target_dir, "mosaic_view")
+        if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
+            QMessageBox.information(
+                self,
+                "Nothing to save",
+                "Both overview and per-well saves are disabled in Preferences → Views.",
+            )
+            return
+        picked = QFileDialog.getExistingDirectory(self, "Choose save directory")
+        if not picked:
+            return
+        target_dir = os.path.join(picked, f"mosaic_view_{int(time.time())}")
         self._dispatch_save(target_dir)
 
     def _dispatch_save(self, target_dir: str) -> None:
@@ -816,8 +823,9 @@ class UnifiedMosaicWidget(QWidget):
         return snapshot
 
     def _write_save_snapshot(self, target_dir: str, snapshot: dict) -> None:
-        """Worker-thread entrypoint. Writes the whole-canvas TIFF, the JSON
-        sidecar, and (in plate mode) per-well TIFFs."""
+        """Worker-thread entrypoint. Writes whichever outputs are enabled by
+        SAVE_DOWNSAMPLED_OVERVIEW / SAVE_DOWNSAMPLED_WELL_IMAGES. Always writes
+        the JSON sidecar so consumers know what (if anything) was produced."""
         try:
             os.makedirs(target_dir, exist_ok=True)
             mode = snapshot["mode"]
@@ -825,32 +833,38 @@ class UnifiedMosaicWidget(QWidget):
             res_tag = f"{int(round(resolution_um))}um"
             channels = snapshot["channels"]
             channel_names = [name for name, _ in channels]
-            stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
-
-            whole_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.ome.tiff")
-            tifffile.imwrite(
-                whole_path,
-                stack,
-                photometric="minisblack",
-                metadata={
-                    "axes": "CYX",
-                    "PhysicalSizeX": resolution_um,
-                    "PhysicalSizeXUnit": "µm",
-                    "PhysicalSizeY": resolution_um,
-                    "PhysicalSizeYUnit": "µm",
-                    "Channel": {"Name": channel_names},
-                },
-                bigtiff=stack.nbytes > 2_000_000_000,
-            )
             sidecar = {k: v for k, v in snapshot.items() if k != "channels"}
             sidecar["channel_names"] = channel_names
-            sidecar["whole_view_file"] = os.path.basename(whole_path)
+
+            save_overview = control._def.SAVE_DOWNSAMPLED_OVERVIEW
+            save_per_well = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES and mode == DisplayMode.PLATE.value
+
+            if save_overview:
+                stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
+                whole_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.ome.tiff")
+                tifffile.imwrite(
+                    whole_path,
+                    stack,
+                    photometric="minisblack",
+                    metadata={
+                        "axes": "CYX",
+                        "PhysicalSizeX": resolution_um,
+                        "PhysicalSizeXUnit": "µm",
+                        "PhysicalSizeY": resolution_um,
+                        "PhysicalSizeYUnit": "µm",
+                        "Channel": {"Name": channel_names},
+                    },
+                    bigtiff=stack.nbytes > 2_000_000_000,
+                )
+                sidecar["whole_view_file"] = os.path.basename(whole_path)
+                self._log.info(f"Saved whole view: {whole_path} ({stack.shape}, {stack.nbytes/1e6:.1f} MB)")
+
+            if save_per_well:
+                self._write_per_well_tiffs(target_dir, snapshot, res_tag)
+                sidecar["per_well_dir"] = "wells"
+
             with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.json"), "w") as f:
                 json.dump(sidecar, f, indent=2)
-            self._log.info(f"Saved whole view: {whole_path} ({stack.shape}, {stack.nbytes/1e6:.1f} MB)")
-
-            if mode == DisplayMode.PLATE.value:
-                self._write_per_well_tiffs(target_dir, snapshot, res_tag)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
 

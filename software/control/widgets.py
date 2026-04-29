@@ -1529,11 +1529,20 @@ class PreferencesDialog(QDialog):
         plate_group = CollapsibleGroupBox("Plate View")
         plate_layout = QFormLayout()
 
-        # Save Downsampled Well Images
+        # Save Downsampled Overview (whole canvas)
+        self.save_downsampled_overview_checkbox = QCheckBox()
+        self.save_downsampled_overview_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_OVERVIEW)
+        self.save_downsampled_overview_checkbox.setToolTip(
+            "Save the whole-canvas downsampled view as an OME-TIFF on acquisition end "
+            "(mosaic_view/mosaic_<mode>_<N>um.ome.tiff)."
+        )
+        plate_layout.addRow("Save Downsampled Overview:", self.save_downsampled_overview_checkbox)
+
+        # Save Downsampled Per-Well Images
         self.save_downsampled_checkbox = QCheckBox()
         self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
         self.save_downsampled_checkbox.setToolTip(
-            "Save individual well TIFFs (e.g., wells/A1_5um.tiff, wells/A1_10um.tiff)"
+            "Save one multi-channel TIFF per scanned well " "(mosaic_view/wells/<well_id>_<N>um.tiff). Plate View only."
         )
         plate_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
@@ -1875,6 +1884,11 @@ class PreferencesDialog(QDialog):
         # Views settings
         self.config.set(
             "VIEWS",
+            "save_downsampled_overview",
+            "true" if self.save_downsampled_overview_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "VIEWS",
             "save_downsampled_well_images",
             "true" if self.save_downsampled_checkbox.isChecked() else "false",
         )
@@ -2010,6 +2024,7 @@ class PreferencesDialog(QDialog):
         control._def.ENABLE_MEMORY_PROFILING = self.enable_memory_profiling_checkbox.isChecked()
 
         # Views settings
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = self.save_downsampled_overview_checkbox.isChecked()
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
         # Parse comma-separated resolutions
         resolutions_str = self.well_resolutions_edit.text()
@@ -2291,6 +2306,11 @@ class PreferencesDialog(QDialog):
         # NOTE: Compare against control._def values (runtime state) since UI is initialized from control._def.
         # This enables MCP commands to modify these settings for RAM usage diagnostics.
         # See PR #424 for context. This pattern may change if settings architecture is refactored.
+        old_val = control._def.SAVE_DOWNSAMPLED_OVERVIEW
+        new_val = self.save_downsampled_overview_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Save Downsampled Overview", str(old_val), str(new_val), False))
+
         old_val = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:

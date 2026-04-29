@@ -33,6 +33,7 @@ def mcp_server(mock_microscope):
 def save_and_restore_def_values():
     """Save original control._def values and restore after test."""
     originals = {
+        "SAVE_DOWNSAMPLED_OVERVIEW": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
         "SAVE_DOWNSAMPLED_WELL_IMAGES": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
         "USE_NAPARI_FOR_MOSAIC_DISPLAY": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
         "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
@@ -41,6 +42,7 @@ def save_and_restore_def_values():
     }
     yield
     # Restore original values
+    control._def.SAVE_DOWNSAMPLED_OVERVIEW = originals["SAVE_DOWNSAMPLED_OVERVIEW"]
     control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = originals["SAVE_DOWNSAMPLED_WELL_IMAGES"]
     control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = originals["USE_NAPARI_FOR_MOSAIC_DISPLAY"]
     control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = originals["MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM"]
