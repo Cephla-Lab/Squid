@@ -5,16 +5,20 @@ widget that supports two display modes sharing one canvas per channel.
 """
 
 import enum
+import json
 import math
 import os
 import sys
-from typing import List, Tuple
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional, Tuple
 
 import numpy as np
+import tifffile
 import yaml
 
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 import napari
 from napari.utils import Colormap
@@ -139,6 +143,14 @@ class UnifiedMosaicWidget(QWidget):
         # a new acquisition scans a different set of wells, in which case the
         # plate canvas is wiped so old tiles don't linger at the wrong slots.
         self._plate_well_ids: frozenset = frozenset()
+        # Per-well origin map (well_id → (x_mm, y_mm)) captured from incoming
+        # MosaicTileUpdates so per-well saves can record stage coords for each well.
+        self._plate_well_origins_mm: dict = {}
+
+        # Save state. Saves go through a single worker thread so multi-GB writes
+        # never block the GUI. Acquisition path is set at acquisition start.
+        self._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="UnifiedMosaicSave")
+        self._acquisition_save_dir: Optional[str] = None
 
         self.shapes_mm: list = []
         self.shape_layer = None
@@ -164,6 +176,10 @@ class UnifiedMosaicWidget(QWidget):
         self.toggle_button = QPushButton(self._toggle_button_label())
         self.toggle_button.clicked.connect(self._toggle_mode)
         button_layout.addWidget(self.toggle_button)
+
+        self.save_button = QPushButton("Save View")
+        self.save_button.clicked.connect(self._on_save_clicked)
+        button_layout.addWidget(self.save_button)
 
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clearAllLayers)
@@ -444,6 +460,7 @@ class UnifiedMosaicWidget(QWidget):
                 return
             slot_h, slot_w = self.well_slot_shape
             origin_x, origin_y = update.well_origin_mm
+            self._plate_well_origins_mm[update.well_id] = (origin_x, origin_y)
             fov_offset_x = int(round((tl_x_mm - origin_x) / self.viewer_pixel_size_mm))
             fov_offset_y = int(round((tl_y_mm - origin_y) / self.viewer_pixel_size_mm))
             y_px = update.well_row * slot_h + fov_offset_y
@@ -712,7 +729,182 @@ class UnifiedMosaicWidget(QWidget):
         self.mosaic_dtype = None
         self._pixel_size_um = 0.0
         self._downsample_factor = 1
+        self._plate_well_origins_mm.clear()
         self.signal_clear_viewer.emit()
+
+    # --- Save (downsampled view) ---
+
+    def set_acquisition_save_target(self, experiment_path: Optional[str]) -> None:
+        """Called from gui_hcs at acquisition start with the run's output dir.
+        Cleared (None) on acquisitions without a known path."""
+        self._acquisition_save_dir = experiment_path
+
+    def save_if_auto_enabled(self) -> None:
+        """Hook for acquisition-finish: save iff there's data and the user has
+        SAVE_DOWNSAMPLED_WELL_IMAGES enabled. No-op otherwise."""
+        if not control._def.SAVE_DOWNSAMPLED_WELL_IMAGES:
+            return
+        if not self.layers_initialized:
+            return
+        if not self._acquisition_save_dir:
+            self._log.warning("Auto-save requested but no acquisition save dir is set; skipping.")
+            return
+        self._dispatch_save(os.path.join(self._acquisition_save_dir, "mosaic_view"))
+
+    def _on_save_clicked(self) -> None:
+        """Manual Save View button. Defaults to acquisition dir if available,
+        otherwise prompts the user for a directory."""
+        if not self.layers_initialized:
+            QMessageBox.information(self, "Nothing to save", "No tiles have been received yet.")
+            return
+        target_dir = self._acquisition_save_dir
+        if not target_dir:
+            picked = QFileDialog.getExistingDirectory(self, "Choose save directory")
+            if not picked:
+                return
+            target_dir = os.path.join(picked, f"mosaic_view_{int(time.time())}")
+        else:
+            target_dir = os.path.join(target_dir, "mosaic_view")
+        self._dispatch_save(target_dir)
+
+    def _dispatch_save(self, target_dir: str) -> None:
+        """Snapshot the current canvases + metadata on the GUI thread, then hand
+        off the actual disk writes to the save executor."""
+        snapshot = self._snapshot_for_save()
+        if snapshot is None:
+            return
+        self._log.info(f"Dispatching mosaic-view save → {target_dir}")
+        self._save_executor.submit(self._write_save_snapshot, target_dir, snapshot)
+
+    def _snapshot_for_save(self) -> Optional[dict]:
+        """Bundle everything the worker thread needs. Copies the layer arrays
+        so subsequent acquisition tiles don't race with the writer."""
+        resolution_um = self.viewer_pixel_size_mm * 1000 if self.viewer_pixel_size_mm else None
+        if resolution_um is None:
+            self._log.warning("Save skipped: viewer_pixel_size_mm is unset.")
+            return None
+        channels = []
+        for layer in self._image_layers():
+            if layer.data.ndim == 3 and layer.data.shape[2] == 3:
+                # Defer RGB save support — see plan R7.
+                self._log.warning(f"Skipping RGB layer '{layer.name}' from save (not supported yet).")
+                continue
+            channels.append((layer.name, np.array(layer.data, copy=True)))
+        if not channels:
+            self._log.warning("Save skipped: no monochrome image layers present.")
+            return None
+        snapshot = {
+            "mode": self.mode.value,
+            "resolution_um": resolution_um,
+            "channels": channels,
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        if self.mode == DisplayMode.PLATE:
+            snapshot["plate"] = {
+                "num_rows": self.num_rows,
+                "num_cols": self.num_cols,
+                "well_slot_shape_px": list(self.well_slot_shape),
+                "fov_grid_shape": list(self.fov_grid_shape),
+                "well_ids": sorted(self._plate_well_ids),
+                "well_origins_mm": {k: list(v) for k, v in self._plate_well_origins_mm.items()},
+            }
+        else:
+            snapshot["full"] = {
+                "top_left_mm": list(self.top_left_coordinate) if self.top_left_coordinate else None,
+                "extents_mm": list(self.viewer_extents) if self.viewer_extents else None,
+            }
+        return snapshot
+
+    def _write_save_snapshot(self, target_dir: str, snapshot: dict) -> None:
+        """Worker-thread entrypoint. Writes the whole-canvas TIFF, the JSON
+        sidecar, and (in plate mode) per-well TIFFs."""
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            mode = snapshot["mode"]
+            resolution_um = snapshot["resolution_um"]
+            res_tag = f"{int(round(resolution_um))}um"
+            channels = snapshot["channels"]
+            channel_names = [name for name, _ in channels]
+            stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
+
+            whole_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.ome.tiff")
+            tifffile.imwrite(
+                whole_path,
+                stack,
+                photometric="minisblack",
+                metadata={
+                    "axes": "CYX",
+                    "PhysicalSizeX": resolution_um,
+                    "PhysicalSizeXUnit": "µm",
+                    "PhysicalSizeY": resolution_um,
+                    "PhysicalSizeYUnit": "µm",
+                    "Channel": {"Name": channel_names},
+                },
+                bigtiff=stack.nbytes > 2_000_000_000,
+            )
+            sidecar = {k: v for k, v in snapshot.items() if k != "channels"}
+            sidecar["channel_names"] = channel_names
+            sidecar["whole_view_file"] = os.path.basename(whole_path)
+            with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.json"), "w") as f:
+                json.dump(sidecar, f, indent=2)
+            self._log.info(f"Saved whole view: {whole_path} ({stack.shape}, {stack.nbytes/1e6:.1f} MB)")
+
+            if mode == DisplayMode.PLATE.value:
+                self._write_per_well_tiffs(target_dir, snapshot, res_tag)
+        except Exception:
+            self._log.exception(f"Mosaic-view save failed for {target_dir}")
+
+    def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
+        """Plate-mode helper: crop each well's slot from the channel stack and
+        write one multi-channel TIFF per well."""
+        plate = snapshot.get("plate") or {}
+        slot_h, slot_w = plate.get("well_slot_shape_px", (0, 0))
+        if slot_h == 0 or slot_w == 0:
+            return
+        wells_dir = os.path.join(target_dir, "wells")
+        os.makedirs(wells_dir, exist_ok=True)
+        # Need (well_row, well_col) per well. parse_well_id is sufficient.
+        from control.core.downsampled_views import parse_well_id
+
+        for well_id in plate.get("well_ids", []):
+            try:
+                row, col = parse_well_id(well_id)
+            except (ValueError, TypeError):
+                self._log.warning(f"Skipping per-well save for unparseable well_id '{well_id}'")
+                continue
+            crops = []
+            for _, data in snapshot["channels"]:
+                y_start = row * slot_h
+                x_start = col * slot_w
+                crop = data[y_start : y_start + slot_h, x_start : x_start + slot_w]
+                if crop.size == 0:
+                    crop = None
+                    break
+                crops.append(crop)
+            if not crops or any(c is None for c in crops):
+                continue
+            stack = np.stack(crops, axis=0)
+            path = os.path.join(wells_dir, f"{well_id}_{res_tag}.tiff")
+            tifffile.imwrite(
+                path,
+                stack,
+                photometric="minisblack",
+                metadata={
+                    "axes": "CYX",
+                    "PhysicalSizeX": snapshot["resolution_um"],
+                    "PhysicalSizeXUnit": "µm",
+                    "PhysicalSizeY": snapshot["resolution_um"],
+                    "PhysicalSizeYUnit": "µm",
+                    "Channel": {"Name": [name for name, _ in snapshot["channels"]]},
+                    "well_id": well_id,
+                },
+            )
+        self._log.info(f"Saved {len(plate.get('well_ids', []))} per-well TIFFs → {wells_dir}")
+
+    def closeEvent(self, event):  # noqa: N802 (Qt naming)
+        """Stop the save executor before Qt destroys us."""
+        self._save_executor.shutdown(wait=False, cancel_futures=False)
+        super().closeEvent(event)
 
     def resetView(self):
         self.viewer.reset_view()

@@ -285,6 +285,14 @@ class QtMultiPointController(MultiPointController, QObject):
             self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
 
+        # Tell the unified mosaic widget where this run's outputs live so the
+        # Save View button (and auto-save on finish) can default to that path.
+        if self.unifiedMosaicWidget is not None:
+            base = parameters.base_path
+            exp_id = parameters.experiment_ID
+            save_target = os.path.join(base, exp_id) if (base and exp_id) else None
+            self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
+
         # NDViewer push-based API: emit start_acquisition signal
         scan_info = parameters.scan_position_information
         channels = [cfg.name for cfg in parameters.selected_configurations]
@@ -364,6 +372,10 @@ class QtMultiPointController(MultiPointController, QObject):
             self.ndviewer_end_zarr_acquisition.emit()
             self._ndviewer_region_index_map = {}
         self._ndviewer_mode = NDViewerMode.INACTIVE
+
+        # Auto-save the downsampled view if SAVE_DOWNSAMPLED_WELL_IMAGES is set.
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.save_if_auto_enabled()
 
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
