@@ -201,6 +201,7 @@ class QtMultiPointController(MultiPointController, QObject):
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
+    signal_acquisition_save_target = Signal(object)  # Optional[str] — output dir for save view
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
@@ -285,13 +286,14 @@ class QtMultiPointController(MultiPointController, QObject):
             self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
 
-        # Tell the unified mosaic widget where this run's outputs live so the
-        # Save View button (and auto-save on finish) can default to that path.
-        if self.unifiedMosaicWidget is not None:
-            base = parameters.base_path
-            exp_id = parameters.experiment_ID
-            save_target = os.path.join(base, exp_id) if (base and exp_id) else None
-            self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
+        # Tell the unified mosaic widget where this run's outputs live so
+        # auto-save on finish can default to that path. The widget lives on
+        # HighContentScreeningGui, not on this controller, so we emit a Qt
+        # signal that the GUI catches in setUp.
+        base = parameters.base_path
+        exp_id = parameters.experiment_ID
+        save_target = os.path.join(base, exp_id) if (base and exp_id) else None
+        self.signal_acquisition_save_target.emit(save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
         scan_info = parameters.scan_position_information
@@ -373,10 +375,9 @@ class QtMultiPointController(MultiPointController, QObject):
             self._ndviewer_region_index_map = {}
         self._ndviewer_mode = NDViewerMode.INACTIVE
 
-        # Auto-save the downsampled view if SAVE_DOWNSAMPLED_WELL_IMAGES is set.
-        if self.unifiedMosaicWidget is not None:
-            self.unifiedMosaicWidget.save_if_auto_enabled()
-
+        # The widget lives on HighContentScreeningGui, not on this controller;
+        # the auto-save hook runs over there via the acquisition_finished signal
+        # that we're about to emit.
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
@@ -1476,6 +1477,11 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
 
+        # Unified mosaic widget save hooks: route the controller's start/finish
+        # signals over here, where self.unifiedMosaicWidget is reachable.
+        self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
+        self.multipointController.acquisition_finished.connect(self._on_acquisition_finished_save)
+
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
@@ -1835,6 +1841,16 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleNapariTabs()
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
+
+    def _on_acquisition_save_target(self, save_target):
+        """Route the controller's per-run save dir to the unified widget."""
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
+
+    def _on_acquisition_finished_save(self):
+        """Trigger the unified widget's auto-save (gated by SAVE_DOWNSAMPLED_*)."""
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.save_if_auto_enabled()
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
