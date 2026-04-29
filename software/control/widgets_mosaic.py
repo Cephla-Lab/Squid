@@ -181,8 +181,6 @@ class UnifiedMosaicWidget(QWidget):
         self.clear_button.clicked.connect(self.clearAllLayers)
         button_layout.addWidget(self.clear_button)
 
-        button_layout.addStretch()
-
         self.save_button = QPushButton("Save View")
         self.save_button.clicked.connect(self._on_save_clicked)
         button_layout.addWidget(self.save_button)
