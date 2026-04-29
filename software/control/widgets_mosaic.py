@@ -39,6 +39,25 @@ NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
 LAST_VIEW_MODE_CACHE = "cache/last_view_mode.yaml"
 
 
+def _to_yaml_safe(obj):
+    """Recursively convert numpy scalars / arrays / tuples to plain Python
+    primitives so yaml.safe_dump can serialize them.
+
+    Without this, fields like resolution_um (sometimes numpy.float64 because
+    pixel size flows through camera SDKs) trigger
+    'cannot represent an object: ...' from yaml.SafeRepresenter.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _to_yaml_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_to_yaml_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
 class DisplayMode(enum.Enum):
     MOSAIC = "mosaic"
     PLATE = "plate"
@@ -861,7 +880,7 @@ class UnifiedMosaicWidget(QWidget):
                 sidecar["per_well_dir"] = "wells"
 
             with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.yaml"), "w") as f:
-                yaml.safe_dump(sidecar, f, sort_keys=False)
+                yaml.safe_dump(_to_yaml_safe(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
 
