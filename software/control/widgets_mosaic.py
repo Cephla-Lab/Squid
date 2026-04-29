@@ -5,7 +5,6 @@ widget that supports two display modes sharing one canvas per channel.
 """
 
 import enum
-import json
 import math
 import os
 import sys
@@ -861,8 +860,8 @@ class UnifiedMosaicWidget(QWidget):
                 self._write_per_well_tiffs(target_dir, snapshot, res_tag)
                 sidecar["per_well_dir"] = "wells"
 
-            with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.json"), "w") as f:
-                json.dump(sidecar, f, indent=2)
+            with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.yaml"), "w") as f:
+                yaml.safe_dump(sidecar, f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
 

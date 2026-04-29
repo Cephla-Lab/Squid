@@ -37,8 +37,6 @@ def save_and_restore_def_values():
         "SAVE_DOWNSAMPLED_WELL_IMAGES": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
         "USE_NAPARI_FOR_MOSAIC_DISPLAY": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
         "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
-        "DOWNSAMPLED_WELL_RESOLUTIONS_UM": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
-        "DOWNSAMPLED_PLATE_RESOLUTION_UM": control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
     }
     yield
     # Restore original values
@@ -46,8 +44,6 @@ def save_and_restore_def_values():
     control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = originals["SAVE_DOWNSAMPLED_WELL_IMAGES"]
     control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = originals["USE_NAPARI_FOR_MOSAIC_DISPLAY"]
     control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = originals["MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM"]
-    control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = originals["DOWNSAMPLED_WELL_RESOLUTIONS_UM"]
-    control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM = originals["DOWNSAMPLED_PLATE_RESOLUTION_UM"]
 
 
 class TestGetViewSettings:
@@ -57,11 +53,10 @@ class TestGetViewSettings:
         """Test that get_view_settings returns all expected fields."""
         result = mcp_server._cmd_get_view_settings()
 
+        assert "save_downsampled_overview" in result
         assert "save_downsampled_well_images" in result
         assert "display_mosaic_view" in result
         assert "mosaic_view_target_pixel_size_um" in result
-        assert "downsampled_well_resolutions_um" in result
-        assert "downsampled_plate_resolution_um" in result
         assert "performance_mode" in result
 
     def test_returns_current_def_values(self, mcp_server, save_and_restore_def_values):

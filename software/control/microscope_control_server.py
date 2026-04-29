@@ -1311,14 +1311,12 @@ class MicroscopeControlServer:
 
     @schema_method
     def _cmd_get_view_settings(self) -> Dict[str, Any]:
-        """Get current view settings for RAM debugging (downsampled images, mosaic view)."""
+        """Get current view settings (downsampled-view auto-save flags, mosaic display)."""
         return {
             "save_downsampled_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
             "mosaic_view_target_pixel_size_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
-            "downsampled_well_resolutions_um": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
-            "downsampled_plate_resolution_um": control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             "performance_mode": getattr(self.gui, "performance_mode", False) if self.gui else None,
         }
 

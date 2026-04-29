@@ -158,12 +158,9 @@ def _save_acquisition_yaml(
 
     # Add remaining common sections
     yaml_dict["downsampled_views"] = {
-        "enabled": params.generate_downsampled_views,
-        "save_well_images": params.save_downsampled_well_images,
-        "well_resolutions_um": _serialize_for_yaml(params.downsampled_well_resolutions_um),
-        "plate_resolution_um": params.downsampled_plate_resolution_um,
-        "z_projection": _serialize_for_yaml(params.downsampled_z_projection),
-        "interpolation_method": _serialize_for_yaml(params.downsampled_interpolation_method),
+        "save_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
+        "save_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+        "resolution_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
     }
     yaml_dict["plate"] = {
         "num_rows": params.plate_num_rows,
@@ -973,13 +970,6 @@ class MultiPointController:
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
-            # Downsampled view generation parameters
-            generate_downsampled_views=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
-            save_downsampled_well_images=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
-            downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
-            downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
-            downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
-            downsampled_interpolation_method=control._def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,

@@ -1525,74 +1525,10 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
 
-        # Plate View section
-        plate_group = CollapsibleGroupBox("Plate View")
-        plate_layout = QFormLayout()
-
-        # Save Downsampled Overview (whole canvas)
-        self.save_downsampled_overview_checkbox = QCheckBox()
-        self.save_downsampled_overview_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_OVERVIEW)
-        self.save_downsampled_overview_checkbox.setToolTip(
-            "Save the whole-canvas downsampled view as an OME-TIFF on acquisition end "
-            "(mosaic_view/mosaic_<mode>_<N>um.ome.tiff)."
-        )
-        plate_layout.addRow("Save Downsampled Overview:", self.save_downsampled_overview_checkbox)
-
-        # Save Downsampled Per-Well Images
-        self.save_downsampled_checkbox = QCheckBox()
-        self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
-        self.save_downsampled_checkbox.setToolTip(
-            "Save one multi-channel TIFF per scanned well " "(mosaic_view/wells/<well_id>_<N>um.tiff). Plate View only."
-        )
-        plate_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
-
-        # Well Resolutions (comma-separated)
-        self.well_resolutions_edit = QLineEdit()
-        default_resolutions = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
-        self.well_resolutions_edit.setText(default_resolutions)
-        self.well_resolutions_edit.setToolTip(
-            "Comma-separated list of resolution values in micrometers (e.g., 5.0, 10.0, 20.0)"
-        )
-        # Validator for comma-separated positive numbers
-        from qtpy.QtCore import QRegularExpression
-        from qtpy.QtGui import QRegularExpressionValidator
-
-        well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?(\s*,\s*\d+(\.\d+)?)*\s*$")
-        self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
-        plate_layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
-
-        # Target Pixel Size
-        self.plate_resolution_spinbox = QDoubleSpinBox()
-        self.plate_resolution_spinbox.setRange(1.0, 100.0)
-        self.plate_resolution_spinbox.setSingleStep(1.0)
-        self.plate_resolution_spinbox.setValue(control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM)
-        self.plate_resolution_spinbox.setSuffix(" μm")
-        self.plate_resolution_spinbox.setToolTip("Pixel size for the plate view overview image")
-        plate_layout.addRow("Target Pixel Size:", self.plate_resolution_spinbox)
-
-        # Z-Projection Mode
-        self.z_projection_combo = QComboBox()
-        self.z_projection_combo.addItems(["mip", "middle"])
-        current_projection = control._def.DOWNSAMPLED_Z_PROJECTION.value
-        self.z_projection_combo.setCurrentText(current_projection)
-        plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
-
-        # Interpolation Method
-        self.interpolation_method_combo = QComboBox()
-        self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
-        current_interp = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
-        self.interpolation_method_combo.setCurrentText(current_interp)
-        self.interpolation_method_combo.setToolTip(
-            "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
-            "inter_area_fast: Balanced (~1ms), pyramid downsampling\n"
-            "inter_area: Slowest (~18ms), highest quality for final output"
-        )
-        plate_layout.addRow("Interpolation Method:", self.interpolation_method_combo)
-
-        plate_group.content.addLayout(plate_layout)
-        layout.addWidget(plate_group)
-
-        # Mosaic View section
+        # Mosaic View section (consolidated; the deprecated "Plate View" section
+        # was removed when the unified mosaic widget replaced the old plate-view
+        # pipeline — its multi-resolution / Z-projection / interpolation-method
+        # fields no longer drive any code path).
         mosaic_group = CollapsibleGroupBox("Mosaic View")
         mosaic_layout = QFormLayout()
 
@@ -1601,13 +1537,35 @@ class PreferencesDialog(QDialog):
         self.display_mosaic_view_checkbox.setChecked(control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY)
         mosaic_layout.addRow("Display Mosaic View:", self.display_mosaic_view_checkbox)
 
-        # Mosaic Target Pixel Size
+        # Mosaic Target Pixel Size — also used as the save resolution.
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
         self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
         self.mosaic_pixel_size_spinbox.setSingleStep(0.5)
         self.mosaic_pixel_size_spinbox.setValue(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         self.mosaic_pixel_size_spinbox.setSuffix(" μm")
+        self.mosaic_pixel_size_spinbox.setToolTip(
+            "Pixel size used both for on-screen rendering and for the saved overview / per-well TIFFs."
+        )
         mosaic_layout.addRow("Target Pixel Size:", self.mosaic_pixel_size_spinbox)
+
+        # Save Downsampled Overview
+        self.save_downsampled_overview_checkbox = QCheckBox()
+        self.save_downsampled_overview_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_OVERVIEW)
+        self.save_downsampled_overview_checkbox.setToolTip(
+            "Save the whole-canvas downsampled view as an OME-TIFF on acquisition end "
+            "(mosaic_view/mosaic_<mode>_<N>um.ome.tiff)."
+        )
+        mosaic_layout.addRow("Save Downsampled Overview:", self.save_downsampled_overview_checkbox)
+
+        # Save Downsampled Per-Well Images (Plate View only)
+        self.save_downsampled_checkbox = QCheckBox()
+        self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
+        self.save_downsampled_checkbox.setToolTip(
+            "Save one multi-channel TIFF per scanned well "
+            "(mosaic_view/wells/<well_id>_<N>um.tiff). Effective only when the widget "
+            "is in Plate View."
+        )
+        mosaic_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
@@ -1892,10 +1850,6 @@ class PreferencesDialog(QDialog):
             "save_downsampled_well_images",
             "true" if self.save_downsampled_checkbox.isChecked() else "false",
         )
-        self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
-        self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
-        self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
-        self.config.set("VIEWS", "downsampled_interpolation_method", self.interpolation_method_combo.currentText())
         self.config.set(
             "VIEWS",
             "display_mosaic_view",
@@ -2026,21 +1980,6 @@ class PreferencesDialog(QDialog):
         # Views settings
         control._def.SAVE_DOWNSAMPLED_OVERVIEW = self.save_downsampled_overview_checkbox.isChecked()
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
-        # Parse comma-separated resolutions
-        resolutions_str = self.well_resolutions_edit.text()
-        try:
-            control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [
-                float(x.strip()) for x in resolutions_str.split(",") if x.strip()
-            ]
-        except ValueError:
-            self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
-        control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
-        control._def.DOWNSAMPLED_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
-            self.z_projection_combo.currentText()
-        )
-        control._def.DOWNSAMPLED_INTERPOLATION_METHOD = control._def.DownsamplingMethod.convert_to_enum(
-            self.interpolation_method_combo.currentText()
-        )
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
@@ -2315,26 +2254,6 @@ class PreferencesDialog(QDialog):
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Save Downsampled Well Images", str(old_val), str(new_val), False))
-
-        old_val = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
-        new_val = self.well_resolutions_edit.text()
-        if old_val != new_val:
-            changes.append(("Well Resolutions", old_val, new_val, False))
-
-        old_val = control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM
-        new_val = self.plate_resolution_spinbox.value()
-        if not self._floats_equal(old_val, new_val):
-            changes.append(("Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
-
-        old_val = control._def.DOWNSAMPLED_Z_PROJECTION.value
-        new_val = self.z_projection_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z-Projection Mode", old_val, new_val, False))
-
-        old_val = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
-        new_val = self.interpolation_method_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Interpolation Method", old_val, new_val, False))
 
         old_val = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
         new_val = self.display_mosaic_view_checkbox.isChecked()
