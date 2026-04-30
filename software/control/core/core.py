@@ -659,6 +659,7 @@ class TrackingWorker(QObject):
 
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
+    signal_z_um_delta = Signal(float)
 
     def __init__(
         self,
@@ -807,6 +808,12 @@ class ImageDisplayWindow(QMainWindow):
         else:
             image_layout.addWidget(self.graphics_widget)
         self.image_container.setLayout(image_layout)
+
+        # Intercept wheel events on the live view so Ctrl+Scroll drives Z instead of zoom.
+        # Wheel events are delivered to the QGraphicsView's viewport; install on it.
+        wheel_target = self.graphics_widget.view if self.show_LUT else self.graphics_widget
+        viewport = wheel_target.viewport() if hasattr(wheel_target, "viewport") else None
+        (viewport or wheel_target).installEventFilter(self)
 
         # Create line profiler widget
         self.line_profiler_widget = pg.GraphicsLayoutWidget()
@@ -1208,6 +1215,16 @@ class ImageDisplayWindow(QMainWindow):
             return 0 <= coordinates.x() < image_width and 0 <= coordinates.y() < image_height
         except:
             return False
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Wheel and (event.modifiers() & Qt.ControlModifier):
+            notches = event.angleDelta().y() / 120.0
+            if notches == 0:
+                return True
+            step_um = LIVE_VIEW_Z_STEP_FAST_UM if (event.modifiers() & Qt.ShiftModifier) else LIVE_VIEW_Z_STEP_UM
+            self.signal_z_um_delta.emit(notches * step_um)
+            return True
+        return super().eventFilter(source, event)
 
     def display_image(self, image):
         # enable the line profiler button after the first image is displayed

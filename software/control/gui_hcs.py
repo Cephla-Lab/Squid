@@ -1474,6 +1474,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
             self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
 
         self.makeNapariConnections()
 
@@ -1648,6 +1649,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
             self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
@@ -2508,22 +2510,45 @@ class HighContentScreeningGui(QMainWindow):
             self.alignmentWidget.enable()
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
-        if self.navigationWidget.get_click_to_move_enabled():
-            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-
-            pixel_sign_x = 1
-            pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-
-            delta_x = pixel_sign_x * pixel_size_um * click_x / 1000.0
-            delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
-
-            self.log.debug(
-                f"Click to move enabled, click at {click_x=}, {click_y=} results in relative move of {delta_x=} [mm], {delta_y=} [mm]"
-            )
-            self.stage.move_x(delta_x)
-            self.stage.move_y(delta_y)
-        else:
+        if not self.navigationWidget.get_click_to_move_enabled():
             self.log.debug(f"Click to move disabled, ignoring click at {click_x=}, {click_y=}")
+            return
+
+        pixel_size_um = self.microscope.get_image_pixel_size_um()
+        if pixel_size_um is None:
+            self.log.warning("Click to move: pixel size unavailable, ignoring click")
+            return
+
+        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
+        delta_x_mm = pixel_size_um * click_x / 1000.0
+        delta_y_mm = pixel_sign_y * pixel_size_um * click_y / 1000.0
+
+        self.log.info(
+            f"click_to_move: click=({click_x},{click_y}) px image=({image_width},{image_height}) "
+            f"lens_factor={self.objectiveStore.get_pixel_size_factor():.6f} "
+            f"binned_um={self.camera.get_pixel_size_binned_um():.4f} "
+            f"binning={self.camera.get_binning()} "
+            f"pixel_size_um={pixel_size_um:.4f} um/px "
+            f"delta=({delta_x_mm:.4f},{delta_y_mm:.4f}) mm"
+        )
+        self.stage.move_x(delta_x_mm, blocking=False)
+        self.stage.move_y(delta_y_mm, blocking=True)
+
+    def move_z_from_scroll(self, delta_um: float):
+        if not self.navigationWidget.get_click_to_move_enabled():
+            return
+        if self.stage.get_state().busy:
+            self.log.debug("z scroll ignored: stage busy")
+            return
+
+        delta_mm = delta_um / 1000.0
+        current_z_mm = self.stage.get_pos().z_mm
+        target_z_mm = current_z_mm + delta_mm
+        if target_z_mm < SOFTWARE_POS_LIMIT.Z_NEGATIVE or target_z_mm > SOFTWARE_POS_LIMIT.Z_POSITIVE:
+            self.log.debug(f"z scroll clamped: target={target_z_mm:.4f} mm out of bounds")
+            return
+        self.log.debug(f"z scroll: delta={delta_um:.2f} um, {current_z_mm=:.4f} -> {target_z_mm=:.4f}")
+        self.stage.move_z(delta_mm, blocking=False)
 
     def move_from_click_mm(self, x_mm, y_mm):
         if self.navigationWidget.get_click_to_move_enabled():
