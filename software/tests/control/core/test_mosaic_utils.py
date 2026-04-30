@@ -1,5 +1,7 @@
 """Tests for control.core.mosaic_utils."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -344,6 +346,10 @@ class TestPyrdownChain:
         assert result.dtype == np.uint8
 
 
+@pytest.mark.skipif(
+    os.environ.get("RUN_PERF_TESTS") != "1",
+    reason="Timing-based perf assertions are flaky on shared CI runners; opt in with RUN_PERF_TESTS=1.",
+)
 class TestDownsamplingPerformance:
     """Performance regression tests for downsampling methods."""
 

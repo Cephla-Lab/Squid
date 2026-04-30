@@ -3,6 +3,7 @@ Tests for MCP view settings commands in microscope_control_server.py.
 
 These commands allow runtime control of view settings for RAM debugging:
 - get_view_settings: Query current state
+- set_save_downsampled_overview: Toggle whole-canvas overview saving
 - set_save_downsampled_images: Toggle downsampled well image saving
 - set_display_mosaic_view: Toggle mosaic view updates (immediate effect)
 - set_view_settings: Batch update multiple settings
@@ -74,6 +75,38 @@ class TestGetViewSettings:
         """Test that performance_mode is None when GUI is not available."""
         result = mcp_server._cmd_get_view_settings()
         assert result["performance_mode"] is None
+
+
+class TestSetSaveDownsampledOverview:
+    """Tests for set_save_downsampled_overview command."""
+
+    def test_enable_saving(self, mcp_server, save_and_restore_def_values):
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = False
+
+        result = mcp_server._cmd_set_save_downsampled_overview(enabled=True)
+
+        assert control._def.SAVE_DOWNSAMPLED_OVERVIEW is True
+        assert result["save_downsampled_overview"] is True
+        assert "enabled" in result["message"]
+
+    def test_disable_saving(self, mcp_server, save_and_restore_def_values):
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = True
+
+        result = mcp_server._cmd_set_save_downsampled_overview(enabled=False)
+
+        assert control._def.SAVE_DOWNSAMPLED_OVERVIEW is False
+        assert result["save_downsampled_overview"] is False
+        assert "disabled" in result["message"]
+
+    def test_message_indicates_next_acquisition(self, mcp_server, save_and_restore_def_values):
+        result = mcp_server._cmd_set_save_downsampled_overview(enabled=True)
+        assert "next acquisition" in result["message"]
+
+    def test_rejects_non_boolean(self, mcp_server, save_and_restore_def_values):
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_save_downsampled_overview(enabled="true")
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_save_downsampled_overview(enabled=1)
 
 
 class TestSetSaveDownsampledImages:
@@ -223,6 +256,7 @@ class TestCommandDiscovery:
     def test_view_commands_are_discovered(self, mcp_server):
         """Test that all view settings commands are auto-discovered."""
         assert "get_view_settings" in mcp_server._commands
+        assert "set_save_downsampled_overview" in mcp_server._commands
         assert "set_save_downsampled_images" in mcp_server._commands
         assert "set_display_mosaic_view" in mcp_server._commands
         assert "set_view_settings" in mcp_server._commands
@@ -231,6 +265,7 @@ class TestCommandDiscovery:
         """Test that view settings commands have schema metadata."""
         for cmd_name in [
             "get_view_settings",
+            "set_save_downsampled_overview",
             "set_save_downsampled_images",
             "set_display_mosaic_view",
             "set_view_settings",

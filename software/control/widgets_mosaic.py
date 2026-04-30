@@ -242,37 +242,33 @@ class UnifiedMosaicWidget(QWidget):
         return [lyr for lyr in self.viewer.layers if lyr.name not in NON_IMAGE_LAYERS and hasattr(lyr, "data")]
 
     def enable_shape_drawing(self, enable):
-        """Enable or disable manual ROI shape drawing (mosaic mode only)."""
+        """Idempotently set Manual-ROI drawing on/off (mosaic mode only).
+
+        Called from WellplateMultiPointWidget when the user enters/leaves
+        Manual mode. Must be safe to call repeatedly with the same value —
+        in particular, calling enable=True twice should *not* leave drawing
+        disabled the second time."""
         if self.mode != DisplayMode.MOSAIC:
             # Plate mode has no concept of stage-coordinate ROIs.
             return
-        if enable:
-            self._toggle_draw_mode()
-        else:
-            self.is_drawing_shape = False
-            if self.shape_layer is not None:
-                self.shape_layer.mode = "pan_zoom"
 
-    def _toggle_draw_mode(self):
-        """Internal toggle invoked by ``enable_shape_drawing(True)``."""
-        self.is_drawing_shape = not self.is_drawing_shape
-
-        if MANUAL_ROI_LAYER not in self.viewer.layers:
+        if enable and MANUAL_ROI_LAYER not in self.viewer.layers:
             self.shape_layer = self.viewer.add_shapes(
                 name=MANUAL_ROI_LAYER, edge_width=40, edge_color="red", face_color="transparent"
             )
             self.shape_layer.events.data.connect(self._on_shape_change)
-        else:
+        elif MANUAL_ROI_LAYER in self.viewer.layers:
             self.shape_layer = self.viewer.layers[MANUAL_ROI_LAYER]
 
-        if self.is_drawing_shape:
-            if len(self.shape_layer.data) > 0:
+        self.is_drawing_shape = bool(enable)
+        if self.shape_layer is not None:
+            if not enable:
+                self.shape_layer.mode = "pan_zoom"
+            elif len(self.shape_layer.data) > 0:
                 self.shape_layer.mode = "select"
                 self.shape_layer.select_mode = "vertex"
             else:
                 self.shape_layer.mode = "add_polygon"
-        else:
-            self.shape_layer.mode = "pan_zoom"
 
         self._on_shape_change()
 
@@ -402,9 +398,6 @@ class UnifiedMosaicWidget(QWidget):
         Single-arg signature so the widget receives a ``Signal(object)`` payload.
         Position is computed inline for the active mode only.
         """
-        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
-            return
-
         image = update.image
         x_mm = update.x_mm
         y_mm = update.y_mm
@@ -412,7 +405,11 @@ class UnifiedMosaicWidget(QWidget):
 
         if self._pixel_size_um == 0.0:
             self._pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-            self._downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um))
+            # Match the rounding rule used by downsample_tile() in mosaic_utils.py
+            # and _emit_plate_layout in multi_point_worker.py — otherwise the
+            # widget's image_pixel_size_mm disagrees with the actual rendered
+            # canvas and tile placement / plate slot sizing diverge.
+            self._downsample_factor = max(1, int(round(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um)))
 
         image = downsample_tile(image, self._pixel_size_um, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         image_pixel_size_mm = (self._pixel_size_um * self._downsample_factor) / 1000
