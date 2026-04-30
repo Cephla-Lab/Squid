@@ -19,7 +19,7 @@ import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
-from control.core.downsampled_views import format_well_id
+from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -1525,74 +1525,10 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
 
-        # Plate View section
-        plate_group = CollapsibleGroupBox("Plate View")
-        plate_layout = QFormLayout()
-
-        # Save Downsampled Well Images
-        self.save_downsampled_checkbox = QCheckBox()
-        self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
-        self.save_downsampled_checkbox.setToolTip(
-            "Save individual well TIFFs (e.g., wells/A1_5um.tiff, wells/A1_10um.tiff)"
-        )
-        plate_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
-
-        # Display Plate View
-        self.display_plate_view_checkbox = QCheckBox()
-        self.display_plate_view_checkbox.setChecked(control._def.DISPLAY_PLATE_VIEW)
-        self.display_plate_view_checkbox.setToolTip(
-            "Show plate view tab in GUI during acquisition.\n"
-            "Note: Plate view TIFF is always saved when either option is enabled."
-        )
-        plate_layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
-
-        # Well Resolutions (comma-separated)
-        self.well_resolutions_edit = QLineEdit()
-        default_resolutions = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
-        self.well_resolutions_edit.setText(default_resolutions)
-        self.well_resolutions_edit.setToolTip(
-            "Comma-separated list of resolution values in micrometers (e.g., 5.0, 10.0, 20.0)"
-        )
-        # Validator for comma-separated positive numbers
-        from qtpy.QtCore import QRegularExpression
-        from qtpy.QtGui import QRegularExpressionValidator
-
-        well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?(\s*,\s*\d+(\.\d+)?)*\s*$")
-        self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
-        plate_layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
-
-        # Target Pixel Size
-        self.plate_resolution_spinbox = QDoubleSpinBox()
-        self.plate_resolution_spinbox.setRange(1.0, 100.0)
-        self.plate_resolution_spinbox.setSingleStep(1.0)
-        self.plate_resolution_spinbox.setValue(control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM)
-        self.plate_resolution_spinbox.setSuffix(" μm")
-        self.plate_resolution_spinbox.setToolTip("Pixel size for the plate view overview image")
-        plate_layout.addRow("Target Pixel Size:", self.plate_resolution_spinbox)
-
-        # Z-Projection Mode
-        self.z_projection_combo = QComboBox()
-        self.z_projection_combo.addItems(["mip", "middle"])
-        current_projection = control._def.DOWNSAMPLED_Z_PROJECTION.value
-        self.z_projection_combo.setCurrentText(current_projection)
-        plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
-
-        # Interpolation Method
-        self.interpolation_method_combo = QComboBox()
-        self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
-        current_interp = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
-        self.interpolation_method_combo.setCurrentText(current_interp)
-        self.interpolation_method_combo.setToolTip(
-            "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
-            "inter_area_fast: Balanced (~1ms), pyramid downsampling\n"
-            "inter_area: Slowest (~18ms), highest quality for final output"
-        )
-        plate_layout.addRow("Interpolation Method:", self.interpolation_method_combo)
-
-        plate_group.content.addLayout(plate_layout)
-        layout.addWidget(plate_group)
-
-        # Mosaic View section
+        # Mosaic View section (consolidated; the deprecated "Plate View" section
+        # was removed when the unified mosaic widget replaced the old plate-view
+        # pipeline — its multi-resolution / Z-projection / interpolation-method
+        # fields no longer drive any code path).
         mosaic_group = CollapsibleGroupBox("Mosaic View")
         mosaic_layout = QFormLayout()
 
@@ -1601,13 +1537,35 @@ class PreferencesDialog(QDialog):
         self.display_mosaic_view_checkbox.setChecked(control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY)
         mosaic_layout.addRow("Display Mosaic View:", self.display_mosaic_view_checkbox)
 
-        # Mosaic Target Pixel Size
+        # Mosaic Target Pixel Size — also used as the save resolution.
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
         self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
         self.mosaic_pixel_size_spinbox.setSingleStep(0.5)
         self.mosaic_pixel_size_spinbox.setValue(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         self.mosaic_pixel_size_spinbox.setSuffix(" μm")
+        self.mosaic_pixel_size_spinbox.setToolTip(
+            "Pixel size used both for on-screen rendering and for the saved overview / per-well TIFFs."
+        )
         mosaic_layout.addRow("Target Pixel Size:", self.mosaic_pixel_size_spinbox)
+
+        # Save Downsampled Overview
+        self.save_downsampled_overview_checkbox = QCheckBox()
+        self.save_downsampled_overview_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_OVERVIEW)
+        self.save_downsampled_overview_checkbox.setToolTip(
+            "Save the whole-canvas downsampled view as an OME-TIFF on acquisition end "
+            "(mosaic_view/mosaic_<mode>_<N>um.ome.tiff)."
+        )
+        mosaic_layout.addRow("Save Downsampled Overview:", self.save_downsampled_overview_checkbox)
+
+        # Save Downsampled Per-Well Images (Plate View only)
+        self.save_downsampled_checkbox = QCheckBox()
+        self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
+        self.save_downsampled_checkbox.setToolTip(
+            "Save one multi-channel TIFF per scanned well "
+            "(mosaic_view/wells/<well_id>_<N>um.tiff). Effective only when the widget "
+            "is in Plate View."
+        )
+        mosaic_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
@@ -1884,18 +1842,14 @@ class PreferencesDialog(QDialog):
         # Views settings
         self.config.set(
             "VIEWS",
-            "save_downsampled_well_images",
-            "true" if self.save_downsampled_checkbox.isChecked() else "false",
+            "save_downsampled_overview",
+            "true" if self.save_downsampled_overview_checkbox.isChecked() else "false",
         )
         self.config.set(
             "VIEWS",
-            "display_plate_view",
-            "true" if self.display_plate_view_checkbox.isChecked() else "false",
+            "save_downsampled_well_images",
+            "true" if self.save_downsampled_checkbox.isChecked() else "false",
         )
-        self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
-        self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
-        self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
-        self.config.set("VIEWS", "downsampled_interpolation_method", self.interpolation_method_combo.currentText())
         self.config.set(
             "VIEWS",
             "display_mosaic_view",
@@ -2024,23 +1978,8 @@ class PreferencesDialog(QDialog):
         control._def.ENABLE_MEMORY_PROFILING = self.enable_memory_profiling_checkbox.isChecked()
 
         # Views settings
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = self.save_downsampled_overview_checkbox.isChecked()
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
-        control._def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
-        # Parse comma-separated resolutions
-        resolutions_str = self.well_resolutions_edit.text()
-        try:
-            control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [
-                float(x.strip()) for x in resolutions_str.split(",") if x.strip()
-            ]
-        except ValueError:
-            self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
-        control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
-        control._def.DOWNSAMPLED_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
-            self.z_projection_combo.currentText()
-        )
-        control._def.DOWNSAMPLED_INTERPOLATION_METHOD = control._def.DownsamplingMethod.convert_to_enum(
-            self.interpolation_method_combo.currentText()
-        )
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
@@ -2306,35 +2245,15 @@ class PreferencesDialog(QDialog):
         # NOTE: Compare against control._def values (runtime state) since UI is initialized from control._def.
         # This enables MCP commands to modify these settings for RAM usage diagnostics.
         # See PR #424 for context. This pattern may change if settings architecture is refactored.
+        old_val = control._def.SAVE_DOWNSAMPLED_OVERVIEW
+        new_val = self.save_downsampled_overview_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Save Downsampled Overview", str(old_val), str(new_val), False))
+
         old_val = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Save Downsampled Well Images", str(old_val), str(new_val), False))
-
-        old_val = control._def.DISPLAY_PLATE_VIEW
-        new_val = self.display_plate_view_checkbox.isChecked()
-        if old_val != new_val:
-            changes.append(("Display Plate View *", str(old_val), str(new_val), True))
-
-        old_val = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
-        new_val = self.well_resolutions_edit.text()
-        if old_val != new_val:
-            changes.append(("Well Resolutions", old_val, new_val, False))
-
-        old_val = control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM
-        new_val = self.plate_resolution_spinbox.value()
-        if not self._floats_equal(old_val, new_val):
-            changes.append(("Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
-
-        old_val = control._def.DOWNSAMPLED_Z_PROJECTION.value
-        new_val = self.z_projection_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z-Projection Mode", old_val, new_val, False))
-
-        old_val = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
-        new_val = self.interpolation_method_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Interpolation Method", old_val, new_val, False))
 
         old_val = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
         new_val = self.display_mosaic_view_checkbox.isChecked()
@@ -6865,6 +6784,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Track XY mode before unchecking, for restoration when re-checking
         self._xy_mode_before_uncheck = None
 
+        # Manual ROI requires both layers initialized and Full View; see _apply_manual_ROI_state.
+        self._mosaic_layers_initialized = False
+        self._mosaic_in_plate_view = False
+
         # Track loading from cache
         self._loading_from_cache = False
 
@@ -7330,6 +7253,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode and self.napariMosaicWidget is not None:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
+            self.napariMosaicWidget.signal_mode_changed.connect(self._on_mosaic_mode_changed)
+            # Seed from current mode; signal only fires on later toggles.
+            self._on_mosaic_mode_changed(self.napariMosaicWidget.mode)
 
         # Connect save/clear coordinates button
         self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
@@ -7361,8 +7287,24 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
 
     def enable_manual_ROI(self):
+        self._mosaic_layers_initialized = True
+        self._apply_manual_ROI_state()
+
+    def _on_mosaic_mode_changed(self, mode):
+        # Local import avoids a circular import at module load.
+        from control.widgets_mosaic import DisplayMode
+
+        self._mosaic_in_plate_view = mode == DisplayMode.PLATE
+        if self._mosaic_in_plate_view and self.combobox_xy_mode.currentText() == "Manual":
+            self.combobox_xy_mode.setCurrentText("Current Position")
+        self._apply_manual_ROI_state()
+
+    def _apply_manual_ROI_state(self):
         _manual_index = self.combobox_xy_mode.findText("Manual")
-        self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
+        if _manual_index < 0:
+            return
+        enabled = self._mosaic_layers_initialized and not self._mosaic_in_plate_view
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(enabled)
 
     def initialize_live_scan_grid_state(self):
         """Initialize live scan grid state - call this after all external connections are made"""
@@ -11591,741 +11533,6 @@ class NapariMultiChannelWidget(QWidget):
             layer.refresh()
 
     def activate(self):
-        self.viewer.window.activate()
-
-
-class NapariMosaicDisplayWidget(QWidget):
-
-    signal_coordinates_clicked = Signal(float, float)  # x, y in mm
-    signal_clear_viewer = Signal()
-    signal_layers_initialized = Signal()
-    signal_shape_drawn = Signal(list)
-
-    def __init__(self, objectiveStore, camera, contrastManager, parent=None):
-        super().__init__(parent)
-        self.objectiveStore = objectiveStore
-        self.camera = camera
-        self.contrastManager = contrastManager
-        self.viewer = napari.Viewer(show=False)
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.viewer.window._qt_window)
-        self.layers_initialized = False
-        self.shape_layer = None
-        self.shapes_mm = []
-        self.is_drawing_shape = False
-
-        # add clear button
-        self.clear_button = QPushButton("Clear Mosaic View")
-        self.clear_button.clicked.connect(self.clearAllLayers)
-        self.layout.addWidget(self.clear_button)
-
-        self.setLayout(self.layout)
-        self.customizeViewer()
-        self.viewer_pixel_size_mm = 1
-        self.dz_um = None
-        self.Nz = None
-        self.channels = set()
-        self.viewer_extents = []  # [min_y, max_y, min_x, max_x]
-        self.top_left_coordinate = None  # [y, x] in mm
-        self.mosaic_dtype = None
-
-    def customizeViewer(self):
-        # # hide status bar
-        # if hasattr(self.viewer.window, "_status_bar"):
-        #     self.viewer.window._status_bar.hide()
-
-        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        if sys.platform == "darwin":
-            self.viewer.window.main_menu.setNativeMenuBar(False)
-        self.viewer.window.main_menu.hide()
-
-        self.viewer.bind_key("D", self.toggle_draw_mode)
-
-    def toggle_draw_mode(self, viewer):
-        self.is_drawing_shape = not self.is_drawing_shape
-
-        if "Manual ROI" not in self.viewer.layers:
-            self.shape_layer = self.viewer.add_shapes(
-                name="Manual ROI", edge_width=40, edge_color="red", face_color="transparent"
-            )
-            self.shape_layer.events.data.connect(self.on_shape_change)
-        else:
-            self.shape_layer = self.viewer.layers["Manual ROI"]
-
-        if self.is_drawing_shape:
-            # if there are existing shapes, switch to vertex select mode
-            if len(self.shape_layer.data) > 0:
-                self.shape_layer.mode = "select"
-                self.shape_layer.select_mode = "vertex"
-            else:
-                # if no shapes exist, switch to add polygon mode
-                # start drawing a new polygon on click, add vertices with additional clicks, finish/close polygon with double-click
-                self.shape_layer.mode = "add_polygon"
-        else:
-            # if no shapes exist, switch to pan/zoom mode
-            self.shape_layer.mode = "pan_zoom"
-
-        self.on_shape_change()
-
-    def enable_shape_drawing(self, enable):
-        if enable:
-            self.toggle_draw_mode(self.viewer)
-        else:
-            self.is_drawing_shape = False
-            if self.shape_layer is not None:
-                self.shape_layer.mode = "pan_zoom"
-
-    def on_shape_change(self, event=None):
-        if self.shape_layer is not None and len(self.shape_layer.data) > 0:
-            # Only convert shapes to mm if mosaic is initialized (has valid coordinate system)
-            if self.layers_initialized and self.top_left_coordinate is not None:
-                self.shapes_mm = [self.convert_shape_to_mm(shape) for shape in self.shape_layer.data]
-            # else: keep existing shapes_mm (they're already in mm from before clear)
-        else:
-            self.shapes_mm = []
-        self.signal_shape_drawn.emit(self.shapes_mm)
-
-    def convert_shape_to_mm(self, shape_data):
-        shape_data_mm = []
-        # Scale factor: viewer uses um (mm * 1000), so data coords = world coords / (pixel_size_mm * 1000)
-        scale = self.viewer_pixel_size_mm * 1000
-        for point in shape_data:
-            # Convert world coordinates (um) to data coordinates (pixels)
-            y_data = point[0] / scale
-            x_data = point[1] / scale
-            # Convert data coordinates to mm
-            x_mm = self.top_left_coordinate[1] + x_data * self.viewer_pixel_size_mm
-            y_mm = self.top_left_coordinate[0] + y_data * self.viewer_pixel_size_mm
-            shape_data_mm.append([x_mm, y_mm])
-        return np.array(shape_data_mm)
-
-    def convert_mm_to_viewer_shapes(self, shapes_mm):
-        viewer_shapes = []
-        # Scale factor: viewer uses um (mm * 1000), so world coords = data coords * (pixel_size_mm * 1000)
-        scale = self.viewer_pixel_size_mm * 1000
-        for shape_mm in shapes_mm:
-            viewer_shape = []
-            for point_mm in shape_mm:
-                # Convert mm to data coordinates (pixels)
-                x_data = (point_mm[0] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm
-                y_data = (point_mm[1] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm
-                # Convert data coordinates to world coordinates (um)
-                world_coords = [y_data * scale, x_data * scale]
-                viewer_shape.append(world_coords)
-            viewer_shapes.append(viewer_shape)
-        return viewer_shapes
-
-    def update_shape_layer_position(self, prev_top_left, new_top_left):
-        if self.shape_layer is None or len(self.shapes_mm) == 0:
-            return
-        try:
-            # update top_left_coordinate
-            self.top_left_coordinate = new_top_left
-
-            # convert mm coordinates to viewer coordinates
-            new_shapes = self.convert_mm_to_viewer_shapes(self.shapes_mm)
-
-            # update shape layer data
-            self.shape_layer.data = new_shapes
-        except Exception as e:
-            print(f"Error updating shape layer position: {e}")
-            import traceback
-
-            traceback.print_exc()
-
-    def initChannels(self, channels):
-        self.channels = set(channels)
-
-    def initLayersShape(self, Nz, dz):
-        self.Nz = 1
-        self.dz_um = dz
-
-    def extractWavelength(self, name):
-        # extract wavelength from channel name
-        parts = name.split()
-        if "Fluorescence" in parts:
-            index = parts.index("Fluorescence") + 1
-            if index < len(parts):
-                return parts[index].split()[0]
-        for color in ["R", "G", "B"]:
-            if color in parts or f"full_{color}" in parts:
-                return color
-        return None
-
-    def generateColormap(self, channel_info):
-        # generate colormap from hex value
-        c0 = (0, 0, 0)
-        c1 = (
-            ((channel_info["hex"] >> 16) & 0xFF) / 255,
-            ((channel_info["hex"] >> 8) & 0xFF) / 255,
-            (channel_info["hex"] & 0xFF) / 255,
-        )
-        return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
-
-    def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
-        # NOTE: Check runtime flag to allow MCP to disable mosaic updates for RAM debugging.
-        # This enables toggling mosaic view without restarting the application.
-        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
-            return
-
-        # calculate pixel size
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
-        image_pixel_size_um = pixel_size_um * downsample_factor
-        image_pixel_size_mm = image_pixel_size_um / 1000
-        image_dtype = image.dtype
-
-        # downsample image
-        if downsample_factor != 1:
-            image = cv2.resize(
-                image,
-                (image.shape[1] // downsample_factor, image.shape[0] // downsample_factor),
-                interpolation=cv2.INTER_AREA,
-            )
-
-        # adjust image position
-        x_mm -= (image.shape[1] * image_pixel_size_mm) / 2
-        y_mm -= (image.shape[0] * image_pixel_size_mm) / 2
-
-        if not self.layers_initialized:
-            # initialize mosaic state for first image (or after clearAllLayers)
-            self.layers_initialized = True
-            self.signal_layers_initialized.emit()
-            self.viewer_pixel_size_mm = image_pixel_size_mm
-            self.viewer_extents = [
-                y_mm,
-                y_mm + image.shape[0] * image_pixel_size_mm,
-                x_mm,
-                x_mm + image.shape[1] * image_pixel_size_mm,
-            ]
-            self.top_left_coordinate = [y_mm, x_mm]
-            self.mosaic_dtype = image_dtype
-
-            # Update Manual ROI shapes to new coordinate system if they exist
-            if self.shape_layer is not None and len(self.shapes_mm) > 0:
-                new_shapes = self.convert_mm_to_viewer_shapes(self.shapes_mm)
-                self.shape_layer.data = new_shapes
-        else:
-            # convert image dtype and scale if necessary
-            image = self.convertImageDtype(image, self.mosaic_dtype)
-            if image_pixel_size_mm != self.viewer_pixel_size_mm:
-                scale_factor = image_pixel_size_mm / self.viewer_pixel_size_mm
-                image = cv2.resize(
-                    image,
-                    (int(image.shape[1] * scale_factor), int(image.shape[0] * scale_factor)),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-
-        if channel_name not in self.viewer.layers:
-            # create new layer for channel
-            channel_info = CHANNEL_COLORS_MAP.get(
-                self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
-            )
-            if channel_info["name"] in AVAILABLE_COLORMAPS:
-                color = AVAILABLE_COLORMAPS[channel_info["name"]]
-            else:
-                color = self.generateColormap(channel_info)
-
-            layer = self.viewer.add_image(
-                np.zeros_like(image),
-                name=channel_name,
-                rgb=len(image.shape) == 3,
-                colormap=color,
-                visible=True,
-                blending="additive",
-                scale=(self.viewer_pixel_size_mm * 1000, self.viewer_pixel_size_mm * 1000),
-            )
-            layer.mouse_double_click_callbacks.append(self.onDoubleClick)
-            layer.events.contrast_limits.connect(self.signalContrastLimits)
-
-        # get layer for channel
-        layer = self.viewer.layers[channel_name]
-
-        # update extents
-        self.viewer_extents[0] = min(self.viewer_extents[0], y_mm)
-        self.viewer_extents[1] = max(self.viewer_extents[1], y_mm + image.shape[0] * self.viewer_pixel_size_mm)
-        self.viewer_extents[2] = min(self.viewer_extents[2], x_mm)
-        self.viewer_extents[3] = max(self.viewer_extents[3], x_mm + image.shape[1] * self.viewer_pixel_size_mm)
-
-        # store previous top-left coordinate
-        prev_top_left = self.top_left_coordinate.copy() if self.top_left_coordinate else None
-        self.top_left_coordinate = [self.viewer_extents[0], self.viewer_extents[2]]
-
-        # update layer
-        self.updateLayer(layer, image, x_mm, y_mm, k, prev_top_left)
-
-        # update contrast limits
-        min_val, max_val = self.contrastManager.get_limits(channel_name)
-        scaled_min = self.convertValue(min_val, self.contrastManager.acquisition_dtype, self.mosaic_dtype)
-        scaled_max = self.convertValue(max_val, self.contrastManager.acquisition_dtype, self.mosaic_dtype)
-        layer.contrast_limits = (scaled_min, scaled_max)
-        layer.refresh()
-
-    def updateLayer(self, layer, image, x_mm, y_mm, k, prev_top_left):
-        # calculate new mosaic size and position
-        mosaic_height = int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
-        mosaic_width = int(math.ceil((self.viewer_extents[3] - self.viewer_extents[2]) / self.viewer_pixel_size_mm))
-
-        is_rgb = len(image.shape) == 3 and image.shape[2] == 3
-        if layer.data.shape[:2] != (mosaic_height, mosaic_width):
-            # calculate offsets for existing data
-            y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
-            x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
-
-            for mosaic in self.viewer.layers:
-                if mosaic.name != "Manual ROI":
-                    if len(mosaic.data.shape) == 3 and mosaic.data.shape[2] == 3:
-                        new_data = np.zeros((mosaic_height, mosaic_width, 3), dtype=mosaic.data.dtype)
-                    else:
-                        new_data = np.zeros((mosaic_height, mosaic_width), dtype=mosaic.data.dtype)
-
-                    # ensure offsets don't exceed bounds
-                    y_end = min(y_offset + mosaic.data.shape[0], new_data.shape[0])
-                    x_end = min(x_offset + mosaic.data.shape[1], new_data.shape[1])
-
-                    # shift existing data
-                    if len(mosaic.data.shape) == 3 and mosaic.data.shape[2] == 3:
-                        new_data[y_offset:y_end, x_offset:x_end, :] = mosaic.data[
-                            : y_end - y_offset, : x_end - x_offset, :
-                        ]
-                    else:
-                        new_data[y_offset:y_end, x_offset:x_end] = mosaic.data[: y_end - y_offset, : x_end - x_offset]
-                    mosaic.data = new_data
-
-            if "Manual ROI" in self.viewer.layers:
-                self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
-
-            self.resetView()
-
-        # insert new image
-        y_pos = int(math.floor((y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
-        x_pos = int(math.floor((x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
-
-        # ensure indices are within bounds
-        y_end = min(y_pos + image.shape[0], layer.data.shape[0])
-        x_end = min(x_pos + image.shape[1], layer.data.shape[1])
-
-        # insert image data
-        if is_rgb:
-            layer.data[y_pos:y_end, x_pos:x_end, :] = image[: y_end - y_pos, : x_end - x_pos, :]
-        else:
-            layer.data[y_pos:y_end, x_pos:x_end] = image[: y_end - y_pos, : x_end - x_pos]
-        layer.refresh()
-
-    def convertImageDtype(self, image, target_dtype):
-        # convert image to target dtype
-        if image.dtype == target_dtype:
-            return image
-
-        # get full range of values for both dtypes
-        if np.issubdtype(image.dtype, np.integer):
-            input_info = np.iinfo(image.dtype)
-            input_min, input_max = input_info.min, input_info.max
-        else:
-            input_min, input_max = np.min(image), np.max(image)
-
-        if np.issubdtype(target_dtype, np.integer):
-            output_info = np.iinfo(target_dtype)
-            output_min, output_max = output_info.min, output_info.max
-        else:
-            output_min, output_max = 0.0, 1.0
-
-        # normalize and scale image
-        image_normalized = (image.astype(np.float64) - input_min) / (input_max - input_min)
-        image_scaled = image_normalized * (output_max - output_min) + output_min
-
-        return image_scaled.astype(target_dtype)
-
-    def convertValue(self, value, from_dtype, to_dtype):
-        # Convert value from one dtype range to another
-        from_info = np.iinfo(from_dtype)
-        to_info = np.iinfo(to_dtype)
-
-        # Normalize the value to [0, 1] range
-        normalized = (value - from_info.min) / (from_info.max - from_info.min)
-
-        # Scale to the target dtype range
-        return normalized * (to_info.max - to_info.min) + to_info.min
-
-    def signalContrastLimits(self, event):
-        layer = event.source
-        min_val, max_val = map(float, layer.contrast_limits)
-
-        # Convert the new limits from mosaic_dtype to acquisition_dtype
-        acquisition_min = self.convertValue(min_val, self.mosaic_dtype, self.contrastManager.acquisition_dtype)
-        acquisition_max = self.convertValue(max_val, self.mosaic_dtype, self.contrastManager.acquisition_dtype)
-
-        # Update the ContrastManager with the new limits
-        self.contrastManager.update_limits(layer.name, acquisition_min, acquisition_max)
-
-    def getContrastLimits(self, dtype):
-        return self.contrastManager.get_default_limits()
-
-    def onDoubleClick(self, layer, event):
-        coords = layer.world_to_data(event.position)
-        if coords is not None:
-            x_mm = self.top_left_coordinate[1] + coords[-1] * self.viewer_pixel_size_mm
-            y_mm = self.top_left_coordinate[0] + coords[-2] * self.viewer_pixel_size_mm
-            print(f"move from click: ({x_mm:.6f}, {y_mm:.6f})")
-            self.signal_coordinates_clicked.emit(x_mm, y_mm)
-
-    def resetView(self):
-        self.viewer.reset_view()
-        for layer in self.viewer.layers:
-            layer.refresh()
-
-    def clear_shape(self):
-        if self.shape_layer is not None:
-            self.viewer.layers.remove(self.shape_layer)
-            self.shape_layer = None
-            self.is_drawing_shape = False
-            self.signal_shape_drawn.emit([])
-
-    def clearAllLayers(self):
-        # Remove all layers except Manual ROI to free memory and allow proper reinitialization
-        layers_to_remove = [layer for layer in self.viewer.layers if layer.name != "Manual ROI"]
-        for layer in layers_to_remove:
-            self.viewer.layers.remove(layer)
-
-        # Reset mosaic-related state so reinitialization logic can run cleanly
-        self.channels = set()
-        self.viewer_extents = None
-        self.layers_initialized = False
-        self.top_left_coordinate = None
-        self.mosaic_dtype = None
-
-        # Force garbage collection to return memory to OS
-        gc.collect()
-
-        self.signal_clear_viewer.emit()
-
-    def activate(self):
-        self.viewer.window.activate()
-
-    def get_screenshot(self) -> Optional[np.ndarray]:
-        """Capture the current mosaic view as a numpy array.
-
-        Returns:
-            RGB image array of the current view, or None if no layers exist.
-        """
-        if not self.layers_initialized:
-            return None
-        try:
-            # Use napari's screenshot functionality
-            return self.viewer.screenshot(canvas_only=True)
-        except Exception:
-            return None
-
-
-class NapariPlateViewWidget(QWidget):
-    """Widget for displaying downsampled plate view with multi-channel support.
-
-    Similar to NapariMosaicDisplayWidget but specifically for plate-based acquisitions.
-    Displays downsampled well images in a grid layout.
-    """
-
-    signal_well_fov_clicked = Signal(str, int)  # well_id, fov_index
-
-    def __init__(self, contrastManager, parent=None):
-        super().__init__(parent)
-        self.contrastManager = contrastManager
-        self.viewer = napari.Viewer(show=False)
-        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        if sys.platform == "darwin":
-            self.viewer.window.main_menu.setNativeMenuBar(False)
-        self.viewer.window.main_menu.hide()
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.viewer.window._qt_window)
-
-        # Clear button
-        self.clear_button = QPushButton("Clear Plate View")
-        self.clear_button.clicked.connect(self.clearAllLayers)
-        self.layout.addWidget(self.clear_button)
-
-        self.setLayout(self.layout)
-
-        # Plate layout info (set by initPlateLayout)
-        self.num_rows = 0
-        self.num_cols = 0
-        self.well_slot_shape = (0, 0)  # (height, width) pixels per well
-        self.fov_grid_shape = (1, 1)  # (ny, nx) FOVs per well
-        self.channel_names = []
-        self.plate_dtype = None
-        self.layers_initialized = False
-
-        # Zoom limits (updated in initPlateLayout based on plate size)
-        self.min_zoom = 0.1  # Prevent zooming out too far
-        self.max_zoom = None  # No max limit until plate size is known
-        # Flag to prevent recursive zoom clamping. This is safe because Qt's event
-        # loop processes events sequentially on the main thread - _custom_wheel_event
-        # and _on_zoom_changed cannot run concurrently, so no lock is needed.
-        self._clamping_zoom = False
-
-        # Override wheel event on vispy canvas to enforce zoom limits
-        canvas_widget = self.viewer.window._qt_viewer.canvas.native
-        canvas_widget.wheelEvent = self._custom_wheel_event
-
-        # Clamp zoom for programmatic changes (e.g., reset_view)
-        self.viewer.camera.events.zoom.connect(self._on_zoom_changed)
-
-    def initPlateLayout(self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None):
-        """Initialize plate layout for click coordinate calculations.
-
-        Args:
-            num_rows: Number of rows in the plate
-            num_cols: Number of columns in the plate
-            well_slot_shape: (height, width) of each well slot in pixels
-            fov_grid_shape: (ny, nx) FOVs per well for click mapping
-            channel_names: List of channel names
-        """
-        self.num_rows = num_rows
-        self.num_cols = num_cols
-        self.well_slot_shape = well_slot_shape
-        self.fov_grid_shape = fov_grid_shape or (1, 1)
-        self.channel_names = channel_names or []
-        self.layers_initialized = False
-
-        # Calculate zoom limits based on plate size
-        plate_height = num_rows * well_slot_shape[0]
-        plate_width = num_cols * well_slot_shape[1]
-        if plate_height > 0 and plate_width > 0:
-            # Max zoom: ensure at least MIN_VISIBLE_PIXELS visible, capped at MAX_ZOOM_FACTOR
-            min_plate_dim = min(plate_height, plate_width)
-            self.max_zoom = min(
-                max(1.0, min_plate_dim / PLATE_VIEW_MIN_VISIBLE_PIXELS),
-                PLATE_VIEW_MAX_ZOOM_FACTOR,
-            )
-
-        # Draw plate boundaries
-        self._draw_plate_boundaries()
-
-        # Reset view to fit plate, then capture that zoom as the min (zoom out limit)
-        self.viewer.reset_view()
-        self.min_zoom = self.viewer.camera.zoom
-
-    def _custom_wheel_event(self, event):
-        """Custom wheel event handler that enforces zoom limits."""
-        # Block ALL wheel events from reaching vispy - we handle zoom ourselves
-        event.accept()
-
-        delta = event.angleDelta().y()
-        if delta == 0:
-            return
-
-        # Calculate new zoom with our own factor
-        zoom = self.viewer.camera.zoom
-        zoom_factor = 1.1 ** (delta / 120.0)  # Standard wheel: 120 units per notch
-        new_zoom = zoom * zoom_factor
-
-        # Clamp to limits
-        new_zoom = max(self.min_zoom, new_zoom)
-        if self.max_zoom is not None:
-            new_zoom = min(self.max_zoom, new_zoom)
-
-        # Apply clamped zoom
-        if new_zoom != zoom:
-            self._clamping_zoom = True
-            self.viewer.camera.zoom = new_zoom
-            self._clamping_zoom = False
-
-    def _on_zoom_changed(self, event):
-        """Clamp zoom to limits after any zoom change (e.g., reset_view)."""
-        if self._clamping_zoom:
-            return
-        zoom = self.viewer.camera.zoom
-        target_zoom = zoom
-        if zoom < self.min_zoom:
-            target_zoom = self.min_zoom
-        elif self.max_zoom is not None and zoom > self.max_zoom:
-            target_zoom = self.max_zoom
-        if target_zoom != zoom:
-            self._clamping_zoom = True
-            self.viewer.camera.zoom = target_zoom
-            self._clamping_zoom = False
-
-    def _draw_plate_boundaries(self):
-        """Draw grid lines to show well boundaries.
-
-        Uses O(rows + cols) lines instead of O(rows * cols) rectangles for better
-        performance with large plates (e.g., 1536-well).
-        """
-        if self.num_rows == 0 or self.num_cols == 0:
-            return
-        if self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
-            return
-
-        # Remove existing boundary layer
-        if "_plate_boundaries" in self.viewer.layers:
-            self.viewer.layers.remove("_plate_boundaries")
-
-        lines = []
-        slot_h, slot_w = self.well_slot_shape
-        plate_height = self.num_rows * slot_h
-        plate_width = self.num_cols * slot_w
-
-        # Horizontal lines (num_rows + 1 lines)
-        for row in range(self.num_rows + 1):
-            y = row * slot_h
-            lines.append([[y, 0], [y, plate_width]])
-
-        # Vertical lines (num_cols + 1 lines)
-        for col in range(self.num_cols + 1):
-            x = col * slot_w
-            lines.append([[0, x], [plate_height, x]])
-
-        if lines:
-            self.viewer.add_shapes(
-                lines,
-                shape_type="line",
-                edge_color="white",
-                edge_width=2,
-                name="_plate_boundaries",
-            )
-            # Make boundaries layer non-interactive so it doesn't intercept clicks
-            boundaries_layer = self.viewer.layers["_plate_boundaries"]
-            boundaries_layer.mouse_pan = False
-            boundaries_layer.mouse_zoom = False
-            # Move boundaries layer to bottom
-            self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
-            # Ensure an image layer is selected, not the shapes layer
-            for layer in reversed(self.viewer.layers):
-                if layer.name != "_plate_boundaries":
-                    self.viewer.layers.selection.active = layer
-                    break
-
-    def extractWavelength(self, name):
-        """Extract wavelength from channel name for colormap selection."""
-        parts = name.split()
-        if "Fluorescence" in parts:
-            index = parts.index("Fluorescence") + 1
-            if index < len(parts):
-                return parts[index].split()[0]
-        for color in ["R", "G", "B"]:
-            if color in parts or f"full_{color}" in parts:
-                return color
-        return None
-
-    def generateColormap(self, channel_info):
-        """Generate colormap from hex value."""
-        c0 = (0, 0, 0)
-        c1 = (
-            ((channel_info["hex"] >> 16) & 0xFF) / 255,
-            ((channel_info["hex"] >> 8) & 0xFF) / 255,
-            (channel_info["hex"] & 0xFF) / 255,
-        )
-        return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
-
-    def updatePlateView(self, channel_idx, channel_name, plate_image):
-        """Update a single channel's plate view.
-
-        Args:
-            channel_idx: Channel index (0-based)
-            channel_name: Name of the channel
-            plate_image: 2D numpy array with the channel's plate view
-        """
-        if plate_image is None:
-            return
-
-        if not self.layers_initialized:
-            self.layers_initialized = True
-            self.plate_dtype = plate_image.dtype
-
-        if channel_name not in self.viewer.layers:
-            # Create layer with appropriate colormap
-            wavelength = self.extractWavelength(channel_name)
-            channel_info = (
-                CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
-                if wavelength is not None
-                else {"hex": 0xFFFFFF, "name": "gray"}
-            )
-            if channel_info["name"] in AVAILABLE_COLORMAPS:
-                color = AVAILABLE_COLORMAPS[channel_info["name"]]
-            else:
-                color = self.generateColormap(channel_info)
-
-            layer = self.viewer.add_image(
-                plate_image,
-                name=channel_name,
-                colormap=color,
-                visible=True,
-                blending="additive",
-            )
-            layer.mouse_double_click_callbacks.append(self.onDoubleClick)
-            layer.events.contrast_limits.connect(self.signalContrastLimits)
-        else:
-            self.viewer.layers[channel_name].data = plate_image
-
-        # Apply contrast from contrastManager
-        layer = self.viewer.layers[channel_name]
-        min_val, max_val = self.contrastManager.get_limits(channel_name)
-        layer.contrast_limits = (min_val, max_val)
-        layer.refresh()
-
-    def signalContrastLimits(self, event):
-        """Handle contrast limit changes and propagate to contrastManager."""
-        layer = event.source
-        min_val, max_val = layer.contrast_limits
-        self.contrastManager.update_limits(layer.name, min_val, max_val)
-
-    def onDoubleClick(self, layer, event):
-        """Handle double-click: calculate well_id and fov_index."""
-        coords = layer.world_to_data(event.position)
-        if coords is None or self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
-            return
-
-        y, x = int(coords[-2]), int(coords[-1])
-
-        # Calculate well position
-        well_row = y // self.well_slot_shape[0]
-        well_col = x // self.well_slot_shape[1]
-
-        # Validate well position
-        if well_row < 0 or well_row >= self.num_rows or well_col < 0 or well_col >= self.num_cols:
-            print(f"Clicked outside plate bounds: row={well_row}, col={well_col}")
-            return
-
-        # Generate well ID using shared utility (inverse of parse_well_id)
-        well_id = format_well_id(well_row, well_col)
-
-        # Calculate FOV within well
-        y_in_well = y % self.well_slot_shape[0]
-        x_in_well = x % self.well_slot_shape[1]
-
-        fov_ny, fov_nx = self.fov_grid_shape
-        if fov_ny > 0 and fov_nx > 0:
-            fov_height = self.well_slot_shape[0] // fov_ny
-            fov_width = self.well_slot_shape[1] // fov_nx
-            if fov_height > 0 and fov_width > 0:
-                # Clamp to valid range to handle clicks at edge of well slot
-                fov_row = min(y_in_well // fov_height, fov_ny - 1)
-                fov_col = min(x_in_well // fov_width, fov_nx - 1)
-                fov_index = fov_row * fov_nx + fov_col
-            else:
-                fov_index = 0
-        else:
-            fov_index = 0
-
-        print(f"Clicked: Well {well_id}, FOV {fov_index}")
-        self.signal_well_fov_clicked.emit(well_id, fov_index)
-
-    def resetView(self):
-        """Reset the viewer to fit all data."""
-        self.viewer.reset_view()
-        for layer in self.viewer.layers:
-            layer.refresh()
-
-    def clearAllLayers(self):
-        """Clear all layers to free memory."""
-        layers_to_remove = list(self.viewer.layers)
-        for layer in layers_to_remove:
-            self.viewer.layers.remove(layer)
-
-        self.layers_initialized = False
-        self.plate_dtype = None
-        gc.collect()
-
-    def activate(self):
-        """Activate the viewer window."""
         self.viewer.window.activate()
 
 

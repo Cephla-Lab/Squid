@@ -1,7 +1,6 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Callable, Union, TYPE_CHECKING
+from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
-from control._def import ZProjectionMode, DownsamplingMethod
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.models import AcquisitionChannel
@@ -57,13 +56,7 @@ class AcquisitionParameters:
     use_fluidics: bool
     skip_saving: bool = False
 
-    # Downsampled view generation parameters
-    generate_downsampled_views: bool = False
-    save_downsampled_well_images: bool = False  # Save individual well TIFFs (wells/A1_5um.tiff)
-    downsampled_well_resolutions_um: Optional[List[float]] = None
-    downsampled_plate_resolution_um: float = 10.0
-    downsampled_z_projection: Union[ZProjectionMode, str] = ZProjectionMode.MIP
-    downsampled_interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_AREA_FAST
+    # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
     plate_num_cols: int = 12  # For 96-well plate
 
@@ -87,12 +80,30 @@ class RegionProgressUpdate:
 
 
 @dataclass
-class PlateViewUpdate:
-    """Data for plate view channel update."""
+class MosaicTileUpdate:
+    """Data for unified mosaic/plate view tile update.
 
-    channel_idx: int
+    Constructed in MultiPointController._signal_new_image_fn from the
+    CameraFrame and CaptureInfo already available there. well_row/well_col
+    are derived from CaptureInfo.region_id via parse_well_id; for non-plate
+    scans where region_id is not a well ID, they default to 0 and plate mode
+    is unavailable anyway.
+
+    well_origin_mm is the (top-left x, top-left y) of the well's bounding box
+    in stage coordinates, computed once at acquisition start from the scan
+    plan. The widget uses this as a stable per-well anchor so tiles arriving
+    in arbitrary scan order always land in non-negative offsets within the
+    well slot. ``None`` for non-plate scans (plate mode is disabled then).
+    """
+
+    image: "np.ndarray"
+    x_mm: float
+    y_mm: float
     channel_name: str
-    plate_image: "np.ndarray"  # Forward reference
+    well_id: str = ""
+    well_row: int = 0
+    well_col: int = 0
+    well_origin_mm: Optional[Tuple[float, float]] = None
 
 
 @dataclass
@@ -103,7 +114,7 @@ class PlateViewInit:
     num_cols: int
     well_slot_shape: Tuple[int, int]
     fov_grid_shape: Tuple[int, int]
-    channel_names: List[str]
+    well_ids: List[str]  # wells scanned this acquisition; used to detect coverage changes
 
 
 @dataclass
@@ -115,10 +126,11 @@ class MultiPointControllerFunctions:
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]
-    # Optional plate view callbacks. Default no-op lambdas avoid None checks at every call site.
-    # Unlike mutable defaults (lists/dicts), lambdas are safe as defaults since they're not modified.
+    # Optional plate-layout callback (used by the unified mosaic widget for Plate Mode).
+    # Default no-op lambda avoids None checks at every call site. Unlike mutable defaults
+    # (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
-    signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None
+    signal_timepoint_finished: Callable[[int], None] = lambda *a, **kw: None
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None
     signal_slack_acquisition_finished: Callable[["AcquisitionStats"], None] = lambda *a, **kw: None

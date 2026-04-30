@@ -990,32 +990,15 @@ LIVE_ONLY_MODE = False
 ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled view settings (for Select Well Mode)
-# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
-# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
-# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
-SAVE_DOWNSAMPLED_WELL_IMAGES = False
-DISPLAY_PLATE_VIEW = False
-DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
-DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
-DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
-DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_AREA_FAST  # Balanced speed/quality default
-
-# Downsampled view job timeouts
-# DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
-# jobs to complete at end of each timepoint. This timeout ensures acquisition doesn't hang
-# indefinitely if a job gets stuck. For typical 96-well plates with 1-4 channels, 30 seconds
-# is sufficient. For larger plates (384-well, 1536-well) with many channels, increase this
-# value proportionally. As a rough guide: ~0.5s per well for processing, so 1536 wells
-# could need up to ~800 seconds in worst case, though parallel processing makes it faster.
-DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
-
-# DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S: Time (seconds) to wait after the last job result before
-# assuming all jobs are complete. When the job input queue is empty but the last job may
-# still be processing, we poll for results. If no new results arrive within this timeout,
-# we assume all jobs have finished. 2 seconds is conservative - most jobs complete in
-# <100ms, so this handles occasional slow jobs without adding unnecessary delay.
-DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+# Downsampled-view auto-save settings. Each flag independently controls one
+# output of the unified mosaic widget's save path:
+#   SAVE_DOWNSAMPLED_OVERVIEW    → mosaic_view/mosaic_<mode>_<N>um.ome.tiff
+#   SAVE_DOWNSAMPLED_WELL_IMAGES → mosaic_view/wells/<well_id>_<N>um.tiff (plate mode only)
+# Both gate auto-save on acquisition end AND the manual Save View button, so
+# the checkboxes are the single source of truth for what gets written.
+# The save resolution is coupled with the on-screen target (MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM).
+SAVE_DOWNSAMPLED_OVERVIEW = True
+SAVE_DOWNSAMPLED_WELL_IMAGES = True
 
 # Plate view zoom limits
 # MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
@@ -1394,10 +1377,14 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
         _views_config.read(CACHED_CONFIG_FILE_PATH)
         if _views_config.has_section("VIEWS"):
             log.info("Loading Views settings from config file")
-            if _views_config.has_option("VIEWS", "display_plate_view"):
-                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
             if _views_config.has_option("VIEWS", "display_mosaic_view"):
                 USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _views_config.has_option("VIEWS", "save_downsampled_overview"):
+                SAVE_DOWNSAMPLED_OVERVIEW = _views_config.get("VIEWS", "save_downsampled_overview").lower() in (
                     "true",
                     "1",
                     "yes",
@@ -1414,31 +1401,6 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
                     "VIEWS", "generate_downsampled_well_images"
                 ).lower() in ("true", "1", "yes")
-            if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):
-                try:
-                    _res_str = _views_config.get("VIEWS", "downsampled_well_resolutions_um")
-                    DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in _res_str.split(",") if x.strip()]
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_plate_resolution_um"):
-                try:
-                    DOWNSAMPLED_PLATE_RESOLUTION_UM = _views_config.getfloat("VIEWS", "downsampled_plate_resolution_um")
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_z_projection"):
-                try:
-                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
-                        _views_config.get("VIEWS", "downsampled_z_projection")
-                    )
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_interpolation_method"):
-                try:
-                    DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.convert_to_enum(
-                        _views_config.get("VIEWS", "downsampled_interpolation_method")
-                    )
-                except ValueError:
-                    pass
             if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
                 try:
                     MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
