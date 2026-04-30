@@ -142,3 +142,31 @@ class TestPerComponentSimulationIntegration:
             ), f"Expected SimulatedCamera (--simulation overrides per-component) but got {type(scope.camera).__name__}"
         finally:
             scope.close()
+
+
+class TestGetImagePixelSizeUm:
+    """Tests for Microscope.get_image_pixel_size_um()."""
+
+    def test_returns_factor_times_binned_um(self):
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            expected = scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+            assert scope.get_image_pixel_size_um() == expected
+        finally:
+            scope.close()
+
+    def test_returns_none_when_factor_is_none(self):
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            with patch.object(scope.objective_store, "get_pixel_size_factor", return_value=None):
+                assert scope.get_image_pixel_size_um() is None
+        finally:
+            scope.close()
+
+    def test_returns_none_when_binned_um_is_none(self):
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            with patch.object(scope.camera, "get_pixel_size_binned_um", return_value=None):
+                assert scope.get_image_pixel_size_um() is None
+        finally:
+            scope.close()
