@@ -205,10 +205,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
-    # Plate view signals
-    plate_view_init = Signal(
-        int, int, tuple, tuple, list, list
-    )  # rows, cols, well_slot_shape, fov_grid_shape, channel_names, well_ids
+    plate_view_init = Signal(object)  # PlateViewInit
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
@@ -468,14 +465,7 @@ class QtMultiPointController(MultiPointController, QObject):
         self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
 
     def _signal_plate_view_init_fn(self, plate_view_init: PlateViewInit):
-        self.plate_view_init.emit(
-            plate_view_init.num_rows,
-            plate_view_init.num_cols,
-            plate_view_init.well_slot_shape,
-            plate_view_init.fov_grid_shape,
-            plate_view_init.channel_names,
-            plate_view_init.well_ids,
-        )
+        self.plate_view_init.emit(plate_view_init)
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
         self.signal_slack_timepoint.emit(stats)

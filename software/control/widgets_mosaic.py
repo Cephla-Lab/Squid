@@ -25,7 +25,8 @@ from napari.utils.colormaps import AVAILABLE_COLORMAPS
 
 import control._def
 from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
-from control.core.mosaic_utils import downsample_tile
+from control.core.mosaic_utils import downsample_tile, format_well_id, parse_well_id
+from control.utils import ensure_directory_exists, serialize_for_yaml
 from control.utils_channel import extract_wavelength_from_config_name
 import squid.logging
 
@@ -37,25 +38,6 @@ MANUAL_ROI_LAYER = "Manual ROI"
 NON_IMAGE_LAYERS = (PLATE_BOUNDARIES_LAYER, MANUAL_ROI_LAYER)
 # Same cache/ YAML pattern other widget state uses (see e.g. cache/multipoint_widget_config.yaml).
 LAST_VIEW_MODE_CACHE = "cache/last_view_mode.yaml"
-
-
-def _to_yaml_safe(obj):
-    """Recursively convert numpy scalars / arrays / tuples to plain Python
-    primitives so yaml.safe_dump can serialize them.
-
-    Without this, fields like resolution_um (sometimes numpy.float64 because
-    pixel size flows through camera SDKs) trigger
-    'cannot represent an object: ...' from yaml.SafeRepresenter.
-    """
-    if isinstance(obj, dict):
-        return {str(k): _to_yaml_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set, frozenset)):
-        return [_to_yaml_safe(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    return obj
 
 
 class DisplayMode(enum.Enum):
@@ -76,7 +58,7 @@ def _load_last_view_mode() -> "DisplayMode":
 def _save_last_view_mode(mode: "DisplayMode") -> None:
     """Persist the display mode so the next session opens in the same view."""
     try:
-        os.makedirs(os.path.dirname(LAST_VIEW_MODE_CACHE), exist_ok=True)
+        ensure_directory_exists(os.path.dirname(LAST_VIEW_MODE_CACHE))
         with open(LAST_VIEW_MODE_CACHE, "w") as f:
             yaml.safe_dump({"mode": mode.value}, f)
     except OSError:
@@ -208,11 +190,9 @@ class UnifiedMosaicWidget(QWidget):
 
     # --- Plate layout setup ---
 
-    def setPlateLayout(
-        self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None, well_ids=None
-    ):
+    def setPlateLayout(self, plate_view_init):
         """Configure plate layout for plate mode. Called at the start of every
-        plate-based acquisition.
+        plate-based acquisition with a ``PlateViewInit`` payload.
 
         Existing channel canvases are wiped to fresh zero-filled plate-sized
         arrays whenever the slot dimensions changed *or* the set of wells being
@@ -220,12 +200,12 @@ class UnifiedMosaicWidget(QWidget):
         previous run sitting at coordinates that no longer match the current
         plate grid.
         """
-        self.num_rows = num_rows
-        self.num_cols = num_cols
-        self.well_slot_shape = tuple(well_slot_shape)
-        self.fov_grid_shape = tuple(fov_grid_shape) if fov_grid_shape else (1, 1)
-        plate_height = num_rows * self.well_slot_shape[0]
-        plate_width = num_cols * self.well_slot_shape[1]
+        self.num_rows = plate_view_init.num_rows
+        self.num_cols = plate_view_init.num_cols
+        self.well_slot_shape = tuple(plate_view_init.well_slot_shape)
+        self.fov_grid_shape = tuple(plate_view_init.fov_grid_shape) if plate_view_init.fov_grid_shape else (1, 1)
+        plate_height = self.num_rows * self.well_slot_shape[0]
+        plate_width = self.num_cols * self.well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
             min_plate_dim = min(plate_height, plate_width)
             max_plate_dim = max(plate_height, plate_width)
@@ -242,7 +222,7 @@ class UnifiedMosaicWidget(QWidget):
         if plate_height <= 0 or plate_width <= 0:
             return
         target_dims = (plate_height, plate_width)
-        new_well_ids = frozenset(well_ids) if well_ids else frozenset()
+        new_well_ids = frozenset(plate_view_init.well_ids) if plate_view_init.well_ids else frozenset()
         coverage_changed = new_well_ids != self._plate_well_ids
         self._plate_well_ids = new_well_ids
         canvas_changed = False
@@ -478,7 +458,8 @@ class UnifiedMosaicWidget(QWidget):
                 return
             slot_h, slot_w = self.well_slot_shape
             origin_x, origin_y = update.well_origin_mm
-            self._plate_well_origins_mm[update.well_id] = (origin_x, origin_y)
+            # First-tile-of-well sets the origin; identical writes from later tiles are noise.
+            self._plate_well_origins_mm.setdefault(update.well_id, (origin_x, origin_y))
             fov_offset_x = int(round((tl_x_mm - origin_x) / self.viewer_pixel_size_mm))
             fov_offset_y = int(round((tl_y_mm - origin_y) / self.viewer_pixel_size_mm))
             y_px = update.well_row * slot_h + fov_offset_y
@@ -488,8 +469,10 @@ class UnifiedMosaicWidget(QWidget):
             blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
             layer.refresh()
             self._draw_plate_boundaries()
-            # Always show the full plate while plate mode is updating.
-            self._fit_view_to_plate()
+            # The fit-the-whole-plate camera reset only fires when the canvas
+            # is (re)allocated — in setPlateLayout when slot dims/coverage
+            # change and in _create_channel_layer when a layer is created.
+            # That way the user keeps any pan/zoom they've made during the run.
 
         # Contrast is per-monochrome-channel; RGB layers display the colour
         # image directly and don't go through the channel ContrastManager.
@@ -560,6 +543,11 @@ class UnifiedMosaicWidget(QWidget):
             layer = self.viewer.add_image(initial_data, colormap=color, blending="additive", **layer_kwargs)
             layer.events.contrast_limits.connect(self._on_contrast_change)
         layer.mouse_double_click_callbacks.append(self._on_double_click)
+        # Fit the view when the first plate-sized canvas is created so the user
+        # immediately sees the full plate; subsequent tiles preserve any
+        # pan/zoom they've made since.
+        if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
+            self._fit_view_to_plate()
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""
@@ -610,8 +598,6 @@ class UnifiedMosaicWidget(QWidget):
         well_col = x // self.well_slot_shape[1]
         if well_row < 0 or well_row >= self.num_rows or well_col < 0 or well_col >= self.num_cols:
             return
-        from control.core.mosaic_utils import format_well_id
-
         well_id = format_well_id(well_row, well_col)
         y_in_well = y % self.well_slot_shape[0]
         x_in_well = x % self.well_slot_shape[1]
@@ -821,6 +807,11 @@ class UnifiedMosaicWidget(QWidget):
             "resolution_um": resolution_um,
             "channels": channels,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            # Capture the flag values now so toggling them between snapshot and
+            # write doesn't leave the sidecar describing one thing and the
+            # actual files describing another.
+            "save_overview": bool(control._def.SAVE_DOWNSAMPLED_OVERVIEW),
+            "save_per_well": bool(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES),
         }
         if self.mode == DisplayMode.PLATE:
             snapshot["plate"] = {
@@ -843,7 +834,7 @@ class UnifiedMosaicWidget(QWidget):
         SAVE_DOWNSAMPLED_OVERVIEW / SAVE_DOWNSAMPLED_WELL_IMAGES. Always writes
         the JSON sidecar so consumers know what (if anything) was produced."""
         try:
-            os.makedirs(target_dir, exist_ok=True)
+            ensure_directory_exists(target_dir)
             mode = snapshot["mode"]
             resolution_um = snapshot["resolution_um"]
             res_tag = f"{int(round(resolution_um))}um"
@@ -852,8 +843,8 @@ class UnifiedMosaicWidget(QWidget):
             sidecar = {k: v for k, v in snapshot.items() if k != "channels"}
             sidecar["channel_names"] = channel_names
 
-            save_overview = control._def.SAVE_DOWNSAMPLED_OVERVIEW
-            save_per_well = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES and mode == DisplayMode.PLATE.value
+            save_overview = snapshot["save_overview"]
+            save_per_well = snapshot["save_per_well"] and mode == DisplayMode.PLATE.value
 
             if save_overview:
                 stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
@@ -880,7 +871,7 @@ class UnifiedMosaicWidget(QWidget):
                 sidecar["per_well_dir"] = "wells"
 
             with open(os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.yaml"), "w") as f:
-                yaml.safe_dump(_to_yaml_safe(sidecar), f, sort_keys=False)
+                yaml.safe_dump(serialize_for_yaml(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
 
@@ -892,10 +883,7 @@ class UnifiedMosaicWidget(QWidget):
         if slot_h == 0 or slot_w == 0:
             return
         wells_dir = os.path.join(target_dir, "wells")
-        os.makedirs(wells_dir, exist_ok=True)
-        # Need (well_row, well_col) per well. parse_well_id is sufficient.
-        from control.core.mosaic_utils import parse_well_id
-
+        ensure_directory_exists(wells_dir)
         for well_id in plate.get("well_ids", []):
             try:
                 row, col = parse_well_id(well_id)
@@ -932,8 +920,10 @@ class UnifiedMosaicWidget(QWidget):
         self._log.info(f"Saved {len(plate.get('well_ids', []))} per-well TIFFs → {wells_dir}")
 
     def closeEvent(self, event):  # noqa: N802 (Qt naming)
-        """Stop the save executor before Qt destroys us."""
-        self._save_executor.shutdown(wait=False, cancel_futures=False)
+        """Wait for in-flight saves before Qt destroys us — otherwise a TIFF
+        write that's mid-flush would be truncated when the app exits via
+        os._exit (see CLAUDE.md on shutdown order)."""
+        self._save_executor.shutdown(wait=True, cancel_futures=False)
         super().closeEvent(event)
 
     def resetView(self):

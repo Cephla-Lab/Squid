@@ -42,29 +42,9 @@ NoOpCallbacks = MultiPointControllerFunctions(
 )
 
 
-def _serialize_for_yaml(obj):
-    """Recursively serialize objects to YAML-compatible types."""
-    if obj is None:
-        return None
-    elif isinstance(obj, Enum):
-        return obj.value
-    # Handle numpy types - convert to native Python types
-    elif isinstance(obj, np.ndarray):
-        return [_serialize_for_yaml(item) for item in obj.tolist()]
-    elif isinstance(obj, (np.integer, np.floating)):
-        return obj.item()  # Convert numpy scalar to Python scalar
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _serialize_for_yaml(v) for k, v in dataclasses.asdict(obj).items()}
-    elif hasattr(obj, "model_dump"):
-        return _serialize_for_yaml(obj.model_dump())
-    elif isinstance(obj, dict):
-        return {k: _serialize_for_yaml(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_serialize_for_yaml(item) for item in obj]
-    else:
-        return obj
+# Local alias kept for diff stability. The shared helper now lives in
+# control.utils.serialize_for_yaml.
+from control.utils import serialize_for_yaml as _serialize_for_yaml  # noqa: E402
 
 
 def _save_acquisition_yaml(
