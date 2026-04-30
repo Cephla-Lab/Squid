@@ -738,8 +738,9 @@ class UnifiedMosaicWidget(QWidget):
         self._acquisition_save_dir = experiment_path
 
     def save_for_timepoint(self, time_point: int) -> None:
-        """Save the canvas under the worker's per-timepoint folder, then
-        zero it so the next timepoint starts fresh."""
+        """Save the canvas under the worker's per-timepoint folder. The
+        canvas is left intact: subsequent timepoints overwrite the same
+        positions, and the final view stays on screen after acquisition."""
         if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
             return
         if not self.layers_initialized:
@@ -749,10 +750,6 @@ class UnifiedMosaicWidget(QWidget):
             return
         timepoint_dir = os.path.join(self._acquisition_save_dir, f"{time_point:0{FILE_ID_PADDING}}")
         self._dispatch_save(os.path.join(timepoint_dir, "mosaic_view"))
-        # Reset must run after _dispatch_save so the snapshot copy is already taken.
-        for layer in self._image_layers():
-            layer.data = np.zeros_like(layer.data)
-            layer.refresh()
 
     def _on_save_clicked(self) -> None:
         """Manual Save View button: always prompt for a save directory.
