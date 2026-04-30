@@ -195,12 +195,14 @@ class UnifiedMosaicWidget(QWidget):
         """Configure plate layout for plate mode. Called at the start of every
         plate-based acquisition with a ``PlateViewInit`` payload.
 
-        Existing channel canvases are wiped to fresh zero-filled plate-sized
-        arrays whenever the slot dimensions changed *or* the set of wells being
-        scanned changed — both cases would otherwise leave tiles from the
-        previous run sitting at coordinates that no longer match the current
-        plate grid.
+        Existing channel canvases are wiped whenever any of the following
+        changed vs. the previous run: slot dimensions, well coverage, or the
+        per-well FOV grid shape. The last is needed because two scans with
+        the same total extent but a different grid (e.g. 2×3 vs 3×2) place
+        FOV centers at different slot pixels, so old tiles can leave residue
+        outside the new tile footprints.
         """
+        old_fov_grid_shape = self.fov_grid_shape
         self.num_rows = plate_view_init.num_rows
         self.num_cols = plate_view_init.num_cols
         self.well_slot_shape = tuple(plate_view_init.well_slot_shape)
@@ -225,11 +227,12 @@ class UnifiedMosaicWidget(QWidget):
         target_dims = (plate_height, plate_width)
         new_well_ids = frozenset(plate_view_init.well_ids) if plate_view_init.well_ids else frozenset()
         coverage_changed = new_well_ids != self._plate_well_ids
+        grid_changed = self.fov_grid_shape != old_fov_grid_shape
         self._plate_well_ids = new_well_ids
         canvas_changed = False
         for layer in self._image_layers():
             dims_changed = layer.data.shape[:2] != target_dims
-            if dims_changed or coverage_changed:
+            if dims_changed or coverage_changed or grid_changed:
                 layer.data = np.zeros(target_dims + layer.data.shape[2:], dtype=layer.data.dtype)
                 canvas_changed = True
         # Boundaries depend on slot dims — drop so they get redrawn on the next tile.
