@@ -115,6 +115,10 @@ class UnifiedMosaicWidget(QWidget):
     signal_clear_viewer = Signal()
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
+    # Fires after the active display mode flips. Listeners (e.g. the wellplate
+    # widget) use this to gate features that only make sense in one mode —
+    # Manual ROI drawing in particular is meaningful only in Full View.
+    signal_mode_changed = Signal(object)  # DisplayMode
 
     def __init__(self, objectiveStore, camera, contrastManager, parent=None):
         super().__init__(parent)
@@ -363,6 +367,7 @@ class UnifiedMosaicWidget(QWidget):
         self.toggle_button.setText(self._toggle_button_label())
         self._clear_shape()
         self.clearAllLayers()
+        self.signal_mode_changed.emit(self.mode)
 
     def _toggle_mode(self):
         """Toggle between full-stage and plate-grid layout. Clears the canvas
@@ -388,6 +393,7 @@ class UnifiedMosaicWidget(QWidget):
         # ROI shapes are stage-coord-based and only meaningful in MOSAIC mode.
         self._clear_shape()
         self.clearAllLayers()
+        self.signal_mode_changed.emit(self.mode)
 
     # --- Tile ingestion ---
 

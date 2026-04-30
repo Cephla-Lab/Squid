@@ -6784,6 +6784,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Track XY mode before unchecking, for restoration when re-checking
         self._xy_mode_before_uncheck = None
 
+        # Manual ROI is gated by two conditions: (a) the unified mosaic widget
+        # has received its first tile (so we have a coordinate system to draw
+        # against), and (b) it is in Full View — Plate View has no concept of
+        # stage-coordinate ROIs. Both flags flip independently; we re-evaluate
+        # the combo entry in _apply_manual_ROI_state.
+        self._mosaic_layers_initialized = False
+        self._mosaic_in_plate_view = False
+
         # Track loading from cache
         self._loading_from_cache = False
 
@@ -7249,6 +7257,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode and self.napariMosaicWidget is not None:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
+            self.napariMosaicWidget.signal_mode_changed.connect(self._on_mosaic_mode_changed)
+            # signal_mode_changed only fires on subsequent toggles, so seed the
+            # initial state from the persisted mode the unified widget loaded
+            # at startup. Otherwise launching with cache=PLATE would still
+            # offer Manual until the user toggles.
+            self._on_mosaic_mode_changed(self.napariMosaicWidget.mode)
 
         # Connect save/clear coordinates button
         self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
@@ -7280,8 +7294,32 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
 
     def enable_manual_ROI(self):
+        """Slot for the unified widget's ``signal_layers_initialized``. The
+        actual combo enable/disable goes through ``_apply_manual_ROI_state``
+        so the Plate-View gate is honored uniformly."""
+        self._mosaic_layers_initialized = True
+        self._apply_manual_ROI_state()
+
+    def _on_mosaic_mode_changed(self, mode):
+        """Slot for the unified widget's ``signal_mode_changed``. Disables
+        Manual when in Plate View — and forces the user out of Manual if they
+        were currently selecting it — since Plate View can't host
+        stage-coordinate ROIs."""
+        # Local import to avoid a circular import at module load time.
+        from control.widgets_mosaic import DisplayMode
+
+        self._mosaic_in_plate_view = mode == DisplayMode.PLATE
+        if self._mosaic_in_plate_view and self.combobox_xy_mode.currentText() == "Manual":
+            self.combobox_xy_mode.setCurrentText("Current Position")
+        self._apply_manual_ROI_state()
+
+    def _apply_manual_ROI_state(self):
+        """Single source of truth for whether the Manual combo entry is enabled."""
         _manual_index = self.combobox_xy_mode.findText("Manual")
-        self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
+        if _manual_index < 0:
+            return
+        enabled = self._mosaic_layers_initialized and not self._mosaic_in_plate_view
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(enabled)
 
     def initialize_live_scan_grid_state(self):
         """Initialize live scan grid state - call this after all external connections are made"""
