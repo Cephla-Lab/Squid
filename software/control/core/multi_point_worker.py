@@ -44,7 +44,7 @@ from control.core.job_processing import (
     JobRunner,
     JobResult,
 )
-from control.core.downsampled_views import (
+from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
 )

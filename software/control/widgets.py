@@ -19,7 +19,7 @@ import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
-from control.core.downsampled_views import format_well_id
+from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage

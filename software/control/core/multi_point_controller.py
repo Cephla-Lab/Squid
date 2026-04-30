@@ -157,7 +157,7 @@ def _save_acquisition_yaml(
         }
 
     # Add remaining common sections
-    yaml_dict["downsampled_views"] = {
+    yaml_dict["mosaic_view"] = {
         "save_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
         "save_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
         "resolution_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,

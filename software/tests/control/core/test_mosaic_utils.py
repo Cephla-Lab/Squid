@@ -1,32 +1,16 @@
-"""Tests for downsampled well and plate view generation."""
-
-import tempfile
-import os
+"""Tests for control.core.mosaic_utils."""
 
 import numpy as np
 import pytest
 
-# These imports will fail until we implement the module
-try:
-    from control.core.downsampled_views import (
-        _pyrdown_chain,
-        calculate_overlap_pixels,
-        crop_overlap,
-        downsample_tile,
-        downsample_to_resolutions,
-        stitch_tiles,
-        parse_well_id,
-        format_well_id,
-        ensure_plate_resolution_in_well_resolutions,
-    )
-    from control._def import DownsamplingMethod
-
-    MODULE_AVAILABLE = True
-except ImportError:
-    MODULE_AVAILABLE = False
-
-
-pytestmark = pytest.mark.skipif(not MODULE_AVAILABLE, reason="downsampled_views module not yet implemented")
+from control.core.mosaic_utils import (
+    _pyrdown_chain,
+    calculate_overlap_pixels,
+    downsample_tile,
+    parse_well_id,
+    format_well_id,
+)
+from control._def import DownsamplingMethod
 
 
 class TestOverlapCalculation:
@@ -77,58 +61,6 @@ class TestOverlapCalculation:
         assert overlap[3] == 124  # right
         assert overlap[0] == 68  # top
         assert overlap[1] == 68  # bottom
-
-
-class TestCropOverlap:
-    """Tests for tile overlap cropping."""
-
-    def test_crop_overlap_all_sides(self):
-        """Test tile cropping removes correct overlap regions."""
-        tile = np.ones((100, 100), dtype=np.uint16) * 1000
-        overlap = (10, 10, 15, 15)  # top, bottom, left, right
-
-        cropped = crop_overlap(tile, overlap)
-
-        assert cropped.shape == (80, 70)  # 100-10-10, 100-15-15
-
-    def test_crop_overlap_preserves_dtype(self):
-        """Test cropping preserves image dtype."""
-        tile = np.ones((100, 100), dtype=np.uint16) * 65535
-        overlap = (5, 5, 5, 5)
-
-        cropped = crop_overlap(tile, overlap)
-
-        assert cropped.dtype == np.uint16
-        assert np.all(cropped == 65535)
-
-    def test_crop_overlap_zero(self):
-        """Test no cropping when overlap is zero."""
-        tile = np.ones((100, 100), dtype=np.uint16)
-        overlap = (0, 0, 0, 0)
-
-        cropped = crop_overlap(tile, overlap)
-
-        assert cropped.shape == tile.shape
-        assert np.array_equal(cropped, tile)
-
-    def test_crop_overlap_edge_tile_top_left(self):
-        """Test cropping for edge tile (no top/left crop)."""
-        tile = np.ones((100, 100), dtype=np.uint16)
-        # For edge tiles, we only crop the sides with neighbors
-        overlap = (0, 10, 0, 15)  # No top/left, crop bottom/right
-
-        cropped = crop_overlap(tile, overlap)
-
-        assert cropped.shape == (90, 85)
-
-    def test_crop_overlap_rgb_image(self):
-        """Test cropping works on RGB images."""
-        tile = np.ones((100, 100, 3), dtype=np.uint8) * 128
-        overlap = (10, 10, 10, 10)
-
-        cropped = crop_overlap(tile, overlap)
-
-        assert cropped.shape == (80, 80, 3)
 
 
 class TestDownsampleTile:
@@ -245,100 +177,6 @@ class TestDownsampleTile:
         assert not np.array_equal(linear, area)
 
 
-class TestDownsampleToResolutions:
-    """Tests for multi-resolution downsampling."""
-
-    def test_downsample_to_resolutions_single(self):
-        """Test downsampling to a single resolution."""
-        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
-
-        results = downsample_to_resolutions(tile, 1.0, [5.0])
-
-        assert len(results) == 1
-        assert 5.0 in results
-        assert results[5.0].shape == (20, 20)
-
-    def test_downsample_to_resolutions_multiple(self):
-        """Test downsampling to multiple resolutions."""
-        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
-
-        results = downsample_to_resolutions(tile, 1.0, [2.0, 5.0, 10.0])
-
-        assert len(results) == 3
-        assert results[2.0].shape == (50, 50)
-        assert results[5.0].shape == (20, 20)
-        assert results[10.0].shape == (10, 10)
-
-    def test_downsample_to_resolutions_inter_linear(self):
-        """Test multi-resolution with INTER_LINEAR (parallel from original)."""
-        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
-
-        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_LINEAR)
-
-        assert len(results) == 2
-        assert results[5.0].shape == (20, 20)
-        assert results[10.0].shape == (10, 10)
-
-    def test_downsample_to_resolutions_inter_area(self):
-        """Test multi-resolution with INTER_AREA (cascaded)."""
-        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
-
-        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_AREA)
-
-        assert len(results) == 2
-        assert results[5.0].shape == (20, 20)
-        assert results[10.0].shape == (10, 10)
-
-    def test_downsample_to_resolutions_inter_area_fast(self):
-        """Test multi-resolution with INTER_AREA_FAST (parallel, pyrDown chain)."""
-        tile = np.random.randint(0, 65535, (200, 200), dtype=np.uint16)
-
-        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_AREA_FAST)
-
-        assert len(results) == 2
-        assert results[5.0].shape == (40, 40)
-        assert results[10.0].shape == (20, 20)
-
-    def test_downsample_to_resolutions_unsorted_input(self):
-        """Test that unsorted resolutions are handled correctly."""
-        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
-
-        # Pass resolutions in unsorted order
-        results = downsample_to_resolutions(tile, 1.0, [10.0, 2.0, 5.0])
-
-        assert len(results) == 3
-        assert results[2.0].shape == (50, 50)
-        assert results[5.0].shape == (20, 20)
-        assert results[10.0].shape == (10, 10)
-
-    def test_downsample_to_resolutions_preserves_dtype(self):
-        """Test that dtype is preserved across all resolutions."""
-        tile = np.ones((100, 100), dtype=np.uint16) * 30000
-
-        results = downsample_to_resolutions(tile, 1.0, [2.0, 5.0, 10.0])
-
-        for resolution, img in results.items():
-            assert img.dtype == np.uint16
-
-    def test_downsample_cascaded_vs_parallel_quality(self):
-        """Test that cascaded INTER_AREA has minimal quality loss vs parallel."""
-        # For INTER_AREA, cascaded should be very close to parallel
-        tile = np.random.randint(0, 65535, (1000, 1000), dtype=np.uint16)
-
-        # Get cascaded result
-        cascaded = downsample_to_resolutions(tile, 1.0, [5.0, 10.0, 20.0], method=DownsamplingMethod.INTER_AREA)
-
-        # Compute parallel result manually
-        parallel_10 = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
-
-        # For INTER_AREA cascaded, the 10um result should be very close to parallel
-        # (small differences due to rounding in intermediate steps)
-        diff = np.abs(cascaded[10.0].astype(float) - parallel_10.astype(float))
-        max_diff = diff.max()
-        # Allow some tolerance for cascading artifacts
-        assert max_diff < 1000, f"Max diff {max_diff} too large for INTER_AREA cascading"
-
-
 class TestDownsamplingMethodEnum:
     """Tests for DownsamplingMethod enum."""
 
@@ -372,64 +210,6 @@ class TestDownsamplingMethodEnum:
         """Test that invalid string raises ValueError."""
         with pytest.raises(ValueError, match="Invalid downsampling method"):
             DownsamplingMethod.convert_to_enum("invalid_method")
-
-
-class TestStitchTiles:
-    """Tests for tile stitching."""
-
-    def test_stitch_tiles_single_fov(self):
-        """Test stitching with single FOV returns tile as-is."""
-        tile = np.ones((100, 100), dtype=np.uint16) * 5000
-        tiles = [(tile, (0.0, 0.0))]  # Single tile at origin
-        pixel_size_um = 1.0
-
-        stitched = stitch_tiles(tiles, pixel_size_um)
-
-        assert stitched.shape == tile.shape
-        assert np.array_equal(stitched, tile)
-
-    def test_stitch_tiles_2x2_grid(self):
-        """Test stitching 2x2 FOV grid with known positions."""
-        tile_size = 100
-        tile1 = np.ones((tile_size, tile_size), dtype=np.uint16) * 1000
-        tile2 = np.ones((tile_size, tile_size), dtype=np.uint16) * 2000
-        tile3 = np.ones((tile_size, tile_size), dtype=np.uint16) * 3000
-        tile4 = np.ones((tile_size, tile_size), dtype=np.uint16) * 4000
-
-        pixel_size_um = 1.0
-        step_mm = 0.1  # 100 um = 100 pixels at 1 um/pixel
-
-        tiles = [
-            (tile1, (0.0, 0.0)),  # top-left
-            (tile2, (step_mm, 0.0)),  # top-right
-            (tile3, (0.0, step_mm)),  # bottom-left
-            (tile4, (step_mm, step_mm)),  # bottom-right
-        ]
-
-        stitched = stitch_tiles(tiles, pixel_size_um)
-
-        assert stitched.shape == (200, 200)
-        # Check each quadrant has correct value
-        assert np.all(stitched[0:100, 0:100] == 1000)  # top-left
-        assert np.all(stitched[0:100, 100:200] == 2000)  # top-right
-        assert np.all(stitched[100:200, 0:100] == 3000)  # bottom-left
-        assert np.all(stitched[100:200, 100:200] == 4000)  # bottom-right
-
-    def test_stitch_tiles_respects_positions(self):
-        """Test tiles placed at correct positions based on coordinates."""
-        tile = np.ones((50, 50), dtype=np.uint16) * 1000
-        pixel_size_um = 2.0  # 2 um/pixel
-
-        # Single tile at position (0.1, 0.1) - canvas starts at min position
-        # So this single tile creates a 50x50 canvas starting at its position
-        tiles = [(tile, (0.1, 0.1))]
-
-        stitched = stitch_tiles(tiles, pixel_size_um)
-
-        # Single tile at non-zero position still creates canvas sized to fit
-        # Canvas origin is at (0.1, 0.1), so tile fills entire canvas
-        assert stitched.shape == (50, 50)
-        assert np.all(stitched == 1000)
 
 
 class TestWellIdParsing:
@@ -495,39 +275,6 @@ class TestWellIdFormatting:
                 well_id = format_well_id(row, col)
                 parsed_row, parsed_col = parse_well_id(well_id)
                 assert (parsed_row, parsed_col) == (row, col), f"Round-trip failed for ({row}, {col}) -> {well_id}"
-
-
-class TestConfigValidation:
-    """Tests for configuration validation."""
-
-    def test_config_plate_resolution_already_in_list(self):
-        """Test no change when plate resolution already in well resolutions."""
-        well_resolutions = [5.0, 10.0, 20.0]
-        plate_resolution = 10.0
-
-        result = ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
-
-        assert result == [5.0, 10.0, 20.0]
-
-    def test_config_plate_resolution_added_if_missing(self):
-        """Test plate resolution auto-added if missing from well resolutions."""
-        well_resolutions = [5.0, 20.0]
-        plate_resolution = 10.0
-
-        result = ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
-
-        assert 10.0 in result
-        assert result == [5.0, 10.0, 20.0]  # Should be sorted
-
-    def test_config_does_not_modify_original_list(self):
-        """Test original list is not modified."""
-        well_resolutions = [5.0, 20.0]
-        plate_resolution = 10.0
-
-        result = ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
-
-        assert well_resolutions == [5.0, 20.0]  # Original unchanged
-        assert result == [5.0, 10.0, 20.0]
 
 
 class TestPyrdownChain:

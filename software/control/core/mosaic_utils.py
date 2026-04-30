@@ -1,22 +1,22 @@
-"""Downsampled well and plate view generation for Select Well Mode imaging.
+"""Helpers for the unified mosaic widget pipeline.
 
-This module provides utilities for generating downsampled views during acquisition:
-- Per-well images at multiple resolutions (e.g., 5, 10, 20 µm)
-- Compact plate view with wells arranged in a grid
-
-The plate view uses grid indexing (not stage coordinates) so wells are immediately
-adjacent with no empty space between them.
+- ``calculate_overlap_pixels``: derive per-edge crop pixels from FOV step size,
+  used by the worker when building a plate-view layout.
+- ``downsample_tile`` / ``_pyrdown_chain``: tile downsampling at the widget's
+  display resolution; ``downsample_tile`` is the public entrypoint used by the
+  unified mosaic widget on every received tile.
+- ``parse_well_id`` / ``format_well_id``: well-ID ↔ (row, col) conversions
+  used by the widget's plate-mode positioning math and by the controller's
+  per-tile metadata derivation.
 """
 
-import os
 import time
-from typing import List, Tuple, Dict, Optional, Union
+from typing import Tuple
 
 import cv2
 import numpy as np
-import tifffile
 
-from control._def import ZProjectionMode, DownsamplingMethod
+from control._def import DownsamplingMethod
 import squid.logging
 
 
@@ -57,28 +57,6 @@ def calculate_overlap_pixels(
     bottom_crop = overlap_y_pixels - top_crop
 
     return (top_crop, bottom_crop, left_crop, right_crop)
-
-
-def crop_overlap(
-    tile: np.ndarray,
-    overlap: Tuple[int, int, int, int],
-) -> np.ndarray:
-    """Crop overlap region from tile edges.
-
-    Args:
-        tile: Image tile (2D or 3D for RGB)
-        overlap: Tuple of (top_crop, bottom_crop, left_crop, right_crop) in pixels
-
-    Returns:
-        Cropped tile
-    """
-    top, bottom, left, right = overlap
-
-    # Handle zero crops
-    bottom_idx = tile.shape[0] - bottom if bottom > 0 else tile.shape[0]
-    right_idx = tile.shape[1] - right if right > 0 else tile.shape[1]
-
-    return tile[top:bottom_idx, left:right_idx]
 
 
 def _pyrdown_chain(tile: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
@@ -170,132 +148,6 @@ def downsample_tile(
     return downsampled
 
 
-def downsample_to_resolutions(
-    tile: np.ndarray,
-    source_pixel_size_um: float,
-    target_resolutions_um: List[float],
-    method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST,
-) -> Dict[float, np.ndarray]:
-    """Downsample a tile to multiple target resolutions.
-
-    For INTER_LINEAR and INTER_AREA_FAST: Each resolution is computed directly
-        from the original (parallel) since these methods are already fast.
-    For INTER_AREA: Resolutions are computed in cascade (sorted finest to coarsest)
-        to improve performance (~3x faster than parallel INTER_AREA).
-
-    Args:
-        tile: Image tile
-        source_pixel_size_um: Source pixel size in micrometers
-        target_resolutions_um: List of target resolutions in micrometers
-        method: Interpolation method
-
-    Returns:
-        Dictionary mapping resolution to downsampled tile
-    """
-    log = squid.logging.get_logger(__name__)
-    t_start = time.perf_counter()
-
-    results: Dict[float, np.ndarray] = {}
-
-    # Sort resolutions finest to coarsest for cascading
-    sorted_resolutions = sorted(target_resolutions_um)
-
-    if method in (DownsamplingMethod.INTER_LINEAR, DownsamplingMethod.INTER_AREA_FAST):
-        # Parallel: each from original (both methods are fast enough)
-        for resolution in sorted_resolutions:
-            results[resolution] = downsample_tile(tile, source_pixel_size_um, resolution, method)
-    else:
-        # Cascaded for INTER_AREA: original → finest → ... → coarsest
-        current = tile
-        current_resolution = source_pixel_size_um
-        for resolution in sorted_resolutions:
-            current = downsample_tile(current, current_resolution, resolution, method)
-            results[resolution] = current
-            current_resolution = resolution
-
-    t_end = time.perf_counter()
-    log.debug(
-        f"[PERF] downsample_to_resolutions: {len(target_resolutions_um)} resolutions, "
-        f"method={method.value}, TOTAL={t_end - t_start:.4f}s"
-    )
-
-    return results
-
-
-def stitch_tiles(
-    tiles: List[Tuple[np.ndarray, Tuple[float, float]]],
-    pixel_size_um: float,
-) -> np.ndarray:
-    """Stitch tiles together using their stage coordinates.
-
-    Args:
-        tiles: List of (tile, (x_mm, y_mm)) tuples with tile images and positions
-        pixel_size_um: Pixel size in micrometers
-
-    Returns:
-        Stitched image
-    """
-    log = squid.logging.get_logger(__name__)
-    t_start = time.perf_counter()
-
-    if len(tiles) == 0:
-        raise ValueError("No tiles to stitch")
-
-    if len(tiles) == 1:
-        return tiles[0][0].copy()
-
-    # Find bounding box in mm
-    min_x_mm = min(pos[0] for _, pos in tiles)
-    min_y_mm = min(pos[1] for _, pos in tiles)
-    max_x_mm = max(pos[0] for _, pos in tiles)
-    max_y_mm = max(pos[1] for _, pos in tiles)
-
-    # Get tile dimensions (assume all tiles same size)
-    tile_height, tile_width = tiles[0][0].shape[:2]
-    tile_width_mm = tile_width * pixel_size_um / 1000.0
-    tile_height_mm = tile_height * pixel_size_um / 1000.0
-
-    # Calculate canvas size
-    canvas_width_mm = max_x_mm - min_x_mm + tile_width_mm
-    canvas_height_mm = max_y_mm - min_y_mm + tile_height_mm
-
-    canvas_width = int(round(canvas_width_mm * 1000.0 / pixel_size_um))
-    canvas_height = int(round(canvas_height_mm * 1000.0 / pixel_size_um))
-
-    t_calc = time.perf_counter()
-
-    # Handle RGB images
-    dtype = tiles[0][0].dtype
-    if len(tiles[0][0].shape) == 3:
-        canvas = np.zeros((canvas_height, canvas_width, tiles[0][0].shape[2]), dtype=dtype)
-    else:
-        canvas = np.zeros((canvas_height, canvas_width), dtype=dtype)
-
-    t_alloc = time.perf_counter()
-
-    # Place tiles
-    for tile, (x_mm, y_mm) in tiles:
-        x_pixel = int(round((x_mm - min_x_mm) * 1000.0 / pixel_size_um))
-        y_pixel = int(round((y_mm - min_y_mm) * 1000.0 / pixel_size_um))
-
-        h, w = tile.shape[:2]
-        y_end = min(y_pixel + h, canvas_height)
-        x_end = min(x_pixel + w, canvas_width)
-
-        canvas[y_pixel:y_end, x_pixel:x_end] = tile[: y_end - y_pixel, : x_end - x_pixel]
-
-    t_place = time.perf_counter()
-
-    # Log detailed timing for performance analysis
-    log.debug(
-        f"[PERF] stitch_tiles: {len(tiles)} tiles -> ({canvas_height}, {canvas_width}) | "
-        f"calc={t_calc - t_start:.4f}s, alloc={t_alloc - t_calc:.4f}s, place={t_place - t_alloc:.4f}s, "
-        f"TOTAL={t_place - t_start:.4f}s"
-    )
-
-    return canvas
-
-
 def parse_well_id(well_id: str) -> Tuple[int, int]:
     """Parse well ID string to (row, col) indices.
 
@@ -369,22 +221,3 @@ def format_well_id(row: int, col: int) -> str:
         letter_part = f"{first_letter}{second_letter}"
 
     return f"{letter_part}{col + 1}"
-
-
-def ensure_plate_resolution_in_well_resolutions(
-    well_resolutions: List[float],
-    plate_resolution: float,
-) -> List[float]:
-    """Ensure plate resolution is in the list of well resolutions.
-
-    Args:
-        well_resolutions: List of well resolution values in µm
-        plate_resolution: Plate resolution value in µm
-
-    Returns:
-        Sorted list of resolutions including plate resolution
-    """
-    result = list(well_resolutions)
-    if plate_resolution not in result:
-        result.append(plate_resolution)
-    return sorted(result)

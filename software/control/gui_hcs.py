@@ -46,7 +46,7 @@ from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
-from control.core.downsampled_views import parse_well_id
+from control.core.mosaic_utils import parse_well_id
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,

@@ -25,7 +25,7 @@ from napari.utils.colormaps import AVAILABLE_COLORMAPS
 
 import control._def
 from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
-from control.core.downsampled_views import downsample_tile
+from control.core.mosaic_utils import downsample_tile
 from control.utils_channel import extract_wavelength_from_config_name
 import squid.logging
 
@@ -610,7 +610,7 @@ class UnifiedMosaicWidget(QWidget):
         well_col = x // self.well_slot_shape[1]
         if well_row < 0 or well_row >= self.num_rows or well_col < 0 or well_col >= self.num_cols:
             return
-        from control.core.downsampled_views import format_well_id
+        from control.core.mosaic_utils import format_well_id
 
         well_id = format_well_id(well_row, well_col)
         y_in_well = y % self.well_slot_shape[0]
@@ -894,7 +894,7 @@ class UnifiedMosaicWidget(QWidget):
         wells_dir = os.path.join(target_dir, "wells")
         os.makedirs(wells_dir, exist_ok=True)
         # Need (well_row, well_col) per well. parse_well_id is sufficient.
-        from control.core.downsampled_views import parse_well_id
+        from control.core.mosaic_utils import parse_well_id
 
         for well_id in plate.get("well_ids", []):
             try:
