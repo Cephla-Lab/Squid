@@ -208,7 +208,6 @@ class QtMultiPointController(MultiPointController, QObject):
     plate_view_init = Signal(object)  # PlateViewInit
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
-    # Per-timepoint flush trigger so the mosaic widget saves & resets at each timepoint boundary.
     timepoint_finished = Signal(int)  # time_point index that just completed
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
@@ -1844,7 +1843,6 @@ class HighContentScreeningGui(QMainWindow):
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
     def _on_timepoint_finished(self, time_point: int):
-        """Per-timepoint flush: writes the canvas to disk and resets it for the next timepoint."""
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
 

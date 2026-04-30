@@ -115,9 +115,6 @@ class UnifiedMosaicWidget(QWidget):
     signal_clear_viewer = Signal()
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
-    # Fires after the active display mode flips. Listeners (e.g. the wellplate
-    # widget) use this to gate features that only make sense in one mode —
-    # Manual ROI drawing in particular is meaningful only in Full View.
     signal_mode_changed = Signal(object)  # DisplayMode
 
     def __init__(self, objectiveStore, camera, contrastManager, parent=None):
@@ -246,14 +243,10 @@ class UnifiedMosaicWidget(QWidget):
         return [lyr for lyr in self.viewer.layers if lyr.name not in NON_IMAGE_LAYERS and hasattr(lyr, "data")]
 
     def enable_shape_drawing(self, enable):
-        """Idempotently set Manual-ROI drawing on/off (mosaic mode only).
-
-        Called from WellplateMultiPointWidget when the user enters/leaves
-        Manual mode. Must be safe to call repeatedly with the same value —
-        in particular, calling enable=True twice should *not* leave drawing
-        disabled the second time."""
+        """Set Manual-ROI drawing on/off. Idempotent: the upstream signal
+        only emits True on entry to Manual mode (never False on exit), so
+        repeated True calls must keep drawing enabled."""
         if self.mode != DisplayMode.MOSAIC:
-            # Plate mode has no concept of stage-coordinate ROIs.
             return
 
         if enable and MANUAL_ROI_LAYER not in self.viewer.layers:
@@ -411,10 +404,8 @@ class UnifiedMosaicWidget(QWidget):
 
         if self._pixel_size_um == 0.0:
             self._pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-            # Match the rounding rule used by downsample_tile() in mosaic_utils.py
-            # and _emit_plate_layout in multi_point_worker.py — otherwise the
-            # widget's image_pixel_size_mm disagrees with the actual rendered
-            # canvas and tile placement / plate slot sizing diverge.
+            # Must match downsample_tile() and _emit_plate_layout, else
+            # image_pixel_size_mm diverges from the rendered canvas.
             self._downsample_factor = max(1, int(round(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self._pixel_size_um)))
 
         image = downsample_tile(image, self._pixel_size_um, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
@@ -747,13 +738,8 @@ class UnifiedMosaicWidget(QWidget):
         self._acquisition_save_dir = experiment_path
 
     def save_for_timepoint(self, time_point: int) -> None:
-        """Hook fired at the end of each timepoint. Writes the canvas to the
-        timepoint's folder (gated by SAVE_DOWNSAMPLED_*), then zeros the
-        canvases so the next timepoint starts fresh.
-
-        Layout matches the worker's per-timepoint folder
-        (``<exp>/<time_point:0FILE_ID_PADDING>/``) so the saved view sits
-        alongside that timepoint's tiles."""
+        """Save the canvas under the worker's per-timepoint folder, then
+        zero it so the next timepoint starts fresh."""
         if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
             return
         if not self.layers_initialized:
@@ -763,9 +749,7 @@ class UnifiedMosaicWidget(QWidget):
             return
         timepoint_dir = os.path.join(self._acquisition_save_dir, f"{time_point:0{FILE_ID_PADDING}}")
         self._dispatch_save(os.path.join(timepoint_dir, "mosaic_view"))
-        # Wipe the canvas so the next timepoint's snapshot doesn't carry over
-        # tiles from this one. Done after _dispatch_save so the snapshot has
-        # already been copied.
+        # Reset must run after _dispatch_save so the snapshot copy is already taken.
         for layer in self._image_layers():
             layer.data = np.zeros_like(layer.data)
             layer.refresh()
