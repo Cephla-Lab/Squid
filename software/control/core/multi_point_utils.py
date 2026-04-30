@@ -130,6 +130,10 @@ class MultiPointControllerFunctions:
     # Default no-op lambda avoids None checks at every call site. Unlike mutable defaults
     # (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    # Fires once per timepoint after that timepoint's data is fully written, with
+    # the just-completed timepoint index. The mosaic widget uses this to flush
+    # the canvas to disk and reset for the next timepoint.
+    signal_timepoint_finished: Callable[[int], None] = lambda *a, **kw: None
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None
     signal_slack_acquisition_finished: Callable[["AcquisitionStats"], None] = lambda *a, **kw: None

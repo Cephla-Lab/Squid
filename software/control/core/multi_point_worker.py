@@ -666,6 +666,11 @@ class MultiPointWorker:
                 except Exception as e:
                     self._log.warning(f"Failed to send Slack timepoint notification: {e}")
 
+            try:
+                self.callbacks.signal_timepoint_finished(self.time_point)
+            except Exception:
+                self._log.exception("signal_timepoint_finished callback failed")
+
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:

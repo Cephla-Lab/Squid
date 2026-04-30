@@ -24,7 +24,7 @@ from napari.utils import Colormap
 from napari.utils.colormaps import AVAILABLE_COLORMAPS
 
 import control._def
-from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
+from control._def import CHANNEL_COLORS_MAP, FILE_ID_PADDING, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
 from control.core.mosaic_utils import downsample_tile, format_well_id, parse_well_id
 from control.utils import ensure_directory_exists, serialize_for_yaml
 from control.utils_channel import extract_wavelength_from_config_name
@@ -743,18 +743,29 @@ class UnifiedMosaicWidget(QWidget):
         Cleared (None) on acquisitions without a known path."""
         self._acquisition_save_dir = experiment_path
 
-    def save_if_auto_enabled(self) -> None:
-        """Hook for acquisition-finish: save iff there's data and at least one
-        of the SAVE_DOWNSAMPLED_* flags is on. Each flag independently gates
-        its respective output (overview TIFF / per-well TIFFs)."""
+    def save_for_timepoint(self, time_point: int) -> None:
+        """Hook fired at the end of each timepoint. Writes the canvas to the
+        timepoint's folder (gated by SAVE_DOWNSAMPLED_*), then zeros the
+        canvases so the next timepoint starts fresh.
+
+        Layout matches the worker's per-timepoint folder
+        (``<exp>/<time_point:0FILE_ID_PADDING>/``) so the saved view sits
+        alongside that timepoint's tiles."""
         if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
             return
         if not self.layers_initialized:
             return
         if not self._acquisition_save_dir:
-            self._log.warning("Auto-save requested but no acquisition save dir is set; skipping.")
+            self._log.warning("Per-timepoint save requested but no acquisition save dir is set; skipping.")
             return
-        self._dispatch_save(os.path.join(self._acquisition_save_dir, "mosaic_view"))
+        timepoint_dir = os.path.join(self._acquisition_save_dir, f"{time_point:0{FILE_ID_PADDING}}")
+        self._dispatch_save(os.path.join(timepoint_dir, "mosaic_view"))
+        # Wipe the canvas so the next timepoint's snapshot doesn't carry over
+        # tiles from this one. Done after _dispatch_save so the snapshot has
+        # already been copied.
+        for layer in self._image_layers():
+            layer.data = np.zeros_like(layer.data)
+            layer.refresh()
 
     def _on_save_clicked(self) -> None:
         """Manual Save View button: always prompt for a save directory.

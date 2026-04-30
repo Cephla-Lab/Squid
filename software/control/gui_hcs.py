@@ -208,6 +208,8 @@ class QtMultiPointController(MultiPointController, QObject):
     plate_view_init = Signal(object)  # PlateViewInit
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
+    # Per-timepoint flush trigger so the mosaic widget saves & resets at each timepoint boundary.
+    timepoint_finished = Signal(int)  # time_point index that just completed
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
@@ -250,6 +252,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
@@ -466,6 +469,9 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_plate_view_init_fn(self, plate_view_init: PlateViewInit):
         self.plate_view_init.emit(plate_view_init)
+
+    def _signal_timepoint_finished_fn(self, time_point: int):
+        self.timepoint_finished.emit(time_point)
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
         self.signal_slack_timepoint.emit(stats)
@@ -1470,7 +1476,7 @@ class HighContentScreeningGui(QMainWindow):
         # Unified mosaic widget save hooks: route the controller's start/finish
         # signals over here, where self.unifiedMosaicWidget is reachable.
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
-        self.multipointController.acquisition_finished.connect(self._on_acquisition_finished_save)
+        self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
 
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
@@ -1837,10 +1843,10 @@ class HighContentScreeningGui(QMainWindow):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
-    def _on_acquisition_finished_save(self):
-        """Trigger the unified widget's auto-save (gated by SAVE_DOWNSAMPLED_*)."""
+    def _on_timepoint_finished(self, time_point: int):
+        """Per-timepoint flush: writes the canvas to disk and resets it for the next timepoint."""
         if self.unifiedMosaicWidget is not None:
-            self.unifiedMosaicWidget.save_if_auto_enabled()
+            self.unifiedMosaicWidget.save_for_timepoint(time_point)
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
