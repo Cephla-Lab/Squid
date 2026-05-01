@@ -21,6 +21,7 @@ from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTRO
 import control._def
 import control.utils
 import control.microscope
+from control.single_instance import acquire_single_instance_lock
 
 # Import auto-migration function
 from tools.migrate_acquisition_configs import run_auto_migration
@@ -53,6 +54,38 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Construct QApplication first so the single-instance check can show a
+    # QMessageBox before any other startup side effects (logging, migration).
+    app = QApplication(["Squid"])
+    app.setStyle("Fusion")
+    app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
+
+    # Single-instance check before file logging or migration so a losing
+    # second instance does not interleave log output or race the migration.
+    lock_result = acquire_single_instance_lock()
+    if lock_result.lock is None:
+        if lock_result.busy:
+            QMessageBox.critical(
+                None,
+                "Squid Already Running",
+                "Another instance of Squid is already running on this computer.\n\n"
+                "Please close the existing Squid window before starting a new one.\n\n"
+                f"If you believe this is an error, you can delete the lock file at:\n{lock_result.path}",
+            )
+        else:
+            QMessageBox.critical(
+                None,
+                "Could Not Start Squid",
+                f"Failed to create the lock file at:\n{lock_result.path}\n\n"
+                "Check that the temp directory is writable.",
+            )
+        sys.exit(1)
+    instance_lock = lock_result.lock
+    # main_hcs.py exits via os._exit(), which skips destructors. aboutToQuit
+    # fires before app.exec_() returns, so unlock() runs and the lock file is
+    # removed on a normal exit.
+    app.aboutToQuit.connect(instance_lock.unlock)
+
     log = squid.logging.get_logger("main_hcs")
 
     if args.verbose:
@@ -68,9 +101,6 @@ if __name__ == "__main__":
     # Auto-migrate legacy acquisition configurations if present
     run_auto_migration()
 
-    app = QApplication(["Squid"])
-    app.setStyle("Fusion")
-    app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
