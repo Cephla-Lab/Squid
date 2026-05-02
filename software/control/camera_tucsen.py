@@ -715,6 +715,7 @@ class TucsenCamera(AbstractCamera):
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                 if self._model_properties.is_genicam:
                     self._set_genicam_parameter("TriggerMode", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
+                    self._set_genicam_parameter("TriggerExposureType", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
                 else:
                     self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
             else:

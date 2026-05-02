@@ -436,8 +436,10 @@ class Microscope:
             self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
             self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
             self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
+            self.live_controller.trigger_mode = control._def.TriggerMode.HARDWARE
         else:
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.live_controller.trigger_mode = control._def.TriggerMode.SOFTWARE
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
