@@ -21,6 +21,7 @@ from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTRO
 import control._def
 import control.utils
 import control.microscope
+from control.single_instance import acquire_single_instance_lock
 
 # Import auto-migration function
 from tools.migrate_acquisition_configs import run_auto_migration
@@ -71,6 +72,19 @@ if __name__ == "__main__":
     app = QApplication(["Squid"])
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
+
+    # Hold the lock for the app's lifetime; QLockFile releases on destruction.
+    instance_lock, lock_path = acquire_single_instance_lock()
+    if instance_lock is None:
+        QMessageBox.critical(
+            None,
+            "Squid Already Running",
+            "Another instance of Squid is already running on this computer.\n\n"
+            "Please close the existing Squid window before starting a new one.\n\n"
+            f"If you believe this is an error, you can delete the lock file at:\n{lock_path}",
+        )
+        sys.exit(1)
+
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
