@@ -811,9 +811,12 @@ class ImageDisplayWindow(QMainWindow):
 
         # Intercept wheel events on the live view so Ctrl+Scroll drives Z instead of zoom.
         # Wheel events are delivered to the QGraphicsView's viewport; install on it.
-        wheel_target = self.graphics_widget.view if self.show_LUT else self.graphics_widget
-        viewport = wheel_target.viewport() if hasattr(wheel_target, "viewport") else None
-        (viewport or wheel_target).installEventFilter(self)
+        # In show_LUT mode the QGraphicsView lives inside pg.ImageView's auto-generated UI.
+        if self.show_LUT:
+            graphics_view = self.graphics_widget.view.ui.graphicsView
+        else:
+            graphics_view = self.graphics_widget
+        graphics_view.viewport().installEventFilter(self)
 
         # Create line profiler widget
         self.line_profiler_widget = pg.GraphicsLayoutWidget()

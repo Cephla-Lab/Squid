@@ -860,14 +860,19 @@ class Microscope:
         """
         return self.stage.get_pos().z_mm
 
-    def get_image_pixel_size_um(self):
+    def get_image_pixel_size_um(self) -> Optional[float]:
         """Return µm per displayed-image pixel for the current objective and camera binning.
 
         Returns None when either the objective lens factor or the binned camera pixel
         size is unavailable; callers should treat that as "navigation unavailable".
+        Some camera drivers raise NotImplementedError for unknown sensor models — those
+        are folded into the None case so callers don't need their own try/except.
         """
-        factor = self.objective_store.get_pixel_size_factor()
-        binned_um = self.camera.get_pixel_size_binned_um()
+        try:
+            factor = self.objective_store.get_pixel_size_factor()
+            binned_um = self.camera.get_pixel_size_binned_um()
+        except (NotImplementedError, AttributeError):
+            return None
         if factor is None or binned_um is None:
             return None
         return factor * binned_um

@@ -1641,15 +1641,8 @@ class HighContentScreeningGui(QMainWindow):
                         (self.napariLiveWidget.signal_autoLevelSetting, self.imageDisplayWindow.set_autolevel),
                     ]
                 )
-        else:
-            # Non-Napari display connections
-            self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
-            self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
-            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
+        # Non-Napari display connections are wired in make_connections() — wiring them
+        # here again under the same condition would double every click/scroll signal.
 
         if not self.live_only_mode:
             # Setup multichannel widget connections

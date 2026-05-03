@@ -170,3 +170,14 @@ class TestGetImagePixelSizeUm:
                 assert scope.get_image_pixel_size_um() is None
         finally:
             scope.close()
+
+    def test_returns_none_when_camera_raises_not_implemented(self):
+        """Some camera drivers (e.g. DefaultCamera with an unknown model) raise
+        NotImplementedError from get_pixel_size_binned_um. Callers expect None
+        per the docstring."""
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            with patch.object(scope.camera, "get_pixel_size_binned_um", side_effect=NotImplementedError):
+                assert scope.get_image_pixel_size_um() is None
+        finally:
+            scope.close()
