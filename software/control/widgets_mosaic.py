@@ -17,7 +17,7 @@ import tifffile
 import yaml
 
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QButtonGroup, QFileDialog, QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 import napari
 from napari.utils import Colormap
@@ -174,9 +174,37 @@ class UnifiedMosaicWidget(QWidget):
         layout.addWidget(self.viewer.window._qt_window)
 
         button_layout = QHBoxLayout()
-        self.toggle_button = QPushButton(self._toggle_button_label())
-        self.toggle_button.clicked.connect(self._toggle_mode)
-        button_layout.addWidget(self.toggle_button)
+
+        # Segmented mode selector. Two checkable buttons in an exclusive
+        # group so the active mode is shown by the pressed-in button. The
+        # whole pair is sized to match the width of the old single
+        # "Switch to <mode>" button so other buttons in the row don't
+        # shift.
+        self.full_view_button = QPushButton(DISPLAY_MODE_LABELS[DisplayMode.MOSAIC])
+        self.full_view_button.setCheckable(True)
+        self.plate_view_button = QPushButton(DISPLAY_MODE_LABELS[DisplayMode.PLATE])
+        self.plate_view_button.setCheckable(True)
+        self._mode_button_group = QButtonGroup(self)
+        self._mode_button_group.setExclusive(True)
+        self._mode_button_group.addButton(self.full_view_button)
+        self._mode_button_group.addButton(self.plate_view_button)
+        self.full_view_button.clicked.connect(lambda: self._switch_mode(DisplayMode.MOSAIC))
+        self.plate_view_button.clicked.connect(lambda: self._switch_mode(DisplayMode.PLATE))
+        self._sync_mode_buttons()
+
+        mode_container = QWidget()
+        mode_inner = QHBoxLayout(mode_container)
+        mode_inner.setContentsMargins(0, 0, 0, 0)
+        mode_inner.setSpacing(0)
+        mode_inner.addWidget(self.full_view_button)
+        mode_inner.addWidget(self.plate_view_button)
+        # Match the previous single-button width so the row layout doesn't
+        # widen. The reference text is the longest label the old button
+        # ever showed.
+        reference_button = QPushButton("Switch to Plate View")
+        mode_container.setFixedWidth(reference_button.sizeHint().width())
+        reference_button.deleteLater()
+        button_layout.addWidget(mode_container)
 
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clearAllLayers)
@@ -327,10 +355,10 @@ class UnifiedMosaicWidget(QWidget):
 
     # --- Mode toggle ---
 
-    def _toggle_button_label(self):
-        """Text shown on the toggle button — names the *target* mode."""
-        target = DisplayMode.PLATE if self.mode == DisplayMode.MOSAIC else DisplayMode.MOSAIC
-        return f"Switch to {DISPLAY_MODE_LABELS[target]}"
+    def _sync_mode_buttons(self):
+        """Reflect ``self.mode`` in the segmented button group's checked state."""
+        self.full_view_button.setChecked(self.mode == DisplayMode.MOSAIC)
+        self.plate_view_button.setChecked(self.mode == DisplayMode.PLATE)
 
     def maybe_switch_to_full_view(self, scan_label: str = "") -> None:
         """If currently in Plate View, prompt the user to switch to Full View
@@ -360,17 +388,21 @@ class UnifiedMosaicWidget(QWidget):
             return
         self.mode = DisplayMode.MOSAIC
         _save_last_view_mode(self.mode)
-        self.toggle_button.setText(self._toggle_button_label())
+        self._sync_mode_buttons()
         self._clear_shape()
         self.clearAllLayers()
         self.signal_mode_changed.emit(self.mode)
 
-    def _toggle_mode(self):
-        """Toggle between full-stage and plate-grid layout. Clears the canvas
-        and ROI shapes — confirms with the user first when there's something
-        on screen to lose.
+    def _switch_mode(self, target: DisplayMode):
+        """Set the active display mode in response to a segmented-button click.
+        Clears the canvas and ROI shapes — confirms with the user first when
+        there's something on screen to lose. If the user declines, the
+        button checked-state is reverted to match ``self.mode`` (the
+        QButtonGroup pre-emptively flipped it on click).
         """
-        target = DisplayMode.PLATE if self.mode == DisplayMode.MOSAIC else DisplayMode.MOSAIC
+        if self.mode == target:
+            self._sync_mode_buttons()
+            return
         target_label = DISPLAY_MODE_LABELS[target]
         if self.layers_initialized:
             reply = QMessageBox.question(
@@ -381,11 +413,12 @@ class UnifiedMosaicWidget(QWidget):
                 QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
+                self._sync_mode_buttons()
                 return
 
         self.mode = target
         _save_last_view_mode(self.mode)
-        self.toggle_button.setText(self._toggle_button_label())
+        self._sync_mode_buttons()
         # ROI shapes are stage-coord-based and only meaningful in MOSAIC mode.
         self._clear_shape()
         self.clearAllLayers()
