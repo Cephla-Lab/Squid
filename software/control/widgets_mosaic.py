@@ -17,7 +17,16 @@ import tifffile
 import yaml
 
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QButtonGroup, QFileDialog, QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QButtonGroup,
+    QFileDialog,
+    QHBoxLayout,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 import napari
 from napari.utils import Colormap
@@ -198,11 +207,15 @@ class UnifiedMosaicWidget(QWidget):
         mode_inner.setSpacing(0)
         mode_inner.addWidget(self.full_view_button)
         mode_inner.addWidget(self.plate_view_button)
-        # Match the previous single-button width so the row layout doesn't
-        # widen. The reference text is the longest label the old button
-        # ever showed.
+        # Match QPushButton's growth behavior so the segmented pair takes
+        # the same share of the row as the previous single toggle button.
+        # setMinimumWidth (not setFixedWidth) keeps the container growable
+        # — fixed width would let Clear/Save absorb the row's extra space
+        # and look much wider than before. The minimum is anchored to the
+        # longest label the old toggle button ever showed.
         reference_button = QPushButton("Switch to Plate View")
-        mode_container.setFixedWidth(reference_button.sizeHint().width())
+        mode_container.setMinimumWidth(reference_button.sizeHint().width())
+        mode_container.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         reference_button.deleteLater()
         button_layout.addWidget(mode_container)
 
