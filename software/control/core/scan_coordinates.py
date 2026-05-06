@@ -66,8 +66,11 @@ class ScanCoordinates:
         self.a1_y_mm = control._def.A1_Y_MM
         self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
         self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = control._def.WELL_SPACING_MM
-        self.well_size_mm = control._def.WELL_SIZE_MM
+        self.well_spacing_x_mm = control._def.WELL_SPACING_X_MM
+        self.well_spacing_y_mm = control._def.WELL_SPACING_Y_MM
+        self.well_size_x_mm = control._def.WELL_SIZE_X_MM
+        self.well_size_y_mm = control._def.WELL_SIZE_Y_MM
+        self.well_shape = control._def.WELL_SHAPE
         self.a1_x_pixel = None
         self.a1_y_pixel = None
         self.number_of_skip = None
@@ -81,15 +84,31 @@ class ScanCoordinates:
         self.well_selector = well_selector
 
     def update_wellplate_settings(
-        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
+        self,
+        format_,
+        a1_x_mm,
+        a1_y_mm,
+        a1_x_pixel,
+        a1_y_pixel,
+        size_x_mm,
+        size_y_mm,
+        spacing_x_mm,
+        spacing_y_mm,
+        well_shape,
+        number_of_skip,
+        rows=None,
+        cols=None,
     ):
         self.format = format_
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
-        self.well_size_mm = size_mm
-        self.well_spacing_mm = spacing_mm
+        self.well_size_x_mm = size_x_mm
+        self.well_size_y_mm = size_y_mm
+        self.well_spacing_x_mm = spacing_x_mm
+        self.well_spacing_y_mm = spacing_y_mm
+        self.well_shape = control._def.WellShape.from_str(well_shape) if isinstance(well_shape, str) else well_shape
         self.number_of_skip = number_of_skip
 
     def _index_to_row(self, index):
@@ -123,8 +142,8 @@ class ScanCoordinates:
             if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
-                x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
-                y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
+                x_mm = self.a1_x_mm + (column * self.well_spacing_x_mm) + self.wellplate_offset_x_mm
+                y_mm = self.a1_y_mm + (row * self.well_spacing_y_mm) + self.wellplate_offset_y_mm
                 well_id = self._index_to_row(row) + str(column + 1)
                 well_centers[well_id] = (x_mm, y_mm)
             _increasing = not _increasing
@@ -135,7 +154,7 @@ class ScanCoordinates:
             self.clear_regions()
         self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
-    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
+    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape, scan_size_y_mm=None):
         new_region_centers = self.get_selected_wells()
 
         if self.format == "glass slide":
@@ -151,7 +170,7 @@ class ScanCoordinates:
             # Add regions for selected wells
             for well_id, (x, y) in new_region_centers.items():
                 if well_id not in self.region_centers:
-                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape)
+                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape, scan_size_y_mm=scan_size_y_mm)
         else:
             self.clear_regions()
 
@@ -178,13 +197,36 @@ class ScanCoordinates:
         else:
             self._log.info("No Manual ROI found")
 
-    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def add_region(
+        self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square", scan_size_y_mm=None
+    ):
         """add region based on user inputs"""
         fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
-        if shape == "Rectangle":
+        if scan_size_y_mm is not None and scan_size_y_mm != scan_size_mm:
+            # Per-axis scan: X and Y have different sizes (rectangular wells)
+            width_mm = scan_size_mm
+            height_mm = scan_size_y_mm
+
+            steps_width = max(1, math.floor(width_mm / step_size_mm))
+            steps_height = max(1, math.floor(height_mm / step_size_mm))
+
+            half_steps_width = (steps_width - 1) / 2
+            half_steps_height = (steps_height - 1) / 2
+
+            for i in range(steps_height):
+                row = []
+                y = center_y + (i - half_steps_height) * step_size_mm
+                for j in range(steps_width):
+                    x = center_x + (j - half_steps_width) * step_size_mm
+                    if self.validate_coordinates(x, y):
+                        row.append((x, y))
+                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
+        elif shape == "Rectangle":
             # Use scan_size_mm as height, width is 0.6 * height
             height_mm = scan_size_mm
             width_mm = scan_size_mm * 0.6
@@ -681,16 +723,25 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_settings)
 
-        if wellplate_format in ["384 well plate", "1536 well plate"]:
+        well_shape_value = wellplate_settings.get("well_shape", control._def.WellShape.CIRCULAR)
+        if isinstance(well_shape_value, str):
+            well_shape_value = control._def.WellShape.from_str(well_shape_value)
+        if not well_shape_value.is_round:
             well_shape = "Square"
         else:
             well_shape = "Circle"
 
+        scan_size_y_mm = None
         if scan_size_mm is None:
-            scan_size_mm = wellplate_settings["well_size_mm"]
+            scan_size_mm = wellplate_settings["well_size_x_mm"]
+            scan_size_y_mm = wellplate_settings["well_size_y_mm"]
+            if scan_size_y_mm == scan_size_mm:
+                scan_size_y_mm = None  # No need for per-axis if equal
 
         for k, v in self.region_centers.items():
-            coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
+            coords = self.create_region_coordinates(
+                v[0], v[1], scan_size_mm, overlap_percent, well_shape, scan_size_y_mm=scan_size_y_mm
+            )
             self.region_fov_coordinates[k] = coords
 
     def get_selected_well_coordinates(self, well_names, wellplate_settings):
@@ -734,34 +785,55 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                         for col in cols:
                             x_mm = (
                                 wellplate_settings["a1_x_mm"]
-                                + col * wellplate_settings["well_spacing_mm"]
+                                + col * wellplate_settings["well_spacing_x_mm"]
                                 + control._def.WELLPLATE_OFFSET_X_mm
                             )
                             y_mm = (
                                 wellplate_settings["a1_y_mm"]
-                                + row * wellplate_settings["well_spacing_mm"]
+                                + row * wellplate_settings["well_spacing_y_mm"]
                                 + control._def.WELLPLATE_OFFSET_Y_mm
                             )
                             self.region_centers[index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
-                        + start_col_index * wellplate_settings["well_spacing_mm"]
+                        + start_col_index * wellplate_settings["well_spacing_x_mm"]
                         + control._def.WELLPLATE_OFFSET_X_mm
                     )
                     y_mm = (
                         wellplate_settings["a1_y_mm"]
-                        + start_row_index * wellplate_settings["well_spacing_mm"]
+                        + start_row_index * wellplate_settings["well_spacing_y_mm"]
                         + control._def.WELLPLATE_OFFSET_Y_mm
                     )
                     self.region_centers[start_row + start_col] = (x_mm, y_mm)
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
-    def create_region_coordinates(self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def create_region_coordinates(
+        self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square", scan_size_y_mm=None
+    ):
         fov_size_mm = self.camera.get_fov_size_mm()
         # We are not taking software cropping into account here. Need to fix it when we merge this into ScanCoordinates.
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
+
+        # Per-axis scan for rectangular wells
+        if scan_size_y_mm is not None and scan_size_y_mm != scan_size_mm:
+            steps_x = max(1, math.floor(scan_size_mm / step_size_mm))
+            steps_y = max(1, math.floor(scan_size_y_mm / step_size_mm))
+            half_steps_x = (steps_x - 1) / 2
+            half_steps_y = (steps_y - 1) / 2
+
+            scan_coordinates = []
+            for i in range(steps_y):
+                row = []
+                y = center_y + (i - half_steps_y) * step_size_mm
+                for j in range(steps_x):
+                    x = center_x + (j - half_steps_x) * step_size_mm
+                    row.append((x, y))
+                if control._def.FOV_PATTERN == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
+            return scan_coordinates if scan_coordinates else [(center_x, center_y)]
 
         steps = math.floor(scan_size_mm / step_size_mm)
         if shape == "Circle":
