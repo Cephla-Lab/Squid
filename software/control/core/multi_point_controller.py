@@ -42,29 +42,9 @@ NoOpCallbacks = MultiPointControllerFunctions(
 )
 
 
-def _serialize_for_yaml(obj):
-    """Recursively serialize objects to YAML-compatible types."""
-    if obj is None:
-        return None
-    elif isinstance(obj, Enum):
-        return obj.value
-    # Handle numpy types - convert to native Python types
-    elif isinstance(obj, np.ndarray):
-        return [_serialize_for_yaml(item) for item in obj.tolist()]
-    elif isinstance(obj, (np.integer, np.floating)):
-        return obj.item()  # Convert numpy scalar to Python scalar
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _serialize_for_yaml(v) for k, v in dataclasses.asdict(obj).items()}
-    elif hasattr(obj, "model_dump"):
-        return _serialize_for_yaml(obj.model_dump())
-    elif isinstance(obj, dict):
-        return {k: _serialize_for_yaml(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_serialize_for_yaml(item) for item in obj]
-    else:
-        return obj
+# Local alias kept for diff stability. The shared helper now lives in
+# control.utils.serialize_for_yaml.
+from control.utils import serialize_for_yaml as _serialize_for_yaml  # noqa: E402
 
 
 def _save_acquisition_yaml(
@@ -157,13 +137,10 @@ def _save_acquisition_yaml(
         }
 
     # Add remaining common sections
-    yaml_dict["downsampled_views"] = {
-        "enabled": params.generate_downsampled_views,
-        "save_well_images": params.save_downsampled_well_images,
-        "well_resolutions_um": _serialize_for_yaml(params.downsampled_well_resolutions_um),
-        "plate_resolution_um": params.downsampled_plate_resolution_um,
-        "z_projection": _serialize_for_yaml(params.downsampled_z_projection),
-        "interpolation_method": _serialize_for_yaml(params.downsampled_interpolation_method),
+    yaml_dict["mosaic_view"] = {
+        "save_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
+        "save_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+        "resolution_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
     }
     yaml_dict["plate"] = {
         "num_rows": params.plate_num_rows,
@@ -973,13 +950,6 @@ class MultiPointController:
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
-            # Downsampled view generation parameters
-            generate_downsampled_views=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES or control._def.DISPLAY_PLATE_VIEW,
-            save_downsampled_well_images=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
-            downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
-            downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
-            downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
-            downsampled_interpolation_method=control._def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,

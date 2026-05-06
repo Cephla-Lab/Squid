@@ -19,7 +19,7 @@ os.environ["QT_API"] = "pyqt5"
 import re
 import time
 from enum import Enum, auto
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import serial
@@ -46,13 +46,14 @@ from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core.mosaic_utils import parse_well_id
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
+    MosaicTileUpdate,
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
-    PlateViewUpdate,
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
@@ -200,12 +201,14 @@ class QtMultiPointController(MultiPointController, QObject):
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
+    signal_acquisition_save_target = Signal(object)  # Optional[str] — output dir for save view
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
-    # Plate view signals
-    plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
-    plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
+    plate_view_init = Signal(object)  # PlateViewInit
+    # Unified mosaic/plate view: single signal carrying full per-tile metadata.
+    mosaic_tile_update = Signal(object)  # MosaicTileUpdate
+    timepoint_finished = Signal(int)  # time_point index that just completed
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
@@ -248,7 +251,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
-                signal_plate_view_update=self._signal_plate_view_update_fn,
+                signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
@@ -260,6 +263,12 @@ class QtMultiPointController(MultiPointController, QObject):
         QObject.__init__(self)
 
         self._napari_inited_for_this_acquisition = False
+        # Cache of region_id → (well_row, well_col) so the per-tile parse_well_id
+        # call doesn't repeat across thousands of FOVs in a scan.
+        self._well_id_index_cache: Dict[str, Tuple[int, int]] = {}
+        # Per-well top-left origin (mm) populated on acquisition start so
+        # mosaic_tile_update can carry a stable anchor independent of scan order.
+        self._well_origins_mm: Dict[str, Tuple[float, float]] = {}
         # NDViewer push-based API state
         self._ndviewer_fov_labels: list = []  # ["A1:0", "A1:1", "A2:0", ...]
         self._ndviewer_region_fov_offset: dict = {}  # {"A1": 0, "A2": 5, ...} for flat FOV index
@@ -275,6 +284,15 @@ class QtMultiPointController(MultiPointController, QObject):
         else:
             self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
+
+        # Tell the unified mosaic widget where this run's outputs live so
+        # auto-save on finish can default to that path. The widget lives on
+        # HighContentScreeningGui, not on this controller, so we emit a Qt
+        # signal that the GUI catches in setUp.
+        base = parameters.base_path
+        exp_id = parameters.experiment_ID
+        save_target = os.path.join(base, exp_id) if (base and exp_id) else None
+        self.signal_acquisition_save_target.emit(save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
         scan_info = parameters.scan_position_information
@@ -300,6 +318,26 @@ class QtMultiPointController(MultiPointController, QObject):
             width, height = crop_width, crop_height
         else:
             width, height = self.microscope.camera.get_resolution()
+
+        # Compute deterministic per-well origins (top-left, mm) for the unified
+        # mosaic widget so tiles arriving in any scan order land at non-negative
+        # offsets within their well slot. Only "Select Wells" produces a real
+        # plate layout; for other scan modes we leave the dict empty, which
+        # makes well_origin_mm=None on every tile and signals the widget to
+        # skip blitting in Plate View instead of stacking tiles at the origin.
+        if parameters.xy_mode == "Select Wells":
+            pixel_size_um = (
+                self.objectiveStore.get_pixel_size_factor() * self.microscope.camera.get_pixel_size_binned_um()
+            )
+            half_w_mm = width * pixel_size_um / 2000.0
+            half_h_mm = height * pixel_size_um / 2000.0
+            self._well_origins_mm = {
+                name: (min(c[0] for c in coords) - half_w_mm, min(c[1] for c in coords) - half_h_mm)
+                for name, coords in scan_info.scan_region_fov_coords_mm.items()
+                if coords
+            }
+        else:
+            self._well_origins_mm = {}
 
         # Check save format to determine which API to use
         if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
@@ -336,6 +374,9 @@ class QtMultiPointController(MultiPointController, QObject):
             self._ndviewer_region_index_map = {}
         self._ndviewer_mode = NDViewerMode.INACTIVE
 
+        # The widget lives on HighContentScreeningGui, not on this controller;
+        # the auto-save hook runs over there via the acquisition_finished signal
+        # that we're about to emit.
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
@@ -360,6 +401,30 @@ class QtMultiPointController(MultiPointController, QObject):
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+        )
+
+        # Cache parsed well indices per region_id — usually a small dict (<=96
+        # for a standard plate). Non-plate scans (manual ROI, current position)
+        # cache (0, 0) on the negative path.
+        region_id = info.region_id if isinstance(info.region_id, str) else ""
+        well_row, well_col = self._well_id_index_cache.get(region_id, (None, None))
+        if well_row is None:
+            try:
+                well_row, well_col = parse_well_id(region_id) if region_id else (0, 0)
+            except (ValueError, TypeError):
+                well_row, well_col = 0, 0
+            self._well_id_index_cache[region_id] = (well_row, well_col)
+        self.mosaic_tile_update.emit(
+            MosaicTileUpdate(
+                image=frame.frame,
+                x_mm=info.position.x_mm,
+                y_mm=info.position.y_mm,
+                channel_name=napri_layer_name,
+                well_id=region_id,
+                well_row=well_row,
+                well_col=well_col,
+                well_origin_mm=self._well_origins_mm.get(region_id),
+            )
         )
 
         # NDViewer push-based API: register image
@@ -402,20 +467,10 @@ class QtMultiPointController(MultiPointController, QObject):
         self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
 
     def _signal_plate_view_init_fn(self, plate_view_init: PlateViewInit):
-        self.plate_view_init.emit(
-            plate_view_init.num_rows,
-            plate_view_init.num_cols,
-            plate_view_init.well_slot_shape,
-            plate_view_init.fov_grid_shape,
-            plate_view_init.channel_names,
-        )
+        self.plate_view_init.emit(plate_view_init)
 
-    def _signal_plate_view_update_fn(self, plate_view_update: PlateViewUpdate):
-        self.plate_view_update.emit(
-            plate_view_update.channel_idx,
-            plate_view_update.channel_name,
-            plate_view_update.plate_image,
-        )
+    def _signal_timepoint_finished_fn(self, time_point: int):
+        self.timepoint_finished.emit(time_point)
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
         self.signal_slack_timepoint.emit(stats)
@@ -944,7 +999,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
                 )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
-            self.napariMosaicDisplayWidget = None
+            self.unifiedMosaicWidget = None
         else:
             self.setupImageDisplayTabs()
 
@@ -959,7 +1014,7 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             self.scanCoordinates,
             self.focusMapWidget,
-            self.napariMosaicDisplayWidget,
+            self.unifiedMosaicWidget,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,
@@ -969,7 +1024,7 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             self.scanCoordinates,
             self.focusMapWidget,
-            self.napariMosaicDisplayWidget,
+            self.unifiedMosaicWidget,
             tab_widget=self.recordTabWidget,
             well_selection_widget=self.wellSelectionWidget,
         )
@@ -988,7 +1043,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController,
             self.objectiveStore,
             self.scanCoordinates,
-            self.napariMosaicDisplayWidget,
+            self.unifiedMosaicWidget,
         )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
@@ -1097,18 +1152,12 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
 
-            self.napariMosaicDisplayWidget = None
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
-                self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
-                )
-                self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
+            from control.widgets_mosaic import UnifiedMosaicWidget
 
-            # Plate view for well-based acquisitions (independent of mosaic view)
-            self.napariPlateViewWidget = None
-            if DISPLAY_PLATE_VIEW:
-                self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
-                self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
+            self.unifiedMosaicWidget = None
+            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+                self.unifiedMosaicWidget = UnifiedMosaicWidget(self.objectiveStore, self.camera, self.contrastManager)
+                self.imageDisplayTabs.addTab(self.unifiedMosaicWidget, "Mosaic View")
 
             # Embedded NDViewer (lightweight) - initialized AFTER napari widgets because
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
@@ -1125,11 +1174,11 @@ class HighContentScreeningGui(QMainWindow):
                 except Exception:
                     self.log.exception("Failed to initialize NDViewer tab - unexpected error")
 
-            # Connect plate view double-click to NDViewer navigation and tab switch
-            if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
-                self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
-            elif self.napariPlateViewWidget is None:
-                self.log.debug("Plate view not available, FOV click navigation disabled")
+            # Connect plate-mode double-click on the unified widget to NDViewer navigation.
+            if self.unifiedMosaicWidget is not None and self.ndviewerTab is not None:
+                self.unifiedMosaicWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
+            elif self.unifiedMosaicWidget is None:
+                self.log.debug("Mosaic/plate view not available, FOV click navigation disabled")
             elif self.ndviewerTab is None:
                 self.log.debug("NDViewer tab not available, FOV click navigation disabled")
 
@@ -1423,6 +1472,11 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
 
+        # Unified mosaic widget save hooks: route the controller's start/finish
+        # signals over here, where self.unifiedMosaicWidget is reachable.
+        self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
+        self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
+
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
@@ -1609,7 +1663,7 @@ class HighContentScreeningGui(QMainWindow):
         self.napari_connections = {
             "napariLiveWidget": [],
             "napariMultiChannelWidget": [],
-            "napariMosaicDisplayWidget": [],
+            "unifiedMosaicWidget": [],
         }
 
         # Setup live view connections
@@ -1697,81 +1751,37 @@ class HighContentScreeningGui(QMainWindow):
                     ]
                 )
 
-            # Setup mosaic display widget connections
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
-                self.napari_connections["napariMosaicDisplayWidget"] = [
-                    (self.multipointController.napari_layers_update, self.napariMosaicDisplayWidget.updateMosaic),
-                    (self.napariMosaicDisplayWidget.signal_coordinates_clicked, self.move_from_click_mm),
-                    (self.napariMosaicDisplayWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
+            # Unified mosaic/plate view connections.
+            # plate_view_init uses Qt.QueuedConnection because it can be emitted from
+            # the acquisition worker thread; the slot needs to run on the main thread.
+            if self.unifiedMosaicWidget is not None:
+                self.napari_connections["unifiedMosaicWidget"] = [
+                    (self.multipointController.mosaic_tile_update, self.unifiedMosaicWidget.updateTile),
+                    (self.unifiedMosaicWidget.signal_coordinates_clicked, self.move_from_click_mm),
+                    (self.unifiedMosaicWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
                 ]
-
-                if ENABLE_FLEXIBLE_MULTIPOINT:
-                    self.napari_connections["napariMosaicDisplayWidget"].extend(
-                        [
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_channels,
-                                self.napariMosaicDisplayWidget.initChannels,
-                            ),
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_shape,
-                                self.napariMosaicDisplayWidget.initLayersShape,
-                            ),
-                        ]
+                self.napari_connections["unifiedMosaicWidget"].append(
+                    (
+                        self.multipointController.plate_view_init,
+                        self.unifiedMosaicWidget.setPlateLayout,
+                        Qt.QueuedConnection,
                     )
+                )
 
+                # ROI shape drawing in mosaic mode (wellplate flow only).
                 if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["napariMosaicDisplayWidget"].extend(
+                    self.napari_connections["unifiedMosaicWidget"].extend(
                         [
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_channels,
-                                self.napariMosaicDisplayWidget.initChannels,
-                            ),
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_shape,
-                                self.napariMosaicDisplayWidget.initLayersShape,
-                            ),
                             (
                                 self.wellplateMultiPointWidget.signal_manual_shape_mode,
-                                self.napariMosaicDisplayWidget.enable_shape_drawing,
+                                self.unifiedMosaicWidget.enable_shape_drawing,
                             ),
                             (
-                                self.napariMosaicDisplayWidget.signal_shape_drawn,
+                                self.unifiedMosaicWidget.signal_shape_drawn,
                                 self.wellplateMultiPointWidget.update_manual_shape,
                             ),
                         ]
                     )
-
-                if RUN_FLUIDICS:
-                    self.napari_connections["napariMosaicDisplayWidget"].extend(
-                        [
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                                self.napariMosaicDisplayWidget.initChannels,
-                            ),
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_shape,
-                                self.napariMosaicDisplayWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-
-            # Setup plate view widget connections (independent of mosaic display)
-            # Use Qt.QueuedConnection explicitly for thread safety since these signals
-            # are emitted from the acquisition worker thread and received on the main thread.
-            # This ensures the slot is invoked in the receiver's thread event loop.
-            if self.napariPlateViewWidget is not None:
-                self.napari_connections["napariPlateViewWidget"] = [
-                    (
-                        self.multipointController.plate_view_init,
-                        self.napariPlateViewWidget.initPlateLayout,
-                        Qt.QueuedConnection,
-                    ),
-                    (
-                        self.multipointController.plate_view_update,
-                        self.napariPlateViewWidget.updatePlateView,
-                        Qt.QueuedConnection,
-                    ),
-                ]
 
             # Make initial connections
             self.updateNapariConnections()
@@ -1827,20 +1837,33 @@ class HighContentScreeningGui(QMainWindow):
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
+    def _on_acquisition_save_target(self, save_target):
+        """Route the controller's per-run save dir to the unified widget."""
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
+
+    def _on_timepoint_finished(self, time_point: int):
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.save_for_timepoint(time_point)
+
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
-        elif not self.live_only_mode:
-            configs = [config.name for config in selected_configurations]
-            print(configs)
-            # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View if enabled
-            is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
-            if is_well_based and self.napariPlateViewWidget is not None and Nz == 1:
-                self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
-            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-            else:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
+            return
+        if self.live_only_mode:
+            return
+
+        # Only "Select Wells" produces a plate layout. Other scan modes (Current
+        # Position, Manual, Load Coordinates without a plate format) would stack
+        # tiles at the origin if the widget is in Plate View — prompt the user
+        # to switch to Full View and clear before tiles arrive.
+        if self.unifiedMosaicWidget is not None and xy_mode != "Select Wells":
+            self.unifiedMosaicWidget.maybe_switch_to_full_view(xy_mode or "")
+
+        if Nz == 1 and self.unifiedMosaicWidget is not None:
+            self.imageDisplayTabs.setCurrentWidget(self.unifiedMosaicWidget)
+        else:
+            self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
 
     def openLedMatrixSettings(self):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
@@ -1884,8 +1907,8 @@ class HighContentScreeningGui(QMainWindow):
         try:
             # Capture screenshot from mosaic widget (must be done on main Qt thread)
             mosaic_image = None
-            if self.napariMosaicDisplayWidget is not None:
-                mosaic_image = self.napariMosaicDisplayWidget.get_screenshot()
+            if self.unifiedMosaicWidget is not None:
+                mosaic_image = self.unifiedMosaicWidget.get_screenshot()
 
             # Send notification with screenshot
             if self.slackNotifier is not None:
@@ -2649,21 +2672,21 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
 
-        # Close napari viewers (they run background threads that prevent clean exit)
+        # Close napari viewers — they run background threads that prevent clean exit.
         for widget_name in [
             "napariLiveWidget",
             "napariMultiChannelWidget",
-            "napariMosaicDisplayWidget",
-            "napariPlateViewWidget",
+            "unifiedMosaicWidget",
         ]:
             widget = getattr(self, widget_name, None)
-            if widget is not None and hasattr(widget, "viewer"):
-                try:
-                    widget.viewer.close()
-                except Exception:
-                    self.log.exception(f"Error closing {widget_name} viewer during {context}")
-                    if not for_restart:
-                        raise
+            if widget is None or not hasattr(widget, "viewer"):
+                continue
+            try:
+                widget.viewer.close()
+            except Exception:
+                self.log.exception(f"Error closing {widget_name} viewer during {context}")
+                if not for_restart:
+                    raise
 
         try:
             self.movement_update_timer.stop()

@@ -64,7 +64,7 @@ class SlowJob(Job):
 
 @dataclass
 class NoneResultJob(Job):
-    """A job that returns None (like DownsampledViewJob for intermediate FOVs)."""
+    """A job that returns None (e.g., a job whose work was suppressed by configuration)."""
 
     duration_s: float = 0.05
 

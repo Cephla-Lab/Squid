@@ -107,8 +107,9 @@ class TestConfAttributeReader:
 
     def test_strips_inline_comments_from_float(self):
         """Test that inline comments are stripped from float values."""
-        # This is the bug that caused TypeError in ensure_plate_resolution_in_well_resolutions
-        result = conf_attribute_reader("10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present")
+        # Regression for inline-comment parsing: a trailing "# explanation" must not
+        # bleed into the float-parse path.
+        result = conf_attribute_reader("10.0  # any trailing comment")
         assert result == 10.0
         assert isinstance(result, float)
 
