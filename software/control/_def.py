@@ -1037,9 +1037,9 @@ SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR = [1, 1, 1]
 SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03  # time to wait before trigger the camera (in seconds)
 
 # Navigation Settings
-ENABLE_CLICK_TO_MOVE_BY_DEFAULT = True
-LIVE_VIEW_Z_STEP_UM = 1
-LIVE_VIEW_Z_STEP_FAST_UM = 20
+ENABLE_CLICK_TO_MOVE = True
+LIVE_VIEW_Z_STEP_UM = 1.0
+LIVE_VIEW_Z_STEP_FAST_UM = 20.0
 
 # Stitcher
 IS_HCS = False
@@ -1465,6 +1465,16 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     "yes",
                 )
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+            if _general_config.has_option("GENERAL", "enable_click_to_move"):
+                ENABLE_CLICK_TO_MOVE = _general_config.get("GENERAL", "enable_click_to_move").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _general_config.has_option("GENERAL", "live_view_z_step_um"):
+                LIVE_VIEW_Z_STEP_UM = _general_config.getfloat("GENERAL", "live_view_z_step_um")
+            if _general_config.has_option("GENERAL", "live_view_z_step_fast_um"):
+                LIVE_VIEW_Z_STEP_FAST_UM = _general_config.getfloat("GENERAL", "live_view_z_step_fast_um")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 
