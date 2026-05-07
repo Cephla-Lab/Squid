@@ -1,13 +1,15 @@
 import logging
 import os
 import tempfile
+import time
 from unittest.mock import MagicMock, Mock, patch
 
+import numpy as np
 import pytest
 
 import control._def
 import control.microscope
-from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, SurfacePlotWidget
+from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
 
 import tests.control.test_stubs as ts
 
@@ -2354,6 +2356,95 @@ class TestWarningErrorWidgetDroppedCount:
         if dropped > 0:
             # Expand button should be visible to show dropped count
             assert widget.btn_expand.isVisible()
+
+
+# ============================================================================
+# RecordingWidget Tests
+# ============================================================================
+
+
+@pytest.fixture
+def recording_widget(qtbot, tmp_path):
+    """Create a RecordingWidget wired to real StreamHandler + ImageSaver, saving into tmp_path."""
+    from control.core import core as _core
+
+    is_live = {"v": True}
+    stream_handler = _core.QtStreamHandler(accept_new_frame_fn=lambda: is_live["v"])
+    image_saver = _core.ImageSaver()
+    stream_handler.packet_image_to_write.connect(image_saver.enqueue)
+
+    original_default = control._def.DEFAULT_SAVING_PATH
+    control._def.DEFAULT_SAVING_PATH = str(tmp_path)
+    # widgets.py imported DEFAULT_SAVING_PATH via `from control._def import *`, so patch its binding too.
+    import control.widgets as _widgets
+
+    original_widgets_default = _widgets.DEFAULT_SAVING_PATH
+    _widgets.DEFAULT_SAVING_PATH = str(tmp_path)
+
+    widget = RecordingWidget(stream_handler, image_saver)
+    qtbot.addWidget(widget)
+
+    yield widget, stream_handler, image_saver, is_live
+
+    control._def.DEFAULT_SAVING_PATH = original_default
+    _widgets.DEFAULT_SAVING_PATH = original_widgets_default
+    image_saver.close()
+
+
+class TestRecordingWidget:
+    """Regression tests for the legacy single-camera RecordingWidget."""
+
+    def test_default_saving_path_applied_on_construction(self, recording_widget, tmp_path):
+        widget, _, image_saver, _ = recording_widget
+        assert widget.lineEdit_savingDir.text() == str(tmp_path)
+        assert image_saver.base_path == str(tmp_path)
+
+    def test_record_without_browse_starts_recording(self, recording_widget):
+        """Pressing Record with the default path should start recording — no Browse required."""
+        widget, stream_handler, image_saver, _ = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+
+        widget.btn_record.setChecked(True)
+        widget.toggle_recording(True)
+
+        assert stream_handler._handler.save_image_flag is True
+        assert image_saver.experiment_ID.startswith("exp_")
+        assert not widget.lineEdit_experimentID.isEnabled()
+        assert not widget.btn_setSavingDir.isEnabled()
+
+    def test_browse_cancel_preserves_existing_path(self, recording_widget, tmp_path):
+        """Cancelling the file dialog must not clobber the previously valid path."""
+        widget, _, image_saver, _ = recording_widget
+        with patch("qtpy.QtWidgets.QFileDialog.getExistingDirectory", return_value=""):
+            widget.set_saving_dir()
+        assert image_saver.base_path == str(tmp_path)
+        assert widget.lineEdit_savingDir.text() == str(tmp_path)
+
+    def test_frame_is_persisted_to_disk(self, recording_widget, tmp_path):
+        """Pushing a frame through the StreamHandler while recording writes a file."""
+        widget, stream_handler, image_saver, _ = recording_widget
+        from squid.abc import CameraFrame
+
+        widget.lineEdit_experimentID.setText("exp")
+        widget.entry_saveFPS.setValue(1000)
+        widget.toggle_recording(True)
+
+        img = np.zeros((32, 32), dtype=np.uint8)
+        frame = CameraFrame(frame_id=0, timestamp=time.time(), frame=img, frame_format=0, frame_pixel_format=0)
+        stream_handler.get_frame_callback()(frame)
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and image_saver.counter == 0:
+            time.sleep(0.05)
+
+        exp_dir = os.path.join(image_saver.base_path, image_saver.experiment_ID)
+        files = []
+        for root, _, fs in os.walk(exp_dir):
+            files.extend(fs)
+        assert files, f"No image saved under {exp_dir}"
+
+        widget.toggle_recording(False)
+        assert stream_handler._handler.save_image_flag is False
 
 
 class TestWarningErrorWidgetErrorExemptionWithDroppedCount:

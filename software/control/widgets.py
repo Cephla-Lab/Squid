@@ -4414,7 +4414,6 @@ class RecordingWidget(QFrame):
         super().__init__(*args, **kwargs)
         self.imageSaver = imageSaver  # for saving path control
         self.streamHandler = streamHandler
-        self.base_path_is_set = False
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -4425,8 +4424,6 @@ class RecordingWidget(QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
-        self.lineEdit_savingDir.setText("Choose a base saving directory")
-
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
         self.imageSaver.set_base_path(DEFAULT_SAVING_PATH)
 
@@ -4485,19 +4482,13 @@ class RecordingWidget(QFrame):
         self.imageSaver.stop_recording.connect(self.stop_recording)
 
     def set_saving_dir(self):
-        dialog = QFileDialog()
-        save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
+        save_dir_base = QFileDialog.getExistingDirectory(None, "Select Folder")
+        if not save_dir_base:
+            return
         self.imageSaver.set_base_path(save_dir_base)
         self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
 
     def toggle_recording(self, pressed):
-        if self.base_path_is_set == False:
-            self.btn_record.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please choose base saving directory first")
-            msg.exec_()
-            return
         if pressed:
             self.lineEdit_experimentID.setEnabled(False)
             self.btn_setSavingDir.setEnabled(False)
