@@ -1038,8 +1038,8 @@ SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03  # time to wait before trigger the 
 
 # Navigation Settings
 ENABLE_CLICK_TO_MOVE = True
-LIVE_VIEW_Z_STEP_UM = 1.0
-LIVE_VIEW_Z_STEP_FAST_UM = 20.0
+LIVE_VIEW_Z_STEP_UM = 5.0
+LIVE_VIEW_Z_STEP_FAST_UM = 40.0
 
 # Stitcher
 IS_HCS = False

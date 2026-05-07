@@ -785,12 +785,12 @@ class TestClickToMoveSettings:
     """Tests for the Click to Move group on the General tab."""
 
     def test_controls_default_to_module_constants(self, preferences_dialog):
-        assert preferences_dialog.click_to_move_default_checkbox.isChecked() is True
-        assert preferences_dialog.click_to_move_z_fine_spinbox.value() == pytest.approx(1.0)
-        assert preferences_dialog.click_to_move_z_coarse_spinbox.value() == pytest.approx(20.0)
+        assert preferences_dialog.click_to_move_enable_checkbox.isChecked() is True
+        assert preferences_dialog.click_to_move_z_fine_spinbox.value() == pytest.approx(5.0)
+        assert preferences_dialog.click_to_move_z_coarse_spinbox.value() == pytest.approx(40.0)
 
     def test_round_trip_writes_three_keys(self, qtbot, preferences_dialog, temp_config_file):
-        preferences_dialog.click_to_move_default_checkbox.setChecked(False)
+        preferences_dialog.click_to_move_enable_checkbox.setChecked(False)
         preferences_dialog.click_to_move_z_fine_spinbox.setValue(0.5)
         preferences_dialog.click_to_move_z_coarse_spinbox.setValue(10.0)
 
