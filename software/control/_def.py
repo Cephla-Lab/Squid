@@ -116,7 +116,7 @@ class TriggerMode:
 
 class Acquisition:
     NUMBER_OF_FOVS_PER_AF = 3
-    IMAGE_FORMAT = "bmp"
+    IMAGE_FORMAT = "tiff"
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
     DX = 0.9
     DY = 0.9
