@@ -1840,17 +1840,20 @@ class SquidLaserEngine(_SquidLaserEngineBase):
 
     def close(self) -> None:
         self._running.clear()
-        for t in (self._query_thread, self._receive_thread):
-            if t is not None:
-                t.join(timeout=2.0)
-        self._query_thread = None
-        self._receive_thread = None
+        # Close the port first so any blocking read() unblocks promptly,
+        # then join — otherwise a thread stuck in read() outlives close()
+        # and could deref a None _serial.
         if self._serial is not None:
             try:
                 self._serial.close()
             except Exception:
                 self._log.exception("Error closing serial port")
-            self._serial = None
+        for t in (self._query_thread, self._receive_thread):
+            if t is not None:
+                t.join(timeout=2.0)
+        self._query_thread = None
+        self._receive_thread = None
+        self._serial = None
 
     # ── Subclass hooks ──────────────────────────────────────────────────────
 
@@ -1917,7 +1920,9 @@ class SquidLaserEngine(_SquidLaserEngineBase):
                 msg.append(byte)
                 # Defensive: clamp the buffer in case the firmware sends garbage.
                 if len(msg) > 1024:
-                    msg = bytearray()
+                    # Defensive clamp. Preserve a trailing \x0A so we don't accidentally
+                    # drop a valid frame whose terminator straddles the discard boundary.
+                    msg = bytearray(b"\x0a") if msg[-1] == 0x0A else bytearray()
 
     def _handle_frame(self, frame: bytes) -> None:
         if len(frame) < 4:
