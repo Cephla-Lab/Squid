@@ -339,3 +339,145 @@ def test_simulation_connection_lost():
         assert signals == ["test drop"]
     finally:
         engine.close()
+
+
+class _FakeSerial:
+    """Drop-in for serial.Serial: captures writes, returns canned responses on read."""
+
+    def __init__(self):
+        self._read_buffer = bytearray()
+        self._write_log = bytearray()
+        self._lock = threading.Lock()
+        self.is_open = True
+
+    # Used by the receive thread.
+    def read(self, n):
+        with self._lock:
+            if not self._read_buffer:
+                return b""
+            chunk = bytes(self._read_buffer[:n])
+            del self._read_buffer[:n]
+            return chunk
+
+    def write(self, data):
+        with self._lock:
+            self._write_log += data
+        return len(data)
+
+    def close(self):
+        self.is_open = False
+
+    # Test helpers
+    def feed_bytes(self, data: bytes):
+        with self._lock:
+            self._read_buffer += data
+
+    def feed_status_packet(self, payload: bytes):
+        full = payload + struct.pack("<I", crc32(payload)) + b"\x0a\x0d"
+        self.feed_bytes(full)
+
+    def writes(self) -> bytes:
+        with self._lock:
+            return bytes(self._write_log)
+
+
+import threading
+
+from control.serial_peripherals import SquidLaserEngine
+
+
+class TestSquidLaserEngineRealClass:
+    def _make_engine(self):
+        fake = _FakeSerial()
+        engine = SquidLaserEngine(_test_serial=fake, query_interval_s=0.05)
+        return engine, fake
+
+    def test_query_thread_sends_Q_periodically(self):
+        engine, fake = self._make_engine()
+        engine.start()
+        try:
+            time.sleep(0.25)
+        finally:
+            engine.close()
+        writes = fake.writes()
+        # Expect at least 2 'Q' packets in 0.25s at 0.05s interval
+        q_packet = _build_command_packet(b"Q")
+        assert writes.count(q_packet) >= 2
+
+    def test_receive_thread_parses_status(self):
+        engine, fake = self._make_engine()
+        engine.start()
+        try:
+            payload = _build_firmware_status_bytes()
+            fake.feed_status_packet(payload)
+            time.sleep(0.3)
+        finally:
+            engine.close()
+        status = engine.get_latest_status()
+        assert status is not None
+        assert status.is_ready_for(["405", "470", "55x", "638", "730"])
+
+    def test_wake_writes_W_packet(self):
+        engine, fake = self._make_engine()
+        engine.start()
+        try:
+            engine.wake_up("55x")
+            time.sleep(0.1)
+        finally:
+            engine.close()
+        wake_packet = _build_command_packet(b"W", channel_index=4)
+        assert wake_packet in fake.writes()
+
+    def test_sleep_writes_S_packet(self):
+        engine, fake = self._make_engine()
+        engine.start()
+        try:
+            engine.put_to_sleep("405")
+            time.sleep(0.1)
+        finally:
+            engine.close()
+        sleep_packet = _build_command_packet(b"S", channel_index=0)
+        assert sleep_packet in fake.writes()
+
+    def test_crc_mismatch_dropped(self):
+        engine, fake = self._make_engine()
+        engine.start()
+        try:
+            payload = _build_firmware_status_bytes()
+            # Bad CRC
+            fake.feed_bytes(payload + b"\x00\x00\x00\x00" + b"\x0a\x0d")
+            time.sleep(0.3)
+        finally:
+            engine.close()
+        # No status was published from the bad packet; counter incremented.
+        assert engine.crc_mismatch_count >= 1
+        assert engine.get_latest_status() is None
+
+    def test_serial_exception_signals_connection_lost(self, qtbot):
+        engine, fake = self._make_engine()
+        signals = []
+        engine.connection_lost.connect(lambda msg: signals.append(msg))
+        # Replace read with one that raises after first call.
+        original_read = fake.read
+        call_count = [0]
+
+        def boom(n):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                import serial
+
+                raise serial.SerialException("simulated drop")
+            return original_read(n)
+
+        fake.read = boom
+        engine.start()
+        try:
+            # qtbot.wait pumps the Qt event loop so the cross-thread connection_lost
+            # signal (emitted from the receive thread) can be delivered to our slot.
+            qtbot.wait(400)
+        finally:
+            engine.close()
+        # Pump once more to catch any emit that happened during close().
+        qtbot.wait(50)
+        assert engine.is_connection_lost() is True
+        assert any("simulated drop" in s for s in signals)

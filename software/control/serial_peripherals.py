@@ -1795,3 +1795,145 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
     def _send_query(self) -> None:
         # Simulator publishes on its own tick; query is a no-op.
         pass
+
+
+class SquidLaserEngine(_SquidLaserEngineBase):
+    """USB-serial controller for the Cephla Squid laser engine.
+
+    Two background threads (mirroring the reference pc-side python):
+      - query thread: sends 'Q' every query_interval_s
+      - receive thread: parses incoming packets and emits status_updated
+    """
+
+    BAUDRATE = 115200
+
+    def __init__(
+        self,
+        sn: Optional[str] = None,
+        device: Optional[str] = None,
+        query_interval_s: float = 1.0,
+        _test_serial=None,
+    ):
+        super().__init__(query_interval_s=query_interval_s)
+        self.sn = sn
+        self.device = device
+        self._serial = _test_serial  # Production: opened in start(); tests inject directly.
+        self._serial_lock = threading.Lock()
+        self._running = threading.Event()
+        self._query_thread: Optional[threading.Thread] = None
+        self._receive_thread: Optional[threading.Thread] = None
+        self.crc_mismatch_count = 0
+        self.parse_failure_count = 0
+
+    # ── Public API: start / close ───────────────────────────────────────────
+
+    def start(self) -> None:
+        if self._running.is_set():
+            return
+        if self._serial is None:
+            self._serial = self._open_serial()
+        self._running.set()
+        self._query_thread = threading.Thread(target=self._query_loop, daemon=True)
+        self._receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
+        self._query_thread.start()
+        self._receive_thread.start()
+
+    def close(self) -> None:
+        self._running.clear()
+        for t in (self._query_thread, self._receive_thread):
+            if t is not None:
+                t.join(timeout=2.0)
+        self._query_thread = None
+        self._receive_thread = None
+        if self._serial is not None:
+            try:
+                self._serial.close()
+            except Exception:
+                self._log.exception("Error closing serial port")
+            self._serial = None
+
+    # ── Subclass hooks ──────────────────────────────────────────────────────
+
+    def _send_query(self) -> None:
+        self._write_packet(_build_command_packet(b"Q"))
+
+    def _send_wake(self, channel_index: int) -> None:
+        self._write_packet(_build_command_packet(b"W", channel_index=channel_index))
+
+    def _send_sleep(self, channel_index: int) -> None:
+        self._write_packet(_build_command_packet(b"S", channel_index=channel_index))
+
+    # ── Internals ───────────────────────────────────────────────────────────
+
+    def _open_serial(self):
+        port_path = self.device
+        if self.sn is not None:
+            for p in list_ports.comports():
+                if p.serial_number == self.sn:
+                    port_path = p.device
+                    break
+            if port_path is None:
+                raise RuntimeError(f"SquidLaserEngine: no USB device found with serial number {self.sn!r}")
+        elif port_path is None:
+            raise RuntimeError("SquidLaserEngine: must provide either sn or device")
+        return serial.Serial(port_path, baudrate=self.BAUDRATE, timeout=0.1)
+
+    def _write_packet(self, packet: bytes) -> None:
+        if self._serial is None or self.is_connection_lost():
+            return
+        try:
+            with self._serial_lock:
+                self._serial.write(packet)
+        except (serial.SerialException, OSError) as e:
+            self._log.error(f"SquidLaserEngine write failed: {e}")
+            self._signal_connection_lost(str(e))
+            self._running.clear()
+
+    def _query_loop(self) -> None:
+        while self._running.is_set():
+            self._send_query()
+            time.sleep(self.query_interval_s)
+
+    def _receive_loop(self) -> None:
+        # Accumulate bytes until we see the \x0A\x0D terminator, matching pc-side-python.py.
+        msg = bytearray()
+        while self._running.is_set():
+            try:
+                chunk = self._serial.read(1)
+            except (serial.SerialException, OSError) as e:
+                self._log.error(f"SquidLaserEngine read failed: {e}")
+                self._signal_connection_lost(str(e))
+                self._running.clear()
+                return
+            if not chunk:
+                continue
+            byte = chunk[0]
+            if byte == 0x0D and len(msg) >= 1 and msg[-1] == 0x0A:
+                # Frame complete: msg[:-1] is the inner payload+CRC.
+                inner = bytes(msg[:-1])
+                msg = bytearray()
+                self._handle_frame(inner)
+            else:
+                msg.append(byte)
+                # Defensive: clamp the buffer in case the firmware sends garbage.
+                if len(msg) > 1024:
+                    msg = bytearray()
+
+    def _handle_frame(self, frame: bytes) -> None:
+        if len(frame) < 4:
+            return
+        body = frame[:-4]
+        received_crc = struct.unpack("<I", frame[-4:])[0]
+        if crc32(body) != received_crc:
+            self.crc_mismatch_count += 1
+            return
+        if not body:
+            return
+        kind = body[0:1]
+        if kind == b"S":
+            status = _parse_status_packet(body)
+            if status is None:
+                self.parse_failure_count += 1
+                return
+            self._publish_status(status)
+        # ACK ('A'), NAK ('N'), and per-channel ('G') frames are ignored for now.
