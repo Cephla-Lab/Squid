@@ -3,7 +3,7 @@
 Driven by `SquidLaserEngine.status_updated` — no QTimer-based polling here.
 """
 
-from typing import Optional
+from typing import Dict, Optional
 
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
@@ -50,7 +50,6 @@ def _engine_summary_label(status: Optional[SquidLaserEngineStatus], connection_l
 
 
 def _format_temp(info) -> str:
-    # Use one trailing °C even for multi-module channels (55x) to keep the line short.
     temps = "/".join(f"{m.temperature_c:.1f}" for m in info.modules)
     return f"{temps} °C"
 
@@ -66,7 +65,7 @@ class LaserEngineWidget(QWidget):
         super().__init__(parent)
         self._engine = engine
         self._last_status: Optional[SquidLaserEngineStatus] = None
-        self._channel_lines: dict = {}
+        self._channel_lines: Dict[str, QLabel] = {}
         self._build_ui()
         engine.status_updated.connect(self._on_status_updated)
         engine.connection_lost.connect(self._on_connection_lost)
@@ -80,10 +79,8 @@ class LaserEngineWidget(QWidget):
         self._engine_label = QLabel("Engine: Waiting…")
         self._wake_btn = QPushButton("Wake All")
         self._sleep_btn = QPushButton("Sleep All")
-        # Wake All / Sleep All call serial.write() up to 5 times on the GUI thread.
-        # pyserial.Serial.write() returns when the kernel accepts the bytes, so the
-        # block is sub-millisecond per call — well under the threshold that would
-        # warrant a worker thread.
+        # serial.write() returns when the kernel accepts the bytes (sub-ms);
+        # no worker thread needed for these click handlers.
         self._wake_btn.clicked.connect(self._engine.wake_up_all)
         self._sleep_btn.clicked.connect(self._engine.sleep_all)
         top_row.addWidget(self._engine_dot)

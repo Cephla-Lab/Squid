@@ -1870,6 +1870,8 @@ class HighContentScreeningGui(QMainWindow):
 
         Repeats within 5s of the previous warning are dropped (still logged) so
         a flapping engine doesn't stack dialogs faster than the user can dismiss.
+        Also closes any prior box still on screen so we never accumulate more
+        than one popup at a time.
         """
         self.log.warning(message)
         now = time.monotonic()
@@ -1877,11 +1879,16 @@ class HighContentScreeningGui(QMainWindow):
         if now - last < 5.0:
             return
         self._last_live_warning_s = now
+        prior = getattr(self, "_live_warning_box", None)
+        if prior is not None:
+            prior.close()
         box = QMessageBox(self)
+        box.setAttribute(Qt.WA_DeleteOnClose)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("Laser engine")
         box.setText(message)
         box.setStandardButtons(QMessageBox.Ok)
+        self._live_warning_box = box
         box.show()  # non-modal — does not block the GUI thread
 
     def _show_laser_engine_dialog(self, channel_keys: list) -> None:
