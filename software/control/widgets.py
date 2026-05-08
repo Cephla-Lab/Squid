@@ -4410,10 +4410,11 @@ class PiezoWidget(QFrame):
 
 
 class RecordingWidget(QFrame):
-    def __init__(self, streamHandler, imageSaver, main=None, *args, **kwargs):
+    def __init__(self, streamHandler, imageSaver, main=None, channel_provider=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.imageSaver = imageSaver  # for saving path control
+        self.imageSaver = imageSaver
         self.streamHandler = streamHandler
+        self._channel_provider = channel_provider
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -4492,10 +4493,13 @@ class RecordingWidget(QFrame):
         if pressed:
             self.lineEdit_experimentID.setEnabled(False)
             self.btn_setSavingDir.setEnabled(False)
+            if self._channel_provider is not None:
+                self.imageSaver.set_channel_provider(self._channel_provider)
             self.imageSaver.start_new_experiment(self.lineEdit_experimentID.text())
             self.streamHandler.start_recording()
         else:
             self.streamHandler.stop_recording()
+            self.imageSaver.set_channel_provider(None)
             self.lineEdit_experimentID.setEnabled(True)
             self.btn_setSavingDir.setEnabled(True)
 
@@ -4504,6 +4508,7 @@ class RecordingWidget(QFrame):
         self.lineEdit_experimentID.setEnabled(True)
         self.btn_record.setChecked(False)
         self.streamHandler.stop_recording()
+        self.imageSaver.set_channel_provider(None)
         self.btn_setSavingDir.setEnabled(True)
 
 

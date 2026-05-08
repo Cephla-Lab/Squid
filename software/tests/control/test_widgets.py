@@ -2403,6 +2403,58 @@ class TestRecordingWidget:
         image_saver.set_channel_provider(None)
         assert image_saver._channel_provider is None
 
+    def test_channel_change_mid_recording_reflected_in_filenames(self, qtbot, recording_widget):
+        widget, _, image_saver = recording_widget
+
+        class _Stub:
+            def __init__(self, name):
+                self.name = name
+                self.exposure_time = 10.0
+                self.analog_gain = 1.0
+                self.illumination_intensity = 50.0
+
+        state = {"channel": _Stub("BF LED matrix full")}
+        image_saver.set_channel_provider(lambda: state["channel"])
+
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        img = np.zeros((8, 8), dtype=np.uint8)
+        image_saver.enqueue(img, 0, 0.0)
+        qtbot.waitUntil(lambda: image_saver.counter == 1, timeout=2000)
+
+        state["channel"] = _Stub("488 nm")
+        image_saver.enqueue(img, 1, 1.0)
+        qtbot.waitUntil(lambda: image_saver.counter == 2, timeout=2000)
+
+        exp_dir = Path(image_saver.base_path) / image_saver.experiment_ID
+        names = sorted(p.name for p in exp_dir.rglob("*") if p.suffix in (".tiff", ".bmp"))
+        assert any("BF_LED_matrix_full" in n for n in names), f"No BF file: {names}"
+        assert any("488_nm" in n for n in names), f"No 488 file: {names}"
+
+    def test_widget_constructed_with_channel_provider(self, qtbot, tmp_path, monkeypatch):
+        """RecordingWidget accepts channel_provider kwarg and registers it on Record-press."""
+        monkeypatch.setattr(control._def, "DEFAULT_SAVING_PATH", str(tmp_path))
+        monkeypatch.setattr(control.widgets, "DEFAULT_SAVING_PATH", str(tmp_path))
+
+        stream_handler = core_module.QtStreamHandler(accept_new_frame_fn=lambda: True)
+        image_saver = core_module.ImageSaver()
+        stream_handler.packet_image_to_write.connect(image_saver.enqueue)
+
+        sentinel = object()
+        provider = lambda: sentinel  # noqa: E731
+
+        widget = RecordingWidget(stream_handler, image_saver, channel_provider=provider)
+        qtbot.addWidget(widget)
+        try:
+            widget.lineEdit_experimentID.setText("exp")
+            qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+            assert image_saver._channel_provider is provider
+            qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+            assert image_saver._channel_provider is None
+        finally:
+            image_saver.close()
+
     def test_directory_creation_failure_raises_and_logs(self, qtbot, recording_widget, caplog):
         _, _, image_saver = recording_widget
         with patch("control.utils.ensure_directory_exists", side_effect=OSError("mock disk error")):
