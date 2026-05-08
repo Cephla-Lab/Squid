@@ -4499,6 +4499,7 @@ class RecordingWidget(QFrame):
             self.streamHandler.start_recording()
         else:
             self.streamHandler.stop_recording()
+            self.imageSaver.stop_experiment()
             self.imageSaver.set_channel_provider(None)
             self.lineEdit_experimentID.setEnabled(True)
             self.btn_setSavingDir.setEnabled(True)
@@ -4508,6 +4509,7 @@ class RecordingWidget(QFrame):
         self.lineEdit_experimentID.setEnabled(True)
         self.btn_record.setChecked(False)
         self.streamHandler.stop_recording()
+        self.imageSaver.stop_experiment()
         self.imageSaver.set_channel_provider(None)
         self.btn_setSavingDir.setEnabled(True)
 

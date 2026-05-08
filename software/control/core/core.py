@@ -32,7 +32,7 @@ import squid.logging
 
 
 from typing import List, Tuple, Optional, Dict, Any, Callable, TypeVar
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
@@ -192,17 +192,18 @@ class ImageSaver(QObject):
                         self._csv_file.flush()
 
                     self.counter += 1
-                self.queue.task_done()
             except OSError as e:
                 log.error(f"Writer fatal error: {e}; stopping recording")
                 self.stop_recording.emit()
             except Exception as e:
                 log.warning(f"Failed to write frame {frame_id}: {e}")
+            finally:
+                self.queue.task_done()
 
     def enqueue(self, image, frame_id, timestamp):
         try:
             self.queue.put_nowait([image, frame_id, timestamp])
-        except Exception:
+        except Full:
             self._dropped_count += 1
             now = time.time()
             if now - self._last_queue_full_warning_ts >= 1.0:
@@ -221,6 +222,9 @@ class ImageSaver(QObject):
         self.recording_time_limit = time_limit
 
     def start_new_experiment(self, experiment_ID, add_timestamp=True):
+        # Defensively close any prior recording in case the caller didn't.
+        self.stop_experiment()
+
         if add_timestamp:
             self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         else:
@@ -248,10 +252,12 @@ class ImageSaver(QObject):
         if self._channel_provider is None:
             log.warning("channel_provider not set; frames tagged with default 'live' channel")
 
-    def close(self):
-        self.queue.join()
-        self.stop_signal_received = True
-        self.thread.join()
+    def stop_experiment(self):
+        """Finalize the current recording: close frames.csv and log a summary.
+
+        Called by the widget on Stop and on time-limit auto-stop. Idempotent
+        so close() can call it again on app shutdown without double-logging.
+        """
         if self._csv_file is not None:
             try:
                 self._csv_file.close()
@@ -264,6 +270,13 @@ class ImageSaver(QObject):
                 f"Recording stopped: frames_saved={self.counter}, "
                 f"dropped={self._dropped_count}, duration={duration:.1f}s"
             )
+            self.experiment_ID = ""
+
+    def close(self):
+        self.queue.join()
+        self.stop_signal_received = True
+        self.thread.join()
+        self.stop_experiment()
 
 
 class ImageSaver_Tracking(QObject):
