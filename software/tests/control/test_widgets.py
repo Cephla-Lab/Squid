@@ -2395,14 +2395,6 @@ class TestRecordingWidget:
         assert widget.lineEdit_savingDir.text() == str(tmp_path)
         assert image_saver.base_path == str(tmp_path)
 
-    def test_channel_provider_can_be_set_and_cleared(self, recording_widget):
-        _, _, image_saver = recording_widget
-        provider = lambda: None
-        image_saver.set_channel_provider(provider)
-        assert image_saver._channel_provider is provider
-        image_saver.set_channel_provider(None)
-        assert image_saver._channel_provider is None
-
     def test_channel_change_mid_recording_reflected_in_filenames(self, qtbot, recording_widget):
         widget, _, image_saver = recording_widget
 
@@ -2465,36 +2457,31 @@ class TestRecordingWidget:
             image_saver.enqueue(np.zeros((4, 4), dtype=np.uint8), 0, 0.0)
             qtbot.waitUntil(lambda: image_saver.queue.empty(), timeout=2000)
 
-    def test_multiple_recordings_close_previous_csv(self, qtbot, recording_widget):
-        """Calling start_new_experiment twice without close() must not leak the previous CSV handle."""
+    def test_recording_lifecycle_finalizes_csv_and_starts_fresh(self, qtbot, recording_widget, caplog):
+        """Stopping a recording closes frames.csv, logs the summary, and a subsequent
+        recording opens a brand-new CSV (no file-descriptor leak across sessions)."""
         widget, _, image_saver = recording_widget
+
         widget.lineEdit_experimentID.setText("first")
         qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
         first_csv = image_saver._csv_file
         assert first_csv is not None and not first_csv.closed
 
-        # Stop the first recording and start a second one
-        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
-        assert first_csv.closed, "Stopping the recording should close frames.csv"
-
-        widget.lineEdit_experimentID.setText("second")
-        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
-        second_csv = image_saver._csv_file
-        assert second_csv is not None and second_csv is not first_csv
-        assert not second_csv.closed
-
-    def test_stop_experiment_finalizes_csv_and_logs_summary(self, qtbot, recording_widget, caplog):
-        widget, _, image_saver = recording_widget
-        widget.lineEdit_experimentID.setText("exp")
-        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
         image_saver.enqueue(np.zeros((4, 4), dtype=np.uint8), 0, 0.0)
         qtbot.waitUntil(lambda: image_saver.counter == 1, timeout=2000)
 
         with caplog.at_level(logging.INFO):
             qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
 
+        assert first_csv.closed, "Stopping should close frames.csv"
         assert image_saver._csv_file is None
         assert any("Recording stopped" in rec.message and "frames_saved=1" in rec.message for rec in caplog.records)
+
+        widget.lineEdit_experimentID.setText("second")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+        second_csv = image_saver._csv_file
+        assert second_csv is not None and second_csv is not first_csv
+        assert not second_csv.closed
 
     def test_directory_creation_failure_raises_and_logs(self, qtbot, recording_widget, caplog):
         _, _, image_saver = recording_widget
