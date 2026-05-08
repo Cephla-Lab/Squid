@@ -1,5 +1,7 @@
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 import control.microscope
 import control._def
 import squid.stage.cephla
@@ -155,18 +157,14 @@ class TestGetImagePixelSizeUm:
         finally:
             scope.close()
 
-    def test_returns_none_when_factor_is_none(self):
+    @pytest.mark.parametrize(
+        "target, attr",
+        [("objective_store", "get_pixel_size_factor"), ("camera", "get_pixel_size_binned_um")],
+    )
+    def test_returns_none_when_component_is_none(self, target, attr):
         scope = control.microscope.Microscope.build_from_global_config(True)
         try:
-            with patch.object(scope.objective_store, "get_pixel_size_factor", return_value=None):
-                assert scope.get_image_pixel_size_um() is None
-        finally:
-            scope.close()
-
-    def test_returns_none_when_binned_um_is_none(self):
-        scope = control.microscope.Microscope.build_from_global_config(True)
-        try:
-            with patch.object(scope.camera, "get_pixel_size_binned_um", return_value=None):
+            with patch.object(getattr(scope, target), attr, return_value=None):
                 assert scope.get_image_pixel_size_um() is None
         finally:
             scope.close()

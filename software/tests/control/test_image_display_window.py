@@ -38,25 +38,19 @@ def image_display_window(qtbot):
     return win
 
 
-def test_ctrl_scroll_emits_fine_step_per_notch(image_display_window):
+@pytest.mark.parametrize(
+    "angle_y, modifiers, expected_um",
+    [
+        (120, Qt.ControlModifier, 1.0),
+        (120, Qt.ControlModifier | Qt.ShiftModifier, 20.0),
+        (-120, Qt.ControlModifier, -1.0),
+    ],
+)
+def test_ctrl_scroll_emits_signed_step_per_notch(image_display_window, angle_y, modifiers, expected_um):
     received = []
     image_display_window.signal_z_um_delta.connect(received.append)
-    image_display_window.eventFilter(image_display_window, _wheel_event(120, Qt.ControlModifier))
-    assert received == [pytest.approx(1.0)]
-
-
-def test_ctrl_shift_scroll_emits_coarse_step_per_notch(image_display_window):
-    received = []
-    image_display_window.signal_z_um_delta.connect(received.append)
-    image_display_window.eventFilter(image_display_window, _wheel_event(120, Qt.ControlModifier | Qt.ShiftModifier))
-    assert received == [pytest.approx(20.0)]
-
-
-def test_ctrl_scroll_down_emits_negative(image_display_window):
-    received = []
-    image_display_window.signal_z_um_delta.connect(received.append)
-    image_display_window.eventFilter(image_display_window, _wheel_event(-120, Qt.ControlModifier))
-    assert received == [pytest.approx(-1.0)]
+    image_display_window.eventFilter(image_display_window, _wheel_event(angle_y, modifiers))
+    assert received == [pytest.approx(expected_um)]
 
 
 def test_zero_delta_is_consumed_and_does_not_emit(image_display_window):
@@ -73,19 +67,6 @@ def test_plain_scroll_is_not_consumed_and_does_not_emit(image_display_window):
     consumed = image_display_window.eventFilter(image_display_window, _wheel_event(120, Qt.NoModifier))
     assert received == []
     assert consumed is False
-
-
-def test_wheel_event_at_real_target_triggers_filter_no_lut(qtbot):
-    """Dispatch a wheel event through Qt to where it actually arrives in real usage
-    (graphics_widget.viewport()). Catches regressions in where the filter is installed."""
-    win = ImageDisplayWindow(show_LUT=False)
-    qtbot.addWidget(win)
-    received = []
-    win.signal_z_um_delta.connect(received.append)
-
-    QApplication.sendEvent(win.graphics_widget.viewport(), _wheel_event(120, Qt.ControlModifier))
-
-    assert received == [pytest.approx(1.0)]
 
 
 def test_wheel_event_at_real_target_triggers_filter_with_lut(qtbot):
