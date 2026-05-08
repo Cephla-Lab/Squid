@@ -51,12 +51,12 @@ def _engine_summary_label(status: Optional[SquidLaserEngineStatus], connection_l
 
 def _format_temp(info) -> str:
     # Use one trailing °C even for multi-module channels (55x) to keep the line short.
-    temps = " / ".join(f"{m.temperature_c:.1f}" for m in info.modules)
+    temps = "/".join(f"{m.temperature_c:.1f}" for m in info.modules)
     return f"{temps} °C"
 
 
 def _format_diff(info) -> str:
-    return " / ".join(f"{m.setpoint_diff_c:+.1f}" for m in info.modules)
+    return "/".join(f"{m.setpoint_diff_c:+.1f}" for m in info.modules)
 
 
 class LaserEngineWidget(QWidget):
