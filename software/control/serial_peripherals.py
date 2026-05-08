@@ -1534,6 +1534,7 @@ class _SquidLaserEngineBase(QObject):
         self._latest_status: Optional[SquidLaserEngineStatus] = None
         self._status_lock = threading.Lock()
         self._connection_lost = False
+        self._connection_lost_lock = threading.Lock()
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
     # ── Public API ──────────────────────────────────────────────────────────
@@ -1631,9 +1632,12 @@ class _SquidLaserEngineBase(QObject):
         self.status_updated.emit(status)
 
     def _signal_connection_lost(self, message: str) -> None:
-        if not self._connection_lost:
+        with self._connection_lost_lock:
+            if self._connection_lost:
+                return
             self._connection_lost = True
-            self.connection_lost.emit(message)
+        # Emit outside the lock so signal handlers don't block other callers.
+        self.connection_lost.emit(message)
 
     # ── Subclass hooks ──────────────────────────────────────────────────────
 
@@ -1667,15 +1671,17 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         self._module_states = {i: LaserChannelState.WARMING_UP for i in range(_NUM_TEMP_CH)}
         self._module_deadlines = {i: time.monotonic() + transition_seconds for i in range(_NUM_TEMP_CH)}
         self._held_states = {}  # firmware-module-index -> LaserChannelState (force-hold)
+        self._state_lock = threading.Lock()
         self._tick_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
 
     # ── Public test hooks ───────────────────────────────────────────────────
 
     def force_hold_state(self, channel_key: str, state: LaserChannelState) -> None:
-        for mi in _CHANNEL_KEY_TO_MODULE_INDICES[channel_key]:
-            self._held_states[mi] = state
-            self._module_states[mi] = state
+        with self._state_lock:
+            for mi in _CHANNEL_KEY_TO_MODULE_INDICES[channel_key]:
+                self._held_states[mi] = state
+                self._module_states[mi] = state
 
     def force_error(self, channel_key: str) -> None:
         self.force_hold_state(channel_key, LaserChannelState.ERROR)
@@ -1701,23 +1707,25 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
     def _tick_loop(self) -> None:
         while self._running.is_set():
             self._advance_states()
+            # _build_status takes a snapshot under the lock; emit outside.
             self._publish_status(self._build_status())
             time.sleep(self.query_interval_s)
 
     def _advance_states(self) -> None:
-        now = time.monotonic()
-        for mi, state in list(self._module_states.items()):
-            if mi in self._held_states:
-                self._module_states[mi] = self._held_states[mi]
-                continue
-            deadline = self._module_deadlines.get(mi)
-            if deadline is not None and now >= deadline:
-                next_state = self._next_state_in_transition(state)
-                if next_state == state:
-                    self._module_deadlines[mi] = None  # stable
-                else:
-                    self._module_states[mi] = next_state
-                    self._module_deadlines[mi] = now + self._transition_seconds
+        with self._state_lock:
+            now = time.monotonic()
+            for mi, state in list(self._module_states.items()):
+                if mi in self._held_states:
+                    self._module_states[mi] = self._held_states[mi]
+                    continue
+                deadline = self._module_deadlines.get(mi)
+                if deadline is not None and now >= deadline:
+                    next_state = self._next_state_in_transition(state)
+                    if next_state == state:
+                        self._module_deadlines[mi] = None  # stable
+                    else:
+                        self._module_states[mi] = next_state
+                        self._module_deadlines[mi] = now + self._transition_seconds
 
     def _next_state_in_transition(self, state):
         # WAKE_UP -> WARMING_UP -> CHECK_ACTIVE -> ACTIVE
@@ -1733,8 +1741,12 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
     def _build_status(self) -> SquidLaserEngineStatus:
         # Synthesize a status for all channels using the current per-module states.
         # Use temps near 25°C, the hi-temp module near 99.7°C.
+        # Take a snapshot under the lock so we don't read while another
+        # thread is mid-write to _module_states.
+        with self._state_lock:
+            states_snapshot = dict(self._module_states)
         module_data = {}
-        for mi, state in self._module_states.items():
+        for mi, state in states_snapshot.items():
             is_hi = mi == 5
             base_temp = 99.7 if is_hi else 25.0
             temp = base_temp if state == LaserChannelState.ACTIVE else base_temp - 1.5
@@ -1764,19 +1776,21 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
     def _send_wake(self, channel_index: int) -> None:
         # Firmware: ch4 wakes both modules 4 and 5.
         modules_to_wake = (4, 5) if channel_index == 4 else (channel_index,)
-        for mi in modules_to_wake:
-            if mi in self._held_states:
-                continue
-            self._module_states[mi] = LaserChannelState.WAKE_UP
-            self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
+        with self._state_lock:
+            for mi in modules_to_wake:
+                if mi in self._held_states:
+                    continue
+                self._module_states[mi] = LaserChannelState.WAKE_UP
+                self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
 
     def _send_sleep(self, channel_index: int) -> None:
         modules_to_sleep = (4, 5) if channel_index == 4 else (channel_index,)
-        for mi in modules_to_sleep:
-            if mi in self._held_states:
-                continue
-            self._module_states[mi] = LaserChannelState.PREPARE_SLEEP
-            self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
+        with self._state_lock:
+            for mi in modules_to_sleep:
+                if mi in self._held_states:
+                    continue
+                self._module_states[mi] = LaserChannelState.PREPARE_SLEEP
+                self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
 
     def _send_query(self) -> None:
         # Simulator publishes on its own tick; query is a no-op.
