@@ -1303,8 +1303,6 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
-        if self.laserEngineWidget:
-            self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
         if ENABLE_NL5:
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -1316,6 +1314,8 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_LASER_AUTOFOCUS:
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
+        if self.laserEngineWidget:
+            self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
