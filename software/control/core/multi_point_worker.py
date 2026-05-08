@@ -577,7 +577,15 @@ class MultiPointWorker:
         if not ok:
             if self.abort_requested_fn():
                 return  # outer abort check handles this
-            raise RuntimeError("Laser engine did not reach ready state within timeout; aborting acquisition")
+            if self._laser_engine.is_connection_lost():
+                raise RuntimeError(
+                    f"Laser engine connection lost while waiting on channel(s) "
+                    f"{self._laser_channels_needed}; aborting acquisition"
+                )
+            raise RuntimeError(
+                f"Laser engine did not reach ready state within timeout while waiting on channel(s) "
+                f"{self._laser_channels_needed}; aborting acquisition"
+            )
 
     def _wait_for_outstanding_callback_images(self):
         # If there are outstanding frames, wait for them to come in.

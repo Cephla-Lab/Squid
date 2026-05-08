@@ -1866,9 +1866,23 @@ class HighContentScreeningGui(QMainWindow):
 
     def _on_live_controller_warning(self, message: str) -> None:
         """Surface a non-fatal warning from LiveController (e.g. laser engine
-        not yet ready). Logs and shows a non-blocking message box."""
+        not yet ready). Logs and shows a non-modal message box.
+
+        Repeats within 5s of the previous warning are dropped (still logged) so
+        a flapping engine doesn't stack dialogs faster than the user can dismiss.
+        """
         self.log.warning(message)
-        QMessageBox.warning(self, "Laser engine", message)
+        now = time.monotonic()
+        last = getattr(self, "_last_live_warning_s", 0.0)
+        if now - last < 5.0:
+            return
+        self._last_live_warning_s = now
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Laser engine")
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.show()  # non-modal — does not block the GUI thread
 
     def _show_laser_engine_dialog(self, channel_keys: list) -> None:
         """Show a non-cancelable modal progress dialog while the worker waits

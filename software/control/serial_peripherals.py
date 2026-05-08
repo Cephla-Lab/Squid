@@ -1518,11 +1518,11 @@ def _build_command_packet(cmd_byte: bytes, channel_index: Optional[int] = None) 
     return body + struct.pack("<I", crc32(body)) + b"\x0a\x0d"
 
 
-class _SquidLaserEngineBase(QObject):
+class SquidLaserEngineBase(QObject):
     """Shared logic for the real and simulation engines.
 
-    Subclasses must implement: _send_query, _send_wake(channel_index),
-    _send_sleep(channel_index), is_connection_lost.
+    Subclasses must implement: start, close, _send_query,
+    _send_wake(channel_index), _send_sleep(channel_index).
     """
 
     status_updated = Signal(object)  # SquidLaserEngineStatus
@@ -1654,7 +1654,7 @@ class _SquidLaserEngineBase(QObject):
         raise NotImplementedError
 
 
-class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
+class SquidLaserEngine_Simulation(SquidLaserEngineBase):
     """Simulator that emits synthesized status on the same cadence as the real engine.
 
     Test hooks: force_hold_state(key, state), force_error(key), force_connection_lost(msg).
@@ -1814,7 +1814,7 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         pass
 
 
-class SquidLaserEngine(_SquidLaserEngineBase):
+class SquidLaserEngine(SquidLaserEngineBase):
     """USB-serial controller for the Cephla Squid laser engine.
 
     Two background threads (mirroring the reference pc-side python):

@@ -203,7 +203,7 @@ class MicroscopeAddons:
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
-        squid_laser_engine: Optional["serial_peripherals.SquidLaserEngine"] = None,
+        squid_laser_engine: Optional["serial_peripherals.SquidLaserEngineBase"] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
         self.dragonfly: Optional[serial_peripherals.Dragonfly] = dragonfly
