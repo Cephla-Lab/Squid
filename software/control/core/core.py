@@ -659,6 +659,7 @@ class TrackingWorker(QObject):
 
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
+    signal_z_um_delta = Signal(float)
 
     def __init__(
         self,
@@ -807,6 +808,14 @@ class ImageDisplayWindow(QMainWindow):
         else:
             image_layout.addWidget(self.graphics_widget)
         self.image_container.setLayout(image_layout)
+
+        # Wheel events arrive at the QGraphicsView's viewport; in show_LUT mode the
+        # graphics view is nested inside pg.ImageView's auto-generated UI.
+        if self.show_LUT:
+            graphics_view = self.graphics_widget.view.ui.graphicsView
+        else:
+            graphics_view = self.graphics_widget
+        graphics_view.viewport().installEventFilter(self)
 
         # Create line profiler widget
         self.line_profiler_widget = pg.GraphicsLayoutWidget()
@@ -1208,6 +1217,22 @@ class ImageDisplayWindow(QMainWindow):
             return 0 <= coordinates.x() < image_width and 0 <= coordinates.y() < image_height
         except:
             return False
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Wheel and (event.modifiers() & Qt.ControlModifier):
+            notches = event.angleDelta().y() / 120.0
+            if notches == 0:
+                return True
+            # Read via the module so runtime updates of the constant are picked up;
+            # the `from control._def import *` binding above would freeze it at import.
+            step_um = (
+                control._def.LIVE_VIEW_Z_STEP_FAST_UM
+                if (event.modifiers() & Qt.ShiftModifier)
+                else control._def.LIVE_VIEW_Z_STEP_UM
+            )
+            self.signal_z_um_delta.emit(notches * step_um)
+            return True
+        return super().eventFilter(source, event)
 
     def display_image(self, image):
         # enable the line profiler button after the first image is displayed

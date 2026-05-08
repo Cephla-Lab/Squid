@@ -1098,6 +1098,27 @@ class PreferencesDialog(QDialog):
         path_layout.addWidget(browse_button)
         layout.addRow("Default Saving Path:", path_widget)
 
+        # Click to Move
+        click_to_move_group = CollapsibleGroupBox("Click to Move")
+        click_to_move_layout = QFormLayout()
+
+        self.click_to_move_enable_checkbox = QCheckBox()
+        self.click_to_move_enable_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_click_to_move", True))
+        click_to_move_layout.addRow("Enable click to move:", self.click_to_move_enable_checkbox)
+
+        self.click_to_move_z_fine_spinbox = self._make_z_step_spinbox(
+            self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
+        )
+        click_to_move_layout.addRow("Z Fine Step (Ctrl+Scroll):", self.click_to_move_z_fine_spinbox)
+
+        self.click_to_move_z_coarse_spinbox = self._make_z_step_spinbox(
+            self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
+        )
+        click_to_move_layout.addRow("Z Coarse Step (Ctrl+Shift+Scroll):", self.click_to_move_z_coarse_spinbox)
+
+        click_to_move_group.content.addLayout(click_to_move_layout)
+        layout.addRow(click_to_move_group)
+
         self.tab_widget.addTab(tab, "General")
 
     def _create_acquisition_tab(self):
@@ -1716,6 +1737,15 @@ class PreferencesDialog(QDialog):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
 
+    def _make_z_step_spinbox(self, value):
+        spinbox = QDoubleSpinBox()
+        spinbox.setRange(0.1, 1000.0)
+        spinbox.setSingleStep(0.1)
+        spinbox.setDecimals(1)
+        spinbox.setSuffix(" µm")
+        spinbox.setValue(value)
+        return spinbox
+
     def _browse_saving_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Default Saving Path", self.saving_path_edit.text())
         if path:
@@ -1750,6 +1780,15 @@ class PreferencesDialog(QDialog):
         )
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
+
+        # Click to Move
+        self.config.set(
+            "GENERAL",
+            "enable_click_to_move",
+            "true" if self.click_to_move_enable_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "live_view_z_step_um", str(self.click_to_move_z_fine_spinbox.value()))
+        self.config.set("GENERAL", "live_view_z_step_fast_um", str(self.click_to_move_z_coarse_spinbox.value()))
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
@@ -1937,6 +1976,11 @@ class PreferencesDialog(QDialog):
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
 
+        # Click to Move
+        control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
+        control._def.LIVE_VIEW_Z_STEP_UM = self.click_to_move_z_fine_spinbox.value()
+        control._def.LIVE_VIEW_Z_STEP_FAST_UM = self.click_to_move_z_coarse_spinbox.value()
+
         # AF settings
         control._def.AF.STOP_THRESHOLD = self.af_stop_threshold.value()
         control._def.AF.CROP_WIDTH = self.af_crop_width.value()
@@ -2009,6 +2053,22 @@ class PreferencesDialog(QDialog):
         new_val = self.show_dev_tab_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
+
+        # Click to Move
+        old_val = self._get_config_bool("GENERAL", "enable_click_to_move", True)
+        new_val = self.click_to_move_enable_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable Click to Move", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
+        new_val = self.click_to_move_z_fine_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Z Step (Fine)", f"{old_val} µm", f"{new_val} µm", False))
+
+        old_val = self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
+        new_val = self.click_to_move_z_coarse_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Z Step (Coarse)", f"{old_val} µm", f"{new_val} µm", False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
@@ -4553,8 +4613,8 @@ class NavigationWidget(QFrame):
 
         self.grid = QVBoxLayout()
         self.grid.addLayout(grid_line0)
-        self.set_click_to_move(ENABLE_CLICK_TO_MOVE_BY_DEFAULT)
-        if not ENABLE_CLICK_TO_MOVE_BY_DEFAULT:
+        self.set_click_to_move(ENABLE_CLICK_TO_MOVE)
+        if not ENABLE_CLICK_TO_MOVE:
             grid_line3 = QHBoxLayout()
             grid_line3.addWidget(self.checkbox_clickToMove, 1)
             self.grid.addLayout(grid_line3)

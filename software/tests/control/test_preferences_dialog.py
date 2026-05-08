@@ -692,3 +692,50 @@ class TestDevTabVisibility:
         assert len(dev_tab_changes) == 1, "Should detect Show Dev Tab change"
         assert dev_tab_changes[0][1] == "False"  # old value
         assert dev_tab_changes[0][2] == "True"  # new value
+
+
+class TestClickToMoveSettings:
+    """Tests for the Click to Move group on the General tab."""
+
+    def test_controls_default_to_module_constants(self, preferences_dialog):
+        assert preferences_dialog.click_to_move_enable_checkbox.isChecked() is True
+        assert preferences_dialog.click_to_move_z_fine_spinbox.value() == pytest.approx(5.0)
+        assert preferences_dialog.click_to_move_z_coarse_spinbox.value() == pytest.approx(40.0)
+
+    def test_round_trip_writes_three_keys(self, qtbot, preferences_dialog, temp_config_file):
+        preferences_dialog.click_to_move_enable_checkbox.setChecked(False)
+        preferences_dialog.click_to_move_z_fine_spinbox.setValue(0.5)
+        preferences_dialog.click_to_move_z_coarse_spinbox.setValue(10.0)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "enable_click_to_move").lower() == "false"
+        assert saved.getfloat("GENERAL", "live_view_z_step_um") == pytest.approx(0.5)
+        assert saved.getfloat("GENERAL", "live_view_z_step_fast_um") == pytest.approx(10.0)
+
+    def test_changes_do_not_require_restart(self, preferences_dialog):
+        preferences_dialog.click_to_move_enable_checkbox.setChecked(False)
+        preferences_dialog.click_to_move_z_fine_spinbox.setValue(2.0)
+        preferences_dialog.click_to_move_z_coarse_spinbox.setValue(50.0)
+
+        changes = {c[0]: c[3] for c in preferences_dialog._get_changes()}
+        assert changes["Enable Click to Move"] is False
+        assert changes["Z Step (Fine)"] is False
+        assert changes["Z Step (Coarse)"] is False
+
+    def test_save_pushes_z_steps_to_def_module(self, qtbot, preferences_dialog):
+        import control._def
+
+        preferences_dialog.click_to_move_z_fine_spinbox.setValue(2.5)
+        preferences_dialog.click_to_move_z_coarse_spinbox.setValue(75.0)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+        assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
+        assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
