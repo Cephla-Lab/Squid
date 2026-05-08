@@ -1103,28 +1103,16 @@ class PreferencesDialog(QDialog):
         click_to_move_layout = QFormLayout()
 
         self.click_to_move_enable_checkbox = QCheckBox()
-        self.click_to_move_enable_checkbox.setChecked(
-            self._get_config_bool("GENERAL", "enable_click_to_move", control._def.ENABLE_CLICK_TO_MOVE)
-        )
+        self.click_to_move_enable_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_click_to_move", True))
         click_to_move_layout.addRow("Enable click to move:", self.click_to_move_enable_checkbox)
 
-        self.click_to_move_z_fine_spinbox = QDoubleSpinBox()
-        self.click_to_move_z_fine_spinbox.setRange(0.1, 1000.0)
-        self.click_to_move_z_fine_spinbox.setSingleStep(0.1)
-        self.click_to_move_z_fine_spinbox.setDecimals(1)
-        self.click_to_move_z_fine_spinbox.setSuffix(" µm")
-        self.click_to_move_z_fine_spinbox.setValue(
-            self._get_config_float("GENERAL", "live_view_z_step_um", control._def.LIVE_VIEW_Z_STEP_UM)
+        self.click_to_move_z_fine_spinbox = self._make_z_step_spinbox(
+            self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
         )
         click_to_move_layout.addRow("Z fine step (Ctrl+Scroll):", self.click_to_move_z_fine_spinbox)
 
-        self.click_to_move_z_coarse_spinbox = QDoubleSpinBox()
-        self.click_to_move_z_coarse_spinbox.setRange(0.1, 1000.0)
-        self.click_to_move_z_coarse_spinbox.setSingleStep(0.1)
-        self.click_to_move_z_coarse_spinbox.setDecimals(1)
-        self.click_to_move_z_coarse_spinbox.setSuffix(" µm")
-        self.click_to_move_z_coarse_spinbox.setValue(
-            self._get_config_float("GENERAL", "live_view_z_step_fast_um", control._def.LIVE_VIEW_Z_STEP_FAST_UM)
+        self.click_to_move_z_coarse_spinbox = self._make_z_step_spinbox(
+            self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
         )
         click_to_move_layout.addRow("Z coarse step (Ctrl+Shift+Scroll):", self.click_to_move_z_coarse_spinbox)
 
@@ -1791,6 +1779,15 @@ class PreferencesDialog(QDialog):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
 
+    def _make_z_step_spinbox(self, value):
+        spinbox = QDoubleSpinBox()
+        spinbox.setRange(0.1, 1000.0)
+        spinbox.setSingleStep(0.1)
+        spinbox.setDecimals(1)
+        spinbox.setSuffix(" µm")
+        spinbox.setValue(value)
+        return spinbox
+
     def _browse_saving_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Default Saving Path", self.saving_path_edit.text())
         if path:
@@ -2114,20 +2111,20 @@ class PreferencesDialog(QDialog):
             changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
         # Click to Move (require restart — read by _def.py at import)
-        old_val = self._get_config_bool("GENERAL", "enable_click_to_move", control._def.ENABLE_CLICK_TO_MOVE)
+        old_val = self._get_config_bool("GENERAL", "enable_click_to_move", True)
         new_val = self.click_to_move_enable_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Click to Move", str(old_val), str(new_val), True))
 
-        old_val = self._get_config_float("GENERAL", "live_view_z_step_um", control._def.LIVE_VIEW_Z_STEP_UM)
+        old_val = self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
         new_val = self.click_to_move_z_fine_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Click to Move - Z Fine Step", f"{old_val} µm", f"{new_val} µm", True))
+            changes.append(("Z Step (Fine)", f"{old_val} µm", f"{new_val} µm", True))
 
-        old_val = self._get_config_float("GENERAL", "live_view_z_step_fast_um", control._def.LIVE_VIEW_Z_STEP_FAST_UM)
+        old_val = self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
         new_val = self.click_to_move_z_coarse_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Click to Move - Z Coarse Step", f"{old_val} µm", f"{new_val} µm", True))
+            changes.append(("Z Step (Coarse)", f"{old_val} µm", f"{new_val} µm", True))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
