@@ -6,10 +6,9 @@ Driven by `SquidLaserEngine.status_updated` — no QTimer-based polling here.
 import time
 from typing import Optional
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QTimer
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -40,7 +39,7 @@ _STATE_COLORS = {
 }
 
 
-def _engine_summary_color(status: SquidLaserEngineStatus, connection_lost: bool) -> QColor:
+def _engine_summary_color(status: Optional[SquidLaserEngineStatus], connection_lost: bool) -> QColor:
     if connection_lost or status is None:
         return QColor("#c0392b")
     if status.any_error():
@@ -53,7 +52,7 @@ def _engine_summary_color(status: SquidLaserEngineStatus, connection_lost: bool)
     return QColor("#daa520")
 
 
-def _engine_summary_label(status: SquidLaserEngineStatus, connection_lost: bool) -> str:
+def _engine_summary_label(status: Optional[SquidLaserEngineStatus], connection_lost: bool) -> str:
     if connection_lost:
         return "Disconnected"
     if status is None:
@@ -111,6 +110,10 @@ class LaserEngineWidget(QWidget):
         self._engine_label = QLabel("Engine: Waiting…")
         self._wake_btn = QPushButton("Wake All")
         self._sleep_btn = QPushButton("Sleep All")
+        # Wake All / Sleep All call serial.write() up to 5 times on the GUI thread.
+        # pyserial.Serial.write() returns when the kernel accepts the bytes, so the
+        # block is sub-millisecond per call — well under the threshold that would
+        # warrant a worker thread.
         self._wake_btn.clicked.connect(self._engine.wake_up_all)
         self._sleep_btn.clicked.connect(self._engine.sleep_all)
         top_row.addWidget(self._engine_dot)
