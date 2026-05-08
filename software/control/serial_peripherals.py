@@ -1674,6 +1674,7 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         self._state_lock = threading.Lock()
         self._tick_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._closed = False
 
     # ── Public test hooks ───────────────────────────────────────────────────
 
@@ -1699,10 +1700,13 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         self._tick_thread.start()
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._running.clear()
         if self._tick_thread:
             self._tick_thread.join(timeout=2.0)
             self._tick_thread = None
+        self._closed = True
 
     def _tick_loop(self) -> None:
         while self._running.is_set():
@@ -1824,6 +1828,7 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._receive_thread: Optional[threading.Thread] = None
         self.crc_mismatch_count = 0
         self.parse_failure_count = 0
+        self._closed = False
 
     # ── Public API: start / close ───────────────────────────────────────────
 
@@ -1839,6 +1844,8 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._receive_thread.start()
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._running.clear()
         # Close the port first so any blocking read() unblocks promptly,
         # then join — otherwise a thread stuck in read() outlives close()
@@ -1854,6 +1861,7 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._query_thread = None
         self._receive_thread = None
         self._serial = None
+        self._closed = True
 
     # ── Subclass hooks ──────────────────────────────────────────────────────
 
