@@ -1,13 +1,20 @@
 import logging
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import numpy as np
 import pytest
+from qtpy.QtCore import Qt
 
 import control._def
 import control.microscope
-from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, SurfacePlotWidget
+import control.widgets
+from control.core import core as core_module
+from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
+from squid.abc import CameraFrame, CameraFrameFormat
+from squid.config import CameraPixelFormat
 
 import tests.control.test_stubs as ts
 
@@ -2354,6 +2361,231 @@ class TestWarningErrorWidgetDroppedCount:
         if dropped > 0:
             # Expand button should be visible to show dropped count
             assert widget.btn_expand.isVisible()
+
+
+# ============================================================================
+# RecordingWidget Tests
+# ============================================================================
+
+
+@pytest.fixture
+def recording_widget(qtbot, tmp_path, monkeypatch):
+    # `widgets.py` imports DEFAULT_SAVING_PATH via `from control._def import *`, which binds a
+    # separate name in the widgets module — both bindings must be patched.
+    monkeypatch.setattr(control._def, "DEFAULT_SAVING_PATH", str(tmp_path))
+    monkeypatch.setattr(control.widgets, "DEFAULT_SAVING_PATH", str(tmp_path))
+
+    stream_handler = core_module.QtStreamHandler(accept_new_frame_fn=lambda: True)
+    image_saver = core_module.ImageSaver()
+    stream_handler.packet_image_to_write.connect(image_saver.enqueue)
+
+    widget = RecordingWidget(stream_handler, image_saver)
+    qtbot.addWidget(widget)
+    try:
+        yield widget, stream_handler, image_saver
+    finally:
+        image_saver.close()
+
+
+class TestRecordingWidget:
+    """Regression tests for the legacy single-camera RecordingWidget."""
+
+    def test_default_saving_path_applied_on_construction(self, recording_widget, tmp_path):
+        widget, _, image_saver = recording_widget
+        assert widget.lineEdit_savingDir.text() == str(tmp_path)
+        assert image_saver.base_path == str(tmp_path)
+
+    def test_channel_change_mid_recording_reflected_in_filenames(self, qtbot, recording_widget):
+        widget, _, image_saver = recording_widget
+
+        class _Stub:
+            def __init__(self, name):
+                self.name = name
+                self.exposure_time = 10.0
+                self.analog_gain = 1.0
+                self.illumination_intensity = 50.0
+
+        state = {"channel": _Stub("BF LED matrix full")}
+        image_saver.set_channel_provider(lambda: state["channel"])
+
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        img = np.zeros((8, 8), dtype=np.uint8)
+        image_saver.enqueue(img, 0, 0.0)
+        qtbot.waitUntil(lambda: image_saver.counter == 1, timeout=2000)
+
+        state["channel"] = _Stub("488 nm")
+        image_saver.enqueue(img, 1, 1.0)
+        qtbot.waitUntil(lambda: image_saver.counter == 2, timeout=2000)
+
+        exp_dir = Path(image_saver.base_path) / image_saver.experiment_ID
+        names = sorted(p.name for p in exp_dir.rglob("*") if p.suffix in (".tiff", ".bmp"))
+        assert any("BF_LED_matrix_full" in n for n in names), f"No BF file: {names}"
+        assert any("488_nm" in n for n in names), f"No 488 file: {names}"
+
+    def test_widget_constructed_with_channel_provider(self, qtbot, tmp_path, monkeypatch):
+        """RecordingWidget accepts channel_provider kwarg and registers it on Record-press."""
+        monkeypatch.setattr(control._def, "DEFAULT_SAVING_PATH", str(tmp_path))
+        monkeypatch.setattr(control.widgets, "DEFAULT_SAVING_PATH", str(tmp_path))
+
+        stream_handler = core_module.QtStreamHandler(accept_new_frame_fn=lambda: True)
+        image_saver = core_module.ImageSaver()
+        stream_handler.packet_image_to_write.connect(image_saver.enqueue)
+
+        sentinel = object()
+        provider = lambda: sentinel  # noqa: E731
+
+        widget = RecordingWidget(stream_handler, image_saver, channel_provider=provider)
+        qtbot.addWidget(widget)
+        try:
+            widget.lineEdit_experimentID.setText("exp")
+            qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+            assert image_saver._channel_provider is provider
+            qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+            assert image_saver._channel_provider is None
+        finally:
+            image_saver.close()
+
+    def test_close_does_not_hang_when_write_raises(self, qtbot, recording_widget):
+        """A write exception must still mark the queue item done; otherwise close() hangs on join()."""
+        widget, _, image_saver = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        with patch("control.utils_acquisition.save_image", side_effect=RuntimeError("boom")):
+            image_saver.enqueue(np.zeros((4, 4), dtype=np.uint8), 0, 0.0)
+            qtbot.waitUntil(lambda: image_saver.queue.empty(), timeout=2000)
+
+    def test_recording_lifecycle_finalizes_csv_and_starts_fresh(self, qtbot, recording_widget, caplog):
+        """Stopping a recording closes frames.csv, logs the summary, and a subsequent
+        recording opens a brand-new CSV (no file-descriptor leak across sessions)."""
+        widget, _, image_saver = recording_widget
+
+        widget.lineEdit_experimentID.setText("first")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+        first_csv = image_saver._csv_file
+        assert first_csv is not None and not first_csv.closed
+
+        image_saver.enqueue(np.zeros((4, 4), dtype=np.uint8), 0, 0.0)
+        qtbot.waitUntil(lambda: image_saver.counter == 1, timeout=2000)
+
+        with caplog.at_level(logging.INFO):
+            qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        assert first_csv.closed, "Stopping should close frames.csv"
+        assert image_saver._csv_file is None
+        assert any("Recording stopped" in rec.message and "frames_saved=1" in rec.message for rec in caplog.records)
+
+        widget.lineEdit_experimentID.setText("second")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+        second_csv = image_saver._csv_file
+        assert second_csv is not None and second_csv is not first_csv
+        assert not second_csv.closed
+
+    def test_directory_creation_failure_raises_and_logs(self, qtbot, recording_widget, caplog):
+        _, _, image_saver = recording_widget
+        with patch("control.utils.ensure_directory_exists", side_effect=OSError("mock disk error")):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(OSError):
+                    image_saver.start_new_experiment("doomed")
+        assert any("Failed to create experiment directory" in rec.message for rec in caplog.records)
+
+    def test_queue_full_logs_warning_and_increments_dropped_count(self, qtbot, recording_widget, caplog):
+        widget, _, image_saver = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        # Block the saver thread by holding image_lock so the queue can't drain.
+        img = np.zeros((8, 8), dtype=np.uint8)
+        with image_saver.image_lock:
+            with caplog.at_level(logging.WARNING):
+                for frame_id in range(40):
+                    image_saver.enqueue(img, frame_id, 0.0)
+
+        assert image_saver._dropped_count > 0
+        assert any("queue full" in rec.message.lower() for rec in caplog.records)
+
+    def test_frames_csv_written_with_metadata(self, qtbot, recording_widget):
+        widget, _, image_saver = recording_widget
+
+        class _Stub:
+            name = "488 nm"
+            exposure_time = 25.0
+            analog_gain = 1.5
+            illumination_intensity = 80.0
+
+        image_saver.set_channel_provider(lambda: _Stub())
+
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+        exp_id = image_saver.experiment_ID  # stop_experiment will clear it
+
+        # Enqueue directly so streamHandler's save-FPS throttle doesn't drop frames.
+        img = np.zeros((16, 16), dtype=np.uint8)
+        for i in range(3):
+            image_saver.enqueue(img, i * 30, 1000.0 + i)
+
+        qtbot.waitUntil(lambda: image_saver.counter == 3, timeout=2000)
+        # Stop the recording so frames.csv is flushed and closed.
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        csv_path = Path(image_saver.base_path) / exp_id / "frames.csv"
+        assert csv_path.is_file()
+
+        import csv as _csv
+
+        with csv_path.open() as f:
+            rows = list(_csv.DictReader(f))
+        assert len(rows) == 3
+        assert [r["frame_id"] for r in rows] == ["0", "30", "60"]
+        assert rows[0]["channel"] == "488 nm"
+        assert float(rows[0]["exposure_ms"]) == 25.0
+        assert float(rows[0]["gain"]) == 1.5
+        assert float(rows[0]["illumination_intensity"]) == 80.0
+        assert rows[0]["file"].endswith(".tiff") or rows[0]["file"].endswith(".bmp")
+
+    def test_record_without_browse_starts_recording(self, qtbot, recording_widget):
+        widget, _, image_saver = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        assert widget.btn_record.isChecked()
+        assert image_saver.experiment_ID.startswith("exp_")
+        assert not widget.lineEdit_experimentID.isEnabled()
+        assert not widget.btn_setSavingDir.isEnabled()
+
+    def test_browse_cancel_preserves_existing_path(self, recording_widget, tmp_path):
+        widget, _, image_saver = recording_widget
+        with patch("qtpy.QtWidgets.QFileDialog.getExistingDirectory", return_value=""):
+            widget.set_saving_dir()
+        assert image_saver.base_path == str(tmp_path)
+        assert widget.lineEdit_savingDir.text() == str(tmp_path)
+
+    def test_frame_is_persisted_to_disk(self, qtbot, recording_widget):
+        widget, stream_handler, image_saver = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+        widget.entry_saveFPS.setValue(1000)
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        frame = CameraFrame(
+            frame_id=0,
+            timestamp=0.0,
+            frame=np.zeros((32, 32), dtype=np.uint8),
+            frame_format=CameraFrameFormat.RAW,
+            frame_pixel_format=CameraPixelFormat.MONO8,
+        )
+        stream_handler.get_frame_callback()(frame)
+
+        qtbot.waitUntil(lambda: image_saver.counter > 0, timeout=2000)
+
+        exp_dir = Path(image_saver.base_path) / image_saver.experiment_ID
+        files = [p for p in exp_dir.rglob("*") if p.is_file()]
+        assert files, f"No image saved under {exp_dir}"
+        # No channel provider was set, so save_image gets the default "live" sentinel.
+        # Filename comes from utils_acquisition.get_image_filepath: <file_id>_<channel_safe>.<ext>
+        assert any("live" in p.stem for p in files), f"Expected 'live' in filename; got {[p.name for p in files]}"
 
 
 class TestWarningErrorWidgetErrorExemptionWithDroppedCount:

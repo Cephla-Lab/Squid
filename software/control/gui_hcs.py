@@ -943,7 +943,11 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
-        self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
+        self.recordingControlWidget = widgets.RecordingWidget(
+            self.streamHandler,
+            self.imageSaver,
+            channel_provider=lambda: self.liveController.currentConfiguration,
+        )
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )

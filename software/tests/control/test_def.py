@@ -228,3 +228,16 @@ class TestParseSimSetting:
         assert self._parse_sim_setting("fasle") is False
         assert self._parse_sim_setting("simualte") is False
         assert self._parse_sim_setting("invalid") is False
+
+
+def test_default_image_format_is_tiff():
+    """The in-code default for Acquisition.IMAGE_FORMAT is 'tiff' (was 'bmp').
+
+    INI files with [ACQUISITION] image_format=... override this at module
+    load time, so we assert against the source rather than the runtime value.
+    """
+    import inspect
+    import control._def
+
+    source = inspect.getsource(control._def.Acquisition)
+    assert 'IMAGE_FORMAT = "tiff"' in source
