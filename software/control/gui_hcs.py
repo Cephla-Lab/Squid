@@ -42,6 +42,7 @@ from qtpy.QtGui import *
 from control._def import *
 
 # app specific libraries
+from control.laser_engine_widget import LaserEngineWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -695,6 +696,7 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
+        self.laserEngineWidget: Optional[LaserEngineWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
@@ -942,6 +944,9 @@ class HighContentScreeningGui(QMainWindow):
             self.filterControllerWidget = widgets.FilterControllerWidget(
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
+
+        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+            self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
@@ -1287,6 +1292,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
+        if self.laserEngineWidget:
+            self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
         if ENABLE_NL5:
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -2718,6 +2725,16 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 if for_restart:
                     self.log.exception(f"Error closing filter wheel during {context}")
+                else:
+                    raise
+
+        # Close Squid laser engine
+        if self.microscope.addons.squid_laser_engine is not None:
+            try:
+                self.microscope.addons.squid_laser_engine.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing squid laser engine during {context}")
                 else:
                     raise
 
