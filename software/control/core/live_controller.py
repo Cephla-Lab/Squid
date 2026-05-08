@@ -118,12 +118,9 @@ class LiveController(QObject):
         status = engine.get_latest_status()
         if status is not None and status.is_ready_for(needed):
             return
-        # Not ready — fire-and-forget wake, then warn.
+        # Not ready — fire-and-forget wake (wake_up swallows transport errors), then warn.
         for k in needed:
-            try:
-                engine.wake_up(k)
-            except Exception as e:
-                self._log.warning(f"Squid laser engine wake_up({k}) failed: {e}")
+            engine.wake_up(k)
         self._log.warning(f"Squid laser engine not ready for channel(s) {needed}; live started anyway")
         self.signal_warning.emit(f"Laser engine warming up (channel {','.join(needed)}); image may be dim")
 

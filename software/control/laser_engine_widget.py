@@ -19,12 +19,11 @@ from qtpy.QtWidgets import (
 )
 
 from control.serial_peripherals import (
+    LASER_CHANNEL_ORDER,
     LaserChannelState,
     SquidLaserEngineStatus,
 )
 
-# Display order matches CHANNEL_ORDER in SquidLaserEngine: 405, 470, 55x, 638, 730.
-_CHANNEL_DISPLAY_ORDER = ("405", "470", "55x", "638", "730")
 _COLUMN_HEADERS = ("Ch", "State", "Temp", "ΔT", "Laser TTL")
 
 _STATE_COLORS = {
@@ -130,12 +129,12 @@ class LaserEngineWidget(QWidget):
         layout.addWidget(self._banner)
 
         # Per-channel table.
-        self._table = QTableWidget(len(_CHANNEL_DISPLAY_ORDER), len(_COLUMN_HEADERS), self)
+        self._table = QTableWidget(len(LASER_CHANNEL_ORDER), len(_COLUMN_HEADERS), self)
         self._table.setHorizontalHeaderLabels(list(_COLUMN_HEADERS))
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionMode(QTableWidget.NoSelection)
-        for row, key in enumerate(_CHANNEL_DISPLAY_ORDER):
+        for row, key in enumerate(LASER_CHANNEL_ORDER):
             self._table.setItem(row, 0, QTableWidgetItem(key))
             for col in range(1, len(_COLUMN_HEADERS)):
                 self._table.setItem(row, col, QTableWidgetItem(""))
@@ -163,7 +162,7 @@ class LaserEngineWidget(QWidget):
     def _refresh_table(self) -> None:
         if self._last_status is None:
             return
-        for row, key in enumerate(_CHANNEL_DISPLAY_ORDER):
+        for row, key in enumerate(LASER_CHANNEL_ORDER):
             info = self._last_status.channels.get(key)
             if info is None:
                 continue

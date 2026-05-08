@@ -1442,6 +1442,9 @@ _NUM_TEMP_CH = 6
 _TCM_BLOCK_BYTES = 7  # state(1) + temp(2) + voltage(2) + current(2)
 _STATUS_PAYLOAD_BYTES = 1 + _NUM_LASER_CH + _NUM_TEMP_CH * _TCM_BLOCK_BYTES + _NUM_TEMP_CH * 2 + _NUM_TEMP_CH * 2
 
+# Public alias for downstream consumers (e.g. the laser engine GUI widget).
+LASER_CHANNEL_ORDER = _CHANNEL_DISPLAY_ORDER
+
 
 def _parse_status_packet(payload: bytes):
     """Parse a verified-CRC status payload (without trailing CRC32) from the laser engine.
@@ -1577,7 +1580,6 @@ class _SquidLaserEngineBase(QObject):
         channel_keys: List[str],
         timeout_s: float = 300.0,
         cancel_fn: Callable[[], bool] = lambda: False,
-        progress_cb: Optional[Callable[[SquidLaserEngineStatus], None]] = None,
     ) -> bool:
         """Block until all requested channels reach ACTIVE.
 
@@ -1615,11 +1617,6 @@ class _SquidLaserEngineBase(QObject):
                     info = status.channels.get(k)
                     if info is not None and info.is_error:
                         raise SquidLaserEngineError(k, f"channel reports {info.display_state.name}")
-                if progress_cb:
-                    try:
-                        progress_cb(status)
-                    except Exception:
-                        self._log.exception("progress_cb raised; continuing wait")
                 if status.is_ready_for(channel_keys):
                     return True
             time.sleep(poll_interval)
@@ -1674,7 +1671,9 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         self._state_lock = threading.Lock()
         self._tick_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
-        self._closed = False
+        # Tracks whether any module state changed since the last publish. True
+        # initially so the first tick still emits a baseline status.
+        self._dirty = True
 
     # ── Public test hooks ───────────────────────────────────────────────────
 
@@ -1682,7 +1681,9 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         with self._state_lock:
             for mi in _CHANNEL_KEY_TO_MODULE_INDICES[channel_key]:
                 self._held_states[mi] = state
-                self._module_states[mi] = state
+                if self._module_states[mi] != state:
+                    self._module_states[mi] = state
+                    self._dirty = True
 
     def force_error(self, channel_key: str) -> None:
         self.force_hold_state(channel_key, LaserChannelState.ERROR)
@@ -1700,19 +1701,23 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
         self._tick_thread.start()
 
     def close(self) -> None:
-        if self._closed:
+        if not self._running.is_set():
             return
         self._running.clear()
         if self._tick_thread:
             self._tick_thread.join(timeout=2.0)
             self._tick_thread = None
-        self._closed = True
 
     def _tick_loop(self) -> None:
         while self._running.is_set():
             self._advance_states()
-            # _build_status takes a snapshot under the lock; emit outside.
-            self._publish_status(self._build_status())
+            # Skip emitting when nothing changed — keeps idle simulators quiet.
+            with self._state_lock:
+                should_publish = self._dirty
+                self._dirty = False
+            if should_publish:
+                # _build_status takes a snapshot under the lock; emit outside.
+                self._publish_status(self._build_status())
             time.sleep(self.query_interval_s)
 
     def _advance_states(self) -> None:
@@ -1720,7 +1725,10 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
             now = time.monotonic()
             for mi, state in list(self._module_states.items()):
                 if mi in self._held_states:
-                    self._module_states[mi] = self._held_states[mi]
+                    held = self._held_states[mi]
+                    if self._module_states[mi] != held:
+                        self._module_states[mi] = held
+                        self._dirty = True
                     continue
                 deadline = self._module_deadlines.get(mi)
                 if deadline is not None and now >= deadline:
@@ -1730,6 +1738,7 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
                     else:
                         self._module_states[mi] = next_state
                         self._module_deadlines[mi] = now + self._transition_seconds
+                        self._dirty = True
 
     def _next_state_in_transition(self, state):
         # WAKE_UP -> WARMING_UP -> CHECK_ACTIVE -> ACTIVE
@@ -1784,7 +1793,9 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
             for mi in modules_to_wake:
                 if mi in self._held_states:
                     continue
-                self._module_states[mi] = LaserChannelState.WAKE_UP
+                if self._module_states[mi] != LaserChannelState.WAKE_UP:
+                    self._module_states[mi] = LaserChannelState.WAKE_UP
+                    self._dirty = True
                 self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
 
     def _send_sleep(self, channel_index: int) -> None:
@@ -1793,7 +1804,9 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
             for mi in modules_to_sleep:
                 if mi in self._held_states:
                     continue
-                self._module_states[mi] = LaserChannelState.PREPARE_SLEEP
+                if self._module_states[mi] != LaserChannelState.PREPARE_SLEEP:
+                    self._module_states[mi] = LaserChannelState.PREPARE_SLEEP
+                    self._dirty = True
                 self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
 
     def _send_query(self) -> None:
@@ -1826,9 +1839,16 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._running = threading.Event()
         self._query_thread: Optional[threading.Thread] = None
         self._receive_thread: Optional[threading.Thread] = None
-        self.crc_mismatch_count = 0
-        self.parse_failure_count = 0
-        self._closed = False
+        self._crc_mismatch_count = 0
+        self._parse_failure_count = 0
+
+    @property
+    def crc_mismatch_count(self) -> int:
+        return self._crc_mismatch_count
+
+    @property
+    def parse_failure_count(self) -> int:
+        return self._parse_failure_count
 
     # ── Public API: start / close ───────────────────────────────────────────
 
@@ -1844,7 +1864,7 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._receive_thread.start()
 
     def close(self) -> None:
-        if self._closed:
+        if not self._running.is_set():
             return
         self._running.clear()
         # Close the port first so any blocking read() unblocks promptly,
@@ -1861,7 +1881,6 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         self._query_thread = None
         self._receive_thread = None
         self._serial = None
-        self._closed = True
 
     # ── Subclass hooks ──────────────────────────────────────────────────────
 
@@ -1938,7 +1957,7 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         body = frame[:-4]
         received_crc = struct.unpack("<I", frame[-4:])[0]
         if crc32(body) != received_crc:
-            self.crc_mismatch_count += 1
+            self._crc_mismatch_count += 1
             return
         if not body:
             return
@@ -1946,7 +1965,7 @@ class SquidLaserEngine(_SquidLaserEngineBase):
         if kind == b"S":
             status = _parse_status_packet(body)
             if status is None:
-                self.parse_failure_count += 1
+                self._parse_failure_count += 1
                 return
             self._publish_status(status)
         # ACK ('A'), NAK ('N'), and per-channel ('G') frames are ignored for now.

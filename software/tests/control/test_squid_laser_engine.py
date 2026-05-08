@@ -321,8 +321,11 @@ class TestSquidLaserEngineSimulation:
     def test_status_updated_signal(self, qtbot, sim_engine):
         received = []
         sim_engine.status_updated.connect(lambda s: received.append(s))
-        # Wait for a few ticks.
-        qtbot.wait(300)
+        # Drive a state change so the dirty-gated tick publishes.
+        sim_engine.put_to_sleep("405")
+        qtbot.wait(150)
+        sim_engine.wake_up("405")
+        qtbot.wait(150)
         assert len(received) >= 2
 
 

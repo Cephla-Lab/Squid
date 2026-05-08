@@ -1889,8 +1889,11 @@ class HighContentScreeningGui(QMainWindow):
         self._laser_engine_dialog.setWindowTitle("Laser engine warming up")
         self._laser_engine_dialog.setCancelButton(None)
         self._laser_engine_dialog.setWindowModality(Qt.ApplicationModal)
-        # Live label updates as new status comes in.
+        # Live label updates as new status comes in. Capture the engine reference here
+        # so a later addon swap can't make _hide_laser_engine_dialog disconnect from
+        # a different object and leak this connection.
         engine = self.microscope.addons.squid_laser_engine
+        self._laser_engine_dialog_engine = engine
         if engine is not None:
             engine.status_updated.connect(self._update_laser_engine_dialog_label)
         self._laser_engine_dialog.show()
@@ -1908,14 +1911,17 @@ class HighContentScreeningGui(QMainWindow):
         dlg = getattr(self, "_laser_engine_dialog", None)
         if dlg is None:
             return
-        engine = self.microscope.addons.squid_laser_engine
+        engine = getattr(self, "_laser_engine_dialog_engine", None)
         if engine is not None:
             try:
                 engine.status_updated.disconnect(self._update_laser_engine_dialog_label)
-            except (TypeError, RuntimeError):
+            except TypeError:
+                # PyQt raises TypeError when the slot wasn't connected. RuntimeError
+                # would indicate the C++ object was destroyed — let that surface.
                 pass
         dlg.close()
         self._laser_engine_dialog = None
+        self._laser_engine_dialog_engine = None
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
