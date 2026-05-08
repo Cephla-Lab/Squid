@@ -2022,8 +2022,7 @@ class PreferencesDialog(QDialog):
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
 
-        # Click to Move (Z step constants are read per wheel event in core.py;
-        # ENABLE_CLICK_TO_MOVE is pushed to NavigationWidget by gui_hcs via signal_config_changed)
+        # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
         control._def.LIVE_VIEW_Z_STEP_UM = self.click_to_move_z_fine_spinbox.value()
         control._def.LIVE_VIEW_Z_STEP_FAST_UM = self.click_to_move_z_coarse_spinbox.value()
@@ -2116,8 +2115,7 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
-        # Click to Move (live update — _apply_live_settings pushes to _def globals
-        # and signal_config_changed lets gui_hcs sync the navigation widget)
+        # Click to Move
         old_val = self._get_config_bool("GENERAL", "enable_click_to_move", True)
         new_val = self.click_to_move_enable_checkbox.isChecked()
         if old_val != new_val:

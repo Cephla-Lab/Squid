@@ -809,9 +809,8 @@ class ImageDisplayWindow(QMainWindow):
             image_layout.addWidget(self.graphics_widget)
         self.image_container.setLayout(image_layout)
 
-        # Intercept wheel events on the live view so Ctrl+Scroll drives Z instead of zoom.
-        # Wheel events are delivered to the QGraphicsView's viewport; install on it.
-        # In show_LUT mode the QGraphicsView lives inside pg.ImageView's auto-generated UI.
+        # Wheel events arrive at the QGraphicsView's viewport; in show_LUT mode the
+        # graphics view is nested inside pg.ImageView's auto-generated UI.
         if self.show_LUT:
             graphics_view = self.graphics_widget.view.ui.graphicsView
         else:
@@ -1224,8 +1223,8 @@ class ImageDisplayWindow(QMainWindow):
             notches = event.angleDelta().y() / 120.0
             if notches == 0:
                 return True
-            # Read through the module so live updates from PreferencesDialog take effect
-            # without restart — `from control._def import *` would bind the value at import.
+            # Read via the module so runtime updates of the constant are picked up;
+            # the `from control._def import *` binding above would freeze it at import.
             step_um = (
                 control._def.LIVE_VIEW_Z_STEP_FAST_UM
                 if (event.modifiers() & Qt.ShiftModifier)
