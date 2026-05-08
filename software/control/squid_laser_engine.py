@@ -616,7 +616,12 @@ class SquidLaserEngine(SquidLaserEngineBase):
         try:
             with self._serial_lock:
                 self._serial.write(packet)
-        except (serial.SerialException, OSError) as e:
+        except Exception as e:
+            # During shutdown close() clears _running and closes the port; a
+            # racing write hits a TypeError from pyserial's nulled fd. Suppress
+            # silently in that case; otherwise treat as a real disconnect.
+            if not self._running.is_set():
+                return
             self._log.error(f"SquidLaserEngine write failed: {e}")
             self._signal_connection_lost(str(e))
             self._running.clear()
@@ -632,7 +637,12 @@ class SquidLaserEngine(SquidLaserEngineBase):
         while self._running.is_set():
             try:
                 chunk = self._serial.read(1)
-            except (serial.SerialException, OSError) as e:
+            except Exception as e:
+                # Shutdown path: close() already cleared _running and closed
+                # the port — pyserial then raises (variously SerialException,
+                # OSError, or TypeError when fd is None). Exit quietly.
+                if not self._running.is_set():
+                    return
                 self._log.error(f"SquidLaserEngine read failed: {e}")
                 self._signal_connection_lost(str(e))
                 self._running.clear()
