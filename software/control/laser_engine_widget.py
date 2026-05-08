@@ -5,7 +5,6 @@ Driven by `SquidLaserEngine.status_updated` — no QTimer-based polling here.
 
 from typing import Optional
 
-from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QHBoxLayout,
@@ -20,17 +19,6 @@ from control.serial_peripherals import (
     LaserChannelState,
     SquidLaserEngineStatus,
 )
-
-_STATE_COLORS = {
-    LaserChannelState.ACTIVE: "#2e8b57",  # green
-    LaserChannelState.CHECK_ACTIVE: "#daa520",  # amber
-    LaserChannelState.WARMING_UP: "#daa520",
-    LaserChannelState.WAKE_UP: "#daa520",
-    LaserChannelState.SLEEP: "#888888",
-    LaserChannelState.PREPARE_SLEEP: "#888888",
-    LaserChannelState.CHECK_ERROR: "#c0392b",
-    LaserChannelState.ERROR: "#c0392b",
-}
 
 
 def _engine_summary_color(status: Optional[SquidLaserEngineStatus], connection_lost: bool) -> QColor:
@@ -112,10 +100,9 @@ class LaserEngineWidget(QWidget):
         self._banner.setVisible(False)
         layout.addWidget(self._banner)
 
-        # One QLabel per channel, monospace, rich-text so per-state coloring works.
+        # One QLabel per channel, plain monospaced text so column padding aligns.
         for key in LASER_CHANNEL_ORDER:
             line = QLabel("—")
-            line.setTextFormat(Qt.RichText)
             line.setStyleSheet("font-family: monospace;")
             self._channel_lines[key] = line
             layout.addWidget(line)
@@ -140,14 +127,9 @@ class LaserEngineWidget(QWidget):
             if info is None:
                 continue
             state = info.display_state
-            color = _STATE_COLORS.get(state, "black")
             ttl = "ON" if info.laser_ttl_on else "OFF"
             self._channel_lines[key].setText(
-                f"<b>{key:>4}</b> "
-                f"<span style='color:{color};'>{state.name:&lt;14}</span> "
-                f"&nbsp;&nbsp;{_format_temp(info)}  "
-                f"ΔT {_format_diff(info)}  "
-                f"TTL {ttl}"
+                f"{key:>4}  {state.name:<14}  {_format_temp(info)}  ΔT {_format_diff(info)}  TTL {ttl}"
             )
 
     def _refresh_summary(self) -> None:
