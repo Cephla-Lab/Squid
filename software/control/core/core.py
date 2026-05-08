@@ -160,7 +160,9 @@ class ImageSaver(QObject):
                     if file_id == 0:
                         utils.ensure_directory_exists(save_dir)
 
-                    channel = (self._channel_provider() if self._channel_provider else None) or _DefaultRecordingChannel()
+                    channel = (
+                        self._channel_provider() if self._channel_provider else None
+                    ) or _DefaultRecordingChannel()
                     utils_acquisition.save_image(
                         image=image,
                         file_id=str(file_id),
