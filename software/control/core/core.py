@@ -95,6 +95,9 @@ class QtStreamHandler(QObject):
         self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
+log = squid.logging.get_logger(__name__)
+
+
 @dataclass
 class _DefaultRecordingChannel:
     """Stand-in for an AcquisitionChannel when no live channel is set during recording.
@@ -130,6 +133,7 @@ class ImageSaver(QObject):
         self._csv_file = None
         self._csv_writer = None
         self._dropped_count = 0
+        self._last_queue_full_warning_ts = 0.0
 
     def set_channel_provider(self, provider):
         """Register a callable returning the active live channel (or None).
@@ -187,19 +191,26 @@ class ImageSaver(QObject):
 
                     self.counter += 1
                 self.queue.task_done()
-            except:
-                pass  # logging in Task 5
-
-    def enqueue(self, image, frame_ID, timestamp):
-        try:
-            self.queue.put_nowait([image, frame_ID, timestamp])
-            if (self.recording_time_limit > 0) and (
-                time.time() - self.recording_start_time >= self.recording_time_limit
-            ):
+            except OSError as e:
+                log.error(f"Writer fatal error: {e}; stopping recording")
                 self.stop_recording.emit()
-            # when using self.queue.put(str_), program can be slowed down despite multithreading because of the block and the GIL
-        except:
-            print("imageSaver queue is full, image discarded")
+            except Exception as e:
+                log.warning(f"Failed to write frame {frame_id}: {e}")
+
+    def enqueue(self, image, frame_id, timestamp):
+        try:
+            self.queue.put_nowait([image, frame_id, timestamp])
+        except Exception:
+            self._dropped_count += 1
+            now = time.time()
+            if now - self._last_queue_full_warning_ts >= 1.0:
+                log.warning(f"Image queue full; frame {frame_id} dropped")
+                self._last_queue_full_warning_ts = now
+            return
+
+        if self.recording_time_limit > 0 and time.time() - self.recording_start_time >= self.recording_time_limit:
+            log.info(f"Auto-stopping: time limit reached ({self.recording_time_limit}s)")
+            self.stop_recording.emit()
 
     def set_base_path(self, path):
         self.base_path = path
@@ -219,8 +230,9 @@ class ImageSaver(QObject):
         experiment_dir = os.path.join(self.base_path, self.experiment_ID)
         try:
             utils.ensure_directory_exists(experiment_dir)
-        except:
-            pass  # logging in Task 5
+        except Exception as e:
+            log.error(f"Failed to create experiment directory {experiment_dir}: {e}")
+            raise
 
         csv_path = os.path.join(experiment_dir, "frames.csv")
         self._csv_file = open(csv_path, "w", newline="")
@@ -229,6 +241,10 @@ class ImageSaver(QObject):
             ["frame_id", "timestamp_iso", "channel", "exposure_ms", "gain", "illumination_intensity", "file"]
         )
         self._csv_file.flush()
+
+        log.info(f"Recording started: id={self.experiment_ID}, dir={experiment_dir}")
+        if self._channel_provider is None:
+            log.warning("channel_provider not set; frames tagged with default 'live' channel")
 
     def close(self):
         self.queue.join()
@@ -240,6 +256,12 @@ class ImageSaver(QObject):
             finally:
                 self._csv_file = None
                 self._csv_writer = None
+        if self.experiment_ID:
+            duration = time.time() - self.recording_start_time
+            log.info(
+                f"Recording stopped: frames_saved={self.counter}, "
+                f"dropped={self._dropped_count}, duration={duration:.1f}s"
+            )
 
 
 class ImageSaver_Tracking(QObject):

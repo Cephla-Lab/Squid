@@ -2403,6 +2403,29 @@ class TestRecordingWidget:
         image_saver.set_channel_provider(None)
         assert image_saver._channel_provider is None
 
+    def test_directory_creation_failure_raises_and_logs(self, qtbot, recording_widget, caplog):
+        _, _, image_saver = recording_widget
+        with patch("control.utils.ensure_directory_exists", side_effect=OSError("mock disk error")):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(OSError):
+                    image_saver.start_new_experiment("doomed")
+        assert any("Failed to create experiment directory" in rec.message for rec in caplog.records)
+
+    def test_queue_full_logs_warning_and_increments_dropped_count(self, qtbot, recording_widget, caplog):
+        widget, _, image_saver = recording_widget
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        # Block the saver thread by holding image_lock so the queue can't drain.
+        img = np.zeros((8, 8), dtype=np.uint8)
+        with image_saver.image_lock:
+            with caplog.at_level(logging.WARNING):
+                for frame_id in range(40):
+                    image_saver.enqueue(img, frame_id, 0.0)
+
+        assert image_saver._dropped_count > 0
+        assert any("queue full" in rec.message.lower() for rec in caplog.records)
+
     def test_frames_csv_written_with_metadata(self, qtbot, recording_widget):
         widget, _, image_saver = recording_widget
 
