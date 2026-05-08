@@ -1,7 +1,4 @@
-"""GUI tab showing live status of the Squid laser engine.
-
-Driven by `SquidLaserEngine.status_updated` — no QTimer-based polling here.
-"""
+"""GUI tab showing live status of the Squid laser engine."""
 
 from typing import Dict, Optional
 
@@ -50,8 +47,7 @@ def _engine_summary_label(status: Optional[SquidLaserEngineStatus], connection_l
 
 
 def _format_temp(info) -> str:
-    temps = "/".join(f"{m.temperature_c:.1f}" for m in info.modules)
-    return f"{temps} °C"
+    return "/".join(f"{m.temperature_c:.1f}" for m in info.modules) + " °C"
 
 
 def _format_diff(info) -> str:
@@ -79,8 +75,6 @@ class LaserEngineWidget(QWidget):
         self._engine_label = QLabel("Engine: Waiting…")
         self._wake_btn = QPushButton("Wake All")
         self._sleep_btn = QPushButton("Sleep All")
-        # serial.write() returns when the kernel accepts the bytes (sub-ms);
-        # no worker thread needed for these click handlers.
         self._wake_btn.clicked.connect(self._engine.wake_up_all)
         self._sleep_btn.clicked.connect(self._engine.sleep_all)
         top_row.addWidget(self._engine_dot)
@@ -95,7 +89,6 @@ class LaserEngineWidget(QWidget):
         self._banner.setVisible(False)
         layout.addWidget(self._banner)
 
-        # One QLabel per channel, plain monospaced text so column padding aligns.
         for key in LASER_CHANNEL_ORDER:
             line = QLabel("—")
             line.setStyleSheet("font-family: monospace;")

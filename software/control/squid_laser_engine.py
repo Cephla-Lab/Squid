@@ -1,11 +1,8 @@
 """Cephla-built Squid laser engine — USB-serial controller + simulator.
 
-The firmware (Teensy 4.1) exposes 5 wake/sleep laser channels but 6 TCM modules:
-the 55x channel has two TCMs (one cool ~25°C, one hot ~99.7°C). Public API uses
-5 channel keys: '405', '470', '55x', '638', '730'. Per-channel "ready" = all
-underlying TCM modules in ACTIVE state.
-
-See spec: docs/superpowers/specs/2026-05-07-squid-laser-engine-design.md
+Firmware exposes 5 wake/sleep laser channels but 6 TCM modules: 55x has two
+TCMs (cool ~25°C, hot ~99.7°C). Public API uses 5 keys: '405', '470', '55x',
+'638', '730'. Per-channel "ready" = all underlying TCM modules in ACTIVE.
 """
 
 import struct
@@ -48,7 +45,6 @@ class TcmModuleInfo:
     hi_temp_setpoint_c: float
 
 
-# Severity ranking for display_state: smaller = more concerning.
 _STATE_DISPLAY_PRIORITY = {
     LaserChannelState.ERROR: 0,
     LaserChannelState.CHECK_ERROR: 1,
@@ -63,9 +59,9 @@ _STATE_DISPLAY_PRIORITY = {
 
 @dataclass(frozen=True)
 class LaserChannelInfo:
-    key: str  # '405' | '470' | '55x' | '638' | '730'
+    key: str
     laser_ttl_on: bool
-    modules: tuple  # tuple[TcmModuleInfo, ...] — 1 module for most channels, 2 for 55x
+    modules: tuple  # 1 module for most channels, 2 for 55x
 
     @property
     def is_ready(self) -> bool:
@@ -82,7 +78,7 @@ class LaserChannelInfo:
 
 @dataclass(frozen=True)
 class SquidLaserEngineStatus:
-    channels: dict  # dict[str, LaserChannelInfo] in display order
+    channels: dict
     timestamp_s: float
 
     def is_ready_for(self, keys) -> bool:
@@ -104,11 +100,8 @@ class SquidLaserEngineError(RuntimeError):
         self.channel_key = channel_key
 
 
-# Channel keys in DISPLAY order (with 55x in the middle, per design).
 _CHANNEL_DISPLAY_ORDER = ("405", "470", "55x", "638", "730")
-# Firmware wake/sleep channel indices (0..4) keyed by display key.
 _CHANNEL_KEY_TO_FIRMWARE_INDEX = {"405": 0, "470": 1, "638": 2, "730": 3, "55x": 4}
-# TCM module indices owned by each laser channel key.
 _CHANNEL_KEY_TO_MODULE_INDICES = {
     "405": (0,),
     "470": (1,),
@@ -117,7 +110,6 @@ _CHANNEL_KEY_TO_MODULE_INDICES = {
     "55x": (4, 5),
 }
 
-# Wavelength -> channel key. Optical aliases included.
 _WAVELENGTH_TO_CHANNEL = {
     405: "405",
     470: "470",
@@ -138,21 +130,20 @@ _NUM_TEMP_CH = 6
 _TCM_BLOCK_BYTES = 7  # state(1) + temp(2) + voltage(2) + current(2)
 _STATUS_PAYLOAD_BYTES = 1 + _NUM_LASER_CH + _NUM_TEMP_CH * _TCM_BLOCK_BYTES + _NUM_TEMP_CH * 2 + _NUM_TEMP_CH * 2
 
-# Public alias for downstream consumers (e.g. the laser engine GUI widget).
 LASER_CHANNEL_ORDER = _CHANNEL_DISPLAY_ORDER
 
 
 def _parse_status_packet(payload: bytes):
-    """Parse a verified-CRC status payload (without trailing CRC32) from the laser engine.
+    """Parse a status payload (CRC already verified, trailing CRC stripped).
 
-    Returns SquidLaserEngineStatus on success, None if payload is malformed or not a status packet.
+    Returns SquidLaserEngineStatus on success, None if malformed or non-'S'.
     """
     if len(payload) < _STATUS_PAYLOAD_BYTES or payload[0:1] != b"S":
         return None
 
     laser_ttl = [bool(payload[1 + i]) for i in range(_NUM_LASER_CH)]
 
-    modules = {}  # module_index -> TcmModuleInfo
+    modules = {}
     base = 1 + _NUM_LASER_CH
     for i in range(_NUM_TEMP_CH):
         offset = base + i * _TCM_BLOCK_BYTES
@@ -176,7 +167,6 @@ def _parse_status_packet(payload: bytes):
         hi_c = struct.unpack(">h", payload[hi_base + i * 2 : hi_base + i * 2 + 2])[0] / 100.0
         modules[i]["hi_temp"] = hi_c
 
-    # Build LaserChannelInfo for each display key, in display order.
     channels = {}
     for key in _CHANNEL_DISPLAY_ORDER:
         module_indices = _CHANNEL_KEY_TO_MODULE_INDICES[key]
@@ -204,10 +194,7 @@ def _parse_status_packet(payload: bytes):
 
 
 def _build_command_packet(cmd_byte: bytes, channel_index: Optional[int] = None) -> bytes:
-    """Build a wire-format command packet matching the firmware protocol.
-
-    Format: cmd_byte [+ struct.pack('<I', channel_index)] + crc32_le + b'\\x0A\\x0D'.
-    """
+    """Wire format: cmd_byte [+ <I channel] + <I crc32 + b'\\x0A\\x0D'."""
     body = cmd_byte
     if channel_index is not None:
         body = body + struct.pack("<I", channel_index)
@@ -227,11 +214,8 @@ class SquidLaserEngineBase(QObject):
     WAVELENGTH_TO_CHANNEL = dict(_WAVELENGTH_TO_CHANNEL)
     CHANNEL_ORDER = _CHANNEL_DISPLAY_ORDER
 
-    # Default poll cadence and acquisition-gate ceiling. Override per-instance
-    # via the constructor / wait_until_ready arg if a specific test / hardware
-    # bring-up needs different timing.
     DEFAULT_QUERY_INTERVAL_S = 1.0
-    READY_TIMEOUT_S = 300.0  # 5 min — gate raises if a channel never reaches ACTIVE.
+    READY_TIMEOUT_S = 300.0
 
     def __init__(self, query_interval_s: Optional[float] = None):
         super().__init__()
@@ -286,14 +270,12 @@ class SquidLaserEngineBase(QObject):
         """Block until all requested channels reach ACTIVE.
 
         Returns True on success; False on timeout, cancel, or connection_lost.
-        Raises SquidLaserEngineError if any requested channel is in ERROR/CHECK_ERROR.
+        Raises SquidLaserEngineError if a needed channel is ERROR / CHECK_ERROR.
         """
-        # Fast path: already ready.
         status = self.get_latest_status()
         if status is not None and status.is_ready_for(channel_keys):
             return True
 
-        # Wake any sleeping needed channels.
         if status is not None:
             for k in channel_keys:
                 info = status.channels.get(k)
@@ -314,7 +296,6 @@ class SquidLaserEngineBase(QObject):
                 return False
             status = self.get_latest_status()
             if status is not None:
-                # Detect ERROR on any needed channel.
                 for k in channel_keys:
                     info = status.channels.get(k)
                     if info is not None and info.is_error:
@@ -335,8 +316,7 @@ class SquidLaserEngineBase(QObject):
             if self._connection_lost:
                 return
             self._connection_lost = True
-        # Emit outside the lock so signal handlers don't block other callers.
-        self.connection_lost.emit(message)
+        self.connection_lost.emit(message)  # emit outside the lock
 
     # ── Subclass hooks ──────────────────────────────────────────────────────
 
@@ -365,17 +345,14 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
     def __init__(self, query_interval_s: Optional[float] = None, transition_seconds: float = 3.0):
         super().__init__(query_interval_s=query_interval_s)
         self._transition_seconds = transition_seconds
-        # Per-firmware-module transition deadline (monotonic). When time >= deadline,
-        # the module advances toward its target state. None means "stable".
+        # Module deadline=None means stable; advance state when time >= deadline.
         self._module_states = {i: LaserChannelState.WARMING_UP for i in range(_NUM_TEMP_CH)}
         self._module_deadlines = {i: time.monotonic() + transition_seconds for i in range(_NUM_TEMP_CH)}
-        self._held_states = {}  # firmware-module-index -> LaserChannelState (force-hold)
+        self._held_states = {}
         self._state_lock = threading.Lock()
         self._tick_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
-        # Tracks whether any module state changed since the last publish. True
-        # initially so the first tick still emits a baseline status.
-        self._dirty = True
+        self._dirty = True  # publish a baseline on first tick
 
     # ── Public test hooks ───────────────────────────────────────────────────
 
@@ -413,12 +390,10 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
     def _tick_loop(self) -> None:
         while self._running.is_set():
             self._advance_states()
-            # Skip emitting when nothing changed — keeps idle simulators quiet.
             with self._state_lock:
                 should_publish = self._dirty
                 self._dirty = False
             if should_publish:
-                # _build_status takes a snapshot under the lock; emit outside.
                 self._publish_status(self._build_status())
             time.sleep(self.query_interval_s)
 
@@ -436,15 +411,14 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
                 if deadline is not None and now >= deadline:
                     next_state = self._next_state_in_transition(state)
                     if next_state == state:
-                        self._module_deadlines[mi] = None  # stable
+                        self._module_deadlines[mi] = None
                     else:
                         self._module_states[mi] = next_state
                         self._module_deadlines[mi] = now + self._transition_seconds
                         self._dirty = True
 
     def _next_state_in_transition(self, state):
-        # WAKE_UP -> WARMING_UP -> CHECK_ACTIVE -> ACTIVE
-        # PREPARE_SLEEP -> SLEEP
+        # WAKE_UP → WARMING_UP → CHECK_ACTIVE → ACTIVE; PREPARE_SLEEP → SLEEP.
         forward = {
             LaserChannelState.WAKE_UP: LaserChannelState.WARMING_UP,
             LaserChannelState.WARMING_UP: LaserChannelState.CHECK_ACTIVE,
@@ -454,10 +428,6 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
         return forward.get(state, state)
 
     def _build_status(self) -> SquidLaserEngineStatus:
-        # Synthesize a status for all channels using the current per-module states.
-        # Use temps near 25°C, the hi-temp module near 99.7°C.
-        # Take a snapshot under the lock so we don't read while another
-        # thread is mid-write to _module_states.
         with self._state_lock:
             states_snapshot = dict(self._module_states)
         module_data = {}
@@ -489,8 +459,7 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
     # ── Subclass hooks: wake/sleep ──────────────────────────────────────────
 
     def _send_wake(self, channel_index: int) -> None:
-        # Firmware: ch4 wakes both modules 4 and 5.
-        modules_to_wake = (4, 5) if channel_index == 4 else (channel_index,)
+        modules_to_wake = (4, 5) if channel_index == 4 else (channel_index,)  # ch4 wakes both 4+5
         with self._state_lock:
             for mi in modules_to_wake:
                 if mi in self._held_states:
@@ -512,17 +481,11 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
                 self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
 
     def _send_query(self) -> None:
-        # Simulator publishes on its own tick; query is a no-op.
-        pass
+        pass  # simulator publishes on its own tick
 
 
 class SquidLaserEngine(SquidLaserEngineBase):
-    """USB-serial controller for the Cephla Squid laser engine.
-
-    Two background threads (mirroring the reference pc-side python):
-      - query thread: sends 'Q' every query_interval_s
-      - receive thread: parses incoming packets and emits status_updated
-    """
+    """USB-serial controller. Background query thread + receive thread."""
 
     BAUDRATE = 115200
 
@@ -536,7 +499,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
         super().__init__(query_interval_s=query_interval_s)
         self.sn = sn
         self.device = device
-        self._serial = _test_serial  # Production: opened in start(); tests inject directly.
+        self._serial = _test_serial  # production: opened in start(); tests inject
         self._serial_lock = threading.Lock()
         self._running = threading.Event()
         self._query_thread: Optional[threading.Thread] = None
@@ -569,9 +532,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
         if not self._running.is_set():
             return
         self._running.clear()
-        # Close the port first so any blocking read() unblocks promptly,
-        # then join — otherwise a thread stuck in read() outlives close()
-        # and could deref a None _serial.
+        # Close the port before joining so any blocking read() unblocks.
         if self._serial is not None:
             try:
                 self._serial.close()
@@ -617,11 +578,8 @@ class SquidLaserEngine(SquidLaserEngineBase):
             with self._serial_lock:
                 self._serial.write(packet)
         except Exception as e:
-            # During shutdown close() clears _running and closes the port; a
-            # racing write hits a TypeError from pyserial's nulled fd. Suppress
-            # silently in that case; otherwise treat as a real disconnect.
             if not self._running.is_set():
-                return
+                return  # shutdown race against close()
             self._log.error(f"SquidLaserEngine write failed: {e}")
             self._signal_connection_lost(str(e))
             self._running.clear()
@@ -632,17 +590,13 @@ class SquidLaserEngine(SquidLaserEngineBase):
             time.sleep(self.query_interval_s)
 
     def _receive_loop(self) -> None:
-        # Accumulate bytes until we see the \x0A\x0D terminator, matching pc-side-python.py.
         msg = bytearray()
         while self._running.is_set():
             try:
                 chunk = self._serial.read(1)
             except Exception as e:
-                # Shutdown path: close() already cleared _running and closed
-                # the port — pyserial then raises (variously SerialException,
-                # OSError, or TypeError when fd is None). Exit quietly.
                 if not self._running.is_set():
-                    return
+                    return  # shutdown race against close()
                 self._log.error(f"SquidLaserEngine read failed: {e}")
                 self._signal_connection_lost(str(e))
                 self._running.clear()
@@ -651,16 +605,14 @@ class SquidLaserEngine(SquidLaserEngineBase):
                 continue
             byte = chunk[0]
             if byte == 0x0D and len(msg) >= 1 and msg[-1] == 0x0A:
-                # Frame complete: msg[:-1] is the inner payload+CRC.
                 inner = bytes(msg[:-1])
                 msg = bytearray()
                 self._handle_frame(inner)
             else:
                 msg.append(byte)
-                # Defensive: clamp the buffer in case the firmware sends garbage.
                 if len(msg) > 1024:
-                    # Defensive clamp. Preserve a trailing \x0A so we don't accidentally
-                    # drop a valid frame whose terminator straddles the discard boundary.
+                    # Preserve trailing \x0A so we don't lose a frame whose
+                    # terminator straddles the discard boundary.
                     msg = bytearray(b"\x0a") if msg[-1] == 0x0A else bytearray()
 
     def _handle_frame(self, frame: bytes) -> None:
@@ -673,6 +625,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
             return
         if not body:
             return
+        # 'A' (ACK), 'N' (NAK), 'G' (per-channel) frames are ignored.
         kind = body[0:1]
         if kind == b"S":
             status = _parse_status_packet(body)
@@ -680,4 +633,3 @@ class SquidLaserEngine(SquidLaserEngineBase):
                 self._parse_failure_count += 1
                 return
             self._publish_status(status)
-        # ACK ('A'), NAK ('N'), and per-channel ('G') frames are ignored for now.

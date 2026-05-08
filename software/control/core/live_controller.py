@@ -99,13 +99,7 @@ class LiveController(QObject):
     # ─────────────────────────────────────────────────────────────────────────────
 
     def _check_laser_engine_warn_only(self) -> None:
-        """If a Squid laser engine is wired in, warn (but do not block) when the
-        channel needed for the current configuration is not yet ready.
-
-        Side effects:
-          * Fires a fire-and-forget wake_up for the needed channel(s).
-          * Logs a warning and emits ``signal_warning`` with a user-facing string.
-        """
+        """Warn (don't block) at Live start if the channel isn't yet ACTIVE."""
         engine = getattr(self.microscope.addons, "squid_laser_engine", None)
         if engine is None:
             return
@@ -118,7 +112,6 @@ class LiveController(QObject):
         status = engine.get_latest_status()
         if status is not None and status.is_ready_for(needed):
             return
-        # Not ready — fire-and-forget wake (wake_up swallows transport errors), then warn.
         for k in needed:
             engine.wake_up(k)
         self._log.warning(f"Squid laser engine not ready for channel(s) {needed}; live started anyway")

@@ -555,13 +555,10 @@ class MultiPointWorker:
         return self._laser_engine.channel_keys_for_wavelengths(wavelengths)
 
     def _wait_for_laser_engine(self) -> None:
-        """Block until needed laser channels are ACTIVE.
+        """Block until needed channels are ACTIVE. Raises on timeout / disconnect / ERROR.
 
-        On timeout / disconnect / channel ERROR: raise so the existing acquisition-error path runs.
-        On regular abort (cancel via the standard Abort button): return without raising — the
-        outer abort check immediately after the call breaks the timepoint loop normally.
+        Returns silently when abort_requested_fn fires — caller handles abort.
         """
-        # Fast path: cached status already shows ready.
         status = self._laser_engine.get_latest_status()
         if status is not None and status.is_ready_for(self._laser_channels_needed):
             return
@@ -576,7 +573,7 @@ class MultiPointWorker:
             self.callbacks.signal_laser_engine_ready()
         if not ok:
             if self.abort_requested_fn():
-                return  # outer abort check handles this
+                return
             channels = ", ".join(self._laser_channels_needed)
             if self._laser_engine.is_connection_lost():
                 raise RuntimeError(

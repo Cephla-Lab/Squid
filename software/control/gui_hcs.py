@@ -1865,14 +1865,7 @@ class HighContentScreeningGui(QMainWindow):
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
 
     def _on_live_controller_warning(self, message: str) -> None:
-        """Surface a non-fatal warning from LiveController (e.g. laser engine
-        not yet ready). Logs and shows a non-modal message box.
-
-        Repeats within 5s of the previous warning are dropped (still logged) so
-        a flapping engine doesn't stack dialogs faster than the user can dismiss.
-        Also closes any prior box still on screen so we never accumulate more
-        than one popup at a time.
-        """
+        """Non-modal warning from LiveController. 5s rate-limit; one popup max."""
         self.log.warning(message)
         now = time.monotonic()
         last = getattr(self, "_last_live_warning_s", 0.0)
@@ -1881,23 +1874,19 @@ class HighContentScreeningGui(QMainWindow):
         self._last_live_warning_s = now
         prior = getattr(self, "_live_warning_box", None)
         if prior is not None:
-            # The Qt C++ object may have been auto-deleted (WA_DeleteOnClose)
-            # after the user clicked Ok; touching it then raises RuntimeError.
             try:
                 prior.close()
             except RuntimeError:
-                pass
+                pass  # C++ side already deleted via WA_DeleteOnClose
         box = QMessageBox(self)
         box.setAttribute(Qt.WA_DeleteOnClose)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("Laser engine")
         box.setText(message)
         box.setStandardButtons(QMessageBox.Ok)
-        # Clear our reference once the C++ object is destroyed so we never
-        # try to .close() a dead wrapper on the next warning.
         box.destroyed.connect(lambda _=None: setattr(self, "_live_warning_box", None))
         self._live_warning_box = box
-        box.show()  # non-modal — does not block the GUI thread
+        box.show()
 
     def _show_laser_engine_dialog(self, channel_keys: list) -> None:
         """Show a non-cancelable modal progress dialog while the worker waits
