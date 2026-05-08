@@ -269,7 +269,7 @@ class TestSquidLaserEngineSimulation:
         status = sim_engine.get_latest_status()
         assert not status.channels["405"].is_ready
         sim_engine.wake_up("405")
-        time.sleep(0.5)
+        time.sleep(0.8)
         status = sim_engine.get_latest_status()
         assert status.channels["405"].is_ready
 

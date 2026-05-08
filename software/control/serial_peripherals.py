@@ -1720,13 +1720,12 @@ class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
                     self._module_deadlines[mi] = now + self._transition_seconds
 
     def _next_state_in_transition(self, state):
-        # Initial bring-up: WARMING_UP -> CHECK_ACTIVE -> ACTIVE.
-        # Wake from sleep is faster (already warm): WAKE_UP -> ACTIVE.
-        # Sleep: PREPARE_SLEEP -> SLEEP.
+        # WAKE_UP -> WARMING_UP -> CHECK_ACTIVE -> ACTIVE
+        # PREPARE_SLEEP -> SLEEP
         forward = {
+            LaserChannelState.WAKE_UP: LaserChannelState.WARMING_UP,
             LaserChannelState.WARMING_UP: LaserChannelState.CHECK_ACTIVE,
             LaserChannelState.CHECK_ACTIVE: LaserChannelState.ACTIVE,
-            LaserChannelState.WAKE_UP: LaserChannelState.ACTIVE,
             LaserChannelState.PREPARE_SLEEP: LaserChannelState.SLEEP,
         }
         return forward.get(state, state)
