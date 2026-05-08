@@ -163,21 +163,20 @@ class ImageSaver(QObject):
                     channel = (
                         self._channel_provider() if self._channel_provider else None
                     ) or _DefaultRecordingChannel()
-                    utils_acquisition.save_image(
-                        image=image,
-                        file_id=str(file_id),
-                        save_directory=save_dir,
-                        config=channel,
-                        is_color=image.ndim == 3,
+                    # Use get_image_filepath for channel-aware naming consistency with the
+                    # multipoint pipeline, but write directly with cv2/iio for speed —
+                    # save_image's imageio.imwrite path is ~10x slower than cv2.imwrite for
+                    # uint8 BMPs and turns the saver into the FPS bottleneck.
+                    saving_path = utils_acquisition.get_image_filepath(
+                        save_dir, str(file_id), channel.name, image.dtype
                     )
+                    if image.dtype == np.uint16:
+                        iio.imwrite(saving_path, image)
+                    else:
+                        cv2.imwrite(saving_path, image)
 
                     if self._csv_writer is not None:
-                        rel_path = os.path.join(
-                            str(folder_id),
-                            os.path.basename(
-                                utils_acquisition.get_image_filepath("", str(file_id), channel.name, image.dtype)
-                            ),
-                        )
+                        rel_path = os.path.relpath(saving_path, os.path.join(self.base_path, self.experiment_ID))
                         self._csv_writer.writerow(
                             [
                                 frame_id,
@@ -189,7 +188,9 @@ class ImageSaver(QObject):
                                 rel_path,
                             ]
                         )
-                        self._csv_file.flush()
+                        # No per-row flush: it's an fsync per frame on most filesystems
+                        # and was the second-largest contributor to the FPS regression.
+                        # stop_experiment() flushes via close().
 
                     self.counter += 1
             except OSError as e:
@@ -253,11 +254,18 @@ class ImageSaver(QObject):
             log.warning("channel_provider not set; frames tagged with default 'live' channel")
 
     def stop_experiment(self):
-        """Finalize the current recording: close frames.csv and log a summary.
+        """Finalize the current recording: drain the queue, close frames.csv, log summary.
 
-        Called by the widget on Stop and on time-limit auto-stop. Idempotent
-        so close() can call it again on app shutdown without double-logging.
+        Called by the widget on Stop and on time-limit auto-stop. Idempotent.
+        Drains the queue first so any buffered frames land in the current
+        experiment dir before experiment_ID is cleared — without that, the
+        saver thread races and writes to a non-existent directory.
         """
+        # Block until the saver thread has processed every buffered frame.
+        # Safe because the caller has already stopped the streamHandler, so no
+        # new items can be enqueued; queue.task_done() runs in finally so a
+        # write exception cannot leave us hanging here.
+        self.queue.join()
         if self._csv_file is not None:
             try:
                 self._csv_file.close()
@@ -273,10 +281,9 @@ class ImageSaver(QObject):
             self.experiment_ID = ""
 
     def close(self):
-        self.queue.join()
+        self.stop_experiment()
         self.stop_signal_received = True
         self.thread.join()
-        self.stop_experiment()
 
 
 class ImageSaver_Tracking(QObject):

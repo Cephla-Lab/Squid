@@ -2519,6 +2519,7 @@ class TestRecordingWidget:
 
         widget.lineEdit_experimentID.setText("exp")
         qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+        exp_id = image_saver.experiment_ID  # stop_experiment will clear it
 
         # Enqueue directly so streamHandler's save-FPS throttle doesn't drop frames.
         img = np.zeros((16, 16), dtype=np.uint8)
@@ -2526,8 +2527,10 @@ class TestRecordingWidget:
             image_saver.enqueue(img, i * 30, 1000.0 + i)
 
         qtbot.waitUntil(lambda: image_saver.counter == 3, timeout=2000)
+        # Stop the recording so frames.csv is flushed and closed.
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
 
-        csv_path = Path(image_saver.base_path) / image_saver.experiment_ID / "frames.csv"
+        csv_path = Path(image_saver.base_path) / exp_id / "frames.csv"
         assert csv_path.is_file()
 
         import csv as _csv
