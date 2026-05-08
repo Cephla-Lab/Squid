@@ -2439,7 +2439,11 @@ class TestRecordingWidget:
         qtbot.waitUntil(lambda: image_saver.counter > 0, timeout=2000)
 
         exp_dir = Path(image_saver.base_path) / image_saver.experiment_ID
-        assert any(p.is_file() for p in exp_dir.rglob("*")), f"No image saved under {exp_dir}"
+        files = [p for p in exp_dir.rglob("*") if p.is_file()]
+        assert files, f"No image saved under {exp_dir}"
+        # No channel provider was set, so save_image gets the default "live" sentinel.
+        # Filename comes from utils_acquisition.get_image_filepath: <file_id>_<channel_safe>.<ext>
+        assert any("live" in p.stem for p in files), f"Expected 'live' in filename; got {[p.name for p in files]}"
 
 
 class TestWarningErrorWidgetErrorExemptionWithDroppedCount:

@@ -32,10 +32,11 @@ import squid.logging
 
 
 from typing import List, Tuple, Optional, Dict, Any, Callable, TypeVar
-from queue import Queue
+from queue import Queue, Empty
 from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
+from dataclasses import dataclass
 from enum import Enum
 from control.models import AcquisitionChannel
 import time
@@ -93,6 +94,20 @@ class QtStreamHandler(QObject):
         self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
+@dataclass
+class _DefaultRecordingChannel:
+    """Stand-in for an AcquisitionChannel when no live channel is set during recording.
+
+    save_image() and return_pseudo_colored_image() only consult `.name`; the other
+    fields keep frames.csv rows uniform when no channel is available.
+    """
+
+    name: str = "live"
+    exposure_time: float = 0.0
+    analog_gain: float = 0.0
+    illumination_intensity: float = 0.0
+
+
 class ImageSaver(QObject):
     stop_recording = Signal()
 
@@ -123,39 +138,32 @@ class ImageSaver(QObject):
 
     def process_queue(self):
         while True:
-            # stop the thread if stop signal is received
             if self.stop_signal_received:
                 return
-            # process the queue
             try:
-                [image, frame_ID, timestamp] = self.queue.get(timeout=0.1)
-                self.image_lock.acquire(True)
-                folder_ID = int(self.counter / self.max_num_image_per_folder)
-                file_ID = int(self.counter % self.max_num_image_per_folder)
-                # create a new folder
-                if file_ID == 0:
-                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                image, frame_id, timestamp = self.queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                with self.image_lock:
+                    folder_id = self.counter // self.max_num_image_per_folder
+                    file_id = self.counter % self.max_num_image_per_folder
+                    save_dir = os.path.join(self.base_path, self.experiment_ID, str(folder_id))
+                    if file_id == 0:
+                        utils.ensure_directory_exists(save_dir)
 
-                if image.dtype == np.uint16:
-                    # need to use tiff when saving 16 bit images
-                    saving_path = os.path.join(
-                        self.base_path, self.experiment_ID, str(folder_ID), str(file_ID) + "_" + str(frame_ID) + ".tiff"
+                    channel = (self._channel_provider() if self._channel_provider else None) or _DefaultRecordingChannel()
+                    utils_acquisition.save_image(
+                        image=image,
+                        file_id=str(file_id),
+                        save_directory=save_dir,
+                        config=channel,
+                        is_color=image.ndim == 3,
                     )
-                    iio.imwrite(saving_path, image)
-                else:
-                    saving_path = os.path.join(
-                        self.base_path,
-                        self.experiment_ID,
-                        str(folder_ID),
-                        str(file_ID) + "_" + str(frame_ID) + "." + self.image_format,
-                    )
-                    cv2.imwrite(saving_path, image)
-
-                self.counter = self.counter + 1
+                    self.counter += 1
                 self.queue.task_done()
-                self.image_lock.release()
             except:
-                pass
+                pass  # logging in Task 5
 
     def enqueue(self, image, frame_ID, timestamp):
         try:
