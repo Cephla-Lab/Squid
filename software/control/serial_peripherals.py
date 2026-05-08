@@ -1446,8 +1446,6 @@ def _parse_status_packet(payload: bytes):
 
     Returns SquidLaserEngineStatus on success, None if payload is malformed or not a status packet.
     """
-    import time as _time
-
     if len(payload) < _STATUS_PAYLOAD_BYTES or payload[0:1] != b"S":
         return None
 
@@ -1501,10 +1499,10 @@ def _parse_status_packet(payload: bytes):
             modules=infos,
         )
 
-    return SquidLaserEngineStatus(channels=channels, timestamp_s=_time.time())
+    return SquidLaserEngineStatus(channels=channels, timestamp_s=time.time())
 
 
-def _build_command_packet(cmd_byte: bytes, channel_index: int = None) -> bytes:
+def _build_command_packet(cmd_byte: bytes, channel_index: Optional[int] = None) -> bytes:
     """Build a wire-format command packet matching the firmware protocol.
 
     Format: cmd_byte [+ struct.pack('<I', channel_index)] + crc32_le + b'\\x0A\\x0D'.

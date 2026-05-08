@@ -206,6 +206,16 @@ class TestParseStatusPacket:
         payload = _build_firmware_status_bytes()
         assert _parse_status_packet(b"A" + payload[1:]) is None
 
+    def test_state_value_out_of_range_falls_back_to_error(self):
+        # Firmware should never send 255, but the parser must not crash.
+        payload = _build_firmware_status_bytes(states=(255, 2, 2, 2, 2, 2))
+        status = _parse_status_packet(payload)
+        assert status is not None
+        assert status.channels["405"].modules[0].state == LaserChannelState.ERROR
+
+    def test_empty_payload_returns_none(self):
+        assert _parse_status_packet(b"") is None
+
 
 class TestBuildCommandPacket:
     def test_query_packet(self):
