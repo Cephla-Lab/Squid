@@ -1,13 +1,15 @@
 import abc
+import threading
 from dataclasses import dataclass
 from enum import IntEnum
 
 import serial
 from serial.tools import list_ports
 import time
-from typing import Tuple, Optional
+from typing import Callable, Iterable, List, Optional, Tuple
 import struct
 from zlib import crc32
+from qtpy.QtCore import QObject, Signal
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
 from squid.abc import LightSource
@@ -1511,3 +1513,272 @@ def _build_command_packet(cmd_byte: bytes, channel_index: Optional[int] = None) 
     if channel_index is not None:
         body = body + struct.pack("<I", channel_index)
     return body + struct.pack("<I", crc32(body)) + b"\x0a\x0d"
+
+
+class _SquidLaserEngineBase(QObject):
+    """Shared logic for the real and simulation engines.
+
+    Subclasses must implement: _send_query, _send_wake(channel_index),
+    _send_sleep(channel_index), is_connection_lost.
+    """
+
+    status_updated = Signal(object)  # SquidLaserEngineStatus
+    connection_lost = Signal(str)
+
+    WAVELENGTH_TO_CHANNEL = dict(_WAVELENGTH_TO_CHANNEL)
+    CHANNEL_ORDER = _CHANNEL_DISPLAY_ORDER
+
+    def __init__(self, query_interval_s: float = 1.0):
+        super().__init__()
+        self.query_interval_s = query_interval_s
+        self._latest_status: Optional[SquidLaserEngineStatus] = None
+        self._status_lock = threading.Lock()
+        self._connection_lost = False
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def get_latest_status(self) -> Optional[SquidLaserEngineStatus]:
+        with self._status_lock:
+            return self._latest_status
+
+    def is_connection_lost(self) -> bool:
+        return self._connection_lost
+
+    def channel_keys_for_wavelengths(self, wavelengths: Iterable[int]) -> List[str]:
+        seen = set()
+        keys = []
+        for w in wavelengths:
+            k = self.WAVELENGTH_TO_CHANNEL.get(w)
+            if k is not None and k not in seen:
+                seen.add(k)
+                keys.append(k)
+        return keys
+
+    def wake_up(self, channel_key: str) -> None:
+        idx = _CHANNEL_KEY_TO_FIRMWARE_INDEX[channel_key]
+        self._send_wake(idx)
+
+    def put_to_sleep(self, channel_key: str) -> None:
+        idx = _CHANNEL_KEY_TO_FIRMWARE_INDEX[channel_key]
+        self._send_sleep(idx)
+
+    def wake_up_all(self) -> None:
+        for k in _CHANNEL_DISPLAY_ORDER:
+            self.wake_up(k)
+
+    def sleep_all(self) -> None:
+        for k in _CHANNEL_DISPLAY_ORDER:
+            self.put_to_sleep(k)
+
+    def wait_until_ready(
+        self,
+        channel_keys: List[str],
+        timeout_s: float = 300.0,
+        cancel_fn: Callable[[], bool] = lambda: False,
+        progress_cb: Optional[Callable[[SquidLaserEngineStatus], None]] = None,
+    ) -> bool:
+        """Block until all requested channels reach ACTIVE.
+
+        Returns True on success; False on timeout, cancel, or connection_lost.
+        Raises SquidLaserEngineError if any requested channel is in ERROR/CHECK_ERROR.
+        """
+        # Fast path: already ready.
+        status = self.get_latest_status()
+        if status is not None and status.is_ready_for(channel_keys):
+            return True
+
+        # Wake any sleeping needed channels.
+        if status is not None:
+            for k in channel_keys:
+                info = status.channels.get(k)
+                if info is not None and info.display_state in (
+                    LaserChannelState.SLEEP,
+                    LaserChannelState.PREPARE_SLEEP,
+                ):
+                    self.wake_up(k)
+
+        deadline = time.monotonic() + timeout_s
+        poll_interval = min(0.1, self.query_interval_s)
+        while True:
+            if cancel_fn():
+                return False
+            if self.is_connection_lost():
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            status = self.get_latest_status()
+            if status is not None:
+                # Detect ERROR on any needed channel.
+                for k in channel_keys:
+                    info = status.channels.get(k)
+                    if info is not None and info.is_error:
+                        raise SquidLaserEngineError(k, f"channel reports {info.display_state.name}")
+                if progress_cb:
+                    try:
+                        progress_cb(status)
+                    except Exception:
+                        self._log.exception("progress_cb raised; continuing wait")
+                if status.is_ready_for(channel_keys):
+                    return True
+            time.sleep(poll_interval)
+
+    # ── Internal helpers for subclasses ─────────────────────────────────────
+
+    def _publish_status(self, status: SquidLaserEngineStatus) -> None:
+        with self._status_lock:
+            self._latest_status = status
+        self.status_updated.emit(status)
+
+    def _signal_connection_lost(self, message: str) -> None:
+        if not self._connection_lost:
+            self._connection_lost = True
+            self.connection_lost.emit(message)
+
+    # ── Subclass hooks ──────────────────────────────────────────────────────
+
+    def _send_query(self) -> None:
+        raise NotImplementedError
+
+    def _send_wake(self, channel_index: int) -> None:
+        raise NotImplementedError
+
+    def _send_sleep(self, channel_index: int) -> None:
+        raise NotImplementedError
+
+    def start(self) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class SquidLaserEngine_Simulation(_SquidLaserEngineBase):
+    """Simulator that emits synthesized status on the same cadence as the real engine.
+
+    Test hooks: force_hold_state(key, state), force_error(key), force_connection_lost(msg).
+    """
+
+    def __init__(self, query_interval_s: float = 1.0, transition_seconds: float = 3.0):
+        super().__init__(query_interval_s=query_interval_s)
+        self._transition_seconds = transition_seconds
+        # Per-firmware-module transition deadline (monotonic). When time >= deadline,
+        # the module advances toward its target state. None means "stable".
+        self._module_states = {i: LaserChannelState.WARMING_UP for i in range(_NUM_TEMP_CH)}
+        self._module_deadlines = {i: time.monotonic() + transition_seconds for i in range(_NUM_TEMP_CH)}
+        self._held_states = {}  # firmware-module-index -> LaserChannelState (force-hold)
+        self._tick_thread: Optional[threading.Thread] = None
+        self._running = threading.Event()
+
+    # ── Public test hooks ───────────────────────────────────────────────────
+
+    def force_hold_state(self, channel_key: str, state: LaserChannelState) -> None:
+        for mi in _CHANNEL_KEY_TO_MODULE_INDICES[channel_key]:
+            self._held_states[mi] = state
+            self._module_states[mi] = state
+
+    def force_error(self, channel_key: str) -> None:
+        self.force_hold_state(channel_key, LaserChannelState.ERROR)
+
+    def force_connection_lost(self, message: str = "simulated drop") -> None:
+        self._signal_connection_lost(message)
+
+    # ── Simulation tick ─────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        if self._running.is_set():
+            return
+        self._running.set()
+        self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
+        self._tick_thread.start()
+
+    def close(self) -> None:
+        self._running.clear()
+        if self._tick_thread:
+            self._tick_thread.join(timeout=2.0)
+            self._tick_thread = None
+
+    def _tick_loop(self) -> None:
+        while self._running.is_set():
+            self._advance_states()
+            self._publish_status(self._build_status())
+            time.sleep(self.query_interval_s)
+
+    def _advance_states(self) -> None:
+        now = time.monotonic()
+        for mi, state in list(self._module_states.items()):
+            if mi in self._held_states:
+                self._module_states[mi] = self._held_states[mi]
+                continue
+            deadline = self._module_deadlines.get(mi)
+            if deadline is not None and now >= deadline:
+                next_state = self._next_state_in_transition(state)
+                if next_state == state:
+                    self._module_deadlines[mi] = None  # stable
+                else:
+                    self._module_states[mi] = next_state
+                    self._module_deadlines[mi] = now + self._transition_seconds
+
+    def _next_state_in_transition(self, state):
+        # Initial bring-up: WARMING_UP -> CHECK_ACTIVE -> ACTIVE.
+        # Wake from sleep is faster (already warm): WAKE_UP -> ACTIVE.
+        # Sleep: PREPARE_SLEEP -> SLEEP.
+        forward = {
+            LaserChannelState.WARMING_UP: LaserChannelState.CHECK_ACTIVE,
+            LaserChannelState.CHECK_ACTIVE: LaserChannelState.ACTIVE,
+            LaserChannelState.WAKE_UP: LaserChannelState.ACTIVE,
+            LaserChannelState.PREPARE_SLEEP: LaserChannelState.SLEEP,
+        }
+        return forward.get(state, state)
+
+    def _build_status(self) -> SquidLaserEngineStatus:
+        # Synthesize a status for all channels using the current per-module states.
+        # Use temps near 25°C, the hi-temp module near 99.7°C.
+        module_data = {}
+        for mi, state in self._module_states.items():
+            is_hi = mi == 5
+            base_temp = 99.7 if is_hi else 25.0
+            temp = base_temp if state == LaserChannelState.ACTIVE else base_temp - 1.5
+            module_data[mi] = TcmModuleInfo(
+                module_index=mi,
+                state=state,
+                temperature_c=temp,
+                setpoint_c=base_temp,
+                setpoint_diff_c=temp - base_temp,
+                tec_voltage=0.5,
+                tec_current=0.1,
+                hi_temp_setpoint_c=99.7,
+            )
+
+        channels = {}
+        for key in _CHANNEL_DISPLAY_ORDER:
+            module_indices = _CHANNEL_KEY_TO_MODULE_INDICES[key]
+            channels[key] = LaserChannelInfo(
+                key=key,
+                laser_ttl_on=False,
+                modules=tuple(module_data[mi] for mi in module_indices),
+            )
+        return SquidLaserEngineStatus(channels=channels, timestamp_s=time.time())
+
+    # ── Subclass hooks: wake/sleep ──────────────────────────────────────────
+
+    def _send_wake(self, channel_index: int) -> None:
+        # Firmware: ch4 wakes both modules 4 and 5.
+        modules_to_wake = (4, 5) if channel_index == 4 else (channel_index,)
+        for mi in modules_to_wake:
+            if mi in self._held_states:
+                continue
+            self._module_states[mi] = LaserChannelState.WAKE_UP
+            self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
+
+    def _send_sleep(self, channel_index: int) -> None:
+        modules_to_sleep = (4, 5) if channel_index == 4 else (channel_index,)
+        for mi in modules_to_sleep:
+            if mi in self._held_states:
+                continue
+            self._module_states[mi] = LaserChannelState.PREPARE_SLEEP
+            self._module_deadlines[mi] = time.monotonic() + self._transition_seconds
+
+    def _send_query(self) -> None:
+        # Simulator publishes on its own tick; query is a no-op.
+        pass

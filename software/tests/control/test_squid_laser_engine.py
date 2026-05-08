@@ -9,6 +9,7 @@ from control.serial_peripherals import (
     TcmModuleInfo,
     LaserChannelInfo,
     SquidLaserEngineStatus,
+    SquidLaserEngineError,
     _parse_status_packet,
     _build_command_packet,
 )
@@ -237,3 +238,104 @@ class TestBuildCommandPacket:
         body = b"S" + struct.pack("<I", 0)
         expected_crc = crc32(body)
         assert pkt == body + struct.pack("<I", expected_crc) + b"\x0a\x0d"
+
+
+import time
+
+from control.serial_peripherals import SquidLaserEngine_Simulation
+
+
+@pytest.fixture
+def sim_engine():
+    """Simulation engine with a fast tick so tests don't sleep for ages."""
+    engine = SquidLaserEngine_Simulation(query_interval_s=0.05, transition_seconds=0.2)
+    engine.start()
+    yield engine
+    engine.close()
+
+
+class TestSquidLaserEngineSimulation:
+    def test_starts_in_warming_then_active(self, sim_engine):
+        # Wait for at least one transition cycle.
+        time.sleep(0.5)
+        status = sim_engine.get_latest_status()
+        assert status is not None
+        assert status.is_ready_for(["405", "470", "55x", "638", "730"])
+
+    def test_sleep_then_wake(self, sim_engine):
+        time.sleep(0.4)
+        sim_engine.put_to_sleep("405")
+        time.sleep(0.4)
+        status = sim_engine.get_latest_status()
+        assert not status.channels["405"].is_ready
+        sim_engine.wake_up("405")
+        time.sleep(0.5)
+        status = sim_engine.get_latest_status()
+        assert status.channels["405"].is_ready
+
+    def test_wait_until_ready_already_active(self, sim_engine):
+        time.sleep(0.4)
+        assert sim_engine.wait_until_ready(["405"], timeout_s=1.0) is True
+
+    def test_wait_until_ready_after_wake(self, sim_engine):
+        time.sleep(0.4)
+        sim_engine.put_to_sleep("470")
+        time.sleep(0.3)
+        assert sim_engine.wait_until_ready(["470"], timeout_s=2.0) is True
+
+    def test_wait_until_ready_timeout(self, sim_engine):
+        # Force-hold a channel in WARMING_UP so it never reaches ACTIVE.
+        sim_engine.force_hold_state("405", LaserChannelState.WARMING_UP)
+        time.sleep(0.2)
+        assert sim_engine.wait_until_ready(["405"], timeout_s=0.5) is False
+
+    def test_wait_until_ready_cancel(self, sim_engine):
+        sim_engine.force_hold_state("405", LaserChannelState.WARMING_UP)
+        cancel_called = [False]
+
+        def cancel():
+            return cancel_called[0]
+
+        # Schedule a cancel after 0.1s.
+        import threading
+
+        threading.Timer(0.1, lambda: cancel_called.__setitem__(0, True)).start()
+        t0 = time.time()
+        result = sim_engine.wait_until_ready(["405"], timeout_s=5.0, cancel_fn=cancel)
+        elapsed = time.time() - t0
+        assert result is False
+        assert elapsed < 1.0  # exited promptly, not after the full timeout
+
+    def test_wait_until_ready_error_raises(self, sim_engine):
+        sim_engine.force_error("638")
+        time.sleep(0.2)
+        with pytest.raises(SquidLaserEngineError):
+            sim_engine.wait_until_ready(["638"], timeout_s=1.0)
+
+    def test_channel_keys_for_wavelengths(self, sim_engine):
+        keys = sim_engine.channel_keys_for_wavelengths([488, 561, 640, 999])
+        # 488->470, 561->55x, 640->638; 999 is unmapped and dropped.
+        # Order preserved, no duplicates.
+        assert keys == ["470", "55x", "638"]
+
+    def test_status_updated_signal(self, qtbot, sim_engine):
+        received = []
+        sim_engine.status_updated.connect(lambda s: received.append(s))
+        # Wait for a few ticks.
+        qtbot.wait(300)
+        assert len(received) >= 2
+
+
+def test_simulation_connection_lost():
+    """Simulator can be told to drop its connection."""
+    engine = SquidLaserEngine_Simulation(query_interval_s=0.05, transition_seconds=0.1)
+    engine.start()
+    try:
+        signals = []
+        engine.connection_lost.connect(lambda msg: signals.append(msg))
+        engine.force_connection_lost("test drop")
+        time.sleep(0.2)
+        assert engine.is_connection_lost() is True
+        assert signals == ["test drop"]
+    finally:
+        engine.close()
