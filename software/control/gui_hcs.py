@@ -2519,14 +2519,6 @@ class HighContentScreeningGui(QMainWindow):
         delta_x_mm = pixel_size_um * click_x / 1000.0
         delta_y_mm = pixel_sign_y * pixel_size_um * click_y / 1000.0
 
-        self.log.info(
-            f"click_to_move: click=({click_x},{click_y}) px image=({image_width},{image_height}) "
-            f"lens_factor={self.objectiveStore.get_pixel_size_factor():.6f} "
-            f"binned_um={self.camera.get_pixel_size_binned_um():.4f} "
-            f"binning={self.camera.get_binning()} "
-            f"pixel_size_um={pixel_size_um:.4f} um/px "
-            f"delta=({delta_x_mm:.4f},{delta_y_mm:.4f}) mm"
-        )
         self.stage.move_x(delta_x_mm, blocking=False)
         self.stage.move_y(delta_y_mm, blocking=True)
 
