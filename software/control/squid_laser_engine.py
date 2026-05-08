@@ -369,6 +369,7 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
 
     def force_connection_lost(self, message: str = "simulated drop") -> None:
         self._signal_connection_lost(message)
+        self._running.clear()  # mirror real engine: stop ticking on disconnect
 
     # ── Simulation tick ─────────────────────────────────────────────────────
 
@@ -533,9 +534,11 @@ class SquidLaserEngine(SquidLaserEngineBase):
             return
         self._running.clear()
         # Close the port before joining so any blocking read() unblocks.
+        # Hold _serial_lock so a concurrent _write_packet can't race the close.
         if self._serial is not None:
             try:
-                self._serial.close()
+                with self._serial_lock:
+                    self._serial.close()
             except Exception:
                 self._log.exception("Error closing serial port")
         for t in (self._query_thread, self._receive_thread):
@@ -590,10 +593,10 @@ class SquidLaserEngine(SquidLaserEngineBase):
             time.sleep(self.query_interval_s)
 
     def _receive_loop(self) -> None:
-        msg = bytearray()
+        # read_until collapses a packet into one syscall; size= bounds garbage runs.
         while self._running.is_set():
             try:
-                chunk = self._serial.read(1)
+                chunk = self._serial.read_until(b"\x0a\x0d", size=2048)
             except Exception as e:
                 if not self._running.is_set():
                     return  # shutdown race against close()
@@ -603,17 +606,9 @@ class SquidLaserEngine(SquidLaserEngineBase):
                 return
             if not chunk:
                 continue
-            byte = chunk[0]
-            if byte == 0x0D and len(msg) >= 1 and msg[-1] == 0x0A:
-                inner = bytes(msg[:-1])
-                msg = bytearray()
-                self._handle_frame(inner)
-            else:
-                msg.append(byte)
-                if len(msg) > 1024:
-                    # Preserve trailing \x0A so we don't lose a frame whose
-                    # terminator straddles the discard boundary.
-                    msg = bytearray(b"\x0a") if msg[-1] == 0x0A else bytearray()
+            if chunk.endswith(b"\x0a\x0d"):
+                self._handle_frame(bytes(chunk[:-2]))
+            # else: timeout or 2048-byte runaway — drop and resync on next read.
 
     def _handle_frame(self, frame: bytes) -> None:
         if len(frame) < 4:

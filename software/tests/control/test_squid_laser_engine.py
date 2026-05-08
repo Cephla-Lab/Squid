@@ -362,6 +362,20 @@ class _FakeSerial:
             del self._read_buffer[:n]
             return chunk
 
+    def read_until(self, expected, size=None):
+        # Mirror pyserial: loop self.read(1) so monkeypatched reads still work.
+        line = bytearray()
+        while True:
+            c = self.read(1)
+            if not c:
+                break
+            line += c
+            if line.endswith(expected):
+                break
+            if size is not None and len(line) >= size:
+                break
+        return bytes(line)
+
     def write(self, data):
         with self._lock:
             self._write_log += data

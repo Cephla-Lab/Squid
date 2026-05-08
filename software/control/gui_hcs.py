@@ -1902,14 +1902,15 @@ class HighContentScreeningGui(QMainWindow):
             f"Waiting for laser engine to be ready: {', '.join(channel_keys)}…\n"
             "(acquisition will resume automatically)"
         )
-        # 0/0 → indeterminate progress. No Cancel button — the regular Abort button still works.
+        # Non-modal: the main window's Abort button must remain reachable while the
+        # dialog is up. We just float it as a regular always-on-top window.
         self._laser_engine_dialog = QProgressDialog(msg, "", 0, 0, self)
         self._laser_engine_dialog.setWindowTitle("Laser engine warming up")
         self._laser_engine_dialog.setCancelButton(None)
-        self._laser_engine_dialog.setWindowModality(Qt.ApplicationModal)
-        # Live label updates as new status comes in. Capture the engine reference here
-        # so a later addon swap can't make _hide_laser_engine_dialog disconnect from
-        # a different object and leak this connection.
+        self._laser_engine_dialog.setWindowModality(Qt.NonModal)
+        self._laser_engine_dialog.setWindowFlags(self._laser_engine_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        # Capture the engine reference at show-time so later addon swaps can't
+        # leak this status_updated connection.
         engine = self.microscope.addons.squid_laser_engine
         self._laser_engine_dialog_engine = engine
         if engine is not None:
