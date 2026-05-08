@@ -2395,6 +2395,14 @@ class TestRecordingWidget:
         assert widget.lineEdit_savingDir.text() == str(tmp_path)
         assert image_saver.base_path == str(tmp_path)
 
+    def test_channel_provider_can_be_set_and_cleared(self, recording_widget):
+        _, _, image_saver = recording_widget
+        provider = lambda: None
+        image_saver.set_channel_provider(provider)
+        assert image_saver._channel_provider is provider
+        image_saver.set_channel_provider(None)
+        assert image_saver._channel_provider is None
+
     def test_record_without_browse_starts_recording(self, qtbot, recording_widget):
         widget, _, image_saver = recording_widget
         widget.lineEdit_experimentID.setText("exp")

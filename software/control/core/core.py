@@ -110,6 +110,16 @@ class ImageSaver(QObject):
         self.counter = 0
         self.recording_start_time = 0
         self.recording_time_limit = -1
+        self._channel_provider: Optional[Callable[[], Optional[Any]]] = None
+
+    def set_channel_provider(self, provider):
+        """Register a callable returning the active live channel (or None).
+
+        Called per-frame from the saver thread. Cross-thread reads of the
+        channel reference are GIL-atomic, so no lock is needed; the GUI thread
+        just swaps the reference when the user toggles channels.
+        """
+        self._channel_provider = provider
 
     def process_queue(self):
         while True:
