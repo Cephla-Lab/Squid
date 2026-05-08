@@ -1531,9 +1531,15 @@ class SquidLaserEngineBase(QObject):
     WAVELENGTH_TO_CHANNEL = dict(_WAVELENGTH_TO_CHANNEL)
     CHANNEL_ORDER = _CHANNEL_DISPLAY_ORDER
 
-    def __init__(self, query_interval_s: float = 1.0):
+    # Default poll cadence and acquisition-gate ceiling. Override per-instance
+    # via the constructor / wait_until_ready arg if a specific test / hardware
+    # bring-up needs different timing.
+    DEFAULT_QUERY_INTERVAL_S = 1.0
+    READY_TIMEOUT_S = 300.0  # 5 min — gate raises if a channel never reaches ACTIVE.
+
+    def __init__(self, query_interval_s: Optional[float] = None):
         super().__init__()
-        self.query_interval_s = query_interval_s
+        self.query_interval_s = query_interval_s if query_interval_s is not None else self.DEFAULT_QUERY_INTERVAL_S
         self._latest_status: Optional[SquidLaserEngineStatus] = None
         self._status_lock = threading.Lock()
         self._connection_lost = False
@@ -1660,7 +1666,7 @@ class SquidLaserEngine_Simulation(SquidLaserEngineBase):
     Test hooks: force_hold_state(key, state), force_error(key), force_connection_lost(msg).
     """
 
-    def __init__(self, query_interval_s: float = 1.0, transition_seconds: float = 3.0):
+    def __init__(self, query_interval_s: Optional[float] = None, transition_seconds: float = 3.0):
         super().__init__(query_interval_s=query_interval_s)
         self._transition_seconds = transition_seconds
         # Per-firmware-module transition deadline (monotonic). When time >= deadline,
@@ -1828,7 +1834,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
         self,
         sn: Optional[str] = None,
         device: Optional[str] = None,
-        query_interval_s: float = 1.0,
+        query_interval_s: Optional[float] = None,
         _test_serial=None,
     ):
         super().__init__(query_interval_s=query_interval_s)

@@ -569,7 +569,7 @@ class MultiPointWorker:
         try:
             ok = self._laser_engine.wait_until_ready(
                 self._laser_channels_needed,
-                timeout_s=control._def.SQUID_LASER_ENGINE_READY_TIMEOUT_S,
+                timeout_s=self._laser_engine.READY_TIMEOUT_S,
                 cancel_fn=self.abort_requested_fn,
             )
         finally:

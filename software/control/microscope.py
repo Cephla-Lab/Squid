@@ -167,14 +167,9 @@ class MicroscopeAddons:
         squid_laser_engine = None
         if control._def.USE_SQUID_LASER_ENGINE:
             squid_laser_engine = (
-                serial_peripherals.SquidLaserEngine(
-                    sn=control._def.SQUID_LASER_ENGINE_SN,
-                    query_interval_s=control._def.SQUID_LASER_ENGINE_QUERY_INTERVAL_S,
-                )
+                serial_peripherals.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
                 if not simulated
-                else serial_peripherals.SquidLaserEngine_Simulation(
-                    query_interval_s=control._def.SQUID_LASER_ENGINE_QUERY_INTERVAL_S,
-                )
+                else serial_peripherals.SquidLaserEngine_Simulation()
             )
 
         return MicroscopeAddons(

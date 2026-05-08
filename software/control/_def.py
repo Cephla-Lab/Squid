@@ -959,10 +959,8 @@ ANDOR_LASER_PID = 0x0300
 # When True, software opens a USB-serial connection to the laser engine, polls
 # per-channel status (state/temperature/ΔT/TTL), and gates acquisition on
 # channels reaching ACTIVE state.
-USE_SQUID_LASER_ENGINE = False
-SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
-SQUID_LASER_ENGINE_QUERY_INTERVAL_S = 1.0
-SQUID_LASER_ENGINE_READY_TIMEOUT_S = 300.0  # 5 min — modal dialog gives up after this
+USE_SQUID_LASER_ENGINE = True
+SQUID_LASER_ENGINE_SN = "16640030"  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
 
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
