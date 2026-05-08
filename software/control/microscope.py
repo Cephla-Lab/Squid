@@ -237,16 +237,6 @@ class MicroscopeAddons:
             self.squid_laser_engine.start()
             self.squid_laser_engine.wake_up_all()  # fire-and-forget
 
-    def close(self) -> None:
-        """Close addon hardware that owns external resources.
-
-        Currently only closes the squid laser engine. Other addons (filter wheel,
-        camera_focus) are still closed directly from Microscope.close() for
-        historical reasons.
-        """
-        if self.squid_laser_engine:
-            self.squid_laser_engine.close()
-
 
 class LowLevelDrivers:
     @staticmethod
