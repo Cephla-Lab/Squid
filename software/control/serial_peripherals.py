@@ -7,6 +7,7 @@ from serial.tools import list_ports
 import time
 from typing import Tuple, Optional
 import struct
+from zlib import crc32
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
 from squid.abc import LightSource
@@ -1403,3 +1404,112 @@ class SquidLaserEngineError(RuntimeError):
     def __init__(self, channel_key: str, message: str):
         super().__init__(f"[{channel_key}] {message}")
         self.channel_key = channel_key
+
+
+# Channel keys in DISPLAY order (with 55x in the middle, per design).
+_CHANNEL_DISPLAY_ORDER = ("405", "470", "55x", "638", "730")
+# Firmware wake/sleep channel indices (0..4) keyed by display key.
+_CHANNEL_KEY_TO_FIRMWARE_INDEX = {"405": 0, "470": 1, "638": 2, "730": 3, "55x": 4}
+# TCM module indices owned by each laser channel key.
+_CHANNEL_KEY_TO_MODULE_INDICES = {
+    "405": (0,),
+    "470": (1,),
+    "638": (2,),
+    "730": (3,),
+    "55x": (4, 5),
+}
+
+# Wavelength -> channel key. Optical aliases included.
+_WAVELENGTH_TO_CHANNEL = {
+    405: "405",
+    470: "470",
+    488: "470",
+    545: "55x",
+    550: "55x",
+    555: "55x",
+    561: "55x",
+    638: "638",
+    640: "638",
+    730: "730",
+    735: "730",
+    750: "730",
+}
+
+_NUM_LASER_CH = 5
+_NUM_TEMP_CH = 6
+_TCM_BLOCK_BYTES = 7  # state(1) + temp(2) + voltage(2) + current(2)
+_STATUS_PAYLOAD_BYTES = 1 + _NUM_LASER_CH + _NUM_TEMP_CH * _TCM_BLOCK_BYTES + _NUM_TEMP_CH * 2 + _NUM_TEMP_CH * 2
+
+
+def _parse_status_packet(payload: bytes):
+    """Parse a verified-CRC status payload (without trailing CRC32) from the laser engine.
+
+    Returns SquidLaserEngineStatus on success, None if payload is malformed or not a status packet.
+    """
+    import time as _time
+
+    if len(payload) < _STATUS_PAYLOAD_BYTES or payload[0:1] != b"S":
+        return None
+
+    laser_ttl = [bool(payload[1 + i]) for i in range(_NUM_LASER_CH)]
+
+    modules = {}  # module_index -> TcmModuleInfo
+    base = 1 + _NUM_LASER_CH
+    for i in range(_NUM_TEMP_CH):
+        offset = base + i * _TCM_BLOCK_BYTES
+        state_val = payload[offset]
+        try:
+            state = LaserChannelState(state_val)
+        except ValueError:
+            state = LaserChannelState.ERROR
+        temp_c = struct.unpack(">h", payload[offset + 1 : offset + 3])[0] / 100.0
+        voltage = struct.unpack(">h", payload[offset + 3 : offset + 5])[0] / 100.0
+        current = struct.unpack(">h", payload[offset + 5 : offset + 7])[0] / 100.0
+        modules[i] = {"state": state, "temp": temp_c, "voltage": voltage, "current": current}
+
+    diff_base = base + _NUM_TEMP_CH * _TCM_BLOCK_BYTES
+    for i in range(_NUM_TEMP_CH):
+        diff_c = struct.unpack(">h", payload[diff_base + i * 2 : diff_base + i * 2 + 2])[0] / 100.0
+        modules[i]["diff"] = diff_c
+
+    hi_base = diff_base + _NUM_TEMP_CH * 2
+    for i in range(_NUM_TEMP_CH):
+        hi_c = struct.unpack(">h", payload[hi_base + i * 2 : hi_base + i * 2 + 2])[0] / 100.0
+        modules[i]["hi_temp"] = hi_c
+
+    # Build LaserChannelInfo for each display key, in display order.
+    channels = {}
+    for key in _CHANNEL_DISPLAY_ORDER:
+        module_indices = _CHANNEL_KEY_TO_MODULE_INDICES[key]
+        firmware_idx = _CHANNEL_KEY_TO_FIRMWARE_INDEX[key]
+        infos = tuple(
+            TcmModuleInfo(
+                module_index=mi,
+                state=modules[mi]["state"],
+                temperature_c=modules[mi]["temp"],
+                setpoint_c=modules[mi]["temp"] - modules[mi]["diff"],
+                setpoint_diff_c=modules[mi]["diff"],
+                tec_voltage=modules[mi]["voltage"],
+                tec_current=modules[mi]["current"],
+                hi_temp_setpoint_c=modules[mi]["hi_temp"],
+            )
+            for mi in module_indices
+        )
+        channels[key] = LaserChannelInfo(
+            key=key,
+            laser_ttl_on=laser_ttl[firmware_idx],
+            modules=infos,
+        )
+
+    return SquidLaserEngineStatus(channels=channels, timestamp_s=_time.time())
+
+
+def _build_command_packet(cmd_byte: bytes, channel_index: int = None) -> bytes:
+    """Build a wire-format command packet matching the firmware protocol.
+
+    Format: cmd_byte [+ struct.pack('<I', channel_index)] + crc32_le + b'\\x0A\\x0D'.
+    """
+    body = cmd_byte
+    if channel_index is not None:
+        body = body + struct.pack("<I", channel_index)
+    return body + struct.pack("<I", crc32(body)) + b"\x0a\x0d"
