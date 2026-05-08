@@ -2403,6 +2403,42 @@ class TestRecordingWidget:
         image_saver.set_channel_provider(None)
         assert image_saver._channel_provider is None
 
+    def test_frames_csv_written_with_metadata(self, qtbot, recording_widget):
+        widget, _, image_saver = recording_widget
+
+        class _Stub:
+            name = "488 nm"
+            exposure_time = 25.0
+            analog_gain = 1.5
+            illumination_intensity = 80.0
+
+        image_saver.set_channel_provider(lambda: _Stub())
+
+        widget.lineEdit_experimentID.setText("exp")
+        qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
+
+        # Enqueue directly so streamHandler's save-FPS throttle doesn't drop frames.
+        img = np.zeros((16, 16), dtype=np.uint8)
+        for i in range(3):
+            image_saver.enqueue(img, i * 30, 1000.0 + i)
+
+        qtbot.waitUntil(lambda: image_saver.counter == 3, timeout=2000)
+
+        csv_path = Path(image_saver.base_path) / image_saver.experiment_ID / "frames.csv"
+        assert csv_path.is_file()
+
+        import csv as _csv
+
+        with csv_path.open() as f:
+            rows = list(_csv.DictReader(f))
+        assert len(rows) == 3
+        assert [r["frame_id"] for r in rows] == ["0", "30", "60"]
+        assert rows[0]["channel"] == "488 nm"
+        assert float(rows[0]["exposure_ms"]) == 25.0
+        assert float(rows[0]["gain"]) == 1.5
+        assert float(rows[0]["illumination_intensity"]) == 80.0
+        assert rows[0]["file"].endswith(".tiff") or rows[0]["file"].endswith(".bmp")
+
     def test_record_without_browse_starts_recording(self, qtbot, recording_widget):
         widget, _, image_saver = recording_widget
         widget.lineEdit_experimentID.setText("exp")

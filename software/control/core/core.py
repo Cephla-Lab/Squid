@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from enum import Enum
 from control.models import AcquisitionChannel
 import time
+import csv
 import itertools
 import json
 import math
@@ -126,6 +127,9 @@ class ImageSaver(QObject):
         self.recording_start_time = 0
         self.recording_time_limit = -1
         self._channel_provider: Optional[Callable[[], Optional[Any]]] = None
+        self._csv_file = None
+        self._csv_writer = None
+        self._dropped_count = 0
 
     def set_channel_provider(self, provider):
         """Register a callable returning the active live channel (or None).
@@ -160,6 +164,27 @@ class ImageSaver(QObject):
                         config=channel,
                         is_color=image.ndim == 3,
                     )
+
+                    if self._csv_writer is not None:
+                        rel_path = os.path.join(
+                            str(folder_id),
+                            os.path.basename(
+                                utils_acquisition.get_image_filepath("", str(file_id), channel.name, image.dtype)
+                            ),
+                        )
+                        self._csv_writer.writerow(
+                            [
+                                frame_id,
+                                datetime.fromtimestamp(timestamp).isoformat(),
+                                getattr(channel, "name", "live"),
+                                getattr(channel, "exposure_time", 0.0),
+                                getattr(channel, "analog_gain", 0.0),
+                                getattr(channel, "illumination_intensity", 0.0),
+                                rel_path,
+                            ]
+                        )
+                        self._csv_file.flush()
+
                     self.counter += 1
                 self.queue.task_done()
             except:
@@ -184,24 +209,37 @@ class ImageSaver(QObject):
 
     def start_new_experiment(self, experiment_ID, add_timestamp=True):
         if add_timestamp:
-            # generate unique experiment ID
             self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         else:
             self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()
-        # create a new folder
-        try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-            # to do: save configuration
-        except:
-            pass
-        # reset the counter
         self.counter = 0
+        self._dropped_count = 0
+
+        experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+        try:
+            utils.ensure_directory_exists(experiment_dir)
+        except:
+            pass  # logging in Task 5
+
+        csv_path = os.path.join(experiment_dir, "frames.csv")
+        self._csv_file = open(csv_path, "w", newline="")
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow(
+            ["frame_id", "timestamp_iso", "channel", "exposure_ms", "gain", "illumination_intensity", "file"]
+        )
+        self._csv_file.flush()
 
     def close(self):
         self.queue.join()
         self.stop_signal_received = True
         self.thread.join()
+        if self._csv_file is not None:
+            try:
+                self._csv_file.close()
+            finally:
+                self._csv_file = None
+                self._csv_writer = None
 
 
 class ImageSaver_Tracking(QObject):
