@@ -125,9 +125,8 @@ class LaserEngineWidget(QWidget):
             if info is None:
                 continue
             state = info.display_state
-            ttl = "ON" if info.laser_ttl_on else "OFF"
             self._channel_lines[key].setText(
-                f"{key:>4}  {state.name:<14}  {_format_temp(info)}  ΔT {_format_diff(info)}  TTL {ttl}"
+                f"{key:>4}  {state.name:<14}  {_format_temp(info)}  ΔT {_format_diff(info)}"
             )
 
     def _refresh_summary(self) -> None:
