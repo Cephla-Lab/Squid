@@ -2022,6 +2022,12 @@ class PreferencesDialog(QDialog):
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
 
+        # Click to Move (Z step constants are read per wheel event in core.py;
+        # ENABLE_CLICK_TO_MOVE is pushed to NavigationWidget by gui_hcs via signal_config_changed)
+        control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
+        control._def.LIVE_VIEW_Z_STEP_UM = self.click_to_move_z_fine_spinbox.value()
+        control._def.LIVE_VIEW_Z_STEP_FAST_UM = self.click_to_move_z_coarse_spinbox.value()
+
         # AF settings
         control._def.AF.STOP_THRESHOLD = self.af_stop_threshold.value()
         control._def.AF.CROP_WIDTH = self.af_crop_width.value()
@@ -2110,21 +2116,22 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Show Dev Tab", str(old_val), str(new_val), False))
 
-        # Click to Move (require restart — read by _def.py at import)
+        # Click to Move (live update — _apply_live_settings pushes to _def globals
+        # and signal_config_changed lets gui_hcs sync the navigation widget)
         old_val = self._get_config_bool("GENERAL", "enable_click_to_move", True)
         new_val = self.click_to_move_enable_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Enable Click to Move", str(old_val), str(new_val), True))
+            changes.append(("Enable Click to Move", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
         new_val = self.click_to_move_z_fine_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Z Step (Fine)", f"{old_val} µm", f"{new_val} µm", True))
+            changes.append(("Z Step (Fine)", f"{old_val} µm", f"{new_val} µm", False))
 
         old_val = self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
         new_val = self.click_to_move_z_coarse_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Z Step (Coarse)", f"{old_val} µm", f"{new_val} µm", True))
+            changes.append(("Z Step (Coarse)", f"{old_val} µm", f"{new_val} µm", False))
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")

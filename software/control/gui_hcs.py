@@ -1853,6 +1853,9 @@ class HighContentScreeningGui(QMainWindow):
                 on_restart=self.restart_application,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
+            dialog.signal_config_changed.connect(
+                lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
+            )
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
