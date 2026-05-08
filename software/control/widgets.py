@@ -1109,12 +1109,12 @@ class PreferencesDialog(QDialog):
         self.click_to_move_z_fine_spinbox = self._make_z_step_spinbox(
             self._get_config_float("GENERAL", "live_view_z_step_um", 5.0)
         )
-        click_to_move_layout.addRow("Z fine step (Ctrl+Scroll):", self.click_to_move_z_fine_spinbox)
+        click_to_move_layout.addRow("Z Fine Step (Ctrl+Scroll):", self.click_to_move_z_fine_spinbox)
 
         self.click_to_move_z_coarse_spinbox = self._make_z_step_spinbox(
             self._get_config_float("GENERAL", "live_view_z_step_fast_um", 40.0)
         )
-        click_to_move_layout.addRow("Z coarse step (Ctrl+Shift+Scroll):", self.click_to_move_z_coarse_spinbox)
+        click_to_move_layout.addRow("Z Coarse Step (Ctrl+Shift+Scroll):", self.click_to_move_z_coarse_spinbox)
 
         click_to_move_group.content.addLayout(click_to_move_layout)
         layout.addRow(click_to_move_group)
