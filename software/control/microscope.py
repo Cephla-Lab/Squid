@@ -23,6 +23,7 @@ import control.celesta
 import control.illumination_andor
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
+import control.squid_laser_engine as squid_laser_engine
 import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
@@ -164,12 +165,12 @@ class MicroscopeAddons:
             )
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
-        squid_laser_engine = None
+        laser_engine = None
         if control._def.USE_SQUID_LASER_ENGINE:
-            squid_laser_engine = (
-                serial_peripherals.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+            laser_engine = (
+                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
                 if not simulated
-                else serial_peripherals.SquidLaserEngine_Simulation()
+                else squid_laser_engine.SquidLaserEngine_Simulation()
             )
 
         return MicroscopeAddons(
@@ -183,7 +184,7 @@ class MicroscopeAddons:
             fluidics,
             piezo_stage,
             sci_microscopy_led_array,
-            squid_laser_engine=squid_laser_engine,
+            squid_laser_engine=laser_engine,
         )
 
     def __init__(
@@ -198,7 +199,7 @@ class MicroscopeAddons:
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
-        squid_laser_engine: Optional["serial_peripherals.SquidLaserEngineBase"] = None,
+        squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
         self.dragonfly: Optional[serial_peripherals.Dragonfly] = dragonfly

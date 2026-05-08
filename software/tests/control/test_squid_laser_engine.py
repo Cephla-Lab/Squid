@@ -4,7 +4,7 @@ import struct
 from zlib import crc32
 
 import pytest
-from control.serial_peripherals import (
+from control.squid_laser_engine import (
     LaserChannelState,
     TcmModuleInfo,
     LaserChannelInfo,
@@ -242,7 +242,7 @@ class TestBuildCommandPacket:
 
 import time
 
-from control.serial_peripherals import SquidLaserEngine_Simulation
+from control.squid_laser_engine import SquidLaserEngine_Simulation
 
 
 @pytest.fixture
@@ -386,7 +386,7 @@ class _FakeSerial:
 
 import threading
 
-from control.serial_peripherals import SquidLaserEngine
+from control.squid_laser_engine import SquidLaserEngine
 
 
 class TestSquidLaserEngineRealClass:

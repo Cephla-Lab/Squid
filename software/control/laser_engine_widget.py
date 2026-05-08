@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from control.serial_peripherals import (
+from control.squid_laser_engine import (
     LASER_CHANNEL_ORDER,
     LaserChannelState,
     SquidLaserEngineStatus,
