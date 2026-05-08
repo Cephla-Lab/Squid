@@ -4,6 +4,8 @@ import time
 import threading
 from typing import List, Optional, TYPE_CHECKING
 
+from qtpy.QtCore import QObject, Signal
+
 import squid.logging
 from control.microcontroller import Microcontroller
 from squid.abc import CameraAcquisitionMode, AbstractCamera
@@ -16,7 +18,11 @@ if TYPE_CHECKING:
     from control.models import AcquisitionChannel, IlluminationChannelConfig
 
 
-class LiveController:
+class LiveController(QObject):
+    # Emitted when live start encounters a non-fatal condition the user should see
+    # (e.g. the Squid laser engine is not yet ready for the requested wavelength).
+    signal_warning = Signal(str)
+
     def __init__(
         self,
         microscope: "Microscope",
@@ -26,6 +32,7 @@ class LiveController:
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
     ):
+        super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
         self.camera: AbstractCamera = camera
@@ -86,6 +93,39 @@ class LiveController:
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code 0-9)."""
         return 0 <= self._get_illumination_source() < 10
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Squid laser engine readiness (warn-only)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _check_laser_engine_warn_only(self) -> None:
+        """If a Squid laser engine is wired in, warn (but do not block) when the
+        channel needed for the current configuration is not yet ready.
+
+        Side effects:
+          * Fires a fire-and-forget wake_up for the needed channel(s).
+          * Logs a warning and emits ``signal_warning`` with a user-facing string.
+        """
+        engine = getattr(self.microscope.addons, "squid_laser_engine", None)
+        if engine is None:
+            return
+        wavelength = self._get_illumination_wavelength()
+        if wavelength is None:
+            return
+        needed = engine.channel_keys_for_wavelengths([wavelength])
+        if not needed:
+            return
+        status = engine.get_latest_status()
+        if status is not None and status.is_ready_for(needed):
+            return
+        # Not ready — fire-and-forget wake, then warn.
+        for k in needed:
+            try:
+                engine.wake_up(k)
+            except Exception as e:
+                self._log.warning(f"Squid laser engine wake_up({k}) failed: {e}")
+        self._log.warning(f"Squid laser engine not ready for channel(s) {needed}; live started anyway")
+        self.signal_warning.emit(f"Laser engine warming up (channel {','.join(needed)}); image may be dim")
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Confocal mode
@@ -321,6 +361,7 @@ class LiveController:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
     def start_live(self):
+        self._check_laser_engine_warn_only()
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (

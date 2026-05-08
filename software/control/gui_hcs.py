@@ -1438,6 +1438,7 @@ class HighContentScreeningGui(QMainWindow):
     def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
         self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
+        self.liveController.signal_warning.connect(self._on_live_controller_warning)
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
@@ -1847,6 +1848,12 @@ class HighContentScreeningGui(QMainWindow):
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
+
+    def _on_live_controller_warning(self, message: str) -> None:
+        """Surface a non-fatal warning from LiveController (e.g. laser engine
+        not yet ready). Logs and shows a non-blocking message box."""
+        self.log.warning(message)
+        QMessageBox.warning(self, "Laser engine", message)
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
