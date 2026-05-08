@@ -1224,7 +1224,13 @@ class ImageDisplayWindow(QMainWindow):
             notches = event.angleDelta().y() / 120.0
             if notches == 0:
                 return True
-            step_um = LIVE_VIEW_Z_STEP_FAST_UM if (event.modifiers() & Qt.ShiftModifier) else LIVE_VIEW_Z_STEP_UM
+            # Read through the module so live updates from PreferencesDialog take effect
+            # without restart — `from control._def import *` would bind the value at import.
+            step_um = (
+                control._def.LIVE_VIEW_Z_STEP_FAST_UM
+                if (event.modifiers() & Qt.ShiftModifier)
+                else control._def.LIVE_VIEW_Z_STEP_UM
+            )
             self.signal_z_um_delta.emit(notches * step_um)
             return True
         return super().eventFilter(source, event)
