@@ -1881,13 +1881,21 @@ class HighContentScreeningGui(QMainWindow):
         self._last_live_warning_s = now
         prior = getattr(self, "_live_warning_box", None)
         if prior is not None:
-            prior.close()
+            # The Qt C++ object may have been auto-deleted (WA_DeleteOnClose)
+            # after the user clicked Ok; touching it then raises RuntimeError.
+            try:
+                prior.close()
+            except RuntimeError:
+                pass
         box = QMessageBox(self)
         box.setAttribute(Qt.WA_DeleteOnClose)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("Laser engine")
         box.setText(message)
         box.setStandardButtons(QMessageBox.Ok)
+        # Clear our reference once the C++ object is destroyed so we never
+        # try to .close() a dead wrapper on the next warning.
+        box.destroyed.connect(lambda _=None: setattr(self, "_live_warning_box", None))
         self._live_warning_box = box
         box.show()  # non-modal — does not block the GUI thread
 
