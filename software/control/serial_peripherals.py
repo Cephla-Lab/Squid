@@ -1,4 +1,6 @@
 import abc
+from dataclasses import dataclass
+from enum import IntEnum
 
 import serial
 from serial.tools import list_ports
@@ -1308,3 +1310,96 @@ class CellX_Simulation:
 
     def close(self):
         pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Squid Laser Engine — Cephla-built Teensy laser controller.
+#
+# The firmware exposes 5 wake/sleep laser channels but 6 TCM modules: the 55x
+# channel has two TCMs (one cool ~25°C, one hot ~99.7°C). Public API uses 5
+# keys: '405', '470', '55x', '638', '730'. Per-channel "ready" = all underlying
+# TCM modules in ACTIVE state.
+#
+# See spec: docs/superpowers/specs/2026-05-07-squid-laser-engine-design.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class LaserChannelState(IntEnum):
+    """Mirrors the ChannelState enum in firmware (laser_engine.ino)."""
+
+    WARMING_UP = 0
+    CHECK_ACTIVE = 1
+    ACTIVE = 2
+    WAKE_UP = 3
+    SLEEP = 4
+    PREPARE_SLEEP = 5
+    CHECK_ERROR = 6
+    ERROR = 7
+
+
+@dataclass(frozen=True)
+class TcmModuleInfo:
+    module_index: int  # 0..5
+    state: LaserChannelState
+    temperature_c: float
+    setpoint_c: float
+    setpoint_diff_c: float
+    tec_voltage: float
+    tec_current: float
+    hi_temp_setpoint_c: float
+
+
+# Severity ranking for display_state: smaller = more concerning.
+_STATE_DISPLAY_PRIORITY = {
+    LaserChannelState.ERROR: 0,
+    LaserChannelState.CHECK_ERROR: 1,
+    LaserChannelState.SLEEP: 2,
+    LaserChannelState.PREPARE_SLEEP: 3,
+    LaserChannelState.WAKE_UP: 4,
+    LaserChannelState.WARMING_UP: 5,
+    LaserChannelState.CHECK_ACTIVE: 6,
+    LaserChannelState.ACTIVE: 7,
+}
+
+
+@dataclass(frozen=True)
+class LaserChannelInfo:
+    key: str  # '405' | '470' | '55x' | '638' | '730'
+    laser_ttl_on: bool
+    modules: tuple  # tuple[TcmModuleInfo, ...] — 1 module for most channels, 2 for 55x
+
+    @property
+    def is_ready(self) -> bool:
+        return all(m.state == LaserChannelState.ACTIVE for m in self.modules)
+
+    @property
+    def is_error(self) -> bool:
+        return any(m.state in (LaserChannelState.ERROR, LaserChannelState.CHECK_ERROR) for m in self.modules)
+
+    @property
+    def display_state(self) -> LaserChannelState:
+        return min(self.modules, key=lambda m: _STATE_DISPLAY_PRIORITY[m.state]).state
+
+
+@dataclass(frozen=True)
+class SquidLaserEngineStatus:
+    channels: dict  # dict[str, LaserChannelInfo] in display order
+    timestamp_s: float
+
+    def is_ready_for(self, keys) -> bool:
+        for k in keys:
+            info = self.channels.get(k)
+            if info is None or not info.is_ready:
+                return False
+        return True
+
+    def any_error(self) -> bool:
+        return any(info.is_error for info in self.channels.values())
+
+
+class SquidLaserEngineError(RuntimeError):
+    """Raised when the laser engine reports an unrecoverable channel error."""
+
+    def __init__(self, channel_key: str, message: str):
+        super().__init__(f"[{channel_key}] {message}")
+        self.channel_key = channel_key
