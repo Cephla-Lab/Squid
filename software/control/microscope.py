@@ -23,6 +23,7 @@ import control.celesta
 import control.illumination_andor
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
+import control.squid_laser_engine as squid_laser_engine
 import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
@@ -164,6 +165,14 @@ class MicroscopeAddons:
             )
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
+        laser_engine = None
+        if control._def.USE_SQUID_LASER_ENGINE:
+            laser_engine = (
+                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                if not simulated
+                else squid_laser_engine.SquidLaserEngine_Simulation()
+            )
+
         return MicroscopeAddons(
             xlight,
             dragonfly,
@@ -175,6 +184,7 @@ class MicroscopeAddons:
             fluidics,
             piezo_stage,
             sci_microscopy_led_array,
+            squid_laser_engine=laser_engine,
         )
 
     def __init__(
@@ -189,6 +199,7 @@ class MicroscopeAddons:
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
+        squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
         self.dragonfly: Optional[serial_peripherals.Dragonfly] = dragonfly
@@ -200,6 +211,7 @@ class MicroscopeAddons:
         self.fluidics = fluidics
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
+        self.squid_laser_engine = squid_laser_engine
 
     def prepare_for_use(self, skip_init: bool = False):
         """
@@ -215,6 +227,11 @@ class MicroscopeAddons:
                 self.emission_filter_wheel.home()
         if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
+        if self.squid_laser_engine:
+            # start() may raise if the USB device is missing — intentional hard fail
+            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+            self.squid_laser_engine.start()
+            self.squid_laser_engine.wake_up_all()  # fire-and-forget
 
 
 class LowLevelDrivers:
@@ -942,6 +959,12 @@ class Microscope:
                 self.addons.camera_focus.close()
             except Exception as e:
                 self._log.warning(f"Error closing focus camera: {e}")
+
+        if self.addons.squid_laser_engine:
+            try:
+                self.addons.squid_laser_engine.close()
+            except Exception as e:
+                self._log.warning(f"Error closing squid laser engine: {e}")
 
         try:
             self.camera.close()

@@ -955,6 +955,13 @@ USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
 
+# Squid laser engine integration (Cephla Teensy-based laser controller)
+# When True, software opens a USB-serial connection to the laser engine, polls
+# per-channel status (state/temperature/ΔT/TTL), and gates acquisition on
+# channels reaching ACTIVE state.
+USE_SQUID_LASER_ENGINE = False
+SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
+
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False

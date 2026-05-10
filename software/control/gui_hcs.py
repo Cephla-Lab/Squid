@@ -42,6 +42,7 @@ from qtpy.QtGui import *
 from control._def import *
 
 # app specific libraries
+from control.laser_engine_widget import LaserEngineWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -224,6 +225,9 @@ class QtMultiPointController(MultiPointController, QObject):
     )  # region_paths, channels, num_z, fovs_per_region, height, width, region_labels
     ndviewer_notify_zarr_frame = Signal(int, int, int, str, int)  # t, fov_idx, z, channel, region_idx
     ndviewer_end_zarr_acquisition = Signal()
+    # Laser engine gate signals — emitted around per-timepoint blocking waits.
+    signal_laser_engine_waiting = Signal(list)  # list[str] of channel keys being waited on
+    signal_laser_engine_ready = Signal()
 
     def __init__(
         self,
@@ -255,6 +259,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
+                signal_laser_engine_waiting=self._signal_laser_engine_waiting_fn,
+                signal_laser_engine_ready=self._signal_laser_engine_ready_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -504,6 +510,12 @@ class QtMultiPointController(MultiPointController, QObject):
                 flat_fov = fov
             self.ndviewer_notify_zarr_frame.emit(time_point, flat_fov, z_index, channel_name, 0)
 
+    def _signal_laser_engine_waiting_fn(self, channel_keys: list):
+        self.signal_laser_engine_waiting.emit(channel_keys)
+
+    def _signal_laser_engine_ready_fn(self):
+        self.signal_laser_engine_ready.emit()
+
     # -------------------------------------------------------------------------
     # Helper methods for Zarr FOV path building
     # -------------------------------------------------------------------------
@@ -695,6 +707,7 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
+        self.laserEngineWidget: Optional[LaserEngineWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
@@ -942,6 +955,9 @@ class HighContentScreeningGui(QMainWindow):
             self.filterControllerWidget = widgets.FilterControllerWidget(
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
+
+        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+            self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
@@ -1298,6 +1314,8 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_LASER_AUTOFOCUS:
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
+        if self.laserEngineWidget:
+            self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
@@ -1431,6 +1449,7 @@ class HighContentScreeningGui(QMainWindow):
     def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
         self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
+        self.liveController.signal_warning.connect(self._on_live_controller_warning)
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
@@ -1476,6 +1495,10 @@ class HighContentScreeningGui(QMainWindow):
         # signals over here, where self.unifiedMosaicWidget is reachable.
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
         self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
+
+        # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
+        self.multipointController.signal_laser_engine_waiting.connect(self._show_laser_engine_dialog)
+        self.multipointController.signal_laser_engine_ready.connect(self._hide_laser_engine_dialog)
 
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
@@ -1840,6 +1863,84 @@ class HighContentScreeningGui(QMainWindow):
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
+
+    def _on_live_controller_warning(self, message: str) -> None:
+        """Non-modal warning from LiveController. 5s rate-limit; one popup max."""
+        self.log.warning(message)
+        now = time.monotonic()
+        last = getattr(self, "_last_live_warning_s", 0.0)
+        if now - last < 5.0:
+            return
+        self._last_live_warning_s = now
+        prior = getattr(self, "_live_warning_box", None)
+        if prior is not None:
+            try:
+                prior.close()
+            except RuntimeError:
+                pass  # C++ side already deleted via WA_DeleteOnClose
+        box = QMessageBox(self)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Laser engine")
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.destroyed.connect(lambda _=None: setattr(self, "_live_warning_box", None))
+        self._live_warning_box = box
+        box.show()
+
+    def _show_laser_engine_dialog(self, channel_keys: list) -> None:
+        """Show a non-cancelable modal progress dialog while the worker waits
+        for the laser engine to reach ACTIVE on the requested channel(s).
+
+        The standard Abort button still works — `wait_until_ready` is wired to
+        `abort_requested_fn`, so the worker breaks out of the gate normally.
+        """
+        from qtpy.QtWidgets import QProgressDialog
+        from qtpy.QtCore import Qt
+
+        msg = (
+            f"Waiting for laser engine to be ready: {', '.join(channel_keys)}…\n"
+            "(acquisition will resume automatically)"
+        )
+        # Non-modal: the main window's Abort button must remain reachable while the
+        # dialog is up. We just float it as a regular always-on-top window.
+        self._laser_engine_dialog = QProgressDialog(msg, "", 0, 0, self)
+        self._laser_engine_dialog.setWindowTitle("Laser engine warming up")
+        self._laser_engine_dialog.setCancelButton(None)
+        self._laser_engine_dialog.setWindowModality(Qt.NonModal)
+        self._laser_engine_dialog.setWindowFlags(self._laser_engine_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        # Capture the engine reference at show-time so later addon swaps can't
+        # leak this status_updated connection.
+        engine = self.microscope.addons.squid_laser_engine
+        self._laser_engine_dialog_engine = engine
+        if engine is not None:
+            engine.status_updated.connect(self._update_laser_engine_dialog_label)
+        self._laser_engine_dialog.show()
+
+    def _update_laser_engine_dialog_label(self, status) -> None:
+        dlg = getattr(self, "_laser_engine_dialog", None)
+        if dlg is None or not dlg.isVisible():
+            return
+        lines = []
+        for key, info in status.channels.items():
+            lines.append(f"  {key}: {info.display_state.name}")
+        dlg.setLabelText("Waiting for laser engine to be ready…\n" + "\n".join(lines))
+
+    def _hide_laser_engine_dialog(self) -> None:
+        dlg = getattr(self, "_laser_engine_dialog", None)
+        if dlg is None:
+            return
+        engine = getattr(self, "_laser_engine_dialog_engine", None)
+        if engine is not None:
+            try:
+                engine.status_updated.disconnect(self._update_laser_engine_dialog_label)
+            except TypeError:
+                # PyQt raises TypeError when the slot wasn't connected. RuntimeError
+                # would indicate the C++ object was destroyed — let that surface.
+                pass
+        dlg.close()
+        self._laser_engine_dialog = None
+        self._laser_engine_dialog_engine = None
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
@@ -2718,6 +2819,16 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 if for_restart:
                     self.log.exception(f"Error closing filter wheel during {context}")
+                else:
+                    raise
+
+        # Close Squid laser engine
+        if self.microscope.addons.squid_laser_engine is not None:
+            try:
+                self.microscope.addons.squid_laser_engine.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing squid laser engine during {context}")
                 else:
                     raise
 

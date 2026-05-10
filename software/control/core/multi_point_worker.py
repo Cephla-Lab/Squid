@@ -442,11 +442,22 @@ class MultiPointWorker:
                 except Exception as e:
                     self._log.warning(f"Failed to send Slack acquisition start notification: {e}")
 
+            # Cache laser-engine refs for the gate (None when flag is off).
+            self._laser_engine = getattr(self.microscope.addons, "squid_laser_engine", None)
+            self._laser_channels_needed = self._compute_laser_channels_needed()
+
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
                 if self.abort_requested_fn():
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
+
+                # Gate on laser engine readiness for the channels this acquisition will fire.
+                # Re-checked every timepoint so dt-induced sleep gaps are handled.
+                if self._laser_engine is not None and self._laser_channels_needed:
+                    self._wait_for_laser_engine()
+                    if self.abort_requested_fn():
+                        break
 
                 if self.fluidics and self.use_fluidics:
                     self.fluidics.update_port(self.time_point)  # use the port in PORT_LIST
@@ -526,6 +537,52 @@ class MultiPointWorker:
                     self._log.warning(f"Failed to send Slack acquisition finished notification: {e}")
 
             self.callbacks.signal_acquisition_finished()
+
+    def _compute_laser_channels_needed(self) -> List[str]:
+        if self._laser_engine is None:
+            return []
+        ill_config = self.microscope.config_repo.get_illumination_config()
+        if ill_config is None:
+            return []
+        wavelengths = []
+        for cfg in self.selected_configurations:
+            try:
+                w = cfg.get_illumination_wavelength(ill_config)
+            except Exception:
+                w = None
+            if w is not None:
+                wavelengths.append(w)
+        return self._laser_engine.channel_keys_for_wavelengths(wavelengths)
+
+    def _wait_for_laser_engine(self) -> None:
+        """Block until needed channels are ACTIVE. Raises on timeout / disconnect / ERROR.
+
+        Returns silently when abort_requested_fn fires — caller handles abort.
+        """
+        status = self._laser_engine.get_latest_status()
+        if status is not None and status.is_ready_for(self._laser_channels_needed):
+            return
+        self.callbacks.signal_laser_engine_waiting(list(self._laser_channels_needed))
+        try:
+            ok = self._laser_engine.wait_until_ready(
+                self._laser_channels_needed,
+                timeout_s=self._laser_engine.READY_TIMEOUT_S,
+                cancel_fn=self.abort_requested_fn,
+            )
+        finally:
+            self.callbacks.signal_laser_engine_ready()
+        if not ok:
+            if self.abort_requested_fn():
+                return
+            channels = ", ".join(self._laser_channels_needed)
+            if self._laser_engine.is_connection_lost():
+                raise RuntimeError(
+                    f"Laser engine connection lost while waiting on channel(s) {channels}; aborting acquisition"
+                )
+            raise RuntimeError(
+                f"Laser engine did not reach ready state within timeout "
+                f"while waiting on channel(s) {channels}; aborting acquisition"
+            )
 
     def _wait_for_outstanding_callback_images(self):
         # If there are outstanding frames, wait for them to come in.

@@ -137,3 +137,7 @@ class MultiPointControllerFunctions:
     # Zarr frame written callback - called when subprocess completes writing a frame
     # Args: (fov, time_point, z_index, channel_name, region_idx)
     signal_zarr_frame_written: Callable[[int, int, int, str, int], None] = lambda *a, **kw: None
+    # Laser engine readiness gate — fired by MultiPointWorker around per-timepoint blocking waits.
+    # The waiting callback receives the list of channel keys it's waiting on (e.g. ["470", "55x"]).
+    signal_laser_engine_waiting: Callable[[List[str]], None] = lambda *a, **kw: None
+    signal_laser_engine_ready: Callable[[], None] = lambda *a, **kw: None
