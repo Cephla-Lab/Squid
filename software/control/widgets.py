@@ -3231,23 +3231,25 @@ class SpinningDiskConfocalWidget(QWidget):
         hw_settings = getattr(configuration, "confocal_hardware_settings", None)
         self.block_iris_control_signals(True)
         try:
-            for has_iris, iris_val, slider, spinbox in (
+            for has_iris, iris_val, default, slider, spinbox in (
                 (
                     self.xlight.has_illumination_iris_diaphragm,
                     getattr(hw_settings, "illumination_iris", None) if hw_settings else None,
+                    XLIGHT_ILLUMINATION_IRIS_DEFAULT,
                     self.slider_illumination_iris,
                     self.spinbox_illumination_iris,
                 ),
                 (
                     self.xlight.has_emission_iris_diaphragm,
                     getattr(hw_settings, "emission_iris", None) if hw_settings else None,
+                    XLIGHT_EMISSION_IRIS_DEFAULT,
                     self.slider_emission_iris,
                     self.spinbox_emission_iris,
                 ),
             ):
                 if not has_iris:
                     continue
-                value = int(iris_val) if iris_val is not None else slider.minimum()
+                value = int(iris_val) if iris_val is not None else int(default)
                 self._set_iris_ui(slider, spinbox, value)
         finally:
             self.block_iris_control_signals(False)
