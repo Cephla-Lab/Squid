@@ -70,10 +70,15 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # The protocol_axis_to_internal() function in firmware handles this conversion.
     _MOTOR_SLOT_TO_AXIS = {3: AXIS.W, 4: AXIS.W2}
 
-    # If the motor moved less than half the requested microsteps we treat it
-    # as "didn't actually move" and trigger a re-home. Catches silent firmware
-    # failures, missed steps, and direction inversions.
-    _W_POS_TOLERANCE_FRAC = 0.5
+    # Maximum allowed mismatch (in microsteps) between commanded and observed
+    # W delta after a move completes. The firmware only clears
+    # `mcu_cmd_execution_in_progress` when its internal step counter equals
+    # the commanded target (operations.cpp:515), so on stepper-only setups
+    # (HAS_ENCODER_W=False) the observed delta should be exact. The small
+    # ±10 ustep budget exists only to absorb encoder/PID settling noise on
+    # setups that enable closed-loop W. Anything larger means the move was
+    # dropped or partial. 10 microsteps ≈ 0.6% of one slot (1600 usteps).
+    _W_POS_TOLERANCE_USTEPS = 10
 
     # Errors raised by `_move_and_verify` that the re-home + retry path can recover from.
     _RECOVERABLE_MOVE_ERRORS = (TimeoutError, CommandAborted)
@@ -124,12 +129,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def _verify_w_move(self, wheel_id: int, w_pos_before: int, expected_usteps_delta: int) -> None:
         """Compare actual broadcast W position against the commanded delta.
 
-        Raises TimeoutError on mismatch so callers fall into the existing
-        re-home + retry path.
+        Allows ±_W_POS_TOLERANCE_USTEPS of jitter; anything larger means the
+        move was dropped or partial. Raises TimeoutError on mismatch so
+        callers fall into the re-home + retry path.
         """
         actual_delta = self.microcontroller.w_pos - w_pos_before
-        max_error = max(abs(int(expected_usteps_delta * self._W_POS_TOLERANCE_FRAC)), 1)
-        if abs(actual_delta - expected_usteps_delta) > max_error:
+        if abs(actual_delta - expected_usteps_delta) > self._W_POS_TOLERANCE_USTEPS:
             _log.warning(
                 f"Filter wheel {wheel_id} W position mismatch after move "
                 f"(expected delta {expected_usteps_delta} usteps, observed {actual_delta}); "
@@ -157,21 +162,24 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._positions[wheel_id] = target_pos
 
     def _move_to_position(self, wheel_id: int, target_pos: int):
-        """Move wheel to target position with automatic re-home on failure.
+        """Move wheel to target position with progressive recovery on failure.
 
-        On a move failure (timeout, firmware-reported execution error, or
-        broadcast W position not matching the commanded delta), this method:
-        1. Logs a warning
-        2. Re-homes the wheel to re-synchronize position tracking
-        3. Retries the movement to the target position
-        4. Re-raises if the retry also fails
+        Recovery ladder:
+        1. Try the move; verify the broadcast W position changed correctly.
+        2. On failure, retry the same move in software. The most common
+           failure mode (firmware ack glitch like the 5.9 ms incident) leaves
+           the motor unmoved, so the wheel is still at the previously tracked
+           position and a plain resend usually succeeds.
+        3. If software retry also fails, fall back to re-homing the wheel
+           and trying once more.
+        4. If even that fails, re-raise.
 
         Args:
             wheel_id: The ID of the wheel to move.
             target_pos: The target position index.
 
         Raises:
-            TimeoutError or CommandAborted: If both attempts fail.
+            TimeoutError or CommandAborted: If all attempts fail.
         """
         config = self._configs[wheel_id]
         current_pos = self._positions[wheel_id]
@@ -184,19 +192,27 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         try:
             self._move_and_verify(wheel_id, delta, target_pos)
+            return
         except self._RECOVERABLE_MOVE_ERRORS as e:
-            _log.warning(f"Filter wheel {wheel_id} movement failed ({e}). Re-homing to re-sync position tracking...")
-            self._home_wheel(wheel_id)
+            _log.warning(f"Filter wheel {wheel_id} movement failed ({e}); retrying without re-home...")
 
-            # Retry the movement (position is now at min_index after homing)
-            current_pos = self._positions[wheel_id]
-            delta = (target_pos - current_pos) * step_size
-            try:
-                self._move_and_verify(wheel_id, delta, target_pos)
-                _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
-            except self._RECOVERABLE_MOVE_ERRORS:
-                _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
-                raise
+        try:
+            self._move_and_verify(wheel_id, delta, target_pos)
+            _log.info(f"Filter wheel {wheel_id} software retry succeeded, now at position {target_pos}")
+            return
+        except self._RECOVERABLE_MOVE_ERRORS as e:
+            _log.warning(f"Filter wheel {wheel_id} software retry failed ({e}); re-homing to re-sync...")
+
+        self._home_wheel(wheel_id)
+        # Position is now at min_index after homing; recompute delta.
+        current_pos = self._positions[wheel_id]
+        delta = (target_pos - current_pos) * step_size
+        try:
+            self._move_and_verify(wheel_id, delta, target_pos)
+            _log.info(f"Filter wheel {wheel_id} recovery via re-home succeeded, now at position {target_pos}")
+        except self._RECOVERABLE_MOVE_ERRORS:
+            _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
+            raise
 
     def _home_wheel(self, wheel_id: int):
         """Home a specific wheel.

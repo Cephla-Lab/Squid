@@ -1482,10 +1482,22 @@ class Microcontroller:
 
             self._warn_if_reads_stale()
 
-    def abort_current_command(self, reason):
+    def abort_current_command(self, reason, recoverable: bool = False):
+        """Mark the current MCU command as aborted.
+
+        Args:
+            reason: Human-readable reason; surfaced in the CommandAborted exception.
+            recoverable: If True, log at WARNING level (caller will retry or
+                handle the failure). If False (default), log at ERROR — the
+                abort wasn't expected and operator attention is warranted.
+        """
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
+        msg = f"[MCU] Command {self._cmd_id} ({cmd_name}) aborted: {reason}"
+        if recoverable:
+            self.log.warning(msg)
+        else:
+            self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
         self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
         self.mcu_cmd_execution_in_progress = False
 
