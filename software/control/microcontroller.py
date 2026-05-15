@@ -1617,6 +1617,12 @@ class Microcontroller:
                     msg[14:18], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
 
+                # W position broadcast added in firmware v1.2; older firmware
+                # leaves bytes 19-20 as zero. Callers gate on
+                # supports_w_pos_broadcast() before trusting w_pos.
+                if self.firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST:
+                    self.w_pos = self._payload_to_int(msg[RESPONSE_BYTE_W_POS_HI : RESPONSE_BYTE_W_POS_LO + 1], 2)
+
                 self.button_and_switch_state = msg[18]
                 # joystick button
                 tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
@@ -1674,6 +1680,15 @@ class Microcontroller:
             True if firmware version >= 1.0, False otherwise.
         """
         return self.firmware_version >= (1, 0)
+
+    def supports_w_pos_broadcast(self) -> bool:
+        """Check if firmware broadcasts the W axis position in status packets.
+
+        Added in firmware v1.2 (bytes 19-20). Callers should use this to gate
+        any verification that compares ``self.w_pos`` against an expected
+        value; older firmware leaves those bytes zero.
+        """
+        return self.firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state

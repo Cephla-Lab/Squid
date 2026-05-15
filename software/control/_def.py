@@ -361,6 +361,14 @@ def port_index_to_source_code(port_index: int) -> int:
 # Response byte positions for MCU protocol (24-byte response)
 RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Nibble-encoded: high=major, low=minor
 
+# Bytes 19-20: W axis current microstep position (signed int16, big-endian).
+# Populated by firmware >= v1.2; zero on older firmware. Used by the filter
+# wheel controller to verify that a MOVE_W command actually moved the motor.
+RESPONSE_BYTE_W_POS_HI = 19
+RESPONSE_BYTE_W_POS_LO = 20
+# Firmware version at which W position broadcast became available.
+MIN_FW_VERSION_W_POS_BROADCAST = (1, 2)
+
 # Serial watchdog (illumination auto-shutoff safety)
 # Must match firmware constants in constants.h
 DEFAULT_WATCHDOG_TIMEOUT_MS = 5000  # 5 seconds (matches firmware)

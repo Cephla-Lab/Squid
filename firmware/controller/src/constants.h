@@ -9,8 +9,10 @@
 // Version is sent in response byte 22 as nibble-encoded: high nibble = major, low nibble = minor
 // Version 1.0 = first version with multi-port illumination support
 // Version 1.1 = serial watchdog for illumination auto-shutoff
+// Version 1.2 = move callbacks report CMD_EXECUTION_ERROR on tmc4361A_moveTo
+//               failure; W axis microstep position broadcast in bytes 19-20
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 1
+#define FIRMWARE_VERSION_MINOR 2
 
 #include "def/def_v1.h"
 

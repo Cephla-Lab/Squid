@@ -90,6 +90,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
             self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
 
+    @staticmethod
+    def _delta_to_usteps(delta: float) -> int:
+        """Microsteps the firmware will be commanded to step for `delta` mm."""
+        return int(STAGE_MOVEMENT_SIGN_W * delta / (SCREW_PITCH_W_MM / (MICROSTEPPING_DEFAULT_W * FULLSTEPS_PER_REV_W)))
+
     def _move_wheel(self, wheel_id: int, delta: float):
         """Move a specific wheel by delta distance.
 
@@ -99,9 +104,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         """
         config = self._configs[wheel_id]
         motor_slot = config.motor_slot_index
-        usteps = int(
-            STAGE_MOVEMENT_SIGN_W * delta / (SCREW_PITCH_W_MM / (MICROSTEPPING_DEFAULT_W * FULLSTEPS_PER_REV_W))
-        )
+        usteps = self._delta_to_usteps(delta)
 
         if motor_slot == 3:
             self.microcontroller.move_w_usteps(usteps)
@@ -110,10 +113,47 @@ class SquidFilterWheel(AbstractFilterWheelController):
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
+    # If the motor moved less than half the requested microsteps we treat it
+    # as "didn't actually move" and trigger a re-home. Catches silent firmware
+    # failures, missed steps, and direction inversions.
+    _W_POS_TOLERANCE_FRAC = 0.5
+
+    def _verify_w_move(self, wheel_id: int, w_pos_before: int, expected_usteps_delta: int) -> None:
+        """Compare actual broadcast W position against the commanded delta.
+
+        Raises TimeoutError on mismatch so callers fall into the existing
+        re-home + retry path.
+        """
+        actual_delta = self.microcontroller.w_pos - w_pos_before
+        max_error = max(abs(int(expected_usteps_delta * self._W_POS_TOLERANCE_FRAC)), 1)
+        if abs(actual_delta - expected_usteps_delta) > max_error:
+            _log.warning(
+                f"Filter wheel {wheel_id} W position mismatch after move "
+                f"(expected delta {expected_usteps_delta} usteps, observed {actual_delta}); "
+                "treating as silent failure."
+            )
+            raise TimeoutError(f"Filter wheel {wheel_id} did not move as commanded")
+
+    def _move_and_verify(self, wheel_id: int, delta: float, target_pos: int, can_verify_w_pos: bool) -> None:
+        """Single move attempt: optionally snapshot W position, command the
+        move, wait for completion, verify the motor actually moved, update
+        the tracked position. Raises TimeoutError if either the wait or the
+        post-move verification fails.
+        """
+        if can_verify_w_pos:
+            w_pos_before = self.microcontroller.w_pos
+            expected_usteps_delta = self._delta_to_usteps(delta)
+        self._move_wheel(wheel_id, delta)
+        self.microcontroller.wait_till_operation_is_completed()
+        if can_verify_w_pos:
+            self._verify_w_move(wheel_id, w_pos_before, expected_usteps_delta)
+        self._positions[wheel_id] = target_pos
+
     def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with automatic re-home on failure.
 
-        If the movement times out (e.g., motor stall), this method will:
+        If the movement times out (e.g., motor stall) or the broadcast W
+        position doesn't match the commanded delta, this method will:
         1. Log a warning
         2. Re-home the wheel to re-synchronize position tracking
         3. Retry the movement to the target position
@@ -135,27 +175,24 @@ class SquidFilterWheel(AbstractFilterWheelController):
         step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
         delta = (target_pos - current_pos) * step_size
 
+        # Only the W axis (motor_slot 3) is broadcast by the firmware today;
+        # W2 has to fall back to trusting the ack.
+        can_verify_w_pos = config.motor_slot_index == 3 and self.microcontroller.supports_w_pos_broadcast()
+
         try:
-            self._move_wheel(wheel_id, delta)
-            self.microcontroller.wait_till_operation_is_completed()
-            self._positions[wheel_id] = target_pos
+            self._move_and_verify(wheel_id, delta, target_pos, can_verify_w_pos)
         except TimeoutError:
-            _log.warning(f"Filter wheel {wheel_id} movement timed out. " f"Re-homing to re-sync position tracking...")
-            # Re-home to re-synchronize position tracking
+            _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
             self._home_wheel(wheel_id)
 
             # Retry the movement (position is now at min_index after homing)
             current_pos = self._positions[wheel_id]
             delta = (target_pos - current_pos) * step_size
             try:
-                self._move_wheel(wheel_id, delta)
-                self.microcontroller.wait_till_operation_is_completed()
-                self._positions[wheel_id] = target_pos
+                self._move_and_verify(wheel_id, delta, target_pos, can_verify_w_pos)
                 _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
             except TimeoutError:
-                _log.error(
-                    f"Filter wheel {wheel_id} movement failed even after re-home. " f"Hardware may need attention."
-                )
+                _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
                 raise
 
     def _home_wheel(self, wheel_id: int):
