@@ -118,3 +118,87 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
         mock_microcontroller.turn_on_stage_pid.assert_called_once()
+
+
+class TestSquidFilterWheelWPosVerification:
+    """Tests for the post-move W position verification path (firmware >= v1.2)."""
+
+    @pytest.fixture
+    def squid_config(self):
+        return SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.008,
+            motor_slot_index=3,
+            transitions_per_revolution=4000,
+        )
+
+    def _build_wheel(self, supports_broadcast: bool, w_pos_after_move: int):
+        """Construct a SquidFilterWheel whose mocked microcontroller advances
+        `w_pos` to `w_pos_after_move` whenever `move_w_usteps` is called.
+        """
+        mc = MagicMock()
+        mc.supports_w_pos_broadcast.return_value = supports_broadcast
+        mc.w_pos = 0
+
+        def fake_move_w_usteps(_usteps):
+            mc.w_pos = w_pos_after_move
+
+        mc.move_w_usteps.side_effect = fake_move_w_usteps
+        return mc
+
+    def test_verify_passes_when_motor_moves_as_commanded(self, squid_config):
+        """Move 1 -> 2 (delta = +1600 usteps) and have the broadcast match."""
+        mc = self._build_wheel(supports_broadcast=True, w_pos_after_move=1600)
+        wheel = SquidFilterWheel(mc, squid_config, skip_init=True)
+        wheel.initialize([1])
+
+        wheel.set_filter_wheel_position({1: 2})
+
+        assert wheel.get_filter_wheel_position()[1] == 2
+        mc.home_w.assert_not_called()
+
+    def test_verify_triggers_rehome_when_motor_did_not_move(self, squid_config):
+        """If broadcast W position doesn't change, we should re-home + retry."""
+        mc = self._build_wheel(supports_broadcast=True, w_pos_after_move=0)
+        wheel = SquidFilterWheel(mc, squid_config, skip_init=True)
+        wheel.initialize([1])
+
+        with pytest.raises(TimeoutError):
+            wheel.set_filter_wheel_position({1: 2})
+
+        # First attempt fails verification -> re-home -> retry still fails.
+        assert mc.home_w.call_count == 1
+        assert mc.move_w_usteps.call_count >= 2
+
+    def test_verification_skipped_when_firmware_does_not_broadcast(self, squid_config):
+        """Old firmware: w_pos is unreliable, verification must be skipped
+        (otherwise the move would falsely look like a silent failure)."""
+        mc = self._build_wheel(supports_broadcast=False, w_pos_after_move=0)
+        wheel = SquidFilterWheel(mc, squid_config, skip_init=True)
+        wheel.initialize([1])
+
+        wheel.set_filter_wheel_position({1: 2})
+
+        assert wheel.get_filter_wheel_position()[1] == 2
+        mc.home_w.assert_not_called()
+
+    def test_verification_skipped_for_w2_axis(self):
+        """W2 (motor_slot 4) isn't broadcast yet; verification must be skipped."""
+        w2_config = SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.008,
+            motor_slot_index=4,
+            transitions_per_revolution=4000,
+        )
+        mc = MagicMock()
+        mc.supports_w_pos_broadcast.return_value = True
+        mc.w_pos = 0  # Never advances; would trip verification if it ran.
+
+        wheel = SquidFilterWheel(mc, w2_config, skip_init=True)
+        wheel.initialize([1])
+        wheel.set_filter_wheel_position({1: 2})
+
+        assert wheel.get_filter_wheel_position()[1] == 2
+        mc.home_w2.assert_not_called()

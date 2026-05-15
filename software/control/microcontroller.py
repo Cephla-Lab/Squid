@@ -185,12 +185,22 @@ class SimSerial(AbstractCephlaMicroSerial):
     # Simulated firmware version
     # v1.0: multi-port illumination support
     # v1.1: serial watchdog for illumination auto-shutoff
+    # v1.2: CMD_EXECUTION_ERROR for failed moves + W position in bytes 19-20
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 1
+    FIRMWARE_VERSION_MINOR = 2
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
+        command_id,
+        execution_status,
+        x,
+        y,
+        z,
+        theta,
+        joystick_button,
+        switch,
+        firmware_version=(1, 2),
+        w=0,
     ) -> bytes:
         """
         - byte 0: command ID (1 byte)
@@ -200,19 +210,30 @@ class SimSerial(AbstractCephlaMicroSerial):
         - bytes 10-13: Z pos (4 bytes)
         - bytes 14-17: Theta (4 bytes)
         - byte 18: buttons and switches (1 byte)
-        - bytes 19-21: reserved (3 bytes)
+        - bytes 19-20: W pos as signed int16 big-endian (v1.2+; zero otherwise)
+        - byte 21: reserved
         - byte 22: firmware version, nibble-encoded (1 byte)
         - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
-        # High nibble = major version, low nibble = minor version
         version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
-        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
+        w_int16 = max(-0x8000, min(0x7FFF, int(w))) if firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST else 0
         response = bytearray(
-            struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
+            struct.pack(
+                ">BBiiiiBhBB",
+                command_id,
+                execution_status,
+                x,
+                y,
+                z,
+                theta,
+                button_state,
+                w_int16,
+                0,  # byte 21 reserved
+                version_byte,
+            )
         )
         response.append(crc_calculator.calculate_checksum(response))
         return bytes(response)
@@ -370,6 +391,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.joystick_button,
                 self.switch,
                 firmware_version=(SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR),
+                w=self.w,
             )
         )
 
@@ -1594,6 +1616,21 @@ class Microcontroller:
                     else:
                         self.log.error("[MCU] !!! checksum error, resending command")
                         self.resend_last_command()
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu == self._cmd_id
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+                ):
+                    # Firmware reported it couldn't execute this command (e.g.
+                    # tmc4361A_moveTo returned non-zero, or a filter-wheel move
+                    # arrived before INITFILTERWHEEL). Fail fast so callers
+                    # don't pay the full 5 s `wait_till_operation_is_completed`
+                    # timeout waiting for a completion that will never arrive.
+                    cmd_type = self.last_command[1] if self.last_command is not None else -1
+                    cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+                    self.abort_current_command(
+                        reason=f"Command {self._cmd_id} ({cmd_name}) failed: firmware reported CMD_EXECUTION_ERROR"
+                    )
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id

@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Union
 
 import squid.logging
 from control._def import *
-from control.microcontroller import Microcontroller
+from control.microcontroller import CommandAborted, Microcontroller
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo
 from squid.config import SquidFilterWheelConfig
 
@@ -70,6 +70,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # The protocol_axis_to_internal() function in firmware handles this conversion.
     _MOTOR_SLOT_TO_AXIS = {3: AXIS.W, 4: AXIS.W2}
 
+    # If the motor moved less than half the requested microsteps we treat it
+    # as "didn't actually move" and trigger a re-home. Catches silent firmware
+    # failures, missed steps, and direction inversions.
+    _W_POS_TOLERANCE_FRAC = 0.5
+
+    # Errors raised by `_move_and_verify` that the re-home + retry path can recover from.
+    _RECOVERABLE_MOVE_ERRORS = (TimeoutError, CommandAborted)
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index
@@ -113,11 +121,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
         else:
             raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
 
-    # If the motor moved less than half the requested microsteps we treat it
-    # as "didn't actually move" and trigger a re-home. Catches silent firmware
-    # failures, missed steps, and direction inversions.
-    _W_POS_TOLERANCE_FRAC = 0.5
-
     def _verify_w_move(self, wheel_id: int, w_pos_before: int, expected_usteps_delta: int) -> None:
         """Compare actual broadcast W position against the commanded delta.
 
@@ -134,37 +137,41 @@ class SquidFilterWheel(AbstractFilterWheelController):
             )
             raise TimeoutError(f"Filter wheel {wheel_id} did not move as commanded")
 
-    def _move_and_verify(self, wheel_id: int, delta: float, target_pos: int, can_verify_w_pos: bool) -> None:
-        """Single move attempt: optionally snapshot W position, command the
-        move, wait for completion, verify the motor actually moved, update
-        the tracked position. Raises TimeoutError if either the wait or the
-        post-move verification fails.
+    def _move_and_verify(self, wheel_id: int, delta: float, target_pos: int) -> None:
+        """Single move attempt: command the move, wait for completion, verify
+        the motor actually moved (when firmware supports W broadcast for the
+        wheel's axis), update tracked position. Raises TimeoutError /
+        CommandAborted on failure so callers can re-home and retry.
         """
-        if can_verify_w_pos:
+        config = self._configs[wheel_id]
+        can_verify = config.motor_slot_index == 3 and self.microcontroller.supports_w_pos_broadcast()
+        if can_verify:
             w_pos_before = self.microcontroller.w_pos
             expected_usteps_delta = self._delta_to_usteps(delta)
-        self._move_wheel(wheel_id, delta)
-        self.microcontroller.wait_till_operation_is_completed()
-        if can_verify_w_pos:
+            self._move_wheel(wheel_id, delta)
+            self.microcontroller.wait_till_operation_is_completed()
             self._verify_w_move(wheel_id, w_pos_before, expected_usteps_delta)
+        else:
+            self._move_wheel(wheel_id, delta)
+            self.microcontroller.wait_till_operation_is_completed()
         self._positions[wheel_id] = target_pos
 
     def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with automatic re-home on failure.
 
-        If the movement times out (e.g., motor stall) or the broadcast W
-        position doesn't match the commanded delta, this method will:
-        1. Log a warning
-        2. Re-home the wheel to re-synchronize position tracking
-        3. Retry the movement to the target position
-        4. Raise an exception if retry also fails
+        On a move failure (timeout, firmware-reported execution error, or
+        broadcast W position not matching the commanded delta), this method:
+        1. Logs a warning
+        2. Re-homes the wheel to re-synchronize position tracking
+        3. Retries the movement to the target position
+        4. Re-raises if the retry also fails
 
         Args:
             wheel_id: The ID of the wheel to move.
             target_pos: The target position index.
 
         Raises:
-            TimeoutError: If both the initial move and retry after re-home fail.
+            TimeoutError or CommandAborted: If both attempts fail.
         """
         config = self._configs[wheel_id]
         current_pos = self._positions[wheel_id]
@@ -175,23 +182,19 @@ class SquidFilterWheel(AbstractFilterWheelController):
         step_size = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
         delta = (target_pos - current_pos) * step_size
 
-        # Only the W axis (motor_slot 3) is broadcast by the firmware today;
-        # W2 has to fall back to trusting the ack.
-        can_verify_w_pos = config.motor_slot_index == 3 and self.microcontroller.supports_w_pos_broadcast()
-
         try:
-            self._move_and_verify(wheel_id, delta, target_pos, can_verify_w_pos)
-        except TimeoutError:
-            _log.warning(f"Filter wheel {wheel_id} movement timed out. Re-homing to re-sync position tracking...")
+            self._move_and_verify(wheel_id, delta, target_pos)
+        except self._RECOVERABLE_MOVE_ERRORS as e:
+            _log.warning(f"Filter wheel {wheel_id} movement failed ({e}). Re-homing to re-sync position tracking...")
             self._home_wheel(wheel_id)
 
             # Retry the movement (position is now at min_index after homing)
             current_pos = self._positions[wheel_id]
             delta = (target_pos - current_pos) * step_size
             try:
-                self._move_and_verify(wheel_id, delta, target_pos, can_verify_w_pos)
+                self._move_and_verify(wheel_id, delta, target_pos)
                 _log.info(f"Filter wheel {wheel_id} recovery successful, now at position {target_pos}")
-            except TimeoutError:
+            except self._RECOVERABLE_MOVE_ERRORS:
                 _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
                 raise
 
