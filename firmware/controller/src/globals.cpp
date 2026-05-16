@@ -33,6 +33,11 @@ uint16_t home_safety_margin[TOTAL_AXES] = {4, 4, 4, 4, 4};
 volatile int buffer_rx_ptr = 0;
 byte cmd_id = 0;
 bool mcu_cmd_execution_in_progress = false;
+// Status reported in the next position-update packet whenever
+// mcu_cmd_execution_in_progress is false. Reset to COMPLETED_WITHOUT_ERRORS
+// at the start of every received command and overwritten with
+// CMD_EXECUTION_ERROR by a callback that detects a failure.
+byte mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
 bool checksum_error = false;
 
 // limit switch

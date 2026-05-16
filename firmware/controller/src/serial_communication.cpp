@@ -26,6 +26,12 @@ void process_serial_message()
       // Reset watchdog timer on every valid serial message
       last_serial_message_time = millis();
 
+      // Reset execution status for this new command; callbacks set it to
+      // CMD_EXECUTION_ERROR if they detect a failure (e.g. tmc4361A_moveTo
+      // returning non-zero) so the host can distinguish a real success
+      // from a silently dropped move.
+      mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
         callback_default();
@@ -46,8 +52,10 @@ void send_position_update()
     buffer_tx[0] = cmd_id;
     if (checksum_error)
       buffer_tx[1] = CMD_CHECKSUM_ERROR; // cmd_execution_status
+    else if (mcu_cmd_execution_in_progress)
+      buffer_tx[1] = IN_PROGRESS;
     else
-      buffer_tx[1] = mcu_cmd_execution_in_progress ? IN_PROGRESS : COMPLETED_WITHOUT_ERRORS; // cmd_execution_status
+      buffer_tx[1] = mcu_cmd_execution_status; // COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
 
     uint32_t X_pos_int32t = uint32_t( X_use_encoder ? X_pos : int32_t(tmc4361A_currentPosition(&tmc4361[x])) );
     buffer_tx[2] = byte(X_pos_int32t >> 24);
@@ -74,9 +82,24 @@ void send_position_update()
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
-    // Clear reserved bytes to avoid stale data affecting the checksum
-    buffer_tx[19] = 0;
-    buffer_tx[20] = 0;
+    // Bytes 19-20: W axis current microstep position as signed int16,
+    // big-endian. Used by the host to detect silent filter-wheel move
+    // failures (W has no encoder feedback). Gated on `enable_filterwheel`
+    // because tmc4361[w] is uninitialized until INITFILTERWHEEL arrives
+    // (init.cpp:123 only inits indices 0..STAGE_AXES-1); reading from an
+    // uninitialized struct would dereference a NULL config pointer.
+    // Byte 21 stays reserved (future use for W2 position).
+    if (enable_filterwheel)
+    {
+        int16_t W_pos_int16 = (int16_t) tmc4361A_currentPosition(&tmc4361[w]);
+        buffer_tx[19] = byte((W_pos_int16 >> 8) & 0xFF);
+        buffer_tx[20] = byte(W_pos_int16 & 0xFF);
+    }
+    else
+    {
+        buffer_tx[19] = 0;
+        buffer_tx[20] = 0;
+    }
     buffer_tx[21] = 0;
 
     // Firmware version in byte 22: high nibble = major, low nibble = minor

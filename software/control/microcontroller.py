@@ -185,12 +185,22 @@ class SimSerial(AbstractCephlaMicroSerial):
     # Simulated firmware version
     # v1.0: multi-port illumination support
     # v1.1: serial watchdog for illumination auto-shutoff
+    # v1.2: CMD_EXECUTION_ERROR for failed moves + W position in bytes 19-20
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 1
+    FIRMWARE_VERSION_MINOR = 2
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
+        command_id,
+        execution_status,
+        x,
+        y,
+        z,
+        theta,
+        joystick_button,
+        switch,
+        firmware_version=(1, 2),
+        w=0,
     ) -> bytes:
         """
         - byte 0: command ID (1 byte)
@@ -200,19 +210,30 @@ class SimSerial(AbstractCephlaMicroSerial):
         - bytes 10-13: Z pos (4 bytes)
         - bytes 14-17: Theta (4 bytes)
         - byte 18: buttons and switches (1 byte)
-        - bytes 19-21: reserved (3 bytes)
+        - bytes 19-20: W pos as signed int16 big-endian (v1.2+; zero otherwise)
+        - byte 21: reserved
         - byte 22: firmware version, nibble-encoded (1 byte)
         - byte 23: CRC (1 byte)
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
         button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
-        # Firmware version is nibble-encoded in byte 22 (last byte of reserved section)
-        # High nibble = major version, low nibble = minor version
         version_byte = (firmware_version[0] << 4) | (firmware_version[1] & 0x0F)
-        reserved_state = version_byte  # Byte 22 = version_byte when packed as big-endian int
+        w_int16 = max(-0x8000, min(0x7FFF, int(w))) if firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST else 0
         response = bytearray(
-            struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
+            struct.pack(
+                ">BBiiiiBhBB",
+                command_id,
+                execution_status,
+                x,
+                y,
+                z,
+                theta,
+                button_state,
+                w_int16,
+                0,  # byte 21 reserved
+                version_byte,
+            )
         )
         response.append(crc_calculator.calculate_checksum(response))
         return bytes(response)
@@ -370,6 +391,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.joystick_button,
                 self.switch,
                 firmware_version=(SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR),
+                w=self.w,
             )
         )
 
@@ -1460,10 +1482,22 @@ class Microcontroller:
 
             self._warn_if_reads_stale()
 
-    def abort_current_command(self, reason):
+    def abort_current_command(self, reason, recoverable: bool = False):
+        """Mark the current MCU command as aborted.
+
+        Args:
+            reason: Human-readable reason; surfaced in the CommandAborted exception.
+            recoverable: If True, log at WARNING — caller will retry or handle
+                the failure. If False (default), log at ERROR (operator attention
+                warranted).
+        """
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
+        msg = f"[MCU] Command {self._cmd_id} ({cmd_name}) aborted: {reason}"
+        if recoverable:
+            self.log.warning(msg)
+        else:
+            self.log.error(msg)
         self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
         self.mcu_cmd_execution_in_progress = False
 
@@ -1596,6 +1630,22 @@ class Microcontroller:
                         self.resend_last_command()
                 elif (
                     self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu == self._cmd_id
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+                ):
+                    # Firmware reported it couldn't execute this command (e.g.
+                    # tmc4361A_moveTo returned non-zero, or a filter-wheel move
+                    # arrived before INITFILTERWHEEL). Fail fast so callers
+                    # don't pay the full 5 s `wait_till_operation_is_completed`
+                    # timeout waiting for a completion that will never arrive.
+                    # Marked recoverable=True so the abort logs at WARNING:
+                    # callers like SquidFilterWheel handle this via re-home + retry.
+                    self.abort_current_command(
+                        reason="firmware reported CMD_EXECUTION_ERROR",
+                        recoverable=True,
+                    )
+                elif (
+                    self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id
                     and self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
@@ -1616,6 +1666,12 @@ class Microcontroller:
                 self.theta_pos = self._payload_to_int(
                     msg[14:18], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
+
+                # W position broadcast added in firmware v1.2; older firmware
+                # leaves bytes 19-20 as zero. Callers gate on
+                # supports_w_pos_broadcast() before trusting w_pos.
+                if self.firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST:
+                    self.w_pos = self._payload_to_int(msg[RESPONSE_BYTE_W_POS_HI : RESPONSE_BYTE_W_POS_LO + 1], 2)
 
                 self.button_and_switch_state = msg[18]
                 # joystick button
@@ -1674,6 +1730,15 @@ class Microcontroller:
             True if firmware version >= 1.0, False otherwise.
         """
         return self.firmware_version >= (1, 0)
+
+    def supports_w_pos_broadcast(self) -> bool:
+        """Check if firmware broadcasts the W axis position in status packets.
+
+        Added in firmware v1.2 (bytes 19-20). Callers should use this to gate
+        any verification that compares ``self.w_pos`` against an expected
+        value; older firmware leaves those bytes zero.
+        """
+        return self.firmware_version >= MIN_FW_VERSION_W_POS_BROADCAST
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state
