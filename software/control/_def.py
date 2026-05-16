@@ -673,6 +673,13 @@ HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
 HAS_ENCODER_W = False
 
+# Maximum mismatch (in microsteps) tolerated when verifying a filter-wheel
+# move against the broadcast W position. Firmware completion guarantees
+# exact match for stepper-only setups (operations.cpp:515); the small budget
+# only absorbs PID/encoder settling on closed-loop W setups. ±10 ≈ 0.6% of
+# one slot (1600 microsteps).
+W_POS_TOLERANCE_USTEPS = 10
+
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False

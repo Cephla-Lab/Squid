@@ -1487,9 +1487,9 @@ class Microcontroller:
 
         Args:
             reason: Human-readable reason; surfaced in the CommandAborted exception.
-            recoverable: If True, log at WARNING level (caller will retry or
-                handle the failure). If False (default), log at ERROR — the
-                abort wasn't expected and operator attention is warranted.
+            recoverable: If True, log at WARNING — caller will retry or handle
+                the failure. If False (default), log at ERROR (operator attention
+                warranted).
         """
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
@@ -1497,7 +1497,7 @@ class Microcontroller:
         if recoverable:
             self.log.warning(msg)
         else:
-            self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
+            self.log.error(msg)
         self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
         self.mcu_cmd_execution_in_progress = False
 
@@ -1638,10 +1638,11 @@ class Microcontroller:
                     # arrived before INITFILTERWHEEL). Fail fast so callers
                     # don't pay the full 5 s `wait_till_operation_is_completed`
                     # timeout waiting for a completion that will never arrive.
-                    cmd_type = self.last_command[1] if self.last_command is not None else -1
-                    cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+                    # Marked recoverable=True so the abort logs at WARNING:
+                    # callers like SquidFilterWheel handle this via re-home + retry.
                     self.abort_current_command(
-                        reason=f"Command {self._cmd_id} ({cmd_name}) failed: firmware reported CMD_EXECUTION_ERROR"
+                        reason="firmware reported CMD_EXECUTION_ERROR",
+                        recoverable=True,
                     )
                 elif (
                     self.mcu_cmd_execution_in_progress
