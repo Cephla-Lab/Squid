@@ -88,10 +88,20 @@ void send_position_update()
     // because tmc4361[w] is uninitialized until INITFILTERWHEEL arrives
     // (init.cpp:123 only inits indices 0..STAGE_AXES-1); reading from an
     // uninitialized struct would dereference a NULL config pointer.
+    //
+    // Saturates rather than wraps: with ~1600 usteps/slot, an 8-slot wheel
+    // stays well within ±32k between homes during normal use, but a long
+    // monotonic sequence (or a misconfigured larger wheel) could overflow.
+    // The host sees the saturated value and the verification will mismatch,
+    // triggering a re-home — safer than a silent wrap.
     // Byte 21 stays reserved (future use for W2 position).
     if (enable_filterwheel)
     {
-        int16_t W_pos_int16 = (int16_t) tmc4361A_currentPosition(&tmc4361[w]);
+        long w_pos = tmc4361A_currentPosition(&tmc4361[w]);
+        int16_t W_pos_int16;
+        if (w_pos > INT16_MAX) W_pos_int16 = INT16_MAX;
+        else if (w_pos < INT16_MIN) W_pos_int16 = INT16_MIN;
+        else W_pos_int16 = (int16_t) w_pos;
         buffer_tx[19] = byte((W_pos_int16 >> 8) & 0xFF);
         buffer_tx[20] = byte(W_pos_int16 & 0xFF);
     }

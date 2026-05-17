@@ -119,7 +119,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def _verify_w_move(self, wheel_id: int, w_pos_before: int, expected_usteps_delta: int) -> None:
         """Compare actual broadcast W position against the commanded delta.
 
-        Allows ±_W_POS_TOLERANCE_USTEPS of jitter; anything larger means the
+        Allows ±W_POS_TOLERANCE_USTEPS of jitter; anything larger means the
         move was dropped or partial. Raises TimeoutError on mismatch so
         callers fall into the re-home + retry path.
         """
@@ -154,11 +154,18 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position with progressive recovery on failure.
 
-        Recovery ladder: initial attempt → software resend → re-home + retry.
-        The software resend is tried before re-homing because the most common
-        failure (firmware ack glitch, like the 5.9 ms incident) leaves the
-        motor unmoved, so the wheel is still at the tracked position and a
-        plain resend usually succeeds without paying the ~4 s home cost.
+        Recovery is conditioned on failure type, not unconditional, because a
+        blind resend can compound partial-motor-stall errors into a silent
+        desync (motor moves 800/1600, resend moves another 1600, verification
+        sees delta=1600 ✓ but wheel is one slot past target).
+
+        - CommandAborted from CMD_EXECUTION_ERROR: firmware rejected the move
+          before the motor moved (tmc4361A_moveTo returned non-zero). The
+          wheel is still at the tracked position, so a plain resend is safe
+          and avoids the ~4 s re-home cost.
+        - TimeoutError (ack timeout, or verification mismatch): the motor
+          state is uncertain — it may have moved partially. Skip the resend
+          and re-home to re-sync ground truth.
 
         Raises:
             TimeoutError or CommandAborted: If all attempts fail.
@@ -175,15 +182,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
         try:
             self._move_and_verify(wheel_id, delta, target_pos)
             return
-        except self._RECOVERABLE_MOVE_ERRORS as e:
-            _log.warning(f"Filter wheel {wheel_id} movement failed ({e}); retrying without re-home...")
-
-        try:
-            self._move_and_verify(wheel_id, delta, target_pos)
-            _log.info(f"Filter wheel {wheel_id} software retry succeeded, now at position {target_pos}")
-            return
-        except self._RECOVERABLE_MOVE_ERRORS as e:
-            _log.warning(f"Filter wheel {wheel_id} software retry failed ({e}); re-homing to re-sync...")
+        except CommandAborted as e:
+            _log.warning(f"Filter wheel {wheel_id} command aborted ({e}); resending in software...")
+            try:
+                self._move_and_verify(wheel_id, delta, target_pos)
+                _log.info(f"Filter wheel {wheel_id} software resend succeeded, now at position {target_pos}")
+                return
+            except self._RECOVERABLE_MOVE_ERRORS as e2:
+                _log.warning(f"Filter wheel {wheel_id} resend also failed ({e2}); re-homing to re-sync...")
+        except TimeoutError as e:
+            _log.warning(f"Filter wheel {wheel_id} move uncertain ({e}); re-homing to re-sync...")
 
         self._home_wheel(wheel_id)
         # Position is now at min_index after homing; recompute delta.

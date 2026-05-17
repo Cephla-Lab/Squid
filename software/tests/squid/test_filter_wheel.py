@@ -202,3 +202,56 @@ class TestSquidFilterWheelWPosVerification:
 
         assert wheel.get_filter_wheel_position()[1] == 2
         mc.home_w2.assert_not_called()
+
+    def test_command_aborted_triggers_software_resend_not_rehome(self, squid_config):
+        """If the firmware raises CommandAborted (CMD_EXECUTION_ERROR) the motor
+        never moved, so we should resend in software instead of paying the
+        ~4 s re-home cost.
+        """
+        from control.microcontroller import CommandAborted
+
+        mc = MagicMock()
+        mc.supports_w_pos_broadcast.return_value = True
+        mc.w_pos = 0
+        attempts = {"count": 0}
+
+        def fake_move_w_usteps(usteps):
+            attempts["count"] += 1
+            # First attempt fails fast (firmware abort), second attempt succeeds.
+            if attempts["count"] == 1:
+                mc.wait_till_operation_is_completed.side_effect = CommandAborted(reason="test", command_id=1)
+            else:
+                mc.wait_till_operation_is_completed.side_effect = None
+                mc.w_pos = usteps
+
+        mc.move_w_usteps.side_effect = fake_move_w_usteps
+        wheel = SquidFilterWheel(mc, squid_config, skip_init=True)
+        wheel.initialize([1])
+
+        wheel.set_filter_wheel_position({1: 2})
+
+        assert wheel.get_filter_wheel_position()[1] == 2
+        mc.home_w.assert_not_called()  # Must NOT re-home; software resend is enough.
+        assert attempts["count"] == 2  # Initial + software resend.
+
+    def test_timeout_skips_resend_and_goes_straight_to_rehome(self, squid_config):
+        """Verification mismatch (TimeoutError) means motor state is uncertain
+        (e.g., partial stall) — must skip the bare resend to avoid compounding
+        the error into a silent desync. Re-home is the only safe recovery.
+        """
+        # w_pos_after_move=0 simulates a "motor didn't reach target" failure;
+        # verification raises TimeoutError, so we should re-home immediately,
+        # NOT attempt a bare resend that could push the wheel one slot past target.
+        mc = self._build_wheel(supports_broadcast=True, w_pos_after_move=0)
+        wheel = SquidFilterWheel(mc, squid_config, skip_init=True)
+        wheel.initialize([1])
+        initial_move_count = mc.move_w_usteps.call_count
+
+        with pytest.raises(TimeoutError):
+            wheel.set_filter_wheel_position({1: 2})
+
+        # Exactly one re-home — not the two attempts a blind-retry ladder would produce.
+        assert mc.home_w.call_count == 1
+        # Move count: 1 (initial attempt) + 1 (offset after home) + 1 (post-home attempt) = 3.
+        # If the buggy "blind resend" ladder had fired, we'd see >= 4 (initial + resend + offset + post-home).
+        assert mc.move_w_usteps.call_count - initial_move_count == 3
