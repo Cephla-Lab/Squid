@@ -233,6 +233,8 @@ class TestSquidFilterWheelAbsoluteMove:
 
         assert getattr(mc, move_to_attr).call_count == 2
         getattr(mc, home_attr).assert_not_called()
+        # Absolute-MOVETO path must not fall back to relative MOVE.
+        getattr(mc, move_rel_attr).assert_not_called()
         assert wheel_inst._positions[1] == 4
 
     @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
@@ -254,6 +256,8 @@ class TestSquidFilterWheelAbsoluteMove:
         # Three MOVETO calls: the failed initial attempt, the home-offset
         # move inside _home_wheel, and the post-home retry to slot 4.
         assert getattr(mc, move_to_attr).call_count == 3
+        # Absolute-MOVETO path must not fall back to relative MOVE.
+        getattr(mc, move_rel_attr).assert_not_called()
         assert wheel_inst._positions[1] == 4
 
     def test_home_uses_absolute_moveto_for_offset(self, wheel, w_config):

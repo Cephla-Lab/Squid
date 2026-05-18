@@ -188,6 +188,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
             return
         except CommandAborted as e:
             _log.warning(f"Filter wheel {wheel_id} command aborted ({e}); resending in software...")
+            # Clear the pending abort so the next send_command doesn't log
+            # a spurious "not cleared before new command sent" warning.
+            self.microcontroller.acknowledge_aborted_command()
             try:
                 self._move_to_usteps(wheel_id, target_usteps)
                 self.microcontroller.wait_till_operation_is_completed()
@@ -196,11 +199,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 return
             except self._RECOVERABLE_MOVE_ERRORS as e2:
                 _log.warning(f"Filter wheel {wheel_id} resend also failed ({e2}); re-homing to re-sync...")
+                if isinstance(e2, CommandAborted):
+                    self.microcontroller.acknowledge_aborted_command()
         except TimeoutError as e:
             _log.warning(f"Filter wheel {wheel_id} move uncertain ({e}); re-homing to re-sync...")
 
         self._home_wheel(wheel_id)
-        target_usteps = self._target_pos_to_usteps(config, target_pos)
         try:
             self._move_to_usteps(wheel_id, target_usteps)
             self.microcontroller.wait_till_operation_is_completed()
@@ -211,7 +215,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise
 
     def _home_wheel(self, wheel_id: int):
-        """Home a wheel, then drive to slot 0 absolutely.
+        """Home a wheel, then drive to its first slot (config.min_index) absolutely.
 
         The firmware anchors the driver's X_ACTUAL counter to 0 at the
         home reference, so the host can target absolute slot positions

@@ -1,10 +1,21 @@
 #include "stage_commands.h"
 
-// Surface a failed move so the next position-update reports CMD_EXECUTION_ERROR.
+// Surface a failed move whose callback had already claimed
+// mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
+// so the host stops waiting for a completion that won't arrive.
 static inline void mark_move_failed()
 {
     mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
     mcu_cmd_execution_in_progress = false;
+}
+
+// Surface a failed move from an early-return path that never claimed
+// mcu_cmd_execution_in_progress for this command. Leaves in_progress
+// untouched so an unrelated motion already in flight on another axis
+// keeps its "still working" state.
+static inline void report_move_error()
+{
+    mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 }
 
 void callback_move_x()
@@ -66,13 +77,15 @@ static inline long decode_payload_int32()
 }
 
 // Shared dispatch for filter-wheel moves (relative and absolute, W and W2).
-// Reject moves before INITFILTERWHEEL via mark_move_failed so the host can
-// re-home instead of trusting a silent ack.
+// Reject moves before INITFILTERWHEEL so the host can re-home instead of
+// trusting a silent ack.
 static void dispatch_filterwheel_move(uint8_t axis, bool enabled, long target, int* direction, long* target_position, bool* movement_in_progress)
 {
     if (!enabled)
     {
-        mark_move_failed();
+        // Don't touch in_progress: a motion on a different axis may be
+        // active and we mustn't unwind its "still working" state.
+        report_move_error();
         return;
     }
 

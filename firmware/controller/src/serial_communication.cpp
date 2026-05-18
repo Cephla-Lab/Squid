@@ -28,7 +28,14 @@ void process_serial_message()
 
       // Default the status to success; callbacks call mark_move_failed()
       // on the failure path to override it before the next status broadcast.
-      mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+      // Skip for HEARTBEAT — the keepalive has no result to report, and
+      // resetting here would clobber a pending CMD_EXECUTION_ERROR from a
+      // previous command if the broadcast hasn't fired yet. Any future
+      // background-sender command should be added to this skip list.
+      if (buffer_rx[1] != HEARTBEAT)
+      {
+          mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+      }
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
