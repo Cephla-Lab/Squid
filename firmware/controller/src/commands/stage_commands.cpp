@@ -1,12 +1,6 @@
 #include "stage_commands.h"
 
-// Mark the current command as failed so the next position-update packet
-// reports CMD_EXECUTION_ERROR. Used by every move callback when
-// tmc4361A_moveTo returns non-zero or a precondition check fails.
-// Without this the firmware would silently report COMPLETED_WITHOUT_ERRORS
-// for a move that never actually executed; the W axis (no encoder, no
-// position broadcast pre-fix) was the only place this manifested as a
-// persistent off-by-one position desync.
+// Surface a failed move so the next position-update reports CMD_EXECUTION_ERROR.
 static inline void mark_move_failed()
 {
     mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
@@ -65,23 +59,27 @@ void callback_move_z()
     }
 }
 
-// Helper function for filter wheel movement (shared by W and W2)
-static void move_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
+// Decode a 32-bit signed payload from buffer_rx[2..5] (big-endian).
+static inline long decode_payload_int32()
+{
+    return int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
+}
+
+// Shared dispatch for filter-wheel moves (relative and absolute, W and W2).
+// Reject moves before INITFILTERWHEEL via mark_move_failed so the host can
+// re-home instead of trusting a silent ack.
+static void dispatch_filterwheel_move(uint8_t axis, bool enabled, long target, int* direction, long* target_position, bool* movement_in_progress)
 {
     if (!enabled)
     {
-        // Move arrived before INITFILTERWHEEL — surface as an execution
-        // error so the host re-homes instead of trusting a silent ack.
         mark_move_failed();
         return;
     }
 
-    long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-    long current_position = tmc4361A_currentPosition(&tmc4361[axis]);
-    *direction = sgn(relative_position);
-    *target_position = current_position + relative_position;
+    *direction = sgn(target - tmc4361A_currentPosition(&tmc4361[axis]));
+    *target_position = target;
     mcu_cmd_execution_in_progress = true;
-    if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
+    if (tmc4361A_moveTo(&tmc4361[axis], target) == 0)
     {
         *movement_in_progress = true;
     }
@@ -93,12 +91,14 @@ static void move_filterwheel(uint8_t axis, bool enabled, int* direction, long* t
 
 void callback_move_w()
 {
-    move_filterwheel(w, enable_filterwheel, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
+    long target = tmc4361A_currentPosition(&tmc4361[w]) + decode_payload_int32();
+    dispatch_filterwheel_move(w, enable_filterwheel, target, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
 }
 
 void callback_move_w2()
 {
-    move_filterwheel(w2, enable_filterwheel_w2, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
+    long target = tmc4361A_currentPosition(&tmc4361[w2]) + decode_payload_int32();
+    dispatch_filterwheel_move(w2, enable_filterwheel_w2, target, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
 }
 
 void callback_move_to_x()
@@ -150,37 +150,14 @@ void callback_move_to_z()
     }
 }
 
-// Helper function for absolute filter wheel move (shared by W and W2)
-static void move_to_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
-{
-    if (!enabled)
-    {
-        mark_move_failed();
-        return;
-    }
-
-    long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-    *direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[axis]));
-    *target_position = absolute_position;
-    mcu_cmd_execution_in_progress = true;
-    if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
-    {
-        *movement_in_progress = true;
-    }
-    else
-    {
-        mark_move_failed();
-    }
-}
-
 void callback_move_to_w()
 {
-    move_to_filterwheel(w, enable_filterwheel, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
+    dispatch_filterwheel_move(w, enable_filterwheel, decode_payload_int32(), &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
 }
 
 void callback_move_to_w2()
 {
-    move_to_filterwheel(w2, enable_filterwheel_w2, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
+    dispatch_filterwheel_move(w2, enable_filterwheel_w2, decode_payload_int32(), &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
 }
 
 void callback_set_lim()

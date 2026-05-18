@@ -70,10 +70,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # The protocol_axis_to_internal() function in firmware handles this conversion.
     _MOTOR_SLOT_TO_AXIS = {3: AXIS.W, 4: AXIS.W2}
 
-    # Errors that the re-home + retry recovery path can recover from.
-    # CommandAborted is raised when firmware reports CMD_EXECUTION_ERROR
-    # (the motor confirmed it didn't move); TimeoutError is raised when
-    # the ack never arrives within the wait window (motor state uncertain).
+    # Map motor_slot_index to the Microcontroller method names that drive
+    # that axis. Keeps the slot→method dispatch in one place instead of
+    # branching `if motor_slot == 3 / == 4` at every call site.
+    _MOTOR_SLOT_MCU_METHODS = {
+        3: {"home": "home_w", "move_to_usteps": "move_w_to_usteps"},
+        4: {"home": "home_w2", "move_to_usteps": "move_w2_to_usteps"},
+    }
+
     _RECOVERABLE_MOVE_ERRORS = (TimeoutError, CommandAborted)
 
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
@@ -111,25 +115,24 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def _target_pos_to_usteps(config: SquidFilterWheelConfig, target_pos: int) -> int:
         """Absolute target microstep address for a given slot index.
 
-        After homing, the firmware re-anchors the tmc4361 X_ACTUAL counter
-        to 0 (operations.cpp:finalize_homing_w), so slot 0 sits at
-        `_delta_to_usteps(config.offset)` and each subsequent slot is one
-        step_size further along.
+        Assumes the firmware anchors X_ACTUAL to 0 at the home reference
+        (see finalize_homing_w / finalize_homing_w2 in firmware).
         """
         step_size_mm = SCREW_PITCH_W_MM / (config.max_index - config.min_index + 1)
         target_mm_from_home = config.offset + (target_pos - config.min_index) * step_size_mm
         return SquidFilterWheel._delta_to_usteps(target_mm_from_home)
 
+    def _mcu_method(self, wheel_id: int, action: str):
+        """Resolve the Microcontroller method for `action` on this wheel's axis."""
+        motor_slot = self._configs[wheel_id].motor_slot_index
+        methods = self._MOTOR_SLOT_MCU_METHODS.get(motor_slot)
+        if methods is None:
+            raise ValueError(f"Unsupported motor_slot_index: {motor_slot}. Expected 3 (W) or 4 (W2).")
+        return getattr(self.microcontroller, methods[action])
+
     def _move_to_usteps(self, wheel_id: int, usteps: int):
         """Dispatch an absolute MOVETO_W / MOVETO_W2 by motor_slot_index."""
-        config = self._configs[wheel_id]
-        motor_slot = config.motor_slot_index
-        if motor_slot == 3:
-            self.microcontroller.move_w_to_usteps(usteps)
-        elif motor_slot == 4:
-            self.microcontroller.move_w2_to_usteps(usteps)
-        else:
-            raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
+        self._mcu_method(wheel_id, "move_to_usteps")(usteps)
 
     def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position using absolute MOVETO; recover on failure.
@@ -177,8 +180,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
             _log.warning(f"Filter wheel {wheel_id} move uncertain ({e}); re-homing to re-sync...")
 
         self._home_wheel(wheel_id)
-        # _home_wheel re-anchored the firmware coordinate to 0; recompute
-        # the absolute target against the (unchanged) slot index.
         target_usteps = self._target_pos_to_usteps(config, target_pos)
         try:
             self._move_to_usteps(wheel_id, target_usteps)
@@ -190,31 +191,20 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise
 
     def _home_wheel(self, wheel_id: int):
-        """Home a specific wheel, then drive to slot 0 (min_index) absolutely.
+        """Home a wheel, then drive to slot 0 absolutely.
 
-        After firmware homing, the tmc4361 X_ACTUAL counter is anchored to
-        0 (operations.cpp:finalize_homing_w). The host then drives to the
-        absolute offset that aligns the wheel with the first filter slot.
+        The firmware anchors the driver's X_ACTUAL counter to 0 at the
+        home reference, so the host can target absolute slot positions
+        as `slot_index * usteps_per_slot + offset_usteps` thereafter.
         """
         config = self._configs[wheel_id]
-        motor_slot = config.motor_slot_index
 
-        if motor_slot == 3:
-            self.microcontroller.home_w()
-        elif motor_slot == 4:
-            self.microcontroller.home_w2()
-        else:
-            raise ValueError(f"Unsupported motor_slot_index: {motor_slot}")
-
-        # Wait for homing to complete (needs longer timeout)
+        self._mcu_method(wheel_id, "home")()
         self.microcontroller.wait_till_operation_is_completed(15)
 
-        # Drive to slot 0 (min_index) using the firmware's now-anchored
-        # absolute coordinate frame.
         self._move_to_usteps(wheel_id, self._delta_to_usteps(config.offset))
         self.microcontroller.wait_till_operation_is_completed()
 
-        # Reset position tracking
         self._positions[wheel_id] = config.min_index
 
     def initialize(self, filter_wheel_indices: List[int]):

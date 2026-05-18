@@ -1074,41 +1074,30 @@ class Microcontroller:
     def move_x_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_X)
 
-    def move_x_to_usteps(self, usteps):
+    def _move_axis_to_usteps(self, usteps, axis_command_code):
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.MOVETO_X
+        cmd[1] = axis_command_code
         cmd[2] = payload >> 24
         cmd[3] = (payload >> 16) & 0xFF
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
+
+    def move_x_to_usteps(self, usteps):
+        self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_X)
 
     def move_y_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Y)
 
     def move_y_to_usteps(self, usteps):
-        payload = self._int_to_payload(usteps, 4)
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.MOVETO_Y
-        cmd[2] = payload >> 24
-        cmd[3] = (payload >> 16) & 0xFF
-        cmd[4] = (payload >> 8) & 0xFF
-        cmd[5] = payload & 0xFF
-        self.send_command(cmd)
+        self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_Y)
 
     def move_z_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Z)
 
     def move_z_to_usteps(self, usteps):
-        payload = self._int_to_payload(usteps, 4)
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.MOVETO_Z
-        cmd[2] = payload >> 24
-        cmd[3] = (payload >> 16) & 0xFF
-        cmd[4] = (payload >> 8) & 0xFF
-        cmd[5] = payload & 0xFF
-        self.send_command(cmd)
+        self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_Z)
 
     def move_theta_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_THETA)
@@ -1120,24 +1109,10 @@ class Microcontroller:
         self._move_axis_usteps(usteps, CMD_SET.MOVE_W2)
 
     def move_w_to_usteps(self, usteps):
-        payload = self._int_to_payload(usteps, 4)
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.MOVETO_W
-        cmd[2] = payload >> 24
-        cmd[3] = (payload >> 16) & 0xFF
-        cmd[4] = (payload >> 8) & 0xFF
-        cmd[5] = payload & 0xFF
-        self.send_command(cmd)
+        self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_W)
 
     def move_w2_to_usteps(self, usteps):
-        payload = self._int_to_payload(usteps, 4)
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.MOVETO_W2
-        cmd[2] = payload >> 24
-        cmd[3] = (payload >> 16) & 0xFF
-        cmd[4] = (payload >> 8) & 0xFF
-        cmd[5] = payload & 0xFF
-        self.send_command(cmd)
+        self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_W2)
 
     def set_off_set_velocity_x(self, off_set_velocity):
         # off_set_velocity is in mm/s
@@ -1633,14 +1608,8 @@ class Microcontroller:
                     and self._cmd_id_mcu == self._cmd_id
                     and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
                 ):
-                    # Firmware reported it couldn't execute this command (e.g.
-                    # tmc4361A_moveTo returned non-zero, or a filter-wheel move
-                    # arrived before INITFILTERWHEEL). Fail fast so callers
-                    # don't pay the full 5 s `wait_till_operation_is_completed`
-                    # timeout waiting for a completion that will never arrive.
-                    # Marked recoverable=True so the abort logs at WARNING —
-                    # callers like SquidFilterWheel handle this via a software
-                    # resend, falling back to re-home + retry.
+                    # Fail fast so callers don't wait the full ack timeout
+                    # for a completion the firmware says will never arrive.
                     self.abort_current_command(
                         reason="firmware reported CMD_EXECUTION_ERROR",
                         recoverable=True,

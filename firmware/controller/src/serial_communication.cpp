@@ -26,11 +26,8 @@ void process_serial_message()
       // Reset watchdog timer on every valid serial message
       last_serial_message_time = millis();
 
-      // Reset execution status for this new command; callbacks set it to
-      // CMD_EXECUTION_ERROR if they detect a failure (e.g. tmc4361A_moveTo
-      // returning non-zero, or a filter-wheel move arriving before
-      // INITFILTERWHEEL) so the host can distinguish a real success from
-      // a silently dropped move.
+      // Default the status to success; callbacks call mark_move_failed()
+      // on the failure path to override it before the next status broadcast.
       mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];

@@ -370,11 +370,7 @@ void finalize_homing_w()
   {
     if (enable_filterwheel == true) {
       // Anchor the driver coordinate to 0 at the home reference so the
-      // host can target absolute slot positions as
-      // `slot_index * usteps_per_slot + offset`. Without this the
-      // post-home X_ACTUAL is whatever value the limit switch latched
-      // (hardware-dependent), and absolute MOVETO_W targets would be
-      // off by that latch value.
+      // host can target absolute slot positions via MOVETO_W.
       tmc4361A_setCurrentPosition(&tmc4361[w], 0);
       tmc4361A_write_encoder(&tmc4361[w], 0);
       if (stage_PID_enabled[w])

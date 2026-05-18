@@ -164,6 +164,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.z = 0
         self.theta = 0
         self.w = 0
+        self.w2 = 0
 
         # Button/switch state
         self.joystick_button = False
@@ -363,7 +364,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         elif cmd_code == self.fw.get("MOVE_W"):
             self.w += get_position()
         elif cmd_code == self.fw.get("MOVE_W2"):
-            self.w += get_position()
+            self.w2 += get_position()
         elif cmd_code == self.fw.get("MOVETO_X"):
             self.x = get_position()
         elif cmd_code == self.fw.get("MOVETO_Y"):
@@ -373,7 +374,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         elif cmd_code == self.fw.get("MOVETO_W"):
             self.w = get_position()
         elif cmd_code == self.fw.get("MOVETO_W2"):
-            self.w = get_position()
+            self.w2 = get_position()
         elif cmd_code == self.fw.get("HOME_OR_ZERO"):
             axis = cmd[2]
             # home_type at cmd[3] indicates HOME_NEGATIVE, HOME_POSITIVE, or ZERO
@@ -392,6 +393,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 self.y = 0
             elif axis == self.fw.get("AXIS_W", 5):
                 self.w = 0
+            elif axis == self.fw.get("AXIS_W2", 6):
+                self.w2 = 0
         elif cmd_code == self.fw.get("RESET"):
             # Reset clears positions
             self.x = 0
@@ -399,6 +402,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.z = 0
             self.theta = 0
             self.w = 0
+            self.w2 = 0
 
         # Build and queue response
         status = self.fw.get("COMPLETED_WITHOUT_ERRORS", 0)
