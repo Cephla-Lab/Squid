@@ -50,9 +50,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
             min_major, min_minor = self._MIN_FIRMWARE_VERSION
             raise RuntimeError(
                 f"SquidFilterWheel requires firmware >= v{min_major}.{min_minor} "
-                f"(got v{fw[0]}.{fw[1]}). Older firmware does not anchor the W "
-                f"axis to 0 after homing, so absolute MOVETO_W targets would "
-                f"land at the wrong slot. Re-flash firmware from firmware/controller."
+                f"(got v{fw[0]}.{fw[1]}). Older firmware does not anchor the "
+                f"filter-wheel driver position to 0 after homing, so absolute "
+                f"MOVETO targets would land at the wrong slot; the W2 MOVETO "
+                f"command also does not exist on older firmware. Re-flash "
+                f"firmware from firmware/controller."
             )
 
         # Convert single config to dict format for uniform handling
@@ -223,14 +225,33 @@ class SquidFilterWheel(AbstractFilterWheelController):
         The firmware anchors the driver's X_ACTUAL counter to 0 at the
         home reference, so the host can target absolute slot positions
         as `slot_index * usteps_per_slot + offset_usteps` thereafter.
+
+        On failure, `_positions[wheel_id]` is *not* updated and may now be
+        stale relative to physical hardware — callers should treat the
+        wheel's position as unknown until a successful home completes.
         """
         config = self._configs[wheel_id]
 
-        self._mcu_method(wheel_id, "home")()
-        self.microcontroller.wait_till_operation_is_completed(15)
+        try:
+            self._mcu_method(wheel_id, "home")()
+            self.microcontroller.wait_till_operation_is_completed(15)
+        except Exception:
+            _log.error(
+                f"Filter wheel {wheel_id} home command failed; physical "
+                f"position is unknown and tracked position may be stale."
+            )
+            raise
 
-        self._move_to_usteps(wheel_id, self._delta_to_usteps(config.offset))
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self._move_to_usteps(wheel_id, self._delta_to_usteps(config.offset))
+            self.microcontroller.wait_till_operation_is_completed()
+        except Exception:
+            _log.error(
+                f"Filter wheel {wheel_id} home succeeded but offset move "
+                f"failed; wheel is at the home reference, not slot "
+                f"{config.min_index}. Tracked position not updated."
+            )
+            raise
 
         self._positions[wheel_id] = config.min_index
 

@@ -260,6 +260,26 @@ class TestSquidFilterWheelAbsoluteMove:
         mc.move_w_usteps.assert_not_called()
         assert wheel_inst._positions[1] == w_config.min_index
 
+    @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
+    def test_rehome_retry_failure_propagates(self, motor_slot, move_to_attr, move_rel_attr, home_attr):
+        """When the post-rehome retry also fails, _move_to_position must re-raise."""
+        wheel_inst, mc, _ = self._build_wheel(motor_slot)
+
+        # Initial move times out → re-home → offset move succeeds → retry times out → raise.
+        mc.wait_till_operation_is_completed.side_effect = [
+            TimeoutError("initial move ack timeout"),
+            None,  # home wait
+            None,  # home offset move wait
+            TimeoutError("post-rehome retry ack timeout"),
+        ]
+
+        with pytest.raises(TimeoutError, match="post-rehome retry"):
+            wheel_inst._move_to_position(1, 4)
+
+        getattr(mc, home_attr).assert_called_once()
+        # Position must not be updated to target on failure.
+        assert wheel_inst._positions[1] != 4
+
 
 class TestSquidFilterWheelFirmwareVersionGate:
     """Tests for the firmware version requirement on SquidFilterWheel."""
