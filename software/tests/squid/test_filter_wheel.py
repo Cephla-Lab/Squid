@@ -4,6 +4,7 @@ import pytest
 
 import squid.config
 import squid.filter_wheel_controller.utils
+from control._def import AXIS
 from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidFilterWheelConfig
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
@@ -120,14 +121,33 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.init_filter_wheel.assert_called_once()
         mock_microcontroller.configure_squidfilter.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "motor_slot,expected_axis",
+        [pytest.param(3, AXIS.W, id="W"), pytest.param(4, AXIS.W2, id="W2")],
+    )
     @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
-    def test_normal_init_configures_encoder_pid(self, mock_microcontroller, squid_config):
-        """skip_init=False with HAS_ENCODER_W=True should configure encoder PID."""
-        SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
+    @patch("squid.filter_wheel_controller.cephla.ENABLE_PID_W", True)
+    def test_normal_init_configures_encoder_pid(self, mock_microcontroller, motor_slot, expected_axis):
+        """HAS_ENCODER_W=True + ENABLE_PID_W=True should configure and engage PID."""
+        config = _make_squid_config(motor_slot=motor_slot)
+        SquidFilterWheel(mock_microcontroller, config, skip_init=False)
 
         mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
-        mock_microcontroller.turn_on_stage_pid.assert_called_once()
+        # turn_on_stage_pid takes axis only — passing extra args would TypeError.
+        mock_microcontroller.turn_on_stage_pid.assert_called_once_with(expected_axis)
+
+    @pytest.mark.parametrize("motor_slot", [3, 4], ids=["W", "W2"])
+    @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
+    @patch("squid.filter_wheel_controller.cephla.ENABLE_PID_W", False)
+    def test_encoder_without_pid_skips_turn_on(self, mock_microcontroller, motor_slot):
+        """HAS_ENCODER_W=True + ENABLE_PID_W=False configures encoder but leaves PID off."""
+        config = _make_squid_config(motor_slot=motor_slot)
+        SquidFilterWheel(mock_microcontroller, config, skip_init=False)
+
+        mock_microcontroller.set_pid_arguments.assert_called_once()
+        mock_microcontroller.configure_stage_pid.assert_called_once()
+        mock_microcontroller.turn_on_stage_pid.assert_not_called()
 
 
 class TestSquidFilterWheelAbsoluteMove:
