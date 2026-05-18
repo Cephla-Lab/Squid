@@ -8,6 +8,24 @@ from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidF
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 
+def _make_squid_config(motor_slot: int = 3) -> SquidFilterWheelConfig:
+    """Default 8-slot SquidFilterWheelConfig used across the test module."""
+    return SquidFilterWheelConfig(
+        max_index=8,
+        min_index=1,
+        offset=0.008,
+        motor_slot_index=motor_slot,
+        transitions_per_revolution=4000,
+    )
+
+
+def _make_mock_mc(firmware_version=(1, 2)) -> MagicMock:
+    """MagicMock microcontroller with a configured firmware_version."""
+    mc = MagicMock()
+    mc.firmware_version = firmware_version
+    return mc
+
+
 def test_create_simulated_filter_wheel():
     """Test that we can create a simulated filter wheel controller."""
     controller = squid.filter_wheel_controller.utils.SimulatedFilterWheelController(
@@ -73,21 +91,11 @@ class TestSquidFilterWheelSkipInit:
 
     @pytest.fixture
     def mock_microcontroller(self):
-        """Create a mock microcontroller running v1.2+ firmware."""
-        mc = MagicMock()
-        mc.firmware_version = (1, 2)
-        return mc
+        return _make_mock_mc()
 
     @pytest.fixture
     def squid_config(self):
-        """Create a SquidFilterWheelConfig for testing."""
-        return SquidFilterWheelConfig(
-            max_index=8,
-            min_index=1,
-            offset=0.008,
-            motor_slot_index=3,
-            transitions_per_revolution=4000,
-        )
+        return _make_squid_config()
 
     def test_skip_init_skips_mcu_initialization(self, mock_microcontroller, squid_config):
         """skip_init=True should skip init_filter_wheel and configure_squidfilter calls."""
@@ -133,23 +141,11 @@ class TestSquidFilterWheelAbsoluteMove:
 
     @pytest.fixture
     def w_config(self):
-        return SquidFilterWheelConfig(
-            max_index=8,
-            min_index=1,
-            offset=0.008,
-            motor_slot_index=3,  # W
-            transitions_per_revolution=4000,
-        )
+        return _make_squid_config(motor_slot=3)
 
     @pytest.fixture
     def w2_config(self):
-        return SquidFilterWheelConfig(
-            max_index=8,
-            min_index=1,
-            offset=0.008,
-            motor_slot_index=4,  # W2
-            transitions_per_revolution=4000,
-        )
+        return _make_squid_config(motor_slot=4)
 
     # (motor_slot, move_to_attr, move_rel_attr, home_attr) for each wheel axis.
     AXIS_PARAMS = [
@@ -159,21 +155,13 @@ class TestSquidFilterWheelAbsoluteMove:
 
     @staticmethod
     def _build_wheel(motor_slot):
-        config = SquidFilterWheelConfig(
-            max_index=8,
-            min_index=1,
-            offset=0.008,
-            motor_slot_index=motor_slot,
-            transitions_per_revolution=4000,
-        )
-        mc = MagicMock()
-        mc.firmware_version = (1, 2)
+        config = _make_squid_config(motor_slot=motor_slot)
+        mc = _make_mock_mc()
         return SquidFilterWheel(mc, config, skip_init=True), mc, config
 
     @pytest.fixture
     def wheel(self, w_config):
-        mc = MagicMock()
-        mc.firmware_version = (1, 2)
+        mc = _make_mock_mc()
         return SquidFilterWheel(mc, w_config, skip_init=True), mc
 
     def test_move_to_position_uses_absolute_moveto_for_w(self, wheel, w_config):
@@ -278,32 +266,19 @@ class TestSquidFilterWheelFirmwareVersionGate:
 
     @pytest.fixture
     def squid_config(self):
-        return SquidFilterWheelConfig(
-            max_index=8,
-            min_index=1,
-            offset=0.008,
-            motor_slot_index=3,
-            transitions_per_revolution=4000,
-        )
+        return _make_squid_config()
 
     @pytest.mark.parametrize("firmware_version", [(0, 0), (1, 0), (1, 1)])
     def test_init_raises_on_pre_v1_2_firmware(self, squid_config, firmware_version):
         """Constructing SquidFilterWheel must reject firmware older than v1.2."""
-        mc = MagicMock()
-        mc.firmware_version = firmware_version
+        mc = _make_mock_mc(firmware_version=firmware_version)
         with pytest.raises(RuntimeError, match="firmware >= v1.2"):
             SquidFilterWheel(mc, squid_config)
 
-    def test_init_succeeds_on_v1_2_firmware(self, squid_config):
-        """v1.2 exactly should be accepted (it's the minimum required version)."""
-        mc = MagicMock()
-        mc.firmware_version = (1, 2)
-        SquidFilterWheel(mc, squid_config)  # no raise
-
-    def test_init_succeeds_on_newer_firmware(self, squid_config):
-        """Future firmware versions should also be accepted."""
-        mc = MagicMock()
-        mc.firmware_version = (2, 0)
+    @pytest.mark.parametrize("firmware_version", [(1, 2), (2, 0)])
+    def test_init_succeeds_on_supported_firmware(self, squid_config, firmware_version):
+        """v1.2 (the minimum) and any newer version should be accepted."""
+        mc = _make_mock_mc(firmware_version=firmware_version)
         SquidFilterWheel(mc, squid_config)  # no raise
 
     def test_skip_init_also_checks_version(self, squid_config):
@@ -312,7 +287,6 @@ class TestSquidFilterWheelFirmwareVersionGate:
         Restart flows could be running against a re-flashed (possibly downgraded)
         firmware, so the check must not be bypassed.
         """
-        mc = MagicMock()
-        mc.firmware_version = (1, 1)
+        mc = _make_mock_mc(firmware_version=(1, 1))
         with pytest.raises(RuntimeError, match="firmware >= v1.2"):
             SquidFilterWheel(mc, squid_config, skip_init=True)

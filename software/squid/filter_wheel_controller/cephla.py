@@ -199,11 +199,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 return
             except self._RECOVERABLE_MOVE_ERRORS as e2:
                 _log.warning(f"Filter wheel {wheel_id} resend also failed ({e2}); re-homing to re-sync...")
-                if isinstance(e2, CommandAborted):
-                    self.microcontroller.acknowledge_aborted_command()
         except TimeoutError as e:
             _log.warning(f"Filter wheel {wheel_id} move uncertain ({e}); re-homing to re-sync...")
 
+        # Clear any pending abort (set when wait_till_operation_is_completed
+        # raised CommandAborted) so the home command's send_command doesn't
+        # log a spurious "not cleared before new command sent" warning.
+        if self.microcontroller.last_command_aborted_error is not None:
+            self.microcontroller.acknowledge_aborted_command()
         self._home_wheel(wheel_id)
         try:
             self._move_to_usteps(wheel_id, target_usteps)
