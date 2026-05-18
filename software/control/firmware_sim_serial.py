@@ -80,11 +80,13 @@ class FirmwareConstants:
             "MOVE_Z",
             "MOVE_THETA",
             "MOVE_W",
+            "MOVE_W2",
             "HOME_OR_ZERO",
             "MOVETO_X",
             "MOVETO_Y",
             "MOVETO_Z",
             "MOVETO_W",
+            "MOVETO_W2",
             "SET_LIM",
             "TURN_ON_ILLUMINATION",
             "TURN_OFF_ILLUMINATION",
@@ -360,6 +362,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.theta += get_position()
         elif cmd_code == self.fw.get("MOVE_W"):
             self.w += get_position()
+        elif cmd_code == self.fw.get("MOVE_W2"):
+            self.w += get_position()
         elif cmd_code == self.fw.get("MOVETO_X"):
             self.x = get_position()
         elif cmd_code == self.fw.get("MOVETO_Y"):
@@ -367,6 +371,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         elif cmd_code == self.fw.get("MOVETO_Z"):
             self.z = get_position()
         elif cmd_code == self.fw.get("MOVETO_W"):
+            self.w = get_position()
+        elif cmd_code == self.fw.get("MOVETO_W2"):
             self.w = get_position()
         elif cmd_code == self.fw.get("HOME_OR_ZERO"):
             axis = cmd[2]

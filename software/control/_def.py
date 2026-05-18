@@ -203,6 +203,7 @@ class CMD_SET:
     SET_WATCHDOG_TIMEOUT = 40  # Set serial watchdog timeout and enable
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
+    MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254

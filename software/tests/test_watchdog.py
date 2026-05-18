@@ -125,8 +125,8 @@ class TestHeartbeat:
 
 
 class TestFirmwareVersionForWatchdog:
-    def test_version_detected_as_1_1(self, mcu):
-        """SimSerial should report firmware version 1.1."""
+    def test_version_detected(self, mcu):
+        """SimSerial should report the simulated firmware version after a command."""
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed()
-        assert mcu.firmware_version == (1, 1)
+        assert mcu.firmware_version == (1, 2)

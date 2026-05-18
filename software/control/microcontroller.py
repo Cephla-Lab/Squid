@@ -46,6 +46,7 @@ _CMD_NAMES = {
     CMD_SET.SET_DAC80508_REFDIV_GAIN: "SET_DAC80508_REFDIV_GAIN",
     CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR: "SET_ILLUMINATION_INTENSITY_FACTOR",
     CMD_SET.MOVETO_W: "MOVETO_W",
+    CMD_SET.MOVETO_W2: "MOVETO_W2",
     CMD_SET.SET_LIM_SWITCH_POLARITY: "SET_LIM_SWITCH_POLARITY",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
@@ -185,12 +186,13 @@ class SimSerial(AbstractCephlaMicroSerial):
     # Simulated firmware version
     # v1.0: multi-port illumination support
     # v1.1: serial watchdog for illumination auto-shutoff
+    # v1.2: CMD_EXECUTION_ERROR reported on failed moves + MOVETO_W2 command
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 1
+    FIRMWARE_VERSION_MINOR = 2
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 1)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 2)
     ) -> bytes:
         """
         - byte 0: command ID (1 byte)
@@ -1117,6 +1119,26 @@ class Microcontroller:
     def move_w2_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_W2)
 
+    def move_w_to_usteps(self, usteps):
+        payload = self._int_to_payload(usteps, 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVETO_W
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        self.send_command(cmd)
+
+    def move_w2_to_usteps(self, usteps):
+        payload = self._int_to_payload(usteps, 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVETO_W2
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        self.send_command(cmd)
+
     def set_off_set_velocity_x(self, off_set_velocity):
         # off_set_velocity is in mm/s
         cmd = bytearray(self.tx_buffer_length)
@@ -1460,10 +1482,22 @@ class Microcontroller:
 
             self._warn_if_reads_stale()
 
-    def abort_current_command(self, reason):
+    def abort_current_command(self, reason, recoverable: bool = False):
+        """Mark the current MCU command as aborted.
+
+        Args:
+            reason: Human-readable reason; surfaced in the CommandAborted exception.
+            recoverable: If True, log at WARNING — caller will retry or handle the
+                failure (e.g. a filter wheel re-home + retry on CMD_EXECUTION_ERROR).
+                If False (default), log at ERROR (operator attention warranted).
+        """
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        self.log.error(f"[MCU] !!! Command {self._cmd_id} ({cmd_name}) ABORTED: {reason}")
+        msg = f"[MCU] Command {self._cmd_id} ({cmd_name}) aborted: {reason}"
+        if recoverable:
+            self.log.warning(msg)
+        else:
+            self.log.error(msg)
         self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
         self.mcu_cmd_execution_in_progress = False
 
@@ -1594,6 +1628,23 @@ class Microcontroller:
                     else:
                         self.log.error("[MCU] !!! checksum error, resending command")
                         self.resend_last_command()
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu == self._cmd_id
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+                ):
+                    # Firmware reported it couldn't execute this command (e.g.
+                    # tmc4361A_moveTo returned non-zero, or a filter-wheel move
+                    # arrived before INITFILTERWHEEL). Fail fast so callers
+                    # don't pay the full 5 s `wait_till_operation_is_completed`
+                    # timeout waiting for a completion that will never arrive.
+                    # Marked recoverable=True so the abort logs at WARNING —
+                    # callers like SquidFilterWheel handle this via a software
+                    # resend, falling back to re-home + retry.
+                    self.abort_current_command(
+                        reason="firmware reported CMD_EXECUTION_ERROR",
+                        recoverable=True,
+                    )
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id
