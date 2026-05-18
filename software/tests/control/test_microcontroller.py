@@ -1,3 +1,4 @@
+import logging
 import time
 
 import pytest
@@ -247,8 +248,6 @@ def test_set_trigger_mode():
 
 def test_abort_current_command_recoverable_logs_at_warning(caplog):
     """recoverable=True → WARNING (caller will retry); default → ERROR (operator attention)."""
-    import logging
-
     micro = get_test_micro()
     try:
         micro.turn_off_all_ports()

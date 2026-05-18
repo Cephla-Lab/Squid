@@ -42,6 +42,19 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         self.microcontroller = microcontroller
 
+        # Fail loudly on a host/firmware version mismatch before any moves
+        # are issued — runs unconditionally (including the skip_init restart
+        # path) because firmware could have been re-flashed between launches.
+        fw = self.microcontroller.firmware_version
+        if fw < self._MIN_FIRMWARE_VERSION:
+            min_major, min_minor = self._MIN_FIRMWARE_VERSION
+            raise RuntimeError(
+                f"SquidFilterWheel requires firmware >= v{min_major}.{min_minor} "
+                f"(got v{fw[0]}.{fw[1]}). Older firmware does not anchor the W "
+                f"axis to 0 after homing, so absolute MOVETO_W targets would "
+                f"land at the wrong slot. Re-flash firmware from firmware/controller."
+            )
+
         # Convert single config to dict format for uniform handling
         if isinstance(configs, SquidFilterWheelConfig):
             self._configs: Dict[int, SquidFilterWheelConfig] = {1: configs}
@@ -89,16 +102,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
-        fw = self.microcontroller.firmware_version
-        if fw < self._MIN_FIRMWARE_VERSION:
-            min_major, min_minor = self._MIN_FIRMWARE_VERSION
-            raise RuntimeError(
-                f"SquidFilterWheel requires firmware >= v{min_major}.{min_minor} "
-                f"(got v{fw[0]}.{fw[1]}). Older firmware does not anchor the W "
-                f"axis to 0 after homing, so absolute MOVETO_W targets would "
-                f"land at the wrong slot. Re-flash firmware from firmware/controller."
-            )
-
         motor_slot = config.motor_slot_index
         axis = self._MOTOR_SLOT_TO_AXIS.get(motor_slot)
         if axis is None:

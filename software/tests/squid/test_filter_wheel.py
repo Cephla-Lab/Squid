@@ -302,11 +302,13 @@ class TestSquidFilterWheelFirmwareVersionGate:
         mc.firmware_version = (2, 0)
         SquidFilterWheel(mc, squid_config)  # no raise
 
-    def test_skip_init_still_checks_version(self, squid_config):
-        """skip_init=True skips MCU init but version check runs in _configure_wheel
-        only when skip_init=False — so skip_init=True with old firmware does not
-        raise. This documents the (intentional) gap: skip_init exists for restart
-        flows where the firmware was already validated on first init."""
+    def test_skip_init_also_checks_version(self, squid_config):
+        """Version check runs in __init__ so it fires regardless of skip_init.
+
+        Restart flows could be running against a re-flashed (possibly downgraded)
+        firmware, so the check must not be bypassed.
+        """
         mc = MagicMock()
         mc.firmware_version = (1, 1)
-        SquidFilterWheel(mc, squid_config, skip_init=True)  # no raise
+        with pytest.raises(RuntimeError, match="firmware >= v1.2"):
+            SquidFilterWheel(mc, squid_config, skip_init=True)
