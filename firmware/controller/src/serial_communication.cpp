@@ -26,6 +26,13 @@ void process_serial_message()
       // Reset watchdog timer on every valid serial message
       last_serial_message_time = millis();
 
+      // Reset execution status for this new command; callbacks set it to
+      // CMD_EXECUTION_ERROR if they detect a failure (e.g. tmc4361A_moveTo
+      // returning non-zero, or a filter-wheel move arriving before
+      // INITFILTERWHEEL) so the host can distinguish a real success from
+      // a silently dropped move.
+      mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
         callback_default();
@@ -46,8 +53,10 @@ void send_position_update()
     buffer_tx[0] = cmd_id;
     if (checksum_error)
       buffer_tx[1] = CMD_CHECKSUM_ERROR; // cmd_execution_status
+    else if (mcu_cmd_execution_in_progress)
+      buffer_tx[1] = IN_PROGRESS;
     else
-      buffer_tx[1] = mcu_cmd_execution_in_progress ? IN_PROGRESS : COMPLETED_WITHOUT_ERRORS; // cmd_execution_status
+      buffer_tx[1] = mcu_cmd_execution_status; // COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
 
     uint32_t X_pos_int32t = uint32_t( X_use_encoder ? X_pos : int32_t(tmc4361A_currentPosition(&tmc4361[x])) );
     buffer_tx[2] = byte(X_pos_int32t >> 24);

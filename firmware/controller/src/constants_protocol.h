@@ -74,6 +74,7 @@ static const int TURN_OFF_ALL_PORTS = 39;      // Turn off all illumination port
 static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and enable
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
+static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

@@ -37,6 +37,7 @@ extern uint16_t home_safety_margin[TOTAL_AXES];
 extern volatile int buffer_rx_ptr;
 extern byte cmd_id;
 extern bool mcu_cmd_execution_in_progress;
+extern byte mcu_cmd_execution_status;
 extern bool checksum_error;
 
 // limit switch

@@ -1,15 +1,32 @@
 #include "stage_commands.h"
 
+// Mark the current command as failed so the next position-update packet
+// reports CMD_EXECUTION_ERROR. Used by every move callback when
+// tmc4361A_moveTo returns non-zero or a precondition check fails.
+// Without this the firmware would silently report COMPLETED_WITHOUT_ERRORS
+// for a move that never actually executed; the W axis (no encoder, no
+// position broadcast pre-fix) was the only place this manifested as a
+// persistent off-by-one position desync.
+static inline void mark_move_failed()
+{
+    mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+    mcu_cmd_execution_in_progress = false;
+}
+
 void callback_move_x()
 {
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[x]);
     X_direction = sgn(relative_position);
     X_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, X_POS_LIMIT) : max(current_position + relative_position, X_NEG_LIMIT) );
+    mcu_cmd_execution_in_progress = true;
     if ( tmc4361A_moveTo(&tmc4361[x], X_commanded_target_position) == 0)
     {
         X_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
@@ -19,10 +36,14 @@ void callback_move_y()
     long current_position = tmc4361A_currentPosition(&tmc4361[y]);
     Y_direction = sgn(relative_position);
     Y_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Y_POS_LIMIT) : max(current_position + relative_position, Y_NEG_LIMIT) );
+    mcu_cmd_execution_in_progress = true;
     if ( tmc4361A_moveTo(&tmc4361[y], Y_commanded_target_position) == 0)
     {
         Y_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
@@ -33,26 +54,40 @@ void callback_move_z()
     Z_direction = sgn(relative_position);
     Z_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Z_POS_LIMIT) : max(current_position + relative_position, Z_NEG_LIMIT) );
     focusPosition = Z_commanded_target_position;
+    mcu_cmd_execution_in_progress = true;
     if ( tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
     {
         Z_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
 // Helper function for filter wheel movement (shared by W and W2)
 static void move_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
 {
-    if (!enabled) return;
+    if (!enabled)
+    {
+        // Move arrived before INITFILTERWHEEL — surface as an execution
+        // error so the host re-homes instead of trusting a silent ack.
+        mark_move_failed();
+        return;
+    }
 
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[axis]);
     *direction = sgn(relative_position);
     *target_position = current_position + relative_position;
+    mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
     {
         *movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
@@ -71,10 +106,14 @@ void callback_move_to_x()
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     X_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
     X_commanded_target_position = absolute_position;
+    mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[x], X_commanded_target_position) == 0)
     {
         X_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
@@ -83,10 +122,14 @@ void callback_move_to_y()
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Y_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
     Y_commanded_target_position = absolute_position;
+    mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[y], Y_commanded_target_position) == 0)
     {
         Y_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
@@ -95,26 +138,49 @@ void callback_move_to_z()
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;
+    mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
     {
         focusPosition = absolute_position;
         Z_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
+    }
+}
+
+// Helper function for absolute filter wheel move (shared by W and W2)
+static void move_to_filterwheel(uint8_t axis, bool enabled, int* direction, long* target_position, bool* movement_in_progress)
+{
+    if (!enabled)
+    {
+        mark_move_failed();
+        return;
+    }
+
+    long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
+    *direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[axis]));
+    *target_position = absolute_position;
+    mcu_cmd_execution_in_progress = true;
+    if (tmc4361A_moveTo(&tmc4361[axis], *target_position) == 0)
+    {
+        *movement_in_progress = true;
+    }
+    else
+    {
+        mark_move_failed();
     }
 }
 
 void callback_move_to_w()
 {
-    if (enable_filterwheel == true) {
-        long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-        W_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[w]));
-        W_commanded_target_position = absolute_position;
-        if (tmc4361A_moveTo(&tmc4361[w], W_commanded_target_position) == 0)
-        {
-        W_commanded_movement_in_progress = true;
-        mcu_cmd_execution_in_progress = true;
-        }
-    }
+    move_to_filterwheel(w, enable_filterwheel, &W_direction, &W_commanded_target_position, &W_commanded_movement_in_progress);
+}
+
+void callback_move_to_w2()
+{
+    move_to_filterwheel(w2, enable_filterwheel_w2, &W2_direction, &W2_commanded_target_position, &W2_commanded_movement_in_progress);
 }
 
 void callback_set_lim()

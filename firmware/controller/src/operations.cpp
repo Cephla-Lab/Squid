@@ -369,6 +369,13 @@ void finalize_homing_w()
   if (is_homing_W && home_W_found && ( tmc4361A_currentPosition(&tmc4361[w]) == tmc4361A_targetPosition(&tmc4361[w]) || us_since_w_home_found > 500 * 1000 ) )
   {
     if (enable_filterwheel == true) {
+      // Anchor the driver coordinate to 0 at the home reference so the
+      // host can target absolute slot positions as
+      // `slot_index * usteps_per_slot + offset`. Without this the
+      // post-home X_ACTUAL is whatever value the limit switch latched
+      // (hardware-dependent), and absolute MOVETO_W targets would be
+      // off by that latch value.
+      tmc4361A_setCurrentPosition(&tmc4361[w], 0);
       tmc4361A_write_encoder(&tmc4361[w], 0);
       if (stage_PID_enabled[w])
         tmc4361A_set_PID(&tmc4361[w], PID_BPG0);
@@ -386,6 +393,7 @@ void finalize_homing_w2()
   if (is_homing_W2 && home_W2_found && ( tmc4361A_currentPosition(&tmc4361[w2]) == tmc4361A_targetPosition(&tmc4361[w2]) || us_since_w2_home_found > 500 * 1000 ) )
   {
     if (enable_filterwheel_w2 == true) {
+      tmc4361A_setCurrentPosition(&tmc4361[w2], 0);
       tmc4361A_write_encoder(&tmc4361[w2], 0);
       if (stage_PID_enabled[w2])
         tmc4361A_set_PID(&tmc4361[w2], PID_BPG0);
