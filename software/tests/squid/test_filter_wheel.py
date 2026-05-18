@@ -73,8 +73,10 @@ class TestSquidFilterWheelSkipInit:
 
     @pytest.fixture
     def mock_microcontroller(self):
-        """Create a mock microcontroller."""
-        return MagicMock()
+        """Create a mock microcontroller running v1.2+ firmware."""
+        mc = MagicMock()
+        mc.firmware_version = (1, 2)
+        return mc
 
     @pytest.fixture
     def squid_config(self):
@@ -149,15 +151,30 @@ class TestSquidFilterWheelAbsoluteMove:
             transitions_per_revolution=4000,
         )
 
+    # (motor_slot, move_to_attr, move_rel_attr, home_attr) for each wheel axis.
+    AXIS_PARAMS = [
+        pytest.param(3, "move_w_to_usteps", "move_w_usteps", "home_w", id="W"),
+        pytest.param(4, "move_w2_to_usteps", "move_w2_usteps", "home_w2", id="W2"),
+    ]
+
+    @staticmethod
+    def _build_wheel(motor_slot):
+        config = SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.008,
+            motor_slot_index=motor_slot,
+            transitions_per_revolution=4000,
+        )
+        mc = MagicMock()
+        mc.firmware_version = (1, 2)
+        return SquidFilterWheel(mc, config, skip_init=True), mc, config
+
     @pytest.fixture
     def wheel(self, w_config):
         mc = MagicMock()
+        mc.firmware_version = (1, 2)
         return SquidFilterWheel(mc, w_config, skip_init=True), mc
-
-    @pytest.fixture
-    def wheel_w2(self, w2_config):
-        mc = MagicMock()
-        return SquidFilterWheel(mc, w2_config, skip_init=True), mc
 
     def test_move_to_position_uses_absolute_moveto_for_w(self, wheel, w_config):
         """Moving slot 1 → slot 5 issues MOVETO_W with absolute target usteps."""
@@ -170,9 +187,9 @@ class TestSquidFilterWheelAbsoluteMove:
         mc.move_w_usteps.assert_not_called()
         assert wheel_inst._positions[1] == 5
 
-    def test_move_to_position_uses_absolute_moveto_for_w2(self, wheel_w2, w2_config):
+    def test_move_to_position_uses_absolute_moveto_for_w2(self, w2_config):
         """Wheel on W2 axis routes to MOVETO_W2, not MOVE_W2."""
-        wheel_inst, mc = wheel_w2
+        wheel_inst, mc, _ = self._build_wheel(motor_slot=4)
 
         expected_usteps = SquidFilterWheel._target_pos_to_usteps(w2_config, 3)
         wheel_inst._move_to_position(1, 3)
@@ -197,11 +214,14 @@ class TestSquidFilterWheelAbsoluteMove:
         # 7 step_sizes between slot 1 and slot 8
         assert u8 - u1 == 7 * step
 
-    def test_command_aborted_triggers_software_resend_not_rehome(self, wheel):
+    @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
+    def test_command_aborted_triggers_software_resend_not_rehome(
+        self, motor_slot, move_to_attr, move_rel_attr, home_attr
+    ):
         """CMD_EXECUTION_ERROR → resend the same MOVETO; do NOT re-home."""
         from control.microcontroller import CommandAborted
 
-        wheel_inst, mc = wheel
+        wheel_inst, mc, _ = self._build_wheel(motor_slot)
 
         # First wait raises CommandAborted, second succeeds.
         mc.wait_till_operation_is_completed.side_effect = [
@@ -211,28 +231,29 @@ class TestSquidFilterWheelAbsoluteMove:
 
         wheel_inst._move_to_position(1, 4)
 
-        assert mc.move_w_to_usteps.call_count == 2
-        mc.home_w.assert_not_called()
+        assert getattr(mc, move_to_attr).call_count == 2
+        getattr(mc, home_attr).assert_not_called()
         assert wheel_inst._positions[1] == 4
 
-    def test_timeout_skips_resend_and_goes_straight_to_rehome(self, wheel):
+    @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
+    def test_timeout_skips_resend_and_goes_straight_to_rehome(self, motor_slot, move_to_attr, move_rel_attr, home_attr):
         """Ack timeout → re-home + retry (no cheap resend, motor state is uncertain)."""
-        wheel_inst, mc = wheel
+        wheel_inst, mc, _ = self._build_wheel(motor_slot)
 
         # First move times out; home succeeds; retry succeeds.
         mc.wait_till_operation_is_completed.side_effect = [
             TimeoutError("ack timeout"),
-            None,  # home_w wait
+            None,  # home wait
             None,  # home offset move wait
             None,  # retry MOVETO wait
         ]
 
         wheel_inst._move_to_position(1, 4)
 
-        mc.home_w.assert_called_once()
-        # Three MOVETO_W calls: the failed initial attempt, the home-offset
+        getattr(mc, home_attr).assert_called_once()
+        # Three MOVETO calls: the failed initial attempt, the home-offset
         # move inside _home_wheel, and the post-home retry to slot 4.
-        assert mc.move_w_to_usteps.call_count == 3
+        assert getattr(mc, move_to_attr).call_count == 3
         assert wheel_inst._positions[1] == 4
 
     def test_home_uses_absolute_moveto_for_offset(self, wheel, w_config):
@@ -246,3 +267,46 @@ class TestSquidFilterWheelAbsoluteMove:
         mc.move_w_to_usteps.assert_called_once_with(expected_offset_usteps)
         mc.move_w_usteps.assert_not_called()
         assert wheel_inst._positions[1] == w_config.min_index
+
+
+class TestSquidFilterWheelFirmwareVersionGate:
+    """Tests for the firmware version requirement on SquidFilterWheel."""
+
+    @pytest.fixture
+    def squid_config(self):
+        return SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.008,
+            motor_slot_index=3,
+            transitions_per_revolution=4000,
+        )
+
+    @pytest.mark.parametrize("firmware_version", [(0, 0), (1, 0), (1, 1)])
+    def test_init_raises_on_pre_v1_2_firmware(self, squid_config, firmware_version):
+        """Constructing SquidFilterWheel must reject firmware older than v1.2."""
+        mc = MagicMock()
+        mc.firmware_version = firmware_version
+        with pytest.raises(RuntimeError, match="firmware >= v1.2"):
+            SquidFilterWheel(mc, squid_config)
+
+    def test_init_succeeds_on_v1_2_firmware(self, squid_config):
+        """v1.2 exactly should be accepted (it's the minimum required version)."""
+        mc = MagicMock()
+        mc.firmware_version = (1, 2)
+        SquidFilterWheel(mc, squid_config)  # no raise
+
+    def test_init_succeeds_on_newer_firmware(self, squid_config):
+        """Future firmware versions should also be accepted."""
+        mc = MagicMock()
+        mc.firmware_version = (2, 0)
+        SquidFilterWheel(mc, squid_config)  # no raise
+
+    def test_skip_init_still_checks_version(self, squid_config):
+        """skip_init=True skips MCU init but version check runs in _configure_wheel
+        only when skip_init=False — so skip_init=True with old firmware does not
+        raise. This documents the (intentional) gap: skip_init exists for restart
+        flows where the firmware was already validated on first init."""
+        mc = MagicMock()
+        mc.firmware_version = (1, 1)
+        SquidFilterWheel(mc, squid_config, skip_init=True)  # no raise

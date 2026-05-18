@@ -80,8 +80,25 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
     _RECOVERABLE_MOVE_ERRORS = (TimeoutError, CommandAborted)
 
+    # Minimum firmware that anchors the W/W2 driver position to 0 at home
+    # (finalize_homing_w/_w2) and reports CMD_EXECUTION_ERROR on failed
+    # moves. Sending MOVETO_W against older firmware would target the
+    # wrong absolute slot because X_ACTUAL would still be at the
+    # limit-switch latch value.
+    _MIN_FIRMWARE_VERSION = (1, 2)
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
+        fw = self.microcontroller.firmware_version
+        if fw < self._MIN_FIRMWARE_VERSION:
+            min_major, min_minor = self._MIN_FIRMWARE_VERSION
+            raise RuntimeError(
+                f"SquidFilterWheel requires firmware >= v{min_major}.{min_minor} "
+                f"(got v{fw[0]}.{fw[1]}). Older firmware does not anchor the W "
+                f"axis to 0 after homing, so absolute MOVETO_W targets would "
+                f"land at the wrong slot. Re-flash firmware from firmware/controller."
+            )
+
         motor_slot = config.motor_slot_index
         axis = self._MOTOR_SLOT_TO_AXIS.get(motor_slot)
         if axis is None:

@@ -243,3 +243,30 @@ def test_set_trigger_mode():
     assert micro.last_command[2] == 1
 
     micro.close()
+
+
+def test_abort_current_command_recoverable_logs_at_warning(caplog):
+    """recoverable=True → WARNING (caller will retry); default → ERROR (operator attention)."""
+    import logging
+
+    micro = get_test_micro()
+    try:
+        micro.turn_off_all_ports()
+        micro.wait_till_operation_is_completed()
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger="squid.Microcontroller"):
+            micro.abort_current_command(reason="test recoverable", recoverable=True)
+            recoverable_records = [r for r in caplog.records if "test recoverable" in r.message]
+            assert recoverable_records, "expected a log record for the recoverable abort"
+            assert all(r.levelno == logging.WARNING for r in recoverable_records)
+
+        caplog.clear()
+        micro.acknowledge_aborted_command()
+        with caplog.at_level(logging.WARNING, logger="squid.Microcontroller"):
+            micro.abort_current_command(reason="test fatal")
+            fatal_records = [r for r in caplog.records if "test fatal" in r.message]
+            assert fatal_records, "expected a log record for the default abort"
+            assert all(r.levelno == logging.ERROR for r in fatal_records)
+    finally:
+        micro.close()
