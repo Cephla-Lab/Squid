@@ -824,6 +824,7 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
         self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
+        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -928,9 +929,6 @@ class ImageDisplayWindow(QMainWindow):
             self.line_start_pos = None
             self.line_end_pos = None
             self._active_view().setCursor(self.normal_cursor)
-
-        # Connect to the view range changed signal to detect manual range changes
-        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
 
     def _on_range_changed(self, view_range):
         """Handle manual range changes in the line profiler plot."""
