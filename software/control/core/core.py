@@ -923,11 +923,19 @@ class ImageDisplayWindow(QMainWindow):
             self.line_profiler_widget.hide()
             if self.line_roi is not None:
                 self.line_roi.hide()
+            # Clean up any in-progress drawing preview (first click made, second click not yet)
+            view = self.graphics_widget.view.getView() if self.show_LUT else self.graphics_widget.view
+            if self.preview_line is not None:
+                view.removeItem(self.preview_line)
+                self.preview_line = None
+            if self.start_point_marker is not None:
+                view.removeItem(self.start_point_marker)
+                self.start_point_marker = None
+            self.is_drawing_line = False
+            self.line_start_pos = None
+            self.line_end_pos = None
             # Reset cursor to normal
-            if self.show_LUT:
-                self.graphics_widget.view.getView().setCursor(self.normal_cursor)
-            else:
-                self.graphics_widget.view.setCursor(self.normal_cursor)
+            view.setCursor(self.normal_cursor)
 
         # Connect to the view range changed signal to detect manual range changes
         self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
