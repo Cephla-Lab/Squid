@@ -138,8 +138,9 @@ class ObjectiveTurret4PosControllerSimulation:
 
     def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
         self._require_open()
-        _resolve_position(objective_name, self._positions)
-        if self._current_objective == objective_name:
+        target_position = _resolve_position(objective_name, self._positions)
+        if self._current_objective is not None and self._positions[self._current_objective] == target_position:
+            self._current_objective = objective_name
             return
 
         captured_z = self._retract_z_if_possible()
@@ -149,7 +150,7 @@ class ObjectiveTurret4PosControllerSimulation:
         logger.info(
             "Simulated turret moved to %s (position %d)",
             objective_name,
-            self._positions[objective_name],
+            target_position,
         )
 
     def clear_alarm(self) -> None:
@@ -264,8 +265,9 @@ class ObjectiveTurret4PosController:
 
     def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
         self._require_open()
-        _resolve_position(objective_name, self._positions)
-        if self._current_objective == objective_name:
+        target_position = _resolve_position(objective_name, self._positions)
+        if self._current_objective is not None and self._positions[self._current_objective] == target_position:
+            self._current_objective = objective_name
             return
 
         captured_z = self._retract_z_if_possible()

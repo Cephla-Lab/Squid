@@ -145,3 +145,25 @@ def test_move_to_objective_skips_z_retract_when_homing_z_disabled(monkeypatch):
     assert stage.z_moves == []  # retract is gated on HOMING_ENABLED_Z
     assert sim.current_objective == "10x"
     sim.close()
+
+
+def test_move_between_aliased_objectives_skips_z_retract(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=3.5)
+    sim = ObjectiveTurret4PosControllerSimulation(
+        serial_number="SIM-001",
+        positions={"4x_A": 1, "4x_B": 1, "10x": 2},
+        stage=stage,
+    )
+
+    sim.move_to_objective("4x_A")
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    stage.z_moves.clear()
+
+    # Switching to a different name that maps to the same physical
+    # position updates the tracked objective but skips the Z dance.
+    sim.move_to_objective("4x_B")
+    assert stage.z_moves == []
+    assert sim.current_objective == "4x_B"
+
+    sim.close()
