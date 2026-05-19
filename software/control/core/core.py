@@ -923,19 +923,11 @@ class ImageDisplayWindow(QMainWindow):
             self.line_profiler_widget.hide()
             if self.line_roi is not None:
                 self.line_roi.hide()
-            # Clean up any in-progress drawing preview (first click made, second click not yet)
-            view = self.graphics_widget.view.getView() if self.show_LUT else self.graphics_widget.view
-            if self.preview_line is not None:
-                view.removeItem(self.preview_line)
-                self.preview_line = None
-            if self.start_point_marker is not None:
-                view.removeItem(self.start_point_marker)
-                self.start_point_marker = None
+            self._remove_line_preview_items()
             self.is_drawing_line = False
             self.line_start_pos = None
             self.line_end_pos = None
-            # Reset cursor to normal
-            view.setCursor(self.normal_cursor)
+            self._active_view().setCursor(self.normal_cursor)
 
         # Connect to the view range changed signal to detect manual range changes
         self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
@@ -943,6 +935,18 @@ class ImageDisplayWindow(QMainWindow):
     def _on_range_changed(self, view_range):
         """Handle manual range changes in the line profiler plot."""
         self.line_profiler_manual_range = True
+
+    def _active_view(self):
+        return self.graphics_widget.view.getView() if self.show_LUT else self.graphics_widget.view
+
+    def _remove_line_preview_items(self):
+        view = self._active_view()
+        if self.preview_line is not None:
+            view.removeItem(self.preview_line)
+            self.preview_line = None
+        if self.start_point_marker is not None:
+            view.removeItem(self.start_point_marker)
+            self.start_point_marker = None
 
     def create_line_roi(self):
         """Create a line ROI for intensity profiling."""
@@ -1119,11 +1123,7 @@ class ImageDisplayWindow(QMainWindow):
         """Handle mouse clicks for both line drawing and other interactions."""
         if self.is_drawing_line:
             try:
-                # Get the view that received the click
-                if self.show_LUT:
-                    view = self.graphics_widget.view.getView()
-                else:
-                    view = self.graphics_widget.view
+                view = self._active_view()
 
                 # Convert click position to view coordinates
                 pos = evt.pos()
@@ -1142,37 +1142,17 @@ class ImageDisplayWindow(QMainWindow):
                         pen=pg.mkPen("y", width=2),
                         brush=pg.mkBrush("y"),
                     )
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().addItem(self.start_point_marker)
-                    else:
-                        self.graphics_widget.view.addItem(self.start_point_marker)
+                    view.addItem(self.start_point_marker)
 
                     # Create preview line
                     self.preview_line = pg.PlotDataItem(pen=pg.mkPen("y", width=2, style=Qt.DashLine))
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().addItem(self.preview_line)
-                    else:
-                        self.graphics_widget.view.addItem(self.preview_line)
+                    view.addItem(self.preview_line)
                 else:
                     # Second click - finish drawing
                     self.line_end_pos = (view_coord.x(), view_coord.y())
                     self._log.info(f"Line end position set to: {self.line_end_pos}")
 
-                    # Remove preview line and start point marker
-                    if self.preview_line is not None:
-                        if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.preview_line)
-                        else:
-                            self.graphics_widget.view.removeItem(self.preview_line)
-                        self.preview_line = None
-
-                    if self.start_point_marker is not None:
-                        if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.start_point_marker)
-                        else:
-                            self.graphics_widget.view.removeItem(self.start_point_marker)
-                        self.start_point_marker = None
-
+                    self._remove_line_preview_items()
                     self.create_line_roi()
                     self.is_drawing_line = False
                     # Reset cursor to normal
@@ -1182,19 +1162,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.is_drawing_line = False
                 self.line_start_pos = None
                 self.line_end_pos = None
-                # Clean up any remaining preview items
-                if self.preview_line is not None:
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.preview_line)
-                    else:
-                        self.graphics_widget.view.removeItem(self.preview_line)
-                    self.preview_line = None
-                if self.start_point_marker is not None:
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.start_point_marker)
-                    else:
-                        self.graphics_widget.view.removeItem(self.start_point_marker)
-                    self.start_point_marker = None
+                self._remove_line_preview_items()
             return
 
         # Handle double clicks for other purposes
