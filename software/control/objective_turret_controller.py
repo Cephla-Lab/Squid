@@ -15,7 +15,7 @@ from control.modbus_rtu import ModbusRTUClient
 import squid.abc
 import squid.logging
 
-logger = squid.logging.get_logger("objective_turret_controller")
+logger = squid.logging.get_logger(__name__)
 
 # Turret mechanics
 GEAR_RATIO = 132 / 48
@@ -67,30 +67,23 @@ STATUS_BIT_FAULT = 1 << 3
 STATUS_BIT_RUNNING = 1 << 12
 
 # Motion parameter defaults (auto-calibrated on first connect).
-# Matches SingleMotor's check_init_params. Sharper accel/decel (e.g. baseline's
-# 600/600) cause step loss; 200/200 is the known-good turret config.
+# 200/200 accel/decel avoids step loss under the turret's inertial load (sharper
+# ramps skip steps mid-move).
 EXPECTED_ACCEL = 200
 EXPECTED_DECEL = 200
 EXPECTED_MAX_SPEED = 250
-# NiMotion ramps cruise → min_speed at the end of position moves, then continues at
-# min_speed for the final approach pulses. Default 16 step/s makes that segment
-# very slow and audibly noisy. Higher values compress the slow tail; 150 ≈ 60% of
-# max_speed leaves enough decel range to avoid step loss.
+# NiMotion ramps cruise → min_speed at end of position moves, then continues at
+# min_speed for final-approach pulses. Default 16 step/s makes that segment audibly
+# slow; 150 keeps it brief while leaving decel range.
 EXPECTED_MIN_SPEED = 150
-# 0x001F low-speed optimization. Manual: 0 = disabled, 1 = enabled. Empirically both
-# values produce identical motion on this firmware (the slow tail is min_speed
-# crawl, not LSO). Keeping the calibration to put the device in the manual's
-# documented "disabled" state explicitly.
+# 0x001F low-speed optimization. Manual says 0 = disabled; empirically a no-op on
+# this firmware (motion is identical at 0 or 1). Set to 0 for documented-disabled.
 DRIVE_PARAM = 0
 
-# Homing defaults (auto-calibrated on first connect)
+# Homing defaults (auto-calibrated on first connect). Slot 1 sits at the limit
+# on this turret, so counter=0 lands at the switch — HOMING_ORIGIN_OFFSET=0
+# enforces that against any tool that may have written a non-zero offset.
 HOMING_METHOD = 17
-# Counter value at the switch position after homing. Slot 1 sits AT the limit on
-# this turret, so we want counter=0 at the switch. SingleMotor's init_turret_params
-# sets this to 500 for a turret where slot 1 is offset from the limit — that doesn't
-# match our hardware, so we override to 0 explicitly. Forcing the value matters even
-# though baseline default is 0, because anything that ran SingleMotor's setup scripts
-# (or any other tool) may have left it at 500.
 HOMING_ORIGIN_OFFSET = 0
 HOMING_SEARCH_SPEED = 1000
 HOMING_ZERO_SPEED = 200
@@ -106,6 +99,23 @@ DEFAULT_HOME_TIMEOUT_S = 30.0
 
 # Settle time after a control-word transition before the next write.
 CONTROL_WORD_SETTLE_S = 0.1
+
+# Calibration tables: (register, expected value, label, kwargs-for-_calibrate_one).
+_MOTION_PARAMS = [
+    (REG_ACCEL, EXPECTED_ACCEL, "accel", {"is_32bit": True}),
+    (REG_DECEL, EXPECTED_DECEL, "decel", {"is_32bit": True}),
+    (REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", {"is_32bit": True}),
+    (REG_MIN_SPEED, EXPECTED_MIN_SPEED, "min_speed", {"is_32bit": True}),
+    (REG_LOW_SPEED_OPT, DRIVE_PARAM, "drive_param", {}),
+]
+_HOMING_PARAMS = [
+    (REG_HOMING_METHOD, HOMING_METHOD, "homing_method", {}),
+    (REG_HOMING_OFFSET, HOMING_ORIGIN_OFFSET, "homing_offset", {"is_32bit": True, "signed": True}),
+    (REG_HOMING_SEARCH_SPEED, HOMING_SEARCH_SPEED, "homing_search_speed", {"is_32bit": True}),
+    (REG_HOMING_ZERO_SPEED, HOMING_ZERO_SPEED, "homing_zero_speed", {"is_32bit": True}),
+    (REG_ZERO_RETURN, HOMING_ZERO_RETURN, "zero_return", {}),
+    (REG_DI_FUNCTION, DI1_FUNCTION_NEG_LIMIT, "DI1_function", {"is_32bit": True, "mask": 0xF}),
+]
 
 
 def _resolve_position(objective_name: str, positions: dict) -> int:
@@ -294,9 +304,8 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
         self._wait_until_idle(timeout_s)
-        # Mark the limit position as counter zero so absolute slot targets land at the
-        # right physical angle. Log before/after so we can confirm the write actually
-        # resets the counter on this firmware variant.
+        # Reset counter to 0 at the post-homing position so absolute slot targets
+        # land at the correct physical angle.
         pre = self.current_position_pulses
         self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
         time.sleep(0.05)
@@ -317,9 +326,11 @@ class ObjectiveTurret4PosController:
             return
 
         captured_z = self._retract_z_if_possible()
-        self._rotate_to(objective_name, timeout_s)
-        self._current_objective = objective_name
-        self._restore_z_if_captured(captured_z)
+        try:
+            self._rotate_to(objective_name, timeout_s)
+            self._current_objective = objective_name
+        finally:
+            self._restore_z_if_captured(captured_z)
 
     def clear_alarm(self) -> None:
         self._write_control(CW_CLEAR_FAULT)
@@ -418,62 +429,24 @@ class ObjectiveTurret4PosController:
             current = self._modbus.read_register_32bit(self._slave_id, addr, signed=signed)
         else:
             current = self._modbus.read_register(self._slave_id, addr)
-        desired = (current & ~mask) | expected if mask is not None else expected
+        desired = (current & ~mask) | (expected & mask) if mask is not None else expected
         fmt = "0x%08X" if mask is not None else "%d"
+        current_str, desired_str = fmt % current, fmt % desired
         if current == desired:
-            logger.info(f"%s @ 0x%04X: device={fmt} matches desired (no write)", label, addr, current)
+            logger.debug("%s @ 0x%04X: device=%s matches desired (no write)", label, addr, current_str)
             return False
         if is_32bit:
             self._modbus.write_register_32bit(self._slave_id, addr, desired, signed=signed)
         else:
             self._modbus.write_register(self._slave_id, addr, desired)
-        logger.info(f"%s @ 0x%04X: {fmt} -> {fmt} (wrote)", label, addr, current, desired)
+        logger.info("%s @ 0x%04X: %s -> %s (wrote)", label, addr, current_str, desired_str)
         return True
 
     def _calibrate_motion_params(self) -> bool:
-        return any(
-            [
-                self._calibrate_one(REG_ACCEL, EXPECTED_ACCEL, "accel", is_32bit=True),
-                self._calibrate_one(REG_DECEL, EXPECTED_DECEL, "decel", is_32bit=True),
-                self._calibrate_one(REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", is_32bit=True),
-                self._calibrate_one(REG_MIN_SPEED, EXPECTED_MIN_SPEED, "min_speed", is_32bit=True),
-                self._calibrate_one(REG_LOW_SPEED_OPT, DRIVE_PARAM, "drive_param"),
-            ]
-        )
+        return any([self._calibrate_one(*a, **kw) for *a, kw in _MOTION_PARAMS])
 
     def _calibrate_homing_config(self) -> bool:
-        return any(
-            [
-                self._calibrate_one(REG_HOMING_METHOD, HOMING_METHOD, "homing_method"),
-                self._calibrate_one(
-                    REG_HOMING_OFFSET,
-                    HOMING_ORIGIN_OFFSET,
-                    "homing_offset",
-                    is_32bit=True,
-                    signed=True,
-                ),
-                self._calibrate_one(
-                    REG_HOMING_SEARCH_SPEED,
-                    HOMING_SEARCH_SPEED,
-                    "homing_search_speed",
-                    is_32bit=True,
-                ),
-                self._calibrate_one(
-                    REG_HOMING_ZERO_SPEED,
-                    HOMING_ZERO_SPEED,
-                    "homing_zero_speed",
-                    is_32bit=True,
-                ),
-                self._calibrate_one(REG_ZERO_RETURN, HOMING_ZERO_RETURN, "zero_return"),
-                self._calibrate_one(
-                    REG_DI_FUNCTION,
-                    DI1_FUNCTION_NEG_LIMIT,
-                    "DI1_function",
-                    is_32bit=True,
-                    mask=0xF,
-                ),
-            ]
-        )
+        return any([self._calibrate_one(*a, **kw) for *a, kw in _HOMING_PARAMS])
 
     def _save_to_eeprom(self) -> None:
         self._write_holding(REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC)
