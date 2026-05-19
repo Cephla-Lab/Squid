@@ -498,7 +498,13 @@ class Microscope:
                 self.addons.objective_changer.home()
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+            try:
+                self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+            except KeyError as e:
+                raise RuntimeError(
+                    f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} is not configured "
+                    f"for the active objective changer: {e}"
+                ) from e
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.

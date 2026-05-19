@@ -3558,7 +3558,15 @@ class ObjectivesWidget(QWidget):
     def on_objective_changed(self, objective_name):
         self.objectiveStore.set_current_objective(objective_name)
         if self.objective_changer is not None:
-            self.objective_changer.move_to_objective(objective_name)
+            try:
+                self.objective_changer.move_to_objective(objective_name)
+            except KeyError as e:
+                QMessageBox.warning(
+                    self,
+                    "Objective Not Available",
+                    f"Objective '{objective_name}' is not configured for the objective changer:\n{e}",
+                )
+                return
         self.signal_objective_changed.emit()
 
 
