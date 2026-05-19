@@ -3,10 +3,10 @@
 独立脚本，只依赖 pyserial（pip install pyserial）。
 不依赖项目内任何模块，可单独拷贝运行。
 
-用法：
-    python3 scripts/write_baseline.py                # 实际写入
-    python3 scripts/write_baseline.py --dry-run      # 只显示差异
-    python3 scripts/write_baseline.py --port /dev/ttyUSB0
+用法（从 software/ 目录运行）：
+    python3 tools/write_baseline.py                # 实际写入
+    python3 tools/write_baseline.py --dry-run      # 只显示差异
+    python3 tools/write_baseline.py --port /dev/ttyUSB0
 """
 
 import argparse

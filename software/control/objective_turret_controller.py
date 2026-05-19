@@ -88,6 +88,13 @@ def _resolve_position(objective_name: str, positions: dict) -> int:
         raise KeyError(f"Unknown objective '{objective_name}'. Valid names: {sorted(positions)}") from None
 
 
+def _is_alias_for_current(current: Optional[str], target_name: str, positions: dict) -> bool:
+    """True if `target_name` maps to the same physical slot as `current` under a different name."""
+    if current is None:
+        return False
+    return _resolve_position(current, positions) == _resolve_position(target_name, positions)
+
+
 def _find_port(serial_number: str) -> str:
     matches = [p.device for p in list_ports.comports() if p.serial_number == serial_number]
     if not matches:
@@ -138,10 +145,10 @@ class ObjectiveTurret4PosControllerSimulation:
 
     def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
         self._require_open()
-        target_position = _resolve_position(objective_name, self._positions)
-        if self._current_objective is not None and self._positions[self._current_objective] == target_position:
+        if _is_alias_for_current(self._current_objective, objective_name, self._positions):
             self._current_objective = objective_name
             return
+        target_position = _resolve_position(objective_name, self._positions)
 
         captured_z = self._retract_z_if_possible()
         self._current_objective = objective_name
@@ -265,8 +272,7 @@ class ObjectiveTurret4PosController:
 
     def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
         self._require_open()
-        target_position = _resolve_position(objective_name, self._positions)
-        if self._current_objective is not None and self._positions[self._current_objective] == target_position:
+        if _is_alias_for_current(self._current_objective, objective_name, self._positions):
             self._current_objective = objective_name
             return
 
