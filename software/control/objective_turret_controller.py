@@ -37,6 +37,8 @@ REG_ACCEL = 0x005F
 REG_DECEL = 0x0061
 REG_HOMING_OFFSET = 0x0069
 REG_HOMING_METHOD = 0x006B
+REG_HOMING_SEARCH_SPEED = 0x006C
+REG_HOMING_ZERO_SPEED = 0x006E
 REG_ZERO_RETURN = 0x0072
 REG_CLEAR_ERROR_STORAGE = 0x0073
 
@@ -68,6 +70,8 @@ EXPECTED_MAX_SPEED = 250
 # Homing defaults (auto-calibrated on first connect)
 HOMING_METHOD = 17
 HOMING_ORIGIN_OFFSET = 500
+HOMING_SEARCH_SPEED = 1000
+HOMING_ZERO_SPEED = 200
 HOMING_ZERO_RETURN = 1
 DI1_FUNCTION_NEG_LIMIT = 1
 
@@ -383,6 +387,18 @@ class ObjectiveTurret4PosController:
                     "homing_offset",
                     is_32bit=True,
                     signed=True,
+                ),
+                self._calibrate_one(
+                    REG_HOMING_SEARCH_SPEED,
+                    HOMING_SEARCH_SPEED,
+                    "homing_search_speed",
+                    is_32bit=True,
+                ),
+                self._calibrate_one(
+                    REG_HOMING_ZERO_SPEED,
+                    HOMING_ZERO_SPEED,
+                    "homing_zero_speed",
+                    is_32bit=True,
                 ),
                 self._calibrate_one(REG_ZERO_RETURN, HOMING_ZERO_RETURN, "zero_return"),
                 self._calibrate_one(
