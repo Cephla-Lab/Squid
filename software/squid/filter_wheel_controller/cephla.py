@@ -46,6 +46,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # are issued — runs unconditionally (including the skip_init restart
         # path) because firmware could have been re-flashed between launches.
         fw = self.microcontroller.firmware_version
+        _log.info(f"SquidFilterWheel.__init__: firmware v{fw[0]}.{fw[1]}, skip_init={skip_init}")
         if fw < self._MIN_FIRMWARE_VERSION:
             min_major, min_minor = self._MIN_FIRMWARE_VERSION
             raise RuntimeError(
@@ -66,6 +67,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # Track per-wheel positions (wheel_id -> position index)
         self._positions: Dict[int, int] = {}
 
+        for wheel_id, config in self._configs.items():
+            _log.info(
+                f"Filter wheel {wheel_id}: motor_slot={config.motor_slot_index}, "
+                f"range=[{config.min_index},{config.max_index}], offset={config.offset}mm"
+            )
+
         if not skip_init:
             # Configure each wheel
             for wheel_id, config in self._configs.items():
@@ -76,6 +83,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
             # Just initialize position tracking without hardware init
             for wheel_id, config in self._configs.items():
                 self._positions[wheel_id] = config.min_index
+            _log.warning(
+                f"skip_init=True: assuming all wheels at min_index without homing — "
+                f"tracked positions may not match physical state"
+            )
 
         self._available_filter_wheels: List[int] = []
 
@@ -182,6 +193,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             return
 
         target_usteps = self._target_pos_to_usteps(config, target_pos)
+        _log.info(f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps})")
 
         try:
             self._move_to_usteps(wheel_id, target_usteps)
@@ -231,6 +243,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
         wheel's position as unknown until a successful home completes.
         """
         config = self._configs[wheel_id]
+        _log.info(f"Homing filter wheel {wheel_id} (prev tracked={self._positions.get(wheel_id)})")
+        home_start = time.monotonic()
 
         try:
             self._mcu_method(wheel_id, "home")()
@@ -254,6 +268,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise
 
         self._positions[wheel_id] = config.min_index
+        _log.info(f"Filter wheel {wheel_id} homed in {time.monotonic() - home_start:.2f}s")
 
     def initialize(self, filter_wheel_indices: List[int]):
         """Initialize the filter wheel controller with the given wheel indices.
