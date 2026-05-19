@@ -27,6 +27,7 @@ POSITION_TOLERANCE_PULSES = 50
 REG_SAVE_PARAMS = 0x0008
 REG_DI_FUNCTION = 0x002C
 REG_MICROSTEP = 0x001A
+REG_LOW_SPEED_OPT = 0x001F  # holding-register view; same address as status word on input side
 REG_STATUS_WORD = 0x001F
 REG_CURRENT_POSITION = 0x0021
 REG_RUN_MODE = 0x0039
@@ -66,6 +67,10 @@ STATUS_BIT_RUNNING = 1 << 12
 EXPECTED_ACCEL = 200
 EXPECTED_DECEL = 200
 EXPECTED_MAX_SPEED = 250
+# Disable low-speed optimization. Factory default is 1 (enabled), which splits
+# position moves into slow/fast segments and causes missed steps on longer travels
+# — visible as positions 2/3/4 landing off-target while position 1 (zero pulses) works.
+LOW_SPEED_OPT_DISABLED = 0
 
 # Homing defaults (auto-calibrated on first connect)
 HOMING_METHOD = 17
@@ -79,6 +84,9 @@ DI1_FUNCTION_NEG_LIMIT = 1
 POLL_INTERVAL_S = 0.05
 DEFAULT_MOVE_TIMEOUT_S = 10.0
 DEFAULT_HOME_TIMEOUT_S = 30.0
+
+# Settle time after a control-word transition before the next write.
+CONTROL_WORD_SETTLE_S = 0.1
 
 
 def _resolve_position(objective_name: str, positions: dict) -> int:
@@ -228,6 +236,11 @@ class ObjectiveTurret4PosController:
         self._modbus.connect()
         try:
             self.clear_alarm()
+            # Some parameter registers (notably homing config) reject writes while the
+            # motor is in OPERATION_ENABLED — which can persist across crashed sessions
+            # where close() never ran. Force the device into SWITCH_ON_DISABLED first.
+            self._write_control(CW_DISABLE)
+            time.sleep(CONTROL_WORD_SETTLE_S)
 
             microstep_raw = self._modbus.read_register(self._slave_id, REG_MICROSTEP)
             if not 0 <= microstep_raw <= 7:
@@ -382,6 +395,7 @@ class ObjectiveTurret4PosController:
                 self._calibrate_one(REG_ACCEL, EXPECTED_ACCEL, "accel", is_32bit=True),
                 self._calibrate_one(REG_DECEL, EXPECTED_DECEL, "decel", is_32bit=True),
                 self._calibrate_one(REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", is_32bit=True),
+                self._calibrate_one(REG_LOW_SPEED_OPT, LOW_SPEED_OPT_DISABLED, "low_speed_opt"),
             ]
         )
 
