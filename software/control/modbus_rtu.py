@@ -510,9 +510,8 @@ class ModbusRTUClient:
                     attempt += 1
                     continue
 
-                # Validate slave_id and function-code echo (defense on a shared
-                # RS-485 bus where stray frames or cross-talk could otherwise be
-                # silently parsed as a valid response).
+                # Reject frames from a different slave or function code — guards
+                # against cross-talk on a shared RS-485 bus.
                 if response[0] != frame[0] or response[1] != frame[1]:
                     last_error = ModbusError(
                         f"Response mismatch: expected slave=0x{frame[0]:02X} fc=0x{frame[1]:02X}, "

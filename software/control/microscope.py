@@ -48,16 +48,13 @@ else:
 
 
 class ObjectiveChangerProtocol(Protocol):
-    """Common interface implemented by both Xeryon 2-pos and NiMotion 4-pos turret controllers.
-
-    Lets type checkers verify that consumers only call methods supported by every
-    objective-changer variant. Optional methods (e.g. `setSpeed` on Xeryon,
-    `clear_alarm` on the turret) are accessed via attribute lookup at runtime.
-    """
+    """Methods shared by both Xeryon and turret controllers. Controller-specific
+    methods (`setSpeed`, `clear_alarm`, …) are accessed via attribute lookup."""
 
     def home(self) -> None: ...
     def move_to_objective(self, objective_name: str) -> None: ...
     def close(self) -> None: ...
+
 
 if control._def.RUN_FLUIDICS:
     from control.fluidics import Fluidics
@@ -515,8 +512,8 @@ class Microscope:
                 self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
             except KeyError as e:
                 raise RuntimeError(
-                    f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} is not configured "
-                    f"for the active objective changer: {e}"
+                    f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "
+                    f"is not configured for the active objective changer"
                 ) from e
 
     def _sync_confocal_mode_from_hardware(self) -> bool:

@@ -1,7 +1,4 @@
-"""Pure-Python tests for Modbus RTU CRC, frame builders, and response parsing.
-
-No hardware required — exercises the codec in isolation.
-"""
+"""Pure-Python tests for Modbus RTU CRC, frame builders, and response parsing."""
 
 from __future__ import annotations
 
@@ -15,10 +12,6 @@ from control.modbus_rtu import (
     build_write_register_frame,
     calculate_crc,
 )
-
-
-# CRC-16 (Modbus) reference vectors. Values from the standard examples in
-# common Modbus references.
 
 
 def test_crc_known_vectors():
@@ -43,9 +36,6 @@ def test_verify_crc_round_trip():
 def test_verify_crc_rejects_short_frames():
     assert _verify_crc(b"") is False
     assert _verify_crc(b"\x01\x03\x00") is False  # too short to carry CRC
-
-
-# Frame builder shapes: length, opcode, parameters, and trailing CRC validity.
 
 
 def test_build_read_holding_registers_frame():
@@ -85,11 +75,9 @@ def test_build_write_multiple_registers_frame():
     assert _verify_crc(frame)
 
 
-def test_build_write_multiple_rejects_empty_values():
-    # Spec: count >= 1; build with zero values shouldn't silently produce a
-    # malformed frame. Behavior is "frame with quantity=0 + byte_count=0";
-    # confirm the builder still produces a CRC-valid frame so an exception
-    # propagates from the slave rather than from local CRC checks.
+def test_build_write_multiple_with_empty_values_still_produces_valid_frame():
+    # Builder doesn't validate count >= 1; the slave is expected to reject
+    # quantity=0 with a Modbus exception (not a local CRC failure).
     frame = build_write_multiple_registers_frame(slave_id=1, address=0x0000, values=[])
     assert _verify_crc(frame)
     assert (frame[4] << 8) | frame[5] == 0

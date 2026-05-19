@@ -3556,7 +3556,6 @@ class ObjectivesWidget(QWidget):
         self.setLayout(layout)
 
     def on_objective_changed(self, objective_name):
-        self.objectiveStore.set_current_objective(objective_name)
         if self.objective_changer is not None:
             try:
                 self.objective_changer.move_to_objective(objective_name)
@@ -3566,7 +3565,12 @@ class ObjectivesWidget(QWidget):
                     "Objective Not Available",
                     f"Objective '{objective_name}' is not configured for the objective changer:\n{e}",
                 )
+                # Revert the dropdown so it matches the store / actual changer state.
+                self.dropdown.blockSignals(True)
+                self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+                self.dropdown.blockSignals(False)
                 return
+        self.objectiveStore.set_current_objective(objective_name)
         self.signal_objective_changed.emit()
 
 
