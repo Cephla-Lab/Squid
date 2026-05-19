@@ -6,7 +6,6 @@ the public API for CI and offline development.
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Optional
 
@@ -14,8 +13,9 @@ from serial.tools import list_ports
 from control.modbus_rtu import ModbusRTUClient
 
 import squid.abc
+import squid.logging
 
-logger = logging.getLogger(__name__)
+logger = squid.logging.get_logger("objective_turret_controller")
 
 # Turret mechanics
 GEAR_RATIO = 132 / 48
@@ -34,6 +34,7 @@ REG_RUN_MODE = 0x0039
 REG_CONTROL_WORD = 0x0051
 REG_TARGET_POSITION = 0x0053
 REG_MAX_SPEED = 0x005B
+REG_MIN_SPEED = 0x005D
 REG_ACCEL = 0x005F
 REG_DECEL = 0x0061
 REG_HOMING_OFFSET = 0x0069
@@ -42,6 +43,7 @@ REG_HOMING_SEARCH_SPEED = 0x006C
 REG_HOMING_ZERO_SPEED = 0x006E
 REG_ZERO_RETURN = 0x0072
 REG_CLEAR_ERROR_STORAGE = 0x0073
+REG_SET_ZERO = 0x0047
 
 # Control word values
 CW_DISABLE = 0x0000
@@ -54,6 +56,7 @@ CW_CLEAR_FAULT = 0x0080
 # Magic values
 SAVE_PARAMS_MAGIC = 0x7376
 CLEAR_ERROR_STORAGE_MAGIC = 0x6C64
+SET_ZERO_MAGIC = 0x535A
 
 # Run modes
 MODE_POSITION = 1
@@ -63,18 +66,32 @@ MODE_HOMING = 3
 STATUS_BIT_FAULT = 1 << 3
 STATUS_BIT_RUNNING = 1 << 12
 
-# Motion parameter defaults (auto-calibrated on first connect)
+# Motion parameter defaults (auto-calibrated on first connect).
+# Matches SingleMotor's check_init_params. Sharper accel/decel (e.g. baseline's
+# 600/600) cause step loss; 200/200 is the known-good turret config.
 EXPECTED_ACCEL = 200
 EXPECTED_DECEL = 200
 EXPECTED_MAX_SPEED = 250
-# Disable low-speed optimization. Factory default is 1 (enabled), which splits
-# position moves into slow/fast segments and causes missed steps on longer travels
-# — visible as positions 2/3/4 landing off-target while position 1 (zero pulses) works.
-LOW_SPEED_OPT_DISABLED = 0
+# NiMotion ramps cruise → min_speed at the end of position moves, then continues at
+# min_speed for the final approach pulses. Default 16 step/s makes that segment
+# very slow and audibly noisy. Higher values compress the slow tail; 150 ≈ 60% of
+# max_speed leaves enough decel range to avoid step loss.
+EXPECTED_MIN_SPEED = 150
+# 0x001F low-speed optimization. Manual: 0 = disabled, 1 = enabled. Empirically both
+# values produce identical motion on this firmware (the slow tail is min_speed
+# crawl, not LSO). Keeping the calibration to put the device in the manual's
+# documented "disabled" state explicitly.
+DRIVE_PARAM = 0
 
 # Homing defaults (auto-calibrated on first connect)
 HOMING_METHOD = 17
-HOMING_ORIGIN_OFFSET = 500
+# Counter value at the switch position after homing. Slot 1 sits AT the limit on
+# this turret, so we want counter=0 at the switch. SingleMotor's init_turret_params
+# sets this to 500 for a turret where slot 1 is offset from the limit — that doesn't
+# match our hardware, so we override to 0 explicitly. Forcing the value matters even
+# though baseline default is 0, because anything that ran SingleMotor's setup scripts
+# (or any other tool) may have left it at 500.
+HOMING_ORIGIN_OFFSET = 0
 HOMING_SEARCH_SPEED = 1000
 HOMING_ZERO_SPEED = 200
 HOMING_ZERO_RETURN = 1
@@ -82,7 +99,9 @@ DI1_FUNCTION_NEG_LIMIT = 1
 
 # Polling
 POLL_INTERVAL_S = 0.05
-DEFAULT_MOVE_TIMEOUT_S = 10.0
+# At accel=200/max_speed=250, slot 1 → slot 4 (~6600 pulses) takes ~25s. 30s
+# matches SingleMotor's UI timeout (_MOVING_TIMEOUT_MS in turret_panel.py).
+DEFAULT_MOVE_TIMEOUT_S = 30.0
 DEFAULT_HOME_TIMEOUT_S = 30.0
 
 # Settle time after a control-word transition before the next write.
@@ -275,7 +294,15 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
         self._wait_until_idle(timeout_s)
+        # Mark the limit position as counter zero so absolute slot targets land at the
+        # right physical angle. Log before/after so we can confirm the write actually
+        # resets the counter on this firmware variant.
+        pre = self.current_position_pulses
+        self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
+        time.sleep(0.05)
+        post = self.current_position_pulses
         self._current_objective = None
+        logger.info("Homed: pre_set_zero=%d, post_set_zero=%d", pre, post)
 
     def enable(self) -> None:
         """Run the disable -> startup -> enable state-machine cycle."""
@@ -341,6 +368,13 @@ class ObjectiveTurret4PosController:
         position_index = _resolve_position(objective_name, self._positions)
         target_pulses = (position_index - 1) * self._pulses_per_position
 
+        logger.info(
+            "Rotating to %s: start=%d, target=%d",
+            objective_name,
+            self.current_position_pulses,
+            target_pulses,
+        )
+
         self._write_control(CW_DISABLE)
         self._write_holding(REG_RUN_MODE, MODE_POSITION)
         self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, target_pulses, signed=True)
@@ -349,6 +383,12 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
         self._wait_for_position(target_pulses, timeout_s)
+        logger.info(
+            "Rotated to %s: target=%d, actual=%d",
+            objective_name,
+            target_pulses,
+            self.current_position_pulses,
+        )
 
     def _retract_z_if_possible(self) -> Optional[float]:
         from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
@@ -379,14 +419,15 @@ class ObjectiveTurret4PosController:
         else:
             current = self._modbus.read_register(self._slave_id, addr)
         desired = (current & ~mask) | expected if mask is not None else expected
+        fmt = "0x%08X" if mask is not None else "%d"
         if current == desired:
+            logger.info(f"%s @ 0x%04X: device={fmt} matches desired (no write)", label, addr, current)
             return False
         if is_32bit:
             self._modbus.write_register_32bit(self._slave_id, addr, desired, signed=signed)
         else:
             self._modbus.write_register(self._slave_id, addr, desired)
-        fmt = "0x%08X" if mask is not None else "%d"
-        logger.info(f"Calibrated %s: {fmt} -> {fmt}", label, current, desired)
+        logger.info(f"%s @ 0x%04X: {fmt} -> {fmt} (wrote)", label, addr, current, desired)
         return True
 
     def _calibrate_motion_params(self) -> bool:
@@ -395,7 +436,8 @@ class ObjectiveTurret4PosController:
                 self._calibrate_one(REG_ACCEL, EXPECTED_ACCEL, "accel", is_32bit=True),
                 self._calibrate_one(REG_DECEL, EXPECTED_DECEL, "decel", is_32bit=True),
                 self._calibrate_one(REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", is_32bit=True),
-                self._calibrate_one(REG_LOW_SPEED_OPT, LOW_SPEED_OPT_DISABLED, "low_speed_opt"),
+                self._calibrate_one(REG_MIN_SPEED, EXPECTED_MIN_SPEED, "min_speed", is_32bit=True),
+                self._calibrate_one(REG_LOW_SPEED_OPT, DRIVE_PARAM, "drive_param"),
             ]
         )
 
