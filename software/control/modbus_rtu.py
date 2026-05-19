@@ -354,28 +354,30 @@ class ModbusRTUClient:
         return self._serial is not None and self._serial.is_open
 
     def connect(self, port: Optional[str] = None, baudrate: Optional[int] = None):
-        if port is not None:
-            self._port = port
-        if baudrate is not None:
-            self._baudrate = baudrate
-        if self._port is None:
-            raise ModbusError("No serial port specified")
-        if self._serial is not None:
-            self._serial.close()
-            self._serial = None
-        try:
-            self._serial = serial.Serial(self._port, baudrate=self._baudrate, timeout=self._timeout)
-        except (serial.SerialException, OSError) as e:
-            raise ModbusError(str(e)) from e
-        logger.info(f"Modbus RTU connected: {self._port}")
+        with self._lock:
+            if port is not None:
+                self._port = port
+            if baudrate is not None:
+                self._baudrate = baudrate
+            if self._port is None:
+                raise ModbusError("No serial port specified")
+            if self._serial is not None:
+                self._serial.close()
+                self._serial = None
+            try:
+                self._serial = serial.Serial(self._port, baudrate=self._baudrate, timeout=self._timeout)
+            except (serial.SerialException, OSError) as e:
+                raise ModbusError(str(e)) from e
+            logger.info(f"Modbus RTU connected: {self._port}")
 
     def disconnect(self):
-        if self._serial is not None:
-            try:
-                self._serial.close()
-            finally:
-                self._serial = None
-            logger.info("Modbus RTU disconnected")
+        with self._lock:
+            if self._serial is not None:
+                try:
+                    self._serial.close()
+                finally:
+                    self._serial = None
+                logger.info("Modbus RTU disconnected")
 
     def _require_connected(self):
         if not self.is_connected:
@@ -500,6 +502,23 @@ class ModbusRTUClient:
 
                 if not _verify_crc(response):
                     last_error = ModbusError("CRC verification failed", slave_id=frame[0])
+                    logger.warning(
+                        f"Modbus request failed (attempt {attempt + 1}/" f"{self._retries + 1}): {last_error}"
+                    )
+                    if attempt < self._retries:
+                        time.sleep(FRAME_INTERVAL * 2)
+                    attempt += 1
+                    continue
+
+                # Validate slave_id and function-code echo (defense on a shared
+                # RS-485 bus where stray frames or cross-talk could otherwise be
+                # silently parsed as a valid response).
+                if response[0] != frame[0] or response[1] != frame[1]:
+                    last_error = ModbusError(
+                        f"Response mismatch: expected slave=0x{frame[0]:02X} fc=0x{frame[1]:02X}, "
+                        f"got slave=0x{response[0]:02X} fc=0x{response[1]:02X}",
+                        slave_id=frame[0],
+                    )
                     logger.warning(
                         f"Modbus request failed (attempt {attempt + 1}/" f"{self._retries + 1}): {last_error}"
                     )

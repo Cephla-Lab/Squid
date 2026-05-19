@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Protocol
 
 import imageio
 import numpy as np
@@ -45,6 +45,19 @@ if control._def.USE_OBJECTIVE_TURRET:
     )
 else:
     ObjectiveTurret4PosController = None
+
+
+class ObjectiveChangerProtocol(Protocol):
+    """Common interface implemented by both Xeryon 2-pos and NiMotion 4-pos turret controllers.
+
+    Lets type checkers verify that consumers only call methods supported by every
+    objective-changer variant. Optional methods (e.g. `setSpeed` on Xeryon,
+    `clear_alarm` on the turret) are accessed via attribute lookup at runtime.
+    """
+
+    def home(self) -> None: ...
+    def move_to_objective(self, objective_name: str) -> None: ...
+    def close(self) -> None: ...
 
 if control._def.RUN_FLUIDICS:
     from control.fluidics import Fluidics
@@ -205,7 +218,7 @@ class MicroscopeAddons:
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
-        objective_changer: Optional[object] = None,
+        objective_changer: Optional[ObjectiveChangerProtocol] = None,
         camera_focus: Optional[AbstractCamera] = None,
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,

@@ -37,7 +37,12 @@ def test_move_to_objective_short_circuits_when_already_there(monkeypatch):
     monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2", ["20x", "40x"])
     stage = FakeStage()
     sim = ObjectiveChanger2PosController_Simulation(sn="SIM", stage=stage)
+    # The sim only retracts Z when moving from pos1 to pos2 (or vice versa), so
+    # initial state must be at pos1 for the pos1 -> pos2 move to record a Z move.
+    sim.move_to_objective("4x")
+    stage.z_moves.clear()
     sim.move_to_objective("40x")  # pos1 -> pos2: records Z move
+    assert stage.z_moves, "expected pos1 -> pos2 to record a Z retract"
     z_moves_after_first = list(stage.z_moves)
     sim.move_to_objective("40x")  # already at pos2: no extra Z move
     assert stage.z_moves == z_moves_after_first
