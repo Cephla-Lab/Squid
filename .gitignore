@@ -6,3 +6,10 @@
 
 # PlatformIO
 .pio/
+
+# Machine-specific configs (keep .example templates)
+software/machine_configs/*.yaml
+!software/machine_configs/*.example
+
+# Xeryon stage settings (machine-specific)
+software/control/Xeryon_settings.txt
