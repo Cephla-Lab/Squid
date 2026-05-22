@@ -39,6 +39,15 @@ jobs:
           # Disable memory profiling in CI to avoid fork+threads deadlock issue
           sed -i '/^\[GENERAL\]/a enable_memory_profiling = false' configuration_Squid+.ini
         working-directory: ./software
+      - name: "Populate machine_configs from .example templates"
+        # Machine-specific configs are gitignored; copy the .example templates
+        # so default-config generation has something to read.
+        run: |
+          for example in machine_configs/*.yaml.example; do
+            target="${example%.example}"
+            cp "$example" "$target"
+          done
+        working-directory: ./software
       # For more on the headless qt prep, see here: https://pytest-qt.readthedocs.io/en/latest/troubleshooting.html#github-actions-azure-pipelines-travis-ci-and-gitlab-ci-cd
       - name: "Prep for headless qt tests."
         run: |
