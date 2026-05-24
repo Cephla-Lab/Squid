@@ -118,7 +118,7 @@ class MultiPointWorker:
         self.do_autofocus = acquisition_parameters.do_autofocus
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
         self.use_piezo = acquisition_parameters.use_piezo
-        self.apply_channel_offset = acquisition_parameters.apply_channel_offset  # NEW
+        self.apply_channel_offset = acquisition_parameters.apply_channel_offset
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
         self.experiment_ID = acquisition_parameters.experiment_ID
