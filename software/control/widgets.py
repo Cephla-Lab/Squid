@@ -4237,7 +4237,6 @@ class LiveControlWidget(QFrame):
         self.btn_resetZOffset.setToolTip("Set this channel's z-offset to 0.")
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
-        # Apply-on-channel-switch checkbox is created here but wired to behavior in Task 14
         self.checkbox_applyOnChannelSwitch = QCheckBox("Apply on channel switch")
         self.checkbox_applyOnChannelSwitch.setToolTip(
             "When checked and laser AF has a reference, switching channels moves z to the laser AF reference plus the new channel's offset."
