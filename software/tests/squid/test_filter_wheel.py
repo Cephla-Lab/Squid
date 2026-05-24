@@ -19,7 +19,7 @@ def _make_squid_config(motor_slot: int = 3) -> SquidFilterWheelConfig:
     )
 
 
-def _make_mock_mc(firmware_version=(1, 2)) -> MagicMock:
+def _make_mock_mc(firmware_version=(1, 3)) -> MagicMock:
     """MagicMock microcontroller with a configured firmware_version."""
     mc = MagicMock()
     mc.firmware_version = firmware_version

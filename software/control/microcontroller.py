@@ -187,12 +187,14 @@ class SimSerial(AbstractCephlaMicroSerial):
     # v1.0: multi-port illumination support
     # v1.1: serial watchdog for illumination auto-shutoff
     # v1.2: CMD_EXECUTION_ERROR reported on failed moves + MOVETO_W2 command
+    # v1.3: strobe ISR latches illumination source at start (race fix for
+    #       channel switch during live HW-triggered acquisition)
     FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 2
+    FIRMWARE_VERSION_MINOR = 3
 
     @staticmethod
     def response_bytes_for(
-        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 2)
+        command_id, execution_status, x, y, z, theta, joystick_button, switch, firmware_version=(1, 3)
     ) -> bytes:
         """
         - byte 0: command ID (1 byte)
