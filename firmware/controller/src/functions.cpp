@@ -195,6 +195,11 @@ bool strobe_on[6] = {false, false, false, false, false, false};
 unsigned long strobe_delay[6] = {0, 0, 0, 0, 0, 0};
 uint32_t illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
 long timestamp_trigger_rising_edge[6] = {0, 0, 0, 0, 0, 0};
+// Source latched at strobe start, used at strobe end to turn off the SAME
+// port we turned on. Without this, a channel switch (set_illumination from
+// Python) between strobe start and end would cause the strobe end to turn off
+// the new channel and leave the old one stuck HIGH.
+int strobe_active_source[6] = {0, 0, 0, 0, 0, 0};
 volatile uint8_t trigger_mode = 0;
 IntervalTimer strobeTimer;
 
@@ -267,14 +272,17 @@ void turn_on_illumination()
   }
 }
 
-void turn_off_illumination()
+// Turn off the port/matrix corresponding to a specific source code, without
+// touching the global illumination_is_on flag. The strobe ISR uses this to
+// turn off the SAME source it turned on at strobe start, even if Python has
+// since updated `illumination_source` while changing channels.
+static void turn_off_illumination_source(int source)
 {
-  // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
-  int port_index = illumination_source_to_port_index(illumination_source);
+  int port_index = illumination_source_to_port_index(source);
   if (port_index >= 0)
     illumination_port_is_on[port_index] = false;
 
-  switch(illumination_source)
+  switch(source)
   {
     case ILLUMINATION_SOURCE_LED_ARRAY_FULL:
       clear_matrix(matrix);
@@ -321,6 +329,11 @@ void turn_off_illumination()
       digitalWrite(PIN_ILLUMINATION_D5, LOW);
       break;
   }
+}
+
+void turn_off_illumination()
+{
+  turn_off_illumination_source(illumination_source);
   illumination_is_on = false;
 }
 
@@ -474,9 +487,14 @@ void ISR_strobeTimer()
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
           strobe_output_level[camera_channel] = HIGH;
+          // Latch the source we turn on, so we turn off the same one below
+          // even if illumination_source changes during the pulse.
+          strobe_active_source[camera_channel] = illumination_source;
           turn_on_illumination();
           delayMicroseconds(illumination_on_time[camera_channel]);
-          turn_off_illumination();
+          turn_off_illumination_source(strobe_active_source[camera_channel]);
+          if (illumination_source == strobe_active_source[camera_channel])
+            illumination_is_on = false;
           strobe_output_level[camera_channel] = LOW;
           control_strobe[camera_channel] = false;
         }
@@ -486,13 +504,23 @@ void ISR_strobeTimer()
         // start the strobe
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
+          // Latch source before turning on, so the strobe-end branch below
+          // turns off the SAME port even if Python changes illumination_source
+          // between start and end (the race that left e.g. 640 nm stuck HIGH
+          // after switching to 405 nm during live HW-triggered acquisition).
+          strobe_active_source[camera_channel] = illumination_source;
           turn_on_illumination();
           strobe_output_level[camera_channel] = HIGH;
         }
         // end the strobe
         if (((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel]) && strobe_output_level[camera_channel] == HIGH)
         {
-          turn_off_illumination();
+          turn_off_illumination_source(strobe_active_source[camera_channel]);
+          // Only clear illumination_is_on if the active source is still the
+          // one we strobed. If Python has switched channels and explicitly
+          // turned on the new source, leave illumination_is_on as Python set it.
+          if (illumination_source == strobe_active_source[camera_channel])
+            illumination_is_on = false;
           strobe_output_level[camera_channel] = LOW;
           control_strobe[camera_channel] = false;
         }

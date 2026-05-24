@@ -133,13 +133,15 @@ extern bool enable_filterwheel_w2;
 /***************************************************************************************************/
 /***************************************** illumination ********************************************/
 /***************************************************************************************************/
-extern int illumination_source;
+// volatile: read/written from both ISR_strobeTimer() and main-loop command callbacks
+extern volatile int illumination_source;
 extern uint16_t illumination_intensity;
 extern float illumination_intensity_factor;
 extern uint8_t led_matrix_r;
 extern uint8_t led_matrix_g;
 extern uint8_t led_matrix_b;
-extern bool illumination_is_on;
+// volatile: cleared at strobe end inside ISR, read by set_illumination() in main loop
+extern volatile bool illumination_is_on;
 
 // Multi-port illumination control (supports up to 16 ports D1-D16)
 #define NUM_ILLUMINATION_PORTS 16

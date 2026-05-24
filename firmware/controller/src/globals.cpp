@@ -130,7 +130,7 @@ bool enable_filterwheel_w2 = false;
 /***************************************************************************************************/
 /***************************************** illumination ********************************************/
 /***************************************************************************************************/
-int illumination_source = 0;
+volatile int illumination_source = 0;
 uint16_t illumination_intensity = 65535;
 // Illumination intensity scaling factor - scales DAC output for different hardware:
 //   0.6 = Squid LEDs (0-1.5V output range)
@@ -141,7 +141,7 @@ float illumination_intensity_factor = 0.6;
 uint8_t led_matrix_r = 0;
 uint8_t led_matrix_g = 0;
 uint8_t led_matrix_b = 0;
-bool illumination_is_on = false;
+volatile bool illumination_is_on = false;
 
 // Multi-port illumination control (all ports off and at zero intensity by default)
 bool illumination_port_is_on[NUM_ILLUMINATION_PORTS] = {false};
