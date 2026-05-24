@@ -772,6 +772,7 @@ class ConfigRepository:
                         ),
                         filter_wheel=None,  # Objective files don't include filter wheel
                         filter_position=None,
+                        z_offset_um=ch.z_offset_um,
                         illumination_settings=IlluminationSettings(
                             illumination_channel=None,  # From general.yaml
                             intensity=ch.illumination_settings.intensity,
