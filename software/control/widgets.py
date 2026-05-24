@@ -2685,6 +2685,7 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_newAnalogGain = Signal(float)
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
+    signal_channel_offsets_reset = Signal()
 
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
@@ -2945,6 +2946,7 @@ class LaserAutofocusSettingWidget(QWidget):
             )
         else:
             self._log.info(f"Reset z-offset to 0 for {len(channels)} channels of objective '{objective}'.")
+            self.signal_channel_offsets_reset.emit()
 
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
@@ -4466,6 +4468,27 @@ class LiveControlWidget(QFrame):
         try:
             self.is_switching_mode = True
             self.entry_zOffset.setValue(0.0)
+        finally:
+            self.is_switching_mode = False
+
+    def refresh_z_offset_from_config(self):
+        """Re-read z_offset_um from the repo and update the spinbox.
+
+        Use after an external mutation (e.g. 'Reset all channel offsets') that may have
+        changed the persisted value without updating this widget's in-memory
+        currentConfiguration.
+        """
+        if self.currentConfiguration is None:
+            return
+        refreshed = self.liveController.get_channel_by_name(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+        )
+        if refreshed is not None:
+            self.currentConfiguration.z_offset_um = refreshed.z_offset_um
+        try:
+            self.is_switching_mode = True
+            self.entry_zOffset.setValue(self.currentConfiguration.z_offset_um or 0.0)
         finally:
             self.is_switching_mode = False
 

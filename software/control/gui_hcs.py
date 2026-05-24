@@ -1626,6 +1626,11 @@ class HighContentScreeningGui(QMainWindow):
                     self.piezoWidget.update_displacement_um_display
                 )
 
+            # Refresh LiveControlWidget spinbox after Reset-all channel offsets
+            self.laserAutofocusSettingWidget.signal_channel_offsets_reset.connect(
+                self.liveControlWidget.refresh_z_offset_from_config
+            )
+
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
                 self.liveController.toggle_confocal_widefield
