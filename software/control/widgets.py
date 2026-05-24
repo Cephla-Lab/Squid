@@ -5503,6 +5503,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
+        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setToolTip(
+            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+        )
+        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
 
@@ -5677,6 +5684,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
+            grid_af.addWidget(self.checkbox_applyChannelOffset)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -5755,6 +5763,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -5788,6 +5797,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def setup_layout(self):
         self.grid = QVBoxLayout()
@@ -5887,6 +5897,18 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             and not self.multipointController.laserAutoFocusController.set_reference()
         ):
             error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+
+    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
+        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
+        if laser_af_on:
+            self.checkbox_applyChannelOffset.setToolTip(
+                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            )
+        else:
+            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
+
+    def _on_apply_channel_offset_changed(self, checked: bool):
+        self.multipointController.set_apply_channel_offset(checked)
 
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
