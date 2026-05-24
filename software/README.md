@@ -157,7 +157,7 @@ python3 main_hcs.py --simulation
 
 ## Updating an existing install
 `filter_wheels.yaml`, `illumination_channel_config.yaml`, and
-`control/Xeryon_settings.txt` were tracked in older revisions and are now
+`Xeryon_settings.txt` were tracked in older revisions and are now
 gitignored (PR #546). A `git pull` that crosses that commit will delete any
 unmodified local copy. If yours were deleted, restore the last tracked
 versions from git history (run from the repo root):
