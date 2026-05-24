@@ -95,12 +95,42 @@ def test_piezo_path_uses_piezo_move_to():
 
 
 def test_piezo_clamped_when_out_of_range():
+    """Piezo overflow is clamped and the offset tracker reflects the achieved (clamped) position."""
     w = _Stub(use_piezo=True, do_reflection_af=True, apply_channel_offset=True)
     w.z_piezo_um = 380.0
-    w._apply_channel_z_offset(_config(50.0))
+    w._apply_channel_z_offset(_config(50.0))  # would land at 430, clamps to 400
     w.piezo.move_to.assert_called_once_with(400.0)
     w._log.warning.assert_called_once()
     assert w.z_piezo_um == 400.0
+    # Tracker reflects the ACHIEVED offset (20 µm), not the requested 50 µm
+    assert w._current_z_offset_um == pytest.approx(20.0)
+
+
+def test_piezo_clamp_does_not_corrupt_subsequent_deltas():
+    """After a clamp, the next channel's delta is computed from the achieved offset, not the requested one."""
+    w = _Stub(use_piezo=True, do_reflection_af=True, apply_channel_offset=True)
+    w.z_piezo_um = 380.0
+    w._apply_channel_z_offset(_config(50.0))  # clamps to +20
+    w.piezo.move_to.reset_mock()
+    w._apply_channel_z_offset(_config(10.0))  # tracker=20, target=10, delta=-10
+    # Should move piezo by -10, from 400 → 390
+    w.piezo.move_to.assert_called_once_with(390.0)
+    assert w._current_z_offset_um == pytest.approx(10.0)
+
+
+def test_reset_handles_stage_failure_without_stranding_state():
+    """If the stage raises during reset, the tracker is still zeroed and the exception is logged, not propagated."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w._apply_channel_z_offset(_config(2.0))
+    assert w._current_z_offset_um == 2.0
+
+    # Make the stage raise on the reset move
+    w.stage.move_z.side_effect = RuntimeError("stage timeout")
+    w._reset_channel_z_offset()  # should not raise
+
+    assert w._current_z_offset_um == 0.0
+    # The error was logged via _log.exception (or _log.error with exc_info)
+    assert w._log.exception.called or w._log.error.called
 
 
 def test_sequence_four_channels_delta_pattern():

@@ -1170,29 +1170,37 @@ class MultiPointWorker:
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
-    def _move_z_for_offset(self, delta_um: float) -> None:
+    def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
 
         Piezo moves are clamped to [0, piezo.range_um] with a warning log if the offset
         would otherwise drive the piezo out of range. Stage moves inherit backlash
         compensation from CephlaStage.move_z().
+
+        Returns:
+            The delta actually moved (may differ from requested when the piezo is clamped
+            to its range).
         """
         if self.use_piezo:
-            new_piezo_um = self.z_piezo_um + delta_um
-            if new_piezo_um < 0 or new_piezo_um > self.piezo.range_um:
+            requested_piezo_um = self.z_piezo_um + delta_um
+            clamped = max(0.0, min(self.piezo.range_um, requested_piezo_um))
+            if clamped != requested_piezo_um:
                 self._log.warning(
                     f"channel z-offset {delta_um:+.2f} µm would drive piezo out of range "
-                    f"({new_piezo_um:.2f} µm vs [0, {self.piezo.range_um}]); clamping"
+                    f"({requested_piezo_um:.2f} µm vs [0, {self.piezo.range_um}]); clamping to "
+                    f"{clamped:.2f} µm"
                 )
-                new_piezo_um = max(0.0, min(self.piezo.range_um, new_piezo_um))
-            self.z_piezo_um = new_piezo_um
+            actual_delta_um = clamped - self.z_piezo_um
+            self.z_piezo_um = clamped
             self.piezo.move_to(self.z_piezo_um)
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            return actual_delta_um
         else:
             self.stage.move_z(delta_um / 1000)
             self.wait_till_operation_is_completed()
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            return delta_um
 
     def _apply_channel_z_offset(self, config) -> None:
         """Move z by the delta needed to reach this channel's per-channel z-offset.
@@ -1202,19 +1210,23 @@ class MultiPointWorker:
         """
         if not (self.apply_channel_offset and self.do_reflection_af):
             return
-        target_um = config.z_offset_um or 0.0
+        target_um = config.z_offset_um if config.z_offset_um is not None else 0.0
         delta_um = target_um - self._current_z_offset_um
         if delta_um == 0:
             return
-        self._move_z_for_offset(delta_um)
-        self._current_z_offset_um = target_um
+        actual_delta_um = self._move_z_for_offset(delta_um)
+        self._current_z_offset_um = self._current_z_offset_um + actual_delta_um
 
     def _reset_channel_z_offset(self) -> None:
         """Undo any remaining offset so z returns to the un-offset baseline."""
         if self._current_z_offset_um == 0:
             return
-        self._move_z_for_offset(-self._current_z_offset_um)
+        saved = self._current_z_offset_um
         self._current_z_offset_um = 0.0
+        try:
+            self._move_z_for_offset(-saved)
+        except Exception:
+            self._log.exception(f"Failed to reset channel z-offset of {saved:+.2f} µm; stage may be at non-baseline z")
 
     def _log_ignored_offsets(self) -> None:
         """Log a notice if non-zero per-channel offsets exist but won't be applied this run."""
