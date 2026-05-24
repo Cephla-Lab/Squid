@@ -4500,7 +4500,10 @@ class LiveControlWidget(QFrame):
         current_z_mm = self.liveController.microscope.stage.get_pos().z_mm
         reference_z_mm = current_z_mm - displacement_um / 1000
         target_z_mm = reference_z_mm + (new_config.z_offset_um or 0.0) / 1000
-        self.liveController.microscope.stage.move_z_to(target_z_mm)
+        try:
+            self.liveController.microscope.stage.move_z_to(target_z_mm)
+        except Exception as e:
+            self._log.warning(f"Failed to apply live channel z-offset (stage move): {e}")
 
     def _persist_iris_config(self, setting_name, new_value):
         if self.currentConfiguration:
