@@ -2933,9 +2933,18 @@ class LaserAutofocusSettingWidget(QWidget):
         )
         if confirm != QMessageBox.Yes:
             return
+        failed = []
         for ch in channels:
-            config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0)
-        self._log.info(f"Reset z-offset to 0 for {len(channels)} channels of objective '{objective}'.")
+            if not config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0):
+                failed.append(ch.name)
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Reset incomplete",
+                f"Could not reset offsets for: {', '.join(failed)}.",
+            )
+        else:
+            self._log.info(f"Reset z-offset to 0 for {len(channels)} channels of objective '{objective}'.")
 
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
@@ -4393,13 +4402,17 @@ class LiveControlWidget(QFrame):
         if self.currentConfiguration is None:
             return
         self.currentConfiguration.z_offset_um = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
+        ok = self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective,
             self.currentConfiguration.name,
             "ZOffset",
             new_value,
             confocal_mode=self.liveController.is_confocal_mode(),
         )
+        if not ok:
+            self._log.warning(
+                f"Failed to persist z_offset_um={new_value} for channel '{self.currentConfiguration.name}'"
+            )
 
     def capture_current_z_offset(self):
         if self.currentConfiguration is None:
@@ -4418,13 +4431,19 @@ class LiveControlWidget(QFrame):
             QMessageBox.warning(self, "Capture failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
             return
         self.currentConfiguration.z_offset_um = displacement_um
-        self.liveController.microscope.config_repo.update_channel_setting(
+        ok = self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective,
             self.currentConfiguration.name,
             "ZOffset",
             displacement_um,
             confocal_mode=self.liveController.is_confocal_mode(),
         )
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "Save failed",
+                "Offset captured but could not be saved to channel config. Value will be lost on restart.",
+            )
         try:
             self.is_switching_mode = True
             self.entry_zOffset.setValue(displacement_um)
@@ -4435,13 +4454,15 @@ class LiveControlWidget(QFrame):
         if self.currentConfiguration is None:
             return
         self.currentConfiguration.z_offset_um = 0.0
-        self.liveController.microscope.config_repo.update_channel_setting(
+        ok = self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective,
             self.currentConfiguration.name,
             "ZOffset",
             0.0,
             confocal_mode=self.liveController.is_confocal_mode(),
         )
+        if not ok:
+            self._log.warning(f"Failed to persist z_offset_um=0.0 for channel '{self.currentConfiguration.name}'")
         try:
             self.is_switching_mode = True
             self.entry_zOffset.setValue(0.0)
