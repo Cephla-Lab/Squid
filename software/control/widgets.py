@@ -9120,6 +9120,13 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
+        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setToolTip(
+            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+        )
+        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+
         # Piezo checkbox
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
@@ -9188,6 +9195,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         options_layout = QVBoxLayout()
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
+            options_layout.addWidget(self.checkbox_applyChannelOffset)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
             if IS_PIEZO_ONLY:
@@ -9232,6 +9240,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -9239,6 +9248,8 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
+
+        self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     # The following methods are copied from WellplateMultiPointWidget with minimal modifications
     def toggle_acquisition(self, pressed):
@@ -9512,6 +9523,18 @@ class MultiPointWithFluidicsWidget(QFrame):
         """Initialize the fluidics system"""
         # self.multipointController.fluidics.initialize()
         self.btn_startAcquisition.setEnabled(True)
+
+    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
+        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
+        if laser_af_on:
+            self.checkbox_applyChannelOffset.setToolTip(
+                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            )
+        else:
+            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
+
+    def _on_apply_channel_offset_changed(self, checked: bool):
+        self.multipointController.set_apply_channel_offset(checked)
 
     def get_rounds(self) -> list:
         """Parse rounds input string into a list of round numbers.
