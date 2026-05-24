@@ -3,20 +3,6 @@
 This directory contains hardware-specific configuration files for the microscope.
 These files define the physical hardware setup and should be configured once per machine.
 
-## After updating from an older version
-
-`filter_wheels.yaml`, `illumination_channel_config.yaml`, and
-`control/Xeryon_settings.txt` were tracked in older revisions and are now
-gitignored (PR #546). A `git pull` that crosses that commit will delete any
-unmodified local copy. To restore the pre-removal versions from git history,
-run once after pulling:
-
-```bash
-bash tools/restore_machine_configs.sh
-```
-
-Subsequent pulls leave the files alone.
-
 ## Files
 
 ### `illumination_channel_config.yaml`
