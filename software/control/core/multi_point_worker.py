@@ -1067,33 +1067,38 @@ class MultiPointWorker:
 
             current_round_images = {}
             # iterate through selected modes
-            for config_idx, config in enumerate(self.selected_configurations):
-                if self.NZ == 1:  # TODO: handle z offset for z stack
-                    self.handle_z_offset(config, True)
+            try:
+                for config_idx, config in enumerate(self.selected_configurations):
+                    self._apply_channel_z_offset(config)
 
-                # acquire image
-                with self._timing.get_timer("acquire_camera_image"):
-                    # TODO(imo): This really should not look for a string in a user configurable name.  We
-                    # need some proper flag on the config to signal this instead...
-                    if "RGB" in config.name:
-                        self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
-                    else:
-                        self.acquire_camera_image(
-                            config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx
-                        )
+                    # acquire image
+                    with self._timing.get_timer("acquire_camera_image"):
+                        # TODO(imo): This really should not look for a string in a user configurable name.  We
+                        # need some proper flag on the config to signal this instead...
+                        if "RGB" in config.name:
+                            self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
+                        else:
+                            self.acquire_camera_image(
+                                config,
+                                file_ID,
+                                current_path,
+                                z_level,
+                                region_id=region_id,
+                                fov=fov,
+                                config_idx=config_idx,
+                            )
 
-                if self.NZ == 1:  # TODO: handle z offset for z stack
-                    self.handle_z_offset(config, False)
-
-                current_image = (
-                    fov * self.NZ * len(self.selected_configurations)
-                    + z_level * len(self.selected_configurations)
-                    + config_idx
-                    + 1
-                )
-                self.callbacks.signal_region_progress(
-                    RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
-                )
+                    current_image = (
+                        fov * self.NZ * len(self.selected_configurations)
+                        + z_level * len(self.selected_configurations)
+                        + config_idx
+                        + 1
+                    )
+                    self.callbacks.signal_region_progress(
+                        RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+                    )
+            finally:
+                self._reset_channel_z_offset()
 
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
@@ -1207,15 +1212,6 @@ class MultiPointWorker:
             return
         self._move_z_for_offset(-self._current_z_offset_um)
         self._current_z_offset_um = 0.0
-
-    def handle_z_offset(self, config, not_offset):
-        if config.z_offset is not None:  # perform z offset for config, assume z_offset is in um
-            if config.z_offset != 0.0:
-                direction = 1 if not_offset else -1
-                self._log.info("Moving Z offset" + str(config.z_offset * direction))
-                self.stage.move_z(config.z_offset / 1000 * direction)
-                self.wait_till_operation_is_completed()
-                self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
