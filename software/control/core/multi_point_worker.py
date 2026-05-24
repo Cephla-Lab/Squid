@@ -448,6 +448,9 @@ class MultiPointWorker:
             self._laser_engine = getattr(self.microscope.addons, "squid_laser_engine", None)
             self._laser_channels_needed = self._compute_laser_channels_needed()
 
+            # Warn once if non-zero channel offsets won't be applied this run.
+            self._log_ignored_offsets()
+
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
                 if self.abort_requested_fn():
@@ -1212,6 +1215,17 @@ class MultiPointWorker:
             return
         self._move_z_for_offset(-self._current_z_offset_um)
         self._current_z_offset_um = 0.0
+
+    def _log_ignored_offsets(self) -> None:
+        """Log a notice if non-zero per-channel offsets exist but won't be applied this run."""
+        if self.apply_channel_offset and self.do_reflection_af:
+            return
+        ignored = [(c.name, c.z_offset_um) for c in self.selected_configurations if (c.z_offset_um or 0.0) != 0.0]
+        if not ignored:
+            return
+        summary = ", ".join(f"{name}: {off:+.2f}µm" for name, off in ignored)
+        reason = "laser AF off" if not self.do_reflection_af else "'Apply channel offset' unchecked"
+        self._log.info(f"[multi-point] {reason} — ignoring non-zero z-offsets on channels: [{summary}]")
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
