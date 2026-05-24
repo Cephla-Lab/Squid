@@ -2667,6 +2667,7 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.streamHandler = streamHandler
         self.liveController: LiveController = liveController
         self.laserAutofocusController = laserAutofocusController
@@ -2798,6 +2799,11 @@ class LaserAutofocusSettingWidget(QWidget):
         self.initialize_button = QPushButton("Initialize")
         self.initialize_button.setStyleSheet("background-color: #C2C2FF")
         initialize_layout.addWidget(self.initialize_button)
+        self.btn_resetAllChannelOffsets = QPushButton("Reset all channel offsets")
+        self.btn_resetAllChannelOffsets.setToolTip(
+            "Set z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
+        )
+        initialize_layout.addWidget(self.btn_resetAllChannelOffsets)
         initialize_group.setLayout(initialize_layout)
 
         # Add Laser AF Characterization Mode checkbox
@@ -2828,6 +2834,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
+        self.btn_resetAllChannelOffsets.clicked.connect(self._reset_all_channel_offsets)
 
     def _add_spinbox(
         self,
@@ -2883,6 +2890,31 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def toggle_characterization_mode(self, state):
         self.laserAutofocusController.characterization_mode = state
+
+    def _reset_all_channel_offsets(self):
+        objective = self.laserAutofocusController.objectiveStore.current_objective
+        config_repo = self.laserAutofocusController._config_repo
+        obj_config = config_repo.get_objective_config(objective)
+        general_config = config_repo.get_general_config()
+        channels = (
+            (obj_config.channels if obj_config else None) or (general_config.channels if general_config else None) or []
+        )
+        if not channels:
+            QMessageBox.information(self, "No channels", f"No channels found for objective '{objective}'.")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Reset channel offsets",
+            f"Set z-offset to 0 for all {len(channels)} channels of objective '{objective}'?\n"
+            f"Recommended when starting a new sample.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        for ch in channels:
+            config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0)
+        self._log.info(f"Reset z-offset to 0 for {len(channels)} channels of objective '{objective}'.")
 
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
@@ -11127,6 +11159,18 @@ class NapariLiveWidget(QWidget):
         self.addNapariGrayclipColormap()
         self.initControlWidgets(show_trigger_options, show_display_options, show_autolevel, autolevel)
         self.update_ui_for_mode(self.live_configuration)
+
+        # Wire 'Apply on channel switch' checkbox enable state to laser AF reference availability.
+        laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
+        if laser_af is not None:
+            laser_af.signal_reference_changed.connect(self._on_laser_af_reference_changed)
+            initial_has_ref = bool(getattr(laser_af.laser_af_properties, "has_reference", False))
+        else:
+            initial_has_ref = False
+
+        self.checkbox_applyOnChannelSwitch.setEnabled(initial_has_ref)
+        self.checkbox_applyOnChannelSwitch.setChecked(initial_has_ref)
+        self.btn_captureZOffset.setEnabled(initial_has_ref)
 
     def initNapariViewer(self):
         self.viewer = napari.Viewer(show=False)
