@@ -111,3 +111,22 @@ def test_sequence_four_channels_delta_pattern():
     rel_mm_args = [call.args[0] for call in w.stage.move_z.call_args_list]
     assert rel_mm_args == pytest.approx([2 / 1000, -3 / 1000, 1 / 1000])
     assert w._current_z_offset_um == 0.0
+
+
+def test_handle_acquisition_abort_resets_offset(tmp_path):
+    """handle_acquisition_abort resets any stranded offset defensively."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    # Simulate a stranded offset (e.g., exception bypassed the inner finally)
+    w._current_z_offset_um = 1.7
+    # Wire up the real method
+    w.handle_acquisition_abort = MultiPointWorker.handle_acquisition_abort.__get__(w)
+    # Minimal mocks for the rest of handle_acquisition_abort's behavior
+    w.coordinates_pd = MagicMock()
+    w.microcontroller = MagicMock()
+    w._wait_for_outstanding_callback_images = MagicMock()
+
+    w.handle_acquisition_abort(current_path=str(tmp_path))
+
+    # The first stage move must be the reset (-1.7 µm)
+    assert w.stage.move_z.call_args_list[0].args[0] == pytest.approx(-1.7 / 1000)
+    assert w._current_z_offset_um == 0.0

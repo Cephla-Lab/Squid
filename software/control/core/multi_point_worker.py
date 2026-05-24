@@ -1539,6 +1539,8 @@ class MultiPointWorker:
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
 
     def handle_acquisition_abort(self, current_path):
+        # Undo any stranded per-channel offset before saving abort state
+        self._reset_channel_z_offset()
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
