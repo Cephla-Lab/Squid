@@ -3990,6 +3990,18 @@ class LiveControlWidget(QFrame):
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
+        # Wire 'Apply on channel switch' checkbox enable state to laser AF reference availability.
+        laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
+        if laser_af is not None:
+            laser_af.signal_reference_changed.connect(self._on_laser_af_reference_changed)
+            initial_has_ref = bool(getattr(laser_af.laser_af_properties, "has_reference", False))
+        else:
+            initial_has_ref = False
+
+        self.checkbox_applyOnChannelSwitch.setEnabled(initial_has_ref)
+        self.checkbox_applyOnChannelSwitch.setChecked(initial_has_ref)
+        self.btn_captureZOffset.setEnabled(initial_has_ref)
+
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
@@ -4263,6 +4275,7 @@ class LiveControlWidget(QFrame):
 
         self.liveController.set_microscope_mode(maybe_new_config)
         self.update_ui_for_mode(maybe_new_config)
+        self._maybe_apply_live_channel_offset(maybe_new_config)
 
     def update_ui_for_mode(self, config):
         try:
@@ -4382,6 +4395,39 @@ class LiveControlWidget(QFrame):
             self.entry_zOffset.setValue(0.0)
         finally:
             self.is_switching_mode = False
+
+    def _on_laser_af_reference_changed(self, has_reference: bool):
+        """Enable or disable the z-offset controls based on laser AF reference availability.
+
+        Never changes the checked state of checkbox_applyOnChannelSwitch — the user's
+        choice is preserved across recalibration cycles.
+        """
+        self.checkbox_applyOnChannelSwitch.setEnabled(has_reference)
+        self.btn_captureZOffset.setEnabled(has_reference)
+
+    def _maybe_apply_live_channel_offset(self, new_config):
+        """Move stage to absolute z = laser_af_reference + new_config.z_offset_um on channel switch.
+
+        No-op when the user hasn't enabled 'Apply on channel switch', when laser AF has no
+        reference, or when no valid laser AF reading is available. Uses absolute positioning
+        so manual z jogs by the user don't bias the next switch.
+        """
+        if not self.checkbox_applyOnChannelSwitch.isChecked():
+            return
+        laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
+        if laser_af is None or not getattr(laser_af.laser_af_properties, "has_reference", False):
+            return
+        if new_config is None:
+            return
+        try:
+            displacement_um = laser_af.measure_displacement()
+        except Exception as e:
+            self._log.warning(f"Could not read laser AF spot for live offset: {e}")
+            return
+        current_z_mm = self.liveController.microscope.stage.get_pos().z_mm
+        reference_z_mm = current_z_mm - displacement_um / 1000
+        target_z_mm = reference_z_mm + (new_config.z_offset_um or 0.0) / 1000
+        self.liveController.microscope.stage.move_z_to(target_z_mm)
 
     def _persist_iris_config(self, setting_name, new_value):
         if self.currentConfiguration:
