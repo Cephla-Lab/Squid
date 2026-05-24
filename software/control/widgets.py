@@ -7027,6 +7027,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
+        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setToolTip(
+            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+        )
+        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
 
@@ -7257,6 +7264,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         options_layout.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
+            options_layout.addWidget(self.checkbox_applyChannelOffset)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -7331,6 +7339,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
@@ -7378,6 +7387,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.list_configurations.itemSelectionChanged.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
         self._mosaic_layers_initialized = True
@@ -8669,6 +8679,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
+
+    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
+        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
+        if laser_af_on:
+            self.checkbox_applyChannelOffset.setToolTip(
+                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            )
+        else:
+            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
+
+    def _on_apply_channel_offset_changed(self, checked: bool):
+        self.multipointController.set_apply_channel_offset(checked)
 
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
