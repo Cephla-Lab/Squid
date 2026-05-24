@@ -24,6 +24,7 @@ class LaserAutofocusController(QObject):
     signal_displacement_um = Signal(float)
     signal_cross_correlation = Signal(float)
     signal_piezo_position_update = Signal()  # Signal to emit piezo position updates
+    signal_reference_changed = Signal(bool)  # emitted with new has_reference state
 
     def __init__(
         self,
@@ -179,6 +180,7 @@ class LaserAutofocusController(QObject):
         )
         self.reference_crop = None
         config.set_reference_image(None)
+        self.signal_reference_changed.emit(False)
         self._log.info(f"Laser spot location on the full sensor is ({int(x)}, {int(y)})")
 
         self.initialize_manual(config)
@@ -454,6 +456,7 @@ class LaserAutofocusController(QObject):
 
         self._log.info("Reference spot position set")
 
+        self.signal_reference_changed.emit(True)
         return True
 
     def on_settings_changed(self) -> None:
