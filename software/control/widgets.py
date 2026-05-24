@@ -960,6 +960,27 @@ class AcquisitionYAMLDropMixin:
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
 
 
+class _ApplyChannelOffsetMixin:
+    """Mixin providing the laser-AF per-channel z-offset checkbox handlers.
+
+    Widgets using this mixin must have:
+    - ``self.checkbox_applyChannelOffset`` (QCheckBox)
+    - ``self.multipointController`` with ``set_apply_channel_offset(bool)``
+    """
+
+    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
+        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
+        if laser_af_on:
+            self.checkbox_applyChannelOffset.setToolTip(
+                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            )
+        else:
+            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
+
+    def _on_apply_channel_offset_changed(self, checked: bool):
+        self.multipointController.set_apply_channel_offset(checked)
+
+
 class AcquisitionYAMLMismatchDialog(QDialog):
     """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
 
@@ -5490,7 +5511,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6087,18 +6108,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             and not self.multipointController.laserAutoFocusController.set_reference()
         ):
             error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
-
-    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
-        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
-        if laser_af_on:
-            self.checkbox_applyChannelOffset.setToolTip(
-                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
-            )
-        else:
-            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
-
-    def _on_apply_channel_offset_changed(self, checked: bool):
-        self.multipointController.set_apply_channel_offset(checked)
 
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
@@ -6988,7 +6997,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8870,18 +8879,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
 
-    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
-        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
-        if laser_af_on:
-            self.checkbox_applyChannelOffset.setToolTip(
-                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
-            )
-        else:
-            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
-
-    def _on_apply_channel_offset_changed(self, checked: bool):
-        self.multipointController.set_apply_channel_offset(checked)
-
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
@@ -9228,7 +9225,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         return row, col
 
 
-class MultiPointWithFluidicsWidget(QFrame):
+class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
     """A simplified version of WellplateMultiPointWidget for use with fluidics"""
 
     signal_acquisition_started = Signal(bool)
@@ -9713,18 +9710,6 @@ class MultiPointWithFluidicsWidget(QFrame):
         """Initialize the fluidics system"""
         # self.multipointController.fluidics.initialize()
         self.btn_startAcquisition.setEnabled(True)
-
-    def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
-        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
-        if laser_af_on:
-            self.checkbox_applyChannelOffset.setToolTip(
-                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
-            )
-        else:
-            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
-
-    def _on_apply_channel_offset_changed(self, checked: bool):
-        self.multipointController.set_apply_channel_offset(checked)
 
     def get_rounds(self) -> list:
         """Parse rounds input string into a list of round numbers.
