@@ -717,6 +717,7 @@ class ConfigRepository:
         - "IlluminationIntensity" -> illumination_settings.intensity
         - "IlluminationIris" -> confocal_hardware_settings.illumination_iris
         - "EmissionIris" -> confocal_hardware_settings.emission_iris
+        - "ZOffset" -> z_offset_um (top-level channel field)
 
         Args:
             objective: Objective name
@@ -741,6 +742,7 @@ class ConfigRepository:
             "IlluminationIntensity": ("illumination", "intensity"),
             "IlluminationIris": ("confocal_hw", "illumination_iris"),
             "EmissionIris": ("confocal_hw", "emission_iris"),
+            "ZOffset": ("channel", "z_offset_um"),
         }
 
         if setting not in setting_mapping:
@@ -795,6 +797,9 @@ class ConfigRepository:
 
                 acq_channel.confocal_hardware_settings = build_confocal_settings_from_config(self.get_confocal_config())
             setattr(acq_channel.confocal_hardware_settings, field, value)
+        elif location == "channel":
+            # Top-level channel field — single value regardless of confocal_mode
+            setattr(acq_channel, field, value)
         elif confocal_mode:
             # Write to confocal_override — create it if it doesn't exist
             if acq_channel.confocal_override is None:
