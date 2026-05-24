@@ -212,6 +212,7 @@ class MultiPointController:
 
         self.do_autofocus = False
         self.do_reflection_af = False
+        self.apply_channel_offset = True  # NEW: default on; acquisition widgets override
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
@@ -399,6 +400,9 @@ class MultiPointController:
 
     def set_reflection_af_flag(self, flag):
         self.do_reflection_af = flag
+
+    def set_apply_channel_offset(self, flag: bool):
+        self.apply_channel_offset = bool(flag)
 
     def set_manual_focus_map_flag(self, flag):
         self.use_manual_focus_map = flag
@@ -944,6 +948,7 @@ class MultiPointController:
             deltat=self.deltat,
             do_autofocus=self.do_autofocus,
             do_reflection_autofocus=self.do_reflection_af,
+            apply_channel_offset=self.apply_channel_offset,  # NEW
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,

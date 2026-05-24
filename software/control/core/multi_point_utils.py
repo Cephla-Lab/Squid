@@ -54,6 +54,7 @@ class AcquisitionParameters:
     z_range: Tuple[float, float]
 
     use_fluidics: bool
+    apply_channel_offset: bool = True
     skip_saving: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").

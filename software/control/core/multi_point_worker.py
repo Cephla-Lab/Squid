@@ -93,6 +93,7 @@ class MultiPointWorker:
         self._acquisition_error_count = 0
         self._laser_af_successes = 0
         self._laser_af_failures = 0
+        self._current_z_offset_um: float = 0.0
         self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
         self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
@@ -117,6 +118,7 @@ class MultiPointWorker:
         self.do_autofocus = acquisition_parameters.do_autofocus
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
         self.use_piezo = acquisition_parameters.use_piezo
+        self.apply_channel_offset = acquisition_parameters.apply_channel_offset  # NEW
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
         self.experiment_ID = acquisition_parameters.experiment_ID

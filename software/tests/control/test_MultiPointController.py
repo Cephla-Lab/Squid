@@ -339,3 +339,71 @@ def test_multi_point_with_contrast_af():
     assert tt.image_count == mpc.get_acquisition_image_count()
     assert tt.current_fovs_count > 0
     assert tt.config_change_count > 0
+
+
+def test_acquisition_parameters_has_apply_channel_offset_default_true():
+    """apply_channel_offset defaults to True for backward compatibility (TCP/MCP callers)."""
+    from control.core.multi_point_utils import AcquisitionParameters, ScanPositionInformation
+
+    sp = ScanPositionInformation(
+        scan_region_coords_mm=[],
+        scan_region_names=[],
+        scan_region_fov_coords_mm={},
+    )
+    p = AcquisitionParameters(
+        experiment_ID=None,
+        base_path=None,
+        selected_configurations=[],
+        acquisition_start_time=0.0,
+        scan_position_information=sp,
+        NX=1,
+        deltaX=0,
+        NY=1,
+        deltaY=0,
+        NZ=1,
+        deltaZ=0,
+        Nt=1,
+        deltat=0,
+        do_autofocus=False,
+        do_reflection_autofocus=False,
+        use_piezo=False,
+        display_resolution_scaling=1.0,
+        z_stacking_config="FROM CENTER",
+        z_range=(0.0, 0.0),
+        use_fluidics=False,
+    )
+    assert p.apply_channel_offset is True
+
+
+def test_acquisition_parameters_apply_channel_offset_can_be_overridden():
+    from control.core.multi_point_utils import AcquisitionParameters, ScanPositionInformation
+
+    sp = ScanPositionInformation(
+        scan_region_coords_mm=[],
+        scan_region_names=[],
+        scan_region_fov_coords_mm={},
+    )
+    p = AcquisitionParameters(
+        experiment_ID=None,
+        base_path=None,
+        selected_configurations=[],
+        acquisition_start_time=0.0,
+        scan_position_information=sp,
+        NX=1,
+        deltaX=0,
+        NY=1,
+        deltaY=0,
+        NZ=1,
+        deltaZ=0,
+        Nt=1,
+        deltat=0,
+        do_autofocus=False,
+        do_reflection_autofocus=False,
+        use_piezo=False,
+        display_resolution_scaling=1.0,
+        z_stacking_config="FROM CENTER",
+        z_range=(0.0, 0.0),
+        use_fluidics=False,
+        apply_channel_offset=False,
+    )
+    assert p.apply_channel_offset is False
