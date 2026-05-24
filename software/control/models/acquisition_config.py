@@ -133,7 +133,14 @@ class AcquisitionChannel(BaseModel):
     filter_position: Optional[int] = Field(None, ge=1, description="Position in filter wheel")
 
     # Z offset applied when switching to this channel
-    z_offset_um: float = Field(0.0, description="Z offset in micrometers")
+    z_offset_um: float = Field(
+        0.0,
+        description=(
+            "Z offset (µm) from the laser AF reference plane. Applied during acquisition "
+            "and (opt-in) on live channel switch only when laser autofocus is the active AF method. "
+            "Sample-dependent — re-capture or reset when starting a new sample."
+        ),
+    )
 
     # Illumination
     illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
