@@ -1314,44 +1314,15 @@ git commit -m "feat(widget): apply per-channel z-offset on channel switch in Liv
 
 ---
 
-## Task 15: `NapariLiveWidget` — mirror Task 13 + Task 14
+## Task 15: `NapariLiveWidget` — SKIPPED
 
-**Files:**
-- Modify: `software/control/widgets.py:10857` (`NapariLiveWidget`)
+**Status:** Skipped on 2026-05-23 during implementation.
 
-`NapariLiveWidget` is the napari-based live view; it duplicates much of `LiveControlWidget`'s per-channel controls (see the existing exposure/gain/intensity blocks around lines 10995-11017).
+**Reason:** `NapariLiveWidget` is dead code in the running app — `USE_NAPARI_FOR_LIVE_VIEW = False` in `software/control/_def.py:991` and no INI/profile override flips it on. The only instantiation site (`gui_hcs.py:1020-1151`) sits inside `if USE_NAPARI_FOR_LIVE_VIEW and self.napariLiveWidget is not None:`, so the widget is never created.
 
-- [ ] **Step 1: Replicate the offset row UI**
+Following the project's "Dead Code Patterns" guidance in `CLAUDE.md` (sibling examples: `USE_NAPARI_FOR_MULTIPOINT`, `SINGLE_WINDOW`, `PlateReader`), there's no value in adding new UI to a widget that's about to be removed.
 
-In `NapariLiveWidget.add_components` (find via `grep -n "def add_components\|class NapariLiveWidget" software/control/widgets.py | head` after line 10857), add the same `checkbox_showZOffset`, `widget_zOffsetRow`, `entry_zOffset`, `btn_captureZOffset`, `btn_resetZOffset`, `checkbox_applyOnChannelSwitch` block as in Task 13.
-
-Use `self.live_configuration` instead of `self.currentConfiguration` (matches the existing NapariLiveWidget pattern at line 10999 et al).
-
-- [ ] **Step 2: Replicate handlers + dropdown integration**
-
-Mirror `update_config_z_offset`, `capture_current_z_offset`, `reset_current_z_offset`, `_on_laser_af_reference_changed`, `_maybe_apply_live_channel_offset`. Adapt attribute names (`live_configuration`, `liveController` vs whatever NapariLiveWidget uses).
-
-In `NapariLiveWidget`'s `update_ui_for_mode` (find around line 11220-11230), add:
-
-```python
-self.entry_zOffset.setValue(self.live_configuration.z_offset_um or 0.0)
-```
-
-In its dropdown-change handler (find by searching same area for `currentIndexChanged` / `dropdown_modeSelection`), call `self._maybe_apply_live_channel_offset(self.live_configuration)` after the config switch.
-
-- [ ] **Step 3: Import sanity check**
-
-```bash
-python -c "import control.widgets; print('OK')"
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-black --config software/pyproject.toml software/control/widgets.py
-git add software/control/widgets.py
-git commit -m "feat(widget): mirror Z-offset UI and live-apply in NapariLiveWidget"
-```
+**Follow-up:** A separate cleanup PR from `master` should remove `NapariLiveWidget`, the `USE_NAPARI_FOR_LIVE_VIEW` flag, and the gated branches in `gui_hcs.py`. Tracking note saved at `worktrees/docs/2026-05-23-napari-live-widget-dead-code-cleanup.md` (uncommitted, project convention for analysis notes).
 
 ---
 
