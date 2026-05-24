@@ -4162,6 +4162,52 @@ class LiveControlWidget(QFrame):
             else:
                 grid_line05.addWidget(self.label_resolutionScaling)
 
+        # Z-offset row (hidden by default; toggled by checkbox_showZOffset)
+        self.checkbox_showZOffset = QCheckBox("Show Z-offset controls")
+        self.checkbox_showZOffset.setChecked(False)
+        self.checkbox_showZOffset.toggled.connect(self._on_show_z_offset_toggled)
+
+        self.widget_zOffsetRow = QWidget()
+        zoff_layout = QHBoxLayout(self.widget_zOffsetRow)
+        zoff_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.entry_zOffset = QDoubleSpinBox()
+        self.entry_zOffset.setKeyboardTracking(False)
+        self.entry_zOffset.setRange(-50.0, 50.0)
+        self.entry_zOffset.setSingleStep(0.1)
+        self.entry_zOffset.setDecimals(2)
+        self.entry_zOffset.setSuffix(" µm")
+        self.entry_zOffset.setToolTip(
+            "Per-channel z-offset from the laser AF reference plane. "
+            "Sample-dependent — re-capture or reset when starting a new sample."
+        )
+        self.entry_zOffset.valueChanged.connect(self.update_config_z_offset)
+
+        self.btn_captureZOffset = QPushButton("Capture current")
+        self.btn_captureZOffset.setToolTip(
+            "Read displacement from the laser AF reference and save as this channel's offset."
+        )
+        self.btn_captureZOffset.clicked.connect(self.capture_current_z_offset)
+
+        self.btn_resetZOffset = QPushButton("Reset")
+        self.btn_resetZOffset.setToolTip("Set this channel's z-offset to 0.")
+        self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
+
+        # Apply-on-channel-switch checkbox is created here but wired to behavior in Task 14
+        self.checkbox_applyOnChannelSwitch = QCheckBox("Apply on channel switch")
+        self.checkbox_applyOnChannelSwitch.setToolTip(
+            "When checked and laser AF has a reference, switching channels moves z to the laser AF reference plus the new channel's offset."
+        )
+
+        zoff_layout.addWidget(QLabel("Z offset:"))
+        zoff_layout.addWidget(self.entry_zOffset)
+        zoff_layout.addWidget(self.btn_captureZOffset)
+        zoff_layout.addWidget(self.btn_resetZOffset)
+        zoff_layout.addWidget(self.checkbox_applyOnChannelSwitch)
+        zoff_layout.addStretch()
+
+        self.widget_zOffsetRow.setVisible(False)
+
         self.grid = QVBoxLayout()
         if show_trigger_options:
             self.grid.addLayout(grid_line0)
@@ -4170,6 +4216,8 @@ class LiveControlWidget(QFrame):
         self.grid.addLayout(grid_line4)
         if show_display_options:
             self.grid.addLayout(grid_line05)
+        self.grid.addWidget(self.checkbox_showZOffset)
+        self.grid.addWidget(self.widget_zOffsetRow)
         if not stretch:
             self.grid.addStretch()
         self.setLayout(self.grid)
@@ -4228,6 +4276,7 @@ class LiveControlWidget(QFrame):
                 self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time)
                 self.entry_analogGain.setValue(self.currentConfiguration.analog_gain)
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
+                self.entry_zOffset.setValue(self.currentConfiguration.z_offset_um or 0.0)
         finally:
             self.is_switching_mode = False
 
@@ -4269,6 +4318,70 @@ class LiveControlWidget(QFrame):
                 confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.liveController.update_illumination()
+
+    def _on_show_z_offset_toggled(self, checked: bool):
+        self.widget_zOffsetRow.setVisible(checked)
+
+    def update_config_z_offset(self, new_value: float):
+        if self.is_switching_mode:
+            return
+        if self.currentConfiguration is None:
+            return
+        self.currentConfiguration.z_offset_um = new_value
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+            "ZOffset",
+            new_value,
+            confocal_mode=self.liveController.is_confocal_mode(),
+        )
+
+    def capture_current_z_offset(self):
+        if self.currentConfiguration is None:
+            return
+        laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
+        if laser_af is None or not getattr(laser_af.laser_af_properties, "has_reference", False):
+            QMessageBox.warning(
+                self,
+                "Capture failed",
+                "Laser autofocus has no reference set. Set a reference before capturing channel offsets.",
+            )
+            return
+        try:
+            displacement_um = laser_af.measure_displacement()
+        except Exception as e:
+            QMessageBox.warning(self, "Capture failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
+            return
+        self.currentConfiguration.z_offset_um = displacement_um
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+            "ZOffset",
+            displacement_um,
+            confocal_mode=self.liveController.is_confocal_mode(),
+        )
+        try:
+            self.is_switching_mode = True
+            self.entry_zOffset.setValue(displacement_um)
+        finally:
+            self.is_switching_mode = False
+
+    def reset_current_z_offset(self):
+        if self.currentConfiguration is None:
+            return
+        self.currentConfiguration.z_offset_um = 0.0
+        self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+            "ZOffset",
+            0.0,
+            confocal_mode=self.liveController.is_confocal_mode(),
+        )
+        try:
+            self.is_switching_mode = True
+            self.entry_zOffset.setValue(0.0)
+        finally:
+            self.is_switching_mode = False
 
     def _persist_iris_config(self, setting_name, new_value):
         if self.currentConfiguration:
