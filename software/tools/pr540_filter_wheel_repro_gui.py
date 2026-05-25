@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
 
         layout.addWidget(self._build_connection_panel())
+        layout.addWidget(self._build_firmware_panel())
         layout.addWidget(self._build_setup_panel())
         layout.addWidget(self._build_scenarios_panel())
         layout.addWidget(self._build_log_panel(), stretch=1)
@@ -143,6 +144,111 @@ class MainWindow(QMainWindow):
         self.lbl_expected.setText("Expected: -")
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
+
+    # ---------- Firmware panel ----------
+    def _build_firmware_panel(self) -> QGroupBox:
+        box = QGroupBox("Firmware")
+        v = QVBoxLayout(box)
+
+        self.rb_post = QRadioButton(fwm.POST_FIX.label)
+        self.rb_post.setChecked(True)
+        self.rb_pre = QRadioButton(fwm.PRE_FIX.label)
+        self.rb_custom = QRadioButton("custom git ref:")
+        self.edit_custom = QLineEdit()
+        self.edit_custom.setPlaceholderText("e.g. HEAD~5 or abc1234")
+        v.addWidget(self.rb_post)
+        v.addWidget(self.rb_pre)
+        row_custom = QHBoxLayout()
+        row_custom.addWidget(self.rb_custom)
+        row_custom.addWidget(self.edit_custom, stretch=1)
+        v.addLayout(row_custom)
+
+        row_path = QHBoxLayout()
+        row_path.addWidget(QLabel("Worktree (auto):"))
+        self.lbl_worktree = QLabel(str(fwm.POST_FIX.worktree_path))
+        row_path.addWidget(self.lbl_worktree, stretch=1)
+        v.addLayout(row_path)
+        self.rb_post.toggled.connect(self._update_worktree_label)
+        self.rb_pre.toggled.connect(self._update_worktree_label)
+        self.rb_custom.toggled.connect(self._update_worktree_label)
+        self.edit_custom.textChanged.connect(self._update_worktree_label)
+
+        row_btns = QHBoxLayout()
+        self.btn_build = QPushButton("Build")
+        self.btn_build.clicked.connect(self._do_build)
+        row_btns.addWidget(self.btn_build)
+        self.btn_flash = QPushButton("Flash")
+        self.btn_flash.clicked.connect(self._do_flash)
+        row_btns.addWidget(self.btn_flash)
+        self.btn_bfr = QPushButton("Build + Flash + Reconnect")
+        self.btn_bfr.clicked.connect(self._do_build_flash_reconnect)
+        row_btns.addWidget(self.btn_bfr)
+        v.addLayout(row_btns)
+        return box
+
+    def _selected_ref(self) -> fwm.FirmwareRef:
+        if self.rb_post.isChecked():
+            return fwm.POST_FIX
+        if self.rb_pre.isChecked():
+            return fwm.PRE_FIX
+        text = self.edit_custom.text().strip() or "HEAD"
+        return fwm.custom_ref(text)
+
+    def _update_worktree_label(self):
+        self.lbl_worktree.setText(str(self._selected_ref().worktree_path))
+
+    def _confirm_worktree_reset(self, exc: fwm.WorktreeMismatch) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                "Worktree mismatch",
+                f"Worktree at {exc.path} is at {exc.current_sha[:10]} but the chosen ref "
+                f"resolves to {exc.expected_sha[:10]}.\n\nReset --hard to {exc.expected_sha[:10]}?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        )
+
+    def _do_build(self):
+        ref = self._selected_ref()
+
+        def job(log):
+            wt = fwm.ensure_worktree(ref, allow_reset=False, log_cb=log)
+            fwm.build_firmware(wt, log_cb=log)
+
+        self._dispatch("build", job)
+
+    def _do_flash(self):
+        ref = self._selected_ref()
+
+        def job(log):
+            wt = fwm.ensure_worktree(ref, allow_reset=False, log_cb=log)
+            fwm.flash_firmware(wt, log_cb=log)
+
+        self._dispatch("flash", job)
+
+    def _do_build_flash_reconnect(self):
+        ref = self._selected_ref()
+        port = self.port_combo.currentData()
+        was_connected = self.micro is not None
+        if was_connected:
+            self._do_disconnect()
+
+        def job(log):
+            wt = fwm.ensure_worktree(ref, allow_reset=False, log_cb=log)
+            fwm.build_firmware(wt, log_cb=log)
+            fwm.flash_firmware(wt, log_cb=log)
+            if port and was_connected:
+                log("[firmware] waiting 3s for Teensy reboot")
+                time.sleep(3.0)
+                from control.microcontroller import MicrocontrollerSerial, Microcontroller
+
+                ser = MicrocontrollerSerial(port, baudrate=2000000)
+                return Microcontroller(serial_device=ser)
+            return None
+
+        self._dispatch("bfr", job)
 
     # ---------- Log panel ----------
     def _build_log_panel(self) -> QGroupBox:
@@ -448,6 +554,51 @@ class MainWindow(QMainWindow):
             for key, lbl in (("A", self.lbl_a), ("B", self.lbl_b), ("C", self.lbl_c), ("Gate", self.lbl_gate)):
                 r = result[key]
                 lbl.setText(f"Result: {r.verdict} — {r.summary}")
+            return
+
+        if job_id in ("build", "flash"):
+            if isinstance(result, fwm.WorktreeMismatch):
+                if self._confirm_worktree_reset(result):
+                    self._append_log("[firmware] retrying with allow_reset=True")
+                    ref = self._selected_ref()
+
+                    def job(log):
+                        wt = fwm.ensure_worktree(ref, allow_reset=True, log_cb=log)
+                        if job_id == "build":
+                            fwm.build_firmware(wt, log_cb=log)
+                        else:
+                            fwm.flash_firmware(wt, log_cb=log)
+
+                    self._dispatch(job_id, job)
+                return
+            if isinstance(result, Exception):
+                QMessageBox.warning(self, f"{job_id} failed", repr(result))
+                return
+            self._append_log(f"[firmware] {job_id} OK")
+            return
+
+        if job_id == "bfr":
+            if isinstance(result, fwm.WorktreeMismatch):
+                if self._confirm_worktree_reset(result):
+                    self._append_log("[firmware] retrying build+flash with allow_reset=True")
+                    QMessageBox.information(
+                        self,
+                        "Confirmed",
+                        "Click 'Build + Flash + Reconnect' again; reset will now be applied.",
+                    )
+                return
+            if isinstance(result, Exception):
+                QMessageBox.warning(self, "build+flash+reconnect failed", repr(result))
+                return
+            if result is not None:
+                self.micro = result
+                fw = self.micro.firmware_version
+                expected = scen.expected_verdict_for_firmware(fw)
+                self.lbl_firmware.setText(f"Firmware: v{fw[0]}.{fw[1]}     Status: connected")
+                self.lbl_expected.setText(
+                    f"Expected: {expected} — " + ("PASS on all" if expected == "post-fix" else "OBSERVED-BUG on A/B/C")
+                )
+                self.btn_disconnect.setEnabled(True)
             return
 
     def closeEvent(self, e):
