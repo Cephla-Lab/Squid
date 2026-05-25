@@ -3,8 +3,11 @@
 Pure logic. No Qt imports. See worktrees/docs/2026-05-24-pr-540-repro-gui-design.md.
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
+
+from control.microcontroller import CommandAborted
 
 
 Verdict = Literal["PASS", "OBSERVED-BUG", "FAIL", "ERROR", "GATE-NOT-PRESENT"]
@@ -54,8 +57,6 @@ class FakeMicrocontroller:
         self.calls.append(("init_filter_wheel", axis))
 
     def wait_till_operation_is_completed(self, timeout_limit_s=5):
-        import time
-
         self.calls.append(("wait",))
         if self._wait_durations:
             time.sleep(self._wait_durations.pop(0))
@@ -63,11 +64,6 @@ class FakeMicrocontroller:
             exc = self._wait_responses.pop(0)
             if exc is not None:
                 raise exc
-
-
-import time
-
-from control.microcontroller import CommandAborted
 
 
 N_SAFE_USTEPS = 100  # well below one full slot transition; chosen so no motion would occur even if INIT had run
