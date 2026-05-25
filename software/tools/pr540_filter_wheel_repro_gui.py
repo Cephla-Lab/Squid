@@ -316,9 +316,10 @@ class MainWindow(QMainWindow):
         if not self._require_connected():
             return
         usteps = self._usteps_per_slot()
+        micro = self.micro
 
         def job(log):
-            return scen.measure_baseline(self.micro, usteps_per_slot=usteps, log_cb=log)
+            return scen.measure_baseline(micro, usteps_per_slot=usteps, log_cb=log)
 
         self._dispatch("baseline", job)
 
@@ -406,7 +407,8 @@ class MainWindow(QMainWindow):
     def _do_a(self):
         if not self._require_connected():
             return
-        self._dispatch("scenario_a", lambda log: scen.scenario_a_pre_init_move(self.micro, log))
+        micro = self.micro
+        self._dispatch("scenario_a", lambda log: scen.scenario_a_pre_init_move(micro, log))
 
     def _do_b(self):
         if not self._require_connected() or not self._require_baseline():
@@ -416,10 +418,11 @@ class MainWindow(QMainWindow):
         usteps = self._usteps_per_slot()
         threshold = self.spin_threshold.value()
         t_base = self.t_baseline
+        micro = self.micro
         self._dispatch(
             "scenario_b",
             lambda log: scen.scenario_b_rapid_burst(
-                self.micro,
+                micro,
                 log,
                 burst_size=burst,
                 iterations=iters,
@@ -436,10 +439,11 @@ class MainWindow(QMainWindow):
         usteps = self._usteps_per_slot()
         threshold = self.spin_threshold.value()
         t_base = self.t_baseline
+        micro = self.micro
         self._dispatch(
             "scenario_c",
             lambda log: scen.scenario_c_soak(
-                self.micro,
+                micro,
                 log,
                 iterations=iters,
                 usteps_per_slot=usteps,
@@ -460,7 +464,8 @@ class MainWindow(QMainWindow):
             motor_slot_index=3,
             transitions_per_revolution=self.spin_transitions.value(),
         )
-        self._dispatch("gate", lambda log: scen.host_version_gate(self.micro, cfg, log))
+        micro = self.micro
+        self._dispatch("gate", lambda log: scen.host_version_gate(micro, cfg, log))
 
     def _do_all(self):
         if not self._require_connected() or not self._require_baseline():
@@ -471,6 +476,7 @@ class MainWindow(QMainWindow):
         usteps = self._usteps_per_slot()
         threshold = self.spin_threshold.value()
         t_base = self.t_baseline
+        micro = self.micro
         from squid.config import SquidFilterWheelConfig
 
         cfg = SquidFilterWheelConfig(
@@ -483,9 +489,9 @@ class MainWindow(QMainWindow):
 
         def job(log):
             return {
-                "A": scen.scenario_a_pre_init_move(self.micro, log),
+                "A": scen.scenario_a_pre_init_move(micro, log),
                 "B": scen.scenario_b_rapid_burst(
-                    self.micro,
+                    micro,
                     log,
                     burst_size=burst,
                     iterations=b_iters,
@@ -494,14 +500,14 @@ class MainWindow(QMainWindow):
                     threshold=threshold,
                 ),
                 "C": scen.scenario_c_soak(
-                    self.micro,
+                    micro,
                     log,
                     iterations=c_iters,
                     usteps_per_slot=usteps,
                     t_baseline=t_base,
                     threshold=threshold,
                 ),
-                "Gate": scen.host_version_gate(self.micro, cfg, log),
+                "Gate": scen.host_version_gate(micro, cfg, log),
             }
 
         self._dispatch("all", job)
@@ -580,12 +586,24 @@ class MainWindow(QMainWindow):
         if job_id == "bfr":
             if isinstance(result, fwm.WorktreeMismatch):
                 if self._confirm_worktree_reset(result):
-                    self._append_log("[firmware] retrying build+flash with allow_reset=True")
-                    QMessageBox.information(
-                        self,
-                        "Confirmed",
-                        "Click 'Build + Flash + Reconnect' again; reset will now be applied.",
-                    )
+                    self._append_log("[firmware] retrying build+flash+reconnect with allow_reset=True")
+                    ref = self._selected_ref()
+                    port = self.port_combo.currentData()
+
+                    def job(log):
+                        wt = fwm.ensure_worktree(ref, allow_reset=True, log_cb=log)
+                        fwm.build_firmware(wt, log_cb=log)
+                        fwm.flash_firmware(wt, log_cb=log)
+                        if port:
+                            log("[firmware] waiting 3s for Teensy reboot")
+                            time.sleep(3.0)
+                            from control.microcontroller import MicrocontrollerSerial, Microcontroller
+
+                            ser = MicrocontrollerSerial(port, baudrate=2000000)
+                            return Microcontroller(serial_device=ser)
+                        return None
+
+                    self._dispatch("bfr", job)
                 return
             if isinstance(result, Exception):
                 QMessageBox.warning(self, "build+flash+reconnect failed", repr(result))
