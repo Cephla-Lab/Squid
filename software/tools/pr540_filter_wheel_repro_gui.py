@@ -68,6 +68,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
 
         layout.addWidget(self._build_connection_panel())
+        layout.addWidget(self._build_setup_panel())
+        layout.addWidget(self._build_scenarios_panel())
         layout.addWidget(self._build_log_panel(), stretch=1)
 
         # Worker thread
@@ -177,12 +179,234 @@ class MainWindow(QMainWindow):
         self.btn_connect.setEnabled(False)
         self.request_run.emit(job_id, fn)
 
+    # ---------- Setup panel ----------
+    def _build_setup_panel(self) -> QGroupBox:
+        box = QGroupBox("Setup")
+        v = QVBoxLayout(box)
+        row = QHBoxLayout()
+        self.spin_transitions = QSpinBox()
+        self.spin_transitions.setRange(1, 64)
+        self.spin_transitions.setValue(8)
+        row.addWidget(QLabel("Transitions per revolution:"))
+        row.addWidget(self.spin_transitions)
+        row.addStretch(1)
+        v.addLayout(row)
+        row2 = QHBoxLayout()
+        self.btn_baseline = QPushButton("Init filter wheel + measure baseline")
+        self.btn_baseline.clicked.connect(self._do_baseline)
+        row2.addWidget(self.btn_baseline)
+        self.lbl_baseline = QLabel("Baseline single-slot time: -- ms")
+        row2.addWidget(self.lbl_baseline)
+        row2.addStretch(1)
+        v.addLayout(row2)
+        return box
+
+    def _usteps_per_slot(self) -> int:
+        from control._def import FULLSTEPS_PER_REV_W, MICROSTEPPING_DEFAULT_W
+
+        return int(FULLSTEPS_PER_REV_W * MICROSTEPPING_DEFAULT_W / self.spin_transitions.value())
+
+    def _do_baseline(self):
+        if not self._require_connected():
+            return
+        usteps = self._usteps_per_slot()
+
+        def job(log):
+            return scen.measure_baseline(self.micro, usteps_per_slot=usteps, log_cb=log)
+
+        self._dispatch("baseline", job)
+
+    # ---------- Scenarios panel ----------
+    def _build_scenarios_panel(self) -> QGroupBox:
+        box = QGroupBox("Scenarios")
+        v = QVBoxLayout(box)
+
+        # Scenario A
+        rowA = QHBoxLayout()
+        self.btn_a = QPushButton("Run A (pre-INIT MOVE_W)")
+        self.btn_a.clicked.connect(self._do_a)
+        rowA.addWidget(self.btn_a)
+        self.lbl_a = QLabel("Result: -")
+        rowA.addWidget(self.lbl_a, stretch=1)
+        v.addLayout(rowA)
+
+        # Scenario B controls
+        rowB = QHBoxLayout()
+        self.btn_b = QPushButton("Run B (rapid burst)")
+        self.btn_b.clicked.connect(self._do_b)
+        rowB.addWidget(self.btn_b)
+        rowB.addWidget(QLabel("Burst:"))
+        self.spin_burst = QSpinBox()
+        self.spin_burst.setRange(2, 20)
+        self.spin_burst.setValue(3)
+        rowB.addWidget(self.spin_burst)
+        rowB.addWidget(QLabel("Iters:"))
+        self.spin_b_iters = QSpinBox()
+        self.spin_b_iters.setRange(1, 1000)
+        self.spin_b_iters.setValue(20)
+        rowB.addWidget(self.spin_b_iters)
+        self.lbl_b = QLabel("Result: -")
+        rowB.addWidget(self.lbl_b, stretch=1)
+        v.addLayout(rowB)
+
+        # Scenario C controls
+        rowC = QHBoxLayout()
+        self.btn_c = QPushButton("Run C (soak)")
+        self.btn_c.clicked.connect(self._do_c)
+        rowC.addWidget(self.btn_c)
+        rowC.addWidget(QLabel("Iters:"))
+        self.spin_c_iters = QSpinBox()
+        self.spin_c_iters.setRange(10, 10000)
+        self.spin_c_iters.setValue(1000)
+        rowC.addWidget(self.spin_c_iters)
+        rowC.addWidget(QLabel("Threshold:"))
+        self.spin_threshold = QDoubleSpinBox()
+        self.spin_threshold.setRange(0.1, 0.95)
+        self.spin_threshold.setSingleStep(0.05)
+        self.spin_threshold.setValue(0.5)
+        rowC.addWidget(self.spin_threshold)
+        self.lbl_c = QLabel("Result: -")
+        rowC.addWidget(self.lbl_c, stretch=1)
+        v.addLayout(rowC)
+
+        # Version gate
+        rowG = QHBoxLayout()
+        self.btn_gate = QPushButton("Run gate test")
+        self.btn_gate.clicked.connect(self._do_gate)
+        rowG.addWidget(self.btn_gate)
+        self.lbl_gate = QLabel("Result: -")
+        rowG.addWidget(self.lbl_gate, stretch=1)
+        v.addLayout(rowG)
+
+        # Run all
+        self.btn_all = QPushButton("Run all scenarios")
+        self.btn_all.clicked.connect(self._do_all)
+        v.addWidget(self.btn_all)
+
+        return box
+
+    def _require_connected(self):
+        if self.micro is None:
+            QMessageBox.warning(self, "Not connected", "Connect to a microcontroller first.")
+            return False
+        return True
+
+    def _require_baseline(self):
+        if self.t_baseline is None:
+            QMessageBox.warning(self, "No baseline", "Run 'Init + measure baseline' first.")
+            return False
+        return True
+
+    def _do_a(self):
+        if not self._require_connected():
+            return
+        self._dispatch("scenario_a", lambda log: scen.scenario_a_pre_init_move(self.micro, log))
+
+    def _do_b(self):
+        if not self._require_connected() or not self._require_baseline():
+            return
+        burst = self.spin_burst.value()
+        iters = self.spin_b_iters.value()
+        usteps = self._usteps_per_slot()
+        threshold = self.spin_threshold.value()
+        t_base = self.t_baseline
+        self._dispatch(
+            "scenario_b",
+            lambda log: scen.scenario_b_rapid_burst(
+                self.micro,
+                log,
+                burst_size=burst,
+                iterations=iters,
+                usteps_per_slot=usteps,
+                t_baseline=t_base,
+                threshold=threshold,
+            ),
+        )
+
+    def _do_c(self):
+        if not self._require_connected() or not self._require_baseline():
+            return
+        iters = self.spin_c_iters.value()
+        usteps = self._usteps_per_slot()
+        threshold = self.spin_threshold.value()
+        t_base = self.t_baseline
+        self._dispatch(
+            "scenario_c",
+            lambda log: scen.scenario_c_soak(
+                self.micro,
+                log,
+                iterations=iters,
+                usteps_per_slot=usteps,
+                t_baseline=t_base,
+                threshold=threshold,
+            ),
+        )
+
+    def _do_gate(self):
+        if not self._require_connected():
+            return
+        from squid.config import SquidFilterWheelConfig
+
+        cfg = SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.0,
+            motor_slot_index=3,
+            transitions_per_revolution=self.spin_transitions.value(),
+        )
+        self._dispatch("gate", lambda log: scen.host_version_gate(self.micro, cfg, log))
+
+    def _do_all(self):
+        if not self._require_connected() or not self._require_baseline():
+            return
+        burst = self.spin_burst.value()
+        b_iters = self.spin_b_iters.value()
+        c_iters = self.spin_c_iters.value()
+        usteps = self._usteps_per_slot()
+        threshold = self.spin_threshold.value()
+        t_base = self.t_baseline
+        from squid.config import SquidFilterWheelConfig
+
+        cfg = SquidFilterWheelConfig(
+            max_index=8,
+            min_index=1,
+            offset=0.0,
+            motor_slot_index=3,
+            transitions_per_revolution=self.spin_transitions.value(),
+        )
+
+        def job(log):
+            return {
+                "A": scen.scenario_a_pre_init_move(self.micro, log),
+                "B": scen.scenario_b_rapid_burst(
+                    self.micro,
+                    log,
+                    burst_size=burst,
+                    iterations=b_iters,
+                    usteps_per_slot=usteps,
+                    t_baseline=t_base,
+                    threshold=threshold,
+                ),
+                "C": scen.scenario_c_soak(
+                    self.micro,
+                    log,
+                    iterations=c_iters,
+                    usteps_per_slot=usteps,
+                    t_baseline=t_base,
+                    threshold=threshold,
+                ),
+                "Gate": scen.host_version_gate(self.micro, cfg, log),
+            }
+
+        self._dispatch("all", job)
+
     @pyqtSlot(str, object)
     def _on_worker_done(self, job_id: str, result):
         self.busy = False
+        self.btn_connect.setEnabled(self.micro is None)
+
         if job_id == "connect":
             if isinstance(result, Exception):
-                self.btn_connect.setEnabled(True)
                 QMessageBox.warning(self, "Connect failed", str(result))
                 return
             self.micro = result
@@ -193,6 +417,38 @@ class MainWindow(QMainWindow):
                 f"Expected: {expected} — " + ("PASS on all" if expected == "post-fix" else "OBSERVED-BUG on A/B/C")
             )
             self.btn_disconnect.setEnabled(True)
+            return
+
+        if job_id == "baseline":
+            if isinstance(result, Exception):
+                self.lbl_baseline.setText("Baseline: ERROR — see log")
+                return
+            self.t_baseline = float(result)
+            self.lbl_baseline.setText(f"Baseline single-slot time: {self.t_baseline*1000:.1f} ms")
+            return
+
+        scenario_label_map = {
+            "scenario_a": self.lbl_a,
+            "scenario_b": self.lbl_b,
+            "scenario_c": self.lbl_c,
+            "gate": self.lbl_gate,
+        }
+        if job_id in scenario_label_map:
+            label = scenario_label_map[job_id]
+            if isinstance(result, Exception):
+                label.setText(f"Result: ERROR — {result!r}")
+            else:
+                label.setText(f"Result: {result.verdict} — {result.summary}")
+            return
+
+        if job_id == "all":
+            if isinstance(result, Exception):
+                QMessageBox.warning(self, "Run-all failed", str(result))
+                return
+            for key, lbl in (("A", self.lbl_a), ("B", self.lbl_b), ("C", self.lbl_c), ("Gate", self.lbl_gate)):
+                r = result[key]
+                lbl.setText(f"Result: {r.verdict} — {r.summary}")
+            return
 
     def closeEvent(self, e):
         self._do_disconnect()
