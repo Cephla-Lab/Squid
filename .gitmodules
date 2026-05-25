@@ -1,3 +1,6 @@
 [submodule "software/fluidics_v2"]
 	path = software/fluidics_v2
 	url = https://github.com/Alpaca233/fluidics_v2.git
+[submodule "software/control/ndviewer_light"]
+	path = software/control/ndviewer_light
+	url = https://github.com/Cephla-Lab/ndviewer_light.git
