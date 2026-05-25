@@ -380,7 +380,7 @@ class TestResponseVersionParsing:
         mcu.wait_till_operation_is_completed()
 
         # Should now have version from SimSerial
-        assert mcu.firmware_version == (1, 2)
+        assert mcu.firmware_version == (1, 3)
         mcu.close()
 
     def test_supports_multi_port_false_for_v0(self):
