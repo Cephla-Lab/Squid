@@ -246,6 +246,52 @@ def scenario_b_rapid_burst(
     )
 
 
+def expected_verdict_for_firmware(firmware_version) -> str:
+    return "post-fix" if firmware_version >= (1, 2) else "pre-fix"
+
+
+def host_version_gate(micro, filter_wheel_config, log_cb: LogCallback) -> ScenarioResult:
+    """Verify SquidFilterWheel's firmware-version gate on the post-fix host.
+
+    On the pre-fix branch SquidFilterWheel has no such gate; this returns GATE-NOT-PRESENT.
+    """
+    log_cb("[Version gate] checking SquidFilterWheel firmware-version gate")
+    from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+    real_version = micro.firmware_version
+
+    # Step 1: ensure construction succeeds at the real (post-fix) firmware version.
+    try:
+        SquidFilterWheel(microcontroller=micro, configs=filter_wheel_config, skip_init=True)
+    except Exception as e:
+        log_cb(f"[Version gate] unexpected exception at real version: {e!r}")
+        return ScenarioResult(
+            name="Gate", verdict="FAIL", summary=f"Construction failed at firmware {real_version}: {e!r}"
+        )
+
+    # Step 2: monkey-patch to a pre-fix version and expect RuntimeError.
+    micro.firmware_version = (1, 1)
+    try:
+        try:
+            SquidFilterWheel(microcontroller=micro, configs=filter_wheel_config, skip_init=True)
+            gate_present = False
+        except RuntimeError:
+            gate_present = True
+    finally:
+        micro.firmware_version = real_version
+
+    if gate_present:
+        log_cb("[Version gate] PASS — RuntimeError raised at firmware (1,1)")
+        return ScenarioResult(name="Gate", verdict="PASS", summary="Firmware-version gate present and rejects v1.1")
+    else:
+        log_cb("[Version gate] GATE-NOT-PRESENT — pre-fix host (no version check in SquidFilterWheel)")
+        return ScenarioResult(
+            name="Gate",
+            verdict="GATE-NOT-PRESENT",
+            summary="SquidFilterWheel did not raise on (1,1); pre-fix branch",
+        )
+
+
 def scenario_c_soak(
     micro,
     log_cb: LogCallback,

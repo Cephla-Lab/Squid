@@ -1,4 +1,10 @@
-from tools.pr540_repro_scenarios import ScenarioResult, FakeMicrocontroller
+from tools.pr540_repro_scenarios import (
+    ScenarioResult,
+    FakeMicrocontroller,
+    host_version_gate,
+    expected_verdict_for_firmware,
+)
+from squid.config import SquidFilterWheelConfig
 
 
 def test_scenario_result_defaults():
@@ -129,3 +135,24 @@ def test_scenario_c_soak_intermittent_fast_ack_is_observed_bug():
     assert r.verdict == "OBSERVED-BUG"
     assert r.suspect_fast_ack_count == 1
     assert r.normal_count == 4
+
+
+def _make_config():
+    return SquidFilterWheelConfig(
+        max_index=8, min_index=1, offset=0.0, motor_slot_index=3, transitions_per_revolution=8
+    )
+
+
+def test_host_version_gate_post_fix_host_passes():
+    fake = FakeMicrocontroller(firmware_version=(1, 2))
+    lines, log = _captured_log()
+    r = host_version_gate(fake, _make_config(), log_cb=log)
+    # On post-fix host, SquidFilterWheel construction succeeds at (1,2) and raises at (1,1).
+    assert r.verdict == "PASS"
+
+
+def test_expected_verdict_for_firmware():
+    assert expected_verdict_for_firmware((1, 2)) == "post-fix"
+    assert expected_verdict_for_firmware((1, 3)) == "post-fix"
+    assert expected_verdict_for_firmware((1, 1)) == "pre-fix"
+    assert expected_verdict_for_firmware((0, 9)) == "pre-fix"
