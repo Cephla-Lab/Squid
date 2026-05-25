@@ -66,3 +66,101 @@ def test_ensure_worktree_mismatch_without_allow_reset(tmp_path, monkeypatch):
     ref = FirmwareRef(label="test", git_ref="origin/master", worktree_path=wt)
     with pytest.raises(WorktreeMismatch):
         ensure_worktree(ref, allow_reset=False, log_cb=lambda s: None)
+
+
+from tools.pr540_firmware_manager import build_firmware, flash_firmware, BuildFailed, FlashFailed
+
+
+class _FakePopen:
+    def __init__(self, lines, returncode):
+        self._lines = list(lines)
+        self.returncode = returncode
+        self.stdout = self
+        self.args = None
+
+    def readline(self):
+        if self._lines:
+            return self._lines.pop(0)
+        return ""
+
+    def wait(self):
+        return self.returncode
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+
+def test_build_firmware_success(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    (wt / "firmware" / "controller").mkdir(parents=True)
+    captured = {}
+
+    def fake_popen(args, **kw):
+        captured["args"] = args
+        return _FakePopen(["Building...\n", "Linking...\n", "SUCCESS\n"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    lines = []
+    build_firmware(wt, log_cb=lines.append)
+    assert any("SUCCESS" in line for line in lines)
+    assert "pio" in captured["args"][0] or captured["args"][0].endswith("pio")
+    assert "-d" in captured["args"]
+    assert "-e" in captured["args"]
+    assert "teensy41" in captured["args"]
+
+
+def test_build_firmware_failure_raises(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    (wt / "firmware" / "controller").mkdir(parents=True)
+
+    def fake_popen(args, **kw):
+        return _FakePopen(["Error: missing lib\n"], returncode=1)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with pytest.raises(BuildFailed):
+        build_firmware(wt, log_cb=lambda s: None)
+
+
+def test_build_firmware_missing_pio_raises(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    (wt / "firmware" / "controller").mkdir(parents=True)
+
+    def fake_popen(args, **kw):
+        raise FileNotFoundError("pio not found")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with pytest.raises(PlatformIONotFound):
+        build_firmware(wt, log_cb=lambda s: None)
+
+
+def test_flash_firmware_invokes_upload_target(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    (wt / "firmware" / "controller").mkdir(parents=True)
+    captured = {}
+
+    def fake_popen(args, **kw):
+        captured["args"] = args
+        return _FakePopen(["Uploading...\n", "Done.\n"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    flash_firmware(wt, log_cb=lambda s: None)
+    assert "-t" in captured["args"]
+    assert "upload" in captured["args"]
+
+
+def test_flash_firmware_failure_raises(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    (wt / "firmware" / "controller").mkdir(parents=True)
+
+    def fake_popen(args, **kw):
+        return _FakePopen(["No Teensy detected\n"], returncode=1)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    with pytest.raises(FlashFailed):
+        flash_firmware(wt, log_cb=lambda s: None)

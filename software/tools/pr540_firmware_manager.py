@@ -113,3 +113,48 @@ def ensure_worktree(ref: FirmwareRef, *, allow_reset: bool, log_cb: LogCallback)
     subprocess.check_call(["git", "-C", str(path), "fetch", "origin"])
     subprocess.check_call(["git", "-C", str(path), "reset", "--hard", expected])
     return path
+
+
+def _run_pio(args, *, log_cb: LogCallback, fail_exc):
+    try:
+        proc = subprocess.Popen(
+            ["pio"] + args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as e:
+        raise PlatformIONotFound(
+            "PlatformIO ('pio') not found on PATH. Install via `pip install platformio` " "or add it to PATH."
+        ) from e
+
+    for line in proc.stdout:
+        log_cb(line.rstrip("\n"))
+    rc = proc.wait()
+    if rc != 0:
+        raise fail_exc(f"pio exited with code {rc}")
+
+
+def build_firmware(worktree: Path, log_cb: LogCallback) -> None:
+    """Run `pio run -d <worktree>/firmware/controller -e teensy41`."""
+    fw_dir = worktree / "firmware" / "controller"
+    log_cb(f"[firmware] building from {fw_dir}")
+    _run_pio(
+        ["run", "-d", str(fw_dir), "-e", "teensy41"],
+        log_cb=log_cb,
+        fail_exc=BuildFailed,
+    )
+    log_cb("[firmware] build OK")
+
+
+def flash_firmware(worktree: Path, log_cb: LogCallback) -> None:
+    """Run `pio run -d <worktree>/firmware/controller -e teensy41 -t upload`."""
+    fw_dir = worktree / "firmware" / "controller"
+    log_cb(f"[firmware] flashing from {fw_dir}")
+    _run_pio(
+        ["run", "-d", str(fw_dir), "-e", "teensy41", "-t", "upload"],
+        log_cb=log_cb,
+        fail_exc=FlashFailed,
+    )
+    log_cb("[firmware] flash OK")
