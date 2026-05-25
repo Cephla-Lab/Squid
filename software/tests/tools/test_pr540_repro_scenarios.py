@@ -62,3 +62,70 @@ def test_scenario_a_unexpected_timeout_is_fail():
     lines, log = _captured_log()
     result = scenario_a_pre_init_move(fake, log)
     assert result.verdict == "FAIL"
+
+
+from tools.pr540_repro_scenarios import (
+    measure_baseline,
+    scenario_b_rapid_burst,
+    scenario_c_soak,
+)
+
+
+def test_measure_baseline_returns_elapsed_seconds():
+    fake = FakeMicrocontroller(firmware_version=(1, 2))
+    fake.queue_wait(duration=0.0)  # init wait
+    fake.queue_wait(duration=0.12)  # forward move wait — this is the measurement
+    fake.queue_wait(duration=0.0)  # backward move wait
+    lines, log = _captured_log()
+    t = measure_baseline(fake, usteps_per_slot=1600, log_cb=log)
+    assert 0.10 < t < 0.15
+
+
+def test_scenario_b_post_fix_with_fast_fail_is_pass():
+    fake = FakeMicrocontroller(firmware_version=(1, 2))
+    # Burst size 3, iterations 2; only the awaited (final) command of each burst calls wait.
+    fake.queue_wait(raises=CommandAborted(command_id=10, reason="firmware reported CMD_EXECUTION_ERROR"), duration=0.01)
+    fake.queue_wait(raises=None, duration=0.15)
+    lines, log = _captured_log()
+    r = scenario_b_rapid_burst(
+        fake, log, burst_size=3, iterations=2, usteps_per_slot=1600, t_baseline=0.15, threshold=0.5
+    )
+    assert r.verdict == "PASS"
+    assert r.fast_fail_count == 1
+    assert r.normal_count == 1
+
+
+def test_scenario_b_pre_fix_silent_fast_ack_is_observed_bug():
+    fake = FakeMicrocontroller(firmware_version=(1, 1))
+    # Both iterations: ack returns silently in 30ms — well below 0.5 * 150ms = 75ms threshold.
+    fake.queue_wait(raises=None, duration=0.03)
+    fake.queue_wait(raises=None, duration=0.03)
+    lines, log = _captured_log()
+    r = scenario_b_rapid_burst(
+        fake, log, burst_size=3, iterations=2, usteps_per_slot=1600, t_baseline=0.15, threshold=0.5
+    )
+    assert r.verdict == "OBSERVED-BUG"
+    assert r.suspect_fast_ack_count == 2
+
+
+def test_scenario_c_soak_no_anomalies_is_pass():
+    fake = FakeMicrocontroller(firmware_version=(1, 2))
+    for _ in range(5):
+        fake.queue_wait(raises=None, duration=0.15)
+    lines, log = _captured_log()
+    r = scenario_c_soak(fake, log, iterations=5, usteps_per_slot=1600, t_baseline=0.15, threshold=0.5)
+    assert r.verdict == "PASS"
+    assert r.normal_count == 5
+
+
+def test_scenario_c_soak_intermittent_fast_ack_is_observed_bug():
+    fake = FakeMicrocontroller(firmware_version=(1, 1))
+    # 4 normal, 1 anomalous fast-ack.
+    durations = [0.15, 0.15, 0.02, 0.15, 0.15]
+    for d in durations:
+        fake.queue_wait(raises=None, duration=d)
+    lines, log = _captured_log()
+    r = scenario_c_soak(fake, log, iterations=5, usteps_per_slot=1600, t_baseline=0.15, threshold=0.5)
+    assert r.verdict == "OBSERVED-BUG"
+    assert r.suspect_fast_ack_count == 1
+    assert r.normal_count == 4

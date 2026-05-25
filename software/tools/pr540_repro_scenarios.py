@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
 
+from control._def import AXIS
 from control.microcontroller import CommandAborted
 
 
@@ -132,6 +133,175 @@ def scenario_a_pre_init_move(micro, log_cb: LogCallback) -> ScenarioResult:
         fast_fail_count=fast_fail,
         suspect_fast_ack_count=suspect,
         normal_count=0,
+        elapsed_seconds=elapsed_total,
+        details=details,
+    )
+
+
+def measure_baseline(micro, usteps_per_slot: int, log_cb: LogCallback) -> float:
+    """INITFILTERWHEEL, then time one single-slot MOVE_W. Return seconds.
+
+    Also issues an opposite-direction move to leave the wheel near its start position.
+    """
+    log_cb("[Baseline] init filter wheel + measure single-slot motion time")
+    micro.init_filter_wheel(axis=AXIS.W)
+    micro.wait_till_operation_is_completed()
+
+    t0 = time.monotonic()
+    micro.move_w_usteps(usteps_per_slot)
+    micro.wait_till_operation_is_completed()
+    t_baseline = time.monotonic() - t0
+    log_cb(f"[Baseline] single-slot move took {t_baseline*1000:.1f}ms")
+
+    # Return wheel to near-original slot (best-effort; ignore errors)
+    try:
+        micro.move_w_usteps(-usteps_per_slot)
+        micro.wait_till_operation_is_completed()
+    except Exception as e:
+        log_cb(f"[Baseline] return move failed (non-fatal): {e!r}")
+
+    return t_baseline
+
+
+def _verdict_from_counts(fast_fail: int, suspect: int, normal: int) -> tuple:
+    if fast_fail >= 1 and suspect == 0:
+        return "PASS", f"fast_fail={fast_fail}, normal={normal} (post-fix fail-fast working)"
+    if fast_fail == 0 and suspect == 0:
+        return "PASS", f"normal={normal} (no anomalous behavior observed)"
+    if fast_fail == 0 and suspect >= 1:
+        return "OBSERVED-BUG", f"suspect_fast_ack={suspect}, normal={normal} (pre-fix bug reproduced)"
+    return "FAIL", f"mixed: fast_fail={fast_fail}, suspect={suspect}, normal={normal}"
+
+
+def _classify_burst(elapsed_s, exc, t_baseline, threshold):
+    if isinstance(exc, CommandAborted) and "CMD_EXECUTION_ERROR" in str(exc):
+        return "fast_fail"
+    if exc is not None:
+        return "error"
+    if elapsed_s < threshold * t_baseline:
+        return "suspect_fast_ack"
+    return "normal"
+
+
+def scenario_b_rapid_burst(
+    micro,
+    log_cb: LogCallback,
+    *,
+    burst_size: int,
+    iterations: int,
+    usteps_per_slot: int,
+    t_baseline: float,
+    threshold: float,
+) -> ScenarioResult:
+    log_cb(
+        f"[Scenario B] rapid back-to-back MOVE_W — burst={burst_size}, iters={iterations}, "
+        f"threshold={threshold:.2f} * {t_baseline*1000:.1f}ms"
+    )
+    fast_fail = suspect = normal = 0
+    errors = []
+    details = []
+    t_total_0 = time.monotonic()
+
+    for i in range(iterations):
+        direction = 1 if i % 2 == 0 else -1
+        micro.last_command_aborted_error = None
+        t0 = time.monotonic()
+        captured = None
+        try:
+            for _ in range(burst_size):
+                micro.move_w_usteps(direction * usteps_per_slot)
+            micro.wait_till_operation_is_completed()
+        except Exception as e:
+            captured = e
+        elapsed = time.monotonic() - t0
+        klass = _classify_burst(elapsed, captured, t_baseline, threshold)
+        details.append(f"iter {i}: dir={direction:+d} elapsed={elapsed*1000:.1f}ms class={klass} exc={captured!r}")
+        if klass == "fast_fail":
+            fast_fail += 1
+        elif klass == "suspect_fast_ack":
+            suspect += 1
+        elif klass == "normal":
+            normal += 1
+        else:
+            errors.append((i, captured))
+
+    elapsed_total = time.monotonic() - t_total_0
+    for d in details:
+        log_cb(d)
+    if errors:
+        verdict, summary = "FAIL", f"Unexpected exceptions: {errors}"
+    else:
+        verdict, summary = _verdict_from_counts(fast_fail, suspect, normal)
+    log_cb(f"[Scenario B] verdict={verdict} — {summary}")
+    return ScenarioResult(
+        name="B",
+        verdict=verdict,
+        summary=summary,
+        iterations=iterations,
+        fast_fail_count=fast_fail,
+        suspect_fast_ack_count=suspect,
+        normal_count=normal,
+        elapsed_seconds=elapsed_total,
+        details=details,
+    )
+
+
+def scenario_c_soak(
+    micro,
+    log_cb: LogCallback,
+    *,
+    iterations: int,
+    usteps_per_slot: int,
+    t_baseline: float,
+    threshold: float,
+) -> ScenarioResult:
+    log_cb(
+        f"[Scenario C] soak (single-slot) — iters={iterations}, " f"threshold={threshold:.2f} * {t_baseline*1000:.1f}ms"
+    )
+    fast_fail = suspect = normal = 0
+    errors = []
+    details = []
+    t_total_0 = time.monotonic()
+
+    for i in range(iterations):
+        direction = 1 if i % 2 == 0 else -1
+        micro.last_command_aborted_error = None
+        t0 = time.monotonic()
+        captured = None
+        try:
+            micro.move_w_usteps(direction * usteps_per_slot)
+            micro.wait_till_operation_is_completed()
+        except Exception as e:
+            captured = e
+        elapsed = time.monotonic() - t0
+        klass = _classify_burst(elapsed, captured, t_baseline, threshold)
+        if klass == "fast_fail":
+            fast_fail += 1
+        elif klass == "suspect_fast_ack":
+            suspect += 1
+            details.append(f"iter {i}: SUSPECT elapsed={elapsed*1000:.1f}ms exc={captured!r}")
+        elif klass == "normal":
+            normal += 1
+        else:
+            errors.append((i, captured))
+            details.append(f"iter {i}: ERROR exc={captured!r}")
+
+    elapsed_total = time.monotonic() - t_total_0
+    for d in details:
+        log_cb(d)
+    if errors:
+        verdict, summary = "FAIL", f"Unexpected exceptions: {errors}"
+    else:
+        verdict, summary = _verdict_from_counts(fast_fail, suspect, normal)
+    log_cb(f"[Scenario C] verdict={verdict} — {summary}")
+    return ScenarioResult(
+        name="C",
+        verdict=verdict,
+        summary=summary,
+        iterations=iterations,
+        fast_fail_count=fast_fail,
+        suspect_fast_ack_count=suspect,
+        normal_count=normal,
         elapsed_seconds=elapsed_total,
         details=details,
     )
