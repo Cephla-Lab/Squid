@@ -63,3 +63,79 @@ class FakeMicrocontroller:
             exc = self._wait_responses.pop(0)
             if exc is not None:
                 raise exc
+
+
+import time
+
+from control.microcontroller import CommandAborted
+
+
+N_SAFE_USTEPS = 100  # well below one full slot transition; chosen so no motion would occur even if INIT had run
+SCENARIO_A_TIME_LIMIT_S = 0.1
+
+
+def _classify_move(elapsed_s, exc):
+    if isinstance(exc, CommandAborted) and "CMD_EXECUTION_ERROR" in str(exc):
+        return "fast_fail"
+    if exc is not None:
+        return "error"
+    if elapsed_s < SCENARIO_A_TIME_LIMIT_S:
+        return "suspect_fast_ack"
+    return "normal"
+
+
+def scenario_a_pre_init_move(micro, log_cb: LogCallback) -> ScenarioResult:
+    """Send MOVE_W and MOVE_W2 without prior INITFILTERWHEEL; classify outcomes."""
+    log_cb("[Scenario A] pre-INIT MOVE_W / MOVE_W2 — expecting CommandAborted on post-fix firmware")
+
+    fast_fail = 0
+    suspect = 0
+    errors = []
+    details = []
+    t_total_0 = time.monotonic()
+
+    for label, send in (("MOVE_W", micro.move_w_usteps), ("MOVE_W2", micro.move_w2_usteps)):
+        micro.last_command_aborted_error = None
+        t0 = time.monotonic()
+        captured: Optional[Exception] = None
+        try:
+            send(N_SAFE_USTEPS)
+            micro.wait_till_operation_is_completed()
+        except Exception as e:  # CommandAborted lives here, plus anything else
+            captured = e
+        elapsed = time.monotonic() - t0
+        klass = _classify_move(elapsed, captured)
+        details.append(f"{label}: elapsed={elapsed*1000:.1f}ms class={klass} exc={captured!r}")
+        log_cb(details[-1])
+        if klass == "fast_fail":
+            fast_fail += 1
+        elif klass == "suspect_fast_ack":
+            suspect += 1
+        elif klass == "error":
+            errors.append((label, captured))
+
+    elapsed_total = time.monotonic() - t_total_0
+    if errors:
+        verdict, summary = "FAIL", f"Unexpected exceptions: {errors}"
+    elif fast_fail >= 1 and suspect == 0:
+        verdict = "PASS"
+        summary = f"{fast_fail}/2 commands fast-failed with CMD_EXECUTION_ERROR (post-fix behavior)"
+    elif fast_fail == 0 and suspect >= 1:
+        verdict = "OBSERVED-BUG"
+        summary = f"{suspect}/2 commands silently completed within {SCENARIO_A_TIME_LIMIT_S*1000:.0f}ms (pre-fix bug reproduced)"
+    else:
+        verdict = "FAIL"
+        summary = f"Mixed/unexpected: fast_fail={fast_fail}, suspect={suspect}"
+
+    log_cb(f"[Scenario A] verdict={verdict} — {summary}")
+    return ScenarioResult(
+        name="A",
+        verdict=verdict,
+        summary=summary,
+        iterations=2,
+        fast_fail_count=fast_fail,
+        suspect_fast_ack_count=suspect,
+        normal_count=0,
+        elapsed_seconds=elapsed_total,
+        details=details,
+    )
