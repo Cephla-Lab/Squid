@@ -4228,15 +4228,16 @@ class LiveControlWidget(QFrame):
 
         self.btn_resetZOffset = QPushButton("Reset")
         self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
-        # Shrink the Reset buttons so 'Apply in Live' isn't pushed out of the row.
-        self.btn_resetZOffset.setFixedWidth(55)
+        # Shrink so 'Apply in Live' isn't pushed out of the row, but scale with the
+        # actual font metrics so the label doesn't clip on HiDPI / large-text setups.
+        _shrink_btn_to_text(self.btn_resetZOffset)
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
         self.btn_resetAllZOffsets = QPushButton("Reset All")
         self.btn_resetAllZOffsets.setToolTip(
             "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
         )
-        self.btn_resetAllZOffsets.setFixedWidth(75)
+        _shrink_btn_to_text(self.btn_resetAllZOffsets)
         self.btn_resetAllZOffsets.clicked.connect(self._reset_all_channel_z_offsets)
 
         self.checkbox_applyOnChannelSwitch = QCheckBox("Apply in Live")
@@ -4411,7 +4412,13 @@ class LiveControlWidget(QFrame):
         # contend and the wait times out, returning NaN. Restore live afterwards.
         was_live = self.liveController.is_live
         if was_live:
-            self.liveController.stop_live()
+            try:
+                self.liveController.stop_live()
+            except Exception as e:
+                # Best-effort: if stop_live raises we may not actually have suspended live,
+                # but we'd rather try the measurement than abort outright. The finally
+                # below will still attempt start_live so we don't leave live stopped.
+                self._log.warning(f"stop_live() raised before laser AF measurement: {e}")
         try:
             try:
                 displacement_um = laser_af.measure_displacement()
@@ -4420,7 +4427,13 @@ class LiveControlWidget(QFrame):
                 return
         finally:
             if was_live:
-                self.liveController.start_live()
+                try:
+                    self.liveController.start_live()
+                    # Notify subscribers (tab switch, alignment widget enable, ...) that
+                    # live is running again — matches what toggle_live() does for the user.
+                    self.signal_start_live.emit()
+                except Exception as e:
+                    self._log.warning(f"start_live() raised after laser AF measurement: {e}")
         # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
         # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
         # poison the YAML config and propagate into every subsequent acquisition's stage move.
@@ -15478,6 +15491,16 @@ class BackpressureMonitorWidget(QWidget):
             self._log.debug(f"Error stopping monitoring on close: {e}")
 
         super().closeEvent(event)
+
+
+def _shrink_btn_to_text(btn: QPushButton, padding: int = 16) -> None:
+    """Constrain a QPushButton to its text width + a small padding via setMaximumWidth.
+
+    Scales with the rendered font metrics so the label doesn't clip on HiDPI displays
+    or when the user has bumped the system font size. Uses setMaximumWidth (not
+    setFixedWidth) so the button can still shrink with the layout if needed.
+    """
+    btn.setMaximumWidth(btn.fontMetrics().horizontalAdvance(btn.text()) + padding)
 
 
 def _is_filter_wheel_enabled() -> bool:
