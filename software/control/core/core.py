@@ -124,8 +124,6 @@ class ImageSaver(QObject):
         self.queue = Queue(10)  # max 10 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
-        self.thread = Thread(target=self.process_queue, daemon=True)
-        self.thread.start()
         self.counter = 0
         self.recording_start_time = 0
         self.recording_time_limit = -1
@@ -141,6 +139,9 @@ class ImageSaver(QObject):
         self._queue_wait_ns_total = 0
         self._queue_wait_count = 0
         self._enqueue_call_count = 0
+        # Start the saver thread last, after all state it touches has been initialized.
+        self.thread = Thread(target=self.process_queue, daemon=True)
+        self.thread.start()
 
     def set_channel_provider(self, provider):
         """Register a callable returning the active live channel (or None).
@@ -163,6 +164,10 @@ class ImageSaver(QObject):
             self._queue_wait_ns_total += time.perf_counter_ns() - get_started_ns
             self._queue_wait_count += 1
             try:
+                # A Qt-queued enqueue slot can arrive after stop_experiment cleared state;
+                # discard those frames instead of writing to <base>/0/.
+                if not self.experiment_ID:
+                    continue
                 with self.image_lock:
                     folder_id = self.counter // self.max_num_image_per_folder
                     file_id = self.counter % self.max_num_image_per_folder
@@ -173,10 +178,11 @@ class ImageSaver(QObject):
                     channel = (
                         self._channel_provider() if self._channel_provider else None
                     ) or _DefaultRecordingChannel()
+                    channel_name = getattr(channel, "name", "live")
                     # cv2.imwrite handles both uint8 (BMP/PNG/TIFF) and uint16 (TIFF/PNG).
                     # ~10x faster than imageio for uint8, ~2-3x faster for uint16.
                     saving_path = utils_acquisition.get_image_filepath(
-                        save_dir, str(file_id), channel.name, image.dtype
+                        save_dir, str(file_id), channel_name, image.dtype
                     )
                     imwrite_started_ns = time.perf_counter_ns()
                     cv2.imwrite(saving_path, image)
@@ -185,6 +191,10 @@ class ImageSaver(QObject):
                     if imwrite_ns > self._imwrite_ns_max:
                         self._imwrite_ns_max = imwrite_ns
                     self._imwrite_count += 1
+                    # Increment counter immediately after a successful image write — if the
+                    # CSV row write below raises, the next frame must not reuse this file_id
+                    # and overwrite what we just saved.
+                    self.counter += 1
 
                     if self._csv_writer is not None:
                         rel_path = os.path.relpath(saving_path, os.path.join(self.base_path, self.experiment_ID))
@@ -192,7 +202,7 @@ class ImageSaver(QObject):
                             [
                                 frame_id,
                                 datetime.fromtimestamp(timestamp).isoformat(),
-                                getattr(channel, "name", "live"),
+                                channel_name,
                                 getattr(channel, "exposure_time", 0.0),
                                 getattr(channel, "analog_gain", 0.0),
                                 getattr(channel, "illumination_intensity", 0.0),
@@ -202,8 +212,6 @@ class ImageSaver(QObject):
                         # No per-row flush: it's an fsync per frame on most filesystems
                         # and was the second-largest contributor to the FPS regression.
                         # stop_experiment() flushes via close().
-
-                    self.counter += 1
             except OSError as e:
                 log.error(f"Writer fatal error: {e}; stopping recording")
                 self.stop_recording.emit()
@@ -245,6 +253,7 @@ class ImageSaver(QObject):
         self.recording_start_time = time.time()
         self.counter = 0
         self._dropped_count = 0
+        self._last_queue_full_warning_ts = 0.0
         self._imwrite_ns_total = 0
         self._imwrite_ns_max = 0
         self._imwrite_count = 0
@@ -260,7 +269,7 @@ class ImageSaver(QObject):
             raise
 
         csv_path = os.path.join(experiment_dir, "frames.csv")
-        self._csv_file = open(csv_path, "w", newline="")
+        self._csv_file = open(csv_path, "w", newline="", encoding="utf-8")
         self._csv_writer = csv.writer(self._csv_file)
         self._csv_writer.writerow(
             ["frame_id", "timestamp_iso", "channel", "exposure_ms", "gain", "illumination_intensity", "file"]
