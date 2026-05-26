@@ -134,6 +134,13 @@ class ImageSaver(QObject):
         self._csv_writer = None
         self._dropped_count = 0
         self._last_queue_full_warning_ts = 0.0
+        # Per-recording diagnostics (reset in start_new_experiment, summarized in stop_experiment).
+        self._imwrite_ns_total = 0
+        self._imwrite_ns_max = 0
+        self._imwrite_count = 0
+        self._queue_wait_ns_total = 0
+        self._queue_wait_count = 0
+        self._enqueue_call_count = 0
 
     def set_channel_provider(self, provider):
         """Register a callable returning the active live channel (or None).
@@ -148,10 +155,13 @@ class ImageSaver(QObject):
         while True:
             if self.stop_signal_received:
                 return
+            get_started_ns = time.perf_counter_ns()
             try:
                 image, frame_id, timestamp = self.queue.get(timeout=0.1)
             except Empty:
                 continue
+            self._queue_wait_ns_total += time.perf_counter_ns() - get_started_ns
+            self._queue_wait_count += 1
             try:
                 with self.image_lock:
                     folder_id = self.counter // self.max_num_image_per_folder
@@ -163,17 +173,18 @@ class ImageSaver(QObject):
                     channel = (
                         self._channel_provider() if self._channel_provider else None
                     ) or _DefaultRecordingChannel()
-                    # Use get_image_filepath for channel-aware naming consistency with the
-                    # multipoint pipeline, but write directly with cv2/iio for speed —
-                    # save_image's imageio.imwrite path is ~10x slower than cv2.imwrite for
-                    # uint8 BMPs and turns the saver into the FPS bottleneck.
+                    # cv2.imwrite handles both uint8 (BMP/PNG/TIFF) and uint16 (TIFF/PNG).
+                    # ~10x faster than imageio for uint8, ~2-3x faster for uint16.
                     saving_path = utils_acquisition.get_image_filepath(
                         save_dir, str(file_id), channel.name, image.dtype
                     )
-                    if image.dtype == np.uint16:
-                        iio.imwrite(saving_path, image)
-                    else:
-                        cv2.imwrite(saving_path, image)
+                    imwrite_started_ns = time.perf_counter_ns()
+                    cv2.imwrite(saving_path, image)
+                    imwrite_ns = time.perf_counter_ns() - imwrite_started_ns
+                    self._imwrite_ns_total += imwrite_ns
+                    if imwrite_ns > self._imwrite_ns_max:
+                        self._imwrite_ns_max = imwrite_ns
+                    self._imwrite_count += 1
 
                     if self._csv_writer is not None:
                         rel_path = os.path.relpath(saving_path, os.path.join(self.base_path, self.experiment_ID))
@@ -202,6 +213,7 @@ class ImageSaver(QObject):
                 self.queue.task_done()
 
     def enqueue(self, image, frame_id, timestamp):
+        self._enqueue_call_count += 1
         try:
             self.queue.put_nowait([image, frame_id, timestamp])
         except Full:
@@ -233,6 +245,12 @@ class ImageSaver(QObject):
         self.recording_start_time = time.time()
         self.counter = 0
         self._dropped_count = 0
+        self._imwrite_ns_total = 0
+        self._imwrite_ns_max = 0
+        self._imwrite_count = 0
+        self._queue_wait_ns_total = 0
+        self._queue_wait_count = 0
+        self._enqueue_call_count = 0
 
         experiment_dir = os.path.join(self.base_path, self.experiment_ID)
         try:
@@ -278,6 +296,22 @@ class ImageSaver(QObject):
                 f"Recording stopped: frames_saved={self.counter}, "
                 f"dropped={self._dropped_count}, duration={duration:.1f}s"
             )
+            if self._imwrite_count > 0:
+                avg_imwrite_ms = self._imwrite_ns_total / self._imwrite_count / 1e6
+                max_imwrite_ms = self._imwrite_ns_max / 1e6
+                avg_queue_wait_ms = (
+                    self._queue_wait_ns_total / self._queue_wait_count / 1e6 if self._queue_wait_count else 0.0
+                )
+                input_fps = self._enqueue_call_count / duration if duration > 0 else 0.0
+                save_fps = self._imwrite_count / duration if duration > 0 else 0.0
+                log.info(
+                    f"Saver diagnostics: "
+                    f"imwrite_avg={avg_imwrite_ms:.1f}ms, "
+                    f"imwrite_max={max_imwrite_ms:.1f}ms, "
+                    f"queue_wait_avg={avg_queue_wait_ms:.1f}ms, "
+                    f"input={input_fps:.1f}fps ({self._enqueue_call_count} enqueues, {self._dropped_count} drops), "
+                    f"saved={save_fps:.1f}fps"
+                )
             self.experiment_ID = ""
 
     def close(self):

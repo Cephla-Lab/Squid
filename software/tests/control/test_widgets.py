@@ -2453,7 +2453,7 @@ class TestRecordingWidget:
         widget.lineEdit_experimentID.setText("exp")
         qtbot.mouseClick(widget.btn_record, Qt.LeftButton)
 
-        with patch("control.utils_acquisition.save_image", side_effect=RuntimeError("boom")):
+        with patch("cv2.imwrite", side_effect=RuntimeError("boom")):
             image_saver.enqueue(np.zeros((4, 4), dtype=np.uint8), 0, 0.0)
             qtbot.waitUntil(lambda: image_saver.queue.empty(), timeout=2000)
 
