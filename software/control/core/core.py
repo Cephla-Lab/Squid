@@ -295,6 +295,13 @@ class ImageSaver(QObject):
             self._csv_file.flush()
         except OSError as e:
             log.error(f"Failed to open {csv_path}: {e}")
+            # If open() succeeded but writerow/flush raised, the handle is open — close it
+            # before nulling the ref so we don't leak the fd.
+            if self._csv_file is not None:
+                try:
+                    self._csv_file.close()
+                except OSError:
+                    pass
             self._csv_file = None
             self._csv_writer = None
             self.experiment_ID = ""

@@ -4495,7 +4495,15 @@ class RecordingWidget(QFrame):
             self.btn_setSavingDir.setEnabled(False)
             if self._channel_provider is not None:
                 self.imageSaver.set_channel_provider(self._channel_provider)
-            self.imageSaver.start_new_experiment(self.lineEdit_experimentID.text())
+            try:
+                self.imageSaver.start_new_experiment(self.lineEdit_experimentID.text())
+            except Exception:
+                # start_new_experiment logged the cause; restore UI so the user can retry.
+                self.imageSaver.set_channel_provider(None)
+                self.lineEdit_experimentID.setEnabled(True)
+                self.btn_setSavingDir.setEnabled(True)
+                self.btn_record.setChecked(False)
+                return
             self.streamHandler.start_recording()
         else:
             self.streamHandler.stop_recording()
