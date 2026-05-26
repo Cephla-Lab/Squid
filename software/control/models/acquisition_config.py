@@ -412,7 +412,11 @@ def merge_channel_configs(
             camera_settings=merged_camera,
             filter_wheel=gen_channel.filter_wheel,  # From general
             filter_position=gen_channel.filter_position,  # From general
-            z_offset_um=gen_channel.z_offset_um,  # From general
+            # z_offset_um is per-objective: focal-plane offset depends on the lens, and
+            # the 'Use Current' UI persists into the objective config via
+            # update_channel_setting('ZOffset', ...). Pulling from general here would
+            # ignore captured offsets and silently break the laser-AF anchor feature.
+            z_offset_um=obj_channel.z_offset_um,
             illumination_settings=merged_illumination,
             confocal_hardware_settings=obj_channel.confocal_hardware_settings,  # From objective
             confocal_override=obj_channel.confocal_override,  # From objective

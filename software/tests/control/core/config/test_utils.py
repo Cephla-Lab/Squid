@@ -159,6 +159,9 @@ class TestGetEffectiveChannels:
                         exposure_time_ms=50.0,  # Objective-specific exposure
                         gain_mode=1.0,
                     ),
+                    # update_channel_setting() copies general's z_offset_um into the
+                    # objective channel when auto-creating; mirror that here.
+                    z_offset_um=5.0,
                 )
             ],
         )
@@ -167,11 +170,11 @@ class TestGetEffectiveChannels:
 
         assert len(result) == 1
         ch = result[0]
-        # From general: illumination_channel, z_offset_um, display_color
+        # From general: illumination_channel, display_color
         assert ch.illumination_settings.illumination_channel == "488nm"
-        assert ch.z_offset_um == 5.0  # v1.0: at channel level
         assert ch.display_color == "#00FF00"  # v1.0: at channel level
-        # From objective: intensity, exposure_time_ms, gain_mode
+        # From objective: intensity, exposure_time_ms, gain_mode, z_offset_um
+        assert ch.z_offset_um == 5.0
         assert ch.illumination_settings.intensity == 75.0
         assert ch.camera_settings.exposure_time_ms == 50.0
         assert ch.camera_settings.gain_mode == 1.0

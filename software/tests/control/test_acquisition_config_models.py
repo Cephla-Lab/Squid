@@ -813,6 +813,9 @@ class TestMergeChannelConfigs:
                         gain_mode=15.0,
                         pixel_format="Mono12",
                     ),
+                    # update_channel_setting() copies general's z_offset_um into the
+                    # objective channel when auto-creating; mirror that here.
+                    z_offset_um=5.0,
                 ),
             ],
         )
@@ -824,17 +827,58 @@ class TestMergeChannelConfigs:
 
         # From general
         assert ch.illumination_settings.illumination_channel == "Fluorescence 488nm"
-        assert ch.z_offset_um == 5.0  # From general (at channel level)
         assert ch.display_color == "#00FF00"  # v1.0: display_color at channel level
         assert ch.filter_wheel == "Emission Wheel"
         assert ch.filter_position == 2
         assert ch.camera == 1  # Camera ID from general
 
-        # From objective
+        # From objective (per-objective fields including z_offset_um)
+        assert ch.z_offset_um == 5.0
         assert ch.illumination_settings.intensity == 25.0
         assert ch.camera_settings.exposure_time_ms == 30.0
         assert ch.camera_settings.gain_mode == 15.0
         assert ch.camera_settings.pixel_format == "Mono12"
+
+    def test_merge_uses_objective_z_offset_when_it_differs_from_general(self):
+        """Regression: z_offset_um is per-objective and must come from the objective channel.
+
+        The UI persists captured offsets via update_channel_setting('ZOffset', ...) which
+        writes to the objective config. If merge pulled from general here, the captured
+        value would be silently ignored at acquisition time.
+        """
+        from control.models import merge_channel_configs
+
+        general = GeneralChannelConfig(
+            version=1.0,
+            channels=[
+                AcquisitionChannel(
+                    name="488 nm",
+                    display_color="#00FF00",
+                    illumination_settings=IlluminationSettings(
+                        illumination_channel="Fluorescence 488nm",
+                        intensity=10.0,
+                    ),
+                    camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=5.0),
+                    z_offset_um=0.0,  # general's stale default
+                ),
+            ],
+        )
+
+        objective = ObjectiveChannelConfig(
+            version=1.0,
+            channels=[
+                AcquisitionChannel(
+                    name="488 nm",
+                    display_color="#FFFFFF",
+                    illumination_settings=IlluminationSettings(illumination_channel=None, intensity=25.0),
+                    camera_settings=CameraSettings(exposure_time_ms=30.0, gain_mode=15.0),
+                    z_offset_um=3.25,  # value captured via 'Use Current' button
+                ),
+            ],
+        )
+
+        merged = merge_channel_configs(general, objective)
+        assert merged[0].z_offset_um == 3.25
 
     def test_merge_no_objective_override(self):
         """Test merge when objective has no override for a channel (schema v1.0)."""
