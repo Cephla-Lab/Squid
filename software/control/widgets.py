@@ -4228,12 +4228,15 @@ class LiveControlWidget(QFrame):
 
         self.btn_resetZOffset = QPushButton("Reset")
         self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
+        # Shrink the Reset buttons so 'Apply in Live' isn't pushed out of the row.
+        self.btn_resetZOffset.setFixedWidth(55)
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
         self.btn_resetAllZOffsets = QPushButton("Reset All")
         self.btn_resetAllZOffsets.setToolTip(
             "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
         )
+        self.btn_resetAllZOffsets.setFixedWidth(75)
         self.btn_resetAllZOffsets.clicked.connect(self._reset_all_channel_z_offsets)
 
         self.checkbox_applyOnChannelSwitch = QCheckBox("Apply in Live")
