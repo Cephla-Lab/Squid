@@ -4429,11 +4429,15 @@ class LiveControlWidget(QFrame):
             if was_live:
                 try:
                     self.liveController.start_live()
-                    # Notify subscribers (tab switch, alignment widget enable, ...) that
-                    # live is running again — matches what toggle_live() does for the user.
-                    self.signal_start_live.emit()
                 except Exception as e:
                     self._log.warning(f"start_live() raised after laser AF measurement: {e}")
+                # Do NOT emit signal_start_live here. Its subscriber onStartLive
+                # (gui_hcs.py) unconditionally switches imageDisplayTabs to index 0; a
+                # user who clicks 'Use Current' from a non-Live tab (Multichannel
+                # Acquisition, Mosaic, NDViewer, Laser-Based Focus) would get yanked
+                # back to Live View mid-workflow. start_live() alone is enough to
+                # resume the camera stream — the rest of toggle_live()'s side effects
+                # (button text, tab switch) are user-press-driven, not appropriate here.
         # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
         # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
         # poison the YAML config and propagate into every subsequent acquisition's stage move.
@@ -15493,14 +15497,18 @@ class BackpressureMonitorWidget(QWidget):
         super().closeEvent(event)
 
 
-def _shrink_btn_to_text(btn: QPushButton, padding: int = 16) -> None:
-    """Constrain a QPushButton to its text width + a small padding via setMaximumWidth.
+def _shrink_btn_to_text(btn: QPushButton) -> None:
+    """Lock a QPushButton to its style-correct natural width via setFixedWidth(sizeHint).
 
-    Scales with the rendered font metrics so the label doesn't clip on HiDPI displays
-    or when the user has bumped the system font size. Uses setMaximumWidth (not
-    setFixedWidth) so the button can still shrink with the layout if needed.
+    Uses QWidget.sizeHint() which already accounts for the active QStyle's button
+    margin, frame thickness, focus rectangle, font, and any icon — so the label
+    won't clip on HiDPI / themed Qt setups. Matches the existing pattern at
+    widgets.py:12969 / :12990.
+
+    Intended for buttons with static text. If a caller mutates btn.text() later
+    they should re-call this helper (sizeHint is sampled at call time).
     """
-    btn.setMaximumWidth(btn.fontMetrics().horizontalAdvance(btn.text()) + padding)
+    btn.setFixedWidth(btn.sizeHint().width())
 
 
 def _is_filter_wheel_enabled() -> bool:
