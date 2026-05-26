@@ -961,7 +961,7 @@ class AcquisitionYAMLDropMixin:
 
 
 class _ApplyChannelOffsetMixin:
-    """Mixin providing the laser-AF per-channel z-offset checkbox handlers.
+    """Mixin providing the laser-AF per-channel Z-offset checkbox handlers.
 
     Widgets using this mixin must have:
     - ``self.checkbox_applyChannelOffset`` (QCheckBox)
@@ -969,13 +969,16 @@ class _ApplyChannelOffsetMixin:
     """
 
     def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
-        self.checkbox_applyChannelOffset.setEnabled(laser_af_on)
+        # Hide the checkbox when laser AF is off — the feature is meaningless without an
+        # AF reference anchor. Also clear the checked state so the underlying controller
+        # flag follows visibility (rather than silently retaining an inactive opt-in).
+        self.checkbox_applyChannelOffset.setVisible(laser_af_on)
         if laser_af_on:
             self.checkbox_applyChannelOffset.setToolTip(
-                "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+                "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
             )
         else:
-            self.checkbox_applyChannelOffset.setToolTip("Requires laser autofocus")
+            self.checkbox_applyChannelOffset.setChecked(False)
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
@@ -2821,9 +2824,9 @@ class LaserAutofocusSettingWidget(QWidget):
         self.initialize_button = QPushButton("Initialize")
         self.initialize_button.setStyleSheet("background-color: #C2C2FF")
         initialize_layout.addWidget(self.initialize_button)
-        self.btn_resetAllChannelOffsets = QPushButton("Reset all channel offsets")
+        self.btn_resetAllChannelOffsets = QPushButton("Reset all channel Z-offsets")
         self.btn_resetAllChannelOffsets.setToolTip(
-            "Set z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
+            "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
         )
         initialize_layout.addWidget(self.btn_resetAllChannelOffsets)
         initialize_group.setLayout(initialize_layout)
@@ -2926,8 +2929,8 @@ class LaserAutofocusSettingWidget(QWidget):
             return
         confirm = QMessageBox.question(
             self,
-            "Reset channel offsets",
-            f"Set z-offset to 0 for all {len(channels)} channels of objective '{objective}'?\n"
+            "Reset channel Z-offsets",
+            f"Set Z-offset to 0 for all {len(channels)} channels of objective '{objective}'?\n"
             f"Recommended when starting a new sample.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -4060,7 +4063,7 @@ class LiveControlWidget(QFrame):
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
-        # Wire 'Apply on channel switch' checkbox enable state to laser AF reference availability.
+        # Wire 'Apply in Live' checkbox enable state to laser AF reference availability.
         laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
         if laser_af is not None:
             laser_af.signal_reference_changed.connect(self._on_laser_af_reference_changed)
@@ -4260,7 +4263,7 @@ class LiveControlWidget(QFrame):
         self.entry_zOffset.setDecimals(2)
         self.entry_zOffset.setSuffix(" µm")
         self.entry_zOffset.setToolTip(
-            "Per-channel z-offset from the laser AF reference plane. "
+            "Per-channel Z-offset from the laser AF reference plane. "
             "Sample-dependent — re-capture or reset when starting a new sample."
         )
         self.entry_zOffset.valueChanged.connect(self.update_config_z_offset)
@@ -4272,15 +4275,15 @@ class LiveControlWidget(QFrame):
         self.btn_captureZOffset.clicked.connect(self.capture_current_z_offset)
 
         self.btn_resetZOffset = QPushButton("Reset")
-        self.btn_resetZOffset.setToolTip("Set this channel's z-offset to 0.")
+        self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
-        self.checkbox_applyOnChannelSwitch = QCheckBox("Apply on channel switch")
+        self.checkbox_applyOnChannelSwitch = QCheckBox("Apply in Live")
         self.checkbox_applyOnChannelSwitch.setToolTip(
-            "When checked and laser AF has a reference, switching channels moves z to the laser AF reference plus the new channel's offset."
+            "When checked and laser AF has a reference, switching channels in live view moves z to the laser AF reference plus the new channel's offset."
         )
 
-        zoff_layout.addWidget(QLabel("Z offset:"))
+        zoff_layout.addWidget(QLabel("Z-offset:"))
         zoff_layout.addWidget(self.entry_zOffset)
         zoff_layout.addWidget(self.btn_captureZOffset)
         zoff_layout.addWidget(self.btn_resetZOffset)
@@ -4437,7 +4440,7 @@ class LiveControlWidget(QFrame):
             QMessageBox.warning(
                 self,
                 "Reading failed",
-                "Laser autofocus has no reference set. Set a reference before capturing channel offsets.",
+                "Laser autofocus has no reference set. Set a reference before capturing channel Z-offsets.",
             )
             return
         try:
@@ -4463,7 +4466,7 @@ class LiveControlWidget(QFrame):
                 "Reading out of range",
                 f"Measured displacement {displacement_um:.2f} µm is outside the configured "
                 f"range [{spinbox_min:.1f}, {spinbox_max:.1f}] µm. Adjust the sample's focus "
-                f"closer to the reference, or widen the z-offset range. Offset unchanged.",
+                f"closer to the reference, or widen the Z-offset range. Offset unchanged.",
             )
             return
         self.currentConfiguration.z_offset_um = displacement_um
@@ -4508,7 +4511,7 @@ class LiveControlWidget(QFrame):
     def refresh_z_offset_from_config(self):
         """Re-read z_offset_um from the repo and update the spinbox.
 
-        Use after an external mutation (e.g. 'Reset all channel offsets') that may have
+        Use after an external mutation (e.g. 'Reset all channel Z-offsets') that may have
         changed the persisted value without updating this widget's in-memory
         currentConfiguration.
         """
@@ -4544,7 +4547,7 @@ class LiveControlWidget(QFrame):
     def _maybe_apply_live_channel_offset(self, new_config):
         """Move stage to absolute z = laser_af_reference + new_config.z_offset_um on channel switch.
 
-        No-op when the user hasn't enabled 'Apply on channel switch', when laser AF has no
+        No-op when the user hasn't enabled 'Apply in Live', when laser AF has no
         reference, when no valid laser AF reading is available, when the channel's stored
         offset is non-finite, or when the resulting move would exceed the safety cap.
         Uses absolute positioning so manual z jogs by the user don't bias the next switch.
@@ -5826,10 +5829,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
         self.checkbox_applyChannelOffset.setChecked(True)
         self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
         )
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
@@ -7338,10 +7341,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
         self.checkbox_applyChannelOffset.setChecked(True)
         self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
         )
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
@@ -9419,10 +9422,10 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Apply per-channel z-offset")
+        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
         self.checkbox_applyChannelOffset.setChecked(True)
         self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved z-offset relative to the laser AF reference."
+            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
         )
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
