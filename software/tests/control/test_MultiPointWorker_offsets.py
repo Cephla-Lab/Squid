@@ -5,6 +5,7 @@ and piezo to verify the delta-tracking algorithm in isolation. See
 software/docs/laser-af-channel-offset-design.md §4 for the algorithm spec.
 """
 
+import math
 from unittest.mock import MagicMock
 import pytest
 
@@ -26,10 +27,15 @@ class _Stub:
         self.liveController = MagicMock()
         self.liveController.trigger_mode = TriggerMode.SOFTWARE
         self._current_z_offset_um = 0.0
+        # Worker sets this in perform_autofocus; default True so existing tests don't
+        # need to track AF state explicitly. Tests that exercise the AF-failure gate
+        # set this to False before calling _apply_channel_z_offset.
+        self._last_af_succeeded = True
         self._log = MagicMock()
         self.wait_till_operation_is_completed = MagicMock()
         self._sleep = MagicMock()
 
+    _Z_OFFSET_EPS_UM = MultiPointWorker._Z_OFFSET_EPS_UM
     _apply_channel_z_offset = MultiPointWorker._apply_channel_z_offset
     _reset_channel_z_offset = MultiPointWorker._reset_channel_z_offset
     _move_z_for_offset = MultiPointWorker._move_z_for_offset
@@ -119,7 +125,8 @@ def test_piezo_clamp_does_not_corrupt_subsequent_deltas():
 
 
 def test_reset_handles_stage_failure_without_stranding_state():
-    """If the stage raises during reset, the tracker is still zeroed and the exception is logged, not propagated."""
+    """If the stage raises during reset, the tracker retains the outstanding offset (so a
+    subsequent reset can retry) and the exception is logged, not propagated."""
     w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
     w._apply_channel_z_offset(_config(2.0))
     assert w._current_z_offset_um == 2.0
@@ -128,9 +135,16 @@ def test_reset_handles_stage_failure_without_stranding_state():
     w.stage.move_z.side_effect = RuntimeError("stage timeout")
     w._reset_channel_z_offset()  # should not raise
 
-    assert w._current_z_offset_um == 0.0
+    # Tracker retains the outstanding offset so a later reset retry knows what to undo;
+    # zeroing it pre-emptively would silently abandon the offset on a transient failure.
+    assert w._current_z_offset_um == 2.0
     # The error was logged via _log.exception (or _log.error with exc_info)
     assert w._log.exception.called or w._log.error.called
+
+    # A retry (stage now working) successfully resets to baseline.
+    w.stage.move_z.side_effect = None
+    w._reset_channel_z_offset()
+    assert w._current_z_offset_um == 0.0
 
 
 def test_sequence_four_channels_delta_pattern():
@@ -257,3 +271,48 @@ def test_multi_time_point_last_z_pos_records_offset_free_baseline():
     because acquire_pos is captured before the try-block that applies offsets.
     Verified manually in code review; needs an integration test."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_apply_skipped_when_laser_af_failed_for_fov():
+    """When perform_autofocus failed for the FOV, applying the offset would shift z
+    relative to an absent reference. The apply gate must suppress the move."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w._last_af_succeeded = False
+    w._apply_channel_z_offset(_config(2.0))
+    w.stage.move_z.assert_not_called()
+    assert w._current_z_offset_um == 0.0
+    w._log.warning.assert_called_once()
+
+
+def test_apply_treats_nan_offset_as_zero_with_warning():
+    """A non-finite z_offset_um (e.g. NaN written by an older buggy capture) must not
+    be forwarded to the stage as a NaN move command."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w._apply_channel_z_offset(_config(float("nan")))
+    w.stage.move_z.assert_not_called()
+    assert w._current_z_offset_um == 0.0
+    w._log.warning.assert_called_once()
+
+
+def test_apply_skips_near_zero_delta_within_epsilon():
+    """Sub-µm FP drift in the delta must not trigger a stage move."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w._current_z_offset_um = 0.1 + 0.2  # 0.30000000000000004 in IEEE-754
+    w._apply_channel_z_offset(_config(0.3))
+    w.stage.move_z.assert_not_called()
+
+
+def test_piezo_state_not_mutated_when_move_fails():
+    """If piezo.move_to raises, z_piezo_um (the software cache) must remain at the
+    pre-move value so subsequent z-stack steps aren't biased."""
+    w = _Stub(use_piezo=True, do_reflection_af=True, apply_channel_offset=True)
+    w.piezo.move_to.side_effect = RuntimeError("piezo USB error")
+    with pytest.raises(RuntimeError):
+        w._apply_channel_z_offset(_config(3.0))
+    assert w.z_piezo_um == 100.0  # unchanged from the stub default
+    assert w._current_z_offset_um == 0.0  # tracker also unchanged
