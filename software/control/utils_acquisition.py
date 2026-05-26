@@ -4,10 +4,15 @@ images, etc.
 """
 
 import os
+import re
 
 import numpy as np
 import cv2
 import imageio
+
+# Characters that would break a filesystem path if they appeared in a channel name:
+# whitespace, POSIX/Windows path separators, and Windows-reserved characters.
+_UNSAFE_CHANNEL_CHARS = re.compile(r'[\s/\\:*?"<>|]+')
 
 import control._def
 from control.models import AcquisitionChannel
@@ -28,7 +33,7 @@ def get_image_filepath(save_directory: str, file_id: str, config_name: str, dtyp
     Returns:
         Full filepath string
     """
-    channel_name_safe = str(config_name).replace(" ", "_")
+    channel_name_safe = _UNSAFE_CHANNEL_CHARS.sub("_", str(config_name))
     if dtype == np.uint16:
         extension = "tiff"
     else:
