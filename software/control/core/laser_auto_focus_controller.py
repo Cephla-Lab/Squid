@@ -102,6 +102,14 @@ class LaserAutofocusController(QObject):
                 self._current_profile, self.objectiveStore.current_objective, updated_config
             )
 
+        # Notify listeners (e.g. LiveControlWidget) that the reference state may have
+        # changed. Covers load_cached_configuration / on_settings_changed paths where the
+        # cached config may carry a different has_reference than the previously-loaded one.
+        # initialize_auto() also emits False explicitly before calling us, which is
+        # harmless redundancy because the second emit fires with consistent
+        # laser_af_properties state.
+        self.signal_reference_changed.emit(self.laser_af_properties.has_reference)
+
     def load_cached_configuration(self):
         """Load configuration from the cache if available."""
         if not self._current_profile:

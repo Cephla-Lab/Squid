@@ -713,6 +713,17 @@ class Microscope:
     # controller and handling objective-change reloads. Once we have a proper
     # acquisition API layer, move this there.
 
+    @property
+    def laser_autofocus_controller(self):
+        """Public accessor for the (possibly lazily-initialized) laser AF controller.
+
+        Returns None when the controller has not been constructed yet. Use
+        perform_laser_af() to trigger lazy init, or have an external owner (e.g. the
+        HCS GUI) pre-populate _laser_af_controller during setup so both call paths
+        share the same instance.
+        """
+        return self._laser_af_controller
+
     def _ensure_laser_af_controller(self):
         if self._laser_af_controller is None:
             if not control._def.SUPPORT_LASER_AUTOFOCUS:

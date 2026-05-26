@@ -663,6 +663,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.piezo,
                 self.objectiveStore,
             )
+            # Share the GUI's instance with the Microscope so widgets can reach it via
+            # microscope.laser_autofocus_controller, and Microscope.on_settings_changed
+            # paths operate on the same controller the GUI is configuring.
+            self.microscope._laser_af_controller = self.laserAutofocusController
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
         self.is_live_scan_grid_on = False
