@@ -2688,7 +2688,6 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_newAnalogGain = Signal(float)
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
-    signal_channel_offsets_reset = Signal()
 
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
@@ -2824,11 +2823,6 @@ class LaserAutofocusSettingWidget(QWidget):
         self.initialize_button = QPushButton("Initialize")
         self.initialize_button.setStyleSheet("background-color: #C2C2FF")
         initialize_layout.addWidget(self.initialize_button)
-        self.btn_resetAllChannelOffsets = QPushButton("Reset all channel Z-offsets")
-        self.btn_resetAllChannelOffsets.setToolTip(
-            "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
-        )
-        initialize_layout.addWidget(self.btn_resetAllChannelOffsets)
         initialize_group.setLayout(initialize_layout)
 
         # Add Laser AF Characterization Mode checkbox
@@ -2859,7 +2853,6 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
-        self.btn_resetAllChannelOffsets.clicked.connect(self._reset_all_channel_offsets)
 
     def _add_spinbox(
         self,
@@ -2915,47 +2908,6 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def toggle_characterization_mode(self, state):
         self.laserAutofocusController.characterization_mode = state
-
-    def _reset_all_channel_offsets(self):
-        objective = self.laserAutofocusController.objectiveStore.current_objective
-        config_repo = self.laserAutofocusController._config_repo
-        obj_config = config_repo.get_objective_config(objective)
-        general_config = config_repo.get_general_config()
-        channels = (
-            (obj_config.channels if obj_config else None) or (general_config.channels if general_config else None) or []
-        )
-        if not channels:
-            QMessageBox.information(self, "No channels", f"No channels found for objective '{objective}'.")
-            return
-        confirm = QMessageBox.question(
-            self,
-            "Reset channel Z-offsets",
-            f"Set Z-offset to 0 for all {len(channels)} channels of objective '{objective}'?\n"
-            f"Recommended when starting a new sample.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if confirm != QMessageBox.Yes:
-            return
-        failed = []
-        for ch in channels:
-            if not config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0):
-                failed.append(ch.name)
-        # Emit unconditionally so subscribers (e.g. LiveControlWidget's spinbox) refresh for
-        # the channels that DID reset; otherwise a partial failure leaves the UI showing a
-        # stale non-zero offset that a subsequent spinbox edit would re-persist.
-        succeeded = len(channels) - len(failed)
-        if succeeded > 0:
-            self._log.info(
-                f"Reset z-offset to 0 for {succeeded}/{len(channels)} channels of objective " f"'{objective}'."
-            )
-            self.signal_channel_offsets_reset.emit()
-        if failed:
-            QMessageBox.warning(
-                self,
-                "Reset incomplete",
-                f"Could not reset offsets for: {', '.join(failed)}.",
-            )
 
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
@@ -4278,6 +4230,12 @@ class LiveControlWidget(QFrame):
         self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
+        self.btn_resetAllZOffsets = QPushButton("Reset All")
+        self.btn_resetAllZOffsets.setToolTip(
+            "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
+        )
+        self.btn_resetAllZOffsets.clicked.connect(self._reset_all_channel_z_offsets)
+
         self.checkbox_applyOnChannelSwitch = QCheckBox("Apply in Live")
         self.checkbox_applyOnChannelSwitch.setToolTip(
             "When checked and laser AF has a reference, switching channels in live view moves z to the laser AF reference plus the new channel's offset."
@@ -4287,6 +4245,7 @@ class LiveControlWidget(QFrame):
         zoff_layout.addWidget(self.entry_zOffset)
         zoff_layout.addWidget(self.btn_captureZOffset)
         zoff_layout.addWidget(self.btn_resetZOffset)
+        zoff_layout.addWidget(self.btn_resetAllZOffsets)
         zoff_layout.addWidget(self.checkbox_applyOnChannelSwitch)
         zoff_layout.addStretch()
 
@@ -4548,6 +4507,50 @@ class LiveControlWidget(QFrame):
         """
         self.checkbox_applyOnChannelSwitch.setEnabled(has_reference)
         self.btn_captureZOffset.setEnabled(has_reference)
+
+    def _reset_all_channel_z_offsets(self):
+        """Zero out z_offset_um on every channel of the current objective.
+
+        Used when starting a new sample, where previously-captured offsets no longer
+        reflect the new sample's focal characteristics.
+        """
+        objective = self.objectiveStore.current_objective
+        config_repo = self.liveController.microscope.config_repo
+        obj_config = config_repo.get_objective_config(objective)
+        general_config = config_repo.get_general_config()
+        channels = (
+            (obj_config.channels if obj_config else None) or (general_config.channels if general_config else None) or []
+        )
+        if not channels:
+            QMessageBox.information(self, "No channels", f"No channels found for objective '{objective}'.")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Reset channel Z-offsets",
+            f"Set Z-offset to 0 for all {len(channels)} channels of objective '{objective}'?\n"
+            f"Recommended when starting a new sample.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        failed = []
+        for ch in channels:
+            if not config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0):
+                failed.append(ch.name)
+        # Refresh the spinbox for the currently-selected channel; otherwise channels that
+        # DID reset would still show their old non-zero offset in the UI, and a subsequent
+        # spinbox edit would re-persist the stale value.
+        succeeded = len(channels) - len(failed)
+        if succeeded > 0:
+            self._log.info(f"Reset Z-offset to 0 for {succeeded}/{len(channels)} channels of objective '{objective}'.")
+            self.refresh_z_offset_from_config()
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Reset incomplete",
+                f"Could not reset offsets for: {', '.join(failed)}.",
+            )
 
     # Safety threshold: any single live-view channel-switch move greater than this many µm
     # is presumed to come from a bad laser AF reading (drift, secondary peak, stale ref)
