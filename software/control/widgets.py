@@ -4265,7 +4265,7 @@ class LiveControlWidget(QFrame):
         )
         self.entry_zOffset.valueChanged.connect(self.update_config_z_offset)
 
-        self.btn_captureZOffset = QPushButton("Capture current")
+        self.btn_captureZOffset = QPushButton("Use Current")
         self.btn_captureZOffset.setToolTip(
             "Read displacement from the laser AF reference and save as this channel's offset."
         )
@@ -4436,14 +4436,14 @@ class LiveControlWidget(QFrame):
         if laser_af is None or not getattr(laser_af.laser_af_properties, "has_reference", False):
             QMessageBox.warning(
                 self,
-                "Capture failed",
+                "Reading failed",
                 "Laser autofocus has no reference set. Set a reference before capturing channel offsets.",
             )
             return
         try:
             displacement_um = laser_af.measure_displacement()
         except Exception as e:
-            QMessageBox.warning(self, "Capture failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
+            QMessageBox.warning(self, "Reading failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
             return
         # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
         # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
@@ -4451,7 +4451,7 @@ class LiveControlWidget(QFrame):
         if displacement_um is None or not math.isfinite(displacement_um):
             QMessageBox.warning(
                 self,
-                "Capture failed",
+                "Reading failed",
                 f"Laser AF returned an invalid reading ({displacement_um!r}). Offset unchanged.",
             )
             return
@@ -4460,7 +4460,7 @@ class LiveControlWidget(QFrame):
         if not (spinbox_min <= displacement_um <= spinbox_max):
             QMessageBox.warning(
                 self,
-                "Capture out of range",
+                "Reading out of range",
                 f"Measured displacement {displacement_um:.2f} µm is outside the configured "
                 f"range [{spinbox_min:.1f}, {spinbox_max:.1f}] µm. Adjust the sample's focus "
                 f"closer to the reference, or widen the z-offset range. Offset unchanged.",
