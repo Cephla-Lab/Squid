@@ -4443,11 +4443,22 @@ class LiveControlWidget(QFrame):
                 "Laser autofocus has no reference set. Set a reference before capturing channel Z-offsets.",
             )
             return
+        # Suspend the main camera's live stream during the measurement: laser AF turns
+        # the AF laser on/off via the microcontroller and waits for completion, while
+        # live continuously queues trigger commands on the same serial link. The two
+        # contend and the wait times out, returning NaN. Restore live afterwards.
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
         try:
-            displacement_um = laser_af.measure_displacement()
-        except Exception as e:
-            QMessageBox.warning(self, "Reading failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
-            return
+            try:
+                displacement_um = laser_af.measure_displacement()
+            except Exception as e:
+                QMessageBox.warning(self, "Reading failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
+                return
+        finally:
+            if was_live:
+                self.liveController.start_live()
         # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
         # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
         # poison the YAML config and propagate into every subsequent acquisition's stage move.
