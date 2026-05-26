@@ -2938,15 +2938,21 @@ class LaserAutofocusSettingWidget(QWidget):
         for ch in channels:
             if not config_repo.update_channel_setting(objective, ch.name, "ZOffset", 0.0):
                 failed.append(ch.name)
+        # Emit unconditionally so subscribers (e.g. LiveControlWidget's spinbox) refresh for
+        # the channels that DID reset; otherwise a partial failure leaves the UI showing a
+        # stale non-zero offset that a subsequent spinbox edit would re-persist.
+        succeeded = len(channels) - len(failed)
+        if succeeded > 0:
+            self._log.info(
+                f"Reset z-offset to 0 for {succeeded}/{len(channels)} channels of objective " f"'{objective}'."
+            )
+            self.signal_channel_offsets_reset.emit()
         if failed:
             QMessageBox.warning(
                 self,
                 "Reset incomplete",
                 f"Could not reset offsets for: {', '.join(failed)}.",
             )
-        else:
-            self._log.info(f"Reset z-offset to 0 for {len(channels)} channels of objective '{objective}'.")
-            self.signal_channel_offsets_reset.emit()
 
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
@@ -4352,9 +4358,16 @@ class LiveControlWidget(QFrame):
                 self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time)
                 self.entry_analogGain.setValue(self.currentConfiguration.analog_gain)
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
-                self.entry_zOffset.setValue(self.currentConfiguration.z_offset_um or 0.0)
+                self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
             self.is_switching_mode = False
+
+    @staticmethod
+    def _safe_z_offset_value(raw) -> float:
+        """Coerce a possibly-None / NaN persisted offset into a spinbox-safe float."""
+        if raw is None or not math.isfinite(raw):
+            return 0.0
+        return float(raw)
 
     def update_trigger_mode(self):
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
@@ -4432,6 +4445,27 @@ class LiveControlWidget(QFrame):
         except Exception as e:
             QMessageBox.warning(self, "Capture failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
             return
+        # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
+        # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
+        # poison the YAML config and propagate into every subsequent acquisition's stage move.
+        if displacement_um is None or not math.isfinite(displacement_um):
+            QMessageBox.warning(
+                self,
+                "Capture failed",
+                f"Laser AF returned an invalid reading ({displacement_um!r}). Offset unchanged.",
+            )
+            return
+        spinbox_min = self.entry_zOffset.minimum()
+        spinbox_max = self.entry_zOffset.maximum()
+        if not (spinbox_min <= displacement_um <= spinbox_max):
+            QMessageBox.warning(
+                self,
+                "Capture out of range",
+                f"Measured displacement {displacement_um:.2f} µm is outside the configured "
+                f"range [{spinbox_min:.1f}, {spinbox_max:.1f}] µm. Adjust the sample's focus "
+                f"closer to the reference, or widen the z-offset range. Offset unchanged.",
+            )
+            return
         self.currentConfiguration.z_offset_um = displacement_um
         ok = self.liveController.microscope.config_repo.update_channel_setting(
             self.objectiveStore.current_objective,
@@ -4488,7 +4522,7 @@ class LiveControlWidget(QFrame):
             self.currentConfiguration.z_offset_um = refreshed.z_offset_um
         try:
             self.is_switching_mode = True
-            self.entry_zOffset.setValue(self.currentConfiguration.z_offset_um or 0.0)
+            self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
             self.is_switching_mode = False
 
@@ -4501,12 +4535,19 @@ class LiveControlWidget(QFrame):
         self.checkbox_applyOnChannelSwitch.setEnabled(has_reference)
         self.btn_captureZOffset.setEnabled(has_reference)
 
+    # Safety threshold: any single live-view channel-switch move greater than this many µm
+    # is presumed to come from a bad laser AF reading (drift, secondary peak, stale ref)
+    # and is suppressed rather than commanded blind. Generous vs the ±50 µm channel offset
+    # range so legitimate moves are never blocked.
+    _LIVE_OFFSET_MAX_JUMP_UM = 500.0
+
     def _maybe_apply_live_channel_offset(self, new_config):
         """Move stage to absolute z = laser_af_reference + new_config.z_offset_um on channel switch.
 
         No-op when the user hasn't enabled 'Apply on channel switch', when laser AF has no
-        reference, or when no valid laser AF reading is available. Uses absolute positioning
-        so manual z jogs by the user don't bias the next switch.
+        reference, when no valid laser AF reading is available, when the channel's stored
+        offset is non-finite, or when the resulting move would exceed the safety cap.
+        Uses absolute positioning so manual z jogs by the user don't bias the next switch.
         """
         if not self.checkbox_applyOnChannelSwitch.isChecked():
             return
@@ -4520,9 +4561,33 @@ class LiveControlWidget(QFrame):
         except Exception as e:
             self._log.warning(f"Could not read laser AF spot for live offset: {e}")
             return
+        # measure_displacement() returns float('nan') on a soft failure rather than raising.
+        if displacement_um is None or not math.isfinite(displacement_um):
+            self._log.warning(
+                f"Skipping live channel z-offset: laser AF returned invalid reading " f"({displacement_um!r})"
+            )
+            return
+        stored_offset_um = new_config.z_offset_um
+        if stored_offset_um is None:
+            stored_offset_um = 0.0
+        elif not math.isfinite(stored_offset_um):
+            self._log.warning(
+                f"Skipping live channel z-offset: channel '{new_config.name}' has non-finite "
+                f"z_offset_um={stored_offset_um!r}"
+            )
+            return
         current_z_mm = self.liveController.microscope.stage.get_pos().z_mm
         reference_z_mm = current_z_mm - displacement_um / 1000
-        target_z_mm = reference_z_mm + (new_config.z_offset_um or 0.0) / 1000
+        target_z_mm = reference_z_mm + stored_offset_um / 1000
+        jump_um = abs(target_z_mm - current_z_mm) * 1000
+        if jump_um > self._LIVE_OFFSET_MAX_JUMP_UM:
+            self._log.warning(
+                f"Skipping live channel z-offset: requested move {jump_um:.1f} µm exceeds "
+                f"safety cap {self._LIVE_OFFSET_MAX_JUMP_UM:.0f} µm (displacement="
+                f"{displacement_um:.2f} µm, offset={stored_offset_um:.2f} µm). The laser AF "
+                f"reference may be stale; re-set it."
+            )
+            return
         try:
             self.liveController.microscope.stage.move_z_to(target_z_mm)
         except Exception as e:

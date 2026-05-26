@@ -1,5 +1,6 @@
 """Unit tests for LiveControlWidget._maybe_apply_live_channel_offset (absolute positioning)."""
 
+import math
 from unittest.mock import MagicMock
 
 import pytest
@@ -34,6 +35,7 @@ class _LiveStub:
 
         self._log = MagicMock()
 
+    _LIVE_OFFSET_MAX_JUMP_UM = LiveControlWidget._LIVE_OFFSET_MAX_JUMP_UM
     _maybe_apply_live_channel_offset = LiveControlWidget._maybe_apply_live_channel_offset
 
 
@@ -97,3 +99,45 @@ def test_absolute_move_robust_to_manual_jog():
     # differs by (10.005 - 10.000) = 0.005 mm.
     assert target1 == pytest.approx(10.002)
     assert target2 == pytest.approx(10.007)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_no_move_when_measure_returns_nan():
+    """measure_displacement returns NaN on soft failure (no spot, laser-on timeout)
+    instead of raising. The helper must NOT issue stage.move_z_to(NaN)."""
+    w = _LiveStub(checked=True, has_reference=True, displacement_um=float("nan"))
+    w._maybe_apply_live_channel_offset(_cfg(2.0))
+    w.liveController.microscope.stage.move_z_to.assert_not_called()
+    w._log.warning.assert_called_once()
+
+
+def test_no_move_when_stored_offset_is_nan():
+    """A persisted NaN offset (e.g. from an older buggy capture) must not turn into a
+    NaN absolute move on channel switch."""
+    w = _LiveStub(checked=True, has_reference=True, displacement_um=0.0)
+    w._maybe_apply_live_channel_offset(_cfg(float("nan")))
+    w.liveController.microscope.stage.move_z_to.assert_not_called()
+    w._log.warning.assert_called_once()
+
+
+def test_no_move_when_jump_exceeds_safety_cap():
+    """A wildly wrong AF reading (drift, secondary peak) should be suppressed rather
+    than commanding a millimetre-scale absolute move."""
+    # displacement_um=2000 → reference_z_mm = 10.0 - 2.0 = 8.0 mm → target with offset=2
+    # = 8.002 mm → |8.002 - 10.0|*1000 = 1998 µm jump, far above the 500 µm cap.
+    w = _LiveStub(checked=True, has_reference=True, displacement_um=2000.0)
+    w._maybe_apply_live_channel_offset(_cfg(2.0))
+    w.liveController.microscope.stage.move_z_to.assert_not_called()
+    w._log.warning.assert_called_once()
+
+
+def test_legitimate_small_move_passes_safety_cap():
+    """A typical offset (a few µm) plus typical AF displacement (a few µm) must not
+    be blocked by the safety cap."""
+    w = _LiveStub(checked=True, has_reference=True, displacement_um=3.0)
+    w._maybe_apply_live_channel_offset(_cfg(5.0))
+    w.liveController.microscope.stage.move_z_to.assert_called_once()
