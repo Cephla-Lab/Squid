@@ -4232,16 +4232,17 @@ class LiveControlWidget(QFrame):
 
         self.btn_resetZOffset = QPushButton("Reset")
         self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
-        # Shrink so 'Apply in Live' isn't pushed out of the row, but scale with the
-        # actual font metrics so the label doesn't clip on HiDPI / large-text setups.
-        _shrink_btn_to_text(self.btn_resetZOffset)
+        # Lock the Reset buttons below their natural sizeHint width so 'Apply in Live'
+        # isn't pushed out of the row. Values empirically verified on this user's
+        # display; HiDPI users may need to widen these.
+        self.btn_resetZOffset.setFixedWidth(55)
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
         self.btn_resetAllZOffsets = QPushButton("Reset All")
         self.btn_resetAllZOffsets.setToolTip(
             "Set Z-offset to 0 for every channel of the current objective. Recommended when starting a new sample."
         )
-        _shrink_btn_to_text(self.btn_resetAllZOffsets)
+        self.btn_resetAllZOffsets.setFixedWidth(75)
         self.btn_resetAllZOffsets.clicked.connect(self._reset_all_channel_z_offsets)
 
         self.checkbox_applyOnChannelSwitch = QCheckBox("Apply in Live")
@@ -15499,20 +15500,6 @@ class BackpressureMonitorWidget(QWidget):
             self._log.debug(f"Error stopping monitoring on close: {e}")
 
         super().closeEvent(event)
-
-
-def _shrink_btn_to_text(btn: QPushButton) -> None:
-    """Lock a QPushButton to its style-correct natural width via setFixedWidth(sizeHint).
-
-    Uses QWidget.sizeHint() which already accounts for the active QStyle's button
-    margin, frame thickness, focus rectangle, font, and any icon — so the label
-    won't clip on HiDPI / themed Qt setups. Matches the existing pattern at
-    widgets.py:12969 / :12990.
-
-    Intended for buttons with static text. If a caller mutates btn.text() later
-    they should re-call this helper (sizeHint is sampled at call time).
-    """
-    btn.setFixedWidth(btn.sizeHint().width())
 
 
 def _is_filter_wheel_enabled() -> bool:

@@ -211,13 +211,22 @@ def test_z_stack_offsets_reset_between_levels():
 # ---------------------------------------------------------------------------
 
 
-def test_log_ignored_offsets_silent_on_happy_path():
-    """No log when laser AF is on AND apply_channel_offset is on."""
+def test_log_ignored_offsets_logs_will_apply_on_happy_path():
+    """Gate is on AND non-zero offsets exist → log that they will be applied
+    (helps diagnose 'offsets not applied' reports by confirming the worker saw them)."""
+    cfg_a = _config(2.0)
+    cfg_a.name = "GFP"
+    cfg_b = _config(-1.0)
+    cfg_b.name = "DAPI"
     w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
-    w.selected_configurations = [_config(2.0), _config(-1.0)]
+    w.selected_configurations = [cfg_a, cfg_b]
     w._log_ignored_offsets = MultiPointWorker._log_ignored_offsets.__get__(w)
     w._log_ignored_offsets()
-    w._log.info.assert_not_called()
+    assert w._log.info.call_count == 1
+    msg = w._log.info.call_args[0][0]
+    assert "will be applied" in msg
+    assert "GFP" in msg and "DAPI" in msg
+    assert "+2.00" in msg and "-1.00" in msg
 
 
 def test_log_ignored_offsets_silent_when_all_offsets_zero():
