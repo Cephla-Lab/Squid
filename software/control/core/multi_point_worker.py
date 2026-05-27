@@ -1241,7 +1241,8 @@ class MultiPointWorker:
         elif not math.isfinite(raw_target):
             self._log.warning(
                 f"Channel '{config.name}' has non-finite z_offset_um={raw_target!r}; "
-                f"treating as 0 and skipping the move"
+                f"treating as 0 (will reset to the un-offset baseline if a prior channel "
+                f"already applied an offset)"
             )
             target_um = 0.0
         else:

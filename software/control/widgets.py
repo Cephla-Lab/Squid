@@ -4023,8 +4023,12 @@ class LiveControlWidget(QFrame):
         else:
             initial_has_ref = False
 
+        # Enable the control if a laser AF reference exists, but leave it UNCHECKED
+        # by default — 'Apply in Live' issues an absolute Z move on every channel switch
+        # while live, and that should be an explicit opt-in. Auto-checking would surprise
+        # users who never asked for the feature with an unexpected stage move the moment
+        # they change channels.
         self.checkbox_applyOnChannelSwitch.setEnabled(initial_has_ref)
-        self.checkbox_applyOnChannelSwitch.setChecked(initial_has_ref)
         self.btn_captureZOffset.setEnabled(initial_has_ref)
 
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
