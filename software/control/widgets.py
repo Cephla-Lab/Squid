@@ -4024,12 +4024,18 @@ class LiveControlWidget(QFrame):
             initial_has_ref = False
 
         # Enable the control if a laser AF reference exists, but leave it UNCHECKED
-        # by default — 'Apply in Live' issues an absolute Z move on every channel switch
-        # while live, and that should be an explicit opt-in. Auto-checking would surprise
-        # users who never asked for the feature with an unexpected stage move the moment
-        # they change channels.
+        # by default — 'Apply in Live' issues a Z move on every channel switch while
+        # live, and that should be an explicit opt-in. The reference gate is kept
+        # because captured offsets come from laser AF; without a reference all
+        # offsets stay 0 and the feature has nothing to do.
         self.checkbox_applyOnChannelSwitch.setEnabled(initial_has_ref)
         self.btn_captureZOffset.setEnabled(initial_has_ref)
+        # Tracker for the per-channel z-offset currently applied via 'Apply in Live'.
+        # Reset to 0 each time the user enables the checkbox, treating the current
+        # stage position as the offset=0 baseline. Per-switch deltas are computed
+        # against this tracker (no AF call) and the tracker is updated on success.
+        self._live_current_z_offset_um: float = 0.0
+        self.checkbox_applyOnChannelSwitch.toggled.connect(self._on_apply_in_live_toggled)
 
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
@@ -4577,19 +4583,34 @@ class LiveControlWidget(QFrame):
                 f"Could not reset offsets for: {', '.join(failed)}.",
             )
 
-    # Safety threshold: any single live-view channel-switch move greater than this many µm
-    # is presumed to come from a bad laser AF reading (drift, secondary peak, stale ref)
-    # and is suppressed rather than commanded blind. Generous vs the ±50 µm channel offset
-    # range so legitimate moves are never blocked.
+    # Safety threshold: any single live-view channel-switch delta greater than this
+    # many µm is suppressed rather than commanded — guards against a bad value in
+    # the channel config. Generous vs the ±50 µm spinbox range so legitimate moves
+    # are never blocked.
     _LIVE_OFFSET_MAX_JUMP_UM = 500.0
 
+    def _on_apply_in_live_toggled(self, checked: bool) -> None:
+        """Reset the offset tracker when the user enables 'Apply in Live'.
+
+        Treats the current stage position as the offset=0 baseline so subsequent
+        channel switches apply the stored offsets relative to wherever the sample
+        is currently in focus.
+        """
+        if checked:
+            self._live_current_z_offset_um = 0.0
+
     def _maybe_apply_live_channel_offset(self, new_config):
-        """Move stage to absolute z = laser_af_reference + new_config.z_offset_um on channel switch.
+        """Apply the channel's stored z-offset as a relative delta on channel switch.
+
+        No AF call — the offset is moved relative to whatever stage z was when the
+        user enabled 'Apply in Live' (the tracker's offset=0 baseline). Subsequent
+        switches compute delta against the tracker so a single channel-switch only
+        moves by the difference between the new and previous channel's offsets.
 
         No-op when the user hasn't enabled 'Apply in Live', when laser AF has no
-        reference, when no valid laser AF reading is available, when the channel's stored
-        offset is non-finite, or when the resulting move would exceed the safety cap.
-        Uses absolute positioning so manual z jogs by the user don't bias the next switch.
+        reference (the offsets come from AF capture; without it they're all 0),
+        when the channel's stored offset is non-finite, or when the resulting
+        delta exceeds the safety cap.
         """
         if not self.checkbox_applyOnChannelSwitch.isChecked():
             return
@@ -4597,17 +4618,6 @@ class LiveControlWidget(QFrame):
         if laser_af is None or not getattr(laser_af.laser_af_properties, "has_reference", False):
             return
         if new_config is None:
-            return
-        try:
-            displacement_um = laser_af.measure_displacement()
-        except Exception as e:
-            self._log.warning(f"Could not read laser AF spot for live offset: {e}")
-            return
-        # measure_displacement() returns float('nan') on a soft failure rather than raising.
-        if displacement_um is None or not math.isfinite(displacement_um):
-            self._log.warning(
-                f"Skipping live channel z-offset: laser AF returned invalid reading " f"({displacement_um!r})"
-            )
             return
         stored_offset_um = new_config.z_offset_um
         if stored_offset_um is None:
@@ -4618,20 +4628,20 @@ class LiveControlWidget(QFrame):
                 f"z_offset_um={stored_offset_um!r}"
             )
             return
-        current_z_mm = self.liveController.microscope.stage.get_pos().z_mm
-        reference_z_mm = current_z_mm - displacement_um / 1000
-        target_z_mm = reference_z_mm + stored_offset_um / 1000
-        jump_um = abs(target_z_mm - current_z_mm) * 1000
-        if jump_um > self._LIVE_OFFSET_MAX_JUMP_UM:
+        delta_um = stored_offset_um - self._live_current_z_offset_um
+        if abs(delta_um) < 1e-4:
+            return
+        if abs(delta_um) > self._LIVE_OFFSET_MAX_JUMP_UM:
             self._log.warning(
-                f"Skipping live channel z-offset: requested move {jump_um:.1f} µm exceeds "
-                f"safety cap {self._LIVE_OFFSET_MAX_JUMP_UM:.0f} µm (displacement="
-                f"{displacement_um:.2f} µm, offset={stored_offset_um:.2f} µm). The laser AF "
-                f"reference may be stale; re-set it."
+                f"Skipping live channel z-offset: delta {delta_um:+.1f} µm exceeds safety "
+                f"cap {self._LIVE_OFFSET_MAX_JUMP_UM:.0f} µm (target offset={stored_offset_um:.2f} µm, "
+                f"current applied={self._live_current_z_offset_um:.2f} µm). Check the channel "
+                f"configs for stale values."
             )
             return
         try:
-            self.liveController.microscope.stage.move_z_to(target_z_mm)
+            self.liveController.microscope.stage.move_z(delta_um / 1000)
+            self._live_current_z_offset_um = stored_offset_um
         except Exception as e:
             self._log.warning(f"Failed to apply live channel z-offset (stage move): {e}")
 
