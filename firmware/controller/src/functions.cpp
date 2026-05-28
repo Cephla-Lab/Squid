@@ -210,6 +210,9 @@ IntervalTimer strobeTimer;
 
 CRGB matrix[NUM_LEDS] = {0};
 
+// Forward declaration: defined later in this file alongside turn_off_all_ports.
+static void turn_off_all_ports_pins_only();
+
 // Turn on the port/matrix corresponding to a specific source code, without
 // touching the global illumination_is_on flag. The strobe ISR uses this with
 // the latched source so the ON pin matches what the OFF helper will turn off
