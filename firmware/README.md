@@ -23,6 +23,18 @@ pip install platformio
 brew install platformio
 ```
 
+`pio run -t upload` shells out to [`teensy_loader_cli`](https://github.com/PaulStoffregen/teensy_loader_cli) to flash the board, so install that too:
+
+```bash
+# Ubuntu / Debian
+sudo apt install teensy-loader-cli
+
+# macOS
+brew install teensy_loader_cli
+```
+
+On Linux, also install the [PJRC udev rules](https://www.pjrc.com/teensy/00-teensy.rules) into `/etc/udev/rules.d/` so non-root users can flash.
+
 ### Quick Start
 
 ```bash
