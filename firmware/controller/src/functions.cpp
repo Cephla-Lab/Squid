@@ -340,7 +340,15 @@ static void turn_off_illumination_source(int source)
       // Unknown source code: fall back to a global shutdown so a forgotten
       // case (e.g. a future D6 in the ON switch but not here) can't leave
       // a pin stuck HIGH — the original bug class this fix is preventing.
-      turn_off_all_ports();
+      // turn_off_all_ports() unconditionally clears illumination_is_on, which
+      // would violate this helper's "doesn't touch illumination_is_on" contract
+      // and bypass the ISR's guarded clear (which keeps the flag set if Python
+      // has switched to a different active source). Save and restore the flag.
+      {
+        bool prev_illumination_is_on = illumination_is_on;
+        turn_off_all_ports();
+        illumination_is_on = prev_illumination_is_on;
+      }
       break;
   }
 }
