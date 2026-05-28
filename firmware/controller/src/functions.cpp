@@ -340,15 +340,10 @@ static void turn_off_illumination_source(int source)
       // Unknown source code: fall back to a global shutdown so a forgotten
       // case (e.g. a future D6 in the ON switch but not here) can't leave
       // a pin stuck HIGH — the original bug class this fix is preventing.
-      // turn_off_all_ports() unconditionally clears illumination_is_on, which
-      // would violate this helper's "doesn't touch illumination_is_on" contract
-      // and bypass the ISR's guarded clear (which keeps the flag set if Python
-      // has switched to a different active source). Save and restore the flag.
-      {
-        bool prev_illumination_is_on = illumination_is_on;
-        turn_off_all_ports();
-        illumination_is_on = prev_illumination_is_on;
-      }
+      // Use the pins-only variant so this helper honors its "doesn't touch
+      // illumination_is_on" contract; the ISR call sites own the guarded
+      // clear of that flag.
+      turn_off_all_ports_pins_only();
       break;
   }
 }
@@ -478,10 +473,11 @@ void set_port_intensity(int port_index, uint16_t intensity)
   illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
 }
 
-// Safety shutdown: turns off ALL illumination (discrete ports + LED matrix).
-// Called by the serial watchdog and TURN_OFF_ALL_PORTS command.
-// Intentionally broad: when this fires, everything should go dark.
-void turn_off_all_ports()
+// Drive every illumination port LOW and clear the LED matrix without touching
+// the global illumination_is_on flag. Used by turn_off_illumination_source()'s
+// default-case fallback, where the ISR call sites own the guarded clear of
+// illumination_is_on and must not see a transient false from this helper.
+static void turn_off_all_ports_pins_only()
 {
   for (int i = 0; i < NUM_ILLUMINATION_PORTS; i++)
   {
@@ -493,6 +489,14 @@ void turn_off_all_ports()
     }
   }
   clear_matrix(matrix);
+}
+
+// Safety shutdown: turns off ALL illumination (discrete ports + LED matrix).
+// Called by the serial watchdog and TURN_OFF_ALL_PORTS command.
+// Intentionally broad: when this fires, everything should go dark.
+void turn_off_all_ports()
+{
+  turn_off_all_ports_pins_only();
   illumination_is_on = false;
 }
 
