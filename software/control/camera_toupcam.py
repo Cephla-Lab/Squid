@@ -830,100 +830,44 @@ class ToupcamCamera(AbstractCamera):
             trigger_option_value = 2
         else:
             raise ValueError(f"Do not know how to handle {acquisition_mode=}")
+        self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
 
-        # MAX_PRECISE_FRAMERATE can only be queried on a running stream
-        # (verified by post-fix breakage where reading it inside the pause
-        # produced "get max_framerate fail"). For CONTINUOUS, cache it now
-        # while the stream is live, then write PRECISE_FRAMERATE inside the
-        # pause where the option write actually sticks.
-        cached_max_fr = None
-        if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-            try:
-                cached_max_fr = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
-            except toupcam.HRESULTException as ex:
-                self._log.warning(f"Could not read MAX_PRECISE_FRAMERATE: {control.toupcam_exceptions.explain(ex)}")
-
-        # Mid-stream Toupcam option changes can fail to take effect; every other
-        # state-mutating method in this file (set_pixel_format, set_binning,
-        # set_frame_format) pauses+restarts the stream. Do the same here so the
-        # TRIGGER and PRECISE_FRAMERATE puts are applied on a fresh stream —
-        # relevant for continuous mode, which has been running well below
-        # MAX_PRECISE_FRAMERATE.
-        with self._pause_streaming():
-            self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
-
-            if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-                if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
-                    try:
-                        self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, 2)
-                    except toupcam.HRESULTException as ex:
-                        error_type = hresult_checker(ex)
-                        # TODO(imo): Propagate error in some way and handle
-                        self._log.error("Unable to set option_trigger to 2: " + error_type)
-
-                    try:
-                        # set IO controltype to PWM mode
-                        self._camera.IoControl(0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4)
-                        self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, 0)
-                        self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1)
-                    except toupcam.HRESULTException as ex:
-                        error_type = hresult_checker(ex)
-                        # TODO(imo): Propagate error in some way and handle
-                        self._log.error("Unable to select trigger source: " + error_type)
-                else:
-                    # select trigger source to GPIO0
-                    try:
-                        self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
-                    except toupcam.HRESULTException as ex:
-                        error_type = hresult_checker(ex)
-                        self._log.exception("Unable to select trigger source: " + error_type)
-                        raise
-                    # set GPIO1 to trigger wait
-                    try:
-                        self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
-                        self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
-                    except toupcam.HRESULTException as ex:
-                        error_type = hresult_checker(ex)
-                        self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
-                        raise
-            elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS and cached_max_fr is not None:
-                # Drive PRECISE_FRAMERATE to the max while the stream is
-                # paused so the option takes effect on restart. The SDK
-                # default is only 90% of the max (per the comment in
-                # _calculate_strobe_info).
+        if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
                 try:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, cached_max_fr)
+                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, 2)
                 except toupcam.HRESULTException as ex:
-                    self._log.exception(
-                        f"Failed to set continuous PRECISE_FRAMERATE: {control.toupcam_exceptions.explain(ex)}"
-                    )
+                    error_type = hresult_checker(ex)
+                    # TODO(imo): Propagate error in some way and handle
+                    self._log.error("Unable to set option_trigger to 2: " + error_type)
 
-        # Re-set exposure time on the restarted stream. _calculate_strobe_info
-        # inside this call needs the camera streaming to read several options
-        # (MAX_PRECISE_FRAMERATE in particular), so it must run AFTER the
-        # _pause_streaming block exits — not inside it.
+                try:
+                    # set IO controltype to PWM mode
+                    self._camera.IoControl(0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4)
+                    self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, 0)
+                    self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    # TODO(imo): Propagate error in some way and handle
+                    self._log.error("Unable to select trigger source: " + error_type)
+            else:
+                # select trigger source to GPIO0
+                try:
+                    self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    self._log.exception("Unable to select trigger source: " + error_type)
+                    raise
+                # set GPIO1 to trigger wait
+                try:
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
+                    raise
+        # Re-set exposure time to force strobe to get set to the remote.
         self.set_exposure_time(self.get_exposure_time())
-
-        # Any in-flight trigger was cancelled by stop_streaming; clear the
-        # host-side flag so get_ready_for_trigger doesn't refuse the next
-        # send_trigger until the exposure-based timeout elapses.
-        self._trigger_sent = False
-
-        # Diagnostic: surface the camera's actual rate-relevant option values
-        # after the mode switch so we can tell hardware cap apart from
-        # "option didn't take effect". Broad except since unsupported options
-        # on some camera SKUs can return non-numeric values (TypeError) in
-        # addition to HRESULTException.
-        try:
-            self._log.info(
-                f"Acquisition mode -> {acquisition_mode}: "
-                f"PRECISE_FR={self._camera.get_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE) / 10:.1f}fps, "
-                f"MAX_PRECISE_FR={self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE) / 10:.1f}fps, "
-                f"BANDWIDTH={self._camera.get_Option(toupcam.TOUPCAM_OPTION_BANDWIDTH)}%, "
-                f"FR_LIMIT={self._camera.get_Option(toupcam.TOUPCAM_OPTION_FRAMERATE)}"
-            )
-        except Exception:
-            pass
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
         trigger_option_value = self._camera.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER)
