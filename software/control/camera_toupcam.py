@@ -834,9 +834,8 @@ class ToupcamCamera(AbstractCamera):
         # Mid-stream Toupcam option changes can fail to take effect; every other
         # state-mutating method in this file (set_pixel_format, set_binning,
         # set_frame_format) pauses+restarts the stream. Do the same here so the
-        # TRIGGER option and the strobe-info / exposure / PRECISE_FRAMERATE
-        # writes inside set_exposure_time all land on a fresh stream — relevant
-        # for continuous mode, which has been running well below
+        # TRIGGER and PRECISE_FRAMERATE puts are applied on a fresh stream —
+        # relevant for continuous mode, which has been running well below
         # MAX_PRECISE_FRAMERATE.
         with self._pause_streaming():
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
@@ -875,12 +874,25 @@ class ToupcamCamera(AbstractCamera):
                         error_type = hresult_checker(ex)
                         self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
                         raise
+            elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                # In video mode the camera autonomously paces frames at
+                # PRECISE_FRAMERATE; the SDK default is only 90% of the max
+                # (per the comment in _calculate_strobe_info). Drive it to the
+                # max while the stream is paused so the option takes effect on
+                # the restart performed by _pause_streaming.
+                try:
+                    max_fr = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_fr)
+                except toupcam.HRESULTException as ex:
+                    self._log.exception(
+                        f"Failed to set continuous PRECISE_FRAMERATE: {control.toupcam_exceptions.explain(ex)}"
+                    )
 
-            # Re-set exposure time INSIDE the pause: this re-runs strobe-info
-            # (which writes PRECISE_FRAMERATE for video mode — the actual reason
-            # continuous mode was capped) and put_ExpoTime, both while the
-            # stream is stopped so the options take effect on restart.
-            self.set_exposure_time(self.get_exposure_time())
+        # Re-set exposure time on the restarted stream. _calculate_strobe_info
+        # inside this call needs the camera streaming to read several options
+        # (MAX_PRECISE_FRAMERATE in particular), so it must run AFTER the
+        # _pause_streaming block exits — not inside it.
+        self.set_exposure_time(self.get_exposure_time())
 
         # Any in-flight trigger was cancelled by stop_streaming; clear the
         # host-side flag so get_ready_for_trigger doesn't refuse the next
