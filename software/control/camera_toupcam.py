@@ -260,6 +260,44 @@ class ToupcamCamera(AbstractCamera):
         self._start_raw_camera_stream()
         self._update_internal_settings()
 
+        # Per-frame timing diagnostics — accumulates a small rolling window
+        # in _on_frame_callback and logs every N frames so we can see where
+        # the per-frame time goes in continuous vs trigger mode.
+        self._diag_last_callback_start_ns: Optional[int] = None
+        self._diag_frame_log_every = 30
+        self._log_startup_option_dump()
+
+    def _log_startup_option_dump(self):
+        """Dump every Toupcam option that plausibly affects FPS so we can
+        compare configured state against what the diagnostic log claims.
+        Runs once at construction; suppresses errors so unsupported options
+        on a given SKU don't abort startup."""
+        rate_options = [
+            ("TRIGGER", toupcam.TOUPCAM_OPTION_TRIGGER),
+            ("PRECISE_FRAMERATE", toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE),
+            ("MAX_PRECISE_FRAMERATE", toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE),
+            ("FRAMERATE_LIMIT", toupcam.TOUPCAM_OPTION_FRAMERATE),
+            ("BANDWIDTH", toupcam.TOUPCAM_OPTION_BANDWIDTH),
+            ("DDR_DEPTH", toupcam.TOUPCAM_OPTION_DDR_DEPTH),
+            ("RAW", toupcam.TOUPCAM_OPTION_RAW),
+            ("LINEAR", toupcam.TOUPCAM_OPTION_LINEAR),
+            ("CURVE", toupcam.TOUPCAM_OPTION_CURVE),
+            ("MULTITHREAD", toupcam.TOUPCAM_OPTION_MULTITHREAD),
+            ("LOW_NOISE", toupcam.TOUPCAM_OPTION_LOW_NOISE),
+        ]
+        parts = []
+        for name, opt in rate_options:
+            try:
+                parts.append(f"{name}={self._camera.get_Option(opt)}")
+            except Exception:
+                parts.append(f"{name}=?")
+        try:
+            ae = self._camera.get_AutoExpoEnable()
+            parts.append(f"AUTOEXP={ae}")
+        except Exception:
+            parts.append("AUTOEXP=?")
+        self._log.info("Toupcam startup option dump: " + ", ".join(parts))
+
     def _start_raw_camera_stream(self):
         """
         Make sure the camera is setup to tell us when frames are available.
@@ -277,6 +315,7 @@ class ToupcamCamera(AbstractCamera):
         """
         This is the callback that we have the toupcam software call when a frame is ready.  It should always be running.
         """
+        callback_start_ns = time.perf_counter_ns()
         with self._raw_frame_callback_lock:
             # Since we are receiving a frame callback, we know things are setup properly.
             self._raw_camera_stream_started = True
@@ -286,6 +325,7 @@ class ToupcamCamera(AbstractCamera):
             self._trigger_sent = False
 
             # get the image from the camera
+            pull_start_ns = time.perf_counter_ns()
             try:
                 self._camera.PullImageV2(
                     self._internal_read_buffer, self._get_pixel_size_in_bytes() * 8, None
@@ -293,6 +333,7 @@ class ToupcamCamera(AbstractCamera):
             except toupcam.HRESULTException as ex:
                 # TODO(imo): Propagate error in some way and handle
                 self._log.error("pull image failed, hr=0x{:x}".format(ex.hr))
+            pull_done_ns = time.perf_counter_ns()
 
             this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
             this_timestamp = time.time()
@@ -310,6 +351,7 @@ class ToupcamCamera(AbstractCamera):
                 raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint16")
             current_raw_image = raw_image.reshape(height, width)
 
+            process_start_ns = time.perf_counter_ns()
             current_frame = CameraFrame(
                 frame_id=this_frame_id,
                 timestamp=this_timestamp,
@@ -317,6 +359,7 @@ class ToupcamCamera(AbstractCamera):
                 frame_format=this_frame_format,
                 frame_pixel_format=this_pixel_format,
             )
+            process_done_ns = time.perf_counter_ns()
 
             # Before releasing the lock, set the new current fram with the incremented frame id so other methods can
             # see we have a new frame. This should be the only place we modify _current_frame outside of init, and
@@ -324,7 +367,33 @@ class ToupcamCamera(AbstractCamera):
             self._current_frame = current_frame
 
         # Propagate the local copy so we are sure it's the correct frame that goes out.
+        propagate_start_ns = time.perf_counter_ns()
         self._propogate_frame(current_frame)
+        propagate_done_ns = time.perf_counter_ns()
+
+        # Per-frame timing diagnostic — logged every N frames so we can spot
+        # which stage paces continuous mode. Inter-frame interval is the gap
+        # between consecutive callback entries; pull/process/propagate are
+        # per-stage durations. All in milliseconds.
+        if this_frame_id % self._diag_frame_log_every == 0:
+            inter_frame_ms = (
+                (callback_start_ns - self._diag_last_callback_start_ns) / 1e6
+                if self._diag_last_callback_start_ns is not None
+                else 0.0
+            )
+            try:
+                mode_name = self.get_acquisition_mode().name
+            except Exception:
+                mode_name = "?"
+            self._log.info(
+                f"frame {this_frame_id} ({mode_name}): "
+                f"interval={inter_frame_ms:.1f}ms "
+                f"pull={(pull_done_ns - pull_start_ns) / 1e6:.1f}ms "
+                f"process={(process_done_ns - process_start_ns) / 1e6:.1f}ms "
+                f"propagate={(propagate_done_ns - propagate_start_ns) / 1e6:.1f}ms "
+                f"total={(propagate_done_ns - callback_start_ns) / 1e6:.1f}ms"
+            )
+        self._diag_last_callback_start_ns = callback_start_ns
 
     def _update_internal_settings(self, send_exposure=True):
         """
