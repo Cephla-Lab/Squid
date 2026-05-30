@@ -831,6 +831,18 @@ class ToupcamCamera(AbstractCamera):
         else:
             raise ValueError(f"Do not know how to handle {acquisition_mode=}")
 
+        # MAX_PRECISE_FRAMERATE can only be queried on a running stream
+        # (verified by post-fix breakage where reading it inside the pause
+        # produced "get max_framerate fail"). For CONTINUOUS, cache it now
+        # while the stream is live, then write PRECISE_FRAMERATE inside the
+        # pause where the option write actually sticks.
+        cached_max_fr = None
+        if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+            try:
+                cached_max_fr = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            except toupcam.HRESULTException as ex:
+                self._log.warning(f"Could not read MAX_PRECISE_FRAMERATE: {control.toupcam_exceptions.explain(ex)}")
+
         # Mid-stream Toupcam option changes can fail to take effect; every other
         # state-mutating method in this file (set_pixel_format, set_binning,
         # set_frame_format) pauses+restarts the stream. Do the same here so the
@@ -874,15 +886,13 @@ class ToupcamCamera(AbstractCamera):
                         error_type = hresult_checker(ex)
                         self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
                         raise
-            elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-                # In video mode the camera autonomously paces frames at
-                # PRECISE_FRAMERATE; the SDK default is only 90% of the max
-                # (per the comment in _calculate_strobe_info). Drive it to the
-                # max while the stream is paused so the option takes effect on
-                # the restart performed by _pause_streaming.
+            elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS and cached_max_fr is not None:
+                # Drive PRECISE_FRAMERATE to the max while the stream is
+                # paused so the option takes effect on restart. The SDK
+                # default is only 90% of the max (per the comment in
+                # _calculate_strobe_info).
                 try:
-                    max_fr = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_fr)
+                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, cached_max_fr)
                 except toupcam.HRESULTException as ex:
                     self._log.exception(
                         f"Failed to set continuous PRECISE_FRAMERATE: {control.toupcam_exceptions.explain(ex)}"
