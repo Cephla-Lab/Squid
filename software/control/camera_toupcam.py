@@ -119,20 +119,29 @@ class ToupcamCamera(AbstractCamera):
         line_length = int(line_length / (bandwidth / 100.0))
         row_time = line_length / 72
 
+        # MAX_PRECISE_FRAMERATE can be rejected by the camera in certain
+        # transient states (notably right after a TRIGGER option flip), and
+        # is not relevant for trigger modes anyway — PRECISE_FRAMERATE only
+        # paces continuous/video mode. Fall back to a high value so vheight
+        # floors at roi_height + 56 (the sensor minimum) when the read fails,
+        # instead of propagating out and breaking the mode switch.
         try:
             max_framerate_tenths_fps = camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
         except toupcam.HRESULTException as ex:
-            log.error(f"get max_framerate fail --> {control.toupcam_exceptions.explain(ex)}")
-            raise
+            log.warning(f"get max_framerate fail (using fallback) --> {control.toupcam_exceptions.explain(ex)}")
+            max_framerate_tenths_fps = None
 
-        # need reset value, because the default value is only 90% of setting value
-        try:
-            camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
-        except toupcam.HRESULTException as ex:
-            log.exception(f"put max_framerate fail --> {control.toupcam_exceptions.explain(ex)}")
-            raise
-
-        max_framerate_fps = max_framerate_tenths_fps / 10.0
+        if max_framerate_tenths_fps is not None:
+            # need reset value, because the default value is only 90% of setting value
+            try:
+                camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
+            except toupcam.HRESULTException as ex:
+                log.warning(f"put max_framerate fail (skipping) --> {control.toupcam_exceptions.explain(ex)}")
+            max_framerate_fps = max_framerate_tenths_fps / 10.0
+        else:
+            # Sensor-floor fallback: high enough that vheight clamps to
+            # roi_height + 56 in the check below.
+            max_framerate_fps = 600.0
 
         vheight = 72000000 / (max_framerate_fps * line_length)
         if vheight < roi_height + 56:
