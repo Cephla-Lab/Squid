@@ -446,6 +446,32 @@ class TucsenCamera(AbstractCamera):
 
         return image_np
 
+    @staticmethod
+    def _convert_header_to_numpy(header: TUCAM_RAWIMG_HEADER) -> np.ndarray:
+        # TODO: In the latest version of 400BSI V3, the readout data will match the
+        # actual bit depth. We can't tell firmware version from SN yet, so we keep a
+        # 16-bit buffer for old demo units. (Carried over from _convert_frame_to_numpy.)
+        #
+        # We copy usWidth*usHeight*itemsize bytes contiguously and reshape flat, which is
+        # only correct when the raw stream has no per-row/column padding. Reject padded
+        # frames loudly rather than silently interleaving padding into pixels. (See the
+        # hardware-verify item in the design spec.)
+        bytes_per_pixel = np.dtype(np.uint16).itemsize  # MONO16
+        if header.usXPadding or header.usYPadding:
+            raise CameraError(
+                f"Padded frames are not supported (usXPadding={header.usXPadding}, "
+                f"usYPadding={header.usYPadding}); a flat reshape would corrupt pixels."
+            )
+        expected = header.usWidth * header.usHeight * bytes_per_pixel
+        if header.uiImgSize < expected:
+            raise CameraError(
+                f"Frame size {header.uiImgSize} < expected {expected} " f"({header.usWidth}x{header.usHeight} MONO16)"
+            )
+        buf = create_string_buffer(expected)
+        memmove(buf, c_void_p(header.pImgData), expected)
+        image_np = np.frombuffer(bytes(buf), dtype=np.uint16).reshape((header.usHeight, header.usWidth))
+        return image_np
+
     def read_camera_frame(self) -> Optional[CameraFrame]:
         if not self.get_is_streaming():
             self._log.error("Cannot read camera frame when not streaming.")
