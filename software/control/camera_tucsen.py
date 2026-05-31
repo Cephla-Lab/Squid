@@ -414,21 +414,20 @@ class TucsenCamera(AbstractCamera):
         # only correct when the raw stream has no per-row/column padding. Reject padded
         # frames loudly rather than silently interleaving padding into pixels. (See the
         # hardware-verify item in the design spec.)
-        bytes_per_pixel = np.dtype(np.uint16).itemsize  # MONO16
         if header.usXPadding or header.usYPadding:
             raise CameraError(
                 f"Padded frames are not supported (usXPadding={header.usXPadding}, "
                 f"usYPadding={header.usYPadding}); a flat reshape would corrupt pixels."
             )
-        expected = header.usWidth * header.usHeight * bytes_per_pixel
+        expected = header.usWidth * header.usHeight * 2  # MONO16: 2 bytes/pixel
         if header.uiImgSize < expected:
             raise CameraError(
                 f"Frame size {header.uiImgSize} < expected {expected} " f"({header.usWidth}x{header.usHeight} MONO16)"
             )
         buf = create_string_buffer(expected)
         memmove(buf, c_void_p(header.pImgData), expected)
-        image_np = np.frombuffer(bytes(buf), dtype=np.uint16).reshape((header.usHeight, header.usWidth))
-        return image_np
+        # np.frombuffer keeps `buf` alive via the returned array's .base, so no extra bytes() copy is needed.
+        return np.frombuffer(buf, dtype=np.uint16).reshape((header.usHeight, header.usWidth))
 
     def read_camera_frame(self) -> Optional[CameraFrame]:
         if not self.get_is_streaming():
