@@ -119,26 +119,21 @@ class ToupcamCamera(AbstractCamera):
         line_length = int(line_length / (bandwidth / 100.0))
         row_time = line_length / 72
 
-        # MAX_PRECISE_FRAMERATE can be rejected by the camera in certain
-        # transient states (notably right after a TRIGGER option flip), and
-        # is not relevant for trigger modes anyway — PRECISE_FRAMERATE only
-        # paces continuous/video mode. Fall back to a high value so vheight
-        # floors at roi_height + 56 (the sensor minimum) when the read fails,
-        # instead of propagating out and breaking the mode switch.
+        # We read MAX_PRECISE_FRAMERATE for the vheight calculation below
+        # (in practice vheight floors at roi_height + 56 for typical configs,
+        # so the value mainly matters for strobe time). We deliberately do
+        # NOT write PRECISE_FRAMERATE: empirically that dragged continuous
+        # mode down to ~4 fps for the ITR3CMOS26000KMA at MONO16 / 2x2 binning
+        # while software / hardware trigger modes ran at ~10 fps. The Toupcam
+        # SDK's default ~90% of MAX is what the firmware can actually sustain
+        # in video mode; writing the burst MAX makes the camera fall back to
+        # a much slower fail-safe rate. PRECISE_FRAMERATE only paces continuous
+        # mode, so trigger modes are unaffected either way.
         try:
             max_framerate_tenths_fps = camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            max_framerate_fps = max_framerate_tenths_fps / 10.0
         except toupcam.HRESULTException as ex:
             log.warning(f"get max_framerate fail (using fallback) --> {control.toupcam_exceptions.explain(ex)}")
-            max_framerate_tenths_fps = None
-
-        if max_framerate_tenths_fps is not None:
-            # need reset value, because the default value is only 90% of setting value
-            try:
-                camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
-            except toupcam.HRESULTException as ex:
-                log.warning(f"put max_framerate fail (skipping) --> {control.toupcam_exceptions.explain(ex)}")
-            max_framerate_fps = max_framerate_tenths_fps / 10.0
-        else:
             # Sensor-floor fallback: high enough that vheight clamps to
             # roi_height + 56 in the check below.
             max_framerate_fps = 600.0
