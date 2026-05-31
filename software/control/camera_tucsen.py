@@ -317,11 +317,13 @@ class TucsenCamera(AbstractCamera):
         # Cap_Stop/Cap_Start or the Buf_Release/Buf_Alloc done on binning/ROI changes.
         if TUCAM_Buf_DataCallBack(self._camera, self._frame_callback_fn, None) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
+            self._m_frame = None  # keep "_m_frame set iff buffer allocated" so a retry re-allocates
             raise CameraError("Failed to register frame callback")
 
         trigger_mode = self._capture_mode_genicam if self._model_properties.is_genicam else self._trigger_attr.nTgrMode
         if TUCAM_Cap_Start(self._camera, trigger_mode) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
+            self._m_frame = None  # keep "_m_frame set iff buffer allocated" so a retry re-allocates
             raise CameraError("Failed to start streaming")
 
         self._trigger_sent.clear()
@@ -342,6 +344,12 @@ class TucsenCamera(AbstractCamera):
             self._log.debug("Already stopped, stop_streaming is noop")
             return
 
+        # Quiesce the callback first: clearing _is_streaming makes _on_frame_callback a
+        # no-op (it re-checks the flag under _frame_lock), so even if Cap_Stop fails and
+        # close() continues to Dev_Close, no callback reads the dying handle.
+        self._is_streaming.clear()
+        self._trigger_sent.clear()
+
         # Vendor teardown order (AbortWait then Cap_Stop); AbortWait no longer has a
         # WaitForFrame loop to break, but keeping the sanctioned sequence is free.
         if TUCAM_Buf_AbortWait(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
@@ -349,8 +357,6 @@ class TucsenCamera(AbstractCamera):
         if TUCAM_Cap_Stop(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise CameraError("Failed to stop streaming")
 
-        self._is_streaming.clear()
-        self._trigger_sent.clear()
         self._log.info("TUCam Camera streaming stopped")
 
     def get_is_streaming(self):
