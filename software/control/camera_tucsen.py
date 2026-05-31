@@ -157,9 +157,8 @@ class TucsenCamera(AbstractCamera):
         self._trigger_sent = threading.Event()
         self._is_streaming = threading.Event()
 
-        # TUCam calls this on its own thread when a new frame is ready. Keep the
-        # CFUNCTYPE object alive on the instance: the SDK holds only a borrowed
-        # pointer, and if Python GCs it a later callback jumps into freed memory.
+        # Keep the CFUNCTYPE alive on the instance: the SDK only borrows the pointer,
+        # so if Python GC'd it a later callback would jump into freed memory.
         self._frame_callback_fn = BUFFER_CALLBACK(self._on_frame_callback)
 
         self._camera = TucsenCamera._open(index=0)
@@ -312,18 +311,17 @@ class TucsenCamera(AbstractCamera):
         if self._m_frame is None:
             self._allocate_buffer()
 
-        # Re-register every cycle: the vendor examples register immediately before
-        # Cap_Start, and it is not documented that a registration survives
-        # Cap_Stop/Cap_Start or the Buf_Release/Buf_Alloc done on binning/ROI changes.
+        # Re-register each cycle (as the vendor examples do): it's undocumented whether
+        # a registration survives Cap_Stop/Cap_Start or the Buf_Release/Alloc on rebinning.
         if TUCAM_Buf_DataCallBack(self._camera, self._frame_callback_fn, None) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
-            self._m_frame = None  # keep "_m_frame set iff buffer allocated" so a retry re-allocates
+            self._m_frame = None  # so a retry re-allocates the buffer
             raise CameraError("Failed to register frame callback")
 
         trigger_mode = self._capture_mode_genicam if self._model_properties.is_genicam else self._trigger_attr.nTgrMode
         if TUCAM_Cap_Start(self._camera, trigger_mode) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
-            self._m_frame = None  # keep "_m_frame set iff buffer allocated" so a retry re-allocates
+            self._m_frame = None  # so a retry re-allocates the buffer
             raise CameraError("Failed to start streaming")
 
         self._trigger_sent.clear()
@@ -344,14 +342,12 @@ class TucsenCamera(AbstractCamera):
             self._log.debug("Already stopped, stop_streaming is noop")
             return
 
-        # Quiesce the callback first: clearing _is_streaming makes _on_frame_callback a
-        # no-op (it re-checks the flag under _frame_lock), so even if Cap_Stop fails and
-        # close() continues to Dev_Close, no callback reads the dying handle.
+        # Clear _is_streaming first so the callback no-ops even if Cap_Stop fails and
+        # close() still proceeds to Dev_Close (avoids a callback reading the dying handle).
         self._is_streaming.clear()
         self._trigger_sent.clear()
 
-        # Vendor teardown order (AbortWait then Cap_Stop); AbortWait no longer has a
-        # WaitForFrame loop to break, but keeping the sanctioned sequence is free.
+        # Vendor stop order: AbortWait then Cap_Stop (AbortWait is a harmless no-op now).
         if TUCAM_Buf_AbortWait(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             self._log.error("Failed to abort wait for frame")
         if TUCAM_Cap_Stop(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
@@ -363,9 +359,8 @@ class TucsenCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def close(self):
-        # Quiesce frame delivery before tearing down the handle so a callback can't
-        # fire into a closed camera. Best-effort: a stop failure must not abort the
-        # teardown that follows, or the device handle / SDK would leak.
+        # Quiesce delivery before teardown so no callback fires into a closed handle.
+        # Best-effort: a stop failure must not abort teardown, or the handle/SDK leaks.
         try:
             self.stop_streaming()
         except CameraError as e:
@@ -379,9 +374,8 @@ class TucsenCamera(AbstractCamera):
         self._log.info("Close Tucsen camera success")
 
     def _on_frame_callback(self):
-        # Runs on TUCam's internal thread. BUFFER_CALLBACK is CFUNCTYPE(c_void_p)
-        # with no arguments, so there is no per-call frame pointer: we re-fetch the
-        # just-arrived frame via TUCAM_Buf_GetData using the camera handle.
+        # Runs on TUCam's thread. The callback gets no frame pointer, so we re-fetch
+        # the just-arrived frame from the handle via TUCAM_Buf_GetData.
         if not self._is_streaming.is_set():
             return  # cheap early-out for a late callback after stop
         try:
@@ -404,7 +398,7 @@ class TucsenCamera(AbstractCamera):
                     frame_pixel_format=self.get_pixel_format(),
                 )
                 self._current_frame = camera_frame
-            # lock released; np_image/camera_frame are private copies — device memory no longer touched
+            # safe outside the lock: camera_frame is a private copy, device memory untouched
             self._propogate_frame(camera_frame)
             self._trigger_sent.clear()
         except Exception as e:
@@ -416,10 +410,8 @@ class TucsenCamera(AbstractCamera):
         # actual bit depth. We can't tell firmware version from SN yet, so we keep a
         # 16-bit buffer for old demo units. (Carried over from _convert_frame_to_numpy.)
         #
-        # We copy usWidth*usHeight*itemsize bytes contiguously and reshape flat, which is
-        # only correct when the raw stream has no per-row/column padding. Reject padded
-        # frames loudly rather than silently interleaving padding into pixels. (See the
-        # hardware-verify item in the design spec.)
+        # Flat reshape of a contiguous w*h*2 copy is only correct with no row/column
+        # padding, so reject padded frames rather than interleaving padding into pixels.
         if header.usXPadding or header.usYPadding:
             raise CameraError(
                 f"Padded frames are not supported (usXPadding={header.usXPadding}, "
@@ -544,10 +536,9 @@ class TucsenCamera(AbstractCamera):
         return [CameraPixelFormat.MONO16]
 
     def _update_internal_settings(self):
-        # Hold _frame_lock across the free+realloc so a callback (which holds the
-        # same lock while reading header.pImgData) can never read a freed buffer.
-        # _calculate_strobe_delay stays outside the lock: on genicam models it issues
-        # SDK queries and would needlessly lengthen the held region.
+        # Hold _frame_lock across the free+realloc so an in-flight callback (which holds
+        # the same lock to read pImgData) can't read a freed buffer. _calculate_strobe_delay
+        # stays outside: on genicam it issues SDK queries that would lengthen the held region.
         with self._frame_lock:
             if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
                 raise CameraError("Failed to release buffer")
