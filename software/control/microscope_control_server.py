@@ -685,7 +685,7 @@ class MicroscopeControlServer:
         wellplate_format: str = Field(
             "96 well plate", description="Wellplate format (e.g., '6 well plate', '96 well plate', '384 well plate')"
         ),
-        overlap_percent: float = Field(10.0, description="Overlap between FOVs in percent", ge=0, le=50),
+        overlap_percent: float = Field(10.0, description="Overlap between FOVs in percent", ge=-1000, le=99),
     ) -> Dict[str, Any]:
         """Run a multi-point acquisition across wells using the MultiPointController."""
         import os
