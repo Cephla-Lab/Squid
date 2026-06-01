@@ -60,6 +60,21 @@ class ObjectiveChanger2PosController:
     def setSpeed(self, value: float):
         self.axisX.setSpeed(value)
 
+    def move_to_objective(self, objective_name: str) -> None:
+        """Unified dispatcher to moveToPosition1 / moveToPosition2 based on the
+        per-machine XERYON_OBJECTIVE_SWITCHER_POS_1/POS_2 lists. Short-circuits
+        if already at the target position. Raises KeyError for unknown names."""
+        from control._def import XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+
+        if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+            if self.currentPosition() != 1:
+                self.moveToPosition1()
+        elif objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+            if self.currentPosition() != 2:
+                self.moveToPosition2()
+        else:
+            raise KeyError(f"Unknown objective '{objective_name}' for Xeryon 2-pos changer")
+
 
 class ObjectiveChanger2PosController_Simulation:
     def __init__(self, sn: str, stage: Optional[squid.abc.AbstractStage] = None):
@@ -97,3 +112,18 @@ class ObjectiveChanger2PosController_Simulation:
 
     def setSpeed(self, value: float):
         pass
+
+    def move_to_objective(self, objective_name: str) -> None:
+        """Unified dispatcher to moveToPosition1 / moveToPosition2 based on the
+        per-machine XERYON_OBJECTIVE_SWITCHER_POS_1/POS_2 lists. Short-circuits
+        if already at the target position. Raises KeyError for unknown names."""
+        from control._def import XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+
+        if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+            if self.currentPosition() != 1:
+                self.moveToPosition1()
+        elif objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+            if self.currentPosition() != 2:
+                self.moveToPosition2()
+        else:
+            raise KeyError(f"Unknown objective '{objective_name}' for Xeryon 2-pos changer")

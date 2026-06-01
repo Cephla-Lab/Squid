@@ -154,3 +154,21 @@ To start the program when no hardware is connected, use
 ```
 python3 main_hcs.py --simulation
 ```
+
+## Updating an existing install
+`filter_wheels.yaml`, `illumination_channel_config.yaml`, and
+`Xeryon_settings.txt` were tracked in older revisions and are now
+gitignored (PR #546). A `git pull` that crosses that commit will delete any
+unmodified local copy. If yours were deleted, restore the last tracked
+versions from git history (run from the repo root):
+
+```bash
+git restore --source=af71d2ef^ -- \
+  software/control/Xeryon_settings.txt \
+  software/machine_configs/filter_wheels.yaml \
+  software/machine_configs/illumination_channel_config.yaml
+```
+
+The restored content is the last version that was in git, not your personal
+calibration — verify it matches your hardware before running acquisitions.
+Subsequent pulls leave the files alone.

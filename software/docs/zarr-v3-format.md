@@ -190,4 +190,3 @@ data = store["0"][0, 0, 0, :, :]  # Read first frame
 ## Related Documentation
 
 - [NDViewer Tab](ndviewer-tab.md) - Live viewing during acquisition
-- [Downsampled Plate View](downsampled-plate-view.md) - Overview visualization for wellplate acquisitions

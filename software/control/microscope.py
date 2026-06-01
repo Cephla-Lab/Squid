@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Protocol
 
 import imageio
 import numpy as np
@@ -23,6 +23,7 @@ import control.celesta
 import control.illumination_andor
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
+import control.squid_laser_engine as squid_laser_engine
 import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
@@ -37,6 +38,24 @@ if control._def.USE_XERYON:
     )
 else:
     ObjectiveChanger2PosController = None
+
+if control._def.USE_OBJECTIVE_TURRET:
+    from control.objective_turret_controller import (
+        ObjectiveTurret4PosController,
+        ObjectiveTurret4PosControllerSimulation,
+    )
+else:
+    ObjectiveTurret4PosController = None
+
+
+class ObjectiveChangerProtocol(Protocol):
+    """Methods shared by both Xeryon and turret controllers. Controller-specific
+    methods (`setSpeed`, `clear_alarm`, …) are accessed via attribute lookup."""
+
+    def home(self) -> None: ...
+    def move_to_objective(self, objective_name: str) -> None: ...
+    def close(self) -> None: ...
+
 
 if control._def.RUN_FLUIDICS:
     from control.fluidics import Fluidics
@@ -129,6 +148,19 @@ class MicroscopeAddons:
                 if not objective_changer_simulated
                 else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
             )
+        elif control._def.USE_OBJECTIVE_TURRET:
+            turret_kwargs = dict(
+                serial_number=control._def.OBJECTIVE_TURRET_SERIAL_NUMBER,
+                slave_id=control._def.OBJECTIVE_TURRET_SLAVE_ID,
+                baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
+                positions=control._def.OBJECTIVE_TURRET_POSITIONS,
+                stage=stage,
+            )
+            objective_changer = (
+                ObjectiveTurret4PosController(**turret_kwargs)
+                if not objective_changer_simulated
+                else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
+            )
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
@@ -164,6 +196,14 @@ class MicroscopeAddons:
             )
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
+        laser_engine = None
+        if control._def.USE_SQUID_LASER_ENGINE:
+            laser_engine = (
+                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                if not simulated
+                else squid_laser_engine.SquidLaserEngine_Simulation()
+            )
+
         return MicroscopeAddons(
             xlight,
             dragonfly,
@@ -175,6 +215,7 @@ class MicroscopeAddons:
             fluidics,
             piezo_stage,
             sci_microscopy_led_array,
+            squid_laser_engine=laser_engine,
         )
 
     def __init__(
@@ -184,11 +225,12 @@ class MicroscopeAddons:
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
-        objective_changer: Optional[ObjectiveChanger2PosController] = None,
+        objective_changer: Optional[ObjectiveChangerProtocol] = None,
         camera_focus: Optional[AbstractCamera] = None,
         fluidics: Optional[Fluidics] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
+        squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
         self.dragonfly: Optional[serial_peripherals.Dragonfly] = dragonfly
@@ -200,6 +242,7 @@ class MicroscopeAddons:
         self.fluidics = fluidics
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
+        self.squid_laser_engine = squid_laser_engine
 
     def prepare_for_use(self, skip_init: bool = False):
         """
@@ -215,6 +258,11 @@ class MicroscopeAddons:
                 self.emission_filter_wheel.home()
         if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
+        if self.squid_laser_engine:
+            # start() may raise if the USB device is missing — intentional hard fail
+            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+            self.squid_laser_engine.start()
+            self.squid_laser_engine.wake_up_all()  # fire-and-forget
 
 
 class LowLevelDrivers:
@@ -472,12 +520,20 @@ class Microscope:
                 raise
 
         if self.addons.objective_changer:
-            self.addons.objective_changer.home()
-            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            if control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_1:
-                self.addons.objective_changer.moveToPosition1(move_z=False)
-            elif control._def.DEFAULT_OBJECTIVE in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
-                self.addons.objective_changer.moveToPosition2(move_z=False)
+            # Xeryon always re-homes (findIndex is fast and required). The turret skips
+            # homing on a software restart: the motor stays powered across close()/re-init
+            # and retains its position register, so a re-home would just be wasted motion.
+            if control._def.USE_XERYON or not skip_init:
+                self.addons.objective_changer.home()
+            if control._def.USE_XERYON:
+                self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+            try:
+                self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+            except KeyError as e:
+                raise RuntimeError(
+                    f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "
+                    f"is not configured for the active objective changer"
+                ) from e
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.
@@ -862,6 +918,23 @@ class Microscope:
         """
         return self.stage.get_pos().z_mm
 
+    def get_image_pixel_size_um(self) -> Optional[float]:
+        """Return µm per displayed-image pixel for the current objective and camera binning.
+
+        Returns None when either the objective lens factor or the binned camera pixel
+        size is unavailable; callers should treat that as "navigation unavailable".
+        Some camera drivers raise NotImplementedError for unknown sensor models — those
+        are folded into the None case so callers don't need their own try/except.
+        """
+        try:
+            factor = self.objective_store.get_pixel_size_factor()
+            binned_um = self.camera.get_pixel_size_binned_um()
+        except (NotImplementedError, AttributeError):
+            return None
+        if factor is None or binned_um is None:
+            return None
+        return factor * binned_um
+
     def move_z_to(self, z_mm: float, blocking: bool = True) -> None:
         """Move the stage to an absolute Z position.
 
@@ -925,6 +998,12 @@ class Microscope:
                 self.addons.camera_focus.close()
             except Exception as e:
                 self._log.warning(f"Error closing focus camera: {e}")
+
+        if self.addons.squid_laser_engine:
+            try:
+                self.addons.squid_laser_engine.close()
+            except Exception as e:
+                self._log.warning(f"Error closing squid laser engine: {e}")
 
         try:
             self.camera.close()

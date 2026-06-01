@@ -203,6 +203,7 @@ class CMD_SET:
     SET_WATCHDOG_TIMEOUT = 40  # Set serial watchdog timeout and enable
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
+    MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -832,7 +833,7 @@ RESUME_LIVE_AFTER_ACQUISITION = True
 
 # When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
 #   <base_path>/<experiment_ID>/acquisition.log
-ENABLE_PER_ACQUISITION_LOG = False
+ENABLE_PER_ACQUISITION_LOG = True
 
 # Memory profiling - when enabled, shows real-time RAM usage in status bar during acquisition
 # and logs periodic memory snapshots to help diagnose memory issues
@@ -955,6 +956,13 @@ USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
 
+# Squid laser engine integration (Cephla Teensy-based laser controller)
+# When True, software opens a USB-serial connection to the laser engine, polls
+# per-channel status (state/temperature/ΔT/TTL), and gates acquisition on
+# channels reaching ACTIVE state.
+USE_SQUID_LASER_ENGINE = False
+SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
+
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False
@@ -990,32 +998,15 @@ LIVE_ONLY_MODE = False
 ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled view settings (for Select Well Mode)
-# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
-# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
-# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
-SAVE_DOWNSAMPLED_WELL_IMAGES = False
-DISPLAY_PLATE_VIEW = False
-DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
-DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
-DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
-DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_AREA_FAST  # Balanced speed/quality default
-
-# Downsampled view job timeouts
-# DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
-# jobs to complete at end of each timepoint. This timeout ensures acquisition doesn't hang
-# indefinitely if a job gets stuck. For typical 96-well plates with 1-4 channels, 30 seconds
-# is sufficient. For larger plates (384-well, 1536-well) with many channels, increase this
-# value proportionally. As a rough guide: ~0.5s per well for processing, so 1536 wells
-# could need up to ~800 seconds in worst case, though parallel processing makes it faster.
-DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
-
-# DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S: Time (seconds) to wait after the last job result before
-# assuming all jobs are complete. When the job input queue is empty but the last job may
-# still be processing, we poll for results. If no new results arrive within this timeout,
-# we assume all jobs have finished. 2 seconds is conservative - most jobs complete in
-# <100ms, so this handles occasional slow jobs without adding unnecessary delay.
-DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+# Downsampled-view auto-save settings. Each flag independently controls one
+# output of the unified mosaic widget's save path:
+#   SAVE_DOWNSAMPLED_OVERVIEW    → mosaic_view/mosaic_<mode>_<N>um.ome.tiff
+#   SAVE_DOWNSAMPLED_WELL_IMAGES → mosaic_view/wells/<well_id>_<N>um.tiff (plate mode only)
+# Both gate auto-save on acquisition end AND the manual Save View button, so
+# the checkboxes are the single source of truth for what gets written.
+# The save resolution is coupled with the on-screen target (MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM).
+SAVE_DOWNSAMPLED_OVERVIEW = True
+SAVE_DOWNSAMPLED_WELL_IMAGES = True
 
 # Plate view zoom limits
 # MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
@@ -1037,7 +1028,9 @@ SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR = [1, 1, 1]
 SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03  # time to wait before trigger the camera (in seconds)
 
 # Navigation Settings
-ENABLE_CLICK_TO_MOVE_BY_DEFAULT = True
+ENABLE_CLICK_TO_MOVE = True
+LIVE_VIEW_Z_STEP_UM = 5.0
+LIVE_VIEW_Z_STEP_FAST_UM = 40.0
 
 # Stitcher
 IS_HCS = False
@@ -1221,6 +1214,22 @@ XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
+# Motorized 4-position objective turret (NiMotion RS-485 stepper, Modbus-RTU)
+USE_OBJECTIVE_TURRET = False
+OBJECTIVE_TURRET_SERIAL_NUMBER = ""
+OBJECTIVE_TURRET_SLAVE_ID = 1
+OBJECTIVE_TURRET_BAUDRATE = 115200
+# Objective name -> turret slot index (1..4). Override per machine in .ini.
+OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
+
+
+def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
+    if use_xeryon and use_turret:
+        raise ValueError(
+            "USE_XERYON and USE_OBJECTIVE_TURRET are mutually exclusive " "(set only one to True in the machine .ini)"
+        )
+
+
 # fluidics
 RUN_FLUIDICS = False
 FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
@@ -1325,6 +1334,8 @@ if config_files:
         myclass = locals()[classkey]
         populate_class_from_dict(myclass, pop_items)
 
+    _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
     CACHED_CONFIG_FILE_PATH = config_files[0]
@@ -1337,6 +1348,7 @@ else:
             sys.exit(1)
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
+        _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)
@@ -1394,10 +1406,14 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
         _views_config.read(CACHED_CONFIG_FILE_PATH)
         if _views_config.has_section("VIEWS"):
             log.info("Loading Views settings from config file")
-            if _views_config.has_option("VIEWS", "display_plate_view"):
-                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
             if _views_config.has_option("VIEWS", "display_mosaic_view"):
                 USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _views_config.has_option("VIEWS", "save_downsampled_overview"):
+                SAVE_DOWNSAMPLED_OVERVIEW = _views_config.get("VIEWS", "save_downsampled_overview").lower() in (
                     "true",
                     "1",
                     "yes",
@@ -1414,31 +1430,6 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
                     "VIEWS", "generate_downsampled_well_images"
                 ).lower() in ("true", "1", "yes")
-            if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):
-                try:
-                    _res_str = _views_config.get("VIEWS", "downsampled_well_resolutions_um")
-                    DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in _res_str.split(",") if x.strip()]
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_plate_resolution_um"):
-                try:
-                    DOWNSAMPLED_PLATE_RESOLUTION_UM = _views_config.getfloat("VIEWS", "downsampled_plate_resolution_um")
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_z_projection"):
-                try:
-                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
-                        _views_config.get("VIEWS", "downsampled_z_projection")
-                    )
-                except ValueError:
-                    pass
-            if _views_config.has_option("VIEWS", "downsampled_interpolation_method"):
-                try:
-                    DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.convert_to_enum(
-                        _views_config.get("VIEWS", "downsampled_interpolation_method")
-                    )
-                except ValueError:
-                    pass
             if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
                 try:
                     MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
@@ -1463,6 +1454,16 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     "yes",
                 )
                 log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+            if _general_config.has_option("GENERAL", "enable_click_to_move"):
+                ENABLE_CLICK_TO_MOVE = _general_config.get("GENERAL", "enable_click_to_move").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _general_config.has_option("GENERAL", "live_view_z_step_um"):
+                LIVE_VIEW_Z_STEP_UM = _general_config.getfloat("GENERAL", "live_view_z_step_um")
+            if _general_config.has_option("GENERAL", "live_view_z_step_fast_um"):
+                LIVE_VIEW_Z_STEP_FAST_UM = _general_config.getfloat("GENERAL", "live_view_z_step_fast_um")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 

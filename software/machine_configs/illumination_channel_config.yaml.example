@@ -1,3 +1,13 @@
+# Illumination Channel Configuration
+#
+# Defines all available illumination channels on this machine:
+#   - LED matrix patterns (transillumination)
+#   - Fluorescence laser lines (epi-illumination)
+#   - Controller port mappings (D1-D8 for lasers, USB for LED matrix)
+#   - Intensity calibration file references (relative to intensity_calibrations/)
+#
+# Copy this file to illumination_channel_config.yaml and edit for your system.
+
 version: 1
 
 # Mapping from controller port to source code

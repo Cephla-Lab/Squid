@@ -13,6 +13,7 @@ void init_callbacks()
     cmd_map[MOVETO_Y] = &callback_move_to_y;
     cmd_map[MOVETO_Z] = &callback_move_to_z;
     cmd_map[MOVETO_W] = &callback_move_to_w;
+    cmd_map[MOVETO_W2] = &callback_move_to_w2;
     cmd_map[SET_LIM] = &callback_set_lim;
     cmd_map[SET_LIM_SWITCH_POLARITY] = &callback_set_lim_switch_polarity;
     cmd_map[SET_HOME_SAFETY_MERGIN] = &callback_set_home_safety_margin;

@@ -195,6 +195,12 @@ bool strobe_on[6] = {false, false, false, false, false, false};
 unsigned long strobe_delay[6] = {0, 0, 0, 0, 0, 0};
 uint32_t illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
 long timestamp_trigger_rising_edge[6] = {0, 0, 0, 0, 0, 0};
+// Source latched at strobe start, used at strobe end to turn off the SAME
+// port we turned on. Without this, a channel switch (set_illumination from
+// Python) between strobe start and end would cause the strobe end to turn off
+// the new channel and leave the old one stuck HIGH. Written and read only
+// inside ISR_strobeTimer, so neither volatile nor noInterrupts() are required.
+static int strobe_active_source[6] = {0, 0, 0, 0, 0, 0};
 volatile uint8_t trigger_mode = 0;
 IntervalTimer strobeTimer;
 
@@ -204,16 +210,20 @@ IntervalTimer strobeTimer;
 
 CRGB matrix[NUM_LEDS] = {0};
 
-void turn_on_illumination()
-{
-  illumination_is_on = true;
+// Forward declaration: defined later in this file alongside turn_off_all_ports.
+static void turn_off_all_ports_pins_only();
 
-  // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
-  int port_index = illumination_source_to_port_index(illumination_source);
+// Turn on the port/matrix corresponding to a specific source code, without
+// touching the global illumination_is_on flag. The strobe ISR uses this with
+// the latched source so the ON pin matches what the OFF helper will turn off
+// (symmetric with turn_off_illumination_source()).
+static void turn_on_illumination_source(int source)
+{
+  int port_index = illumination_source_to_port_index(source);
   if (port_index >= 0)
     illumination_port_is_on[port_index] = true;
 
-  switch (illumination_source)
+  switch (source)
   {
     case ILLUMINATION_SOURCE_LED_ARRAY_FULL:
       turn_on_LED_matrix_pattern(matrix, ILLUMINATION_SOURCE_LED_ARRAY_FULL, led_matrix_r, led_matrix_g, led_matrix_b);
@@ -267,14 +277,23 @@ void turn_on_illumination()
   }
 }
 
-void turn_off_illumination()
+void turn_on_illumination()
 {
-  // Update per-port state for D1-D5 sources (backward compatibility with new multi-port tracking)
-  int port_index = illumination_source_to_port_index(illumination_source);
+  illumination_is_on = true;
+  turn_on_illumination_source(illumination_source);
+}
+
+// Turn off the port/matrix corresponding to a specific source code, without
+// touching the global illumination_is_on flag. The strobe ISR uses this to
+// turn off the SAME source it turned on at strobe start, even if Python has
+// since updated `illumination_source` while changing channels.
+static void turn_off_illumination_source(int source)
+{
+  int port_index = illumination_source_to_port_index(source);
   if (port_index >= 0)
     illumination_port_is_on[port_index] = false;
 
-  switch(illumination_source)
+  switch(source)
   {
     case ILLUMINATION_SOURCE_LED_ARRAY_FULL:
       clear_matrix(matrix);
@@ -320,7 +339,21 @@ void turn_off_illumination()
     case ILLUMINATION_D5:
       digitalWrite(PIN_ILLUMINATION_D5, LOW);
       break;
+    default:
+      // Unknown source code: fall back to a global shutdown so a forgotten
+      // case (e.g. a future D6 in the ON switch but not here) can't leave
+      // a pin stuck HIGH — the original bug class this fix is preventing.
+      // Use the pins-only variant so this helper honors its "doesn't touch
+      // illumination_is_on" contract; the ISR call sites own the guarded
+      // clear of that flag.
+      turn_off_all_ports_pins_only();
+      break;
   }
+}
+
+void turn_off_illumination()
+{
+  turn_off_illumination_source(illumination_source);
   illumination_is_on = false;
 }
 
@@ -443,10 +476,11 @@ void set_port_intensity(int port_index, uint16_t intensity)
   illumination_port_intensity[port_index] = intensity;  // Store unscaled for reference
 }
 
-// Safety shutdown: turns off ALL illumination (discrete ports + LED matrix).
-// Called by the serial watchdog and TURN_OFF_ALL_PORTS command.
-// Intentionally broad: when this fires, everything should go dark.
-void turn_off_all_ports()
+// Drive every illumination port LOW and clear the LED matrix without touching
+// the global illumination_is_on flag. Used by turn_off_illumination_source()'s
+// default-case fallback, where the ISR call sites own the guarded clear of
+// illumination_is_on and must not see a transient false from this helper.
+static void turn_off_all_ports_pins_only()
 {
   for (int i = 0; i < NUM_ILLUMINATION_PORTS; i++)
   {
@@ -458,6 +492,14 @@ void turn_off_all_ports()
     }
   }
   clear_matrix(matrix);
+}
+
+// Safety shutdown: turns off ALL illumination (discrete ports + LED matrix).
+// Called by the serial watchdog and TURN_OFF_ALL_PORTS command.
+// Intentionally broad: when this fires, everything should go dark.
+void turn_off_all_ports()
+{
+  turn_off_all_ports_pins_only();
   illumination_is_on = false;
 }
 
@@ -473,10 +515,18 @@ void ISR_strobeTimer()
         // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
+          // Latch the source we turn on, so we turn off the same one below
+          // even if illumination_source changes during the pulse. Both ON and
+          // OFF helpers below take the latched source explicitly, so the pin
+          // toggled HIGH here is exactly the one toggled LOW after the delay.
+          strobe_active_source[camera_channel] = illumination_source;
+          illumination_is_on = true;
+          turn_on_illumination_source(strobe_active_source[camera_channel]);
           strobe_output_level[camera_channel] = HIGH;
-          turn_on_illumination();
           delayMicroseconds(illumination_on_time[camera_channel]);
-          turn_off_illumination();
+          turn_off_illumination_source(strobe_active_source[camera_channel]);
+          if (illumination_source == strobe_active_source[camera_channel])
+            illumination_is_on = false;
           strobe_output_level[camera_channel] = LOW;
           control_strobe[camera_channel] = false;
         }
@@ -486,13 +536,26 @@ void ISR_strobeTimer()
         // start the strobe
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
-          turn_on_illumination();
+          // Latch source before turning on, so the strobe-end branch below
+          // turns off the SAME port even if Python changes illumination_source
+          // between start and end (the race that left e.g. 640 nm stuck HIGH
+          // after switching to 405 nm during live HW-triggered acquisition).
+          // Both helpers take the latched source explicitly to make the ON/OFF
+          // pair symmetric.
+          strobe_active_source[camera_channel] = illumination_source;
+          illumination_is_on = true;
+          turn_on_illumination_source(strobe_active_source[camera_channel]);
           strobe_output_level[camera_channel] = HIGH;
         }
         // end the strobe
         if (((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel]) && strobe_output_level[camera_channel] == HIGH)
         {
-          turn_off_illumination();
+          turn_off_illumination_source(strobe_active_source[camera_channel]);
+          // Only clear illumination_is_on if the active source is still the
+          // one we strobed. If Python has switched channels and explicitly
+          // turned on the new source, leave illumination_is_on as Python set it.
+          if (illumination_source == strobe_active_source[camera_channel])
+            illumination_is_on = false;
           strobe_output_level[camera_channel] = LOW;
           control_strobe[camera_channel] = false;
         }

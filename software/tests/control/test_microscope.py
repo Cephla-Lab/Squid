@@ -1,5 +1,7 @@
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 import control.microscope
 import control._def
 import squid.stage.cephla
@@ -140,5 +142,40 @@ class TestPerComponentSimulationIntegration:
             assert isinstance(
                 scope.camera, SimulatedCamera
             ), f"Expected SimulatedCamera (--simulation overrides per-component) but got {type(scope.camera).__name__}"
+        finally:
+            scope.close()
+
+
+class TestGetImagePixelSizeUm:
+    """Tests for Microscope.get_image_pixel_size_um()."""
+
+    def test_returns_factor_times_binned_um(self):
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            expected = scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+            assert scope.get_image_pixel_size_um() == expected
+        finally:
+            scope.close()
+
+    @pytest.mark.parametrize(
+        "target, attr",
+        [("objective_store", "get_pixel_size_factor"), ("camera", "get_pixel_size_binned_um")],
+    )
+    def test_returns_none_when_component_is_none(self, target, attr):
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            with patch.object(getattr(scope, target), attr, return_value=None):
+                assert scope.get_image_pixel_size_um() is None
+        finally:
+            scope.close()
+
+    def test_returns_none_when_camera_raises_not_implemented(self):
+        """Some camera drivers (e.g. DefaultCamera with an unknown model) raise
+        NotImplementedError from get_pixel_size_binned_um. Callers expect None
+        per the docstring."""
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            with patch.object(scope.camera, "get_pixel_size_binned_um", side_effect=NotImplementedError):
+                assert scope.get_image_pixel_size_um() is None
         finally:
             scope.close()

@@ -201,6 +201,39 @@ def ensure_directory_exists(raw_string_path: str):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def serialize_for_yaml(obj):
+    """Recursively convert objects into YAML/JSON-safe Python primitives.
+
+    Handles Enum (→ .value), numpy scalars/arrays, dataclasses, Pydantic
+    models, and the usual container types. Sets and frozensets become sorted
+    lists. Returns the input unchanged for already-primitive types.
+    """
+    import dataclasses
+    from enum import Enum
+
+    import numpy as np
+
+    if obj is None:
+        return None
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, np.ndarray):
+        return [serialize_for_yaml(item) for item in obj.tolist()]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {k: serialize_for_yaml(v) for k, v in dataclasses.asdict(obj).items()}
+    if hasattr(obj, "model_dump"):
+        return serialize_for_yaml(obj.model_dump())
+    if isinstance(obj, dict):
+        return {str(k): serialize_for_yaml(v) for k, v in obj.items()}
+    if isinstance(obj, (set, frozenset)):
+        return sorted(serialize_for_yaml(item) for item in obj)
+    if isinstance(obj, (list, tuple)):
+        return [serialize_for_yaml(item) for item in obj]
+    return obj
+
+
 def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,

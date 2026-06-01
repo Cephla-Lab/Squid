@@ -39,6 +39,13 @@ jobs:
           # Disable memory profiling in CI to avoid fork+threads deadlock issue
           sed -i '/^\[GENERAL\]/a enable_memory_profiling = false' configuration_Squid+.ini
         working-directory: ./software
+      - name: "Populate illumination_channel_config from .example template"
+        # The illumination channel config is gitignored but required for
+        # default-profile config generation. Other machine_configs templates
+        # are intentionally not copied to avoid activating optional hardware
+        # paths (e.g., confocal, multi-camera) during tests.
+        run: cp machine_configs/illumination_channel_config.yaml.example machine_configs/illumination_channel_config.yaml
+        working-directory: ./software
       # For more on the headless qt prep, see here: https://pytest-qt.readthedocs.io/en/latest/troubleshooting.html#github-actions-azure-pipelines-travis-ci-and-gitlab-ci-cd
       - name: "Prep for headless qt tests."
         run: |

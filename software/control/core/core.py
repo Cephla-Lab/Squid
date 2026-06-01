@@ -839,6 +839,7 @@ class TrackingWorker(QObject):
 
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
+    signal_z_um_delta = Signal(float)
 
     def __init__(
         self,
@@ -988,6 +989,14 @@ class ImageDisplayWindow(QMainWindow):
             image_layout.addWidget(self.graphics_widget)
         self.image_container.setLayout(image_layout)
 
+        # Wheel events arrive at the QGraphicsView's viewport; in show_LUT mode the
+        # graphics view is nested inside pg.ImageView's auto-generated UI.
+        if self.show_LUT:
+            graphics_view = self.graphics_widget.view.ui.graphicsView
+        else:
+            graphics_view = self.graphics_widget
+        graphics_view.viewport().installEventFilter(self)
+
         # Create line profiler widget
         self.line_profiler_widget = pg.GraphicsLayoutWidget()
         self.line_profiler_plot = self.line_profiler_widget.addPlot()
@@ -995,6 +1004,7 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
         self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
+        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -1094,18 +1104,27 @@ class ImageDisplayWindow(QMainWindow):
             self.line_profiler_widget.hide()
             if self.line_roi is not None:
                 self.line_roi.hide()
-            # Reset cursor to normal
-            if self.show_LUT:
-                self.graphics_widget.view.getView().setCursor(self.normal_cursor)
-            else:
-                self.graphics_widget.view.setCursor(self.normal_cursor)
-
-        # Connect to the view range changed signal to detect manual range changes
-        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
+            self._remove_line_preview_items()
+            self.is_drawing_line = False
+            self.line_start_pos = None
+            self.line_end_pos = None
+            self._active_view().setCursor(self.normal_cursor)
 
     def _on_range_changed(self, view_range):
         """Handle manual range changes in the line profiler plot."""
         self.line_profiler_manual_range = True
+
+    def _active_view(self):
+        return self.graphics_widget.view.getView() if self.show_LUT else self.graphics_widget.view
+
+    def _remove_line_preview_items(self):
+        view = self._active_view()
+        if self.preview_line is not None:
+            view.removeItem(self.preview_line)
+            self.preview_line = None
+        if self.start_point_marker is not None:
+            view.removeItem(self.start_point_marker)
+            self.start_point_marker = None
 
     def create_line_roi(self):
         """Create a line ROI for intensity profiling."""
@@ -1282,11 +1301,7 @@ class ImageDisplayWindow(QMainWindow):
         """Handle mouse clicks for both line drawing and other interactions."""
         if self.is_drawing_line:
             try:
-                # Get the view that received the click
-                if self.show_LUT:
-                    view = self.graphics_widget.view.getView()
-                else:
-                    view = self.graphics_widget.view
+                view = self._active_view()
 
                 # Convert click position to view coordinates
                 pos = evt.pos()
@@ -1305,37 +1320,17 @@ class ImageDisplayWindow(QMainWindow):
                         pen=pg.mkPen("y", width=2),
                         brush=pg.mkBrush("y"),
                     )
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().addItem(self.start_point_marker)
-                    else:
-                        self.graphics_widget.view.addItem(self.start_point_marker)
+                    view.addItem(self.start_point_marker)
 
                     # Create preview line
                     self.preview_line = pg.PlotDataItem(pen=pg.mkPen("y", width=2, style=Qt.DashLine))
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().addItem(self.preview_line)
-                    else:
-                        self.graphics_widget.view.addItem(self.preview_line)
+                    view.addItem(self.preview_line)
                 else:
                     # Second click - finish drawing
                     self.line_end_pos = (view_coord.x(), view_coord.y())
                     self._log.info(f"Line end position set to: {self.line_end_pos}")
 
-                    # Remove preview line and start point marker
-                    if self.preview_line is not None:
-                        if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.preview_line)
-                        else:
-                            self.graphics_widget.view.removeItem(self.preview_line)
-                        self.preview_line = None
-
-                    if self.start_point_marker is not None:
-                        if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.start_point_marker)
-                        else:
-                            self.graphics_widget.view.removeItem(self.start_point_marker)
-                        self.start_point_marker = None
-
+                    self._remove_line_preview_items()
                     self.create_line_roi()
                     self.is_drawing_line = False
                     # Reset cursor to normal
@@ -1345,19 +1340,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.is_drawing_line = False
                 self.line_start_pos = None
                 self.line_end_pos = None
-                # Clean up any remaining preview items
-                if self.preview_line is not None:
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.preview_line)
-                    else:
-                        self.graphics_widget.view.removeItem(self.preview_line)
-                    self.preview_line = None
-                if self.start_point_marker is not None:
-                    if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.start_point_marker)
-                    else:
-                        self.graphics_widget.view.removeItem(self.start_point_marker)
-                    self.start_point_marker = None
+                self._remove_line_preview_items()
             return
 
         # Handle double clicks for other purposes
@@ -1388,6 +1371,22 @@ class ImageDisplayWindow(QMainWindow):
             return 0 <= coordinates.x() < image_width and 0 <= coordinates.y() < image_height
         except:
             return False
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Wheel and (event.modifiers() & Qt.ControlModifier):
+            notches = event.angleDelta().y() / 120.0
+            if notches == 0:
+                return True
+            # Read via the module so runtime updates of the constant are picked up;
+            # the `from control._def import *` binding above would freeze it at import.
+            step_um = (
+                control._def.LIVE_VIEW_Z_STEP_FAST_UM
+                if (event.modifiers() & Qt.ShiftModifier)
+                else control._def.LIVE_VIEW_Z_STEP_UM
+            )
+            self.signal_z_um_delta.emit(notches * step_um)
+            return True
+        return super().eventFilter(source, event)
 
     def display_image(self, image):
         # enable the line profiler button after the first image is displayed

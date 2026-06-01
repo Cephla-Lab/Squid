@@ -552,6 +552,18 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_pixel_format(self) -> squid.config.CameraPixelFormat:
         pass
 
+    @property
+    def is_color(self) -> bool:
+        """True iff the camera's current pixel format produces colour images.
+
+        Mirrors the shape used by legacy concrete cameras (FLIR, IDS, TIS)
+        which expose ``is_color`` as a plain attribute. Surfacing it here
+        keeps callers like core_volumetric_imaging / core_PDAF working on
+        any AbstractCamera-derived class (incl. SimulatedCamera) without
+        falling through __getattr__ placeholders.
+        """
+        return CameraPixelFormat.is_color_format(self.get_pixel_format())
+
     @abc.abstractmethod
     def get_available_pixel_formats(self) -> Sequence[squid.config.CameraPixelFormat]:
         """

@@ -64,14 +64,6 @@ class AcquisitionInfo:
     physical_size_y_um: Optional[float] = None
 
 
-from .downsampled_views import (
-    crop_overlap,
-    downsample_tile,
-    downsample_to_resolutions,
-    WellTileAccumulator,
-)
-
-
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
 # that we need a custom serializer (which will be slow!).  So, use dataclass here instead.
 @dataclass
@@ -762,271 +754,6 @@ class ThrowImmediatelyJob(Job):
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
 
 
-@dataclass
-class DownsampledViewResult:
-    """Result from DownsampledViewJob containing well images for plate view update."""
-
-    well_id: str
-    well_row: int
-    well_col: int
-    well_images: Dict[int, np.ndarray]  # channel_idx -> downsampled image
-    channel_names: List[str]
-
-
-@dataclass
-class DownsampledViewJob(Job):
-    """Job to generate downsampled well images and contribute to plate view.
-
-    This job:
-    1. Crops overlap from the tile
-    2. Accumulates tiles for the well (using class-level storage per process)
-    3. When all FOVs for all channels are received, stitches and saves as multipage TIFF
-    4. Returns the first channel 10um image via queue for plate view update in main process
-
-    Warning:
-        This class uses a mutable class-level accumulator (_well_accumulators) that is
-        only safe because each JobRunner runs in its own *process* (via multiprocessing).
-        Each worker has its own independent copy of this attribute.
-
-        Do NOT use DownsampledViewJob in a threading context (e.g., with
-        ThreadPoolExecutor or other in-process thread runners) without adding
-        proper synchronization or refactoring to avoid shared mutable class
-        state, as that would lead to race conditions and data corruption.
-    """
-
-    # All fields must have defaults because parent class Job has job_id with default
-    well_id: str = ""
-    well_row: int = 0
-    well_col: int = 0
-    fov_index: int = 0
-    total_fovs_in_well: int = 1
-    channel_idx: int = 0
-    total_channels: int = 1
-    channel_name: str = ""
-    fov_position_in_well: Tuple[float, float] = (0.0, 0.0)  # (x_mm, y_mm) relative to well origin
-    overlap_pixels: Tuple[int, int, int, int] = field(default=(0, 0, 0, 0))  # (top, bottom, left, right)
-    pixel_size_um: float = 1.0
-    target_resolutions_um: List[float] = field(default_factory=lambda: [5.0, 10.0, 20.0])
-    plate_resolution_um: float = 10.0
-    output_dir: str = ""
-    channel_names: List[str] = field(default_factory=list)
-    z_index: int = 0
-    total_z_levels: int = 1
-    z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
-    interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_AREA_FAST
-    skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
-
-    # Class-level accumulator storage keyed by well_id.
-    # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
-    # process has its own copy of this class variable. It is process-local and
-    # safe to mutate without cross-process synchronization.
-    _well_accumulators: ClassVar[Dict[str, WellTileAccumulator]] = {}
-    # Track wells that encountered errors during processing
-    _failed_wells: ClassVar[Dict[str, str]] = {}  # well_id -> error message
-
-    @classmethod
-    def clear_accumulators(cls) -> None:
-        """Clear all accumulated well data and error tracking.
-
-        Call this at the start of a new acquisition to ensure no stale state
-        from previous (potentially aborted) acquisitions remains.
-
-        This method is safe to call even if no accumulators exist.
-        Performance: O(1) - just clears the dictionaries.
-        """
-        cls._well_accumulators.clear()
-        cls._failed_wells.clear()
-
-    @classmethod
-    def get_accumulator_count(cls) -> int:
-        """Get the number of wells currently being accumulated.
-
-        Useful for monitoring memory pressure during acquisition.
-        """
-        return len(cls._well_accumulators)
-
-    @classmethod
-    def get_failed_wells(cls) -> Dict[str, str]:
-        """Get a copy of the failed wells dictionary.
-
-        Returns:
-            Dict mapping well_id to error message for wells that failed processing.
-        """
-        return cls._failed_wells.copy()
-
-    def run(self) -> Optional[DownsampledViewResult]:
-        log = squid.logging.get_logger(self.__class__.__name__)
-
-        t_start = time.perf_counter()
-
-        # Get image array (may involve unpickling)
-        tile = self.image_array()
-        t_get_image = time.perf_counter()
-
-        # Crop overlap from tile
-        cropped = crop_overlap(tile, self.overlap_pixels)
-
-        t_crop = time.perf_counter()
-
-        # Get or create accumulator for this well
-        if self.well_id not in self._well_accumulators:
-            self._well_accumulators[self.well_id] = WellTileAccumulator(
-                well_id=self.well_id,
-                total_fovs=self.total_fovs_in_well,
-                total_channels=self.total_channels,
-                pixel_size_um=self.pixel_size_um,
-                channel_names=self.channel_names if self.channel_names else None,
-                total_z_levels=self.total_z_levels,
-                z_projection_mode=self.z_projection_mode,
-            )
-
-        accumulator = self._well_accumulators[self.well_id]
-        accumulator.add_tile(
-            cropped,
-            self.fov_position_in_well,
-            self.channel_idx,
-            fov_idx=self.fov_index,
-            z_index=self.z_index,
-        )
-
-        t_accumulate = time.perf_counter()
-
-        # If not all FOVs for all channels received yet, return None
-        if not accumulator.is_complete():
-            t_intermediate = time.perf_counter()
-            z_info = f" z {self.z_index + 1}/{self.total_z_levels}" if self.total_z_levels > 1 else ""
-            log.debug(
-                f"Well {self.well_id}: channel {self.channel_idx} FOV {self.fov_index + 1}/{self.total_fovs_in_well}{z_info}, "
-                f"channels: {accumulator.get_channel_count()}/{self.total_channels} | "
-                f"tile={tile.shape}, get_img={t_get_image - t_start:.3f}s, crop={t_crop - t_get_image:.3f}s, "
-                f"accum={t_accumulate - t_crop:.3f}s, total={t_intermediate - t_start:.3f}s"
-            )
-            return None
-
-        # All FOVs for all channels (and z-levels for MIP) received - stitch and save
-        z_info = f" x {self.total_z_levels} z-levels ({self.z_projection_mode})" if self.total_z_levels > 1 else ""
-        log.info(
-            f"Well {self.well_id}: all {self.total_fovs_in_well} FOVs x {self.total_channels} channels{z_info} received, stitching..."
-        )
-
-        try:
-            t_stitch_start = time.perf_counter()
-
-            # Memory tracking: stitching is memory-intensive
-            set_worker_operation(f"STITCH_{self.well_id}")
-
-            # Stitch all channels
-            stitched_channels = accumulator.stitch_all_channels()
-
-            t_stitch_end = time.perf_counter()
-
-            # Get channel names for metadata
-            channel_names = accumulator.channel_names
-
-            # Convert interpolation_method to enum if string
-            interp_method = (
-                DownsamplingMethod.convert_to_enum(self.interpolation_method)
-                if isinstance(self.interpolation_method, str)
-                else self.interpolation_method
-            )
-
-            # Memory tracking: downsampling phase
-            set_worker_operation(f"DOWNSAMPLE_{self.well_id}")
-
-            # Generate plate view images first (at plate resolution only)
-            t_downsample_plate_start = time.perf_counter()
-            well_images_for_plate: Dict[int, np.ndarray] = {}
-            for ch_idx in sorted(stitched_channels.keys()):
-                downsampled = downsample_tile(
-                    stitched_channels[ch_idx], self.pixel_size_um, self.plate_resolution_um, interp_method
-                )
-                well_images_for_plate[ch_idx] = downsampled
-            t_downsample_plate_end = time.perf_counter()
-
-            # Memory tracking: save phase
-            set_worker_operation(f"SAVE_{self.well_id}")
-
-            # Save TIFFs only if not skipping
-            t_save_start = time.perf_counter()
-            if not self.skip_saving:
-                wells_dir = os.path.join(self.output_dir, "wells")
-                os.makedirs(wells_dir, exist_ok=True)
-
-                # Downsample each channel to all target resolutions
-                # downsample_to_resolutions handles cascading for INTER_AREA
-                # Initialize resolution stacks before the loop to avoid UnboundLocalError if stitched_channels is empty
-                resolution_stacks: Dict[float, List[np.ndarray]] = {r: [] for r in self.target_resolutions_um}
-                for ch_idx in sorted(stitched_channels.keys()):
-                    # Get all resolutions for this channel (may include plate_resolution)
-                    resolutions_to_compute = [r for r in self.target_resolutions_um if r != self.plate_resolution_um]
-                    downsampled_images = downsample_to_resolutions(
-                        stitched_channels[ch_idx], self.pixel_size_um, resolutions_to_compute, interp_method
-                    )
-                    # Add already-computed plate resolution
-                    downsampled_images[self.plate_resolution_um] = well_images_for_plate[ch_idx]
-
-                    # Store for stacking
-                    for resolution in self.target_resolutions_um:
-                        resolution_stacks[resolution].append(downsampled_images[resolution])
-
-                # Save each resolution as multipage TIFF
-                for resolution in self.target_resolutions_um:
-                    downsampled_stack = resolution_stacks[resolution]
-                    if not downsampled_stack:
-                        continue
-
-                    # Stack channels into multipage array (C, H, W)
-                    stacked = np.stack(downsampled_stack, axis=0)
-
-                    filename = f"{self.well_id}_{int(resolution)}um.tiff"
-                    filepath = os.path.join(wells_dir, filename)
-
-                    # Save as multipage TIFF with channel metadata
-                    tifffile.imwrite(
-                        filepath,
-                        stacked,
-                        metadata={
-                            "axes": "CYX",
-                            "Channel": {"Name": channel_names[: len(downsampled_stack)]},
-                        },
-                    )
-                    log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
-
-            t_save_end = time.perf_counter()
-
-            # Log timing summary for performance analysis
-            t_total = t_save_end - t_start
-            stitched_shape = list(stitched_channels.values())[0].shape if stitched_channels else (0, 0)
-            plate_shape = list(well_images_for_plate.values())[0].shape if well_images_for_plate else (0, 0)
-            log.debug(
-                f"[PERF] Well {self.well_id} complete: "
-                f"get_img={t_get_image - t_start:.3f}s, crop={t_crop - t_get_image:.3f}s, "
-                f"accum={t_accumulate - t_crop:.3f}s, stitch={t_stitch_end - t_stitch_start:.3f}s, "
-                f"downsample_plate={t_downsample_plate_end - t_downsample_plate_start:.3f}s, "
-                f"save={t_save_end - t_save_start:.3f}s, "
-                f"TOTAL={t_total:.3f}s | "
-                f"tile={tile.shape}, stitched={stitched_shape}, plate={plate_shape}, "
-                f"channels={len(stitched_channels)}, skip_saving={self.skip_saving}"
-            )
-
-            return DownsampledViewResult(
-                well_id=self.well_id,
-                well_row=self.well_row,
-                well_col=self.well_col,
-                well_images=well_images_for_plate,
-                channel_names=channel_names,
-            )
-
-        except Exception as e:
-            log.exception(f"Error processing well {self.well_id}: {e}")
-            # Track failed well for reporting
-            self._failed_wells[self.well_id] = str(e)
-            raise
-        finally:
-            # Ensure accumulator is always cleaned up after processing a complete well
-            self._well_accumulators.pop(self.well_id, None)
-
-
 class JobRunner(multiprocessing.Process):
     def __init__(
         self,
@@ -1247,16 +974,13 @@ class JobRunner(multiprocessing.Process):
                 self._log.info(f"Running job {job.job_id} (waited {(t_got_job - t_wait_start)*1000:.1f}ms in queue)...")
 
                 # Set operation context for memory tracking
-                if isinstance(job, DownsampledViewJob):
-                    set_worker_operation(f"DOWNSAMPLE_{job.well_id}")
-                else:
-                    set_worker_operation(job.__class__.__name__)
+                set_worker_operation(job.__class__.__name__)
 
                 t_run_start = time.perf_counter()
                 result = job.run()
                 t_run_end = time.perf_counter()
 
-                # Only queue non-None results (DownsampledViewJob returns None for intermediate FOVs)
+                # Only queue non-None results (some jobs return None when their work is suppressed)
                 if result is not None:
                     self._log.info(
                         f"Job {job.job_id} returned in {(t_run_end - t_run_start)*1000:.1f}ms. "
@@ -1283,10 +1007,7 @@ class JobRunner(multiprocessing.Process):
                         self._pending_count.value -= 1
 
                     # Backpressure tracking: decrement counters immediately when job completes.
-                    # Note: For DownsampledViewJob, the image data moves to subprocess memory
-                    # (the accumulator) when the job is processed. Backpressure tracks queue
-                    # memory, not subprocess memory, so it's correct to release bytes here
-                    # rather than waiting for well completion.
+                    # Backpressure tracks queue memory, not subprocess memory.
                     if self._bp_pending_jobs is not None:
                         with self._bp_pending_jobs.get_lock():
                             self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
