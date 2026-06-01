@@ -317,6 +317,7 @@ class ScanCoordinates:
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
+            self.region_shapes[region_id] = "Square"
             self.region_fov_coordinates[region_id] = scan_coordinates
             self._update_callback(
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
@@ -329,6 +330,7 @@ class ScanCoordinates:
             raise ValueError(f"FOV with center (x,y)={center_x},{center_y} is not valid, cannot add region.")
 
         self.region_centers[region_id] = [center_x, center_y, center_z]
+        self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
         self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
 
@@ -353,6 +355,7 @@ class ScanCoordinates:
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
+            self.region_shapes[region_id] = "Square"
             self.region_fov_coordinates[region_id] = scan_coordinates
             self._update_callback(
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
@@ -459,6 +462,7 @@ class ScanCoordinates:
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
+        self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = scan_coordinates
         self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
 
