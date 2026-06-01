@@ -328,6 +328,12 @@ class LiveController:
         ):
             self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
+        elif self.trigger_mode == TriggerMode.CONTINUOUS:
+            # Continuous mode has no trigger_acquisition() loop to turn on the
+            # illumination, so do it here. stop_live() already turns it off
+            # symmetrically.
+            if self.control_illumination and not self.illumination_on:
+                self.turn_on_illumination()
         # if controlling the laser displacement measurement camera
         if self.for_displacement_measurement:
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
