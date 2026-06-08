@@ -59,8 +59,12 @@ def save_cached_order(cache_key, names, path=_CACHE_PATH):
             with open(path, "r") as f:
                 data = yaml.safe_load(f) or {}
         data[cache_key] = list(names)
-        with open(path, "w") as f:
+        # Atomic write: a crash mid-dump must not truncate the file shared by all
+        # three widgets and wipe every saved sequence.
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp, path)
     except Exception as e:
         _log.warning(f"Failed to save channel sequence cache: {e}")
 
@@ -167,7 +171,7 @@ class ChannelOrderDelegate(QStyledItemDelegate):
         # controller, consuming press AND release so the click does not also
         # toggle the row's selection.
         if self._controller is not None and self.badge_for_index(index) is not None:
-            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease) and event.button() == Qt.LeftButton:
                 pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
                 up_rect, down_rect = self._arrow_rects(option.rect)
                 if up_rect.contains(pos) or down_rect.contains(pos):
@@ -195,7 +199,13 @@ class ChannelSequenceController(QObject):
         self._cache_key = cache_key
         self._cache_path = cache_path
         self._suppress = False
-        self._pending_rebuild = False
+        # Owned single-shot timer for the deferred selection rebuild. Parenting
+        # it to the controller (itself parented to the list) means it is
+        # destroyed with the widget, so a queued rebuild can never fire on a
+        # torn-down list.
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.timeout.connect(self._flush_selection_rebuild)
 
         list_widget.setSelectionMode(QAbstractItemView.MultiSelection)
         list_widget.setItemDelegate(ChannelOrderDelegate(list_widget, controller=self))
@@ -288,12 +298,9 @@ class ChannelSequenceController(QObject):
                 existing.add(n)
         self._included_order = new_order
         self._save()
-        if not self._pending_rebuild:
-            self._pending_rebuild = True
-            QTimer.singleShot(0, self._flush_selection_rebuild)
+        self._rebuild_timer.start(0)  # coalesce rapid selections into one deferred rebuild
 
     def _flush_selection_rebuild(self):
-        self._pending_rebuild = False
         self._rebuild()
 
     def move_up(self, name):

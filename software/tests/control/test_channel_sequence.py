@@ -251,6 +251,22 @@ class TestArrows:
         assert not handled  # falls through to default handling (selection toggle)
         assert ctrl.ordered_selected_names() == ["a", "b", "c"]
 
+    def test_non_left_click_on_arrow_is_ignored(self, qtbot, tmp_path):
+        lw, ctrl = _controller(qtbot, ["a", "b", "c"], path=str(tmp_path / "c.yaml"))
+        ctrl.set_included_order(["a", "b", "c"])
+        delegate = lw.itemDelegate()
+        opt = QStyleOptionViewItem()
+        opt.rect = QRect(0, 0, 200, 20)
+        index = lw.model().index(_row_of(lw, "a"), 0)
+        up_rect, _ = ChannelOrderDelegate._arrow_rects(opt.rect)
+        right_release = QMouseEvent(
+            QEvent.MouseButtonRelease, QPointF(up_rect.center()), Qt.RightButton, Qt.RightButton, Qt.NoModifier
+        )
+
+        handled = delegate.editorEvent(right_release, lw.model(), opt, index)
+        assert not handled  # right-click on the arrow must not be consumed
+        assert ctrl.ordered_selected_names() == ["a", "b", "c"]  # nor reorder
+
 
 class TestArrowClickIntegration:
     """End-to-end: a real mouse click on an arrow (press+release through the
