@@ -109,10 +109,10 @@ class ChannelOrderDelegate(QStyledItemDelegate):
     @staticmethod
     def _gutter_width(font_metrics, count):
         # Reserve room for the widest badge actually in use ("[9]" for <=9
-        # selected, "[99]" for 10-99) plus one trailing space, so the names align
-        # with only a tight gap after the bracket regardless of channel count.
+        # selected, "[99]" for 10-99) plus two trailing spaces, so the names
+        # align with a consistent gap after the bracket regardless of count.
         digits = len(str(max(count, 1)))
-        return font_metrics.horizontalAdvance("[" + "9" * digits + "] ")
+        return font_metrics.horizontalAdvance("[" + "9" * digits + "]  ")
 
     @staticmethod
     def _arrow_rects(rect):
