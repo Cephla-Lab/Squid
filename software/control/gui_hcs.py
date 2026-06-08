@@ -2312,6 +2312,8 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.refresh_channel_list()
         if self.wellplateMultiPointWidget:
             self.wellplateMultiPointWidget.refresh_channel_list()
+        if self.multiPointWithFluidicsWidget:
+            self.multiPointWithFluidicsWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
