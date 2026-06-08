@@ -272,3 +272,19 @@ class TestArrowClickIntegration:
         assert ctrl.ordered_selected_names() == ["b", "a", "c"]  # "a" moved later
         selected = [lw.item(i).text() for i in range(lw.count()) if lw.item(i).isSelected()]
         assert "a" in selected  # the arrow click must NOT have deselected "a"
+
+
+class TestDragSelectDisabled:
+    """Dragging across rows must not rubber-band a range of channels; only
+    discrete clicks toggle. The controller's viewport event filter swallows
+    mouse-move events while a button is held."""
+
+    def test_move_with_button_held_is_swallowed(self, qtbot, tmp_path):
+        lw, ctrl = _controller(qtbot, ["a", "b", "c"], path=str(tmp_path / "c.yaml"))
+        dragging = QMouseEvent(QEvent.MouseMove, QPointF(5, 5), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        assert ctrl.eventFilter(lw.viewport(), dragging) is True
+
+    def test_hover_move_without_button_passes_through(self, qtbot, tmp_path):
+        lw, ctrl = _controller(qtbot, ["a", "b", "c"], path=str(tmp_path / "c.yaml"))
+        hover = QMouseEvent(QEvent.MouseMove, QPointF(5, 5), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+        assert ctrl.eventFilter(lw.viewport(), hover) is False

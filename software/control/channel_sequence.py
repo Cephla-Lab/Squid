@@ -211,6 +211,21 @@ class ChannelSequenceController(QObject):
         self._rebuild()
 
         list_widget.itemSelectionChanged.connect(self._on_selection_changed)
+        # Disable drag-to-select (see eventFilter): clicks toggle channels, but
+        # dragging across rows must not rubber-band a whole range. Cache the
+        # viewport so eventFilter compares by identity and never dereferences
+        # the (possibly torn-down) list.
+        self._viewport = list_widget.viewport()
+        self._viewport.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        # Swallow mouse-move events over the list viewport while a button is
+        # held, so a click-drag does not extend the selection across rows.
+        # Discrete clicks (press/release) and the per-row arrow clicks are
+        # unaffected.
+        if obj is self._viewport and event.type() == QEvent.MouseMove and event.buttons():
+            return True
+        return super().eventFilter(obj, event)
 
     def _config_order(self):
         return list(self._get_names())
