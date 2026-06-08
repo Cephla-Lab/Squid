@@ -104,16 +104,9 @@ class ChannelOrderDelegate(QStyledItemDelegate):
         painter.setPen(self._arrow_color(palette, enabled))
         painter.drawText(rect, Qt.AlignCenter, glyph)
 
-    def _is_last_selected_row(self, index):
-        selected_rows = [i.row() for i in self.parent().selectedIndexes()]
-        return bool(selected_rows) and index.row() == max(selected_rows)
-
     @classmethod
     def _gutter_width(cls, font_metrics):
-        s = cls._GUTTER_SAMPLE
-        if hasattr(font_metrics, "horizontalAdvance"):  # Qt >= 5.11
-            return font_metrics.horizontalAdvance(s)
-        return font_metrics.width(s)
+        return font_metrics.horizontalAdvance(cls._GUTTER_SAMPLE)
 
     @staticmethod
     def _arrow_rects(rect):
@@ -162,7 +155,7 @@ class ChannelOrderDelegate(QStyledItemDelegate):
         painter.drawText(name_rect, alignment, fm.elidedText(name, Qt.ElideRight, max(0, name_rect.width())))
         painter.restore()
 
-        if self._is_last_selected_row(index):
+        if position is not None and position == count:  # last channel in the block
             painter.save()
             painter.setPen(opt.palette.color(QPalette.Mid))
             r = option.rect
@@ -257,7 +250,7 @@ class ChannelSequenceController(QObject):
         try:
             config_order = self._config_order()
             order = display_order(self._included_order, config_order)
-            included_set = {n for n in self._included_order if n in set(config_order)}
+            included_set = set(reconcile_included(self._included_order, config_order))
             self._list.clear()
             for name in order:
                 self._list.addItem(name)
