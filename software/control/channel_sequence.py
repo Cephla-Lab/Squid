@@ -78,8 +78,6 @@ class ChannelOrderDelegate(QStyledItemDelegate):
     item data is never modified.
     """
 
-    _GUTTER_SAMPLE = "[99]  "  # widest expected badge (assumes <= 99 selected channels)
-
     def __init__(self, list_widget, controller=None):
         super().__init__(list_widget)
         self._controller = controller
@@ -108,9 +106,13 @@ class ChannelOrderDelegate(QStyledItemDelegate):
         painter.setPen(self._arrow_color(palette, enabled))
         painter.drawText(rect, Qt.AlignCenter, glyph)
 
-    @classmethod
-    def _gutter_width(cls, font_metrics):
-        return font_metrics.horizontalAdvance(cls._GUTTER_SAMPLE)
+    @staticmethod
+    def _gutter_width(font_metrics, count):
+        # Reserve room for the widest badge actually in use ("[9]" for <=9
+        # selected, "[99]" for 10-99) plus one trailing space, so the names align
+        # with only a tight gap after the bracket regardless of channel count.
+        digits = len(str(max(count, 1)))
+        return font_metrics.horizontalAdvance("[" + "9" * digits + "] ")
 
     @staticmethod
     def _arrow_rects(rect):
@@ -122,7 +124,8 @@ class ChannelOrderDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
-        size.setWidth(size.width() + self._gutter_width(option.fontMetrics))
+        _, count = self._position_and_count(index)
+        size.setWidth(size.width() + self._gutter_width(option.fontMetrics, count))
         return size
 
     def paint(self, painter, option, index):
@@ -137,14 +140,14 @@ class ChannelOrderDelegate(QStyledItemDelegate):
 
         text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, widget)
         fm = opt.fontMetrics
-        gutter = self._gutter_width(fm)
+        position, count = self._position_and_count(index)
+        gutter = self._gutter_width(fm, count)
         alignment = Qt.AlignVCenter | Qt.AlignLeft
 
         painter.save()
         selected = bool(opt.state & QStyle.State_Selected)
         text_pen = opt.palette.color(QPalette.HighlightedText if selected else QPalette.Text)
         painter.setPen(text_pen)
-        position, count = self._position_and_count(index)
         name_rect = QRect(text_rect)
         name_rect.setLeft(text_rect.left() + gutter)
         if position is not None:
