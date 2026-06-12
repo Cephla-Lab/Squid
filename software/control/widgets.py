@@ -4599,6 +4599,16 @@ class LiveControlWidget(QFrame):
         if checked:
             self._live_current_z_offset_um = 0.0
 
+    @property
+    def applied_channel_z_offset_um(self) -> float:
+        """The per-channel z-offset currently applied by 'Apply in Live', in µm.
+
+        How far the stage has been moved relative to the offset=0 baseline that
+        was established when the user enabled 'Apply in Live'. Exposed so the
+        laser AF widget can step the stage back to baseline around Set Reference.
+        """
+        return self._live_current_z_offset_um
+
     def _maybe_apply_live_channel_offset(self, new_config):
         """Apply the channel's stored z-offset as a relative delta on channel switch.
 
@@ -12587,10 +12597,24 @@ class DisplacementMeasurementWidget(QFrame):
 
 
 class LaserAutofocusControlWidget(QFrame):
-    def __init__(self, laserAutofocusController, liveController: LiveController, main=None, *args, **kwargs):
+    def __init__(
+        self,
+        laserAutofocusController,
+        liveController: LiveController,
+        liveControlWidget=None,
+        main=None,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.laserAutofocusController = laserAutofocusController
         self.liveController: LiveController = liveController
+        # Optional handle on the LiveControlWidget so 'Set Reference' can step the
+        # stage back to the offset=0 baseline before capturing the reference (and
+        # restore the applied channel offset after). May be None in tests / contexts
+        # where the live widget isn't available.
+        self.liveControlWidget = liveControlWidget
         self.add_components()
         self.update_init_state()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -12661,11 +12685,45 @@ class LaserAutofocusControlWidget(QFrame):
             self.liveController.start_live()
 
     def on_set_reference_clicked(self):
-        """Handle set reference button click"""
+        """Handle set reference button click.
+
+        If the LiveControlWidget has a per-channel z-offset applied (the user is
+        on a channel whose stored offset has shifted the stage), step the stage
+        back to the offset=0 baseline before capturing the reference. This
+        anchors the reference plane at the un-offset z so other channels' stored
+        offsets remain valid relative deltas from it. After set_reference, move
+        the stage back to its original z so the user's view doesn't jump.
+        """
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()
+
+        applied_offset_um = 0.0
+        if self.liveControlWidget is not None:
+            applied_offset_um = self.liveControlWidget.applied_channel_z_offset_um
+
+        moved_to_baseline = False
+        if abs(applied_offset_um) > 1e-4:
+            try:
+                self.liveController.microscope.stage.move_z(-applied_offset_um / 1000)
+                moved_to_baseline = True
+            except Exception as e:
+                self._log.warning(
+                    f"Failed to step stage to offset=0 baseline before set_reference "
+                    f"(applied offset was {applied_offset_um:+.2f} µm): {e}. Capturing "
+                    f"reference at the current offset position instead."
+                )
+
         success = self.laserAutofocusController.set_reference()
+
+        if moved_to_baseline:
+            try:
+                self.liveController.microscope.stage.move_z(applied_offset_um / 1000)
+            except Exception as e:
+                self._log.warning(
+                    f"Failed to restore stage to offset={applied_offset_um:+.2f} µm " f"after set_reference: {e}"
+                )
+
         if success:
             self.btn_measure_displacement.setEnabled(True)
             self.btn_move_to_target.setEnabled(True)
