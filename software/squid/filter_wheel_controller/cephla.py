@@ -167,6 +167,30 @@ class SquidFilterWheel(AbstractFilterWheelController):
         """Dispatch an absolute MOVETO_W / MOVETO_W2 by motor_slot_index."""
         self._mcu_method(wheel_id, "move_to_usteps")(usteps)
 
+    def _move_to_usteps_with_resend(self, wheel_id: int, usteps: int):
+        """Issue an absolute MOVETO and wait; on a single CommandAborted, ack
+        and resend the identical MOVETO once.
+
+        CMD_EXECUTION_ERROR means the firmware rejected the move before the
+        motor moved (e.g. tmc4361A_moveTo returned non-zero, or the move
+        arrived before INITFILTERWHEEL), so resending the same absolute target
+        is safe and avoids the ~4 s re-home cost. A TimeoutError (motor state
+        uncertain) is NOT resent, and a failed resend propagates — both leave
+        the caller to decide whether to re-home. The pending abort is
+        acknowledged before the resend so the next send_command doesn't log a
+        spurious "not cleared before new command sent" warning.
+        """
+        try:
+            self._move_to_usteps(wheel_id, usteps)
+            self.microcontroller.wait_till_operation_is_completed()
+            return
+        except CommandAborted as e:
+            _log.warning(f"Filter wheel {wheel_id} move aborted ({e}); resending in software...")
+            self.microcontroller.acknowledge_aborted_command()
+        self._move_to_usteps(wheel_id, usteps)
+        self.microcontroller.wait_till_operation_is_completed()
+        _log.info(f"Filter wheel {wheel_id} software resend succeeded")
+
     def _move_to_position(self, wheel_id: int, target_pos: int):
         """Move wheel to target position using absolute MOVETO; recover on failure.
 
@@ -196,25 +220,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
         _log.info(f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps})")
 
         try:
-            self._move_to_usteps(wheel_id, target_usteps)
-            self.microcontroller.wait_till_operation_is_completed()
+            self._move_to_usteps_with_resend(wheel_id, target_usteps)
             self._positions[wheel_id] = target_pos
             return
-        except CommandAborted as e:
-            _log.warning(f"Filter wheel {wheel_id} command aborted ({e}); resending in software...")
-            # Clear the pending abort so the next send_command doesn't log
-            # a spurious "not cleared before new command sent" warning.
-            self.microcontroller.acknowledge_aborted_command()
-            try:
-                self._move_to_usteps(wheel_id, target_usteps)
-                self.microcontroller.wait_till_operation_is_completed()
-                self._positions[wheel_id] = target_pos
-                _log.info(f"Filter wheel {wheel_id} software resend succeeded, now at position {target_pos}")
-                return
-            except self._RECOVERABLE_MOVE_ERRORS as e2:
-                _log.warning(f"Filter wheel {wheel_id} resend also failed ({e2}); re-homing to re-sync...")
-        except TimeoutError as e:
-            _log.warning(f"Filter wheel {wheel_id} move uncertain ({e}); re-homing to re-sync...")
+        except self._RECOVERABLE_MOVE_ERRORS as e:
+            # CMD_EXECUTION_ERROR survived a resend, or the ack never arrived
+            # (motor state uncertain) — re-home to re-anchor the coordinate
+            # frame, then retry to the same absolute target.
+            _log.warning(f"Filter wheel {wheel_id} move failed ({e}); re-homing to re-sync...")
 
         # Clear any pending abort (set when wait_till_operation_is_completed
         # raised CommandAborted) so the home command's send_command doesn't
@@ -256,35 +269,19 @@ class SquidFilterWheel(AbstractFilterWheelController):
             )
             raise
 
-        offset_usteps = self._delta_to_usteps(config.offset)
+        # The post-home offset move is subject to the same recoverable
+        # CMD_EXECUTION_ERROR as any slot move, so resend once on abort (see
+        # _move_to_usteps_with_resend). Re-homing is not a recovery option
+        # here — we are already inside the home path — so a failed resend or
+        # any other error propagates. Homing runs uncaught during startup, so
+        # without this resend a single transient abort would crash launch.
         try:
-            self._move_to_usteps(wheel_id, offset_usteps)
-            self.microcontroller.wait_till_operation_is_completed()
-        except CommandAborted as e:
-            # Same recoverable rejection _move_to_position handles: the firmware
-            # rejected the MOVETO before the motor moved (CMD_EXECUTION_ERROR),
-            # so a plain resend is safe. Mirror that single resend here so a
-            # transient abort doesn't turn homing — which runs uncaught during
-            # startup — into a fatal crash. Re-homing is not a recovery option
-            # (we are already inside the home path), so a failed resend or any
-            # other error type propagates to the caller.
-            _log.warning(f"Filter wheel {wheel_id} offset move aborted ({e}); resending in software...")
-            self.microcontroller.acknowledge_aborted_command()
-            try:
-                self._move_to_usteps(wheel_id, offset_usteps)
-                self.microcontroller.wait_till_operation_is_completed()
-            except Exception:
-                _log.error(
-                    f"Filter wheel {wheel_id} home succeeded but offset move "
-                    f"failed after resend; wheel is at the home reference, not "
-                    f"slot {config.min_index}. Tracked position not updated."
-                )
-                raise
+            self._move_to_usteps_with_resend(wheel_id, self._delta_to_usteps(config.offset))
         except Exception:
             _log.error(
-                f"Filter wheel {wheel_id} home succeeded but offset move "
-                f"failed; wheel is at the home reference, not slot "
-                f"{config.min_index}. Tracked position not updated."
+                f"Filter wheel {wheel_id} home succeeded but offset move failed; "
+                f"wheel is at the home reference, not slot {config.min_index}. "
+                f"Tracked position not updated."
             )
             raise
 
