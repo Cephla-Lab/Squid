@@ -261,10 +261,11 @@ class MicroscopeAddons:
                     self.emission_filter_wheel.home()
                 except Exception:
                     # A filter-wheel homing failure must not brick the whole
-                    # microscope: the wheel controller already leaves its tracked
-                    # position unset on failure, so come up with the position
-                    # unknown and let the operator re-home from the GUI rather
-                    # than aborting startup before the window even opens.
+                    # microscope: the wheel controller leaves its tracked
+                    # position unchanged (and possibly stale) on failure, so
+                    # treat the position as unknown, come up anyway, and let the
+                    # operator re-home from the GUI rather than aborting startup
+                    # before the window even opens.
                     _log.error(
                         "Filter wheel homing failed during startup; continuing with the "
                         "filter wheel position unknown. Re-home from the GUI before relying "

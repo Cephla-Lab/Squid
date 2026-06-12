@@ -168,23 +168,27 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._mcu_method(wheel_id, "move_to_usteps")(usteps)
 
     def _move_to_usteps_with_resend(self, wheel_id: int, usteps: int):
-        """Issue an absolute MOVETO and wait; on a single CommandAborted, ack
-        and resend the identical MOVETO once.
+        """Issue an absolute MOVETO and wait; on a *recoverable* CommandAborted,
+        ack and resend the identical MOVETO once.
 
-        CMD_EXECUTION_ERROR means the firmware rejected the move before the
-        motor moved (e.g. tmc4361A_moveTo returned non-zero, or the move
-        arrived before INITFILTERWHEEL), so resending the same absolute target
-        is safe and avoids the ~4 s re-home cost. A TimeoutError (motor state
-        uncertain) is NOT resent, and a failed resend propagates — both leave
-        the caller to decide whether to re-home. The pending abort is
-        acknowledged before the resend so the next send_command doesn't log a
-        spurious "not cleared before new command sent" warning.
+        Only a recoverable abort (firmware-reported CMD_EXECUTION_ERROR) is
+        resent: it means the firmware rejected the move before the motor moved
+        (e.g. tmc4361A_moveTo returned non-zero, or the move arrived before
+        INITFILTERWHEEL), so resending the same absolute target is safe and
+        avoids the ~4 s re-home cost. A non-recoverable abort (ack timeout /
+        checksum failure after retries) leaves the motor state uncertain and is
+        re-raised — as is a TimeoutError and a failed resend — so the caller
+        decides whether to re-home. The pending abort is acknowledged before
+        the resend so the next send_command doesn't log a spurious "not cleared
+        before new command sent" warning.
         """
         try:
             self._move_to_usteps(wheel_id, usteps)
             self.microcontroller.wait_till_operation_is_completed()
             return
         except CommandAborted as e:
+            if not e.recoverable:
+                raise
             _log.warning(f"Filter wheel {wheel_id} move aborted ({e}); resending in software...")
             self.microcontroller.acknowledge_aborted_command()
         self._move_to_usteps(wheel_id, usteps)

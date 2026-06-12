@@ -105,11 +105,18 @@ class CommandAborted(RuntimeError):
     for wait and progress check operations until a new command is started.
 
     This does mean that if you don't check for command completion, you may miss these errors!
+
+    `recoverable` is True only when the firmware actively reported the command
+    as failed before acting on it (CMD_EXECUTION_ERROR) — the motor never
+    moved, so a plain resend is safe. It is False for aborts where the motor
+    state is uncertain (ack timeout / checksum failure after retries), which
+    should be recovered by re-homing rather than blindly resending.
     """
 
-    def __init__(self, command_id, reason):
+    def __init__(self, command_id, reason, recoverable: bool = False):
         super().__init__(reason)
         self.command_id = command_id
+        self.recoverable = recoverable
 
 
 # NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
@@ -1465,8 +1472,10 @@ class Microcontroller:
         Args:
             reason: Human-readable reason; surfaced in the CommandAborted exception.
             recoverable: If True, log at WARNING — caller will retry or handle the
-                failure (e.g. a filter wheel re-home + retry on CMD_EXECUTION_ERROR).
-                If False (default), log at ERROR (operator attention warranted).
+                failure (e.g. a filter wheel resend on CMD_EXECUTION_ERROR). Also
+                surfaced on the CommandAborted exception so callers can resend
+                safely only in this case. If False (default), log at ERROR
+                (operator attention warranted) and the motor state is uncertain.
         """
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
@@ -1475,7 +1484,9 @@ class Microcontroller:
             self.log.warning(msg)
         else:
             self.log.error(msg)
-        self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
+        self.last_command_aborted_error = CommandAborted(
+            reason=reason, command_id=self._cmd_id, recoverable=recoverable
+        )
         self.mcu_cmd_execution_in_progress = False
 
     def acknowledge_aborted_command(self):

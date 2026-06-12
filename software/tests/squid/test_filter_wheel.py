@@ -206,14 +206,14 @@ class TestSquidFilterWheelAbsoluteMove:
     def test_command_aborted_triggers_software_resend_not_rehome(
         self, motor_slot, move_to_attr, move_rel_attr, home_attr
     ):
-        """CMD_EXECUTION_ERROR → resend the same MOVETO; do NOT re-home."""
+        """Recoverable CMD_EXECUTION_ERROR → resend the same MOVETO; do NOT re-home."""
         from control.microcontroller import CommandAborted
 
         wheel_inst, mc, _ = self._build_wheel(motor_slot)
 
-        # First wait raises CommandAborted, second succeeds.
+        # First wait raises a recoverable abort (motor never moved), second succeeds.
         mc.wait_till_operation_is_completed.side_effect = [
-            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1),
+            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1, recoverable=True),
             None,
         ]
 
@@ -223,6 +223,30 @@ class TestSquidFilterWheelAbsoluteMove:
         getattr(mc, home_attr).assert_not_called()
         # Absolute-MOVETO path must not fall back to relative MOVE.
         getattr(mc, move_rel_attr).assert_not_called()
+        assert wheel_inst._positions[1] == 4
+
+    @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
+    def test_non_recoverable_abort_skips_resend_and_rehomes(self, motor_slot, move_to_attr, move_rel_attr, home_attr):
+        """A non-recoverable CommandAborted (ack timeout / checksum after retries)
+        leaves motor state uncertain → do NOT resend; go straight to re-home,
+        exactly like a TimeoutError."""
+        from control.microcontroller import CommandAborted
+
+        wheel_inst, mc, _ = self._build_wheel(motor_slot)
+
+        # First move aborts non-recoverably; home succeeds; retry succeeds.
+        mc.wait_till_operation_is_completed.side_effect = [
+            CommandAborted(reason="ack timeout after retries", command_id=1, recoverable=False),
+            None,  # home wait
+            None,  # home offset move wait
+            None,  # retry MOVETO wait
+        ]
+
+        wheel_inst._move_to_position(1, 4)
+
+        getattr(mc, home_attr).assert_called_once()
+        # No cheap resend: initial attempt + home-offset move + post-home retry = 3.
+        assert getattr(mc, move_to_attr).call_count == 3
         assert wheel_inst._positions[1] == 4
 
     @pytest.mark.parametrize("motor_slot,move_to_attr,move_rel_attr,home_attr", AXIS_PARAMS)
@@ -274,10 +298,10 @@ class TestSquidFilterWheelAbsoluteMove:
         # Start away from min_index so a successful home is observable as a reset.
         wheel_inst._positions[1] = 5
 
-        # home wait OK; offset move aborts; resend OK.
+        # home wait OK; offset move aborts (recoverable); resend OK.
         mc.wait_till_operation_is_completed.side_effect = [
             None,  # home wait
-            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1),
+            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1, recoverable=True),
             None,  # resend wait
         ]
 
@@ -302,8 +326,8 @@ class TestSquidFilterWheelAbsoluteMove:
 
         mc.wait_till_operation_is_completed.side_effect = [
             None,  # home wait
-            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1),
-            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=2),
+            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1, recoverable=True),
+            CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=2, recoverable=True),
         ]
 
         with pytest.raises(CommandAborted):
