@@ -325,3 +325,61 @@ def test_piezo_state_not_mutated_when_move_fails():
         w._apply_channel_z_offset(_config(3.0))
     assert w.z_piezo_um == 100.0  # unchanged from the stub default
     assert w._current_z_offset_um == 0.0  # tracker also unchanged
+
+
+# ---------------------------------------------------------------------------
+# perform_autofocus AF-success bookkeeping (reflection AF branch)
+# ---------------------------------------------------------------------------
+
+
+def _af_stub(*, move_to_target_result=True, move_to_target_raises=False):
+    """Stub with just the attributes the reflection-AF branch of perform_autofocus reads."""
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w.laser_auto_focus_controller = MagicMock()
+    if move_to_target_raises:
+        w.laser_auto_focus_controller.move_to_target.side_effect = RuntimeError("af crashed")
+    else:
+        w.laser_auto_focus_controller.move_to_target.return_value = move_to_target_result
+    w._laser_af_successes = 0
+    w._laser_af_failures = 0
+    w.perform_autofocus = MultiPointWorker.perform_autofocus.__get__(w)
+    return w
+
+
+def test_perform_autofocus_soft_failure_marks_af_failed():
+    """move_to_target reports failure via its RETURN VALUE (no reference, NaN
+    displacement, out-of-range, cross-correlation mismatch) — not by raising.
+    perform_autofocus must treat False as a failure or the per-channel z-offset
+    gate applies offsets from an unanchored z."""
+    w = _af_stub(move_to_target_result=False)
+    assert w.perform_autofocus("region", 0) is False
+    assert w._last_af_succeeded is False
+    assert w._laser_af_failures == 1
+    assert w._laser_af_successes == 0
+    # And the offset gate must now suppress the move:
+    w._apply_channel_z_offset(_config(2.0))
+    w.stage.move_z.assert_not_called()
+
+
+def test_perform_autofocus_success_marks_af_succeeded():
+    w = _af_stub(move_to_target_result=True)
+    assert w.perform_autofocus("region", 0) is True
+    assert w._last_af_succeeded is True
+    assert w._laser_af_successes == 1
+    assert w._laser_af_failures == 0
+
+
+def test_perform_autofocus_exception_marks_af_failed(tmp_path):
+    """The raise path also marks the FOV failed (and dumps the focus image)."""
+    import numpy as np
+
+    w = _af_stub(move_to_target_raises=True)
+    w.laser_auto_focus_controller.image = np.zeros((4, 4), dtype=np.uint8)
+    w.base_path = str(tmp_path)
+    w.experiment_ID = "exp"
+    w.time_point = 0
+    (tmp_path / "exp" / "0").mkdir(parents=True)
+    assert w.perform_autofocus("region", 0) is False
+    assert w._last_af_succeeded is False
+    assert w._laser_af_failures == 1
+    assert w._laser_af_successes == 0

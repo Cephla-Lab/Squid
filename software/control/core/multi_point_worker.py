@@ -1155,9 +1155,12 @@ class MultiPointWorker:
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             self._log.info("laser reflection af")
+            # move_to_target reports soft failures (no reference, NaN displacement,
+            # displacement out of range, cross-correlation mismatch) via its return
+            # value, NOT by raising — both paths must mark the FOV's AF as failed or
+            # the per-channel z-offset gate would apply offsets from an unanchored z.
             try:
-                self.laser_auto_focus_controller.move_to_target(0)
-                self._laser_af_successes += 1
+                af_succeeded = self.laser_auto_focus_controller.move_to_target(0)
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
@@ -1166,9 +1169,12 @@ class MultiPointWorker:
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                     exc_info=e,
                 )
+                af_succeeded = False
+            if not af_succeeded:
                 self._laser_af_failures += 1
                 self._last_af_succeeded = False
                 return False
+            self._laser_af_successes += 1
         return True
 
     def prepare_z_stack(self):
