@@ -31,6 +31,8 @@ import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
 
+_log = squid.logging.get_logger(__name__)
+
 if control._def.USE_XERYON:
     from control.objective_changer_2_pos_controller import (
         ObjectiveChanger2PosController,
@@ -255,7 +257,20 @@ class MicroscopeAddons:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
             if not skip_init:
-                self.emission_filter_wheel.home()
+                try:
+                    self.emission_filter_wheel.home()
+                except Exception:
+                    # A filter-wheel homing failure must not brick the whole
+                    # microscope: the wheel controller already leaves its tracked
+                    # position unset on failure, so come up with the position
+                    # unknown and let the operator re-home from the GUI rather
+                    # than aborting startup before the window even opens.
+                    _log.error(
+                        "Filter wheel homing failed during startup; continuing with the "
+                        "filter wheel position unknown. Re-home from the GUI before relying "
+                        "on filter selection.",
+                        exc_info=True,
+                    )
         if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
         if self.squid_laser_engine:

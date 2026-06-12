@@ -85,6 +85,31 @@ def test_prepare_for_use_skips_homing_when_flag_set(mock_get_fw_config):
     mock_piezo_stage.home.assert_called_once()
 
 
+@patch("squid.config.get_filter_wheel_config")
+def test_prepare_for_use_contains_filter_wheel_homing_failure(mock_get_fw_config):
+    """A filter wheel homing failure during startup must be contained, not crash
+    the whole microscope build.
+
+    The wheel is left at an unknown position, but the GUI should still come up so
+    the user can re-home — a recoverable hardware hiccup must not brick startup.
+    """
+    from control.microcontroller import CommandAborted
+
+    mock_fw_config = MagicMock()
+    mock_fw_config.indices = [1]
+    mock_get_fw_config.return_value = mock_fw_config
+
+    mock_filter_wheel = MagicMock()
+    mock_filter_wheel.home.side_effect = CommandAborted(reason="firmware reported CMD_EXECUTION_ERROR", command_id=1)
+
+    addons = control.microscope.MicroscopeAddons(emission_filter_wheel=mock_filter_wheel)
+
+    # Must NOT raise — the homing failure is contained so startup continues.
+    addons.prepare_for_use(skip_init=False)
+
+    mock_filter_wheel.home.assert_called_once()
+
+
 def test_simulated_scope_basic_ops():
     scope = control.microscope.Microscope.build_from_global_config(True)
 

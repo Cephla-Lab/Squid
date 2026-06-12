@@ -256,9 +256,30 @@ class SquidFilterWheel(AbstractFilterWheelController):
             )
             raise
 
+        offset_usteps = self._delta_to_usteps(config.offset)
         try:
-            self._move_to_usteps(wheel_id, self._delta_to_usteps(config.offset))
+            self._move_to_usteps(wheel_id, offset_usteps)
             self.microcontroller.wait_till_operation_is_completed()
+        except CommandAborted as e:
+            # Same recoverable rejection _move_to_position handles: the firmware
+            # rejected the MOVETO before the motor moved (CMD_EXECUTION_ERROR),
+            # so a plain resend is safe. Mirror that single resend here so a
+            # transient abort doesn't turn homing — which runs uncaught during
+            # startup — into a fatal crash. Re-homing is not a recovery option
+            # (we are already inside the home path), so a failed resend or any
+            # other error type propagates to the caller.
+            _log.warning(f"Filter wheel {wheel_id} offset move aborted ({e}); resending in software...")
+            self.microcontroller.acknowledge_aborted_command()
+            try:
+                self._move_to_usteps(wheel_id, offset_usteps)
+                self.microcontroller.wait_till_operation_is_completed()
+            except Exception:
+                _log.error(
+                    f"Filter wheel {wheel_id} home succeeded but offset move "
+                    f"failed after resend; wheel is at the home reference, not "
+                    f"slot {config.min_index}. Tracked position not updated."
+                )
+                raise
         except Exception:
             _log.error(
                 f"Filter wheel {wheel_id} home succeeded but offset move "
