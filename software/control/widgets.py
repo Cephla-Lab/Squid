@@ -961,23 +961,30 @@ class AcquisitionYAMLDropMixin:
 
 
 class _ApplyChannelOffsetMixin:
-    """Mixin providing the laser-AF per-channel Z-offset checkbox handlers.
+    """Mixin providing the laser-AF per-channel Z-offset checkbox + handlers.
 
-    Widgets using this mixin must have:
-    - ``self.checkbox_applyChannelOffset`` (QCheckBox)
-    - ``self.multipointController`` with ``set_apply_channel_offset(bool)``
+    Widgets using this mixin call ``_create_apply_channel_offset_checkbox()`` to build
+    ``self.checkbox_applyChannelOffset`` and must have ``self.multipointController`` with
+    ``set_apply_channel_offset(bool)``.
     """
+
+    _APPLY_CHANNEL_OFFSET_TOOLTIP = (
+        "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
+    )
+
+    def _create_apply_channel_offset_checkbox(self):
+        """Build the (default-checked) per-channel Z-offset checkbox and wire its toggle."""
+        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
+        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setToolTip(self._APPLY_CHANNEL_OFFSET_TOOLTIP)
+        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
     def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
         # Hide the checkbox when laser AF is off — the feature is meaningless without an
         # AF reference anchor. Also clear the checked state so the underlying controller
         # flag follows visibility (rather than silently retaining an inactive opt-in).
         self.checkbox_applyChannelOffset.setVisible(laser_af_on)
-        if laser_af_on:
-            self.checkbox_applyChannelOffset.setToolTip(
-                "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
-            )
-        else:
+        if not laser_af_on:
             self.checkbox_applyChannelOffset.setChecked(False)
 
     def _on_apply_channel_offset_changed(self, checked: bool):
@@ -4238,9 +4245,8 @@ class LiveControlWidget(QFrame):
 
         self.btn_resetZOffset = QPushButton("Reset")
         self.btn_resetZOffset.setToolTip("Set this channel's Z-offset to 0.")
-        # Lock the Reset buttons below their natural sizeHint width so 'Apply in Live'
-        # isn't pushed out of the row. Values empirically verified on this user's
-        # display; HiDPI users may need to widen these.
+        # Fixed widths keep 'Apply in Live' from being pushed out of the row; widen if
+        # the button text clips on a larger system font.
         self.btn_resetZOffset.setFixedWidth(55)
         self.btn_resetZOffset.clicked.connect(self.reset_current_z_offset)
 
@@ -4388,20 +4394,35 @@ class LiveControlWidget(QFrame):
     def _on_show_z_offset_toggled(self, checked: bool):
         self.widget_zOffsetRow.setVisible(checked)
 
+    def _persist_z_offset(self, value: float) -> bool:
+        """Persist a per-channel Z-offset to the current objective's config.
+
+        Returns the repository's success flag; callers decide how to surface failure
+        (a log line for background writes, a dialog for explicit user captures).
+        """
+        return self.liveController.microscope.config_repo.update_channel_setting(
+            self.objectiveStore.current_objective,
+            self.currentConfiguration.name,
+            "ZOffset",
+            value,
+            confocal_mode=self.liveController.is_confocal_mode(),
+        )
+
+    def _set_z_offset_spinbox_silently(self, value: float) -> None:
+        """setValue on the Z-offset spinbox without re-triggering update_config_z_offset."""
+        try:
+            self.is_switching_mode = True
+            self.entry_zOffset.setValue(value)
+        finally:
+            self.is_switching_mode = False
+
     def update_config_z_offset(self, new_value: float):
         if self.is_switching_mode:
             return
         if self.currentConfiguration is None:
             return
         self.currentConfiguration.z_offset_um = new_value
-        ok = self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.currentConfiguration.name,
-            "ZOffset",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        if not ok:
+        if not self._persist_z_offset(new_value):
             self._log.warning(
                 f"Failed to persist z_offset_um={new_value} for channel '{self.currentConfiguration.name}'"
             )
@@ -4431,24 +4452,19 @@ class LiveControlWidget(QFrame):
                 # below will still attempt start_live so we don't leave live stopped.
                 self._log.warning(f"stop_live() raised before laser AF measurement: {e}")
         try:
-            try:
-                displacement_um = laser_af.measure_displacement()
-            except Exception as e:
-                QMessageBox.warning(self, "Reading failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
-                return
+            displacement_um = laser_af.measure_displacement()
+        except Exception as e:
+            QMessageBox.warning(self, "Reading failed", f"Could not read laser AF spot: {e}\nOffset unchanged.")
+            return
         finally:
             if was_live:
                 try:
                     self.liveController.start_live()
                 except Exception as e:
                     self._log.warning(f"start_live() raised after laser AF measurement: {e}")
-                # Do NOT emit signal_start_live here. Its subscriber onStartLive
-                # (gui_hcs.py) unconditionally switches imageDisplayTabs to index 0; a
-                # user who clicks 'Use Current' from a non-Live tab (Multichannel
-                # Acquisition, Mosaic, NDViewer, Laser-Based Focus) would get yanked
-                # back to Live View mid-workflow. start_live() alone is enough to
-                # resume the camera stream — the rest of toggle_live()'s side effects
-                # (button text, tab switch) are user-press-driven, not appropriate here.
+                # Deliberately not emitting signal_start_live: its subscriber switches the
+                # display to the Live tab, which would yank a user who pressed 'Use Current'
+                # from another tab. start_live() alone resumes the camera stream.
         # measure_displacement() returns float('nan') on a soft failure (laser-on timeout,
         # no spot detected, invalid centroid) rather than raising. Persisting NaN here would
         # poison the YAML config and propagate into every subsequent acquisition's stage move.
@@ -4471,43 +4487,21 @@ class LiveControlWidget(QFrame):
             )
             return
         self.currentConfiguration.z_offset_um = displacement_um
-        ok = self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.currentConfiguration.name,
-            "ZOffset",
-            displacement_um,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        if not ok:
+        if not self._persist_z_offset(displacement_um):
             QMessageBox.warning(
                 self,
                 "Save failed",
                 "Offset captured but could not be saved to channel config. Value will be lost on restart.",
             )
-        try:
-            self.is_switching_mode = True
-            self.entry_zOffset.setValue(displacement_um)
-        finally:
-            self.is_switching_mode = False
+        self._set_z_offset_spinbox_silently(displacement_um)
 
     def reset_current_z_offset(self):
         if self.currentConfiguration is None:
             return
         self.currentConfiguration.z_offset_um = 0.0
-        ok = self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.currentConfiguration.name,
-            "ZOffset",
-            0.0,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        if not ok:
+        if not self._persist_z_offset(0.0):
             self._log.warning(f"Failed to persist z_offset_um=0.0 for channel '{self.currentConfiguration.name}'")
-        try:
-            self.is_switching_mode = True
-            self.entry_zOffset.setValue(0.0)
-        finally:
-            self.is_switching_mode = False
+        self._set_z_offset_spinbox_silently(0.0)
 
     def refresh_z_offset_from_config(self):
         """Re-read z_offset_um from the repo and update the spinbox.
@@ -4524,11 +4518,7 @@ class LiveControlWidget(QFrame):
         )
         if refreshed is not None:
             self.currentConfiguration.z_offset_um = refreshed.z_offset_um
-        try:
-            self.is_switching_mode = True
-            self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
-        finally:
-            self.is_switching_mode = False
+        self._set_z_offset_spinbox_silently(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
 
     def _on_laser_af_reference_changed(self, has_reference: bool):
         """Enable or disable the z-offset controls based on laser AF reference availability.
@@ -5888,12 +5878,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
-        self.checkbox_applyChannelOffset.setChecked(True)
-        self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
-        )
-        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+        self._create_apply_channel_offset_checkbox()
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -7400,12 +7385,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
-        self.checkbox_applyChannelOffset.setChecked(True)
-        self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
-        )
-        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+        self._create_apply_channel_offset_checkbox()
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
@@ -9481,12 +9461,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
-        self.checkbox_applyChannelOffset.setChecked(True)
-        self.checkbox_applyChannelOffset.setToolTip(
-            "When laser autofocus is active, apply each channel's saved Z-offset relative to the laser AF reference."
-        )
-        self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+        self._create_apply_channel_offset_checkbox()
 
         # Piezo checkbox
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")

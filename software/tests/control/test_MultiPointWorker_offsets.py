@@ -27,18 +27,18 @@ class _Stub:
         self.liveController = MagicMock()
         self.liveController.trigger_mode = TriggerMode.SOFTWARE
         self._current_z_offset_um = 0.0
-        # Worker sets this in perform_autofocus; default True so existing tests don't
-        # need to track AF state explicitly. Tests that exercise the AF-failure gate
-        # set this to False before calling _apply_channel_z_offset.
-        self._last_af_succeeded = True
         self._log = MagicMock()
         self.wait_till_operation_is_completed = MagicMock()
         self._sleep = MagicMock()
 
     _Z_OFFSET_EPS_UM = MultiPointWorker._Z_OFFSET_EPS_UM
-    _apply_channel_z_offset = MultiPointWorker._apply_channel_z_offset
     _reset_channel_z_offset = MultiPointWorker._reset_channel_z_offset
     _move_z_for_offset = MultiPointWorker._move_z_for_offset
+
+    def _apply_channel_z_offset(self, config, af_succeeded: bool = True):
+        # Default af_succeeded=True so the common-case tests don't have to thread it;
+        # the AF-failure gate test passes False explicitly.
+        return MultiPointWorker._apply_channel_z_offset(self, config, af_succeeded)
 
 
 def _config(z_offset_um):
@@ -288,11 +288,10 @@ def test_multi_time_point_last_z_pos_records_offset_free_baseline():
 
 
 def test_apply_skipped_when_laser_af_failed_for_fov():
-    """When perform_autofocus failed for the FOV, applying the offset would shift z
-    relative to an absent reference. The apply gate must suppress the move."""
+    """When perform_autofocus failed for the FOV (af_succeeded=False), applying the
+    offset would shift z relative to an absent reference. The gate must suppress it."""
     w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
-    w._last_af_succeeded = False
-    w._apply_channel_z_offset(_config(2.0))
+    w._apply_channel_z_offset(_config(2.0), af_succeeded=False)
     w.stage.move_z.assert_not_called()
     assert w._current_z_offset_um == 0.0
     w._log.warning.assert_called_once()
@@ -352,25 +351,24 @@ def test_perform_autofocus_soft_failure_marks_af_failed():
     perform_autofocus must treat False as a failure or the per-channel z-offset
     gate applies offsets from an unanchored z."""
     w = _af_stub(move_to_target_result=False)
-    assert w.perform_autofocus("region", 0) is False
-    assert w._last_af_succeeded is False
+    af_ok = w.perform_autofocus("region", 0)
+    assert af_ok is False
     assert w._laser_af_failures == 1
     assert w._laser_af_successes == 0
-    # And the offset gate must now suppress the move:
-    w._apply_channel_z_offset(_config(2.0))
+    # And the gate (fed the return value) must suppress the move:
+    w._apply_channel_z_offset(_config(2.0), af_succeeded=af_ok)
     w.stage.move_z.assert_not_called()
 
 
 def test_perform_autofocus_success_marks_af_succeeded():
     w = _af_stub(move_to_target_result=True)
     assert w.perform_autofocus("region", 0) is True
-    assert w._last_af_succeeded is True
     assert w._laser_af_successes == 1
     assert w._laser_af_failures == 0
 
 
 def test_perform_autofocus_exception_marks_af_failed(tmp_path):
-    """The raise path also marks the FOV failed (and dumps the focus image)."""
+    """The raise path also reports failure (and dumps the focus image)."""
     import numpy as np
 
     w = _af_stub(move_to_target_raises=True)
@@ -380,6 +378,5 @@ def test_perform_autofocus_exception_marks_af_failed(tmp_path):
     w.time_point = 0
     (tmp_path / "exp" / "0").mkdir(parents=True)
     assert w.perform_autofocus("region", 0) is False
-    assert w._last_af_succeeded is False
     assert w._laser_af_failures == 1
     assert w._laser_af_successes == 0

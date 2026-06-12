@@ -94,9 +94,6 @@ class MultiPointWorker:
         self._acquisition_error_count = 0
         self._laser_af_successes = 0
         self._laser_af_failures = 0
-        # Tracks whether the most recent perform_autofocus call succeeded; gates
-        # per-channel z-offset application so an unanchored FOV doesn't get shifted.
-        self._last_af_succeeded: bool = True
         self._current_z_offset_um: float = 0.0
         self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
@@ -1045,7 +1042,8 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
-        if not self.perform_autofocus(region_id, fov):
+        af_succeeded = self.perform_autofocus(region_id, fov)
+        if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
             )
@@ -1076,7 +1074,7 @@ class MultiPointWorker:
             # iterate through selected modes
             try:
                 for config_idx, config in enumerate(self.selected_configurations):
-                    self._apply_channel_z_offset(config)
+                    self._apply_channel_z_offset(config, af_succeeded)
 
                     # acquire image
                     with self._timing.get_timer("acquire_camera_image"):
@@ -1133,9 +1131,6 @@ class MultiPointWorker:
         self.wait_till_operation_is_completed()
 
     def perform_autofocus(self, region_id, fov):
-        # Default to True for the contrast-AF path (or when AF is skipped this FOV) — the
-        # per-channel offset gate only suppresses on a definite reflection-AF failure.
-        self._last_af_succeeded = True
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
             if (
@@ -1172,7 +1167,6 @@ class MultiPointWorker:
                 af_succeeded = False
             if not af_succeeded:
                 self._laser_af_failures += 1
-                self._last_af_succeeded = False
                 return False
             self._laser_af_successes += 1
         return True
@@ -1223,17 +1217,17 @@ class MultiPointWorker:
     # Prevents accumulated float-subtraction error from triggering spurious sub-nm moves.
     _Z_OFFSET_EPS_UM = 1e-4
 
-    def _apply_channel_z_offset(self, config) -> None:
+    def _apply_channel_z_offset(self, config, af_succeeded: bool) -> None:
         """Move z by the delta needed to reach this channel's per-channel z-offset.
 
         No-op when laser AF is not the active AF method, when the 'Apply channel offset'
-        flag is off, when reflection AF failed for this FOV (no anchor), when the channel's
-        z_offset_um is non-finite, or when the resulting delta is below the move-resolution
-        tolerance.
+        flag is off, when reflection AF failed for this FOV (af_succeeded is False, so no
+        anchor), when the channel's z_offset_um is non-finite, or when the resulting delta
+        is below the move-resolution tolerance.
         """
         if not (self.apply_channel_offset and self.do_reflection_af):
             return
-        if not self._last_af_succeeded:
+        if not af_succeeded:
             # Reflection AF failed for this FOV; the FOV is at an unanchored z. Applying
             # the channel offset would shift the FOV by an unintended amount relative to
             # the absent reference, so skip.
