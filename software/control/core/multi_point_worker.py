@@ -1283,16 +1283,18 @@ class MultiPointWorker:
         - Gate is OFF AND finite non-zero offsets exist → log they're being ignored,
           with the reason.
         """
-        non_finite = [c.name for c in self.selected_configurations if not math.isfinite(c.z_offset_um or 0.0)]
+        non_finite = []
+        finite_non_zero = []
+        for c in self.selected_configurations:
+            offset = c.z_offset_um or 0.0
+            if not math.isfinite(offset):
+                non_finite.append(c.name)
+            elif offset != 0.0:
+                finite_non_zero.append((c.name, offset))
         if non_finite:
             self._log.warning(
                 f"[multi-point] Channels with non-finite z_offset_um (treated as 0): [{', '.join(non_finite)}]"
             )
-        finite_non_zero = [
-            (c.name, c.z_offset_um)
-            for c in self.selected_configurations
-            if math.isfinite(c.z_offset_um or 0.0) and (c.z_offset_um or 0.0) != 0.0
-        ]
         if not finite_non_zero:
             return
         summary = ", ".join(f"{name}: {off:+.2f}µm" for name, off in finite_non_zero)
