@@ -1275,16 +1275,27 @@ class MultiPointWorker:
     def _log_ignored_offsets(self) -> None:
         """Log the per-channel z-offset plan at acquisition start.
 
-        Two cases:
-        - Gate is OFF (apply_channel_offset/do_reflection_af unchecked) AND non-zero
-          offsets exist → log that they're being ignored, with the reason.
-        - Gate is ON AND non-zero offsets exist → log that they'll be applied. Helps
-          diagnose 'offsets not applied' reports by confirming the worker saw them.
+        Cases:
+        - Non-finite offsets exist → warn separately; _apply_channel_z_offset treats
+          them as 0, so they must not appear in a "will be applied" summary.
+        - Gate is ON AND finite non-zero offsets exist → log they'll be applied (helps
+          diagnose 'offsets not applied' reports by confirming the worker saw them).
+        - Gate is OFF AND finite non-zero offsets exist → log they're being ignored,
+          with the reason.
         """
-        non_zero = [(c.name, c.z_offset_um) for c in self.selected_configurations if (c.z_offset_um or 0.0) != 0.0]
-        if not non_zero:
+        non_finite = [c.name for c in self.selected_configurations if not math.isfinite(c.z_offset_um or 0.0)]
+        if non_finite:
+            self._log.warning(
+                f"[multi-point] Channels with non-finite z_offset_um (treated as 0): [{', '.join(non_finite)}]"
+            )
+        finite_non_zero = [
+            (c.name, c.z_offset_um)
+            for c in self.selected_configurations
+            if math.isfinite(c.z_offset_um or 0.0) and (c.z_offset_um or 0.0) != 0.0
+        ]
+        if not finite_non_zero:
             return
-        summary = ", ".join(f"{name}: {off:+.2f}µm" for name, off in non_zero)
+        summary = ", ".join(f"{name}: {off:+.2f}µm" for name, off in finite_non_zero)
         if self.apply_channel_offset and self.do_reflection_af:
             self._log.info(f"[multi-point] Per-channel z-offsets will be applied: [{summary}]")
             return

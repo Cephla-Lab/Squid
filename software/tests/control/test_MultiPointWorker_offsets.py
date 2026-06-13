@@ -267,6 +267,25 @@ def test_log_ignored_offsets_fires_when_checkbox_off():
     assert "'Apply channel offset' unchecked" in w._log.info.call_args[0][0]
 
 
+def test_log_ignored_offsets_warns_on_non_finite_and_excludes_from_will_apply():
+    """A NaN offset must be warned about separately and NOT counted in the
+    'will be applied' summary (since _apply_channel_z_offset treats it as 0)."""
+    cfg_nan = _config(float("nan"))
+    cfg_nan.name = "Bad"
+    cfg_ok = _config(2.0)
+    cfg_ok.name = "GFP"
+    w = _Stub(use_piezo=False, do_reflection_af=True, apply_channel_offset=True)
+    w.selected_configurations = [cfg_nan, cfg_ok]
+    w._log_ignored_offsets = MultiPointWorker._log_ignored_offsets.__get__(w)
+    w._log_ignored_offsets()
+    warn_msg = w._log.warning.call_args[0][0]
+    assert "non-finite" in warn_msg and "Bad" in warn_msg
+    info_msg = w._log.info.call_args[0][0]
+    assert "will be applied" in info_msg
+    assert "GFP" in info_msg
+    assert "Bad" not in info_msg  # NaN channel excluded from the apply summary
+
+
 # ---------------------------------------------------------------------------
 # Gap 3: Multi-time-point invariant — placeholder skip
 # ---------------------------------------------------------------------------

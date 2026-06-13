@@ -366,8 +366,12 @@ def merge_channel_configs(
 
     The merge takes:
     - From general: name, display_color, camera (ID), illumination_channel, filter_wheel,
-                    filter_position, z_offset_um
-    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_hardware_settings, confocal_override
+                    filter_position
+    - From objective: intensity, exposure_time_ms, gain_mode, pixel_format, z_offset_um,
+                      confocal_hardware_settings, confocal_override
+
+    z_offset_um is per-objective: the laser-AF focal-plane offset depends on the lens, and
+    the capture UI persists it into the objective config via update_channel_setting('ZOffset').
 
     Args:
         general: General channel configuration (defines channel identity)

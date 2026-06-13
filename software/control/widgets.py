@@ -4599,6 +4599,15 @@ class LiveControlWidget(QFrame):
         """
         return self._live_current_z_offset_um
 
+    def set_applied_channel_z_offset_um(self, value: float) -> None:
+        """Force the live offset tracker to a known value.
+
+        Used by callers that move the stage on this widget's behalf (e.g. the laser
+        AF Set Reference flow stepping to baseline) so the tracker stays consistent
+        with the physical stage position.
+        """
+        self._live_current_z_offset_um = value
+
     def _maybe_apply_live_channel_offset(self, new_config):
         """Apply the channel's stored z-offset as a relative delta on channel switch.
 
@@ -12695,8 +12704,14 @@ class LaserAutofocusControlWidget(QFrame):
             try:
                 self.liveController.microscope.stage.move_z(applied_offset_um / 1000)
             except Exception as e:
+                # Restore failed: the stage is still at the offset=0 baseline, so sync the
+                # live tracker to 0 too. Otherwise it would keep the old applied offset and
+                # the next channel switch would compute deltas from a stale baseline.
+                if self.liveControlWidget is not None:
+                    self.liveControlWidget.set_applied_channel_z_offset_um(0.0)
                 self._log.warning(
-                    f"Failed to restore stage to offset={applied_offset_um:+.2f} µm " f"after set_reference: {e}"
+                    f"Failed to restore stage to offset={applied_offset_um:+.2f} µm after "
+                    f"set_reference: {e}. Live offset tracker reset to 0 (stage left at baseline)."
                 )
 
         if success:
