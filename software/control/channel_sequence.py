@@ -34,14 +34,21 @@ def reconcile_included(included_order, config_order):
     return [name for name in included_order if name in config_set]
 
 
+def _read_cache(path):
+    """Read the cache file as a mapping; return {} if it is missing or parses to
+    a non-mapping (corrupt partial write from an older version, manual edit).
+    Normalizing to {} lets save_cached_order self-heal the file by overwriting it."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        loaded = yaml.safe_load(f)
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def load_cached_order(cache_key, path=_CACHE_PATH):
     """Return the cached list of included channel names for `cache_key`, or []."""
     try:
-        if not os.path.exists(path):
-            return []
-        with open(path, "r") as f:
-            data = yaml.safe_load(f) or {}
-        value = data.get(cache_key, [])
+        value = _read_cache(path).get(cache_key, [])
         return list(value) if isinstance(value, list) else []
     except Exception as e:
         _log.warning(f"Failed to load channel sequence cache: {e}")
@@ -54,10 +61,7 @@ def save_cached_order(cache_key, names, path=_CACHE_PATH):
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        data = {}
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                data = yaml.safe_load(f) or {}
+        data = _read_cache(path)
         data[cache_key] = list(names)
         # Atomic write: a crash mid-dump must not truncate the file shared by all
         # three widgets and wipe every saved sequence.
