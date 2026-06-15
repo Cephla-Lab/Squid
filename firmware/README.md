@@ -23,17 +23,11 @@ pip install platformio
 brew install platformio
 ```
 
-`pio run -t upload` shells out to [`teensy_loader_cli`](https://github.com/PaulStoffregen/teensy_loader_cli) to flash the board, so install that too:
+`pio run -t upload` flashes the board with the [Teensy Loader](https://www.pjrc.com/teensy/loader.html) application, which PlatformIO bundles in its Teensy platform tools (`tool-teensy`) — there is no separate uploader to install. During upload the Teensy Loader window opens, the board is automatically rebooted into the bootloader, and the firmware is flashed.
 
-```bash
-# Ubuntu / Debian
-sudo apt install teensy-loader-cli
+> **Note:** The Teensy Loader is a graphical application, so uploading normally requires a desktop (display) environment. On platforms where the GUI app is unavailable (e.g. Linux ARM), PlatformIO automatically falls back to the command-line loader (`teensy_loader_cli`).
 
-# macOS
-brew install teensy_loader_cli
-```
-
-On Linux, also install the [PJRC udev rules](https://www.pjrc.com/teensy/00-teensy.rules) into `/etc/udev/rules.d/` so non-root users can flash.
+On Linux, install the [PJRC udev rules](https://www.pjrc.com/teensy/00-teensy.rules) into `/etc/udev/rules.d/` so non-root users can flash. A copy ships with PlatformIO at `~/.platformio/packages/tool-teensy/00-teensy.rules`.
 
 ### Quick Start
 
