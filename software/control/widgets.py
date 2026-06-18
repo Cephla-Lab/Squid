@@ -4048,7 +4048,10 @@ class LiveControlWidget(QFrame):
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
-        self.dropdown_triggerManu.addItems([TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS])
+        trigger_modes = [TriggerMode.SOFTWARE, TriggerMode.HARDWARE]
+        if ENABLE_RECORDING:
+            trigger_modes.append(TriggerMode.CONTINUOUS)
+        self.dropdown_triggerManu.addItems(trigger_modes)
         self.dropdown_triggerManu.setCurrentText(self.camera.get_acquisition_mode().value)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
