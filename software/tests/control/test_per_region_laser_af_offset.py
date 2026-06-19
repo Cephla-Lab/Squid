@@ -78,7 +78,6 @@ class _FMStub:
         self.focus_points = focus_points if focus_points is not None else []
         self.region_laser_af_offsets = offsets if offsets is not None else {}
         self.status_label = MagicMock()
-        self._reflection_af_available = False
         self.checkbox_perRegionLaserAFOffset = MagicMock()
         self.fit_method_combo = MagicMock()
         self.fit_method_combo.currentText.return_value = "constant"
@@ -90,7 +89,6 @@ class _FMStub:
     _sync_offsets_to_focus_points = FocusMapWidget._sync_offsets_to_focus_points
     _on_laser_af_reference_changed = FocusMapWidget._on_laser_af_reference_changed
     _on_per_region_offset_toggled = FocusMapWidget._on_per_region_offset_toggled
-    set_reflection_af_available = FocusMapWidget.set_reflection_af_available
     _update_per_region_offset_enabled = FocusMapWidget._update_per_region_offset_enabled
     get_offsets_for_acquisition = FocusMapWidget.get_offsets_for_acquisition
 
@@ -216,54 +214,26 @@ def test_toggle_on_sets_capture_enabled():
     assert w.capture_laser_af_offset_enabled is True
 
 
-def test_toggle_off_sets_capture_disabled_and_clears_offsets():
+def test_toggle_off_disables_capture_but_retains_offsets():
+    # Unchecking only stops new captures; it must NOT discard already-captured offsets
+    # (those are cleared only on reference change or focus-point edits). The acquisition
+    # gate returns {} while unchecked, so retaining them is safe and avoids data loss when
+    # an unrelated state change (e.g. another tab) incidentally unchecks the box.
     w = _FMStub(enabled=True, offsets={"A1": 1.0, "B2": 2.0})
     w._on_per_region_offset_toggled(False)
     assert w.capture_laser_af_offset_enabled is False
-    assert w.region_laser_af_offsets == {}
+    assert w.region_laser_af_offsets == {"A1": 1.0, "B2": 2.0}
 
 
 # ---------------------------------------------------------------------------
-# set_reflection_af_available / _update_per_region_offset_enabled
-# ---------------------------------------------------------------------------
-
-
-def test_set_reflection_af_unavailable_when_checkbox_checked():
-    w = _FMStub()
-    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = True
-    w.set_reflection_af_available(False)
-    assert w._reflection_af_available is False
-    w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_with(False)
-    w.checkbox_perRegionLaserAFOffset.setChecked.assert_called_once_with(False)
-
-
-def test_set_reflection_af_unavailable_when_checkbox_unchecked_no_setchecked():
-    w = _FMStub()
-    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
-    w.set_reflection_af_available(False)
-    assert w._reflection_af_available is False
-    w.checkbox_perRegionLaserAFOffset.setChecked.assert_not_called()
-
-
-def test_set_reflection_af_available_enables_checkbox_no_setchecked():
-    # With method="constant" and by_region=True (stub defaults), reflection AF on → enabled.
-    w = _FMStub()
-    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
-    w.set_reflection_af_available(True)
-    assert w._reflection_af_available is True
-    w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_with(True)
-    w.checkbox_perRegionLaserAFOffset.setChecked.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# constant-mode gating (Fix B)
+# _update_per_region_offset_enabled — gated ONLY on the shared focus-map controls
+# (constant + Fit by Region), NOT on any tab's Reflection AF checkbox, so a tab
+# toggle cannot clobber the shared widget. Reflection AF is enforced at acquisition.
 # ---------------------------------------------------------------------------
 
 
 def test_update_per_region_offset_disabled_when_method_is_spline():
-    """setEnabled(False) even if reflection AF is on, when method != constant."""
     w = _FMStub()
-    w._reflection_af_available = True
     w.fit_method_combo.currentText.return_value = "spline"
     w.by_region_checkbox.isChecked.return_value = True
     w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
@@ -272,9 +242,7 @@ def test_update_per_region_offset_disabled_when_method_is_spline():
 
 
 def test_update_per_region_offset_disabled_when_by_region_unchecked():
-    """setEnabled(False) when by_region is False, even with method=constant and AF on."""
     w = _FMStub()
-    w._reflection_af_available = True
     w.fit_method_combo.currentText.return_value = "constant"
     w.by_region_checkbox.isChecked.return_value = False
     w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
@@ -282,10 +250,8 @@ def test_update_per_region_offset_disabled_when_by_region_unchecked():
     w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_with(False)
 
 
-def test_update_per_region_offset_enabled_when_all_conditions_met():
-    """setEnabled(True) only when all three conditions hold."""
+def test_update_per_region_offset_enabled_when_constant_and_by_region():
     w = _FMStub()
-    w._reflection_af_available = True
     w.fit_method_combo.currentText.return_value = "constant"
     w.by_region_checkbox.isChecked.return_value = True
     w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
@@ -294,9 +260,8 @@ def test_update_per_region_offset_enabled_when_all_conditions_met():
 
 
 def test_update_per_region_offset_unchecks_when_conditions_not_met_and_was_checked():
-    """When conditions fail and checkbox was checked, setChecked(False) must be called."""
+    """When conditions fail and the checkbox was checked, it must be unchecked."""
     w = _FMStub()
-    w._reflection_af_available = True
     w.fit_method_combo.currentText.return_value = "rbf"
     w.by_region_checkbox.isChecked.return_value = True
     w.checkbox_perRegionLaserAFOffset.isChecked.return_value = True

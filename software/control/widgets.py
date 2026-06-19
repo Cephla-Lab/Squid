@@ -6152,8 +6152,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
-        # FocusMapWidget is shared by both multipoint tabs; enable-state is "last toggle wins" — harmless because each acquisition-start re-reads its own checkbox_withReflectionAutofocus.isChecked().
-        self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -6188,7 +6186,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
-        self.focusMapWidget.set_reflection_af_available(self.checkbox_withReflectionAutofocus.isChecked())
 
     def setup_layout(self):
         self.grid = QVBoxLayout()
@@ -7698,8 +7695,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
-        # FocusMapWidget is shared by both multipoint tabs; enable-state is "last toggle wins" — harmless because each acquisition-start re-reads its own checkbox_withReflectionAutofocus.isChecked().
-        self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
@@ -7749,7 +7744,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
-        self.focusMapWidget.set_reflection_af_available(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
         self._mosaic_layers_initialized = True
@@ -10405,7 +10399,6 @@ class FocusMapWidget(QFrame):
         # region_id. Captured at each focus point when the combined mode is enabled.
         self.region_laser_af_offsets = {}
         self.capture_laser_af_offset_enabled = False
-        self._reflection_af_available = False
 
         self.setup_ui()
         self.make_connections()
@@ -10745,26 +10738,24 @@ class FocusMapWidget(QFrame):
         self.region_laser_af_offsets[region_id] = offset_um
 
     def _on_per_region_offset_toggled(self, checked):
+        # Toggling only gates whether NEW captures happen; it deliberately does not clear
+        # already-captured offsets. Those are cleared only when the laser-AF reference
+        # changes or the focus points change. get_offsets_for_acquisition returns {} while
+        # unchecked, so retaining them here is safe and avoids losing data on an incidental
+        # uncheck (e.g. switching focus-map method).
         self.capture_laser_af_offset_enabled = checked
-        if not checked:
-            self._clear_region_offsets()
-
-    def set_reflection_af_available(self, available):
-        self._reflection_af_available = bool(available)
-        self._update_per_region_offset_enabled()
 
     def _update_per_region_offset_enabled(self, *args):
         # The per-region laser-AF offset is only valid for the constant, one-point-per-well
-        # focus map (method="constant" + Fit by Region) while laser AF is active. A
-        # non-constant surface has many points per region, so a single per-region offset
-        # cannot represent it — keep the checkbox unavailable there. Disabling also unchecks
-        # (which clears captured offsets via the toggle handler) so a stale opt-in cannot
-        # survive a mode switch. (*args absorbs the value emitted by the combo/checkbox signals.)
-        enabled = (
-            self._reflection_af_available
-            and self.fit_method_combo.currentText() == "constant"
-            and self.by_region_checkbox.isChecked()
-        )
+        # focus map (method="constant" + Fit by Region): a non-constant surface has many
+        # points per region, so a single per-region offset cannot represent it. Enable is
+        # driven ONLY by these two SHARED focus-map controls — deliberately NOT by any
+        # multipoint tab's Reflection AF checkbox, because this one widget is shared across
+        # all tabs and a per-tab toggle would clobber the others ("last toggle wins").
+        # Whether laser AF is actually active is enforced at acquisition by
+        # get_offsets_for_acquisition, using the running tab's own checkbox.
+        # (*args absorbs the value emitted by the combo/checkbox signals.)
+        enabled = self.fit_method_combo.currentText() == "constant" and self.by_region_checkbox.isChecked()
         self.checkbox_perRegionLaserAFOffset.setEnabled(enabled)
         if not enabled and self.checkbox_perRegionLaserAFOffset.isChecked():
             self.checkbox_perRegionLaserAFOffset.setChecked(False)
