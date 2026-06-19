@@ -92,6 +92,7 @@ class _FMStub:
     _on_per_region_offset_toggled = FocusMapWidget._on_per_region_offset_toggled
     set_reflection_af_available = FocusMapWidget.set_reflection_af_available
     _update_per_region_offset_enabled = FocusMapWidget._update_per_region_offset_enabled
+    get_offsets_for_acquisition = FocusMapWidget.get_offsets_for_acquisition
 
 
 def test_capture_stores_displacement_when_enabled():
@@ -302,3 +303,23 @@ def test_update_per_region_offset_unchecks_when_conditions_not_met_and_was_check
     w._update_per_region_offset_enabled()
     w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_with(False)
     w.checkbox_perRegionLaserAFOffset.setChecked.assert_called_once_with(False)
+
+
+def test_get_offsets_for_acquisition_returns_offsets_when_active():
+    w = _FMStub(offsets={"A1": 3.0})
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = True
+    result = w.get_offsets_for_acquisition(reflection_af_active=True)
+    assert result == {"A1": 3.0}
+    assert result is not w.region_laser_af_offsets  # returns a copy, not the live dict
+
+
+def test_get_offsets_for_acquisition_empty_when_reflection_af_off():
+    w = _FMStub(offsets={"A1": 3.0})
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = True
+    assert w.get_offsets_for_acquisition(reflection_af_active=False) == {}
+
+
+def test_get_offsets_for_acquisition_empty_when_checkbox_off():
+    w = _FMStub(offsets={"A1": 3.0})
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
+    assert w.get_offsets_for_acquisition(reflection_af_active=True) == {}

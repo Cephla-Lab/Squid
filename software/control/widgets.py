@@ -6480,13 +6480,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
                 self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                if (
-                    self.checkbox_withReflectionAutofocus.isChecked()
-                    and self.focusMapWidget.checkbox_perRegionLaserAFOffset.isChecked()
-                ):
-                    self.multipointController.set_region_laser_af_offsets(self.focusMapWidget.region_laser_af_offsets)
-                else:
-                    self.multipointController.set_region_laser_af_offsets({})
+                self.multipointController.set_region_laser_af_offsets(
+                    self.focusMapWidget.get_offsets_for_acquisition(self.checkbox_withReflectionAutofocus.isChecked())
+                )
             else:
                 self.multipointController.set_focus_map(None)
                 self.multipointController.set_region_laser_af_offsets({})
@@ -8843,15 +8839,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 if self.focusMapWidget.fit_surface():
                     # If fit successful, set the surface fitter in controller
                     self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                    if (
-                        self.checkbox_withReflectionAutofocus.isChecked()
-                        and self.focusMapWidget.checkbox_perRegionLaserAFOffset.isChecked()
-                    ):
-                        self.multipointController.set_region_laser_af_offsets(
-                            self.focusMapWidget.region_laser_af_offsets
+                    self.multipointController.set_region_laser_af_offsets(
+                        self.focusMapWidget.get_offsets_for_acquisition(
+                            self.checkbox_withReflectionAutofocus.isChecked()
                         )
-                    else:
-                        self.multipointController.set_region_laser_af_offsets({})
+                    )
                 else:
                     QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
                     self.btn_startAcquisition.setChecked(False)
@@ -10739,7 +10731,9 @@ class FocusMapWidget(QFrame):
             self.status_label.setText("Laser AF reference not set — per-region offset not captured")
             return
         offset_um = self.laserAutofocusController.measure_displacement()
-        if math.isnan(offset_um):
+        # measure_displacement() returns float('nan') on a soft failure; guard with isfinite
+        # (matching capture_current_z_offset) so an invalid reading is never stored.
+        if offset_um is None or not math.isfinite(offset_um):
             self.status_label.setText(f"Laser AF spot not detected — offset not captured for {region_id}")
             return
         laser_af_range = self.laserAutofocusController.laser_af_properties.laser_af_range
@@ -10781,9 +10775,20 @@ class FocusMapWidget(QFrame):
     def _sync_offsets_to_focus_points(self):
         """Drop offsets for regions that no longer have any focus point."""
         live_regions = {rid for rid, _, _, _ in self.focus_points}
-        for rid in list(self.region_laser_af_offsets.keys()):
-            if rid not in live_regions:
-                self.region_laser_af_offsets.pop(rid, None)
+        self.region_laser_af_offsets = {
+            rid: offset for rid, offset in self.region_laser_af_offsets.items() if rid in live_regions
+        }
+
+    def get_offsets_for_acquisition(self, reflection_af_active):
+        """Per-region laser-AF offsets to apply for an acquisition, or {} when the combined
+        mode is inactive (reflection AF off, or the per-region checkbox unchecked).
+
+        Centralizes the reflection-AF/checkbox gating so both multipoint widgets — and any
+        future acquisition entry point — share one source of truth.
+        """
+        if reflection_af_active and self.checkbox_perRegionLaserAFOffset.isChecked():
+            return dict(self.region_laser_af_offsets)
+        return {}
 
     def _on_laser_af_reference_changed(self, has_reference):
         # The reference plane moved; previously-captured offsets are relative to the old

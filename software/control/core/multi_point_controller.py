@@ -419,7 +419,7 @@ class MultiPointController:
     def set_region_laser_af_offsets(self, offsets):
         # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
         # every FOV targets the reference (displacement 0), i.e. current behavior.
-        self.region_laser_af_offsets = dict(offsets) if offsets else {}
+        self.region_laser_af_offsets = dict(offsets or {})
 
     def set_base_path(self, path):
         self.base_path = path
