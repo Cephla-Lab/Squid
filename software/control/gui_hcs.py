@@ -2407,6 +2407,10 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.set_default_scan_size()
 
     def toggle_live_scan_grid(self, on):
+        # Idempotent: PyQt removes only one connection per disconnect(), so a duplicate connect
+        # would leave a dangling slot that keeps the live grid chasing the stage during acquisition.
+        if on == self.is_live_scan_grid_on:
+            return
         if on:
             self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
