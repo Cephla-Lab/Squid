@@ -226,6 +226,7 @@ class MultiPointController:
         self.overlap_percent = 10.0  # FOV overlap percentage
 
         self.focus_map = None
+        self.region_laser_af_offsets = {}
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -414,6 +415,11 @@ class MultiPointController:
 
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
+
+    def set_region_laser_af_offsets(self, offsets):
+        # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
+        # every FOV targets the reference (displacement 0), i.e. current behavior.
+        self.region_laser_af_offsets = dict(offsets) if offsets else {}
 
     def set_base_path(self, path):
         self.base_path = path
@@ -958,6 +964,7 @@ class MultiPointController:
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
+            region_laser_af_offsets=self.region_laser_af_offsets,
         )
 
     def _on_acquisition_completed(self):
