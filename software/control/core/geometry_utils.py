@@ -7,28 +7,35 @@ These functions are pure geometry calculations with no UI dependencies.
 import math
 
 
-def get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well=True):
+def get_effective_well_size(well_size_x_mm, well_size_y_mm, fov_size_mm, shape, is_round_well=True):
     """Calculate the default scan size for a well based on shape.
 
     Args:
-        well_size_mm: Well diameter (round) or side length (square)
+        well_size_x_mm: Well X dimension (or diameter for round wells)
+        well_size_y_mm: Well Y dimension (same as X for round wells)
         fov_size_mm: Field of view size in mm
         shape: Scan shape ("Circle", "Square", or "Rectangle")
-        is_round_well: True for round wells, False for square wells
+        is_round_well: True for round wells, False for rectangular wells
 
     Returns:
-        Effective scan size in mm that provides ~100% coverage
+        Effective scan size — scalar for round wells or circle scan,
+        tuple (x, y) for rectangular wells with non-circle scan.
     """
-    if shape == "Circle":
-        return well_size_mm + fov_size_mm * (1 + math.sqrt(2))
-    elif shape == "Square" and is_round_well:
-        # Inscribed square side length = diameter / sqrt(2)
-        return well_size_mm / math.sqrt(2)
-    elif shape == "Rectangle" and is_round_well:
-        # Rectangle with 0.6 aspect ratio inscribed in circle
-        # h = diameter / sqrt(1 + 0.6²) = diameter / sqrt(1.36)
-        return well_size_mm / math.sqrt(1.36)
-    return well_size_mm
+    if is_round_well:
+        diameter = well_size_x_mm
+        if shape == "Circle":
+            return diameter + fov_size_mm * (1 + math.sqrt(2))
+        elif shape == "Square":
+            return diameter / math.sqrt(2)
+        elif shape == "Rectangle":
+            return diameter / math.sqrt(1.36)
+        return diameter
+    else:
+        # Rectangular well — return tuple (x, y) for per-axis scan sizes
+        if shape == "Circle":
+            return math.sqrt(well_size_x_mm**2 + well_size_y_mm**2) + fov_size_mm * (1 + math.sqrt(2))
+        else:
+            return (well_size_x_mm, well_size_y_mm)
 
 
 def get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape):
@@ -92,7 +99,9 @@ def get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape):
     return tiles if tiles else [(0, 0)]
 
 
-def calculate_well_coverage(scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well=True):
+def calculate_well_coverage(
+    scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_x_mm, well_size_y_mm=None, is_round_well=True
+):
     """Calculate what fraction of the well is covered by FOV tiles.
 
     Uses grid sampling to determine coverage.
@@ -102,40 +111,46 @@ def calculate_well_coverage(scan_size_mm, fov_size_mm, overlap_percent, shape, w
         fov_size_mm: Field of view size in mm
         overlap_percent: Overlap between adjacent tiles (%)
         shape: Scan shape ("Circle", "Square", or "Rectangle")
-        well_size_mm: Well diameter (round) or side length (square)
-        is_round_well: True for round wells, False for square wells
+        well_size_x_mm: Well X dimension (or diameter for round wells)
+        well_size_y_mm: Well Y dimension (defaults to well_size_x_mm for backward compat)
+        is_round_well: True for round wells, False for rectangular wells
 
     Returns:
         Coverage percentage (0-100)
     """
+    if well_size_y_mm is None:
+        well_size_y_mm = well_size_x_mm
+
     step_size = fov_size_mm * (1 - overlap_percent / 100)
-    if step_size <= 0 or scan_size_mm <= 0 or well_size_mm <= 0:
+    if step_size <= 0 or scan_size_mm <= 0 or well_size_x_mm <= 0 or well_size_y_mm <= 0:
         return 0
 
     tiles = get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape)
     if not tiles:
         return 0
 
-    well_radius = well_size_mm / 2
+    well_half_x = well_size_x_mm / 2
+    well_half_y = well_size_y_mm / 2
     fov_half = fov_size_mm / 2
 
     # Grid sampling to calculate coverage
     resolution = 100
     covered = 0
     total = 0
-    step = 2 * well_radius / (resolution - 1) if resolution > 1 else 0
+    step_x = 2 * well_half_x / (resolution - 1) if resolution > 1 else 0
+    step_y = 2 * well_half_y / (resolution - 1) if resolution > 1 else 0
 
     for i in range(resolution):
         for j in range(resolution):
-            x = -well_radius + step * i
-            y = -well_radius + step * j
+            x = -well_half_x + step_x * i
+            y = -well_half_y + step_y * j
 
             # Check if point is inside well
             if is_round_well:
-                if x * x + y * y > well_radius * well_radius:
+                if x * x + y * y > well_half_x * well_half_x:
                     continue
             else:
-                if abs(x) > well_radius or abs(y) > well_radius:
+                if abs(x) > well_half_x or abs(y) > well_half_y:
                     continue
 
             total += 1

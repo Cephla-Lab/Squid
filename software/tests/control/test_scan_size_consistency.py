@@ -79,20 +79,20 @@ class TestEffectiveWellSize:
 
     def test_square_on_round_well_inscribed(self):
         well_size = 6.21
-        effective = get_effective_well_size(well_size, 0.5, "Square", is_round_well=True)
+        effective = get_effective_well_size(well_size, well_size, 0.5, "Square", is_round_well=True)
         expected = well_size / math.sqrt(2)
         assert abs(effective - expected) < 0.001
 
     def test_circle_includes_fov_adjustment(self):
         well_size = 6.21
         fov_size = 0.5
-        effective = get_effective_well_size(well_size, fov_size, "Circle")
+        effective = get_effective_well_size(well_size, well_size, fov_size, "Circle")
         expected = well_size + fov_size * (1 + math.sqrt(2))
         assert effective == expected
 
     def test_rectangle_on_round_well(self):
         well_size = 6.21
-        effective = get_effective_well_size(well_size, 0.5, "Rectangle", is_round_well=True)
+        effective = get_effective_well_size(well_size, well_size, 0.5, "Rectangle", is_round_well=True)
         expected = well_size / math.sqrt(1.36)
         assert abs(effective - expected) < 0.001
 
