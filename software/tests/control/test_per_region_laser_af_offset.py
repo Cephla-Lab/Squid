@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 from control.core.multi_point_utils import AcquisitionParameters
 from control.core.multi_point_worker import MultiPointWorker
+from control.widgets import FocusMapWidget
 
 
 def test_acquisition_parameters_has_region_offsets_field():
@@ -60,9 +61,6 @@ def test_perform_autofocus_failure_increments_and_returns_false():
     assert w._laser_af_failures == 1
 
 
-from control.widgets import FocusMapWidget
-
-
 def _laser_controller(displacement, has_reference=True, laser_af_range=200.0):
     c = MagicMock()
     c.laser_af_properties.has_reference = has_reference
@@ -84,6 +82,7 @@ class _FMStub:
     _capture_region_offset = FocusMapWidget._capture_region_offset
     _clear_region_offsets = FocusMapWidget._clear_region_offsets
     _sync_offsets_to_focus_points = FocusMapWidget._sync_offsets_to_focus_points
+    _on_laser_af_reference_changed = FocusMapWidget._on_laser_af_reference_changed
 
 
 def test_capture_stores_displacement_when_enabled():
@@ -125,6 +124,7 @@ def test_capture_stores_but_warns_when_out_of_range():
     w._capture_region_offset("A1")
     assert w.region_laser_af_offsets == {"A1": 500.0}
     assert w.status_label.setText.called
+    assert "exceeds" in w.status_label.setText.call_args[0][0]
 
 
 def test_capture_replaces_stale_entry_when_disabled():
@@ -144,3 +144,16 @@ def test_sync_drops_orphaned_offsets():
     w = _FMStub(focus_points=[("A1", 0.0, 0.0, 1.0)], offsets={"A1": 1.0, "B2": 2.0})
     w._sync_offsets_to_focus_points()
     assert w.region_laser_af_offsets == {"A1": 1.0}
+
+
+def test_reference_change_clears_offsets_and_sets_status():
+    w = _FMStub(offsets={"A1": 1.0})
+    w._on_laser_af_reference_changed(True)
+    assert w.region_laser_af_offsets == {}
+    assert w.status_label.setText.called
+
+
+def test_reference_change_no_status_when_nothing_to_clear():
+    w = _FMStub()
+    w._on_laser_af_reference_changed(True)
+    w.status_label.setText.assert_not_called()
