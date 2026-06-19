@@ -10368,7 +10368,9 @@ class PandasTableModel(QAbstractTableModel):
 class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
-    def __init__(self, stage: AbstractStage, navigationViewer, scanCoordinates, focusMap):
+    def __init__(
+        self, stage: AbstractStage, navigationViewer, scanCoordinates, focusMap, laserAutofocusController=None
+    ):
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._allow_updating_focus_points_on_signal = True
@@ -10378,15 +10380,24 @@ class FocusMapWidget(QFrame):
         self.navigationViewer = navigationViewer
         self.scanCoordinates = scanCoordinates
         self.focusMap = focusMap
+        self.laserAutofocusController = laserAutofocusController
 
         # Store focus points in widget
         self.focus_points = []  # list of (region_id, x, y, z) tuples
         self.enabled = False  # toggled when focus map enabled for next acquisition
+        # Per-region laser-AF offsets (µm from the global laser-AF reference), keyed by
+        # region_id. Captured at each focus point when the combined mode is enabled.
+        self.region_laser_af_offsets = {}
+        self.capture_laser_af_offset_enabled = False
+        self._reflection_af_available = False
 
         self.setup_ui()
         self.make_connections()
         self.setEnabled(False)
         self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
+
+        if self.laserAutofocusController is not None:
+            self.laserAutofocusController.signal_reference_changed.connect(self._on_laser_af_reference_changed)
 
     def setup_ui(self):
         """Create and arrange UI components"""
@@ -10568,6 +10579,7 @@ class FocusMapWidget(QFrame):
         if self.enabled:
             self.point_combo.blockSignals(True)
             self.focus_points.clear()
+            self._clear_region_offsets()
             self.navigationViewer.clear_focus_points()
             self.status_label.setText(" ")
             current_z = self.stage.get_pos().z_mm
@@ -10631,6 +10643,7 @@ class FocusMapWidget(QFrame):
             self.focus_points.append((region_id, pos.x_mm, pos.y_mm, pos.z_mm))
             self.update_point_list()
             self.navigationViewer.register_focus_point(pos.x_mm, pos.y_mm)
+            self._capture_region_offset(region_id)
         else:
             QMessageBox.warning(self, "Region Error", "Could not determine a valid region for this focus point.")
 
@@ -10638,6 +10651,7 @@ class FocusMapWidget(QFrame):
         index = self.point_combo.currentIndex()
         if 0 <= index < len(self.focus_points):
             self.focus_points.pop(index)
+            self._sync_offsets_to_focus_points()
             self.update_point_list()
             self.update_focus_point_display()
 
@@ -10665,6 +10679,7 @@ class FocusMapWidget(QFrame):
             region_id, x, y, _ = self.focus_points[index]
             self.focus_points[index] = (region_id, x, y, new_z)
             self.update_point_list()
+            self._capture_region_offset(region_id)
 
     def get_region_points_dict(self):
         points_dict = {}
@@ -10673,6 +10688,49 @@ class FocusMapWidget(QFrame):
                 points_dict[region_id] = []
             points_dict[region_id].append((x, y, z))
         return points_dict
+
+    def _capture_region_offset(self, region_id):
+        """Record the laser-AF displacement at the current z as this region's offset.
+
+        No-op (and clears any stale entry for region_id) unless the combined mode is
+        enabled, a laser-AF controller exists, and a reference is set. Never stores NaN
+        (failed spot detection). Warns — but still stores — when the offset exceeds the
+        laser-AF range, since that region would fail AF during acquisition.
+        """
+        self.region_laser_af_offsets.pop(region_id, None)
+        if not self.capture_laser_af_offset_enabled or self.laserAutofocusController is None:
+            return
+        if not self.laserAutofocusController.laser_af_properties.has_reference:
+            self.status_label.setText("Laser AF reference not set — per-region offset not captured")
+            return
+        offset_um = self.laserAutofocusController.measure_displacement()
+        if math.isnan(offset_um):
+            self.status_label.setText(f"Laser AF spot not detected — offset not captured for {region_id}")
+            return
+        laser_af_range = self.laserAutofocusController.laser_af_properties.laser_af_range
+        if abs(offset_um) > laser_af_range:
+            self.status_label.setText(
+                f"Warning: region {region_id} offset {offset_um:.1f} µm exceeds laser AF range "
+                f"({laser_af_range:.1f} µm); it may fail AF during acquisition"
+            )
+        self.region_laser_af_offsets[region_id] = offset_um
+
+    def _clear_region_offsets(self):
+        self.region_laser_af_offsets = {}
+
+    def _sync_offsets_to_focus_points(self):
+        """Drop offsets for regions that no longer have any focus point."""
+        live_regions = {rid for rid, _, _, _ in self.focus_points}
+        for rid in list(self.region_laser_af_offsets.keys()):
+            if rid not in live_regions:
+                self.region_laser_af_offsets.pop(rid, None)
+
+    def _on_laser_af_reference_changed(self, has_reference):
+        # The reference plane moved; previously-captured offsets are relative to the old
+        # reference and are now meaningless. Clear them so they cannot be applied stale.
+        if self.region_laser_af_offsets:
+            self._clear_region_offsets()
+            self.status_label.setText("Laser AF reference changed — captured per-region offsets cleared")
 
     def fit_surface(self):
         try:
