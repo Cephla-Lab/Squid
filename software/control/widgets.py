@@ -10379,7 +10379,13 @@ class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
     def __init__(
-        self, stage: AbstractStage, navigationViewer, scanCoordinates, focusMap, laserAutofocusController=None
+        self,
+        stage: AbstractStage,
+        navigationViewer,
+        scanCoordinates,
+        focusMap,
+        laserAutofocusController=None,
+        liveController=None,
     ):
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -10391,6 +10397,9 @@ class FocusMapWidget(QFrame):
         self.scanCoordinates = scanCoordinates
         self.focusMap = focusMap
         self.laserAutofocusController = laserAutofocusController
+        # Main imaging live controller — suspended around laser-AF offset captures (see
+        # _capture_region_offset). May be None when laser AF is unsupported.
+        self.liveController = liveController
 
         # Store focus points in widget
         self.focus_points = []  # list of (region_id, x, y, z) tuples
@@ -10723,7 +10732,19 @@ class FocusMapWidget(QFrame):
         if not self.laserAutofocusController.laser_af_properties.has_reference:
             self.status_label.setText("Laser AF reference not set — per-region offset not captured")
             return
-        offset_um = self.laserAutofocusController.measure_displacement()
+        # Suspend the main camera's live stream during the measurement: laser AF toggles the
+        # AF laser via the microcontroller and waits for completion, while live keeps queuing
+        # triggers on the same serial link; the contention can time out and return NaN. Mirror
+        # LiveControlWidget.capture_current_z_offset. start_live() alone (no signal) resumes the
+        # stream without yanking the user to the Live tab.
+        was_live = self.liveController is not None and self.liveController.is_live
+        try:
+            if was_live:
+                self.liveController.stop_live()
+            offset_um = self.laserAutofocusController.measure_displacement()
+        finally:
+            if was_live:
+                self.liveController.start_live()
         # measure_displacement() returns float('nan') on a soft failure; guard with isfinite
         # (matching capture_current_z_offset) so an invalid reading is never stored.
         if offset_um is None or not math.isfinite(offset_um):

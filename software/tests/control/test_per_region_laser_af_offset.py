@@ -72,12 +72,14 @@ def _laser_controller(displacement, has_reference=True, laser_af_range=200.0):
 class _FMStub:
     """FocusMapWidget-ish object exposing just what the capture/persistence helpers read."""
 
-    def __init__(self, *, enabled=True, controller=None, focus_points=None, offsets=None):
+    def __init__(self, *, enabled=True, controller=None, focus_points=None, offsets=None, live=False):
         self.capture_laser_af_offset_enabled = enabled
         self.laserAutofocusController = controller
         self.focus_points = focus_points if focus_points is not None else []
         self.region_laser_af_offsets = offsets if offsets is not None else {}
         self.status_label = MagicMock()
+        self.liveController = MagicMock()
+        self.liveController.is_live = live
         self.checkbox_perRegionLaserAFOffset = MagicMock()
         self.fit_method_combo = MagicMock()
         self.fit_method_combo.currentText.return_value = "constant"
@@ -105,6 +107,23 @@ def test_capture_shows_offset_on_status_line():
     w._capture_region_offset("A1")
     msg = w.status_label.setText.call_args[0][0]
     assert "A1" in msg and "2.3" in msg
+
+
+def test_capture_suspends_main_live_during_measurement():
+    # measure_displacement contends with the main live stream on the microcontroller serial
+    # link; capture must stop live around the measurement and restore it after.
+    w = _FMStub(controller=_laser_controller(2.3), live=True)
+    w._capture_region_offset("A1")
+    w.liveController.stop_live.assert_called_once()
+    w.liveController.start_live.assert_called_once()
+    assert w.region_laser_af_offsets == {"A1": 2.3}
+
+
+def test_capture_does_not_toggle_live_when_not_live():
+    w = _FMStub(controller=_laser_controller(2.3), live=False)
+    w._capture_region_offset("A1")
+    w.liveController.stop_live.assert_not_called()
+    w.liveController.start_live.assert_not_called()
 
 
 def test_capture_noop_when_mode_disabled():

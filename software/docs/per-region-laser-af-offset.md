@@ -30,9 +30,10 @@ reference plane.
    - Navigate to the region and bring it into the focus you want.
    - Click **Add** (or select the region's point and click **Update Z**).
    - The current laser-AF displacement is recorded as that region's offset and shown on the
-     status line (e.g. `Region A1: Laser AF offset +2.30 µm`). Problems are reported there
-     too: no reference set, spot not detected, or an offset larger than the laser-AF range
-     (that region may fail AF during the run).
+     status line (e.g. `Region A1: Laser AF offset +2.30 µm`). The live view briefly pauses
+     while the reading is taken, then resumes. Problems are reported on the status line too:
+     no reference set, spot not detected, or an offset larger than the laser-AF range (that
+     region may fail AF during the run).
 4. In the multipoint panel, enable **Reflection AF** and **Use Focus Map**.
 5. Start the acquisition. At each FOV, laser AF drives the stage to that region's recorded
    offset instead of to the shared reference plane.
