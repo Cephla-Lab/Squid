@@ -10784,6 +10784,51 @@ class FocusMapWidget(QFrame):
         if self.fit_method_combo.currentText() == "constant":
             self.by_region_checkbox.setChecked(True)
 
+    def _write_focus_points_csv(self, file_path):
+        with open(file_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Region_ID", "X_mm", "Y_mm", "Z_um", "Offset_um"])
+            for region_id, x, y, z in self.focus_points:
+                offset = self.region_laser_af_offsets.get(region_id, "")
+                writer.writerow([region_id, x, y, z, offset])
+
+    def _read_focus_points_csv(self, file_path):
+        """Parse a focus-points CSV. Returns (points, offsets).
+
+        points: list of (region_id, x, y, z). offsets: {region_id: float} for rows that
+        carry a non-empty Offset_um (column optional, for back-compat). Raises ValueError
+        if any required column is missing.
+        """
+        points = []
+        offsets = {}
+        with open(file_path, "r", newline="") as csvfile:
+            reader = csv.reader(csvfile)
+            header = next(reader)
+            required_columns = ["Region_ID", "X_mm", "Y_mm", "Z_um"]
+            if not all(col in header for col in required_columns):
+                raise ValueError(f"CSV file must contain columns: {', '.join(required_columns)}")
+            region_idx = header.index("Region_ID")
+            x_idx = header.index("X_mm")
+            y_idx = header.index("Y_mm")
+            z_idx = header.index("Z_um")
+            offset_idx = header.index("Offset_um") if "Offset_um" in header else None
+            for row in reader:
+                if len(row) >= 4:
+                    try:
+                        region_id = str(row[region_idx])
+                        x = float(row[x_idx])
+                        y = float(row[y_idx])
+                        z = float(row[z_idx])
+                    except (ValueError, IndexError):
+                        continue
+                    points.append((region_id, x, y, z))
+                    if offset_idx is not None and offset_idx < len(row) and row[offset_idx] != "":
+                        try:
+                            offsets[region_id] = float(row[offset_idx])
+                        except ValueError:
+                            pass
+        return points, offsets
+
     def export_focus_points(self):
         """Export focus points to a CSV file"""
         if not self.focus_points:
@@ -10797,91 +10842,52 @@ class FocusMapWidget(QFrame):
             file_path += ".csv"
 
         try:
-            with open(file_path, "w", newline="") as csvfile:
-                writer = csv.writer(csvfile)
-                # Write header
-                writer.writerow(["Region_ID", "X_mm", "Y_mm", "Z_um"])
-
-                # Write data
-                for region_id, x, y, z in self.focus_points:
-                    writer.writerow([region_id, x, y, z])
-
+            self._write_focus_points_csv(file_path)
             self.status_label.setText(f"Exported {len(self.focus_points)} points to {file_path}")
-
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export focus points: {str(e)}")
 
     def import_focus_points(self):
-        """Import focus points from a CSV file"""
+        """Import focus points (and optional per-region offsets) from a CSV file"""
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Focus Points", "", "CSV Files (*.csv);;All Files (*)")
-
         if not file_path:
             return
 
         try:
-            # Read the CSV file
-            imported_points = []
-            with open(file_path, "r", newline="") as csvfile:
-                reader = csv.reader(csvfile)
-                header = next(reader)  # Skip header row
-
-                # Validate header
-                required_columns = ["Region_ID", "X_mm", "Y_mm", "Z_um"]
-                if not all(col in header for col in required_columns):
-                    QMessageBox.warning(
-                        self, "Invalid Format", f"CSV file must contain columns: {', '.join(required_columns)}"
-                    )
-                    return
-
-                # Get column indices
-                region_idx = header.index("Region_ID")
-                x_idx = header.index("X_mm")
-                y_idx = header.index("Y_mm")
-                z_idx = header.index("Z_um")
-
-                # Read data
-                for row in reader:
-                    if len(row) >= 4:
-                        try:
-                            region_id = str(row[region_idx])
-                            x = float(row[x_idx])
-                            y = float(row[y_idx])
-                            z = float(row[z_idx])
-                            imported_points.append((region_id, x, y, z))
-                        except (ValueError, IndexError):
-                            continue
-
-            # If by_region is checked, validate regions
-            if self.by_region_checkbox.isChecked():
-                scan_regions = set(self.scanCoordinates.region_centers.keys())
-                focus_regions = set(region_id for region_id, _, _, _ in imported_points)
-
-                if not focus_regions == scan_regions:
-                    response = QMessageBox.warning(
-                        self,
-                        "Region Mismatch",
-                        f"The imported focus points have regions: {', '.join(sorted(focus_regions))}\n\n"
-                        f"Current scan has regions: {', '.join(sorted(scan_regions))}\n\n"
-                        "Import anyway (disable 'By Region') or cancel?",
-                        QMessageBox.Ok | QMessageBox.Cancel,
-                        QMessageBox.Cancel,
-                    )
-
-                    if response == QMessageBox.Cancel:
-                        return
-                    else:
-                        # User chose to continue, uncheck by_region
-                        self.by_region_checkbox.setChecked(False)
-
-            # Clear existing points and add imported ones
-            self.focus_points = imported_points
-            self.update_point_list()
-            self.update_focus_point_display()
-
-            self.status_label.setText(f"Imported {len(imported_points)} focus points")
-
+            imported_points, imported_offsets = self._read_focus_points_csv(file_path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Format", str(e))
+            return
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import focus points: {str(e)}")
+            return
+
+        # If by_region is checked, validate regions
+        if self.by_region_checkbox.isChecked():
+            scan_regions = set(self.scanCoordinates.region_centers.keys())
+            focus_regions = set(region_id for region_id, _, _, _ in imported_points)
+            if not focus_regions == scan_regions:
+                response = QMessageBox.warning(
+                    self,
+                    "Region Mismatch",
+                    f"The imported focus points have regions: {', '.join(sorted(focus_regions))}\n\n"
+                    f"Current scan has regions: {', '.join(sorted(scan_regions))}\n\n"
+                    "Import anyway (disable 'By Region') or cancel?",
+                    QMessageBox.Ok | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                if response == QMessageBox.Cancel:
+                    return
+                else:
+                    # User chose to continue, uncheck by_region
+                    self.by_region_checkbox.setChecked(False)
+
+        # Clear existing points and add imported ones
+        self.focus_points = imported_points
+        self.region_laser_af_offsets = imported_offsets
+        self.update_point_list()
+        self.update_focus_point_display()
+        self.status_label.setText(f"Imported {len(imported_points)} focus points")
 
     def on_regions_updated(self):
         if not self._allow_updating_focus_points_on_signal:

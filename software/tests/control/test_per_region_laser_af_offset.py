@@ -157,3 +157,40 @@ def test_reference_change_no_status_when_nothing_to_clear():
     w = _FMStub()
     w._on_laser_af_reference_changed(True)
     w.status_label.setText.assert_not_called()
+
+
+def test_csv_roundtrip_includes_offsets(tmp_path):
+    src = _FMStub(
+        focus_points=[("A1", 1.0, 2.0, 0.5), ("B2", 3.0, 4.0, 0.6)],
+        offsets={"A1": 7.0},  # B2 intentionally has no offset
+    )
+    src._write_focus_points_csv = FocusMapWidget._write_focus_points_csv.__get__(src)
+    path = str(tmp_path / "fp.csv")
+    src._write_focus_points_csv(path)
+
+    dst = _FMStub()
+    dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
+    points, offsets = dst._read_focus_points_csv(path)
+    assert points == [("A1", 1.0, 2.0, 0.5), ("B2", 3.0, 4.0, 0.6)]
+    assert offsets == {"A1": 7.0}
+
+
+def test_csv_read_back_compat_without_offset_column(tmp_path):
+    path = tmp_path / "legacy.csv"
+    path.write_text("Region_ID,X_mm,Y_mm,Z_um\nA1,1.0,2.0,0.5\n")
+    dst = _FMStub()
+    dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
+    points, offsets = dst._read_focus_points_csv(str(path))
+    assert points == [("A1", 1.0, 2.0, 0.5)]
+    assert offsets == {}
+
+
+def test_csv_read_rejects_missing_required_columns(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text("Region_ID,X_mm\nA1,1.0\n")
+    dst = _FMStub()
+    dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
+    import pytest
+
+    with pytest.raises(ValueError):
+        dst._read_focus_points_csv(str(path))
