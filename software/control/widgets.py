@@ -6152,6 +6152,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -6186,6 +6187,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
+        self.focusMapWidget.set_reflection_af_available(self.checkbox_withReflectionAutofocus.isChecked())
 
     def setup_layout(self):
         self.grid = QVBoxLayout()
@@ -6477,8 +6479,16 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
                 self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+                if (
+                    self.checkbox_withReflectionAutofocus.isChecked()
+                    and self.focusMapWidget.checkbox_perRegionLaserAFOffset.isChecked()
+                ):
+                    self.multipointController.set_region_laser_af_offsets(self.focusMapWidget.region_laser_af_offsets)
+                else:
+                    self.multipointController.set_region_laser_af_offsets({})
             else:
                 self.multipointController.set_focus_map(None)
+                self.multipointController.set_region_laser_af_offsets({})
 
             # Set acquisition parameters
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
@@ -7691,6 +7701,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
@@ -7740,6 +7751,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
+        self.focusMapWidget.set_reflection_af_available(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
         self._mosaic_layers_initialized = True
@@ -8829,6 +8841,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 if self.focusMapWidget.fit_surface():
                     # If fit successful, set the surface fitter in controller
                     self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+                    if (
+                        self.checkbox_withReflectionAutofocus.isChecked()
+                        and self.focusMapWidget.checkbox_perRegionLaserAFOffset.isChecked()
+                    ):
+                        self.multipointController.set_region_laser_af_offsets(
+                            self.focusMapWidget.region_laser_af_offsets
+                        )
+                    else:
+                        self.multipointController.set_region_laser_af_offsets({})
                 else:
                     QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
                     self.btn_startAcquisition.setChecked(False)
@@ -8836,6 +8857,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             else:
                 # If checkbox not checked, set surface fitter to None
                 self.multipointController.set_focus_map(None)
+                self.multipointController.set_region_laser_af_offsets({})
 
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
@@ -10464,6 +10486,14 @@ class FocusMapWidget(QFrame):
         self.by_region_checkbox = QCheckBox("Fit by Region")
         self.by_region_checkbox.setChecked(False)
         settings_layout.addWidget(self.by_region_checkbox)
+        self.checkbox_perRegionLaserAFOffset = QCheckBox("Per-region laser AF offset")
+        self.checkbox_perRegionLaserAFOffset.setChecked(False)
+        self.checkbox_perRegionLaserAFOffset.setEnabled(False)
+        self.checkbox_perRegionLaserAFOffset.setToolTip(
+            "With laser AF and focus map both on: capture each region's offset from the laser AF "
+            "reference at its focus point, and drive laser AF to that per-region target during acquisition."
+        )
+        settings_layout.addWidget(self.checkbox_perRegionLaserAFOffset)
         self.layout.addLayout(settings_layout)
 
         # Status label - reserve space even when hidden
@@ -10492,6 +10522,7 @@ class FocusMapWidget(QFrame):
 
         # Connect fitting method change
         self.fit_method_combo.currentTextChanged.connect(self._match_by_region_box)
+        self.checkbox_perRegionLaserAFOffset.toggled.connect(self._on_per_region_offset_toggled)
 
     def update_point_list(self):
         """Update point selection combo showing grid coordinates for points"""
@@ -10714,6 +10745,20 @@ class FocusMapWidget(QFrame):
                 f"({laser_af_range:.1f} µm); it may fail AF during acquisition"
             )
         self.region_laser_af_offsets[region_id] = offset_um
+
+    def _on_per_region_offset_toggled(self, checked):
+        self.capture_laser_af_offset_enabled = checked
+        if not checked:
+            self._clear_region_offsets()
+
+    def set_reflection_af_available(self, available):
+        # The per-region offset only makes sense with laser AF on. Disable + uncheck (and
+        # via the toggle handler, clear) the checkbox when reflection AF is off — mirrors
+        # the per-channel offset checkbox behavior in the multipoint widgets.
+        self._reflection_af_available = bool(available)
+        self.checkbox_perRegionLaserAFOffset.setEnabled(self._reflection_af_available)
+        if not self._reflection_af_available and self.checkbox_perRegionLaserAFOffset.isChecked():
+            self.checkbox_perRegionLaserAFOffset.setChecked(False)
 
     def _clear_region_offsets(self):
         self.region_laser_af_offsets = {}

@@ -974,7 +974,7 @@ class HighContentScreeningGui(QMainWindow):
             self.wellSelectionWidget = widgets.Well1536SelectionWidget(self.wellplateFormatWidget)
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
         self.focusMapWidget = widgets.FocusMapWidget(
-            self.stage, self.navigationViewer, self.scanCoordinates, core.FocusMap()
+            self.stage, self.navigationViewer, self.scanCoordinates, core.FocusMap(), self.laserAutofocusController
         )
 
         if SUPPORT_LASER_AUTOFOCUS:
