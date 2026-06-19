@@ -6152,6 +6152,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        # FocusMapWidget is shared by both multipoint tabs; enable-state is "last toggle wins" — harmless because each acquisition-start re-reads its own checkbox_withReflectionAutofocus.isChecked().
         self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
@@ -7701,6 +7702,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        # FocusMapWidget is shared by both multipoint tabs; enable-state is "last toggle wins" — harmless because each acquisition-start re-reads its own checkbox_withReflectionAutofocus.isChecked().
         self.checkbox_withReflectionAutofocus.toggled.connect(self.focusMapWidget.set_reflection_af_available)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
@@ -10522,6 +10524,8 @@ class FocusMapWidget(QFrame):
 
         # Connect fitting method change
         self.fit_method_combo.currentTextChanged.connect(self._match_by_region_box)
+        self.fit_method_combo.currentTextChanged.connect(self._update_per_region_offset_enabled)
+        self.by_region_checkbox.toggled.connect(self._update_per_region_offset_enabled)
         self.checkbox_perRegionLaserAFOffset.toggled.connect(self._on_per_region_offset_toggled)
 
     def update_point_list(self):
@@ -10752,12 +10756,23 @@ class FocusMapWidget(QFrame):
             self._clear_region_offsets()
 
     def set_reflection_af_available(self, available):
-        # The per-region offset only makes sense with laser AF on. Disable + uncheck (and
-        # via the toggle handler, clear) the checkbox when reflection AF is off — mirrors
-        # the per-channel offset checkbox behavior in the multipoint widgets.
         self._reflection_af_available = bool(available)
-        self.checkbox_perRegionLaserAFOffset.setEnabled(self._reflection_af_available)
-        if not self._reflection_af_available and self.checkbox_perRegionLaserAFOffset.isChecked():
+        self._update_per_region_offset_enabled()
+
+    def _update_per_region_offset_enabled(self, *args):
+        # The per-region laser-AF offset is only valid for the constant, one-point-per-well
+        # focus map (method="constant" + Fit by Region) while laser AF is active. A
+        # non-constant surface has many points per region, so a single per-region offset
+        # cannot represent it — keep the checkbox unavailable there. Disabling also unchecks
+        # (which clears captured offsets via the toggle handler) so a stale opt-in cannot
+        # survive a mode switch. (*args absorbs the value emitted by the combo/checkbox signals.)
+        enabled = (
+            self._reflection_af_available
+            and self.fit_method_combo.currentText() == "constant"
+            and self.by_region_checkbox.isChecked()
+        )
+        self.checkbox_perRegionLaserAFOffset.setEnabled(enabled)
+        if not enabled and self.checkbox_perRegionLaserAFOffset.isChecked():
             self.checkbox_perRegionLaserAFOffset.setChecked(False)
 
     def _clear_region_offsets(self):

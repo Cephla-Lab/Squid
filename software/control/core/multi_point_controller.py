@@ -848,6 +848,13 @@ class MultiPointController:
 
             acquisition_params = self.build_params(scan_position_information=scan_position_information)
 
+            # build_params has captured the per-region laser-AF offsets into
+            # acquisition_params for THIS run; clear the controller's copy now so a later
+            # acquisition from an entry point that never pushes offsets (e.g. fluidics or
+            # the control server) cannot inherit stale targets. Rebinding (not mutating)
+            # leaves the copy already handed to acquisition_params intact.
+            self.region_laser_af_offsets = {}
+
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
             objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
