@@ -10473,7 +10473,7 @@ class FocusMapWidget(QFrame):
         self.by_region_checkbox = QCheckBox("Fit by Region")
         self.by_region_checkbox.setChecked(False)
         settings_layout.addWidget(self.by_region_checkbox)
-        self.checkbox_perRegionLaserAFOffset = QCheckBox("Per-region laser AF offset")
+        self.checkbox_perRegionLaserAFOffset = QCheckBox("Laser AF Offset")
         self.checkbox_perRegionLaserAFOffset.setChecked(False)
         self.checkbox_perRegionLaserAFOffset.setEnabled(False)
         self.checkbox_perRegionLaserAFOffset.setToolTip(
@@ -10735,6 +10735,8 @@ class FocusMapWidget(QFrame):
                 f"Warning: region {region_id} offset {offset_um:.1f} µm exceeds laser AF range "
                 f"({laser_af_range:.1f} µm); it may fail AF during acquisition"
             )
+        else:
+            self.status_label.setText(f"Region {region_id}: Laser AF offset {offset_um:+.2f} µm")
         self.region_laser_af_offsets[region_id] = offset_um
 
     def _on_per_region_offset_toggled(self, checked):

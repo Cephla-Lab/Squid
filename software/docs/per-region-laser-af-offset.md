@@ -15,7 +15,7 @@ The feature is active only when **all** of these are true:
 - Laser AF (**Reflection AF**) is enabled for the acquisition.
 - A **focus map** is used, set to **`constant`** method with **`Fit by Region`** checked
   (i.e. one focus point per well/region — the "constant-z" case).
-- The **`Per-region laser AF offset`** checkbox (in the Focus Map tab) is checked.
+- The **`Laser AF Offset`** checkbox (in the Focus Map tab) is checked.
 
 If any of these is off, behavior is unchanged: laser AF drives every FOV to the single
 reference plane.
@@ -25,13 +25,14 @@ reference plane.
 1. **Set the laser-AF reference** once (the usual "Set Reference" step), with the sample at
    a representative focus. All per-region offsets are measured relative to this plane.
 2. Open the **Focus Map** tab. Set **Fitting Method** to `constant` and check **Fit by
-   Region**. The **`Per-region laser AF offset`** checkbox now becomes available — check it.
+   Region**. The **`Laser AF Offset`** checkbox now becomes available — check it.
 3. For **each well/region**, add one focus point:
    - Navigate to the region and bring it into the focus you want.
    - Click **Add** (or select the region's point and click **Update Z**).
-   - The current laser-AF displacement is recorded as that region's offset. The status line
-     reports problems (no reference set, spot not detected, or an offset larger than the
-     laser-AF range — that region may fail AF during the run).
+   - The current laser-AF displacement is recorded as that region's offset and shown on the
+     status line (e.g. `Region A1: Laser AF offset +2.30 µm`). Problems are reported there
+     too: no reference set, spot not detected, or an offset larger than the laser-AF range
+     (that region may fail AF during the run).
 4. In the multipoint panel, enable **Reflection AF** and **Use Focus Map**.
 5. Start the acquisition. At each FOV, laser AF drives the stage to that region's recorded
    offset instead of to the shared reference plane.
@@ -53,7 +54,7 @@ reference plane.
 
 ## Troubleshooting
 
-- **The `Per-region laser AF offset` checkbox is greyed out.** It only enables for a
+- **The `Laser AF Offset` checkbox is greyed out.** It only enables for a
   `constant` + `Fit by Region` focus map. Pick those in the Focus Map tab.
 - **Offsets don't seem to apply during the run.** Confirm **Reflection AF** is enabled in
   the multipoint panel you started the run from, and that the checkbox is still checked.

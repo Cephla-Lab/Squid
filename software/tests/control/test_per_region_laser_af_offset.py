@@ -99,6 +99,14 @@ def test_capture_stores_displacement_when_enabled():
     assert w.region_laser_af_offsets == {"A1": 3.5}
 
 
+def test_capture_shows_offset_on_status_line():
+    # On a successful in-range capture, the focus-map status line reports the offset.
+    w = _FMStub(controller=_laser_controller(2.3))
+    w._capture_region_offset("A1")
+    msg = w.status_label.setText.call_args[0][0]
+    assert "A1" in msg and "2.3" in msg
+
+
 def test_capture_noop_when_mode_disabled():
     ctrl = _laser_controller(3.5)
     w = _FMStub(enabled=False, controller=ctrl)
