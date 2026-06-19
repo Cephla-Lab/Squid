@@ -78,11 +78,15 @@ class _FMStub:
         self.focus_points = focus_points if focus_points is not None else []
         self.region_laser_af_offsets = offsets if offsets is not None else {}
         self.status_label = MagicMock()
+        self._reflection_af_available = False
+        self.checkbox_perRegionLaserAFOffset = MagicMock()
 
     _capture_region_offset = FocusMapWidget._capture_region_offset
     _clear_region_offsets = FocusMapWidget._clear_region_offsets
     _sync_offsets_to_focus_points = FocusMapWidget._sync_offsets_to_focus_points
     _on_laser_af_reference_changed = FocusMapWidget._on_laser_af_reference_changed
+    _on_per_region_offset_toggled = FocusMapWidget._on_per_region_offset_toggled
+    set_reflection_af_available = FocusMapWidget.set_reflection_af_available
 
 
 def test_capture_stores_displacement_when_enabled():
@@ -194,3 +198,52 @@ def test_csv_read_rejects_missing_required_columns(tmp_path):
 
     with pytest.raises(ValueError):
         dst._read_focus_points_csv(str(path))
+
+
+# ---------------------------------------------------------------------------
+# _on_per_region_offset_toggled
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_on_sets_capture_enabled():
+    w = _FMStub(enabled=False)
+    w._on_per_region_offset_toggled(True)
+    assert w.capture_laser_af_offset_enabled is True
+
+
+def test_toggle_off_sets_capture_disabled_and_clears_offsets():
+    w = _FMStub(enabled=True, offsets={"A1": 1.0, "B2": 2.0})
+    w._on_per_region_offset_toggled(False)
+    assert w.capture_laser_af_offset_enabled is False
+    assert w.region_laser_af_offsets == {}
+
+
+# ---------------------------------------------------------------------------
+# set_reflection_af_available
+# ---------------------------------------------------------------------------
+
+
+def test_set_reflection_af_unavailable_when_checkbox_checked():
+    w = _FMStub()
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = True
+    w.set_reflection_af_available(False)
+    assert w._reflection_af_available is False
+    w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_once_with(False)
+    w.checkbox_perRegionLaserAFOffset.setChecked.assert_called_once_with(False)
+
+
+def test_set_reflection_af_unavailable_when_checkbox_unchecked_no_setchecked():
+    w = _FMStub()
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
+    w.set_reflection_af_available(False)
+    assert w._reflection_af_available is False
+    w.checkbox_perRegionLaserAFOffset.setChecked.assert_not_called()
+
+
+def test_set_reflection_af_available_enables_checkbox_no_setchecked():
+    w = _FMStub()
+    w.checkbox_perRegionLaserAFOffset.isChecked.return_value = False
+    w.set_reflection_af_available(True)
+    assert w._reflection_af_available is True
+    w.checkbox_perRegionLaserAFOffset.setEnabled.assert_called_once_with(True)
+    w.checkbox_perRegionLaserAFOffset.setChecked.assert_not_called()
