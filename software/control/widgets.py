@@ -17258,8 +17258,9 @@ class RecordZStackMultiPointWidget(QFrame):
 
         E2 will call this from the inline-editor wiring; tests may call it directly.
         """
-        if name not in self._zstack_channel_names:
-            self._zstack_channel_names.append(name)
+        if name in self._zstack_channel_names:
+            return
+        self._zstack_channel_names.append(name)
         row = self.zstack_channel_table.rowCount()
         self.zstack_channel_table.insertRow(row)
         item = QTableWidgetItem(name)
@@ -17281,8 +17282,7 @@ class RecordZStackMultiPointWidget(QFrame):
         ctrl = self.laser_autofocus_controller
         if ctrl is None:
             return False
-        # LaserAutofocusController sets reference_object_distance_mm when captured.
-        return getattr(ctrl, "reference_object_distance_mm", None) is not None
+        return bool(getattr(getattr(ctrl, "laser_af_properties", None), "has_reference", False))
 
     # ---------------------------------------------------------------------- public API
 
