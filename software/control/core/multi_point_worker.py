@@ -45,6 +45,7 @@ from control.core.job_processing import (
     JobRunner,
     JobResult,
 )
+from control.core.acquisition_setup import compute_pixel_size_um
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
@@ -81,9 +82,11 @@ class MultiPointWorkerBase:
         abort_requested_fn: Callable[[], bool],
         request_abort_fn: Callable[[], None],
     ):
-        # Use type(self).__name__ so subclass instances log under their own class
-        # name, matching the pre-refactor behavior (MultiPointWorker used
-        # __class__.__name__, which resolved to the subclass for its instances).
+        # Use type(self).__name__ so each subclass instance gets a logger named
+        # after its own concrete class (e.g. "RecordZStackWorker"), rather than
+        # after the class where the expression is written.  __class__ inside a
+        # method always refers to the defining class (MultiPointWorkerBase), not
+        # the runtime type, so type(self) is required to produce per-subclass names.
         self._log = squid.logging.get_logger(type(self).__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
 
@@ -161,6 +164,19 @@ class MultiPointWorkerBase:
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
+
+    def _wait_for_outstanding_callback_images(self):
+        """Block until any in-flight triggered frame has been dispatched/processed."""
+        self._log.info("Waiting for any outstanding frames.")
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+
+        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last image to process!")
+
+        # No matter what, set the flags so things can continue
+        self._ready_for_next_trigger.set()
+        self._image_callback_idle.set()
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
@@ -544,15 +560,7 @@ class MultiPointWorker(MultiPointWorkerBase):
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
-        try:
-            pixel_factor = self.objectiveStore.get_pixel_size_factor()
-            sensor_pixel_um = self.camera.get_pixel_size_binned_um()
-            if pixel_factor is not None and sensor_pixel_um is not None:
-                self._pixel_size_um = float(pixel_factor) * float(sensor_pixel_um)
-            else:
-                self._pixel_size_um = None
-        except Exception:
-            self._pixel_size_um = None
+        self._pixel_size_um = compute_pixel_size_um(self.objectiveStore, self.camera)
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
@@ -646,7 +654,6 @@ class MultiPointWorker(MultiPointWorkerBase):
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
-        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -987,19 +994,6 @@ class MultiPointWorker(MultiPointWorkerBase):
                 f"Laser engine did not reach ready state within timeout "
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
-
-    def _wait_for_outstanding_callback_images(self):
-        # If there are outstanding frames, wait for them to come in.
-        self._log.info("Waiting for any outstanding frames.")
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
-
-        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last image to process!")
-
-        # No matter what, set the flags so things can continue
-        self._ready_for_next_trigger.set()
-        self._image_callback_idle.set()
 
     def run_single_time_point(self):
         try:
