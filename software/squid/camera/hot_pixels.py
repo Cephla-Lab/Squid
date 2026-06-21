@@ -221,7 +221,8 @@ def aggregate_sweep(results: List[ConditionResult]) -> SweepSummary:
                 entry["types"].add(dt.value)
                 if label not in entry["conditions"]:
                     entry["conditions"].append(label)
-                entry["dn"] = max(entry["dn"], c.result.flagged_values.get(key, 0.0))
+                # key is always present: flagged_values covers the combined mask (union of all per-type masks)
+                entry["dn"] = max(entry["dn"], c.result.flagged_values[key])
 
     pixels = [
         PixelDefect(

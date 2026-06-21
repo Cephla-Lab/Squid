@@ -146,3 +146,9 @@ def test_condition_label_handles_ambient():
     assert "ambient" in hp.condition_label(None, 100.0)
     assert "100" in hp.condition_label(None, 100.0)
     assert "-10" in hp.condition_label(-10.0, 100.0)
+
+
+def test_aggregate_sweep_empty_returns_empty_summary():
+    summary = hp.aggregate_sweep([])
+    assert summary.pixels == []
+    assert summary.per_condition == []
