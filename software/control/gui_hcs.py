@@ -1547,6 +1547,9 @@ class HighContentScreeningGui(QMainWindow):
             self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
             self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
+        if ENABLE_RECORDING:
+            self.recordZStackWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
         self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)

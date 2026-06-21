@@ -16993,6 +16993,8 @@ class RecordZStackMultiPointWidget(QFrame):
     Inline channel-editor wiring, Copy-from-Live, and Start-button handoff are E2/E3.
     """
 
+    signal_acquisition_started = Signal(bool)  # True = started, False = finished
+
     def __init__(
         self,
         stage,
@@ -17596,8 +17598,8 @@ class RecordZStackMultiPointWidget(QFrame):
 
         On start (pressed=True):
           - validate(); show QMessageBox.warning and un-check button on failure.
-          - push all parameters to recordZStackController via its setters.
-          - call recordZStackController.run_acquisition().
+          - call recordZStackController.run_acquisition(self.build_parameters()).
+          - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
 
         On stop (pressed=False):
           - call recordZStackController.request_abort().
@@ -17617,12 +17619,14 @@ class RecordZStackMultiPointWidget(QFrame):
 
             params = self.build_parameters()
             self.recordZStackController.run_acquisition(params)
+            self.signal_acquisition_started.emit(True)
         else:
             self.recordZStackController.request_abort()
 
     def acquisition_is_finished(self):
         """Called (thread-safe via Qt signal) when the acquisition worker finishes."""
         self.btn_startAcquisition.setChecked(False)
+        self.signal_acquisition_started.emit(False)
 
     def display_progress_bar(self, show: bool) -> None:
         """No-op stub: RecordZStackMultiPointWidget has no progress bar.
