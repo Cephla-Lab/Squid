@@ -28,6 +28,7 @@ def test_capture_dark_stack_shapes_and_count():
     assert stack.n_frames == 5
     h, w = camera.get_resolution()[1], camera.get_resolution()[0]
     assert stack.mean.shape == stack.min_proj.shape == stack.max_proj.shape
+    assert stack.mean.shape == (h, w)
     # min projection never exceeds max projection anywhere
     assert np.all(stack.min_proj <= stack.max_proj)
 
