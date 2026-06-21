@@ -16963,6 +16963,10 @@ def _validate_record_zstack_params(
             return "Recording FPS must be greater than 0."
         if duration_s <= 0:
             return "Recording duration must be greater than 0."
+        from control.core.record_zstack_controller import frame_count as _frame_count
+
+        if _frame_count(fps, duration_s) < 1:
+            return f"Recording: fps×duration yields 0 frames (fps={fps}, duration={duration_s}s). Increase one or both."
         if not recording_channel_name:
             return "A channel must be chosen for the Recording phase."
     if zstack_enabled:
@@ -17411,7 +17415,10 @@ class RecordZStackMultiPointWidget(QFrame):
     def _get_zstack_row_values(self, name: str):
         """Return (exposure, gain, illumination) for the z-stack row identified by *name*.
 
-        Returns (50.0, 0.0, 50.0) as defaults if the row or spinboxes are missing.
+        Returns (50.0, 0.0, 50.0) as defaults if the row is not found (logs a warning).
+        Spinbox widgets are always present when a row exists (created by
+        _add_zstack_channel_row), so missing-spinbox branches are not expected;
+        a warning is logged rather than silently substituting defaults.
         """
         for row in range(self.zstack_channel_table.rowCount()):
             item = self.zstack_channel_table.item(row, 0)
@@ -17419,10 +17426,14 @@ class RecordZStackMultiPointWidget(QFrame):
                 exp_spin = self.zstack_channel_table.cellWidget(row, 1)
                 gain_spin = self.zstack_channel_table.cellWidget(row, 2)
                 illum_spin = self.zstack_channel_table.cellWidget(row, 3)
-                exposure = exp_spin.value() if exp_spin is not None else 50.0
-                gain = gain_spin.value() if gain_spin is not None else 0.0
-                illum = illum_spin.value() if illum_spin is not None else 50.0
-                return exposure, gain, illum
+                if exp_spin is None or gain_spin is None or illum_spin is None:
+                    self._log.warning(
+                        f"_get_zstack_row_values: spinbox(es) missing for row '{name}'; "
+                        "returning defaults (50.0, 0.0, 50.0)"
+                    )
+                    return 50.0, 0.0, 50.0
+                return exp_spin.value(), gain_spin.value(), illum_spin.value()
+        self._log.warning(f"_get_zstack_row_values: row '{name}' not found; returning defaults")
         return 50.0, 0.0, 50.0
 
     def _copy_recording_from_live(self) -> None:
@@ -17456,20 +17467,29 @@ class RecordZStackMultiPointWidget(QFrame):
 
     def _on_zstack_add_channel_clicked(self) -> None:
         """Add the currently selected channel in the add-channel combo to the z-stack table."""
-        if self.combobox_zstack_add_channel is None:
-            return
         name = self.combobox_zstack_add_channel.currentText()
         if name:
             self._add_zstack_channel_row(name)
 
     def _get_selected_well_count(self) -> int:
-        """Return the number of currently selected wells."""
-        if self.well_selection_widget is not None and hasattr(self.well_selection_widget, "get_selected_wells"):
-            return len(self.well_selection_widget.get_selected_wells())
+        """Return the number of currently selected wells.
+
+        Resolves lazily via ``self.scanCoordinates`` so that plate-format
+        changes (which replace ``gui_hcs.wellSelectionWidget`` and call
+        ``scanCoordinates.add_well_selector()``) are always reflected
+        without needing to update a cached widget reference.
+
+        Returns 0 when a wellplate format is active but no wells are
+        selected.  Returns 1 for glass-slide (current-position imaging)
+        and when no scanCoordinates is attached.
+        """
         if self.scanCoordinates is not None and hasattr(self.scanCoordinates, "get_selected_wells"):
-            return len(self.scanCoordinates.get_selected_wells())
-        # Fallback: treat as 1 well (current position) so the widget is usable
-        # without a well-selection panel attached.
+            selected = self.scanCoordinates.get_selected_wells()
+            if selected is None:
+                # glass-slide: imaging at current position — count as 1
+                return 1
+            return len(selected)
+        # No scanCoordinates attached: treat as single-position (glass-slide-like).
         return 1
 
     def _laser_af_has_reference(self) -> bool:
@@ -17596,25 +17616,7 @@ class RecordZStackMultiPointWidget(QFrame):
                 return
 
             params = self.build_parameters()
-
-            # Push all parameters to the controller via its individual setters.
-            self.recordZStackController.set_base_path(params.base_path)
-            self.recordZStackController.set_experiment_id(params.experiment_id)
-            self.recordZStackController.set_Nt(params.Nt)
-            self.recordZStackController.set_dt_s(params.dt_s)
-            self.recordZStackController.set_use_laser_af(params.use_laser_af)
-            self.recordZStackController.set_recording_enabled(params.recording_enabled)
-            self.recordZStackController.set_recording_channel(params.recording_channel)
-            self.recordZStackController.set_fps(params.fps)
-            self.recordZStackController.set_duration_s(params.duration_s)
-            self.recordZStackController.set_recording_z_offset_um(params.recording_z_offset_um)
-            self.recordZStackController.set_zstack_enabled(params.zstack_enabled)
-            self.recordZStackController.set_zstack_channels(params.zstack_channels)
-            self.recordZStackController.set_z_min_um(params.z_min_um)
-            self.recordZStackController.set_z_max_um(params.z_max_um)
-            self.recordZStackController.set_z_step_um(params.z_step_um)
-
-            self.recordZStackController.run_acquisition()
+            self.recordZStackController.run_acquisition(params)
         else:
             self.recordZStackController.request_abort()
 
