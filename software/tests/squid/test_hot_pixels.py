@@ -54,3 +54,9 @@ def test_darkness_check_warns_on_bright_frame():
     msg = hp.darkness_check(frame, black_level=2.0, max_value=4095)
     assert msg is not None
     assert "dark" in msg.lower()
+
+
+def test_darkness_check_boundary_at_threshold():
+    threshold = 2.0 + 0.25 * 4095  # 1025.75
+    frame = np.full((20, 20), threshold)
+    assert hp.darkness_check(frame, black_level=2.0, max_value=4095) is None
