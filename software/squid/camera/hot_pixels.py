@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -161,3 +161,76 @@ def detect_defects(
         statistical_threshold_dn=stat_thresh,
         flagged_values=flagged_values,
     )
+
+
+@dataclass
+class ConditionResult:
+    temperature_c: Optional[float]
+    actual_temperature_c: Optional[float]
+    exposure_ms: float
+    n_frames: int
+    result: DefectResult
+
+
+@dataclass
+class PixelDefect:
+    x: int
+    y: int
+    types: List[str]
+    mean_dark_dn: float
+    conditions: List[str]
+
+
+@dataclass
+class SweepSummary:
+    pixels: List[PixelDefect]
+    per_condition: List[dict]
+
+
+def condition_label(temperature_c: Optional[float], exposure_ms: float) -> str:
+    temp = "ambient" if temperature_c is None else f"{temperature_c:g}C"
+    return f"T={temp},exp={exposure_ms:g}ms"
+
+
+def aggregate_sweep(results: List[ConditionResult]) -> SweepSummary:
+    pixel_map: Dict[Tuple[int, int], dict] = {}
+    per_condition: List[dict] = []
+
+    for c in results:
+        label = condition_label(c.temperature_c, c.exposure_ms)
+        per_condition.append(
+            {
+                "label": label,
+                "temperature_c": c.temperature_c,
+                "actual_temperature_c": c.actual_temperature_c,
+                "exposure_ms": c.exposure_ms,
+                "n_frames": c.n_frames,
+                "counts": {dt.value: c.result.count(dt) for dt in DefectType},
+                "combined_count": c.result.combined_count(),
+                "median_dn": c.result.stats.median,
+                "sigma_robust_dn": c.result.stats.sigma_robust,
+                "min_dn": c.result.stats.min,
+                "max_dn": c.result.stats.max,
+                "statistical_threshold_dn": c.result.statistical_threshold_dn,
+            }
+        )
+        for dt in DefectType:
+            for x, y in c.result.coords(dt):
+                key = (int(x), int(y))
+                entry = pixel_map.setdefault(key, {"types": set(), "conditions": [], "dn": 0.0})
+                entry["types"].add(dt.value)
+                if label not in entry["conditions"]:
+                    entry["conditions"].append(label)
+                entry["dn"] = max(entry["dn"], c.result.flagged_values.get(key, 0.0))
+
+    pixels = [
+        PixelDefect(
+            x=x,
+            y=y,
+            types=sorted(e["types"]),
+            mean_dark_dn=e["dn"],
+            conditions=e["conditions"],
+        )
+        for (x, y), e in sorted(pixel_map.items())
+    ]
+    return SweepSummary(pixels=pixels, per_condition=per_condition)

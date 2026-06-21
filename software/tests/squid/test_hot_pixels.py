@@ -122,3 +122,27 @@ def test_detect_defects_dead_requires_floor_above_threshold():
     max_proj = np.zeros(shape, dtype=np.uint16)
     res = hp.detect_defects(mean, min_proj, max_proj, 4095, hp.DefectThresholds())
     assert res.count(hp.DefectType.DEAD_LOW) == 0
+
+
+def _condition(temp, exp):
+    mean, min_proj, max_proj, max_value = _dark_stack_with_defects()
+    res = hp.detect_defects(mean, min_proj, max_proj, max_value, hp.DefectThresholds())
+    return hp.ConditionResult(temperature_c=temp, actual_temperature_c=temp, exposure_ms=exp, n_frames=10, result=res)
+
+
+def test_aggregate_sweep_tracks_pixels_and_conditions():
+    results = [_condition(-10.0, 100.0), _condition(-10.0, 500.0)]
+    summary = hp.aggregate_sweep(results)
+
+    assert len(summary.per_condition) == 2
+    # the stuck-high pixel (40, 30) was flagged in both conditions
+    stuck = [p for p in summary.pixels if (p.x, p.y) == (40, 30)]
+    assert len(stuck) == 1
+    assert "stuck_high" in stuck[0].types
+    assert len(stuck[0].conditions) == 2
+
+
+def test_condition_label_handles_ambient():
+    assert "ambient" in hp.condition_label(None, 100.0)
+    assert "100" in hp.condition_label(None, 100.0)
+    assert "-10" in hp.condition_label(-10.0, 100.0)
