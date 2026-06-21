@@ -105,3 +105,155 @@ def test_streaming_capture_counts_and_downsamples():
     assert emitted == 5
     assert w.writes == [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0)]
     assert getattr(w, "finalized", False) is True
+
+
+# ---------------------------------------------------------------------------
+# Fix-batch tests: start() error path, OOB gating, abort path, partial warning
+# ---------------------------------------------------------------------------
+
+
+def test_recording_writer_start_failure_propagates_without_join_crash(tmp_path, monkeypatch):
+    """If ZarrWriter.initialize() raises, start() propagates the original error and
+    finalize()/abort() must NOT crash trying to join an unstarted thread."""
+    from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    cfg = ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "rec.ome.zarr"),
+        shape=(2, 1, 1, 4, 4),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+    )
+
+    sentinel_error = RuntimeError("boom from initialize")
+
+    def boom(self):
+        raise sentinel_error
+
+    monkeypatch.setattr(ZarrWriter, "initialize", boom)
+
+    w = RecordingWriter(cfg)
+    import pytest
+
+    with pytest.raises(RuntimeError, match="boom from initialize"):
+        w.start()
+
+    assert w._started is False
+    # finalize() and abort() must be safe no-ops (no "cannot join thread" crash).
+    w.finalize()
+    w.abort()
+
+
+class _CountingFakeSource:
+    """Delivers all frames synchronously, even past the stop count, to exercise the
+    out-of-bounds guard in _on_frame."""
+
+    def __init__(self, frames):
+        self._frames = frames
+
+    def start(self, on_frame):
+        for f in self._frames:
+            on_frame(f)
+
+    def stop(self):
+        pass
+
+
+def test_streaming_capture_no_enqueue_past_T_with_extra_frames():
+    """Frames arriving after the stop count is met must never be enqueued (would be
+    out of bounds for a (T, ...)-shaped dataset)."""
+    # No downsampling (fps=0 -> emit every frame); 10 frames but T=3.
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(10)]
+    w = _ListWriter()
+    cap = StreamingCapture(
+        _CountingFakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(3),
+        w,
+        abort_fn=lambda: False,
+    )
+    emitted = cap.run()
+    assert emitted == 3
+    # Only t-indices 0..2 — nothing at or beyond T=3.
+    assert w.writes == [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    assert all(t < 3 for (t, _, _) in w.writes)
+
+
+class _RecordingStubWriter:
+    """Records which of finalize()/abort() was called."""
+
+    def __init__(self):
+        self.writes = []
+        self.finalized = False
+        self.aborted = False
+
+    def start(self):
+        pass
+
+    def enqueue(self, frame, t, c, z):
+        self.writes.append((t, c, z))
+
+    def finalize(self):
+        self.finalized = True
+
+    def abort(self):
+        self.aborted = True
+
+
+def test_streaming_capture_abort_calls_writer_abort_not_finalize():
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(10)]
+    w = _RecordingStubWriter()
+    cap = StreamingCapture(
+        _CountingFakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(100),  # never reached
+        w,
+        abort_fn=lambda: True,  # abort on first frame
+    )
+    emitted = cap.run()
+    assert emitted == 0
+    assert w.aborted is True
+    assert w.finalized is False
+
+
+def test_streaming_capture_complete_calls_finalize_not_abort():
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(5)]
+    w = _RecordingStubWriter()
+    cap = StreamingCapture(
+        _CountingFakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(3),
+        w,
+        abort_fn=lambda: False,
+    )
+    emitted = cap.run()
+    assert emitted == 3
+    assert w.finalized is True
+    assert w.aborted is False
+
+
+def test_streaming_capture_partial_warns(caplog):
+    """Fewer frames than T -> finalize + a loud WARNING about partial capture."""
+    import logging
+
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(2)]
+    w = _RecordingStubWriter()
+    cap = StreamingCapture(
+        _CountingFakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(5),  # expect 5, only 2 delivered
+        w,
+        abort_fn=lambda: False,
+    )
+    with caplog.at_level(logging.WARNING):
+        emitted = cap.run(timeout=0.1)
+    assert emitted == 2
+    assert w.finalized is True
+    assert w.aborted is False
+    assert any("incomplete" in rec.getMessage() and "2/5" in rec.getMessage() for rec in caplog.records)
