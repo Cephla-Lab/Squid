@@ -75,6 +75,7 @@ def _dark_stack_with_defects():
     max_proj[10, 20] = 1500
 
     # Stuck-high: always near max
+    mean[30, 40] = 4090.0
     min_proj[30, 40] = 4090
     max_proj[30, 40] = 4095
 
@@ -99,10 +100,12 @@ def test_detect_defects_finds_each_type():
     assert res.count(hp.DefectType.DEAD_LOW) == 1
     assert res.combined_count() == 3  # stuck-high pixel is counted once in combined
     # coords are (x, y)
-    xy = res.coords(hp.DefectType.HOT_STATISTICAL)
-    assert xy.tolist() == [[20, 10]]
+    hot_stat = res.coords(hp.DefectType.HOT_STATISTICAL).tolist()
+    assert [20, 10] in hot_stat  # injected hot pixel
+    assert [40, 30] in hot_stat  # stuck-high pixel also reads bright
     # flagged value recorded
     assert res.flagged_values[(20, 10)] == 1500.0
+    assert res.flagged_values[(40, 30)] == 4090.0
 
 
 def test_detect_defects_absolute_off_by_default():
