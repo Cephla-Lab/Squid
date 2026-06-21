@@ -21,3 +21,4 @@ def test_default_thresholds():
     assert t.sigma_n == 5.0
     assert t.abs_threshold_dn is None
     assert t.stuck_high_frac == 0.99
+    assert t.dead_max_dn == 1
