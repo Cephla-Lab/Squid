@@ -74,3 +74,18 @@ def compute_frame_stats(mean_frame: np.ndarray) -> FrameStats:
         min=float(flat.min()),
         max=float(flat.max()),
     )
+
+
+def darkness_check(
+    mean_frame: np.ndarray, black_level: float, max_value: int, max_fraction: float = 0.25
+) -> Optional[str]:
+    """Warn if the averaged frame is probably not dark (likely a light leak)."""
+    median = float(np.median(mean_frame))
+    threshold = black_level + max_fraction * max_value
+    if median > threshold:
+        return (
+            f"Dark-frame median {median:.1f} DN exceeds {threshold:.1f} DN "
+            f"(black level {black_level:.1f} + {max_fraction:.0%} of full scale {max_value}). "
+            "The sensor may not be in the dark — block all light before running a hot-pixel test."
+        )
+    return None

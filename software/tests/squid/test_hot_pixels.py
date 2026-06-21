@@ -42,3 +42,15 @@ def test_compute_frame_stats_sigma_scales_with_noise():
     frame = rng.normal(100.0, 10.0, size=(200, 200))
     stats = hp.compute_frame_stats(frame)
     assert abs(stats.sigma_robust - 10.0) < 1.5  # 1.4826*MAD approximates std for gaussian
+
+
+def test_darkness_check_passes_on_dark_frame():
+    frame = np.full((20, 20), 5.0)  # near black
+    assert hp.darkness_check(frame, black_level=2.0, max_value=4095) is None
+
+
+def test_darkness_check_warns_on_bright_frame():
+    frame = np.full((20, 20), 2000.0)  # ~half of full scale
+    msg = hp.darkness_check(frame, black_level=2.0, max_value=4095)
+    assert msg is not None
+    assert "dark" in msg.lower()
