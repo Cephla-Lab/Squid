@@ -22,7 +22,7 @@ in tests/control/.
 
 import sys
 from typing import List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -439,3 +439,122 @@ def test_zstack_row_inline_editors_reflected_in_build_parameters(qtbot, simulate
     assert ch.exposure_time == pytest.approx(77.0)
     assert ch.analog_gain == pytest.approx(3.0)
     assert ch.illumination_intensity == pytest.approx(45.0)
+
+
+# ---------------------------------------------------------------------------
+# E3: Start/Stop handoff to RecordZStackController
+# ---------------------------------------------------------------------------
+
+
+def _make_stub_controller():
+    """Stub RecordZStackController that records calls and reports not-in-progress."""
+    ctrl = MagicMock()
+    ctrl.acquisition_in_progress.return_value = False
+    return ctrl
+
+
+def _make_valid_widget(qtbot, deps):
+    """Return a widget pre-configured for a valid z-stack-only acquisition."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test_e3")
+    w.checkbox_zstack.setChecked(True)
+    w.checkbox_recording.setChecked(False)
+    w.entry_zmin.setValue(-2.0)
+    w.entry_zmax.setValue(2.0)
+    w.entry_step.setValue(1.0)
+    w._add_zstack_channel_row("BF LED matrix full")
+    return w
+
+
+def test_toggle_acquisition_start_valid_calls_run_acquisition(qtbot, simulated_widget_deps):
+    """Clicking Start with valid params calls run_acquisition() exactly once."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    # Simulate pressing the Start button (checked=True)
+    w.toggle_acquisition(True)
+
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_toggle_acquisition_start_valid_pushes_params_to_controller(qtbot, simulated_widget_deps):
+    """Clicking Start with valid params pushes all parameters via controller setters."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.toggle_acquisition(True)
+
+    # Verify key setters were called
+    ctrl.set_base_path.assert_called_once_with("/tmp/test_e3")
+    ctrl.set_zstack_enabled.assert_called_once_with(True)
+    ctrl.set_recording_enabled.assert_called_once_with(False)
+    ctrl.set_z_min_um.assert_called_once_with(-2.0)
+    ctrl.set_z_max_um.assert_called_once_with(2.0)
+    ctrl.set_z_step_um.assert_called_once_with(1.0)
+
+
+def test_toggle_acquisition_start_invalid_no_phase_does_not_call_run(qtbot, simulated_widget_deps):
+    """Clicking Start with both phases disabled does NOT call run_acquisition()."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test_e3")
+    w.checkbox_zstack.setChecked(False)
+    w.checkbox_recording.setChecked(False)
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+        w.toggle_acquisition(True)
+
+    ctrl.run_acquisition.assert_not_called()
+    mock_warn.assert_called_once()
+    # Button must be un-checked after a failed start
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_toggle_acquisition_start_invalid_bad_zrange_shows_warning(qtbot, simulated_widget_deps):
+    """Clicking Start with z_max <= z_min pops a warning and does not start."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test_e3")
+    w.checkbox_zstack.setChecked(True)
+    w.entry_zmin.setValue(3.0)
+    w.entry_zmax.setValue(-3.0)  # invalid: max < min
+    w.entry_step.setValue(1.0)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    warning_args = []
+    with patch("control.widgets.QMessageBox.warning", side_effect=lambda *a: warning_args.append(a)):
+        w.toggle_acquisition(True)
+
+    ctrl.run_acquisition.assert_not_called()
+    assert len(warning_args) == 1
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_toggle_acquisition_stop_calls_request_abort(qtbot, simulated_widget_deps):
+    """Un-pressing the Start button (pressed=False) calls request_abort()."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    # Simulate pressing stop (unchecked)
+    w.toggle_acquisition(False)
+
+    ctrl.request_abort.assert_called_once()
+    ctrl.run_acquisition.assert_not_called()
