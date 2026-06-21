@@ -31,6 +31,7 @@ from control._def import (
     TriggerMode,
 )
 from squid.abc import CameraAcquisitionMode
+from control.core.acquisition_setup import compute_pixel_size_um
 from control.core.multi_point_worker import MultiPointWorkerBase
 from control.core.streaming_capture import (
     StreamingCapture,
@@ -108,15 +109,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
 
         # Pre-compute acquisition-wide metadata (pixel size etc.) for zarr/job info.
-        try:
-            pixel_factor = self.objectiveStore.get_pixel_size_factor()
-            sensor_pixel_um = self.camera.get_pixel_size_binned_um()
-            if pixel_factor is not None and sensor_pixel_um is not None:
-                self._pixel_size_um = float(pixel_factor) * float(sensor_pixel_um)
-            else:
-                self._pixel_size_um = None
-        except Exception:
-            self._pixel_size_um = None
+        self._pixel_size_um = compute_pixel_size_um(self.objectiveStore, self.camera)
 
         self._time_increment_s = params.dt_s if params.Nt > 1 and params.dt_s > 0 else None
         self._physical_size_z_um = abs(params.z_step_um) if self._NZ > 1 else None
@@ -134,11 +127,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
             physical_size_x_um=self._pixel_size_um,
             physical_size_y_um=self._pixel_size_um,
         )
-
-        self._backpressure: Optional[BackpressureController] = None
-        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
-        self._abort_on_failed_job = True
-        self._first_job_dispatched = False
 
         # Per-acquisition fixed geometry — compute once and reuse for every FOV
         # (z-stack offsets and the recording frame shape don't change mid-run).
@@ -450,15 +438,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     # --------------------------------------------------------------- helpers
-    def _wait_for_outstanding_callback_images(self) -> None:
-        """Block until any in-flight triggered frame has been dispatched/processed."""
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            log.warning("Timed out waiting for outstanding z-stack frames")
-        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
-            log.warning("Timed out waiting for last z-stack image to process")
-        self._ready_for_next_trigger.set()
-        self._image_callback_idle.set()
-
     def _move_xy(self, coord) -> None:
         self.stage.move_x_to(coord[0])
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)

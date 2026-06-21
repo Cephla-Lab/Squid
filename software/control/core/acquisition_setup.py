@@ -7,9 +7,35 @@ logic across controller classes.
 
 import os
 from datetime import datetime
-from typing import Tuple
+from typing import Optional, Tuple
 
 from control import utils
+
+
+def compute_pixel_size_um(objective_store, camera) -> Optional[float]:
+    """Compute the physical pixel size in µm from objective and camera metadata.
+
+    Returns the product of the objective's pixel-size factor and the camera's
+    binned pixel size in µm, or None if either value is unavailable or an
+    exception is raised.
+
+    Args:
+        objective_store: ObjectiveStore (or compatible object) with
+            ``get_pixel_size_factor() -> Optional[float]``.
+        camera: AbstractCamera (or compatible) with
+            ``get_pixel_size_binned_um() -> Optional[float]``.
+
+    Returns:
+        Pixel size in µm, or None.
+    """
+    try:
+        pixel_factor = objective_store.get_pixel_size_factor()
+        sensor_pixel_um = camera.get_pixel_size_binned_um()
+        if pixel_factor is not None and sensor_pixel_um is not None:
+            return float(pixel_factor) * float(sensor_pixel_um)
+        return None
+    except Exception:
+        return None
 
 
 def create_experiment_dir(base_path: str, experiment_id: str) -> Tuple[str, str]:
