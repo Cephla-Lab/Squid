@@ -1,4 +1,6 @@
-"""Tests for RecordZStackMultiPointWidget (Task E1).
+"""Tests for RecordZStackMultiPointWidget (Tasks E1 + E2).
+
+Covers: widget skeleton, validation, inline editors, Copy-from-Live, computed labels.
 
 Two test layers:
 1. Pure validation helper (_validate_record_zstack_params) — no Qt needed.
@@ -389,7 +391,7 @@ def test_computed_plane_label_degrades_gracefully_on_invalid_range(qtbot, simula
     w.entry_zmax.setValue(-3.0)  # invalid: max < min
     # Label should show a placeholder, not crash
     text = w.label_zstack_planes.text()
-    assert "planes" not in text.lower() or text.startswith("--") or "—" in text or text == "— planes"
+    assert text == "-- planes"
 
 
 def test_build_parameters_uses_inline_editor_values(qtbot, simulated_widget_deps):
