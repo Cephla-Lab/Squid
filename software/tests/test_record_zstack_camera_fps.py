@@ -5,6 +5,15 @@ import squid.camera.utils
 from squid.abc import CameraAcquisitionMode
 
 
+def test_clamp_precise_framerate_tenths():
+    from control.camera_toupcam import clamp_precise_framerate_tenths
+
+    # fps -> tenths, clamped to [min,max] in tenths
+    assert clamp_precise_framerate_tenths(11.5, min_tenths=10, max_tenths=600) == 115
+    assert clamp_precise_framerate_tenths(0.1, min_tenths=10, max_tenths=600) == 10  # below min
+    assert clamp_precise_framerate_tenths(999.0, min_tenths=10, max_tenths=600) == 600  # above max
+
+
 def _sim_camera():
     cfg = squid.config.get_camera_config().model_copy(update={"rotate_image_angle": None, "flip": None})
     return squid.camera.utils.get_camera(cfg, simulated=True)
