@@ -159,3 +159,15 @@ def test_gui_module_imports_without_qapplication():
     args = mod.parse_args(["--camera", "toupcam", "--simulated"])
     assert args.camera == "toupcam"
     assert args.simulated is True
+
+
+def test_gui_require_mono_format_rejects_color():
+    import importlib
+    import pytest
+
+    mod = importlib.import_module("tools.hot_pixel_test_gui")
+    # MONO is accepted (no raise)
+    mod._require_mono_format(CameraPixelFormat.MONO12)
+    # color is rejected with a clear error
+    with pytest.raises(ValueError):
+        mod._require_mono_format(CameraPixelFormat.RGB24)

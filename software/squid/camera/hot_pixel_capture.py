@@ -8,9 +8,12 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
+import squid.logging
 from squid.abc import AbstractCamera
 from squid.config import CameraPixelFormat
 from squid.camera import hot_pixels
+
+_log = squid.logging.get_logger("hot_pixel_capture")
 
 
 @dataclass
@@ -133,6 +136,7 @@ def run_sweep(
             try:
                 actual_t = camera.get_temperature()
             except Exception:
+                _log.debug("get_temperature() failed; recording ambient temperature as None", exc_info=True)
                 actual_t = None
 
         for exposure_ms in exposures_ms:

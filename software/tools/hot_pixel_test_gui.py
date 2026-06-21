@@ -47,6 +47,17 @@ from squid.camera import hot_pixels as hp
 log = squid.logging.get_logger("hot_pixel_test_gui")
 
 
+def _require_mono_format(pixel_format):
+    """Raise a clear error if the camera's pixel format is not a MONO format the analysis supports."""
+    try:
+        hp.max_value_for_pixel_format(pixel_format)
+    except ValueError:
+        raise ValueError(
+            f"Hot-pixel analysis requires a MONO pixel format, but the camera is using {pixel_format}. "
+            "Set the camera to a MONO format (e.g. MONO12) and retry."
+        )
+
+
 def _parse_float_list(text: str) -> List[float]:
     return [float(p.strip()) for p in text.split(",") if p.strip()]
 
@@ -437,6 +448,7 @@ def _build_camera(args):
         camera.set_pixel_format(pixel_format)
     except Exception:
         pixel_format = camera.get_pixel_format()
+    _require_mono_format(pixel_format)
     camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
     camera.start_streaming()
     return camera, pixel_format
