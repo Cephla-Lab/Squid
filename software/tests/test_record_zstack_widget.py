@@ -483,20 +483,26 @@ def test_toggle_acquisition_start_valid_calls_run_acquisition(qtbot, simulated_w
 
 
 def test_toggle_acquisition_start_valid_pushes_params_to_controller(qtbot, simulated_widget_deps):
-    """Clicking Start with valid params pushes all parameters via controller setters."""
+    """Clicking Start with valid params calls run_acquisition(params) with correct values."""
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
+
     ctrl = _make_stub_controller()
     simulated_widget_deps["recordZStackController"] = ctrl
 
     w = _make_valid_widget(qtbot, simulated_widget_deps)
     w.toggle_acquisition(True)
 
-    # Verify key setters were called
-    ctrl.set_base_path.assert_called_once_with("/tmp/test_e3")
-    ctrl.set_zstack_enabled.assert_called_once_with(True)
-    ctrl.set_recording_enabled.assert_called_once_with(False)
-    ctrl.set_z_min_um.assert_called_once_with(-2.0)
-    ctrl.set_z_max_um.assert_called_once_with(2.0)
-    ctrl.set_z_step_um.assert_called_once_with(1.0)
+    # run_acquisition should be called once with a RecordZStackAcquisitionParameters object
+    ctrl.run_acquisition.assert_called_once()
+    call_args = ctrl.run_acquisition.call_args
+    params = call_args.args[0] if call_args.args else call_args.kwargs.get("params")
+    assert isinstance(params, RecordZStackAcquisitionParameters)
+    assert params.base_path == "/tmp/test_e3"
+    assert params.zstack_enabled is True
+    assert params.recording_enabled is False
+    assert params.z_min_um == pytest.approx(-2.0)
+    assert params.z_max_um == pytest.approx(2.0)
+    assert params.z_step_um == pytest.approx(1.0)
 
 
 def test_toggle_acquisition_start_invalid_no_phase_does_not_call_run(qtbot, simulated_widget_deps):
@@ -558,3 +564,142 @@ def test_toggle_acquisition_stop_calls_request_abort(qtbot, simulated_widget_dep
 
     ctrl.request_abort.assert_called_once()
     ctrl.run_acquisition.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# New tests added by fix-batch3
+# ---------------------------------------------------------------------------
+
+
+# --- IMPORTANT 9b: frame_count < 1 rejected ---
+
+
+def test_validate_helper_recording_zero_frame_count():
+    """fps × duration rounds to 0 frames — must be rejected."""
+    # 0.1 fps × 1.0 s = 0.1 → round → 0 frames
+    params = _base_params(recording_enabled=True, fps=0.1, duration_s=1.0, zstack_enabled=False)
+    err = _validate_record_zstack_params(**params)
+    assert err is not None
+    assert "0 frames" in err or "frame" in err.lower()
+
+
+def test_validate_helper_recording_one_frame_is_valid():
+    """fps × duration = exactly 1 frame — must pass."""
+    # 1.0 fps × 1.0 s = 1 frame
+    params = _base_params(recording_enabled=True, fps=1.0, duration_s=1.0, zstack_enabled=False)
+    assert _validate_record_zstack_params(**params) is None
+
+
+def test_validate_helper_recording_borderline_zero_frames():
+    """fps × duration just below 0.5 → rounds to 0 — must be rejected."""
+    params = _base_params(recording_enabled=True, fps=0.4, duration_s=1.0, zstack_enabled=False)
+    err = _validate_record_zstack_params(**params)
+    assert err is not None
+
+
+# --- IMPORTANT 3+4: well count handles None / glass-slide ---
+
+
+def test_get_selected_well_count_glass_slide_returns_one(qtbot, simulated_widget_deps):
+    """_get_selected_well_count returns 1 (not 0) when scanCoordinates.get_selected_wells() is None (glass-slide)."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = None  # glass-slide: returns None
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w._get_selected_well_count() == 1
+
+
+def test_get_selected_well_count_empty_wellplate_returns_zero(qtbot, simulated_widget_deps):
+    """_get_selected_well_count returns 0 when no wells are selected on a wellplate."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = {}  # wellplate, no wells selected
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w._get_selected_well_count() == 0
+
+
+def test_get_selected_well_count_wellplate_selection(qtbot, simulated_widget_deps):
+    """_get_selected_well_count reflects current well_selector, not a stale cached widget."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = {"A1": (0.0, 0.0), "A2": (1.0, 0.0)}
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w._get_selected_well_count() == 2
+
+    # Simulate a plate-format change that updates the scanCoordinates well_selector
+    sc.get_selected_wells.return_value = {"B1": (0.0, 1.0)}
+    assert w._get_selected_well_count() == 1  # picks up new selection, no stale cache
+
+
+def test_validate_rejects_no_wells_selected(qtbot, simulated_widget_deps):
+    """validate() returns an error when no wells are selected (dict empty from scanCoordinates)."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = {}  # no wells
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_zstack.setChecked(True)
+    w.entry_zmin.setValue(-1.0)
+    w.entry_zmax.setValue(1.0)
+    w.entry_step.setValue(1.0)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    err = w.validate()
+    assert err is not None
+    assert "well" in err.lower()
+
+
+# --- MEDIUM: _abort_event threading.Event path ---
+
+
+def test_abort_event_set_on_request_abort():
+    """request_abort() sets the abort event; run_acquisition() clears it before starting."""
+    import threading
+    from unittest.mock import MagicMock, patch
+
+    ctrl_kwargs = dict(
+        microscope=MagicMock(),
+        live_controller=MagicMock(),
+        laser_autofocus_controller=MagicMock(),
+        objective_store=MagicMock(),
+        scan_coordinates=MagicMock(),
+        callbacks=MagicMock(),
+    )
+
+    with patch("control._def.Acquisition.USE_MULTIPROCESSING", False):
+        from control.core.record_zstack_controller import RecordZStackController
+
+        ctrl = RecordZStackController(**ctrl_kwargs)
+
+        # Event should start clear
+        assert not ctrl._abort_event.is_set()
+
+        ctrl.request_abort()
+        assert ctrl._abort_event.is_set()
+
+        # Simulate run_acquisition clearing the event before spawning the worker
+        ctrl._abort_event.clear()
+        assert not ctrl._abort_event.is_set()
