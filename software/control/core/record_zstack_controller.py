@@ -12,6 +12,7 @@ def frame_count(fps: float, duration_s: float) -> int:
 def zstack_plane_count(z_min_um: float, z_max_um: float, step_um: float) -> int:
     if step_um <= 0 or z_max_um < z_min_um:
         raise ValueError("require step>0 and z_max>=z_min")
+    # epsilon absorbs float representation error so e.g. 6.0/1.0 -> 5.999... still floors to 6
     return int(math.floor((z_max_um - z_min_um) / step_um + 1e-9)) + 1
 
 
