@@ -19,6 +19,10 @@ class CountStop:
     def met(self, emitted: int) -> bool:
         return emitted >= self.target
 
+    def expected(self) -> Optional[int]:
+        """Expected total frame count, used for partial-capture warnings."""
+        return self.target
+
 
 class RecordingRouter:
     """Maps incoming frames to (t,c,z)=(t_index,0,0), downsampling to `fps`."""
@@ -40,10 +44,10 @@ class RecordingRouter:
 class RecordingWriter:
     """Bounded-queue writer that drains frames to a ZarrWriter on a background thread.
 
-    The hot camera callback calls `enqueue` (non-blocking); the background thread
-    calls `ZarrWriter.write_frame` which may block on I/O.  The queue is bounded so
-    that a slow disk eventually provides backpressure: `enqueue` will block for up
-    to 0.5 s before logging a drop and returning.
+    The hot camera callback calls `enqueue` (truly non-blocking); the background
+    thread calls `ZarrWriter.write_frame` which may block on I/O.  The queue is
+    bounded so that a slow disk eventually fills it: when full, `enqueue` drops the
+    frame immediately (never blocks the camera delivery thread) and logs a warning.
 
     After `start()` the drain thread is the SOLE owner of the ZarrWriter: only it
     calls `write_frame`, `finalize`, and `abort`.  The main thread only calls
@@ -52,22 +56,38 @@ class RecordingWriter:
     concurrently with the drain thread still inside `write_frame`.
     """
 
-    def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 64):
+    def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 256):
         self._writer = ZarrWriter(config)
         self._q: "queue.Queue" = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._dropped = 0
         self._abort_requested = threading.Event()
+        # True only once the drain thread has actually been started.  finalize()/
+        # abort() must not join (or push the sentinel to) a thread that never
+        # started, otherwise a failure in start()'s initialize() would surface as
+        # "cannot join thread before it is started" and mask the real error.
+        self._started = False
 
     def start(self) -> None:
-        """Initialize the underlying ZarrWriter and start the drain thread."""
+        """Initialize the underlying ZarrWriter and start the drain thread.
+
+        ``initialize()`` runs BEFORE the thread starts.  If it raises, the thread
+        is never started and ``_started`` stays False, so a later finalize()/abort()
+        cleanly no-ops the join and the original ``initialize()`` error propagates.
+        """
         self._writer.initialize()
         self._thread.start()
+        self._started = True
 
     def enqueue(self, frame: np.ndarray, t: int, c: int, z: int) -> None:
-        """Non-blocking enqueue.  Blocks briefly as backpressure; drops on full."""
+        """Truly non-blocking enqueue: drops the frame on a full queue.
+
+        Runs on the hot camera delivery thread, so it must never block.  When the
+        bounded queue is full (drain thread cannot keep up with disk I/O) the frame
+        is dropped and counted rather than waiting for space.
+        """
         try:
-            self._q.put((frame, t, c, z), timeout=0.5)
+            self._q.put_nowait((frame, t, c, z))
         except queue.Full:
             self._dropped += 1
             _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
@@ -101,6 +121,10 @@ class RecordingWriter:
 
     def finalize(self) -> None:
         """Flush the queue, join the drain thread (which finalizes the ZarrWriter)."""
+        if not self._started:
+            # start() never got the thread running (e.g. initialize() raised).
+            # Nothing to flush or join; let the original error propagate.
+            return
         self._q.put(_SENTINEL)
         self._thread.join(timeout=30.0)
         if self._thread.is_alive():
@@ -108,6 +132,10 @@ class RecordingWriter:
 
     def abort(self) -> None:
         """Signal the drain thread to stop (which aborts the ZarrWriter)."""
+        if not self._started:
+            # start() never got the thread running (e.g. initialize() raised).
+            self._abort_requested.set()
+            return
         self._abort_requested.set()
         try:
             self._q.put_nowait(_SENTINEL)
@@ -126,7 +154,7 @@ class RecordingWriter:
 class ContinuousFrameSource:
     """Wraps a camera and delivers frames via callback.
 
-    Calls set_frame_rate, set_acquisition_mode(CONTINUOUS), registers a frame
+    Calls set_acquisition_mode(CONTINUOUS), set_frame_rate, registers a frame
     callback, and starts/stops streaming.
     """
 
@@ -136,8 +164,11 @@ class ContinuousFrameSource:
         self._cb_id: Optional[int] = None
 
     def start(self, on_frame: Callable) -> None:
-        self._camera.set_frame_rate(self._fps)
+        # Order matters: switching to CONTINUOUS resets the frame-rate strategy to
+        # MAX on toupcam, wiping any earlier fps hint.  Set the mode FIRST, then the
+        # frame rate, so the PRECISE_FRAMERATE hint survives the mode switch.
         self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+        self._camera.set_frame_rate(self._fps)
         self._cb_id = self._camera.add_frame_callback(on_frame)
         self._camera.start_streaming()
 
@@ -177,12 +208,22 @@ class StreamingCapture:
         self._abort_fn = abort_fn
         self._emitted = 0
         self._done = threading.Event()
+        self._aborted = False
 
     def _on_frame(self, camera_frame) -> None:
         """Hot-thread callback: route + enqueue only.  Must not block."""
         if self._done.is_set():
             return
         if self._abort_fn():
+            self._aborted = True
+            self._done.set()
+            return
+        # Out-of-bounds guard: if the stop condition is already met for the current
+        # emitted count, do not route/enqueue.  A frame that arrives in-flight after
+        # CountStop(T) is satisfied would otherwise route to t-index == T and enqueue
+        # into a (T, ...)-shaped dataset (out of bounds).  Re-check here, not just at
+        # entry, so once _emitted == T no further frame is ever emitted.
+        if self._stop.met(self._emitted):
             self._done.set()
             return
         idx = self._router.route(camera_frame.timestamp)
@@ -205,5 +246,20 @@ class StreamingCapture:
             # drain thread has exited, so the put times out and the frame is logged as
             # dropped, not corrupted).
             self._source.stop()
-            self._writer.finalize()
+            # source.stop() above quiesces the camera delivery thread, so reading
+            # self._emitted here is safe without a lock: no callback thread mutates
+            # it after this point (and CPython int load/store is atomic anyway).
+            expected = self._stop.expected() if hasattr(self._stop, "expected") else None
+            if self._aborted:
+                # Aborted mid-capture: seal the recording as incomplete, not complete.
+                self._writer.abort()
+            else:
+                self._writer.finalize()
+                if expected is not None and self._emitted < expected:
+                    # Stop condition was not met (slow camera / timeout): the trailing
+                    # zarr planes are fill values, not real data.  Warn loudly.
+                    _log.warning(
+                        f"streaming capture incomplete: captured {self._emitted}/{expected} "
+                        f"frames; trailing planes are blank fill"
+                    )
         return self._emitted
