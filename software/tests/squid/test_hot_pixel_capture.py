@@ -46,7 +46,7 @@ def test_settle_temperature_converges_on_simulated_camera():
     camera = _sim_camera()
     # Simulated get_temperature returns the setpoint immediately -> settles in stable_reads polls.
     settled, last = cap.settle_temperature(
-        camera, target_c=-10.0, tolerance_c=1.0, stable_reads=3, sleep_fn=lambda s: None
+        camera, target_c=-10.0, tolerance_c=1.0, stable_reads=3, sleep_fn=lambda s: None, now_fn=lambda: 0.0
     )
     camera.stop_streaming()
     assert settled is True
