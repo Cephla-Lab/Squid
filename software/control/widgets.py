@@ -16926,3 +16926,437 @@ class WarningErrorWidget(QWidget):
         if len(msg) > 60:
             msg = msg[:57] + "..."
         return msg
+
+
+# ---------------------------------------------------------------------------
+# Pure validation helper — factored out so tests can call it without a real
+# QWidget (Qt display is optional; a QApplication is still needed for the
+# widget itself, but not for the rules below).
+# ---------------------------------------------------------------------------
+
+
+def _validate_record_zstack_params(
+    *,
+    base_path: str,
+    selected_well_count: int,
+    recording_enabled: bool,
+    fps: float,
+    duration_s: float,
+    recording_channel_name: Optional[str],
+    zstack_enabled: bool,
+    z_min: float,
+    z_max: float,
+    step: float,
+    zstack_channel_names: List[str],
+    use_laser_af: bool,
+    laser_af_has_reference: bool,
+) -> Optional[str]:
+    """Return an error string describing the first validation failure, or None if valid."""
+    if not base_path:
+        return "Base path must be set before starting acquisition."
+    if selected_well_count < 1:
+        return "At least one well must be selected."
+    if not recording_enabled and not zstack_enabled:
+        return "At least one phase (Recording or Z-Stack) must be enabled."
+    if recording_enabled:
+        if fps <= 0:
+            return "Recording FPS must be greater than 0."
+        if duration_s <= 0:
+            return "Recording duration must be greater than 0."
+        if not recording_channel_name:
+            return "A channel must be chosen for the Recording phase."
+    if zstack_enabled:
+        if z_max <= z_min:
+            return "Z-Stack: z_max must be greater than z_min."
+        if step <= 0:
+            return "Z-Stack: step must be greater than 0."
+        if not zstack_channel_names:
+            return "Z-Stack: at least one channel must be selected."
+    if use_laser_af and not laser_af_has_reference:
+        return "Laser AF is enabled but no reference position has been captured."
+    return None
+
+
+class RecordZStackMultiPointWidget(QFrame):
+    """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
+
+    Construction pattern mirrors WellplateMultiPointWidget:
+      - group boxes stacked vertically in a scroll area
+      - reads channels via liveController.get_channels(objectiveStore.current_objective)
+      - base-path / experiment-ID fields identical to the wellplate widget
+
+    E1 scope: skeleton + input validation + build_parameters().
+    Inline channel-editor wiring, Copy-from-Live, and Start-button handoff are E2/E3.
+    """
+
+    def __init__(
+        self,
+        stage,
+        navigationViewer,
+        recordZStackController,
+        liveController,
+        objectiveStore,
+        scanCoordinates,
+        well_selection_widget=None,
+        tab_widget=None,
+        laser_autofocus_controller=None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.stage = stage
+        self.navigationViewer = navigationViewer
+        self.recordZStackController = recordZStackController
+        self.liveController = liveController
+        self.objectiveStore = objectiveStore
+        self.scanCoordinates = scanCoordinates
+        self.well_selection_widget = well_selection_widget
+        self.tab_widget: Optional[QTabWidget] = tab_widget
+        self.laser_autofocus_controller = laser_autofocus_controller
+
+        # Track z-stack channel names added via _add_zstack_channel_row()
+        self._zstack_channel_names: List[str] = []
+
+        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        self._add_components()
+
+    # ---------------------------------------------------------------------- build UI
+
+    def _add_components(self) -> None:
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(4, 4, 4, 4)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        layout.addWidget(self._build_output_group())
+        layout.addWidget(self._build_wells_fov_group())
+        layout.addWidget(self._build_timelapse_focus_group())
+        layout.addWidget(self._build_recording_group())
+        layout.addWidget(self._build_zstack_group())
+        layout.addWidget(self._build_start_group())
+        layout.addStretch(1)
+
+        scroll.setWidget(inner)
+        outer_layout.addWidget(scroll)
+
+    def _build_output_group(self) -> QGroupBox:
+        grp = QGroupBox("Output")
+        layout = QGridLayout(grp)
+
+        layout.addWidget(QLabel("Base path:"), 0, 0)
+        self.lineEdit_savingDir = QLineEdit()
+        last_path = get_last_used_saving_path()
+        self.lineEdit_savingDir.setText(last_path)
+        layout.addWidget(self.lineEdit_savingDir, 0, 1)
+
+        self.btn_setSavingDir = QPushButton("Browse")
+        self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
+        self.btn_setSavingDir.clicked.connect(self._browse_saving_dir)
+        layout.addWidget(self.btn_setSavingDir, 0, 2)
+
+        layout.addWidget(QLabel("Experiment ID:"), 1, 0)
+        self.lineEdit_experimentID = QLineEdit()
+        self.lineEdit_experimentID.setPlaceholderText("record_zstack")
+        layout.addWidget(self.lineEdit_experimentID, 1, 1, 1, 2)
+
+        return grp
+
+    def _build_wells_fov_group(self) -> QGroupBox:
+        grp = QGroupBox("Wells & FOV Grid")
+        layout = QFormLayout(grp)
+
+        self.label_selected_wells = QLabel("0 well(s) selected")
+        layout.addRow("Wells:", self.label_selected_wells)
+
+        self.entry_overlap = QDoubleSpinBox()
+        self.entry_overlap.setRange(-1000, 99)
+        self.entry_overlap.setValue(10)
+        self.entry_overlap.setSuffix("%")
+        self.entry_overlap.setKeyboardTracking(False)
+        layout.addRow("FOV overlap:", self.entry_overlap)
+
+        self.combobox_shape = QComboBox()
+        self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
+        layout.addRow("Region shape:", self.combobox_shape)
+
+        return grp
+
+    def _build_timelapse_focus_group(self) -> QGroupBox:
+        grp = QGroupBox("Time-lapse & Focus")
+        layout = QFormLayout(grp)
+
+        self.entry_Nt = QSpinBox()
+        self.entry_Nt.setMinimum(1)
+        self.entry_Nt.setMaximum(5000)
+        self.entry_Nt.setValue(1)
+        layout.addRow("Time points (Nt):", self.entry_Nt)
+
+        self.entry_dt = QDoubleSpinBox()
+        self.entry_dt.setRange(0, 24 * 3600)
+        self.entry_dt.setValue(0)
+        self.entry_dt.setSuffix(" s")
+        self.entry_dt.setKeyboardTracking(False)
+        layout.addRow("Interval (dt):", self.entry_dt)
+
+        self.checkbox_laser_af = QCheckBox("Use laser reflection AF")
+        self.checkbox_laser_af.setChecked(False)
+        layout.addRow("", self.checkbox_laser_af)
+
+        return grp
+
+    def _build_recording_group(self) -> QGroupBox:
+        grp = QGroupBox("Recording phase")
+        grp.setCheckable(True)
+        grp.setChecked(False)
+        self.checkbox_recording = grp  # expose as checkbox_recording for callers
+
+        layout = QFormLayout(grp)
+
+        self.combobox_recording_channel = QComboBox()
+        self._populate_channel_combo(self.combobox_recording_channel)
+        layout.addRow("Channel:", self.combobox_recording_channel)
+
+        self.entry_fps = QDoubleSpinBox()
+        self.entry_fps.setRange(0.1, 1000)
+        self.entry_fps.setValue(10.0)
+        self.entry_fps.setSuffix(" fps")
+        self.entry_fps.setKeyboardTracking(False)
+        layout.addRow("FPS:", self.entry_fps)
+
+        self.entry_duration = QDoubleSpinBox()
+        self.entry_duration.setRange(0.01, 3600)
+        self.entry_duration.setValue(1.0)
+        self.entry_duration.setSuffix(" s")
+        self.entry_duration.setKeyboardTracking(False)
+        layout.addRow("Duration:", self.entry_duration)
+
+        self.label_recording_frames = QLabel("-- frames")
+        layout.addRow("Computed:", self.label_recording_frames)
+
+        self.entry_recording_z_offset = QDoubleSpinBox()
+        self.entry_recording_z_offset.setRange(-1000, 1000)
+        self.entry_recording_z_offset.setValue(0.0)
+        self.entry_recording_z_offset.setSuffix(" μm")
+        self.entry_recording_z_offset.setKeyboardTracking(False)
+        layout.addRow("Z-offset:", self.entry_recording_z_offset)
+
+        # Wire up live frame count update
+        self.entry_fps.valueChanged.connect(self._update_recording_frames_label)
+        self.entry_duration.valueChanged.connect(self._update_recording_frames_label)
+        self._update_recording_frames_label()
+
+        return grp
+
+    def _build_zstack_group(self) -> QGroupBox:
+        grp = QGroupBox("Z-Stack phase")
+        grp.setCheckable(True)
+        grp.setChecked(False)
+        self.checkbox_zstack = grp  # expose as checkbox_zstack for callers
+
+        layout = QFormLayout(grp)
+
+        self.entry_zmin = QDoubleSpinBox()
+        self.entry_zmin.setRange(-5000, 5000)
+        self.entry_zmin.setValue(-3.0)
+        self.entry_zmin.setSuffix(" μm")
+        self.entry_zmin.setDecimals(3)
+        self.entry_zmin.setSingleStep(0.5)
+        self.entry_zmin.setKeyboardTracking(False)
+        layout.addRow("Z-min:", self.entry_zmin)
+
+        self.entry_zmax = QDoubleSpinBox()
+        self.entry_zmax.setRange(-5000, 5000)
+        self.entry_zmax.setValue(3.0)
+        self.entry_zmax.setSuffix(" μm")
+        self.entry_zmax.setDecimals(3)
+        self.entry_zmax.setSingleStep(0.5)
+        self.entry_zmax.setKeyboardTracking(False)
+        layout.addRow("Z-max:", self.entry_zmax)
+
+        self.entry_step = QDoubleSpinBox()
+        self.entry_step.setRange(0.001, 1000)
+        self.entry_step.setValue(1.0)
+        self.entry_step.setSuffix(" μm")
+        self.entry_step.setDecimals(3)
+        self.entry_step.setSingleStep(0.1)
+        self.entry_step.setKeyboardTracking(False)
+        layout.addRow("Step:", self.entry_step)
+
+        self.label_zstack_planes = QLabel("-- planes")
+        layout.addRow("Computed:", self.label_zstack_planes)
+
+        # Z-stack channel table (rows added via _add_zstack_channel_row)
+        self.zstack_channel_table = QTableWidget(0, 1)
+        self.zstack_channel_table.setHorizontalHeaderLabels(["Channel"])
+        self.zstack_channel_table.horizontalHeader().setStretchLastSection(True)
+        self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.zstack_channel_table.setMaximumHeight(120)
+        layout.addRow("Channels:", self.zstack_channel_table)
+
+        # Wire up live plane count update
+        self.entry_zmin.valueChanged.connect(self._update_zstack_planes_label)
+        self.entry_zmax.valueChanged.connect(self._update_zstack_planes_label)
+        self.entry_step.valueChanged.connect(self._update_zstack_planes_label)
+        self._update_zstack_planes_label()
+
+        return grp
+
+    def _build_start_group(self) -> QGroupBox:
+        grp = QGroupBox()
+        layout = QVBoxLayout(grp)
+        self.btn_startAcquisition = QPushButton("Start Acquisition")
+        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        self.btn_startAcquisition.setCheckable(True)
+        self.btn_startAcquisition.setChecked(False)
+        layout.addWidget(self.btn_startAcquisition)
+        return grp
+
+    # ---------------------------------------------------------------------- helpers
+
+    def _populate_channel_combo(self, combo: QComboBox) -> None:
+        """Populate a channel QComboBox from liveController."""
+        combo.clear()
+        try:
+            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+            for ch in channels:
+                combo.addItem(ch.name)
+        except Exception as exc:
+            self._log.warning(f"Could not populate channel combo: {exc}")
+
+    def _browse_saving_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Saving Directory", self.lineEdit_savingDir.text())
+        if path:
+            self.lineEdit_savingDir.setText(path)
+
+    def _update_recording_frames_label(self) -> None:
+        from control.core.record_zstack_controller import frame_count
+
+        try:
+            n = frame_count(self.entry_fps.value(), self.entry_duration.value())
+            self.label_recording_frames.setText(f"{n} frames")
+        except Exception:
+            self.label_recording_frames.setText("-- frames")
+
+    def _update_zstack_planes_label(self) -> None:
+        from control.core.record_zstack_controller import zstack_plane_count
+
+        try:
+            n = zstack_plane_count(self.entry_zmin.value(), self.entry_zmax.value(), self.entry_step.value())
+            self.label_zstack_planes.setText(f"{n} planes")
+        except Exception:
+            self.label_zstack_planes.setText("-- planes")
+
+    def _add_zstack_channel_row(self, name: str) -> None:
+        """Add a channel row to the Z-Stack channel table (also updates internal list).
+
+        E2 will call this from the inline-editor wiring; tests may call it directly.
+        """
+        if name not in self._zstack_channel_names:
+            self._zstack_channel_names.append(name)
+        row = self.zstack_channel_table.rowCount()
+        self.zstack_channel_table.insertRow(row)
+        item = QTableWidgetItem(name)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self.zstack_channel_table.setItem(row, 0, item)
+
+    def _get_selected_well_count(self) -> int:
+        """Return the number of currently selected wells."""
+        if self.well_selection_widget is not None and hasattr(self.well_selection_widget, "get_selected_wells"):
+            return len(self.well_selection_widget.get_selected_wells())
+        if self.scanCoordinates is not None and hasattr(self.scanCoordinates, "get_selected_wells"):
+            return len(self.scanCoordinates.get_selected_wells())
+        # Fallback: treat as 1 well (current position) so the widget is usable
+        # without a well-selection panel attached.
+        return 1
+
+    def _laser_af_has_reference(self) -> bool:
+        """Return True if the laser autofocus controller has a captured reference."""
+        ctrl = self.laser_autofocus_controller
+        if ctrl is None:
+            return False
+        # LaserAutofocusController sets reference_object_distance_mm when captured.
+        return getattr(ctrl, "reference_object_distance_mm", None) is not None
+
+    # ---------------------------------------------------------------------- public API
+
+    def validate(self) -> Optional[str]:
+        """Return an error string if the current widget state is invalid, or None.
+
+        Delegates to the pure helper _validate_record_zstack_params so the
+        rules can be tested independently of Qt.
+        """
+        return _validate_record_zstack_params(
+            base_path=self.lineEdit_savingDir.text().strip(),
+            selected_well_count=self._get_selected_well_count(),
+            recording_enabled=self.checkbox_recording.isChecked(),
+            fps=self.entry_fps.value(),
+            duration_s=self.entry_duration.value(),
+            recording_channel_name=(
+                self.combobox_recording_channel.currentText() if self.combobox_recording_channel.count() > 0 else None
+            ),
+            zstack_enabled=self.checkbox_zstack.isChecked(),
+            z_min=self.entry_zmin.value(),
+            z_max=self.entry_zmax.value(),
+            step=self.entry_step.value(),
+            zstack_channel_names=list(self._zstack_channel_names),
+            use_laser_af=self.checkbox_laser_af.isChecked(),
+            laser_af_has_reference=self._laser_af_has_reference(),
+        )
+
+    def build_parameters(self):
+        """Read widget fields and return a RecordZStackAcquisitionParameters instance.
+
+        Transient AcquisitionChannel objects are constructed from the inline
+        channel selectors (full per-channel editor wiring is E2).
+        """
+        from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
+        from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
+
+        def _make_channel(name: str) -> AcquisitionChannel:
+            """Build a minimal transient AcquisitionChannel from the channel name."""
+            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+            for ch in channels:
+                if ch.name == name:
+                    return ch
+            # Fallback: construct a bare-bones channel (E2 will provide richer wiring)
+            return AcquisitionChannel(
+                name=name,
+                camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
+                illumination_settings=IlluminationSettings(intensity=50.0),
+            )
+
+        rec_channel_name = (
+            self.combobox_recording_channel.currentText()
+            if self.combobox_recording_channel.count() > 0 and self.checkbox_recording.isChecked()
+            else None
+        )
+        recording_channel = _make_channel(rec_channel_name) if rec_channel_name else None
+
+        zstack_channels = (
+            [_make_channel(name) for name in self._zstack_channel_names] if self.checkbox_zstack.isChecked() else []
+        )
+
+        return RecordZStackAcquisitionParameters(
+            base_path=self.lineEdit_savingDir.text().strip(),
+            experiment_id=self.lineEdit_experimentID.text().strip() or "record_zstack",
+            Nt=self.entry_Nt.value(),
+            dt_s=self.entry_dt.value(),
+            use_laser_af=self.checkbox_laser_af.isChecked(),
+            recording_enabled=self.checkbox_recording.isChecked(),
+            recording_channel=recording_channel,
+            fps=self.entry_fps.value(),
+            duration_s=self.entry_duration.value(),
+            recording_z_offset_um=self.entry_recording_z_offset.value(),
+            zstack_enabled=self.checkbox_zstack.isChecked(),
+            zstack_channels=zstack_channels,
+            z_min_um=self.entry_zmin.value(),
+            z_max_um=self.entry_zmax.value(),
+            z_step_um=self.entry_step.value(),
+        )
