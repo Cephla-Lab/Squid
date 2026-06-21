@@ -17270,6 +17270,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         layout.addWidget(self.btn_startAcquisition)
+        self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         return grp
 
     # ---------------------------------------------------------------------- helpers
@@ -17569,3 +17570,50 @@ class RecordZStackMultiPointWidget(QFrame):
             z_max_um=self.entry_zmax.value(),
             z_step_um=self.entry_step.value(),
         )
+
+    def toggle_acquisition(self, pressed: bool) -> None:
+        """Handle Start/Stop button press.
+
+        On start (pressed=True):
+          - validate(); show QMessageBox.warning and un-check button on failure.
+          - push all parameters to recordZStackController via its setters.
+          - call recordZStackController.run_acquisition().
+
+        On stop (pressed=False):
+          - call recordZStackController.request_abort().
+        """
+        self._log.debug(f"RecordZStackMultiPointWidget.toggle_acquisition, {pressed=}")
+        if pressed:
+            if self.recordZStackController.acquisition_in_progress():
+                self._log.warning("Acquisition already in progress, cannot start another.")
+                self.btn_startAcquisition.setChecked(False)
+                return
+
+            error = self.validate()
+            if error is not None:
+                self.btn_startAcquisition.setChecked(False)
+                QMessageBox.warning(self, "Invalid Parameters", error)
+                return
+
+            params = self.build_parameters()
+
+            # Push all parameters to the controller via its individual setters.
+            self.recordZStackController.set_base_path(params.base_path)
+            self.recordZStackController.set_experiment_id(params.experiment_id)
+            self.recordZStackController.set_Nt(params.Nt)
+            self.recordZStackController.set_dt_s(params.dt_s)
+            self.recordZStackController.set_use_laser_af(params.use_laser_af)
+            self.recordZStackController.set_recording_enabled(params.recording_enabled)
+            self.recordZStackController.set_recording_channel(params.recording_channel)
+            self.recordZStackController.set_fps(params.fps)
+            self.recordZStackController.set_duration_s(params.duration_s)
+            self.recordZStackController.set_recording_z_offset_um(params.recording_z_offset_um)
+            self.recordZStackController.set_zstack_enabled(params.zstack_enabled)
+            self.recordZStackController.set_zstack_channels(params.zstack_channels)
+            self.recordZStackController.set_z_min_um(params.z_min_um)
+            self.recordZStackController.set_z_max_um(params.z_max_um)
+            self.recordZStackController.set_z_step_um(params.z_step_um)
+
+            self.recordZStackController.run_acquisition()
+        else:
+            self.recordZStackController.request_abort()
