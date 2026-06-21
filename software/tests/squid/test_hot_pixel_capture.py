@@ -5,6 +5,7 @@ import squid.config
 from squid.abc import CameraAcquisitionMode
 from squid.config import CameraPixelFormat
 from squid.camera import hot_pixel_capture as cap
+from squid.camera import hot_pixels as hp
 
 
 def _sim_camera():
@@ -84,3 +85,64 @@ def test_settle_temperature_times_out():
     )
     assert settled is False
     assert last == 25.0
+
+
+def test_run_sweep_ambient_produces_one_result_per_exposure():
+    camera = _sim_camera()
+    try:
+        results = cap.run_sweep(
+            camera,
+            exposures_ms=[1.0, 2.0],
+            temperatures_c=None,
+            n_frames=3,
+            thresholds=hp.DefectThresholds(),
+            pixel_format=CameraPixelFormat.MONO12,
+        )
+    finally:
+        camera.stop_streaming()
+    assert len(results) == 2
+    assert [r.exposure_ms for r in results] == [1.0, 2.0]
+    assert all(r.temperature_c is None for r in results)
+
+
+def test_run_sweep_temperature_grid():
+    camera = _sim_camera()
+    progress = []
+    try:
+        results = cap.run_sweep(
+            camera,
+            exposures_ms=[1.0, 2.0],
+            temperatures_c=[-10.0, 0.0],
+            n_frames=2,
+            thresholds=hp.DefectThresholds(),
+            pixel_format=CameraPixelFormat.MONO12,
+            on_progress=lambda t, e: progress.append((t, e)),
+            settle_kwargs={"sleep_fn": lambda s: None, "stable_reads": 1},
+        )
+    finally:
+        camera.stop_streaming()
+    assert len(results) == 4  # 2 temps x 2 exposures
+    assert progress[0] == (-10.0, 1.0)
+
+
+def test_run_sweep_stops_midway():
+    camera = _sim_camera()
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1  # allow first condition, then stop
+
+    try:
+        results = cap.run_sweep(
+            camera,
+            exposures_ms=[1.0, 2.0, 3.0],
+            temperatures_c=None,
+            n_frames=2,
+            thresholds=hp.DefectThresholds(),
+            pixel_format=CameraPixelFormat.MONO12,
+            should_stop=should_stop,
+        )
+    finally:
+        camera.stop_streaming()
+    assert len(results) < 3

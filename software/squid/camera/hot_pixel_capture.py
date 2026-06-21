@@ -107,3 +107,54 @@ def settle_temperature(
             consecutive = 0
         sleep_fn(poll_interval_s)
     return False, last
+
+
+def run_sweep(
+    camera,
+    exposures_ms: List[float],
+    temperatures_c: Optional[List[float]],
+    n_frames: int,
+    thresholds: hot_pixels.DefectThresholds,
+    pixel_format: CameraPixelFormat,
+    black_level: float = 0.0,
+    should_stop: Optional[Callable[[], bool]] = None,
+    on_progress: Optional[Callable[[Optional[float], float], None]] = None,
+    settle_kwargs: Optional[dict] = None,
+) -> List[hot_pixels.ConditionResult]:
+    max_value = hot_pixels.max_value_for_pixel_format(pixel_format)
+    results: List[hot_pixels.ConditionResult] = []
+    temps: List[Optional[float]] = list(temperatures_c) if temperatures_c else [None]
+
+    for t in temps:
+        actual_t: Optional[float] = None
+        if t is not None:
+            _, actual_t = settle_temperature(camera, t, should_stop=should_stop, **(settle_kwargs or {}))
+            if should_stop and should_stop():
+                return results
+        else:
+            try:
+                actual_t = camera.get_temperature()
+            except Exception:
+                actual_t = None
+
+        for exposure_ms in exposures_ms:
+            if should_stop and should_stop():
+                return results
+            if on_progress:
+                on_progress(t, exposure_ms)
+            stack = capture_dark_stack(camera, exposure_ms, n_frames, should_stop=should_stop)
+            if stack is None:
+                return results
+            result = hot_pixels.detect_defects(
+                stack.mean, stack.min_proj, stack.max_proj, max_value, thresholds, black_level
+            )
+            results.append(
+                hot_pixels.ConditionResult(
+                    temperature_c=t,
+                    actual_temperature_c=actual_t,
+                    exposure_ms=exposure_ms,
+                    n_frames=stack.n_frames,
+                    result=result,
+                )
+            )
+    return results
