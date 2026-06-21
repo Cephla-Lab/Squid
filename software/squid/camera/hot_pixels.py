@@ -7,8 +7,8 @@ inside the render functions so this module imports cleanly in headless contexts.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -89,3 +89,75 @@ def darkness_check(
             "The sensor may not be in the dark — block all light before running a hot-pixel test."
         )
     return None
+
+
+@dataclass
+class DefectResult:
+    stats: FrameStats
+    thresholds: DefectThresholds
+    max_value: int
+    masks: Dict[DefectType, np.ndarray]
+    statistical_threshold_dn: float
+    flagged_values: Dict[Tuple[int, int], float] = field(default_factory=dict)
+
+    @property
+    def combined_mask(self) -> np.ndarray:
+        out = None
+        for m in self.masks.values():
+            out = m.copy() if out is None else (out | m)
+        return out
+
+    def coords(self, defect_type: DefectType) -> np.ndarray:
+        ys, xs = np.where(self.masks[defect_type])
+        return np.column_stack([xs, ys])  # (N, 2) as (x, y)
+
+    def count(self, defect_type: DefectType) -> int:
+        return int(self.masks[defect_type].sum())
+
+    def combined_count(self) -> int:
+        return int(self.combined_mask.sum())
+
+
+def detect_defects(
+    mean_frame: np.ndarray,
+    min_proj: np.ndarray,
+    max_proj: np.ndarray,
+    max_value: int,
+    thresholds: DefectThresholds,
+    black_level: float = 0.0,
+) -> DefectResult:
+    mean_frame = np.asarray(mean_frame, dtype=np.float64)
+    min_proj = np.asarray(min_proj)
+    max_proj = np.asarray(max_proj)
+
+    stats = compute_frame_stats(mean_frame)
+    stat_thresh = stats.median + thresholds.sigma_n * stats.sigma_robust
+
+    hot_statistical = mean_frame > stat_thresh
+    if thresholds.abs_threshold_dn is not None:
+        hot_absolute = mean_frame > thresholds.abs_threshold_dn
+    else:
+        hot_absolute = np.zeros(mean_frame.shape, dtype=bool)
+    stuck_high = min_proj >= thresholds.stuck_high_frac * max_value
+    # Only meaningful when there is a real dark floor above the dead threshold.
+    dead_low = (max_proj <= thresholds.dead_max_dn) & (stats.median > thresholds.dead_max_dn)
+
+    masks = {
+        DefectType.HOT_STATISTICAL: hot_statistical,
+        DefectType.HOT_ABSOLUTE: hot_absolute,
+        DefectType.STUCK_HIGH: stuck_high,
+        DefectType.DEAD_LOW: dead_low,
+    }
+
+    combined = hot_statistical | hot_absolute | stuck_high | dead_low
+    ys, xs = np.where(combined)
+    flagged_values = {(int(x), int(y)): float(mean_frame[y, x]) for x, y in zip(xs, ys)}
+
+    return DefectResult(
+        stats=stats,
+        thresholds=thresholds,
+        max_value=max_value,
+        masks=masks,
+        statistical_threshold_dn=stat_thresh,
+        flagged_values=flagged_values,
+    )

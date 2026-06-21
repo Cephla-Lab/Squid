@@ -60,3 +60,62 @@ def test_darkness_check_boundary_at_threshold():
     threshold = 2.0 + 0.25 * 4095  # 1025.75
     frame = np.full((20, 20), threshold)
     assert hp.darkness_check(frame, black_level=2.0, max_value=4095) is None
+
+
+def _dark_stack_with_defects():
+    """Build mean/min/max projections of a 64x64, 12-bit dark sensor with known defects."""
+    shape = (64, 64)
+    max_value = 4095
+    mean = np.full(shape, 100.0)  # uniform dark floor at 100 DN
+    min_proj = np.full(shape, 90, dtype=np.uint16)
+    max_proj = np.full(shape, 110, dtype=np.uint16)
+
+    # Hot (statistical + absolute): elevated mean, normal min/max-ish
+    mean[10, 20] = 1500.0
+    max_proj[10, 20] = 1500
+
+    # Stuck-high: always near max
+    min_proj[30, 40] = 4090
+    max_proj[30, 40] = 4095
+
+    # Dead/stuck-low: never rises above 0 while floor is 100
+    mean[50, 5] = 0.0
+    min_proj[50, 5] = 0
+    max_proj[50, 5] = 0
+    return mean, min_proj, max_proj, max_value
+
+
+def test_detect_defects_finds_each_type():
+    mean, min_proj, max_proj, max_value = _dark_stack_with_defects()
+    thresholds = hp.DefectThresholds(sigma_n=5.0, abs_threshold_dn=1000)
+    res = hp.detect_defects(mean, min_proj, max_proj, max_value, thresholds)
+
+    assert res.masks[hp.DefectType.HOT_STATISTICAL][10, 20]
+    assert res.masks[hp.DefectType.HOT_ABSOLUTE][10, 20]
+    assert res.masks[hp.DefectType.STUCK_HIGH][30, 40]
+    assert res.masks[hp.DefectType.DEAD_LOW][50, 5]
+    # exact counts: one pixel each
+    assert res.count(hp.DefectType.STUCK_HIGH) == 1
+    assert res.count(hp.DefectType.DEAD_LOW) == 1
+    assert res.combined_count() == 3  # stuck-high pixel is counted once in combined
+    # coords are (x, y)
+    xy = res.coords(hp.DefectType.HOT_STATISTICAL)
+    assert xy.tolist() == [[20, 10]]
+    # flagged value recorded
+    assert res.flagged_values[(20, 10)] == 1500.0
+
+
+def test_detect_defects_absolute_off_by_default():
+    mean, min_proj, max_proj, max_value = _dark_stack_with_defects()
+    res = hp.detect_defects(mean, min_proj, max_proj, max_value, hp.DefectThresholds())
+    assert res.count(hp.DefectType.HOT_ABSOLUTE) == 0
+
+
+def test_detect_defects_dead_requires_floor_above_threshold():
+    # If the whole frame is ~0 (no real dark floor), do not flag everything as dead.
+    shape = (16, 16)
+    mean = np.zeros(shape)
+    min_proj = np.zeros(shape, dtype=np.uint16)
+    max_proj = np.zeros(shape, dtype=np.uint16)
+    res = hp.detect_defects(mean, min_proj, max_proj, 4095, hp.DefectThresholds())
+    assert res.count(hp.DefectType.DEAD_LOW) == 0
