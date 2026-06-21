@@ -10,6 +10,8 @@ import enum
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
+
 from squid.config import CameraPixelFormat
 
 
@@ -45,3 +47,30 @@ def max_value_for_pixel_format(pixel_format: CameraPixelFormat) -> int:
             "Color/Bayer formats must be handled by the caller."
         )
     return (1 << _BIT_DEPTH_BY_FORMAT[pixel_format]) - 1
+
+
+@dataclass(frozen=True)
+class FrameStats:
+    mean: float
+    median: float
+    sigma_robust: float
+    min: float
+    max: float
+
+
+def compute_frame_stats(mean_frame: np.ndarray) -> FrameStats:
+    """Robust statistics of an averaged dark frame.
+
+    Uses median + 1.4826*MAD so a population of hot pixels cannot inflate the scale
+    and hide itself above a plain mean+std threshold.
+    """
+    flat = np.asarray(mean_frame, dtype=np.float64).ravel()
+    median = float(np.median(flat))
+    mad = float(np.median(np.abs(flat - median)))
+    return FrameStats(
+        mean=float(flat.mean()),
+        median=median,
+        sigma_robust=1.4826 * mad,
+        min=float(flat.min()),
+        max=float(flat.max()),
+    )
