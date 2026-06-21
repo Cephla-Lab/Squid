@@ -43,6 +43,12 @@ class RecordingWriter:
     calls `ZarrWriter.write_frame` which may block on I/O.  The queue is bounded so
     that a slow disk eventually provides backpressure: `enqueue` will block for up
     to 0.5 s before logging a drop and returning.
+
+    After `start()` the drain thread is the SOLE owner of the ZarrWriter: only it
+    calls `write_frame`, `finalize`, and `abort`.  The main thread only calls
+    `initialize()` (before the thread starts) and then enqueues items / signals stop.
+    This prevents the data race where `abort()` used to call `self._writer.abort()`
+    concurrently with the drain thread still inside `write_frame`.
     """
 
     def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 64):
@@ -50,6 +56,7 @@ class RecordingWriter:
         self._q: "queue.Queue" = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._dropped = 0
+        self._abort_requested = threading.Event()
 
     def start(self) -> None:
         """Initialize the underlying ZarrWriter and start the drain thread."""
@@ -65,28 +72,46 @@ class RecordingWriter:
             _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
 
     def _drain(self) -> None:
-        """Background thread: pulls items and writes them via ZarrWriter."""
-        while True:
-            item = self._q.get()
-            if item is _SENTINEL:
-                return
-            frame, t, c, z = item
-            try:
-                self._writer.write_frame(frame, t=t, c=c, z=z)
-            except Exception as e:
-                _log.error(f"recording write_frame failed t={t}: {e}")
+        """Background thread: sole owner of ZarrWriter after start().
+
+        Reads the queue with a short timeout so it can notice an abort between
+        frames.  On exit, calls writer.abort() or writer.finalize() as appropriate.
+        """
+        try:
+            while True:
+                if self._abort_requested.is_set():
+                    break
+                try:
+                    item = self._q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is _SENTINEL:
+                    break
+                frame, t, c, z = item
+                try:
+                    self._writer.write_frame(frame, t=t, c=c, z=z)
+                except Exception as e:
+                    _log.error(f"recording write_frame failed t={t}: {e}")
+        finally:
+            if self._abort_requested.is_set():
+                self._writer.abort()
+            else:
+                self._writer.finalize()
 
     def finalize(self) -> None:
-        """Flush the queue, join the drain thread, and finalize the ZarrWriter."""
+        """Flush the queue, join the drain thread (which finalizes the ZarrWriter)."""
         self._q.put(_SENTINEL)
-        self._thread.join()
-        self._writer.finalize()
+        self._thread.join(timeout=30.0)
+        if self._thread.is_alive():
+            _log.warning("drain thread still alive after finalize() join timeout")
 
     def abort(self) -> None:
-        """Signal the drain thread to stop, then abort the ZarrWriter."""
+        """Signal the drain thread to stop (which aborts the ZarrWriter)."""
+        self._abort_requested.set()
         try:
             self._q.put_nowait(_SENTINEL)
         except queue.Full:
             pass
-        self._thread.join(timeout=2.0)
-        self._writer.abort()
+        self._thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            _log.warning("drain thread still alive after abort() join timeout")
