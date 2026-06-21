@@ -1,3 +1,5 @@
+import time
+
 import squid.config
 import squid.camera.utils
 from squid.abc import CameraAcquisitionMode
@@ -15,3 +17,17 @@ def test_set_frame_rate_returns_achievable_and_is_clamped():
     achievable = cam.set_frame_rate(10_000.0)
     assert achievable <= 1000.0 / cam.get_total_frame_time() + 1e-6
     assert achievable > 0
+
+
+def test_simulated_camera_honors_frame_rate():
+    cam = _sim_camera()
+    cam.set_exposure_time(1)  # 1 ms exposure -> would free-run very fast
+    cam.set_frame_rate(20.0)  # but cap to 20 fps
+    cam.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+    received = []
+    cam.add_frame_callback(lambda f: received.append(f.timestamp))
+    cam.start_streaming()
+    time.sleep(1.0)
+    cam.stop_streaming()
+    # ~20 fps over ~1s -> well under 40, comfortably over 5 (loose bounds for CI).
+    assert 5 <= len(received) <= 40
