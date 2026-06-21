@@ -12,10 +12,10 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from typing import List, Optional
 
-import numpy as np
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt5.QtCore import QMetaObject, QObject, QThread, Qt, Q_ARG, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -150,6 +150,8 @@ class CaptureWorker(QObject):
             }
             hp.write_defect_csv(summary, os.path.join(output_dir, "defects.csv"))
             hp.write_summary_json(summary, metadata, os.path.join(output_dir, "summary.json"))
+            import matplotlib.pyplot as plt
+
             for c in results:
                 fig = hp.render_defect_map(
                     c.result,
@@ -162,7 +164,10 @@ class CaptureWorker(QObject):
                         f"map_{hp.condition_label(c.temperature_c, c.exposure_ms).replace(',', '_')}.png",
                     )
                 )
-            hp.render_count_vs_exposure(summary).savefig(os.path.join(output_dir, "count_vs_exposure.png"))
+                plt.close(fig)
+            curve = hp.render_count_vs_exposure(summary)
+            curve.savefig(os.path.join(output_dir, "count_vs_exposure.png"))
+            plt.close(curve)
             self.log.emit(f"Sweep complete. Artifacts written to {output_dir}")
             self.sweep_finished.emit(summary)
         except Exception as e:
@@ -266,8 +271,6 @@ class HotPixelWindow(QMainWindow):
         self._set_running(True)
         thresholds = self._thresholds_from(self._snap_sigma, self._snap_abs_check, self._snap_abs)
         # Invoke the worker slot on its own thread via a queued call.
-        from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
-
         QMetaObject.invokeMethod(
             self._worker,
             "run_snap",
@@ -341,9 +344,6 @@ class HotPixelWindow(QMainWindow):
             self._output_dir.setText(d)
 
     def _do_sweep(self):
-        from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
-        from datetime import datetime
-
         try:
             exposures = _parse_float_list(self._sweep_exposures.text())
             temps = _parse_float_list(self._sweep_temps.text())
@@ -371,10 +371,13 @@ class HotPixelWindow(QMainWindow):
         )
 
     def _replace_canvas(self, attr: str, fig):
+        import matplotlib.pyplot as plt
+
         old = getattr(self, attr)
         new = FigureCanvasQTAgg(fig)
         parent_layout = old.parent().layout()
         parent_layout.replaceWidget(old, new)
+        plt.close(old.figure)
         old.deleteLater()
         setattr(self, attr, new)
 
@@ -383,7 +386,11 @@ class HotPixelWindow(QMainWindow):
         try:
             self._worker.request_stop()
             self._thread.quit()
-            self._thread.wait(10000)
+            if not self._thread.wait(10000):
+                log.warning("Capture worker did not stop within 10s; terminating thread")
+                self._thread.terminate()
+                self._thread.wait()
+            # worker is now guaranteed stopped — safe to touch the camera on this thread
             if self._original_temperature is not None:
                 try:
                     self._camera.set_temperature(self._original_temperature)
@@ -399,9 +406,6 @@ class HotPixelWindow(QMainWindow):
 
 
 def _empty_figure():
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
     from matplotlib.figure import Figure
 
     fig = Figure(figsize=(6, 6))
