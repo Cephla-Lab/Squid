@@ -17598,11 +17598,19 @@ class RecordZStackMultiPointWidget(QFrame):
 
         On start (pressed=True):
           - validate(); show QMessageBox.warning and un-check button on failure.
-          - call recordZStackController.run_acquisition(self.build_parameters()).
           - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
+          - call recordZStackController.run_acquisition(self.build_parameters()).
 
         On stop (pressed=False):
           - call recordZStackController.request_abort().
+
+        Ordering note: signal_acquisition_started(True) is emitted BEFORE
+        run_acquisition() spawns the worker thread.  Otherwise a fast/one-frame
+        acquisition could finish (firing acquisition_is_finished -> emit(False))
+        before this method reaches the emit(True) line, leaving the GUI to process
+        False then True and permanently locking all tabs.  This mirrors
+        WellplateMultiPointWidget, which emits True (via _set_ui_acquisition_running)
+        before calling run_acquisition().
         """
         self._log.debug(f"RecordZStackMultiPointWidget.toggle_acquisition, {pressed=}")
         if pressed:
@@ -17618,13 +17626,29 @@ class RecordZStackMultiPointWidget(QFrame):
                 return
 
             params = self.build_parameters()
-            self.recordZStackController.run_acquisition(params)
+            # Lock the UI before the worker thread can possibly finish (see docstring).
             self.signal_acquisition_started.emit(True)
+            try:
+                self.recordZStackController.run_acquisition(params)
+            except Exception as e:
+                self._log.error(f"Failed to start acquisition: {e}", exc_info=True)
+                self.btn_startAcquisition.setChecked(False)
+                # Unlock the UI: the worker never started, so acquisition_is_finished
+                # will not fire to emit(False) for us.
+                self.signal_acquisition_started.emit(False)
         else:
             self.recordZStackController.request_abort()
 
     def acquisition_is_finished(self):
-        """Called (thread-safe via Qt signal) when the acquisition worker finishes."""
+        """Called (thread-safe via Qt signal) when the acquisition worker finishes.
+
+        Connected in gui_hcs to recordZStackController.acquisition_finished, so this
+        is the single place that emits signal_acquisition_started(False) on normal
+        completion AND on the stop-button/abort path (request_abort eventually drives
+        the worker to completion, which fires acquisition_finished -> here).  The only
+        other emit(False) is the failure-to-start path in toggle_acquisition, where the
+        worker thread never launched so acquisition_finished will not fire.
+        """
         self.btn_startAcquisition.setChecked(False)
         self.signal_acquisition_started.emit(False)
 
