@@ -146,3 +146,16 @@ def test_run_sweep_stops_midway():
     finally:
         camera.stop_streaming()
     assert len(results) < 3
+
+
+def test_gui_module_imports_without_qapplication():
+    # Importing the GUI module must not construct a QApplication or open a window.
+    import importlib
+
+    from PyQt5.QtWidgets import QApplication
+
+    mod = importlib.import_module("tools.hot_pixel_test_gui")
+    assert QApplication.instance() is None
+    args = mod.parse_args(["--camera", "toupcam", "--simulated"])
+    assert args.camera == "toupcam"
+    assert args.simulated is True
