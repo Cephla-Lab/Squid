@@ -40,3 +40,47 @@ def test_capture_dark_stack_stops_when_requested():
     finally:
         camera.stop_streaming()
     assert stack is None
+
+
+def test_settle_temperature_converges_on_simulated_camera():
+    camera = _sim_camera()
+    # Simulated get_temperature returns the setpoint immediately -> settles in stable_reads polls.
+    settled, last = cap.settle_temperature(
+        camera, target_c=-10.0, tolerance_c=1.0, stable_reads=3, sleep_fn=lambda s: None
+    )
+    camera.stop_streaming()
+    assert settled is True
+    assert last == -10.0
+
+
+def test_settle_temperature_no_tec_returns_false():
+    class NoTecCamera:
+        def set_temperature(self, t):
+            raise NotImplementedError("no TEC")
+
+    settled, last = cap.settle_temperature(NoTecCamera(), target_c=-10.0, sleep_fn=lambda s: None)
+    assert settled is False
+    assert last is None
+
+
+def test_settle_temperature_times_out():
+    class StuckCamera:
+        def set_temperature(self, t):
+            pass
+
+        def get_temperature(self):
+            return 25.0  # never reaches target
+
+    fake_time = {"t": 0.0}
+
+    def now():
+        return fake_time["t"]
+
+    def sleep(s):
+        fake_time["t"] += s
+
+    settled, last = cap.settle_temperature(
+        StuckCamera(), target_c=-10.0, timeout_s=10.0, poll_interval_s=2.0, sleep_fn=sleep, now_fn=now
+    )
+    assert settled is False
+    assert last == 25.0

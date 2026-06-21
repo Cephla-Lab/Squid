@@ -71,3 +71,39 @@ def capture_dark_stack(
             on_frame(captured)
 
     return DarkStack(mean=acc / captured, min_proj=min_proj, max_proj=max_proj, n_frames=captured)
+
+
+def settle_temperature(
+    camera,
+    target_c: float,
+    tolerance_c: float = 1.0,
+    timeout_s: float = 300.0,
+    stable_reads: int = 3,
+    poll_interval_s: float = 2.0,
+    should_stop: Optional[Callable[[], bool]] = None,
+    on_poll: Optional[Callable[[Optional[float]], None]] = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    now_fn: Callable[[], float] = time.time,
+) -> Tuple[bool, Optional[float]]:
+    try:
+        camera.set_temperature(target_c)
+    except Exception:
+        return False, None
+
+    start = now_fn()
+    consecutive = 0
+    last: Optional[float] = None
+    while now_fn() - start < timeout_s:
+        if should_stop and should_stop():
+            return False, last
+        last = camera.get_temperature()
+        if on_poll:
+            on_poll(last)
+        if last is not None and abs(last - target_c) <= tolerance_c:
+            consecutive += 1
+            if consecutive >= stable_reads:
+                return True, last
+        else:
+            consecutive = 0
+        sleep_fn(poll_interval_s)
+    return False, last
