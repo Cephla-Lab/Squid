@@ -17617,3 +17617,14 @@ class RecordZStackMultiPointWidget(QFrame):
             self.recordZStackController.run_acquisition()
         else:
             self.recordZStackController.request_abort()
+
+    def acquisition_is_finished(self):
+        """Called (thread-safe via Qt signal) when the acquisition worker finishes."""
+        self.btn_startAcquisition.setChecked(False)
+
+    def display_progress_bar(self, show: bool) -> None:
+        """No-op stub: RecordZStackMultiPointWidget has no progress bar.
+
+        Required so ``toggleAcquisitionStart`` in gui_hcs can call this on
+        whatever widget is the current record tab without checking the type.
+        """
