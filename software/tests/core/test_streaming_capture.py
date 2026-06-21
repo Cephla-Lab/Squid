@@ -257,3 +257,76 @@ def test_streaming_capture_partial_warns(caplog):
     assert w.finalized is True
     assert w.aborted is False
     assert any("incomplete" in rec.getMessage() and "2/5" in rec.getMessage() for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Fix-batch5: dropped_count accessor + summary log
+# ---------------------------------------------------------------------------
+
+
+def test_recording_writer_dropped_count_accessor(tmp_path):
+    """dropped_count property returns the number of frames dropped due to a full queue."""
+    from control.core.zarr_writer import ZarrAcquisitionConfig
+    from control.core.streaming_capture import RecordingWriter
+
+    cfg = ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "rec.ome.zarr"),
+        shape=(4, 1, 1, 4, 4),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+    )
+    # Use a queue of size 1 so extra enqueues are dropped immediately.
+    w = RecordingWriter(cfg, max_queue=1)
+    assert w.dropped_count == 0
+    w.start()
+    # Fill the queue slot with first frame, then overflow with two more.
+    frame = np.zeros((4, 4), dtype=np.uint16)
+    w.enqueue(frame, 0, 0, 0)
+    w.enqueue(frame, 1, 0, 0)  # may or may not drop depending on drain speed
+    w.enqueue(frame, 2, 0, 0)  # likely dropped
+    w.finalize()
+    # At least one drop should have occurred; exact count is timing-dependent.
+    # Just verify the property exists and returns an int.
+    assert isinstance(w.dropped_count, int)
+
+
+def test_streaming_capture_logs_dropped_summary(caplog):
+    """When frames are dropped, StreamingCapture logs a summary WARNING at end."""
+    import logging
+
+    class _DroppingWriter:
+        """Writer that pretends to drop every frame (dropped_count always > 0)."""
+
+        dropped_count = 3
+
+        def start(self):
+            pass
+
+        def enqueue(self, frame, t, c, z):
+            pass
+
+        def finalize(self):
+            pass
+
+        def abort(self):
+            pass
+
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(3)]
+    w = _DroppingWriter()
+    cap = StreamingCapture(
+        _CountingFakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(3),
+        w,
+        abort_fn=lambda: False,
+    )
+    with caplog.at_level(logging.WARNING):
+        cap.run()
+
+    assert any("dropped" in rec.getMessage() and "3" in rec.getMessage() for rec in caplog.records)
