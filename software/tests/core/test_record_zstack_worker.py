@@ -157,3 +157,121 @@ def test_record_zstack_worker_smoke(tmp_path):
     for path in zstack_zarrs:
         ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path / "0")}}).result()
         assert tuple(ds.shape) == (Nt, len(zstack_channels), n_z, crop_h, crop_w), f"bad z-stack shape {ds.shape}"
+
+
+# ---------------------------------------------------------------------------
+# Task D3: RecordZStackController smoke test
+#
+# Same 2-well x 2-FOV geometry as the D2 test but driven through
+# RecordZStackController.run_acquisition() + join().
+# Also exercises Nt=2 with a short dt_s=0.1 (two time-points).
+# ---------------------------------------------------------------------------
+
+
+def test_record_zstack_controller_smoke(tmp_path):
+    import control._def
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import RecordZStackController, frame_count
+    from control.core.scan_coordinates import ScanCoordinates
+
+    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+
+    crop_w, crop_h = 64, 48
+    scope = _build_simulated_microscope(crop_w, crop_h)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
+    laser_af = ts.get_test_laser_autofocus_controller(scope)
+
+    channels = live_controller.get_channels(scope.objective_store.default_objective)
+    assert len(channels) >= 2
+    recording_channel = channels[0]
+    zstack_channels = channels[:2]
+
+    scope.camera.set_exposure_time(1)
+
+    z_cfg = scope.stage.get_config().Z_AXIS
+    z_mid = (z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0
+    scope.stage.move_z_to(z_mid)
+    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+
+    x_cfg = scope.stage.get_config().X_AXIS
+    y_cfg = scope.stage.get_config().Y_AXIS
+    x0 = x_cfg.MIN_POSITION + 1.0
+    y0 = y_cfg.MIN_POSITION + 1.0
+
+    # Build a minimal ScanCoordinates with two regions, two FOVs each.
+    scan_coords = ScanCoordinates(
+        objectiveStore=scope.objective_store,
+        stage=scope.stage,
+        camera=scope.camera,
+    )
+    scan_coords.region_fov_coordinates = {
+        "A1": [(x0, y0), (x0 + 0.5, y0)],
+        "A2": [(x0 + 1.0, y0), (x0 + 1.5, y0)],
+    }
+    n_wells = 2
+    n_fov = 2
+    Nt = 2
+
+    fps = 10.0
+    duration_s = 0.3
+    T = frame_count(fps, duration_s)
+    assert T >= 1
+
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=scan_coords,
+        callbacks=NoOpCallbacks,
+    )
+
+    # Push params via setters (as a widget would).
+    controller.set_base_path(str(tmp_path))
+    controller.set_experiment_id("ctrl_smoke")
+    controller.set_Nt(Nt)
+    controller.set_dt_s(0.1)  # short inter-timepoint delay
+    controller.set_use_laser_af(False)
+    controller.set_recording_enabled(True)
+    controller.set_recording_channel(recording_channel)
+    controller.set_fps(fps)
+    controller.set_duration_s(duration_s)
+    controller.set_recording_z_offset_um(0.0)
+    controller.set_zstack_enabled(True)
+    controller.set_zstack_channels(zstack_channels)
+    controller.set_z_min_um(-1.0)
+    controller.set_z_max_um(1.0)
+    controller.set_z_step_um(1.0)  # 3 planes
+
+    controller.run_acquisition()
+    # Wait up to 120 s for the worker thread to finish.
+    controller.join(timeout=120)
+    assert not controller.acquisition_in_progress(), "worker thread did not finish in time"
+
+    # Determine the resolved experiment_id (has a timestamp appended).
+    subdirs = [d for d in Path(tmp_path).iterdir() if d.is_dir()]
+    assert len(subdirs) == 1, f"expected exactly one experiment dir, got {subdirs}"
+    base = subdirs[0]
+
+    # Recording: one dataset per (t, well, fov).
+    rec = sorted((base / "recording").rglob("*.ome.zarr"))
+    assert len(rec) == Nt * n_wells * n_fov, f"expected {Nt * n_wells * n_fov} recordings, got {len(rec)}: {rec}"
+
+    import tensorstore as tstore
+
+    for path in rec:
+        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path)}}).result()
+        assert tuple(ds.shape) == (T, 1, 1, crop_h, crop_w), f"bad recording shape {ds.shape} for {path}"
+
+    # Z-stack: per-FOV zarr datasets exist.
+    zstack_zarrs = list((base / "zarr").rglob("fov_*.ome.zarr"))
+    assert zstack_zarrs, f"no z-stack zarr datasets found under {base / 'zarr'}"
+    assert len(zstack_zarrs) == n_wells * n_fov, f"expected {n_wells * n_fov} z-stack fovs, got {len(zstack_zarrs)}"
+
+    n_z = len(zstack_offsets_um(-1.0, 1.0, 1.0))
+    for path in zstack_zarrs:
+        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path / "0")}}).result()
+        assert tuple(ds.shape) == (Nt, len(zstack_channels), n_z, crop_h, crop_w), f"bad z-stack shape {ds.shape}"
+
+    controller.close()
