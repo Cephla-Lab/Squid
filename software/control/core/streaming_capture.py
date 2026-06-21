@@ -6,6 +6,7 @@ import numpy as np
 
 import squid.logging
 from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+from squid.abc import CameraAcquisitionMode
 
 _log = squid.logging.get_logger("RecordingWriter")
 _SENTINEL = object()
@@ -121,8 +122,6 @@ class RecordingWriter:
 # Task C3: ContinuousFrameSource + StreamingCapture
 # ---------------------------------------------------------------------------
 
-from squid.abc import CameraAcquisitionMode  # noqa: E402 — kept at bottom to avoid circular import
-
 
 class ContinuousFrameSource:
     """Wraps a camera and delivers frames via callback.
@@ -200,6 +199,11 @@ class StreamingCapture:
             self._source.start(self._on_frame)
             self._done.wait(timeout)  # FakeSource sets _done synchronously; real camera via callback
         finally:
+            # Assumes source.stop() quiesces the camera delivery thread. With cameras
+            # that don't join their callback thread on stop, a final in-flight frame may
+            # reach writer.enqueue after finalize — harmless with RecordingWriter (the
+            # drain thread has exited, so the put times out and the frame is logged as
+            # dropped, not corrupted).
             self._source.stop()
             self._writer.finalize()
         return self._emitted
