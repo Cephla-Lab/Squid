@@ -760,3 +760,42 @@ def test_signal_acquisition_started_emits_false_on_finish(qtbot, simulated_widge
     w.acquisition_is_finished()
 
     assert emitted == [False]
+
+
+def test_signal_acquisition_started_emitted_before_run_acquisition(qtbot, simulated_widget_deps):
+    """emit(True) must happen BEFORE run_acquisition() spawns the worker thread.
+
+    Otherwise a fast/one-frame acquisition could finish (emit False) before this
+    widget reaches the emit(True) line, leaving the UI permanently locked.
+    """
+    events = []
+
+    ctrl = _make_stub_controller()
+    ctrl.run_acquisition.side_effect = lambda *a, **k: events.append("run")
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.signal_acquisition_started.connect(lambda started: events.append(f"emit({started})"))
+
+    w.toggle_acquisition(True)
+
+    # The True emit must come first, then run_acquisition.
+    assert events == ["emit(True)", "run"]
+
+
+def test_signal_acquisition_started_emits_false_when_run_raises(qtbot, simulated_widget_deps):
+    """If run_acquisition() raises, the UI is unlocked: emit(True) then emit(False)."""
+    ctrl = _make_stub_controller()
+    ctrl.run_acquisition.side_effect = RuntimeError("boom starting worker")
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    emitted = []
+    w.signal_acquisition_started.connect(emitted.append)
+
+    w.toggle_acquisition(True)
+
+    assert emitted == [True, False]
+    # Button must be un-checked after a failed start.
+    assert not w.btn_startAcquisition.isChecked()
