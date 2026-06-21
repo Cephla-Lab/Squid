@@ -276,5 +276,11 @@ def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
     qtbot.addWidget(w)
     w._add_zstack_channel_row("BF LED matrix full")
     w._add_zstack_channel_row("BF LED matrix full")  # duplicate
-    # Internal list should deduplicate; table may have 2 rows (visual only)
+    # Both the internal list AND the table must stay at 1 entry after dedup.
     assert w._zstack_channel_names.count("BF LED matrix full") == 1
+    assert w.zstack_channel_table.rowCount() == 1
+
+
+def test_validate_helper_recording_bad_duration():
+    params = _base_params(recording_enabled=True, duration_s=0.0, zstack_enabled=False)
+    assert _validate_record_zstack_params(**params) is not None
