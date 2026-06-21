@@ -119,6 +119,11 @@ class RecordingWriter:
             else:
                 self._writer.finalize()
 
+    @property
+    def dropped_count(self) -> int:
+        """Total frames dropped due to a full queue (diagnosable in slow-disk runs)."""
+        return self._dropped
+
     def finalize(self) -> None:
         """Flush the queue, join the drain thread (which finalizes the ZarrWriter)."""
         if not self._started:
@@ -262,4 +267,11 @@ class StreamingCapture:
                         f"streaming capture incomplete: captured {self._emitted}/{expected} "
                         f"frames; trailing planes are blank fill"
                     )
+            # Surface total dropped frames so slow-disk runs are diagnosable without
+            # grepping individual per-frame warnings.
+            dropped = self._writer.dropped_count if hasattr(self._writer, "dropped_count") else 0
+            if dropped > 0:
+                _log.warning(
+                    f"streaming capture finished: {dropped} frame(s) dropped total " f"(queue full / slow disk)"
+                )
         return self._emitted
