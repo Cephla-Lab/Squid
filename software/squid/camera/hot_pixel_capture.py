@@ -129,8 +129,6 @@ def run_sweep(
         actual_t: Optional[float] = None
         if t is not None:
             _, actual_t = settle_temperature(camera, t, should_stop=should_stop, **(settle_kwargs or {}))
-            if should_stop and should_stop():
-                return results
         else:
             try:
                 actual_t = camera.get_temperature()
