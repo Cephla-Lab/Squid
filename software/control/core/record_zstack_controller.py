@@ -1,8 +1,13 @@
 import math
 from dataclasses import dataclass, field
+from threading import Thread
 from typing import List, Optional
 
+import squid.logging
+import control._def
 from control.models.acquisition_config import AcquisitionChannel
+
+log = squid.logging.get_logger("RecordZStackController")
 
 
 def frame_count(fps: float, duration_s: float) -> int:
@@ -39,3 +44,238 @@ class RecordZStackAcquisitionParameters:
     z_min_um: float = -3.0
     z_max_um: float = 3.0
     z_step_um: float = 1.0
+
+
+class RecordZStackController:
+    """Controller that builds params, sets up the pre-warmed JobRunner, and spawns
+    RecordZStackWorker on a daemon thread.
+
+    Constructor arguments mirror MultiPointController's signature where the concept
+    overlaps; widget setters are provided for every RecordZStackAcquisitionParameters
+    field so the GUI (or tests) can push values in before calling run_acquisition().
+    """
+
+    def __init__(
+        self,
+        microscope,
+        live_controller,
+        laser_autofocus_controller,
+        objective_store,
+        scan_coordinates,
+        callbacks,
+    ):
+        self._microscope = microscope
+        self._live_controller = live_controller
+        self._laser_af = laser_autofocus_controller
+        self._objective_store = objective_store
+        self._scan_coordinates = scan_coordinates
+        self._callbacks = callbacks
+
+        # Mutable params pushed by the widget before run_acquisition().
+        self.base_path: Optional[str] = None
+        self.experiment_id: str = "record_zstack"
+        self.Nt: int = 1
+        self.dt_s: float = 0.0
+        self.use_laser_af: bool = False
+        self.recording_enabled: bool = False
+        self.recording_channel: Optional[AcquisitionChannel] = None
+        self.fps: float = 10.0
+        self.duration_s: float = 1.0
+        self.recording_z_offset_um: float = 0.0
+        self.zstack_enabled: bool = False
+        self.zstack_channels: List[AcquisitionChannel] = []
+        self.z_min_um: float = -3.0
+        self.z_max_um: float = 3.0
+        self.z_step_um: float = 1.0
+
+        self._abort_requested: bool = False
+        self._worker = None
+        self._thread: Optional[Thread] = None
+
+        # Pre-warm a job runner subprocess at init so it is ready when the user
+        # clicks "Start Acquisition" (mirrors MultiPointController.__init__).
+        self._prewarmed_job_runner = None
+        self._prewarmed_bp_values = None
+        if control._def.Acquisition.USE_MULTIPROCESSING:
+            self._start_prewarmed_job_runner()
+
+    # ---------------------------------------------------------------------- pre-warm
+
+    def _start_prewarmed_job_runner(self) -> None:
+        from control.core.job_processing import JobRunner
+        from control.core.backpressure import create_backpressure_values
+
+        log.info("Pre-warming job runner subprocess for RecordZStack...")
+        self._prewarmed_bp_values = create_backpressure_values()
+        self._prewarmed_job_runner = JobRunner(
+            bp_pending_jobs=self._prewarmed_bp_values[0],
+            bp_pending_bytes=self._prewarmed_bp_values[1],
+            bp_capacity_event=self._prewarmed_bp_values[2],
+        )
+        self._prewarmed_job_runner.start()
+
+    def _get_prewarmed_job_runner(self):
+        """Consume the pre-warmed runner (start a fresh one for next time).
+
+        Returns (runner, bp_values) or (None, None) when multiprocessing is off.
+        """
+        runner = self._prewarmed_job_runner
+        bp_values = self._prewarmed_bp_values
+        self._prewarmed_job_runner = None
+        self._prewarmed_bp_values = None
+        if control._def.Acquisition.USE_MULTIPROCESSING:
+            self._start_prewarmed_job_runner()
+        return runner, bp_values
+
+    def _cleanup_prewarmed_runner(self, runner, timeout_s: float = 1.0, context: str = "") -> None:
+        if runner is not None:
+            try:
+                runner.shutdown(timeout_s=timeout_s)
+            except Exception as e:
+                log.error(f"Error shutting down pre-warmed runner {context}: {e}")
+
+    # ---------------------------------------------------------------------- widget setters
+
+    def set_base_path(self, path: str) -> None:
+        self.base_path = path
+
+    def set_experiment_id(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+
+    def set_Nt(self, Nt: int) -> None:
+        self.Nt = Nt
+
+    def set_dt_s(self, dt_s: float) -> None:
+        self.dt_s = dt_s
+
+    def set_use_laser_af(self, flag: bool) -> None:
+        self.use_laser_af = flag
+
+    def set_recording_enabled(self, flag: bool) -> None:
+        self.recording_enabled = flag
+
+    def set_recording_channel(self, channel: Optional[AcquisitionChannel]) -> None:
+        self.recording_channel = channel
+
+    def set_fps(self, fps: float) -> None:
+        self.fps = fps
+
+    def set_duration_s(self, duration_s: float) -> None:
+        self.duration_s = duration_s
+
+    def set_recording_z_offset_um(self, offset_um: float) -> None:
+        self.recording_z_offset_um = offset_um
+
+    def set_zstack_enabled(self, flag: bool) -> None:
+        self.zstack_enabled = flag
+
+    def set_zstack_channels(self, channels: List[AcquisitionChannel]) -> None:
+        self.zstack_channels = list(channels)
+
+    def set_z_min_um(self, z_min_um: float) -> None:
+        self.z_min_um = z_min_um
+
+    def set_z_max_um(self, z_max_um: float) -> None:
+        self.z_max_um = z_max_um
+
+    def set_z_step_um(self, z_step_um: float) -> None:
+        self.z_step_um = z_step_um
+
+    # ---------------------------------------------------------------------- acquisition
+
+    def acquisition_in_progress(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def request_abort(self) -> None:
+        """Signal the running worker to stop after the current FOV."""
+        self._abort_requested = True
+
+    def run_acquisition(self) -> None:
+        """Build params, set up the pre-warmed JobRunner, and spawn the worker thread."""
+        from control.core.acquisition_setup import create_experiment_dir
+        from control.core.record_zstack_worker import RecordZStackWorker
+
+        # Resolve and create a timestamped unique output directory.
+        resolved_id, _dir = create_experiment_dir(self.base_path, self.experiment_id)
+
+        params = RecordZStackAcquisitionParameters(
+            base_path=self.base_path,
+            experiment_id=resolved_id,
+            Nt=self.Nt,
+            dt_s=self.dt_s,
+            use_laser_af=self.use_laser_af,
+            recording_enabled=self.recording_enabled,
+            recording_channel=self.recording_channel,
+            fps=self.fps,
+            duration_s=self.duration_s,
+            recording_z_offset_um=self.recording_z_offset_um,
+            zstack_enabled=self.zstack_enabled,
+            zstack_channels=list(self.zstack_channels),
+            z_min_um=self.z_min_um,
+            z_max_um=self.z_max_um,
+            z_step_um=self.z_step_um,
+        )
+
+        # Collect scan coordinates: {region_id: [(x_mm, y_mm[, z_mm]), ...]}
+        scan_region_fov_coords = {}
+        if self._scan_coordinates is not None and hasattr(self._scan_coordinates, "region_fov_coordinates"):
+            scan_region_fov_coords = dict(self._scan_coordinates.region_fov_coordinates)
+
+        # Reset abort flag for this run.
+        self._abort_requested = False
+
+        # Consume the pre-warmed runner; only pass it to the worker when
+        # USE_MULTIPROCESSING is True (otherwise it's None and passing it would
+        # create a resource leak if the worker ignores non-multiprocessing paths).
+        prewarmed_runner, prewarmed_bp_values = self._get_prewarmed_job_runner()
+
+        try:
+            self._worker = RecordZStackWorker(
+                scope=self._microscope,
+                live_controller=self._live_controller,
+                laser_auto_focus_controller=self._laser_af,
+                objective_store=self._objective_store,
+                params=params,
+                callbacks=self._callbacks,
+                abort_requested_fn=lambda: self._abort_requested,
+                request_abort_fn=self.request_abort,
+                scan_region_fov_coords=scan_region_fov_coords,
+                prewarmed_job_runner=prewarmed_runner if control._def.Acquisition.USE_MULTIPROCESSING else None,
+                prewarmed_bp_values=prewarmed_bp_values if control._def.Acquisition.USE_MULTIPROCESSING else None,
+            )
+        except Exception:
+            # Clean up the pre-warmed runner if worker construction failed.
+            self._cleanup_prewarmed_runner(prewarmed_runner, context="after worker creation failure")
+            raise
+
+        self._thread = Thread(target=self._worker.run, name="RecordZStack-acquisition", daemon=True)
+        self._thread.start()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        """Wait for the acquisition thread to finish (useful in tests and scripts)."""
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    # ---------------------------------------------------------------------- cleanup
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        """Abort any running acquisition and shut down the pre-warmed job runner."""
+        if self._prewarmed_job_runner is not None:
+            log.info("Shutting down pre-warmed job runner for RecordZStackController...")
+        self._cleanup_prewarmed_runner(
+            self._prewarmed_job_runner,
+            timeout_s=1.0,
+            context="during close",
+        )
+        self._prewarmed_job_runner = None
+        self._prewarmed_bp_values = None
+
+        if self.acquisition_in_progress():
+            self.request_abort()
+            if self._thread is not None:
+                self._thread.join(timeout=timeout_s)
+                if self._thread.is_alive():
+                    log.warning(f"RecordZStack acquisition thread did not stop within {timeout_s}s")
+
+        self._worker = None
+        self._thread = None

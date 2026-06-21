@@ -363,7 +363,11 @@ class ZarrWriter:
         """Get or create the event loop (only used for init/finalize)."""
         if self._loop is None or self._loop.is_closed():
             try:
-                self._loop = asyncio.get_event_loop()
+                candidate = asyncio.get_event_loop()
+                if candidate.is_closed():
+                    # The thread's current loop is closed; create a fresh one.
+                    raise RuntimeError("current event loop is closed")
+                self._loop = candidate
                 self._owns_loop = False  # Using existing loop
             except RuntimeError:
                 self._loop = asyncio.new_event_loop()
