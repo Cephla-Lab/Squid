@@ -48,6 +48,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import parse_well_id
+from control.core.record_zstack_controller import RecordZStackController
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
@@ -598,6 +599,52 @@ class QtMultiPointController(MultiPointController, QObject):
         return len(scan_info.scan_region_names) > 0
 
 
+class QtRecordZStackController(RecordZStackController, QObject):
+    """Qt-aware wrapper for RecordZStackController.
+
+    Emits ``acquisition_finished`` as a thread-safe Qt signal so the widget
+    can reset its Start button via a queued connection, regardless of which
+    thread the worker runs on.
+    """
+
+    acquisition_finished = Signal()
+
+    def __init__(
+        self,
+        microscope,
+        live_controller,
+        laser_autofocus_controller,
+        objective_store,
+        scan_coordinates,
+    ):
+        # Build a MultiPointControllerFunctions callbacks object whose
+        # signal_acquisition_finished emits our Qt signal.  All other
+        # callbacks are no-ops because RecordZStackWorker only ever calls
+        # signal_acquisition_finished.
+        callbacks = MultiPointControllerFunctions(
+            signal_acquisition_start=lambda *a, **kw: None,
+            signal_acquisition_finished=self._on_acquisition_finished,
+            signal_new_image=lambda *a, **kw: None,
+            signal_current_configuration=lambda *a, **kw: None,
+            signal_current_fov=lambda *a, **kw: None,
+            signal_overall_progress=lambda *a, **kw: None,
+            signal_region_progress=lambda *a, **kw: None,
+        )
+        RecordZStackController.__init__(
+            self,
+            microscope=microscope,
+            live_controller=live_controller,
+            laser_autofocus_controller=laser_autofocus_controller,
+            objective_store=objective_store,
+            scan_coordinates=scan_coordinates,
+            callbacks=callbacks,
+        )
+        QObject.__init__(self)
+
+    def _on_acquisition_finished(self):
+        self.acquisition_finished.emit()
+
+
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
@@ -676,6 +723,7 @@ class HighContentScreeningGui(QMainWindow):
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.multipointController: QtMultiPointController = None
+        self.recordZStackController: Optional[QtRecordZStackController] = None
         self.streamHandler: core.QtStreamHandler = None
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
@@ -884,6 +932,14 @@ class HighContentScreeningGui(QMainWindow):
             laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
         )
+        if ENABLE_RECORDING:
+            self.recordZStackController = QtRecordZStackController(
+                self.microscope,
+                self.liveController,
+                self.laserAutofocusController,
+                self.objectiveStore,
+                self.scanCoordinates,
+            )
 
     def setup_hardware(self):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
@@ -1076,6 +1132,20 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
+
+        if ENABLE_RECORDING:
+            self.recordZStackWidget = widgets.RecordZStackMultiPointWidget(
+                self.stage,
+                self.navigationViewer,
+                self.recordZStackController,
+                self.liveController,
+                self.objectiveStore,
+                self.scanCoordinates,
+                well_selection_widget=self.wellSelectionWidget,
+                tab_widget=self.recordTabWidget,
+                laser_autofocus_controller=self.laserAutofocusController,
+            )
+            self.recordZStackController.acquisition_finished.connect(self.recordZStackWidget.acquisition_is_finished)
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
@@ -1270,6 +1340,7 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
             self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
+            self.recordTabWidget.addTab(self.recordZStackWidget, "Record + Z-Stack")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 
