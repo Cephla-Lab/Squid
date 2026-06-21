@@ -1,6 +1,6 @@
 import queue
 import threading
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
@@ -115,3 +115,91 @@ class RecordingWriter:
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():
             _log.warning("drain thread still alive after abort() join timeout")
+
+
+# ---------------------------------------------------------------------------
+# Task C3: ContinuousFrameSource + StreamingCapture
+# ---------------------------------------------------------------------------
+
+from squid.abc import CameraAcquisitionMode  # noqa: E402 — kept at bottom to avoid circular import
+
+
+class ContinuousFrameSource:
+    """Wraps a camera and delivers frames via callback.
+
+    Calls set_frame_rate, set_acquisition_mode(CONTINUOUS), registers a frame
+    callback, and starts/stops streaming.
+    """
+
+    def __init__(self, camera, fps: float):
+        self._camera = camera
+        self._fps = fps
+        self._cb_id: Optional[int] = None
+
+    def start(self, on_frame: Callable) -> None:
+        self._camera.set_frame_rate(self._fps)
+        self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+        self._cb_id = self._camera.add_frame_callback(on_frame)
+        self._camera.start_streaming()
+
+    def stop(self) -> None:
+        self._camera.stop_streaming()
+        if self._cb_id is not None:
+            self._camera.remove_frame_callback(self._cb_id)
+            self._cb_id = None
+
+
+class StreamingCapture:
+    """Orchestrates a frame source, router, stop condition, and writer.
+
+    ``run()`` starts the source, routes each incoming frame through the router,
+    enqueues accepted frames to the writer, and stops when the stop condition is
+    met or ``abort_fn`` returns True.
+
+    The ``_on_frame`` callback runs on the hot camera thread — it must stay cheap
+    (route + enqueue only, no blocking I/O).
+
+    Args:
+        frame_source: Any object with ``start(on_frame)`` / ``stop()`` interface.
+        router: ``RecordingRouter`` (or compatible) — maps timestamps to (t,c,z).
+        stop_condition: ``CountStop`` (or compatible) — ``met(emitted)`` returns bool.
+        writer: Object with ``start()``, ``enqueue(frame,t,c,z)``, ``finalize()``, ``abort()``.
+        abort_fn: Zero-argument callable; returns True to abort early.
+        timeout: Optional seconds to wait for completion.  If the source does not
+            trigger the done event within this time ``run()`` still stops and
+            finalizes (returns frames emitted so far).  None means wait forever.
+    """
+
+    def __init__(self, frame_source, router, stop_condition, writer, abort_fn: Callable[[], bool]):
+        self._source = frame_source
+        self._router = router
+        self._stop = stop_condition
+        self._writer = writer
+        self._abort_fn = abort_fn
+        self._emitted = 0
+        self._done = threading.Event()
+
+    def _on_frame(self, camera_frame) -> None:
+        """Hot-thread callback: route + enqueue only.  Must not block."""
+        if self._done.is_set():
+            return
+        if self._abort_fn():
+            self._done.set()
+            return
+        idx = self._router.route(camera_frame.timestamp)
+        if idx is not None:
+            self._writer.enqueue(camera_frame.frame, *idx)
+            self._emitted += 1
+            if self._stop.met(self._emitted):
+                self._done.set()
+
+    def run(self, timeout: Optional[float] = None) -> int:
+        """Start capture, block until done (or timeout), and return emitted count."""
+        self._writer.start()
+        try:
+            self._source.start(self._on_frame)
+            self._done.wait(timeout)  # FakeSource sets _done synchronously; real camera via callback
+        finally:
+            self._source.stop()
+            self._writer.finalize()
+        return self._emitted

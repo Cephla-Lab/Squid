@@ -1,6 +1,6 @@
 import numpy as np
 
-from control.core.streaming_capture import CountStop, RecordingRouter
+from control.core.streaming_capture import CountStop, RecordingRouter, StreamingCapture
 
 
 def test_count_stop():
@@ -45,3 +45,63 @@ def test_recording_writer_roundtrip(tmp_path):
     ds = ts.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": cfg.output_path}}).result()
     assert tuple(ds.shape) == (T, 1, 1, Y, X)
     assert int(ds[2, 0, 0, 0, 0].read().result()) == 3
+
+
+# ---------------------------------------------------------------------------
+# Task C3: StreamingCapture + ContinuousFrameSource tests (fake source)
+# ---------------------------------------------------------------------------
+
+
+class _FakeFrame:
+    def __init__(self, ts, arr):
+        self.timestamp = ts
+        self.frame = arr
+
+
+class _FakeSource:
+    """Delivers N frames synchronously when started."""
+
+    def __init__(self, frames):
+        self._frames = frames
+        self._cb = None
+
+    def start(self, on_frame):
+        self._cb = on_frame
+        for f in self._frames:
+            self._cb(f)
+
+    def stop(self):
+        pass
+
+
+class _ListWriter:
+    def __init__(self):
+        self.writes = []
+
+    def start(self):
+        pass
+
+    def enqueue(self, frame, t, c, z):
+        self.writes.append((t, c, z))
+
+    def finalize(self):
+        self.finalized = True
+
+    def abort(self):
+        pass
+
+
+def test_streaming_capture_counts_and_downsamples():
+    frames = [_FakeFrame(100.0 + i * 0.05, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _ListWriter()
+    cap = StreamingCapture(
+        _FakeSource(frames),
+        RecordingRouter(fps=10.0),
+        CountStop(5),
+        w,
+        abort_fn=lambda: False,
+    )
+    emitted = cap.run()
+    assert emitted == 5
+    assert w.writes == [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0)]
+    assert getattr(w, "finalized", False) is True
