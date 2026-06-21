@@ -724,6 +724,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.multipointController: QtMultiPointController = None
         self.recordZStackController: Optional[QtRecordZStackController] = None
+        self.recordZStackWidget: Optional[widgets.RecordZStackMultiPointWidget] = None
         self.streamHandler: core.QtStreamHandler = None
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
