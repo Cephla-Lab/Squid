@@ -1,3 +1,6 @@
+import csv
+import json
+
 import numpy as np
 import pytest
 
@@ -152,3 +155,29 @@ def test_aggregate_sweep_empty_returns_empty_summary():
     summary = hp.aggregate_sweep([])
     assert summary.pixels == []
     assert summary.per_condition == []
+
+
+def test_write_defect_csv(tmp_path):
+    summary = hp.aggregate_sweep([_condition(-10.0, 100.0)])
+    out = tmp_path / "defects.csv"
+    hp.write_defect_csv(summary, str(out))
+    rows = list(csv.DictReader(out.open()))
+    assert rows
+    assert set(rows[0].keys()) == {
+        "x",
+        "y",
+        "type",
+        "mean_dark_dn",
+        "n_conditions_flagged",
+        "conditions",
+    }
+
+
+def test_write_summary_json(tmp_path):
+    summary = hp.aggregate_sweep([_condition(-10.0, 100.0)])
+    out = tmp_path / "summary.json"
+    hp.write_summary_json(summary, {"camera": "toupcam"}, str(out))
+    data = json.loads(out.read_text())
+    assert data["metadata"]["camera"] == "toupcam"
+    assert len(data["per_condition"]) == 1
+    assert "pixels" in data

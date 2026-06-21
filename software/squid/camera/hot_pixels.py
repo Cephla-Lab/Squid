@@ -6,7 +6,9 @@ inside the render functions so this module imports cleanly in headless contexts.
 
 from __future__ import annotations
 
+import csv
 import enum
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -235,3 +237,39 @@ def aggregate_sweep(results: List[ConditionResult]) -> SweepSummary:
         for (x, y), e in sorted(pixel_map.items())
     ]
     return SweepSummary(pixels=pixels, per_condition=per_condition)
+
+
+def write_defect_csv(summary: SweepSummary, path: str) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["x", "y", "type", "mean_dark_dn", "n_conditions_flagged", "conditions"])
+        for p in summary.pixels:
+            writer.writerow(
+                [
+                    p.x,
+                    p.y,
+                    "|".join(p.types),
+                    f"{p.mean_dark_dn:.2f}",
+                    len(p.conditions),
+                    "|".join(p.conditions),
+                ]
+            )
+
+
+def write_summary_json(summary: SweepSummary, metadata: dict, path: str) -> None:
+    payload = {
+        "metadata": metadata,
+        "per_condition": summary.per_condition,
+        "pixels": [
+            {
+                "x": p.x,
+                "y": p.y,
+                "types": p.types,
+                "mean_dark_dn": p.mean_dark_dn,
+                "conditions": p.conditions,
+            }
+            for p in summary.pixels
+        ],
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
