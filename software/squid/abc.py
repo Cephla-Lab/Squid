@@ -524,6 +524,18 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         return self.get_exposure_time() + self.get_strobe_time()
 
+    def set_frame_rate(self, fps: float) -> float:
+        """Best-effort hint to run continuous/free-run acquisition near `fps`.
+
+        Base default cannot change hardware timing, so it returns the
+        exposure-limited max the camera will actually deliver. Subclasses that
+        support an internal frame-rate (e.g. ToupTek PRECISE_FRAMERATE) override
+        this. Callers must still downsample to their target rate.
+        """
+        max_fps = 1000.0 / self.get_total_frame_time()
+        self._log.debug(f"set_frame_rate({fps}) no-op on base camera; max≈{max_fps:.2f} fps")
+        return max_fps
+
     @abc.abstractmethod
     def set_frame_format(self, frame_format: CameraFrameFormat):
         """
