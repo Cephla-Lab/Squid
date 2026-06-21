@@ -28,6 +28,7 @@ from control._def import (
     SCAN_STABILIZATION_TIME_MS_X,
     SCAN_STABILIZATION_TIME_MS_Y,
     SCAN_STABILIZATION_TIME_MS_Z,
+    TriggerMode,
 )
 from squid.abc import CameraAcquisitionMode
 from control.core.multi_point_worker import MultiPointWorkerBase
@@ -139,6 +140,13 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._abort_on_failed_job = True
         self._first_job_dispatched = False
 
+        # Per-acquisition fixed geometry — compute once and reuse for every FOV
+        # (z-stack offsets and the recording frame shape don't change mid-run).
+        self._zstack_offsets: List[float] = (
+            zstack_offsets_um(params.z_min_um, params.z_max_um, params.z_step_um) if params.zstack_enabled else []
+        )
+        self._frame_shape: Tuple[int, int, np.dtype] = self._probe_frame_shape()
+
         if params.zstack_enabled and self.zstack_channels:
             self._setup_zstack_job_runner(prewarmed_job_runner, prewarmed_bp_values)
         else:
@@ -230,6 +238,14 @@ class RecordZStackWorker(MultiPointWorkerBase):
         camera is left stopped between FOVs/phases, so this loop owns no camera
         callback of its own.
         """
+        # Quiesce live view once for the whole acquisition (restored in finally).
+        was_live = bool(getattr(self.liveController, "is_live", False))
+        if was_live:
+            try:
+                self.liveController.stop_live()
+            except Exception:
+                log.exception("Failed to stop live view before acquisition")
+
         try:
             if self.params.zstack_enabled and self._job_runners:
                 self._backpressure.reset()
@@ -263,6 +279,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
                     self._finish_jobs()
                 except Exception:
                     log.exception("Error finishing z-stack jobs")
+            # Restart live view once, only if it was running before the acquisition.
+            if was_live:
+                try:
+                    self.liveController.start_live()
+                except Exception:
+                    log.exception("Failed to restart live view after acquisition")
             try:
                 self.callbacks.signal_acquisition_finished()
             except Exception:
@@ -296,29 +318,20 @@ class RecordZStackWorker(MultiPointWorkerBase):
 
         Returns the number of frames emitted.
         """
-        # Quiesce live view if one is running (guarded for the headless/test case).
-        was_live = bool(getattr(self.liveController, "is_live", False))
-        if was_live:
-            try:
-                self.liveController.stop_live()
-            except Exception:
-                log.exception("Failed to stop live view before recording")
-
-        # Apply the recording channel (exposure/gain/illumination).
-        if self.params.recording_channel is not None:
-            self._select_config(self.params.recording_channel)
+        # Apply the recording channel (exposure/gain/illumination settings).
+        rec_channel = self.params.recording_channel
+        if rec_channel is not None:
+            self._select_config(rec_channel)
 
         # Move to z_ref + recording offset.
         self._move_z_to_offset(z_ref, self.params.recording_z_offset_um)
 
         T = frame_count(self.params.fps, self.params.duration_s)
         out = self._recording_path(t_idx, region_id, fov_idx)
-        y, x, dtype = self._probe_frame_shape()
+        y, x, dtype = self._frame_shape
 
-        rec_channel_name = self.params.recording_channel.name if self.params.recording_channel is not None else "REC"
-        rec_color = (
-            self.params.recording_channel.display_color if self.params.recording_channel is not None else "#FFFFFF"
-        )
+        rec_channel_name = rec_channel.name if rec_channel is not None else "REC"
+        rec_color = rec_channel.display_color if rec_channel is not None else "#FFFFFF"
         cfg = ZarrAcquisitionConfig(
             output_path=out,
             shape=(T, 1, 1, y, x),
@@ -341,7 +354,16 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         # Generous timeout: enough to gather T frames even at a slow effective rate.
         timeout = self.params.duration_s * 3 + 5
-        emitted = cap.run(timeout=timeout)
+
+        # The CONTINUOUS stream does not gate illumination per-frame, and
+        # set_microscope_mode only energizes illumination when live (we are not
+        # live here). Turn illumination on for the whole recording, off in finally,
+        # so the recorded frames are not dark.
+        self.liveController.turn_on_illumination()
+        try:
+            emitted = cap.run(timeout=timeout)
+        finally:
+            self.liveController.turn_off_illumination()
         log.info(f"recording done t={t_idx} region={region_id} fov={fov_idx}: {emitted}/{T} frames")
 
         # Restore the camera to a software-trigger-friendly state and Z reference.
@@ -362,15 +384,25 @@ class RecordZStackWorker(MultiPointWorkerBase):
         -> ``SaveZarrJob`` dispatch.  Restores Z to ``z_ref`` at the end.
         """
         self.time_point = t_idx
-        offsets = zstack_offsets_um(self.params.z_min_um, self.params.z_max_um, self.params.z_step_um)
+        offsets = self._zstack_offsets
 
-        # The inherited capture path needs the camera streaming, in software-trigger
-        # mode, with our frame callback registered.  Manage that lifecycle locally so
-        # it never interferes with the recording phase's CONTINUOUS streaming.
+        # The inherited capture path (acquire_camera_image) branches on
+        # liveController.trigger_mode, so the LiveController and the camera must agree
+        # on software-trigger mode.  set_trigger_mode(SOFTWARE) sets both the camera
+        # acquisition mode and the microcontroller trigger mode; capture the previous
+        # LiveController mode and restore it in the finally.  Manage the streaming
+        # lifecycle locally so it never interferes with the recording phase's
+        # CONTINUOUS streaming.
+        prev_trigger_mode = getattr(self.liveController, "trigger_mode", None)
         try:
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
         except Exception:
             log.exception("Failed to set software-trigger mode for z-stack")
+            # Fall back to setting the camera directly so capture can still proceed.
+            try:
+                self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            except Exception:
+                log.exception("Failed to set camera software-trigger mode for z-stack")
         self.camera.start_streaming()
         cb_id = self.camera.add_frame_callback(self._image_callback)
         # Make sure the trigger gate starts open.
@@ -395,12 +427,24 @@ class RecordZStackWorker(MultiPointWorkerBase):
                         config_idx=c_idx,
                     )
         finally:
-            # Wait for the last in-flight frame, then detach our callback.
+            # Wait for the last in-flight frame, then detach our callback and stop
+            # streaming (mirrors ContinuousFrameSource.stop()), so the next FOV's
+            # recording phase starts ContinuousFrameSource on a stopped camera.
             self._wait_for_outstanding_callback_images()
             try:
                 self.camera.remove_frame_callback(cb_id)
             except Exception:
                 log.exception("Failed to remove z-stack frame callback")
+            try:
+                self.camera.stop_streaming()
+            except Exception:
+                log.exception("Failed to stop streaming after z-stack")
+            # Restore the LiveController trigger mode captured before the z-stack.
+            if prev_trigger_mode is not None and prev_trigger_mode != TriggerMode.SOFTWARE:
+                try:
+                    self.liveController.set_trigger_mode(prev_trigger_mode)
+                except Exception:
+                    log.exception("Failed to restore LiveController trigger mode after z-stack")
             self.stage.move_z_to(z_ref)
             self.wait_till_operation_is_completed()
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
