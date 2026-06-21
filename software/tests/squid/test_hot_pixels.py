@@ -181,3 +181,23 @@ def test_write_summary_json(tmp_path):
     assert data["metadata"]["camera"] == "toupcam"
     assert len(data["per_condition"]) == 1
     assert "pixels" in data
+
+
+def test_render_defect_map_returns_figure(tmp_path):
+    mean, min_proj, max_proj, max_value = _dark_stack_with_defects()
+    res = hp.detect_defects(mean, min_proj, max_proj, max_value, hp.DefectThresholds(abs_threshold_dn=1000))
+    fig = hp.render_defect_map(res, frame_shape=mean.shape, title="test")
+    import matplotlib.figure
+
+    assert isinstance(fig, matplotlib.figure.Figure)
+    fig.savefig(str(tmp_path / "map.png"))  # must not raise
+
+
+def test_render_count_vs_exposure_returns_figure(tmp_path):
+    results = [_condition(-10.0, 100.0), _condition(-10.0, 500.0)]
+    summary = hp.aggregate_sweep(results)
+    fig = hp.render_count_vs_exposure(summary)
+    import matplotlib.figure
+
+    assert isinstance(fig, matplotlib.figure.Figure)
+    fig.savefig(str(tmp_path / "curve.png"))  # must not raise

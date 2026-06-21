@@ -273,3 +273,60 @@ def write_summary_json(summary: SweepSummary, metadata: dict, path: str) -> None
     }
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
+
+
+_DEFECT_COLORS = {
+    DefectType.HOT_STATISTICAL: "red",
+    DefectType.HOT_ABSOLUTE: "orange",
+    DefectType.STUCK_HIGH: "magenta",
+    DefectType.DEAD_LOW: "cyan",
+}
+
+
+def _lazy_pyplot():
+    import matplotlib
+
+    matplotlib.use("Agg", force=False)
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def render_defect_map(result: DefectResult, frame_shape, title: str = ""):
+    plt = _lazy_pyplot()
+    height, width = frame_shape
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.set_xlim(0, width)
+    ax.set_ylim(height, 0)  # image orientation: y increases downward
+    ax.set_aspect("equal")
+    for dt, color in _DEFECT_COLORS.items():
+        xy = result.coords(dt)
+        if len(xy):
+            ax.scatter(xy[:, 0], xy[:, 1], s=8, c=color, label=f"{dt.value} ({len(xy)})")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(title or "Defect map")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    fig.tight_layout()
+    return fig
+
+
+def render_count_vs_exposure(summary: SweepSummary):
+    plt = _lazy_pyplot()
+    by_temp: Dict[Optional[float], List[Tuple[float, int]]] = {}
+    for c in summary.per_condition:
+        by_temp.setdefault(c["temperature_c"], []).append((c["exposure_ms"], c["combined_count"]))
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for temp, points in sorted(by_temp.items(), key=lambda kv: (kv[0] is not None, kv[0])):
+        points.sort()
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        label = "ambient" if temp is None else f"{temp:g} C"
+        ax.plot(xs, ys, marker="o", label=label)
+    ax.set_xlabel("Exposure time (ms)")
+    ax.set_ylabel("Defective pixel count")
+    ax.set_title("Hot-pixel count vs exposure")
+    ax.legend(title="Temperature", fontsize=8)
+    fig.tight_layout()
+    return fig
