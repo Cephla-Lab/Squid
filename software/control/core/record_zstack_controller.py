@@ -231,6 +231,9 @@ class RecordZStackController:
             scan_region_fov_coords = dict(self._scan_coordinates.region_fov_coordinates)
 
         # Clear abort event for this run (thread-safe: Event.clear() is atomic).
+        # The small window between clear() and the worker thread starting is safe
+        # under the single-acquisition-at-a-time assumption enforced by the widget
+        # (toggle_acquisition checks acquisition_in_progress() before calling here).
         self._abort_event.clear()
 
         # Consume the pre-warmed runner; only pass it to the worker when
