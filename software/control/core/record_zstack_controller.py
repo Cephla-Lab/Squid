@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, field
-from threading import Thread
+from threading import Event, Thread
 from typing import List, Optional
 
 import squid.logging
@@ -88,7 +88,7 @@ class RecordZStackController:
         self.z_max_um: float = 3.0
         self.z_step_um: float = 1.0
 
-        self._abort_requested: bool = False
+        self._abort_event: Event = Event()
         self._worker = None
         self._thread: Optional[Thread] = None
 
@@ -188,41 +188,50 @@ class RecordZStackController:
 
     def request_abort(self) -> None:
         """Signal the running worker to stop after the current FOV."""
-        self._abort_requested = True
+        self._abort_event.set()
 
-    def run_acquisition(self) -> None:
-        """Build params, set up the pre-warmed JobRunner, and spawn the worker thread."""
+    def run_acquisition(self, params: Optional[RecordZStackAcquisitionParameters] = None) -> None:
+        """Build params, set up the pre-warmed JobRunner, and spawn the worker thread.
+
+        If *params* is provided the acquisition uses those values directly;
+        otherwise the instance attributes set via the individual setters are used
+        (legacy path, kept for backwards compatibility with tests/scripts that
+        still call the setters before invoking run_acquisition()).
+        """
         from control.core.acquisition_setup import create_experiment_dir
         from control.core.record_zstack_worker import RecordZStackWorker
 
-        # Resolve and create a timestamped unique output directory.
-        resolved_id, _dir = create_experiment_dir(self.base_path, self.experiment_id)
+        # Resolve params: use supplied object or build one from instance attrs.
+        if params is None:
+            params = RecordZStackAcquisitionParameters(
+                base_path=self.base_path,
+                experiment_id=self.experiment_id,
+                Nt=self.Nt,
+                dt_s=self.dt_s,
+                use_laser_af=self.use_laser_af,
+                recording_enabled=self.recording_enabled,
+                recording_channel=self.recording_channel,
+                fps=self.fps,
+                duration_s=self.duration_s,
+                recording_z_offset_um=self.recording_z_offset_um,
+                zstack_enabled=self.zstack_enabled,
+                zstack_channels=list(self.zstack_channels),
+                z_min_um=self.z_min_um,
+                z_max_um=self.z_max_um,
+                z_step_um=self.z_step_um,
+            )
 
-        params = RecordZStackAcquisitionParameters(
-            base_path=self.base_path,
-            experiment_id=resolved_id,
-            Nt=self.Nt,
-            dt_s=self.dt_s,
-            use_laser_af=self.use_laser_af,
-            recording_enabled=self.recording_enabled,
-            recording_channel=self.recording_channel,
-            fps=self.fps,
-            duration_s=self.duration_s,
-            recording_z_offset_um=self.recording_z_offset_um,
-            zstack_enabled=self.zstack_enabled,
-            zstack_channels=list(self.zstack_channels),
-            z_min_um=self.z_min_um,
-            z_max_um=self.z_max_um,
-            z_step_um=self.z_step_um,
-        )
+        # Resolve and create a timestamped unique output directory.
+        resolved_id, _dir = create_experiment_dir(params.base_path, params.experiment_id)
+        params.experiment_id = resolved_id
 
         # Collect scan coordinates: {region_id: [(x_mm, y_mm[, z_mm]), ...]}
         scan_region_fov_coords = {}
         if self._scan_coordinates is not None and hasattr(self._scan_coordinates, "region_fov_coordinates"):
             scan_region_fov_coords = dict(self._scan_coordinates.region_fov_coordinates)
 
-        # Reset abort flag for this run.
-        self._abort_requested = False
+        # Clear abort event for this run (thread-safe: Event.clear() is atomic).
+        self._abort_event.clear()
 
         # Consume the pre-warmed runner; only pass it to the worker when
         # USE_MULTIPROCESSING is True (otherwise it's None and passing it would
@@ -237,7 +246,7 @@ class RecordZStackController:
                 objective_store=self._objective_store,
                 params=params,
                 callbacks=self._callbacks,
-                abort_requested_fn=lambda: self._abort_requested,
+                abort_requested_fn=lambda: self._abort_event.is_set(),
                 request_abort_fn=self.request_abort,
                 scan_region_fov_coords=scan_region_fov_coords,
                 prewarmed_job_runner=prewarmed_runner if control._def.Acquisition.USE_MULTIPROCESSING else None,
@@ -271,7 +280,7 @@ class RecordZStackController:
         self._prewarmed_bp_values = None
 
         if self.acquisition_in_progress():
-            self.request_abort()
+            self._abort_event.set()
             if self._thread is not None:
                 self._thread.join(timeout=timeout_s)
                 if self._thread.is_alive():
