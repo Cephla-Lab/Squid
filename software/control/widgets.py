@@ -17119,9 +17119,43 @@ class RecordZStackMultiPointWidget(QFrame):
 
         layout = QFormLayout(grp)
 
+        # Channel row with Copy-from-Live button
+        channel_row = QWidget()
+        channel_row_layout = QHBoxLayout(channel_row)
+        channel_row_layout.setContentsMargins(0, 0, 0, 0)
         self.combobox_recording_channel = QComboBox()
         self._populate_channel_combo(self.combobox_recording_channel)
-        layout.addRow("Channel:", self.combobox_recording_channel)
+        channel_row_layout.addWidget(self.combobox_recording_channel, 1)
+        self.btn_copy_from_live = QPushButton("⟳ Live")
+        self.btn_copy_from_live.setToolTip("Copy current live channel settings (channel, exposure, gain, illumination)")
+        self.btn_copy_from_live.setMaximumWidth(70)
+        self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
+        channel_row_layout.addWidget(self.btn_copy_from_live)
+        layout.addRow("Channel:", channel_row)
+
+        # Inline exposure/gain/illumination spinboxes
+        self.entry_recording_exposure = QDoubleSpinBox()
+        self.entry_recording_exposure.setRange(0.01, 60000)
+        self.entry_recording_exposure.setValue(50.0)
+        self.entry_recording_exposure.setSuffix(" ms")
+        self.entry_recording_exposure.setDecimals(1)
+        self.entry_recording_exposure.setKeyboardTracking(False)
+        layout.addRow("Exposure:", self.entry_recording_exposure)
+
+        self.entry_recording_gain = QDoubleSpinBox()
+        self.entry_recording_gain.setRange(0.0, 100.0)
+        self.entry_recording_gain.setValue(0.0)
+        self.entry_recording_gain.setDecimals(2)
+        self.entry_recording_gain.setKeyboardTracking(False)
+        layout.addRow("Gain:", self.entry_recording_gain)
+
+        self.entry_recording_illumination = QDoubleSpinBox()
+        self.entry_recording_illumination.setRange(0.0, 100.0)
+        self.entry_recording_illumination.setValue(50.0)
+        self.entry_recording_illumination.setSuffix(" %")
+        self.entry_recording_illumination.setDecimals(1)
+        self.entry_recording_illumination.setKeyboardTracking(False)
+        layout.addRow("Illumination:", self.entry_recording_illumination)
 
         self.entry_fps = QDoubleSpinBox()
         self.entry_fps.setRange(0.1, 1000)
@@ -17193,12 +17227,32 @@ class RecordZStackMultiPointWidget(QFrame):
         layout.addRow("Computed:", self.label_zstack_planes)
 
         # Z-stack channel table (rows added via _add_zstack_channel_row)
-        self.zstack_channel_table = QTableWidget(0, 1)
-        self.zstack_channel_table.setHorizontalHeaderLabels(["Channel"])
-        self.zstack_channel_table.horizontalHeader().setStretchLastSection(True)
+        # Columns: Channel | Exposure (ms) | Gain | Illumination (%) | Actions
+        self.zstack_channel_table = QTableWidget(0, 5)
+        self.zstack_channel_table.setHorizontalHeaderLabels(["Channel", "Exp (ms)", "Gain", "Illum (%)", ""])
+        hdr = self.zstack_channel_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.zstack_channel_table.setMaximumHeight(120)
+        self.zstack_channel_table.setMinimumHeight(80)
+        self.zstack_channel_table.setMaximumHeight(200)
         layout.addRow("Channels:", self.zstack_channel_table)
+
+        # "+ Add channel" row below the table
+        add_ch_row = QWidget()
+        add_ch_row_layout = QHBoxLayout(add_ch_row)
+        add_ch_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.combobox_zstack_add_channel = QComboBox()
+        self._populate_channel_combo(self.combobox_zstack_add_channel)
+        add_ch_row_layout.addWidget(self.combobox_zstack_add_channel, 1)
+        self.btn_zstack_add_channel = QPushButton("+ Add")
+        self.btn_zstack_add_channel.setMaximumWidth(60)
+        self.btn_zstack_add_channel.clicked.connect(self._on_zstack_add_channel_clicked)
+        add_ch_row_layout.addWidget(self.btn_zstack_add_channel)
+        layout.addRow("Add channel:", add_ch_row)
 
         # Wire up live plane count update
         self.entry_zmin.valueChanged.connect(self._update_zstack_planes_label)
@@ -17253,19 +17307,159 @@ class RecordZStackMultiPointWidget(QFrame):
         except Exception:
             self.label_zstack_planes.setText("-- planes")
 
-    def _add_zstack_channel_row(self, name: str) -> None:
+    def _add_zstack_channel_row(
+        self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
+    ) -> None:
         """Add a channel row to the Z-Stack channel table (also updates internal list).
 
-        E2 will call this from the inline-editor wiring; tests may call it directly.
+        Each row contains: channel name (read-only) | exposure spinbox | gain spinbox |
+        illumination spinbox | ⟳ Live button + ✕ remove button.
+        Skips silently if ``name`` is already present (dedup guard).
         """
         if name in self._zstack_channel_names:
             return
         self._zstack_channel_names.append(name)
         row = self.zstack_channel_table.rowCount()
         self.zstack_channel_table.insertRow(row)
+
+        # Col 0: channel name (read-only)
         item = QTableWidgetItem(name)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self.zstack_channel_table.setItem(row, 0, item)
+
+        # Col 1: exposure spinbox
+        exp_spin = QDoubleSpinBox()
+        exp_spin.setRange(0.01, 60000)
+        exp_spin.setValue(exposure)
+        exp_spin.setSuffix(" ms")
+        exp_spin.setDecimals(1)
+        exp_spin.setKeyboardTracking(False)
+        self.zstack_channel_table.setCellWidget(row, 1, exp_spin)
+
+        # Col 2: gain spinbox
+        gain_spin = QDoubleSpinBox()
+        gain_spin.setRange(0.0, 100.0)
+        gain_spin.setValue(gain)
+        gain_spin.setDecimals(2)
+        gain_spin.setKeyboardTracking(False)
+        self.zstack_channel_table.setCellWidget(row, 2, gain_spin)
+
+        # Col 3: illumination spinbox
+        illum_spin = QDoubleSpinBox()
+        illum_spin.setRange(0.0, 100.0)
+        illum_spin.setValue(illumination)
+        illum_spin.setSuffix(" %")
+        illum_spin.setDecimals(1)
+        illum_spin.setKeyboardTracking(False)
+        self.zstack_channel_table.setCellWidget(row, 3, illum_spin)
+
+        # Col 4: action buttons (⟳ Live + ✕)
+        btn_container = QWidget()
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setContentsMargins(1, 1, 1, 1)
+        btn_layout.setSpacing(2)
+
+        btn_live = QPushButton("⟳")
+        btn_live.setToolTip(f"Copy current live settings into '{name}' row")
+        btn_live.setMaximumWidth(28)
+        btn_live.clicked.connect(lambda checked=False, n=name: self._copy_zstack_row_from_live(n))
+        btn_layout.addWidget(btn_live)
+
+        btn_remove = QPushButton("✕")
+        btn_remove.setToolTip(f"Remove '{name}' from z-stack channels")
+        btn_remove.setMaximumWidth(28)
+        btn_remove.clicked.connect(lambda checked=False, n=name: self._remove_zstack_channel_row(n))
+        btn_layout.addWidget(btn_remove)
+
+        self.zstack_channel_table.setCellWidget(row, 4, btn_container)
+
+    def _remove_zstack_channel_row(self, name: str) -> None:
+        """Remove the row for *name* from the table and internal list.
+
+        No-op if *name* is not present.
+        """
+        if name not in self._zstack_channel_names:
+            return
+        # Find the row by scanning col-0 items
+        for row in range(self.zstack_channel_table.rowCount()):
+            item = self.zstack_channel_table.item(row, 0)
+            if item is not None and item.text() == name:
+                self.zstack_channel_table.removeRow(row)
+                break
+        self._zstack_channel_names.remove(name)
+
+    def _set_zstack_row_values(self, name: str, exposure: float, gain: float, illumination: float) -> None:
+        """Set inline editor values for the z-stack row identified by *name*.
+
+        Used by ⟳ Live button and by tests.  No-op if *name* is not present.
+        """
+        for row in range(self.zstack_channel_table.rowCount()):
+            item = self.zstack_channel_table.item(row, 0)
+            if item is not None and item.text() == name:
+                exp_spin = self.zstack_channel_table.cellWidget(row, 1)
+                gain_spin = self.zstack_channel_table.cellWidget(row, 2)
+                illum_spin = self.zstack_channel_table.cellWidget(row, 3)
+                if exp_spin is not None:
+                    exp_spin.setValue(exposure)
+                if gain_spin is not None:
+                    gain_spin.setValue(gain)
+                if illum_spin is not None:
+                    illum_spin.setValue(illumination)
+                return
+
+    def _get_zstack_row_values(self, name: str):
+        """Return (exposure, gain, illumination) for the z-stack row identified by *name*.
+
+        Returns (50.0, 0.0, 50.0) as defaults if the row or spinboxes are missing.
+        """
+        for row in range(self.zstack_channel_table.rowCount()):
+            item = self.zstack_channel_table.item(row, 0)
+            if item is not None and item.text() == name:
+                exp_spin = self.zstack_channel_table.cellWidget(row, 1)
+                gain_spin = self.zstack_channel_table.cellWidget(row, 2)
+                illum_spin = self.zstack_channel_table.cellWidget(row, 3)
+                exposure = exp_spin.value() if exp_spin is not None else 50.0
+                gain = gain_spin.value() if gain_spin is not None else 0.0
+                illum = illum_spin.value() if illum_spin is not None else 50.0
+                return exposure, gain, illum
+        return 50.0, 0.0, 50.0
+
+    def _copy_recording_from_live(self) -> None:
+        """Copy current live channel settings into the recording inline editors."""
+        try:
+            live_ch = self.liveController.currentConfiguration
+            if live_ch is None:
+                return
+            # Update channel dropdown
+            idx = self.combobox_recording_channel.findText(live_ch.name)
+            if idx >= 0:
+                self.combobox_recording_channel.setCurrentIndex(idx)
+            # Update inline spinboxes
+            self.entry_recording_exposure.setValue(live_ch.exposure_time)
+            self.entry_recording_gain.setValue(live_ch.analog_gain)
+            self.entry_recording_illumination.setValue(live_ch.illumination_intensity)
+        except Exception as exc:
+            self._log.warning(f"Copy-from-Live failed: {exc}")
+
+    def _copy_zstack_row_from_live(self, name: str) -> None:
+        """Copy current live channel settings into the z-stack row for *name*."""
+        try:
+            live_ch = self.liveController.currentConfiguration
+            if live_ch is None:
+                return
+            self._set_zstack_row_values(
+                name, live_ch.exposure_time, live_ch.analog_gain, live_ch.illumination_intensity
+            )
+        except Exception as exc:
+            self._log.warning(f"Copy-from-Live for z-stack row '{name}' failed: {exc}")
+
+    def _on_zstack_add_channel_clicked(self) -> None:
+        """Add the currently selected channel in the add-channel combo to the z-stack table."""
+        if self.combobox_zstack_add_channel is None:
+            return
+        name = self.combobox_zstack_add_channel.currentText()
+        if name:
+            self._add_zstack_channel_row(name)
 
     def _get_selected_well_count(self) -> int:
         """Return the number of currently selected wells."""
@@ -17314,34 +17508,49 @@ class RecordZStackMultiPointWidget(QFrame):
         """Read widget fields and return a RecordZStackAcquisitionParameters instance.
 
         Transient AcquisitionChannel objects are constructed from the inline
-        channel selectors (full per-channel editor wiring is E2).
+        channel editors so that the caller receives the exact settings the user
+        entered, not the defaults from the channel config.
         """
         from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
         from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
 
-        def _make_channel(name: str) -> AcquisitionChannel:
-            """Build a minimal transient AcquisitionChannel from the channel name."""
-            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
-            for ch in channels:
-                if ch.name == name:
-                    return ch
-            # Fallback: construct a bare-bones channel (E2 will provide richer wiring)
+        def _make_channel_base(name: str) -> AcquisitionChannel:
+            """Return a copy of the named channel from liveController, or a bare-bones fallback."""
+            try:
+                channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+                for ch in channels:
+                    if ch.name == name:
+                        # Return a copy so inline-editor mutations don't corrupt the source
+                        return ch.model_copy(deep=True)
+            except Exception:
+                pass
             return AcquisitionChannel(
                 name=name,
                 camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
                 illumination_settings=IlluminationSettings(intensity=50.0),
             )
 
-        rec_channel_name = (
-            self.combobox_recording_channel.currentText()
-            if self.combobox_recording_channel.count() > 0 and self.checkbox_recording.isChecked()
-            else None
-        )
-        recording_channel = _make_channel(rec_channel_name) if rec_channel_name else None
+        # Build recording channel from inline editors
+        recording_channel = None
+        if self.combobox_recording_channel.count() > 0 and self.checkbox_recording.isChecked():
+            rec_name = self.combobox_recording_channel.currentText()
+            if rec_name:
+                ch = _make_channel_base(rec_name)
+                ch.exposure_time = self.entry_recording_exposure.value()
+                ch.analog_gain = self.entry_recording_gain.value()
+                ch.illumination_intensity = self.entry_recording_illumination.value()
+                recording_channel = ch
 
-        zstack_channels = (
-            [_make_channel(name) for name in self._zstack_channel_names] if self.checkbox_zstack.isChecked() else []
-        )
+        # Build z-stack channels from per-row inline editors
+        zstack_channels = []
+        if self.checkbox_zstack.isChecked():
+            for name in self._zstack_channel_names:
+                ch = _make_channel_base(name)
+                exposure, gain, illum = self._get_zstack_row_values(name)
+                ch.exposure_time = exposure
+                ch.analog_gain = gain
+                ch.illumination_intensity = illum
+                zstack_channels.append(ch)
 
         return RecordZStackAcquisitionParameters(
             base_path=self.lineEdit_savingDir.text().strip(),
