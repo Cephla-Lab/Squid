@@ -703,3 +703,60 @@ def test_abort_event_set_on_request_abort():
         # Simulate run_acquisition clearing the event before spawning the worker
         ctrl._abort_event.clear()
         assert not ctrl._abort_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Fix-batch5: signal_acquisition_started wiring
+# ---------------------------------------------------------------------------
+
+
+def test_signal_acquisition_started_emits_true_on_start(qtbot, simulated_widget_deps):
+    """signal_acquisition_started(True) is emitted when toggle_acquisition(True) succeeds."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    emitted = []
+    w.signal_acquisition_started.connect(emitted.append)
+
+    w.toggle_acquisition(True)
+
+    assert emitted == [True]
+
+
+def test_signal_acquisition_started_not_emitted_on_invalid_start(qtbot, simulated_widget_deps):
+    """signal_acquisition_started must NOT emit when validation rejects the start."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_zstack.setChecked(False)
+    w.checkbox_recording.setChecked(False)
+
+    emitted = []
+    w.signal_acquisition_started.connect(emitted.append)
+
+    with patch("control.widgets.QMessageBox.warning"):
+        w.toggle_acquisition(True)
+
+    assert emitted == []
+
+
+def test_signal_acquisition_started_emits_false_on_finish(qtbot, simulated_widget_deps):
+    """signal_acquisition_started(False) is emitted when acquisition_is_finished() is called."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    emitted = []
+    w.signal_acquisition_started.connect(emitted.append)
+
+    w.acquisition_is_finished()
+
+    assert emitted == [False]
