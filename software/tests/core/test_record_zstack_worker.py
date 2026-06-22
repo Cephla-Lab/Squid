@@ -172,7 +172,11 @@ def test_record_zstack_controller_smoke(tmp_path):
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackController, frame_count
+    from control.core.record_zstack_controller import (
+        RecordZStackAcquisitionParameters,
+        RecordZStackController,
+        frame_count,
+    )
     from control.core.scan_coordinates import ScanCoordinates
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
@@ -227,24 +231,26 @@ def test_record_zstack_controller_smoke(tmp_path):
         callbacks=NoOpCallbacks,
     )
 
-    # Push params via setters (as a widget would).
-    controller.set_base_path(str(tmp_path))
-    controller.set_experiment_id("ctrl_smoke")
-    controller.set_Nt(Nt)
-    controller.set_dt_s(0.1)  # short inter-timepoint delay
-    controller.set_use_laser_af(False)
-    controller.set_recording_enabled(True)
-    controller.set_recording_channel(recording_channel)
-    controller.set_fps(fps)
-    controller.set_duration_s(duration_s)
-    controller.set_recording_z_offset_um(0.0)
-    controller.set_zstack_enabled(True)
-    controller.set_zstack_channels(zstack_channels)
-    controller.set_z_min_um(-1.0)
-    controller.set_z_max_um(1.0)
-    controller.set_z_step_um(1.0)  # 3 planes
+    # Build params directly and pass to run_acquisition (same path as the widget).
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="ctrl_smoke",
+        Nt=Nt,
+        dt_s=0.1,  # short inter-timepoint delay
+        use_laser_af=False,
+        recording_enabled=True,
+        recording_channel=recording_channel,
+        fps=fps,
+        duration_s=duration_s,
+        recording_z_offset_um=0.0,
+        zstack_enabled=True,
+        zstack_channels=zstack_channels,
+        z_min_um=-1.0,
+        z_max_um=1.0,
+        z_step_um=1.0,  # 3 planes
+    )
 
-    controller.run_acquisition()
+    controller.run_acquisition(params)
     # Wait up to 120 s for the worker thread to finish.
     controller.join(timeout=120)
     assert not controller.acquisition_in_progress(), "worker thread did not finish in time"
