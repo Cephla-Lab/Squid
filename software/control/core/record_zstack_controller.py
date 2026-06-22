@@ -47,12 +47,12 @@ class RecordZStackAcquisitionParameters:
 
 
 class RecordZStackController:
-    """Controller that builds params, sets up the pre-warmed JobRunner, and spawns
-    RecordZStackWorker on a daemon thread.
+    """Controller that sets up the pre-warmed JobRunner and spawns RecordZStackWorker
+    on a daemon thread.
 
     Constructor arguments mirror MultiPointController's signature where the concept
-    overlaps; widget setters are provided for every RecordZStackAcquisitionParameters
-    field so the GUI (or tests) can push values in before calling run_acquisition().
+    overlaps. Call run_acquisition(params) with a fully-built
+    RecordZStackAcquisitionParameters object (as the widget does via build_parameters()).
     """
 
     def __init__(
@@ -70,23 +70,6 @@ class RecordZStackController:
         self._objective_store = objective_store
         self._scan_coordinates = scan_coordinates
         self._callbacks = callbacks
-
-        # Mutable params pushed by the widget before run_acquisition().
-        self.base_path: Optional[str] = None
-        self.experiment_id: str = "record_zstack"
-        self.Nt: int = 1
-        self.dt_s: float = 0.0
-        self.use_laser_af: bool = False
-        self.recording_enabled: bool = False
-        self.recording_channel: Optional[AcquisitionChannel] = None
-        self.fps: float = 10.0
-        self.duration_s: float = 1.0
-        self.recording_z_offset_um: float = 0.0
-        self.zstack_enabled: bool = False
-        self.zstack_channels: List[AcquisitionChannel] = []
-        self.z_min_um: float = -3.0
-        self.z_max_um: float = 3.0
-        self.z_step_um: float = 1.0
 
         self._abort_event: Event = Event()
         self._worker = None
@@ -134,53 +117,6 @@ class RecordZStackController:
             except Exception as e:
                 log.error(f"Error shutting down pre-warmed runner {context}: {e}")
 
-    # ---------------------------------------------------------------------- widget setters
-
-    def set_base_path(self, path: str) -> None:
-        self.base_path = path
-
-    def set_experiment_id(self, experiment_id: str) -> None:
-        self.experiment_id = experiment_id
-
-    def set_Nt(self, Nt: int) -> None:
-        self.Nt = Nt
-
-    def set_dt_s(self, dt_s: float) -> None:
-        self.dt_s = dt_s
-
-    def set_use_laser_af(self, flag: bool) -> None:
-        self.use_laser_af = flag
-
-    def set_recording_enabled(self, flag: bool) -> None:
-        self.recording_enabled = flag
-
-    def set_recording_channel(self, channel: Optional[AcquisitionChannel]) -> None:
-        self.recording_channel = channel
-
-    def set_fps(self, fps: float) -> None:
-        self.fps = fps
-
-    def set_duration_s(self, duration_s: float) -> None:
-        self.duration_s = duration_s
-
-    def set_recording_z_offset_um(self, offset_um: float) -> None:
-        self.recording_z_offset_um = offset_um
-
-    def set_zstack_enabled(self, flag: bool) -> None:
-        self.zstack_enabled = flag
-
-    def set_zstack_channels(self, channels: List[AcquisitionChannel]) -> None:
-        self.zstack_channels = list(channels)
-
-    def set_z_min_um(self, z_min_um: float) -> None:
-        self.z_min_um = z_min_um
-
-    def set_z_max_um(self, z_max_um: float) -> None:
-        self.z_max_um = z_max_um
-
-    def set_z_step_um(self, z_step_um: float) -> None:
-        self.z_step_um = z_step_um
-
     # ---------------------------------------------------------------------- acquisition
 
     def acquisition_in_progress(self) -> bool:
@@ -190,36 +126,14 @@ class RecordZStackController:
         """Signal the running worker to stop after the current FOV."""
         self._abort_event.set()
 
-    def run_acquisition(self, params: Optional[RecordZStackAcquisitionParameters] = None) -> None:
-        """Build params, set up the pre-warmed JobRunner, and spawn the worker thread.
+    def run_acquisition(self, params: RecordZStackAcquisitionParameters) -> None:
+        """Set up the pre-warmed JobRunner and spawn the worker thread.
 
-        If *params* is provided the acquisition uses those values directly;
-        otherwise the instance attributes set via the individual setters are used
-        (legacy path, kept for backwards compatibility with tests/scripts that
-        still call the setters before invoking run_acquisition()).
+        *params* must be a fully-built RecordZStackAcquisitionParameters (as produced
+        by the widget's build_parameters() method).
         """
         from control.core.acquisition_setup import create_experiment_dir
         from control.core.record_zstack_worker import RecordZStackWorker
-
-        # Resolve params: use supplied object or build one from instance attrs.
-        if params is None:
-            params = RecordZStackAcquisitionParameters(
-                base_path=self.base_path,
-                experiment_id=self.experiment_id,
-                Nt=self.Nt,
-                dt_s=self.dt_s,
-                use_laser_af=self.use_laser_af,
-                recording_enabled=self.recording_enabled,
-                recording_channel=self.recording_channel,
-                fps=self.fps,
-                duration_s=self.duration_s,
-                recording_z_offset_um=self.recording_z_offset_um,
-                zstack_enabled=self.zstack_enabled,
-                zstack_channels=list(self.zstack_channels),
-                z_min_um=self.z_min_um,
-                z_max_um=self.z_max_um,
-                z_step_um=self.z_step_um,
-            )
 
         # Resolve and create a timestamped unique output directory.
         resolved_id, _dir = create_experiment_dir(params.base_path, params.experiment_id)
