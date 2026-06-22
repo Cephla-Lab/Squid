@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from typing import List, Optional
 
-from PyQt5.QtCore import QMetaObject, QObject, QThread, Qt, Q_ARG, pyqtSignal
+from PyQt5.QtCore import QMetaObject, QObject, QThread, Qt, Q_ARG, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -84,6 +84,7 @@ class CaptureWorker(QObject):
     def _should_stop(self) -> bool:
         return self._stop
 
+    @pyqtSlot(float, int, object)
     def run_snap(self, exposure_ms: float, n_frames: int, thresholds: hp.DefectThresholds):
         self._stop = False
         try:
@@ -115,6 +116,7 @@ class CaptureWorker(QObject):
         finally:
             self.finished.emit()
 
+    @pyqtSlot(object, object, int, object, str, float, float)
     def run_sweep_job(
         self,
         exposures_ms: List[float],
@@ -205,6 +207,7 @@ class HotPixelWindow(QMainWindow):
         self._worker.log.connect(self._append_log)
         self._worker.error.connect(lambda m: self._append_log("ERROR: " + m))
         self._worker.snap_result.connect(self._show_snap_result)
+        self._worker.sweep_finished.connect(self._show_sweep_result)
         self._worker.finished.connect(self._on_job_finished)
 
         tabs = QTabWidget()
@@ -260,7 +263,7 @@ class HotPixelWindow(QMainWindow):
         self._snap_frames.setRange(1, 1000)
         self._snap_frames.setValue(20)
         self._snap_sigma = QDoubleSpinBox()
-        self._snap_sigma.setRange(0.0, 100.0)
+        self._snap_sigma.setRange(0.1, 100.0)
         self._snap_sigma.setValue(5.0)
         self._snap_abs_check = QCheckBox("Use absolute DN threshold")
         self._snap_abs = QSpinBox()
@@ -305,7 +308,7 @@ class HotPixelWindow(QMainWindow):
         self._sweep_frames.setRange(1, 1000)
         self._sweep_frames.setValue(20)
         self._sweep_sigma = QDoubleSpinBox()
-        self._sweep_sigma.setRange(0.0, 100.0)
+        self._sweep_sigma.setRange(0.1, 100.0)
         self._sweep_sigma.setValue(5.0)
         self._sweep_abs_check = QCheckBox("Use absolute DN threshold")
         self._sweep_abs = QSpinBox()
@@ -334,6 +337,7 @@ class HotPixelWindow(QMainWindow):
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)  # busy indicator while running
         self._progress.reset()
+        self._sweep_canvas = FigureCanvasQTAgg(_empty_figure())
 
         form.addRow("Exposures (ms, comma)", self._sweep_exposures)
         form.addRow("Temperatures (C, comma; empty=ambient)", self._sweep_temps)
@@ -347,12 +351,18 @@ class HotPixelWindow(QMainWindow):
         form.addRow(self._run_button)
         form.addRow(self._stop_button)
         form.addRow(self._progress)
+        form.addRow(self._sweep_canvas)
         return w
 
     def _browse_output(self):
         d = QFileDialog.getExistingDirectory(self, "Select output directory", self._output_dir.text())
         if d:
             self._output_dir.setText(d)
+
+    def _show_sweep_result(self, summary):
+        fig = hp.render_count_vs_exposure(summary)
+        self._replace_canvas("_sweep_canvas", fig)
+        self._append_log(f"Sweep result: {len(summary.pixels)} total defective pixels across all conditions.")
 
     def _do_sweep(self):
         try:
@@ -364,9 +374,17 @@ class HotPixelWindow(QMainWindow):
         if not exposures:
             self._append_log("ERROR: provide at least one exposure.")
             return
+        if any(e <= 0 for e in exposures):
+            self._append_log("ERROR: all exposures must be positive (ms).")
+            return
         thresholds = self._thresholds_from(self._sweep_sigma, self._sweep_abs_check, self._sweep_abs)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         output_dir = os.path.join(self._output_dir.text(), stamp)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            self._append_log(f"ERROR: cannot create output directory {output_dir}: {e}")
+            return
         self._set_running(True)
         QMetaObject.invokeMethod(
             self._worker,

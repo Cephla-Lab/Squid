@@ -323,3 +323,18 @@ def test_run_sweep_warns_on_settle_failure(caplog):
 
     assert len(results) == 1  # proceeds despite settle failure
     assert any("did not settle" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Fix B1 — worker slots must be registered via @pyqtSlot
+# ---------------------------------------------------------------------------
+
+
+def test_capture_worker_exposes_invokable_slots():
+    import importlib
+
+    mod = importlib.import_module("tools.hot_pixel_test_gui")
+    mo = mod.CaptureWorker.staticMetaObject
+    names = {bytes(mo.method(i).name()).decode() for i in range(mo.methodCount())}
+    assert "run_snap" in names, "run_snap must be a registered @pyqtSlot for QMetaObject.invokeMethod to reach it"
+    assert "run_sweep_job" in names, "run_sweep_job must be a registered @pyqtSlot"
