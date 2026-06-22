@@ -17031,15 +17031,15 @@ class RecordZStackMultiPointWidget(QFrame):
 
     def _add_components(self) -> None:
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(4, 4, 4, 4)
+        outer_layout.setContentsMargins(4, 2, 4, 2)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         inner = QWidget()
         layout = QVBoxLayout(inner)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
         layout.addWidget(self._build_output_group())
         layout.addWidget(self._build_wells_fov_group())
@@ -17055,6 +17055,8 @@ class RecordZStackMultiPointWidget(QFrame):
     def _build_output_group(self) -> QGroupBox:
         grp = QGroupBox("Output")
         layout = QGridLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
         layout.addWidget(QLabel("Base path:"), 0, 0)
         self.lineEdit_savingDir = QLineEdit()
@@ -17076,44 +17078,53 @@ class RecordZStackMultiPointWidget(QFrame):
 
     def _build_wells_fov_group(self) -> QGroupBox:
         grp = QGroupBox("Wells & FOV Grid")
-        layout = QFormLayout(grp)
+        layout = QGridLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
         self.label_selected_wells = QLabel("0 well(s) selected")
-        layout.addRow("Wells:", self.label_selected_wells)
+        layout.addWidget(QLabel("Wells:"), 0, 0)
+        layout.addWidget(self.label_selected_wells, 0, 1)
 
         self.entry_overlap = QDoubleSpinBox()
         self.entry_overlap.setRange(-1000, 99)
         self.entry_overlap.setValue(10)
         self.entry_overlap.setSuffix("%")
         self.entry_overlap.setKeyboardTracking(False)
-        layout.addRow("FOV overlap:", self.entry_overlap)
+        layout.addWidget(QLabel("FOV overlap:"), 0, 2)
+        layout.addWidget(self.entry_overlap, 0, 3)
 
         self.combobox_shape = QComboBox()
         self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
-        layout.addRow("Region shape:", self.combobox_shape)
+        layout.addWidget(QLabel("Region shape:"), 1, 0)
+        layout.addWidget(self.combobox_shape, 1, 1, 1, 3)
 
         return grp
 
     def _build_timelapse_focus_group(self) -> QGroupBox:
         grp = QGroupBox("Time-lapse & Focus")
-        layout = QFormLayout(grp)
+        layout = QGridLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
         self.entry_Nt = QSpinBox()
         self.entry_Nt.setMinimum(1)
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setValue(1)
-        layout.addRow("Time points (Nt):", self.entry_Nt)
+        layout.addWidget(QLabel("Nt:"), 0, 0)
+        layout.addWidget(self.entry_Nt, 0, 1)
 
         self.entry_dt = QDoubleSpinBox()
         self.entry_dt.setRange(0, 24 * 3600)
         self.entry_dt.setValue(0)
         self.entry_dt.setSuffix(" s")
         self.entry_dt.setKeyboardTracking(False)
-        layout.addRow("Interval (dt):", self.entry_dt)
+        layout.addWidget(QLabel("dt:"), 0, 2)
+        layout.addWidget(self.entry_dt, 0, 3)
 
         self.checkbox_laser_af = QCheckBox("Use laser reflection AF")
         self.checkbox_laser_af.setChecked(False)
-        layout.addRow("", self.checkbox_laser_af)
+        layout.addWidget(self.checkbox_laser_af, 0, 4)
 
         return grp
 
@@ -17123,37 +17134,38 @@ class RecordZStackMultiPointWidget(QFrame):
         grp.setChecked(False)
         self.checkbox_recording = grp  # expose as checkbox_recording for callers
 
-        layout = QFormLayout(grp)
+        layout = QGridLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
-        # Channel row with Copy-from-Live button
-        channel_row = QWidget()
-        channel_row_layout = QHBoxLayout(channel_row)
-        channel_row_layout.setContentsMargins(0, 0, 0, 0)
+        # Row 0: Channel combo + Copy-from-Live button
         self.combobox_recording_channel = QComboBox()
         self._populate_channel_combo(self.combobox_recording_channel)
-        channel_row_layout.addWidget(self.combobox_recording_channel, 1)
+        layout.addWidget(QLabel("Channel:"), 0, 0)
+        layout.addWidget(self.combobox_recording_channel, 0, 1, 1, 3)
         self.btn_copy_from_live = QPushButton("⟳ Live")
         self.btn_copy_from_live.setToolTip("Copy current live channel settings (channel, exposure, gain, illumination)")
         self.btn_copy_from_live.setMaximumWidth(70)
         self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
-        channel_row_layout.addWidget(self.btn_copy_from_live)
-        layout.addRow("Channel:", channel_row)
+        layout.addWidget(self.btn_copy_from_live, 0, 4)
 
-        # Inline exposure/gain/illumination spinboxes
+        # Row 1: Exposure | Gain | Illumination on one row
         self.entry_recording_exposure = QDoubleSpinBox()
         self.entry_recording_exposure.setRange(0.01, 60000)
         self.entry_recording_exposure.setValue(50.0)
         self.entry_recording_exposure.setSuffix(" ms")
         self.entry_recording_exposure.setDecimals(1)
         self.entry_recording_exposure.setKeyboardTracking(False)
-        layout.addRow("Exposure:", self.entry_recording_exposure)
+        layout.addWidget(QLabel("Exp:"), 1, 0)
+        layout.addWidget(self.entry_recording_exposure, 1, 1)
 
         self.entry_recording_gain = QDoubleSpinBox()
         self.entry_recording_gain.setRange(0.0, 100.0)
         self.entry_recording_gain.setValue(0.0)
         self.entry_recording_gain.setDecimals(2)
         self.entry_recording_gain.setKeyboardTracking(False)
-        layout.addRow("Gain:", self.entry_recording_gain)
+        layout.addWidget(QLabel("Gain:"), 1, 2)
+        layout.addWidget(self.entry_recording_gain, 1, 3)
 
         self.entry_recording_illumination = QDoubleSpinBox()
         self.entry_recording_illumination.setRange(0.0, 100.0)
@@ -17161,31 +17173,37 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_illumination.setSuffix(" %")
         self.entry_recording_illumination.setDecimals(1)
         self.entry_recording_illumination.setKeyboardTracking(False)
-        layout.addRow("Illumination:", self.entry_recording_illumination)
+        layout.addWidget(QLabel("Illum:"), 1, 4)
+        layout.addWidget(self.entry_recording_illumination, 1, 5)
 
+        # Row 2: FPS | Duration | Computed frames on one row
         self.entry_fps = QDoubleSpinBox()
         self.entry_fps.setRange(0.1, 1000)
         self.entry_fps.setValue(10.0)
         self.entry_fps.setSuffix(" fps")
         self.entry_fps.setKeyboardTracking(False)
-        layout.addRow("FPS:", self.entry_fps)
+        layout.addWidget(QLabel("FPS:"), 2, 0)
+        layout.addWidget(self.entry_fps, 2, 1)
 
         self.entry_duration = QDoubleSpinBox()
         self.entry_duration.setRange(0.01, 3600)
         self.entry_duration.setValue(1.0)
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
-        layout.addRow("Duration:", self.entry_duration)
+        layout.addWidget(QLabel("Dur:"), 2, 2)
+        layout.addWidget(self.entry_duration, 2, 3)
 
         self.label_recording_frames = QLabel("-- frames")
-        layout.addRow("Computed:", self.label_recording_frames)
+        layout.addWidget(self.label_recording_frames, 2, 4, 1, 2)
 
+        # Row 3: Z-offset
         self.entry_recording_z_offset = QDoubleSpinBox()
         self.entry_recording_z_offset.setRange(-1000, 1000)
         self.entry_recording_z_offset.setValue(0.0)
         self.entry_recording_z_offset.setSuffix(" μm")
         self.entry_recording_z_offset.setKeyboardTracking(False)
-        layout.addRow("Z-offset:", self.entry_recording_z_offset)
+        layout.addWidget(QLabel("Z-offset:"), 3, 0)
+        layout.addWidget(self.entry_recording_z_offset, 3, 1, 1, 2)
 
         # Wire up live frame count update
         self.entry_fps.valueChanged.connect(self._update_recording_frames_label)
@@ -17200,8 +17218,11 @@ class RecordZStackMultiPointWidget(QFrame):
         grp.setChecked(False)
         self.checkbox_zstack = grp  # expose as checkbox_zstack for callers
 
-        layout = QFormLayout(grp)
+        layout = QGridLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
 
+        # Row 0: Z-min | Z-max | Step | Computed planes on one row
         self.entry_zmin = QDoubleSpinBox()
         self.entry_zmin.setRange(-5000, 5000)
         self.entry_zmin.setValue(-3.0)
@@ -17209,7 +17230,8 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_zmin.setDecimals(3)
         self.entry_zmin.setSingleStep(0.5)
         self.entry_zmin.setKeyboardTracking(False)
-        layout.addRow("Z-min:", self.entry_zmin)
+        layout.addWidget(QLabel("Z-min:"), 0, 0)
+        layout.addWidget(self.entry_zmin, 0, 1)
 
         self.entry_zmax = QDoubleSpinBox()
         self.entry_zmax.setRange(-5000, 5000)
@@ -17218,7 +17240,8 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_zmax.setDecimals(3)
         self.entry_zmax.setSingleStep(0.5)
         self.entry_zmax.setKeyboardTracking(False)
-        layout.addRow("Z-max:", self.entry_zmax)
+        layout.addWidget(QLabel("Z-max:"), 0, 2)
+        layout.addWidget(self.entry_zmax, 0, 3)
 
         self.entry_step = QDoubleSpinBox()
         self.entry_step.setRange(0.001, 1000)
@@ -17227,12 +17250,13 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_step.setDecimals(3)
         self.entry_step.setSingleStep(0.1)
         self.entry_step.setKeyboardTracking(False)
-        layout.addRow("Step:", self.entry_step)
+        layout.addWidget(QLabel("Step:"), 0, 4)
+        layout.addWidget(self.entry_step, 0, 5)
 
         self.label_zstack_planes = QLabel("-- planes")
-        layout.addRow("Computed:", self.label_zstack_planes)
+        layout.addWidget(self.label_zstack_planes, 0, 6)
 
-        # Z-stack channel table (rows added via _add_zstack_channel_row)
+        # Row 1: Z-stack channel table (rows added via _add_zstack_channel_row)
         # Columns: Channel | Exposure (ms) | Gain | Illumination (%) | Actions
         self.zstack_channel_table = QTableWidget(0, 5)
         self.zstack_channel_table.setHorizontalHeaderLabels(["Channel", "Exp (ms)", "Gain", "Illum (%)", ""])
@@ -17245,20 +17269,17 @@ class RecordZStackMultiPointWidget(QFrame):
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.zstack_channel_table.setMinimumHeight(80)
         self.zstack_channel_table.setMaximumHeight(200)
-        layout.addRow("Channels:", self.zstack_channel_table)
+        layout.addWidget(self.zstack_channel_table, 1, 0, 1, 7)
 
-        # "+ Add channel" row below the table
-        add_ch_row = QWidget()
-        add_ch_row_layout = QHBoxLayout(add_ch_row)
-        add_ch_row_layout.setContentsMargins(0, 0, 0, 0)
+        # Row 2: Add channel dropdown + button
         self.combobox_zstack_add_channel = QComboBox()
         self._populate_channel_combo(self.combobox_zstack_add_channel)
-        add_ch_row_layout.addWidget(self.combobox_zstack_add_channel, 1)
+        layout.addWidget(QLabel("Add:"), 2, 0)
+        layout.addWidget(self.combobox_zstack_add_channel, 2, 1, 1, 5)
         self.btn_zstack_add_channel = QPushButton("+ Add")
         self.btn_zstack_add_channel.setMaximumWidth(60)
         self.btn_zstack_add_channel.clicked.connect(self._on_zstack_add_channel_clicked)
-        add_ch_row_layout.addWidget(self.btn_zstack_add_channel)
-        layout.addRow("Add channel:", add_ch_row)
+        layout.addWidget(self.btn_zstack_add_channel, 2, 6)
 
         # Wire up live plane count update
         self.entry_zmin.valueChanged.connect(self._update_zstack_planes_label)
@@ -17271,6 +17292,8 @@ class RecordZStackMultiPointWidget(QFrame):
     def _build_start_group(self) -> QGroupBox:
         grp = QGroupBox()
         layout = QVBoxLayout(grp)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
         self.btn_startAcquisition = QPushButton("Start Acquisition")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
