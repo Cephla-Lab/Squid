@@ -1,8 +1,9 @@
+import pytest
 import numpy as np
 
 import squid.camera.utils
 import squid.config
-from squid.abc import CameraAcquisitionMode
+from squid.abc import CameraAcquisitionMode, CameraFrame, CameraFrameFormat
 from squid.config import CameraPixelFormat
 from squid.camera import hot_pixel_capture as cap
 from squid.camera import hot_pixels as hp
@@ -163,7 +164,6 @@ def test_gui_module_imports_without_qapplication():
 
 def test_gui_require_mono_format_rejects_color():
     import importlib
-    import pytest
 
     mod = importlib.import_module("tools.hot_pixel_test_gui")
     # MONO is accepted (no raise)
@@ -171,3 +171,155 @@ def test_gui_require_mono_format_rejects_color():
     # color is rejected with a clear error
     with pytest.raises(ValueError):
         mod._require_mono_format(CameraPixelFormat.RGB24)
+
+
+# ---------------------------------------------------------------------------
+# Fix A1 — guard n_frames
+# ---------------------------------------------------------------------------
+
+
+def test_capture_dark_stack_rejects_zero_frames():
+    camera = _sim_camera()
+    try:
+        with pytest.raises(ValueError):
+            cap.capture_dark_stack(camera, 1.0, n_frames=0)
+    finally:
+        camera.stop_streaming()
+
+
+# ---------------------------------------------------------------------------
+# Fix A2 — bounded failure / stale-duplicate frames
+# ---------------------------------------------------------------------------
+
+
+class _AlwaysNoneCamera:
+    """Minimal fake camera whose read_camera_frame always returns None."""
+
+    def set_exposure_time(self, ms):
+        pass
+
+    def get_ready_for_trigger(self):
+        return True
+
+    def send_trigger(self):
+        pass
+
+    def read_camera_frame(self):
+        return None
+
+
+def test_capture_dark_stack_aborts_on_persistent_none():
+    fake = _AlwaysNoneCamera()
+    result = cap.capture_dark_stack(
+        fake,
+        1.0,
+        n_frames=5,
+        warmup_frames=0,
+        should_stop=None,
+        sleep_fn=lambda s: None,
+    )
+    assert result is None
+
+
+class _FixedFrameIdCamera:
+    """Fake camera that always returns a CameraFrame with the same frame_id (simulates stale/duplicate)."""
+
+    def set_exposure_time(self, ms):
+        pass
+
+    def get_ready_for_trigger(self):
+        return True
+
+    def send_trigger(self):
+        pass
+
+    def read_camera_frame(self):
+        return CameraFrame(
+            frame_id=7,
+            timestamp=0.0,
+            frame=np.zeros((4, 4), dtype=np.uint16),
+            frame_format=CameraFrameFormat.RAW,
+            frame_pixel_format=CameraPixelFormat.MONO12,
+        )
+
+
+def test_capture_dark_stack_skips_duplicate_frame():
+    fake = _FixedFrameIdCamera()
+    result = cap.capture_dark_stack(
+        fake,
+        1.0,
+        n_frames=3,
+        warmup_frames=0,
+        sleep_fn=lambda s: None,
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Fix A4 — surface settle failure
+# ---------------------------------------------------------------------------
+
+
+def test_run_sweep_warns_on_settle_failure(caplog):
+    import logging
+
+    class StuckTempCamera:
+        """Camera whose temperature never reaches the setpoint."""
+
+        def set_exposure_time(self, ms):
+            pass
+
+        def get_ready_for_trigger(self):
+            return True
+
+        def send_trigger(self):
+            pass
+
+        def read_camera_frame(self):
+            return CameraFrame(
+                frame_id=_run_sweep_warns_on_settle_failure_counter(),
+                timestamp=0.0,
+                frame=np.zeros((4, 4), dtype=np.uint16),
+                frame_format=CameraFrameFormat.RAW,
+                frame_pixel_format=CameraPixelFormat.MONO12,
+            )
+
+        def set_temperature(self, t):
+            pass
+
+        def get_temperature(self):
+            return 25.0  # never reaches -10 C
+
+    # Monotonically incrementing frame_id generator so dedup never fires.
+    _counter = {"n": 0}
+
+    def _run_sweep_warns_on_settle_failure_counter():
+        _counter["n"] += 1
+        return _counter["n"]
+
+    fake_time = {"t": 0.0}
+
+    def now():
+        return fake_time["t"]
+
+    def sleep(s):
+        fake_time["t"] += s
+
+    with caplog.at_level(logging.WARNING, logger="hot_pixel_capture"):
+        results = cap.run_sweep(
+            StuckTempCamera(),
+            exposures_ms=[1.0],
+            temperatures_c=[-10.0],
+            n_frames=2,
+            thresholds=hp.DefectThresholds(),
+            pixel_format=CameraPixelFormat.MONO12,
+            settle_kwargs={
+                "sleep_fn": sleep,
+                "now_fn": now,
+                "timeout_s": 5.0,
+                "poll_interval_s": 6.0,  # one poll exceeds timeout immediately
+            },
+        )
+
+    assert len(results) == 1  # proceeds despite settle failure
+    assert any("did not settle" in r.message for r in caplog.records)

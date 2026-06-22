@@ -24,13 +24,15 @@ class DarkStack:
     n_frames: int
 
 
-def _trigger_and_read(camera: AbstractCamera, max_none_retries: int) -> Optional[np.ndarray]:
+def _trigger_and_read(camera: AbstractCamera, max_none_retries: int, should_stop=None):
     for _ in range(max_none_retries + 1):
+        if should_stop and should_stop():
+            return None
         if camera.get_ready_for_trigger():
             camera.send_trigger()
-        frame = camera.read_camera_frame()
-        if frame is not None:
-            return frame.frame
+        cam_frame = camera.read_camera_frame()
+        if cam_frame is not None:
+            return cam_frame
     return None
 
 
@@ -40,26 +42,46 @@ def capture_dark_stack(
     n_frames: int,
     warmup_frames: int = 2,
     max_none_retries: int = 5,
+    max_consecutive_failures: int = 10,
+    sleep_fn: Callable[[float], None] = time.sleep,
     should_stop: Optional[Callable[[], bool]] = None,
     on_frame: Optional[Callable[[int], None]] = None,
 ) -> Optional[DarkStack]:
+    if n_frames < 1:
+        raise ValueError(f"n_frames must be >= 1, got {n_frames}")
+
     camera.set_exposure_time(exposure_ms)
 
     for _ in range(warmup_frames):
         if should_stop and should_stop():
             return None
-        _trigger_and_read(camera, max_none_retries)
+        _trigger_and_read(camera, max_none_retries, should_stop=should_stop)
 
     acc: Optional[np.ndarray] = None
     min_proj: Optional[np.ndarray] = None
     max_proj: Optional[np.ndarray] = None
     captured = 0
+    last_frame_id = None
+    consecutive_failures = 0
+
     while captured < n_frames:
         if should_stop and should_stop():
             return None
-        frame = _trigger_and_read(camera, max_none_retries)
-        if frame is None:
+        cam_frame = _trigger_and_read(camera, max_none_retries, should_stop=should_stop)
+        if cam_frame is None or (last_frame_id is not None and cam_frame.frame_id == last_frame_id):
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                _log.warning(
+                    "capture_dark_stack: %d consecutive failed/duplicate reads at exposure %s ms; aborting",
+                    consecutive_failures,
+                    exposure_ms,
+                )
+                return None
+            sleep_fn(0.01)
             continue
+        consecutive_failures = 0
+        last_frame_id = cam_frame.frame_id
+        frame = cam_frame.frame
         f64 = frame.astype(np.float64)
         if acc is None:
             acc = f64.copy()
@@ -131,7 +153,14 @@ def run_sweep(
     for t in temps:
         actual_t: Optional[float] = None
         if t is not None:
-            _, actual_t = settle_temperature(camera, t, should_stop=should_stop, **(settle_kwargs or {}))
+            settled, actual_t = settle_temperature(camera, t, should_stop=should_stop, **(settle_kwargs or {}))
+            if not settled:
+                _log.warning(
+                    "Temperature did not settle to %sC (last reading %s); proceeding. "
+                    "Analyze by actual_temperature_c, not temperature_c.",
+                    t,
+                    actual_t,
+                )
         else:
             try:
                 actual_t = camera.get_temperature()
@@ -147,6 +176,9 @@ def run_sweep(
             stack = capture_dark_stack(camera, exposure_ms, n_frames, should_stop=should_stop)
             if stack is None:
                 return results
+            darkness_msg = hot_pixels.darkness_check(stack.mean, black_level, max_value)
+            if darkness_msg is not None:
+                _log.warning("%s: %s", hot_pixels.condition_label(t, exposure_ms), darkness_msg)
             result = hot_pixels.detect_defects(
                 stack.mean, stack.min_proj, stack.max_proj, max_value, thresholds, black_level
             )
