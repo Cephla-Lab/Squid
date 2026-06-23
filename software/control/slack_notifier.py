@@ -23,6 +23,7 @@ import numpy as np
 
 import control._def
 import squid.logging
+import squid.slack
 
 log = squid.logging.get_logger(__name__)
 
@@ -158,58 +159,7 @@ class SlackNotifier:
                 log.warning(f"Error in Slack worker loop: {e}")
 
     def _post_message(self, text: str, blocks: Optional[list] = None) -> Tuple[bool, Optional[str]]:
-        """Post a message to Slack using chat.postMessage API.
-
-        Args:
-            text: Fallback text for the message.
-            blocks: Optional Block Kit blocks for rich formatting.
-
-        Returns:
-            Tuple of (success, message_ts) where message_ts is the timestamp
-            of the posted message (used for threading).
-        """
-        token = self.bot_token
-        channel = self.channel_id
-
-        if not token or not channel:
-            log.debug("No Slack bot token or channel configured")
-            return False, None
-
-        try:
-            log.info(f"Sending Slack message: {text[:50]}")
-            payload = {
-                "channel": channel,
-                "text": text,
-            }
-            if blocks:
-                payload["blocks"] = blocks
-
-            data = json.dumps(payload).encode("utf-8")
-            request = urllib.request.Request(
-                f"{self.SLACK_API_BASE}/chat.postMessage",
-                data=data,
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    "Authorization": f"Bearer {token}",
-                },
-                method="POST",
-            )
-
-            with urllib.request.urlopen(request, timeout=15) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                if result.get("ok"):
-                    log.info("Slack message sent successfully")
-                    return True, result.get("ts")
-                else:
-                    log.warning(f"Slack API error: {result.get('error')}")
-                    return False, None
-
-        except urllib.error.URLError as e:
-            log.warning(f"Failed to send Slack message: {e}")
-            return False, None
-        except Exception as e:
-            log.warning(f"Unexpected error sending Slack message: {e}")
-            return False, None
+        return squid.slack.post_message(self.bot_token, self.channel_id, text, blocks)
 
     def _upload_image(
         self,
