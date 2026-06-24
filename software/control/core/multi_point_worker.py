@@ -30,6 +30,7 @@ from control.microscope import Microscope
 from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
+import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
 from control.core.job_processing import ZarrWriteResult
@@ -81,6 +82,7 @@ class MultiPointWorker:
         slack_notifier=None,
         prewarmed_job_runner: Optional[JobRunner] = None,
         prewarmed_bp_values: Optional["BackpressureValues"] = None,
+        run_state_writer=None,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
@@ -110,6 +112,8 @@ class MultiPointWorker:
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
+        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
+        self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 

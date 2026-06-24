@@ -28,6 +28,7 @@ from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+import squid.acquisition_state
 import squid.logging
 
 
@@ -872,6 +873,27 @@ class MultiPointController:
                 self.overlap_percent,
             )
 
+            # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
+            self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
+            try:
+                expected = {
+                    "timepoints": self.Nt,
+                    "regions": len(scan_position_information.scan_region_coords_mm),
+                    "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
+                    "channels": len(self.selected_configurations),
+                    "z": self.NZ,
+                }
+                config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
+                self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
+                    experiment_id=self.experiment_ID,
+                    pid=os.getpid(),
+                    config_path=config_path,
+                    output_path=experiment_path,
+                    expected=expected,
+                )
+            except Exception as e:
+                self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
+
             # Get pre-warmed job runner and its shared backpressure values
             # (starts a new one warming for next acquisition)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
@@ -893,6 +915,7 @@ class MultiPointController:
                     slack_notifier=self._slack_notifier,
                     prewarmed_job_runner=prewarmed_runner,
                     prewarmed_bp_values=prewarmed_bp_values,
+                    run_state_writer=self._run_state_writer,
                 )
             except Exception:
                 # Clean up pre-warmed runner if worker creation failed.
