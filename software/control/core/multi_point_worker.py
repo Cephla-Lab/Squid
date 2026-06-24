@@ -120,6 +120,7 @@ class MultiPointWorker:
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
         self.use_piezo = acquisition_parameters.use_piezo
         self.apply_channel_offset = acquisition_parameters.apply_channel_offset
+        self.region_laser_af_offsets = acquisition_parameters.region_laser_af_offsets
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
         self.experiment_ID = acquisition_parameters.experiment_ID
@@ -1155,7 +1156,10 @@ class MultiPointWorker:
             # value, NOT by raising — both paths must mark the FOV's AF as failed or
             # the per-channel z-offset gate would apply offsets from an unanchored z.
             try:
-                af_succeeded = self.laser_auto_focus_controller.move_to_target(0)
+                target_um = self.region_laser_af_offsets.get(region_id, 0.0)
+                if target_um:
+                    self._log.info(f"laser AF target for region '{region_id}': {target_um:.2f} µm")
+                af_succeeded = self.laser_auto_focus_controller.move_to_target(target_um)
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)

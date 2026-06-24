@@ -360,6 +360,9 @@ def _af_stub(*, move_to_target_result=True, move_to_target_raises=False):
         w.laser_auto_focus_controller.move_to_target.return_value = move_to_target_result
     w._laser_af_successes = 0
     w._laser_af_failures = 0
+    # perform_autofocus reads this per-region target map (empty -> target 0.0, the
+    # pre-existing behavior); the real worker sets it in __init__.
+    w.region_laser_af_offsets = {}
     w.perform_autofocus = MultiPointWorker.perform_autofocus.__get__(w)
     return w
 

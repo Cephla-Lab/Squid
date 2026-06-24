@@ -226,6 +226,7 @@ class MultiPointController:
         self.overlap_percent = 10.0  # FOV overlap percentage
 
         self.focus_map = None
+        self.region_laser_af_offsets = {}
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -414,6 +415,11 @@ class MultiPointController:
 
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
+
+    def set_region_laser_af_offsets(self, offsets):
+        # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
+        # every FOV targets the reference (displacement 0), i.e. current behavior.
+        self.region_laser_af_offsets = dict(offsets or {})
 
     def set_base_path(self, path):
         self.base_path = path
@@ -842,6 +848,13 @@ class MultiPointController:
 
             acquisition_params = self.build_params(scan_position_information=scan_position_information)
 
+            # build_params has captured the per-region laser-AF offsets into
+            # acquisition_params for THIS run; clear the controller's copy now so a later
+            # acquisition from an entry point that never pushes offsets (e.g. fluidics or
+            # the control server) cannot inherit stale targets. Rebinding (not mutating)
+            # leaves the copy already handed to acquisition_params intact.
+            self.region_laser_af_offsets = {}
+
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
             objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
@@ -958,6 +971,7 @@ class MultiPointController:
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
+            region_laser_af_offsets=self.region_laser_af_offsets,
         )
 
     def _on_acquisition_completed(self):
