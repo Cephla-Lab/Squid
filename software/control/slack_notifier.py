@@ -52,6 +52,7 @@ class AcquisitionStats:
     total_duration_seconds: float
     errors_encountered: int
     experiment_id: str
+    reason: str = "completed"
 
 
 @dataclass

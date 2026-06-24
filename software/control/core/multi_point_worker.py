@@ -428,8 +428,28 @@ class MultiPointWorker:
         )
         return True
 
+    def _run_state_beat(self) -> None:
+        self._run_state.beat(
+            {
+                "timepoint": self.time_point,
+                "expected_timepoints": self.Nt,
+                "fov": self._timepoint_fov_count,
+                "images": self.image_count,
+            }
+        )
+
+    def _compute_end_reason(self) -> str:
+        if self._run_state_fatal:
+            return "error"
+        if self.abort_requested_fn():
+            return "error" if self._abort_cause == "error" else "user_abort"
+        if self._acquisition_error_count > 0:
+            return "completed_with_errors"
+        return "completed"
+
     def run(self):
         this_image_callback_id = None
+        self._run_state_fatal = False
         try:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
@@ -461,6 +481,7 @@ class MultiPointWorker:
                 if self.abort_requested_fn():
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
+                self._run_state_beat()
 
                 # Gate on laser engine readiness for the channels this acquisition will fire.
                 # Re-checked every timepoint so dt-induced sleep gaps are handled.
@@ -506,6 +527,7 @@ class MultiPointWorker:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
+                        self._run_state_beat()
                         self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
@@ -517,9 +539,11 @@ class MultiPointWorker:
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
+            self._abort_cause = "error"
             self.request_abort_fn()
         except Exception as e:
             self._log.exception(e)
+            self._run_state_fatal = True
             raise
         finally:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
@@ -531,16 +555,29 @@ class MultiPointWorker:
 
             self._finish_jobs()
 
+            # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
+            reason = self._compute_end_reason()
+            total_duration = time.time() - self.timestamp_acquisition_started
+            self._run_state.end(
+                reason,
+                {
+                    "total_images": self.image_count,
+                    "total_timepoints": self.time_point,
+                    "total_duration_seconds": total_duration,
+                    "errors_encountered": self._acquisition_error_count,
+                },
+            )
+
             # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
             if self._slack_notifier is not None:
                 try:
-                    total_duration = time.time() - self.timestamp_acquisition_started
                     stats = AcquisitionStats(
                         total_images=self.image_count,
                         total_timepoints=self.time_point,
                         total_duration_seconds=total_duration,
                         errors_encountered=self._acquisition_error_count,
                         experiment_id=self.experiment_ID or "unknown",
+                        reason=reason,
                     )
                     self.callbacks.signal_slack_acquisition_finished(stats)
                 except Exception as e:
@@ -1033,6 +1070,7 @@ class MultiPointWorker:
                     result = self._summarize_runner_outputs()
                     if not result.none_failed and self._abort_on_failed_job:
                         self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
+                        self._abort_cause = "error"
                         self.request_abort_fn()
                         return
 
@@ -1337,6 +1375,7 @@ class MultiPointWorker:
                 # Increment image counter for Slack notification stats
                 self._timepoint_image_count += 1
                 self.image_count += 1
+                self._run_state_beat()
 
                 with self._timing.get_timer("job creation and dispatch"):
                     # Wait for subprocess to be ready before first dispatch

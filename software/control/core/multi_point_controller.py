@@ -693,6 +693,7 @@ class MultiPointController:
             log_memory("ACQUISITION START", include_children=True)
 
         thread_started = False
+        self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
             self._log.info("start multipoint")
             self._start_position = self.stage.get_pos()
@@ -935,6 +936,9 @@ class MultiPointController:
             self.thread.start()
         finally:
             if not thread_started:
+                # Acquisition never launched a worker — close out the breadcrumb so the
+                # watchdog doesn't later misread the lingering "running" state as a hang.
+                self._run_state_writer.end("error", None)
                 self._stop_per_acquisition_log()
                 # Stop memory monitor if acquisition setup failed
                 if self._memory_monitor is not None:
