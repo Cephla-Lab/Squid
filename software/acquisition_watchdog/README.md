@@ -21,7 +21,9 @@ in that section to disable watchdog alerts on a machine.
 
 ## Install as an always-on service
 - **Linux:** see `systemd/squid-acquisition-watchdog.service` (header has steps).
-- **Windows:** run `windows/install.ps1` (registers a logon-triggered task).
+- **Windows:** run `windows/install.ps1` (registers a logon-triggered task). Ensure
+  `pythonw.exe` is on `PATH`, or edit the `-Execute` value in `install.ps1` to the full
+  Python path.
 
 ## State dir
 Defaults to `platformdirs.user_state_path("squid","cephla")/watchdog`. Override with
