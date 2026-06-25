@@ -562,6 +562,9 @@ class SlackNotifier:
         """Send an acquisition completion notification to Slack."""
         if not control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_FINISHED:
             return
+        if stats.reason != "completed":
+            # Premature/degraded ends are reported once by the acquisition watchdog.
+            return
 
         duration_str = self._format_duration(stats.total_duration_seconds)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
