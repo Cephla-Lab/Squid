@@ -1,8 +1,6 @@
 .DS_Store
 *.pyc
 *.xml
-# Acquisition watchdog Windows Task Scheduler definition (committed deployment artifact)
-!software/acquisition_watchdog/windows/squid-acquisition-watchdog.xml
 **/.idea/
 .migration_complete
 
