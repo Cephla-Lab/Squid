@@ -43,12 +43,12 @@ class Monitor:
     def __init__(
         self,
         state_dir: Optional[Path] = None,
-        cli_config: Optional[str] = None,
+        slack_settings: Optional[str] = None,
         poll_interval: float = 5.0,
         heartbeat_timeout: float = 120.0,
     ):
         self._state_dir = Path(state_dir) if state_dir else None
-        self._cli_config = cli_config
+        self._slack_settings = slack_settings
         self._poll = poll_interval
         self._timeout = heartbeat_timeout
         base = self._state_dir or acquisition_state.default_state_dir()
@@ -91,7 +91,7 @@ class Monitor:
         if kind is None:
             return
 
-        cfg_path = config.resolve_config_path(self._cli_config, run)
+        cfg_path = config.resolve_slack_settings_path(self._slack_settings)
         slack_cfg = config.load_slack_config(cfg_path)
         if not (slack_cfg.bot_token and slack_cfg.channel_id and slack_cfg.watchdog_enabled):
             _log.warning(

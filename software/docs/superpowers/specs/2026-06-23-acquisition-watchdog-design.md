@@ -37,8 +37,8 @@ Three parts, with a clean dependency DAG (`acquisition_watchdog` → `squid`; `c
   └───────────────────────────────────────────────┘
                                                           reads
   acquisition_watchdog  (independent always-on process) ◄────────  <state_dir>/run.json
-    poll every ~5s → classify → Slack alert (once per run_id)      reads [SlackNotifications]
-                                                                    from the active .ini
+    poll every ~5s → classify → Slack alert (once per run_id)      reads bot_token/channel_id
+                                                                    from cache/slack_settings.yaml
 ```
 
 ### Part 1 — Breadcrumb protocol (in the acquisition engine)
@@ -153,18 +153,17 @@ both the notifier and the watchdog. Image upload (`files.getUploadURLExternal`) 
 
 ## Config sharing
 
-The watchdog reads the **same `[SlackNotifications]`** the GUI uses (token, channel,
-enabled). Resolution order: `--config` flag → `SQUID_CONFIG` env →
-`run.json.config_path` (written by the GUI, so the watchdog auto-discovers the active
-`.ini` with no args) → `cache/config_file_path.txt`. Parsed with stdlib `configparser`;
-the watchdog never imports `control._def`. One new opt-out key,
-`[SlackNotifications] watchdog_enabled` (default `True` when a token+channel are set), lets
-a machine disable watchdog alerts without disabling the in-process notifier.
+The watchdog reads the **same `cache/slack_settings.yaml`** the GUI writes and loads
+(`bot_token` / `channel_id` / `enabled`), resolved cwd-relative or overridden via the
+`--slack-settings` flag or `$SQUID_SLACK_SETTINGS` env. It is parsed with `yaml`; the
+watchdog never imports `control._def`. A `watchdog_enabled: false` key (default `true`)
+disables watchdog alerts on a machine without disabling the in-process GUI notifier.
 
 ## Deployment — always-on user service
 
-Core process is just `python -m acquisition_watchdog [--config <ini>]`, identical on both
-OSes. Shipped recipes:
+Core process is just `python -m acquisition_watchdog [--slack-settings <yaml>]`, identical on
+both OSes (run from `software/` so the default `cache/slack_settings.yaml` resolves). Shipped
+recipes:
 
 - **Linux:** a systemd **`--user`** unit (`Restart=always`, `WantedBy=default.target`),
   `systemctl --user enable --now squid-acquisition-watchdog`. Runs as the same user as the
@@ -184,7 +183,7 @@ mount — see Future work.
 | `squid/slack.py` | shared dependency-free `chat.postMessage` sender |
 | `software/acquisition_watchdog/__main__.py` | CLI entry (`python -m acquisition_watchdog`) |
 | `software/acquisition_watchdog/monitor.py` | poll loop + classification + dedup |
-| `software/acquisition_watchdog/config.py` | resolve active `.ini`, load `[SlackNotifications]` |
+| `software/acquisition_watchdog/config.py` | resolve & load `cache/slack_settings.yaml` (the GUI's Slack creds) |
 | `software/acquisition_watchdog/alerts.py` | format the Slack alert payload |
 | `software/acquisition_watchdog/systemd/`, `windows/`, `README.md` | install recipes + docs |
 | `control/core/multi_point_controller.py`, `control/core/multi_point_worker.py` | write breadcrumbs (start / beat / end) + abort-cause tagging |
@@ -202,8 +201,8 @@ filesystem-events package.
   state (`running`+stale heartbeat, `running`+dead PID, each `ended` reason, `completed`)
   → expected alert/no-alert; dedup (no double alert per `run_id`, persists across a
   monitor restart via `alerted.json`).
-- `acquisition_watchdog/config.py`: resolution precedence (`--config` > env >
-  `run.json.config_path` > cache pointer); missing/disabled Slack → logs, no crash.
+- `acquisition_watchdog/config.py`: resolution precedence (`--slack-settings` > env >
+  default `cache/slack_settings.yaml`); missing/disabled Slack → logs, no crash.
 - `squid/slack.py`: monkeypatch `urllib`, assert request shape; no network.
 - PID check: alive (current pid) vs an impossible/known-dead pid, on the available
   platform; graceful degrade when `psutil` absent.

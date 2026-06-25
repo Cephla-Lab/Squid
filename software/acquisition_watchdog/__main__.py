@@ -14,7 +14,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         prog="acquisition_watchdog",
         description="Alert on prematurely-ended Squid acquisitions (crash/hang/abort/error).",
     )
-    parser.add_argument("--config", help="Path to the active configuration .ini ([SlackNotifications]).")
+    parser.add_argument(
+        "--slack-settings",
+        help="Path to the Slack settings YAML (defaults to ./cache/slack_settings.yaml, "
+        "the same file the GUI writes).",
+    )
     parser.add_argument("--state-dir", help="Override the watchdog state directory.")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between checks (default 5).")
     parser.add_argument(
@@ -29,7 +33,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     log = squid.logging.get_logger("acquisition_watchdog")
     monitor = Monitor(
         state_dir=Path(args.state_dir) if args.state_dir else None,
-        cli_config=args.config,
+        slack_settings=args.slack_settings,
         poll_interval=args.poll_interval,
         heartbeat_timeout=args.heartbeat_timeout,
     )

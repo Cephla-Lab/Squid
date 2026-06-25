@@ -11,13 +11,16 @@ run dies, hangs, or ends with a non-clean reason. Clean completions are silent.
 
 ## Run it
     cd software
-    python3 -m acquisition_watchdog --config ./configuration.ini
+    python3 -m acquisition_watchdog
 
-Options: `--state-dir`, `--poll-interval` (5s), `--heartbeat-timeout` (120s), `--once`.
+Options: `--slack-settings`, `--state-dir`, `--poll-interval` (5s), `--heartbeat-timeout` (120s), `--once`.
 
-Slack credentials are read from the `[SlackNotifications]` section of the active
-`.ini` (same `bot_token` / `channel_id` the GUI uses). Set `watchdog_enabled = False`
-in that section to disable watchdog alerts on a machine.
+Slack credentials are read from `cache/slack_settings.yaml` — the same file the GUI's
+Slack settings dialog writes (keys `bot_token`, `channel_id`, `enabled`). Run the
+watchdog from the `software/` directory (so the default `cache/slack_settings.yaml`
+path resolves), or pass `--slack-settings <path>`. To disable watchdog alerts on a
+machine without disabling the GUI's notifications, add `watchdog_enabled: false` to
+that YAML.
 
 ## Install as an always-on service
 - **Linux:** see `systemd/squid-acquisition-watchdog.service` (header has steps).

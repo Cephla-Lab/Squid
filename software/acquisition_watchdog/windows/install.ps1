@@ -1,16 +1,15 @@
 # Run in PowerShell (as the user who runs the Squid GUI), from software\ :
 #   .\acquisition_watchdog\windows\install.ps1
 # Registers a logon-triggered scheduled task that runs the acquisition watchdog.
-# Edit $workingDir / $configPath below if your install path differs.
+# Edit $workingDir below if your install path differs.
 $ErrorActionPreference = "Stop"
 
 $taskName   = "SquidAcquisitionWatchdog"
 $workingDir = "C:\Squid\software"
-$configPath = "C:\Squid\software\configuration.ini"
 
 $action = New-ScheduledTaskAction `
     -Execute "pythonw.exe" `
-    -Argument "-m acquisition_watchdog --config `"$configPath`"" `
+    -Argument "-m acquisition_watchdog" `
     -WorkingDirectory $workingDir
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn

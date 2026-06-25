@@ -1,7 +1,7 @@
 # Install (per user):
 #   mkdir -p ~/.config/systemd/user
 #   cp acquisition_watchdog/systemd/squid-acquisition-watchdog.service ~/.config/systemd/user/
-#   # edit WorkingDirectory + --config below to match this machine, then:
+#   # edit WorkingDirectory below to match this machine, then:
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now squid-acquisition-watchdog
 [Unit]
@@ -11,7 +11,7 @@ After=default.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Squid/software
-ExecStart=/usr/bin/python3 -m acquisition_watchdog --config %h/Squid/software/configuration.ini
+ExecStart=/usr/bin/python3 -m acquisition_watchdog
 Restart=always
 RestartSec=5
 
