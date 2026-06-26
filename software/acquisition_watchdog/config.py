@@ -15,7 +15,6 @@ import yaml
 
 
 class SlackConfig(NamedTuple):
-    enabled: bool
     bot_token: Optional[str]
     channel_id: Optional[str]
     watchdog_enabled: bool
@@ -37,16 +36,15 @@ def resolve_slack_settings_path(cli_path: Optional[str]) -> Path:
 def load_slack_config(path: Optional[Path]) -> SlackConfig:
     p = Path(path) if path else Path(DEFAULT_SLACK_SETTINGS)
     if not p.exists():
-        return SlackConfig(False, None, None, True)
+        return SlackConfig(None, None, True)
     try:
         with open(p) as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return SlackConfig(False, None, None, True)
+        return SlackConfig(None, None, True)
     if not isinstance(data, dict):
-        return SlackConfig(False, None, None, True)
+        return SlackConfig(None, None, True)
     return SlackConfig(
-        enabled=bool(data.get("enabled", False)),
         bot_token=(data.get("bot_token") or None),
         channel_id=(data.get("channel_id") or None),
         watchdog_enabled=bool(data.get("watchdog_enabled", True)),

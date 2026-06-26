@@ -26,7 +26,6 @@ def test_load_reads_credentials_from_yaml(tmp_path):
         {"enabled": True, "bot_token": "xoxb-xyz", "channel_id": "C42"},
     )
     cfg = wdconfig.load_slack_config(p)
-    assert cfg.enabled is True
     assert cfg.bot_token == "xoxb-xyz"
     assert cfg.channel_id == "C42"
     assert cfg.watchdog_enabled is True  # default when key absent

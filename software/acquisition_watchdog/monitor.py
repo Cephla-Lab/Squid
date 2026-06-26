@@ -51,8 +51,8 @@ class Monitor:
         self._slack_settings = slack_settings
         self._poll = poll_interval
         self._timeout = heartbeat_timeout
-        base = self._state_dir or acquisition_state.default_state_dir()
-        self._alerted_path = base / "alerted.json"
+        self._base = self._state_dir or acquisition_state.default_state_dir()
+        self._alerted_path = self._base / "alerted.json"
         self._alerted = self._load_alerted()
 
     def _load_alerted(self) -> Set[str]:
@@ -115,8 +115,7 @@ class Monitor:
         self._save_alerted()
 
     def run_forever(self) -> None:
-        base = self._state_dir or acquisition_state.default_state_dir()
-        _log.info(f"Acquisition watchdog started. state_dir={base} heartbeat_timeout={self._timeout}s")
+        _log.info(f"Acquisition watchdog started. state_dir={self._base} heartbeat_timeout={self._timeout}s")
         while True:
             try:
                 self.check_once(time.time())

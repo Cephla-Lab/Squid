@@ -112,11 +112,11 @@ class RunStateWriter:
         return self._record.get("run_id")
 
     def beat(self, progress: Optional[dict] = None, force: bool = False) -> None:
-        if progress:
-            self._record["progress"] = progress
         now = time.time()
         if not force and (now - self._last_beat) < HEARTBEAT_INTERVAL_S:
             return
+        if progress:
+            self._record["progress"] = progress
         self._last_beat = now
         self._record["heartbeat_at"] = now
         self._flush()

@@ -428,11 +428,20 @@ class MultiPointWorker:
         )
         return True
 
+    def _abort_due_to_error(self) -> None:
+        """Abort the run due to an internal error (vs a user abort).
+
+        The worker only ever aborts itself on error conditions; user aborts arrive
+        via the external abort flag. Tagging the cause here lets _compute_end_reason
+        classify the end as "error" instead of "user_abort".
+        """
+        self._abort_cause = "error"
+        self.request_abort_fn()
+
     def _run_state_beat(self) -> None:
         self._run_state.beat(
             {
                 "timepoint": self.time_point,
-                "expected_timepoints": self.Nt,
                 "fov": self._timepoint_fov_count,
                 "images": self.image_count,
             }
@@ -539,8 +548,7 @@ class MultiPointWorker:
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
-            self._abort_cause = "error"
-            self.request_abort_fn()
+            self._abort_due_to_error()
         except Exception as e:
             self._log.exception(e)
             self._run_state_fatal = True
@@ -1070,8 +1078,7 @@ class MultiPointWorker:
                     result = self._summarize_runner_outputs()
                     if not result.none_failed and self._abort_on_failed_job:
                         self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
-                        self._abort_cause = "error"
-                        self.request_abort_fn()
+                        self._abort_due_to_error()
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
@@ -1363,13 +1370,13 @@ class MultiPointWorker:
                 self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     return
 
                 image = camera_frame.frame
                 if not camera_frame or image is None:
                     self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     return
 
                 # Increment image counter for Slack notification stats
@@ -1399,7 +1406,7 @@ class MultiPointWorker:
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
                                 self._log.error("Failed to dispatch multiprocessing job!")
-                                self.request_abort_fn()
+                                self._abort_due_to_error()
                                 return
                         else:
                             try:
@@ -1408,7 +1415,7 @@ class MultiPointWorker:
                                 result = job.run()
                             except Exception:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.request_abort_fn()
+                                self._abort_due_to_error()
                                 return
 
                 height, width = image.shape[:2]
@@ -1451,7 +1458,7 @@ class MultiPointWorker:
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
                 self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-                self.request_abort_fn()
+                self._abort_due_to_error()
                 return
 
         # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
@@ -1511,7 +1518,7 @@ class MultiPointWorker:
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
                 if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
                     self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
 

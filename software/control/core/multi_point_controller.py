@@ -875,7 +875,8 @@ class MultiPointController:
             )
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
-            self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
+            # self._run_state_writer is already a NullRunStateWriter (set before the outer try); it
+            # stays one if start() below fails, so a breadcrumb write failure never breaks acquisition.
             try:
                 expected = {
                     "timepoints": self.Nt,

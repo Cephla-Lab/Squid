@@ -66,7 +66,7 @@ def test_dedup_persists_across_restart(tmp_path, monkeypatch):
     monkeypatch.setattr("squid.slack.post_message", lambda *a, **k: (sent.append(a) or (True, "1")))
     monkeypatch.setattr(
         "acquisition_watchdog.config.load_slack_config",
-        lambda p: SlackConfig(True, "xoxb", "C1", True),
+        lambda p: SlackConfig("xoxb", "C1", True),
     )
     Monitor(state_dir=tmp_path).check_once(time.time())
     assert len(sent) == 1
