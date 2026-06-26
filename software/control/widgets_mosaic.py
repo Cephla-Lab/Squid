@@ -34,7 +34,7 @@ from napari.utils.colormaps import AVAILABLE_COLORMAPS
 
 import control._def
 from control._def import CHANNEL_COLORS_MAP, FILE_ID_PADDING
-from control.core.mosaic_utils import downsample_tile, format_well_id, parse_well_id
+from control.core.mosaic_utils import downsample_tile, format_well_id, parse_well_id, resample_tile_to_pixel_size
 from control.utils import ensure_directory_exists, serialize_for_yaml
 from control.utils_channel import extract_wavelength_from_config_name
 import squid.logging
@@ -451,28 +451,37 @@ class UnifiedMosaicWidget(QWidget):
         y_mm = update.y_mm
         channel_name = update.channel_name
 
-        # Pixel size feeds both downsample_factor and viewer_pixel_size_mm,
-        # which in turn drive every tile coordinate on the canvas. A
-        # mid-session change (Preferences → Mosaic Target Pixel Size,
-        # objective swap, or binning change) makes already-placed tiles
-        # land at coordinates inconsistent with new ones. Detect and reset.
+        # Pixel size drives every tile coordinate on the canvas, so all tiles
+        # on one canvas must agree on it. The two modes reach that agreement
+        # differently (see each branch).
         target_pixel_size_um = float(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         live_pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-        live_downsample = max(1, int(round(target_pixel_size_um / live_pixel_size_um)))
-        if self._pixel_size_um > 0.0 and (
-            not math.isclose(live_pixel_size_um, self._pixel_size_um) or live_downsample != self._downsample_factor
-        ):
-            self._log.info("Pixel size changed since last tile; clearing canvas to keep tile positions consistent.")
-            self.clearAllLayers()
 
-        if self._pixel_size_um == 0.0:
-            self._pixel_size_um = live_pixel_size_um
-            # Must match downsample_tile() and _emit_plate_layout, else
-            # image_pixel_size_mm diverges from the rendered canvas.
-            self._downsample_factor = live_downsample
+        if self.mode == DisplayMode.MOSAIC:
+            # Full View renders every tile at EXACTLY the target pixel size, so tiles
+            # from any magnification share one grid and coexist. Only a change to the
+            # target itself (Preferences) forces a clear — objective/binning never do.
+            if self.layers_initialized and not math.isclose(self.viewer_pixel_size_mm, target_pixel_size_um / 1000):
+                self._log.info("Mosaic target pixel size changed; clearing canvas.")
+                self.clearAllLayers()
+            image = resample_tile_to_pixel_size(image, live_pixel_size_um, target_pixel_size_um)
+            image_pixel_size_mm = target_pixel_size_um / 1000
+        else:
+            # Plate View keeps the integer-factor downsample: the slot geometry in
+            # multi_point_worker._emit_plate_layout is sized to match int(round(target/source)),
+            # so the rendered effective pixel size must use the same integer factor.
+            live_downsample = max(1, int(round(target_pixel_size_um / live_pixel_size_um)))
+            if self._pixel_size_um > 0.0 and (
+                not math.isclose(live_pixel_size_um, self._pixel_size_um) or live_downsample != self._downsample_factor
+            ):
+                self._log.info("Pixel size changed since last tile; clearing canvas to keep tile positions consistent.")
+                self.clearAllLayers()
+            if self._pixel_size_um == 0.0:
+                self._pixel_size_um = live_pixel_size_um
+                self._downsample_factor = live_downsample
+            image = downsample_tile(image, self._pixel_size_um, target_pixel_size_um)
+            image_pixel_size_mm = (self._pixel_size_um * self._downsample_factor) / 1000
 
-        image = downsample_tile(image, self._pixel_size_um, target_pixel_size_um)
-        image_pixel_size_mm = (self._pixel_size_um * self._downsample_factor) / 1000
         tl_x_mm = x_mm - (image.shape[1] * image_pixel_size_mm) / 2
         tl_y_mm = y_mm - (image.shape[0] * image_pixel_size_mm) / 2
 
