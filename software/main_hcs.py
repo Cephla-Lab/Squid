@@ -445,6 +445,11 @@ if __name__ == "__main__":
             mpc.request_abort_aquisition()
             if getattr(mpc, "thread", None) is not None:
                 mpc.thread.join(timeout=15.0)
+                if mpc.thread.is_alive():
+                    log.warning(
+                        "Acquisition thread still alive 15s after abort request; exiting anyway — "
+                        "the watchdog may report this run as a crash."
+                    )
     except Exception as e:
         log.warning(f"Error during shutdown abort handling: {e}")
 
