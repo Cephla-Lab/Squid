@@ -8769,6 +8769,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def update_live_coordinates(self, pos: squid.abc.Pos):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+        # Don't move the live scan grid while an acquisition is running: the stage is stepping
+        # through the planned FOVs, and the orange planned-coordinate grid must stay fixed rather
+        # than re-centering on the current position.
+        if self.multipointController.acquisition_in_progress():
+            return
         # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide.
         # This disables updating scanning grid when focus map is checked
         if self.focusMapWidget is not None and self.focusMapWidget.enabled:
