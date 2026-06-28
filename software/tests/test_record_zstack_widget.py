@@ -305,7 +305,7 @@ def _make_live_channel(name: str, exposure: float, gain: float, intensity: float
 
 
 def test_copy_from_live_populates_recording_fields(qtbot, simulated_widget_deps):
-    """Copy-from-Live reads currentConfiguration and sets recording fields."""
+    """Copy-from-Live reads currentConfiguration and sets the recording table row."""
     from control.widgets import RecordZStackMultiPointWidget
 
     live_ch = _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0)
@@ -318,12 +318,12 @@ def test_copy_from_live_populates_recording_fields(qtbot, simulated_widget_deps)
     w.checkbox_recording.setChecked(True)
     w.btn_copy_from_live.click()
 
-    # Channel dropdown should be updated to the live channel name
-    assert w.combobox_recording_channel.currentText() == "Fluorescence 488 nm Ex"
-    # Exposure, gain, intensity spinboxes should reflect live channel values
-    assert w.entry_recording_exposure.value() == pytest.approx(33.0)
-    assert w.entry_recording_gain.value() == pytest.approx(2.5)
-    assert w.entry_recording_illumination.value() == pytest.approx(75.0)
+    # Channel combo in table row should be updated to the live channel name
+    assert w._recording_channel_name() == "Fluorescence 488 nm Ex"
+    # Spinboxes in table row should reflect live channel values
+    assert w._recording_exposure() == pytest.approx(33.0)
+    assert w._recording_gain() == pytest.approx(2.5)
+    assert w._recording_illumination() == pytest.approx(75.0)
 
 
 def test_add_remove_zstack_channel_row_syncs_list_and_table(qtbot, simulated_widget_deps):
@@ -349,20 +349,6 @@ def test_add_remove_zstack_channel_row_syncs_list_and_table(qtbot, simulated_wid
     assert len(w._zstack_channel_names) == 1
     assert "BF LED matrix full" not in w._zstack_channel_names
     assert "Fluorescence 488 nm Ex" in w._zstack_channel_names
-
-
-def test_computed_frame_label_updates_on_spinbox_change(qtbot, simulated_widget_deps):
-    """label_recording_frames updates to '→ N frames' when fps/duration change."""
-    from control.core.record_zstack_controller import frame_count
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.entry_fps.setValue(5.0)
-    w.entry_duration.setValue(4.0)
-    expected = frame_count(5.0, 4.0)  # 20
-    assert str(expected) in w.label_recording_frames.text()
 
 
 def test_computed_plane_label_updates_on_spinbox_change(qtbot, simulated_widget_deps):
@@ -395,7 +381,7 @@ def test_computed_plane_label_degrades_gracefully_on_invalid_range(qtbot, simula
 
 
 def test_build_parameters_uses_inline_editor_values(qtbot, simulated_widget_deps):
-    """build_parameters() reflects inline editor values, not just channel name lookup."""
+    """build_parameters() reflects recording table row values, not just channel name lookup."""
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
@@ -404,10 +390,10 @@ def test_build_parameters_uses_inline_editor_values(qtbot, simulated_widget_deps
     w.checkbox_recording.setChecked(True)
     w.checkbox_zstack.setChecked(False)
 
-    # Set inline editor values
-    w.entry_recording_exposure.setValue(99.0)
-    w.entry_recording_gain.setValue(1.5)
-    w.entry_recording_illumination.setValue(60.0)
+    # Set values via the table's spinbox cell widgets
+    w._recording_exp_spin.setValue(99.0)
+    w._recording_gain_spin.setValue(1.5)
+    w._recording_illum_spin.setValue(60.0)
 
     params = w.build_parameters()
     assert params.recording_channel is not None
@@ -799,3 +785,141 @@ def test_signal_acquisition_started_emits_false_when_run_raises(qtbot, simulated
     assert emitted == [True, False]
     # Button must be un-checked after a failed start.
     assert not w.btn_startAcquisition.isChecked()
+
+
+# ---------------------------------------------------------------------------
+# FOV-grid wiring tests (entry_scan_size / entry_overlap / combobox_shape)
+# ---------------------------------------------------------------------------
+
+
+def test_entry_scan_size_exists(qtbot, simulated_widget_deps):
+    """entry_scan_size widget is created on the widget."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert hasattr(w, "entry_scan_size")
+
+
+def test_fov_grid_wired_overlap_calls_set_well_coordinates(qtbot, simulated_widget_deps):
+    """Changing entry_overlap triggers scanCoordinates.set_well_coordinates with correct args."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    sc.reset_mock()
+    w.entry_overlap.setValue(20.0)
+
+    sc.set_well_coordinates.assert_called()
+    call_args = sc.set_well_coordinates.call_args
+    _scan_size_mm, overlap_pct, _shape = call_args.args
+    assert overlap_pct == pytest.approx(20.0)
+
+
+def test_fov_grid_wired_scan_size_calls_set_well_coordinates(qtbot, simulated_widget_deps):
+    """Changing entry_scan_size triggers scanCoordinates.set_well_coordinates with correct args."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    sc.reset_mock()
+    w.entry_scan_size.setValue(2.5)
+
+    sc.set_well_coordinates.assert_called()
+    call_args = sc.set_well_coordinates.call_args
+    scan_size_mm, _overlap_pct, _shape = call_args.args
+    assert scan_size_mm == pytest.approx(2.5)
+
+
+def test_fov_grid_wired_shape_calls_set_well_coordinates(qtbot, simulated_widget_deps):
+    """Changing combobox_shape triggers scanCoordinates.set_well_coordinates with correct shape."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    sc.reset_mock()
+    w.combobox_shape.setCurrentText("Circle")
+
+    sc.set_well_coordinates.assert_called()
+    call_args = sc.set_well_coordinates.call_args
+    _scan_size_mm, _overlap_pct, shape = call_args.args
+    assert shape == "Circle"
+
+
+def test_fov_grid_wired_set_well_coordinates_receives_all_three_args(qtbot, simulated_widget_deps):
+    """_update_scan_regions passes scan_size_mm, overlap_percent, shape to set_well_coordinates."""
+    from unittest.mock import MagicMock
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.entry_scan_size.setValue(1.5)
+    w.entry_overlap.setValue(15.0)
+    w.combobox_shape.setCurrentText("Rectangle")
+
+    sc.reset_mock()
+    w._update_scan_regions()
+
+    sc.set_well_coordinates.assert_called_once_with(pytest.approx(1.5), pytest.approx(15.0), "Rectangle")
+
+
+def test_fov_grid_no_crash_without_scan_coordinates(qtbot, simulated_widget_deps):
+    """_update_scan_regions is a no-op when scanCoordinates is None."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["scanCoordinates"] = None
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Must not raise
+    w._update_scan_regions()
+
+
+def test_toggle_acquisition_calls_update_scan_regions_before_run(qtbot, simulated_widget_deps):
+    """toggle_acquisition calls _update_scan_regions before run_acquisition."""
+    from unittest.mock import MagicMock
+
+    sc = MagicMock()
+    # Non-empty well selection so validate() passes (no modal warning dialog).
+    sc.get_selected_wells.return_value = {"A1": (0.0, 0.0)}
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.scanCoordinates = sc
+
+    sc.reset_mock()
+    ctrl.reset_mock()
+    ctrl.acquisition_in_progress.return_value = False
+
+    call_order = []
+    sc.set_well_coordinates.side_effect = lambda *a: call_order.append("set_well_coordinates")
+    ctrl.run_acquisition.side_effect = lambda *a: call_order.append("run_acquisition")
+
+    w.toggle_acquisition(True)
+
+    assert "set_well_coordinates" in call_order
+    assert "run_acquisition" in call_order
+    assert call_order.index("set_well_coordinates") < call_order.index("run_acquisition")
