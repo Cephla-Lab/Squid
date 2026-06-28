@@ -150,6 +150,50 @@ def test_recording_writer_start_failure_propagates_without_join_crash(tmp_path, 
     w.abort()
 
 
+def test_recording_writer_aborts_writer_when_thread_start_fails(tmp_path, monkeypatch):
+    """If initialize() succeeds but the drain thread fails to start, start() must
+    abort the already-opened ZarrWriter (no leak) and propagate the error."""
+    import pytest
+    from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    cfg = ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "rec.ome.zarr"),
+        shape=(2, 1, 1, 4, 4),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+    )
+
+    # initialize() succeeds (opens the writer); the drain thread then fails to start.
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    aborted = {"called": False}
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: aborted.__setitem__("called", True))
+
+    w = RecordingWriter(cfg)
+
+    class _BoomThread:
+        def start(self):
+            raise RuntimeError("boom from thread start")
+
+    w._thread = _BoomThread()
+
+    with pytest.raises(RuntimeError, match="boom from thread start"):
+        w.start()
+
+    # The writer that initialize() opened must be released, not leaked.
+    assert aborted["called"] is True
+    assert w._started is False
+    # subsequent finalize()/abort() stay safe no-ops.
+    w.finalize()
+    w.abort()
+
+
 class _CountingFakeSource:
     """Delivers all frames synchronously, even past the stop count, to exercise the
     out-of-bounds guard in _on_frame."""
