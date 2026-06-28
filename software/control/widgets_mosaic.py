@@ -138,7 +138,9 @@ class UnifiedMosaicWidget(QWidget):
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
 
-        # Cached after first tile so the hot-path doesn't repeat objective/camera lookups.
+        # Plate View only: cached after the first plate tile so its hot-path doesn't
+        # repeat objective/camera lookups. Full View renders at the exact target pixel
+        # size and does not read these (see updateTile's MOSAIC branch).
         self._pixel_size_um: float = 0.0
         self._downsample_factor: int = 1
 
