@@ -76,7 +76,14 @@ class RecordingWriter:
         cleanly no-ops the join and the original ``initialize()`` error propagates.
         """
         self._writer.initialize()
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception:
+            # initialize() already opened the writer, but the drain thread (its
+            # sole owner after start()) will never run to close it — release it
+            # here before propagating so we don't leak the ZarrWriter.
+            self._writer.abort()
+            raise
         self._started = True
 
     def enqueue(self, frame: np.ndarray, t: int, c: int, z: int) -> None:
