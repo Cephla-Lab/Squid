@@ -107,3 +107,35 @@ def test_combined_stage_routes_axes():
     assert combined.get_pos().x_mm == 0.0  # X from cephla
     combined.zero(False, False, True, False)  # z-zero routes to PIFocusStage (inert)
     assert abs(combined.get_pos().z_mm - 1.0) < 1e-9
+
+
+def test_pi_builder_simulated_returns_working_stage():
+    stage = squid.stage.pi.connect_pi_focus_stage(
+        simulated=True, reference=True, stage_config=squid.config.get_stage_config()
+    )
+    assert isinstance(stage, squid.stage.pi.PIFocusStage)
+    stage.move_z_to(0.5)
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9
+
+
+def test_resolve_port_by_sn(monkeypatch):
+    import serial.tools.list_ports
+
+    class _P:
+        def __init__(self, dev, sn):
+            self.device, self.serial_number = dev, sn
+
+    monkeypatch.setattr(
+        serial.tools.list_ports,
+        "comports",
+        lambda: [_P("/dev/ttyUSB0", "1UETR6I!"), _P("/dev/ttyUSB1", "other")],
+    )
+    assert squid.stage.pi._resolve_port_by_sn("1UETR6I!") == "/dev/ttyUSB0"
+
+
+def test_resolve_port_by_sn_missing_mentions_bind_rule(monkeypatch):
+    import serial.tools.list_ports
+
+    monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
+    with pytest.raises(RuntimeError, match="98-pi-c414-bind"):
+        squid.stage.pi._resolve_port_by_sn("1UETR6I!")

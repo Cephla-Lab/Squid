@@ -13,6 +13,7 @@ flip or offset and no use of ``Z_AXIS.MOVEMENT_SIGN`` (that is a Cephla-stepper 
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import suppress
 from typing import Optional, Tuple
 
@@ -227,3 +228,173 @@ class CombinedStage(AbstractStage):
             theta_neg_rad=theta_neg_rad,
         )
         self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
+
+
+class C414FocusStage:
+    """Single-axis closed-loop focus drive (V-308 on a C-414), GCS 2.0 via pipython.
+
+    SAFETY: the voice coil has no self-locking. ``reference()`` and ``autozero()`` MOVE the
+    stage -- run them with the objective clear of the sample.
+    """
+
+    def __init__(self, axis: str = "1"):
+        GCSDevice, GCSError, pitools = _import_pipython()
+        self._GCSError = GCSError
+        self._pitools = pitools
+        self.gcs = GCSDevice(CONTROLLERNAME)
+        self.axis = axis
+
+    # --- connection ----------------------------------------------------------
+    def connect_serial(self, comport, baudrate: int = 115200) -> None:
+        """Connect over the FTDI virtual COM port (115200 8-N-1) -- the default path."""
+        self.gcs.ConnectRS232(comport=comport, baudrate=baudrate)
+        self._after_connect()
+
+    def connect_tcpip(self, ipaddress: str, ipport: int = 50000) -> None:
+        self.gcs.ConnectTCPIP(ipaddress=ipaddress, ipport=ipport)
+        self._after_connect()
+
+    def connect_usb(self, serialnum: Optional[str] = None) -> None:
+        """Connect over USB via PI's GCS DLL (requires the PI software install)."""
+        if serialnum is None:
+            found = self.gcs.EnumerateUSB(mask=CONTROLLERNAME)
+            if not found:
+                raise RuntimeError("No C-414 found on USB.")
+            serialnum = found[0].split()[-1]
+        self.gcs.ConnectUSB(serialnum=serialnum)
+        self._after_connect()
+
+    def _after_connect(self) -> None:
+        if self.axis not in self.gcs.axes:
+            self.axis = self.gcs.axes[0]
+
+    # --- bring-up ------------------------------------------------------------
+    def initialize(self, reference: bool = True, ref_timeout: float = 60.0) -> None:
+        """Enable closed loop and (optionally) reference the axis (referencing MOVES it)."""
+        self.gcs.RON(self.axis, [True])
+        self.gcs.SVO(self.axis, [True])
+        if reference and not self.is_referenced():
+            self.reference(timeout=ref_timeout)
+
+    def is_referenced(self) -> bool:
+        return bool(self.gcs.qFRF(self.axis)[self.axis])
+
+    def reference(self, timeout: float = 60.0) -> None:
+        """Reference move to the optical reference switch (MOVES the stage)."""
+        self.gcs.FRF(self.axis)
+        self._pitools.waitonreferencing(self.gcs, axes=self.axis, timeout=timeout)
+        if not self.is_referenced():
+            raise RuntimeError("Reference move did not complete.")
+
+    def autozero(self, low_mm: float, timeout: float = 60.0) -> None:
+        """Compensate residual weight force so servo-off is safe (vertical mount; MOVES)."""
+        if not self.is_referenced():
+            raise RuntimeError("Axis must be referenced before autozero.")
+        self.gcs.ATZ(self.axis, [float(low_mm)])
+        self._pitools.waitonready(self.gcs, timeout=timeout)
+        if not bool(self.gcs.qATZ(self.axis)[self.axis]):
+            raise RuntimeError("Autozero did not succeed.")
+
+    # --- limits / config -----------------------------------------------------
+    def hardware_limits_mm(self) -> Tuple[float, float]:
+        return self.gcs.qTMN(self.axis)[self.axis], self.gcs.qTMX(self.axis)[self.axis]
+
+    def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
+        """Fence the reachable Z range (Position Range Limit min/max). Requires command level 1."""
+        self.gcs.CCL(1, CCL_PASSWORD)
+        self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
+        self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
+        if persist:
+            self.gcs.WPA(WPA_PASSWORD)
+        self.gcs.CCL(0)
+
+    def set_velocity(self, vel_mm_s: float) -> None:
+        self.gcs.VEL(self.axis, [vel_mm_s])
+
+    def get_velocity(self) -> float:
+        return self.gcs.qVEL(self.axis)[self.axis]
+
+    # --- motion --------------------------------------------------------------
+    def get_position_mm(self) -> float:
+        return self.gcs.qPOS(self.axis)[self.axis]
+
+    def on_target(self) -> bool:
+        return bool(self.gcs.qONT(self.axis)[self.axis])
+
+    def is_moving(self) -> bool:
+        return bool(self.gcs.IsMoving(self.axis)[self.axis])
+
+    def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
+        """Absolute move (mm). Returns the actual on-target position."""
+        self.gcs.MOV(self.axis, z_mm)
+        if wait:
+            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
+            if settle_s:
+                time.sleep(settle_s)
+        return self.get_position_mm()
+
+    def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
+        self.gcs.MVR(self.axis, dz_mm)
+        if wait:
+            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
+        return self.get_position_mm()
+
+    def stop(self) -> None:
+        with suppress(self._GCSError):
+            self.gcs.StopAll(noraise=True)
+
+    # --- teardown ------------------------------------------------------------
+    def close(self) -> None:
+        with suppress(Exception):
+            self.gcs.CloseConnection()
+
+    def __enter__(self) -> "C414FocusStage":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def _resolve_port_by_sn(serialnum: str) -> str:
+    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path."""
+    import serial.tools.list_ports
+
+    matches = [p.device for p in serial.tools.list_ports.comports() if p.serial_number == serialnum]
+    if not matches:
+        raise RuntimeError(
+            f"No serial port with serial_number={serialnum!r}. On Linux the C-414's custom-VID "
+            f"FTDI needs the ftdi_sio bind rule (98-pi-c414-bind.rules) installed so /dev/ttyUSB* "
+            f"appears; verify it is present and the controller is powered."
+        )
+    return matches[0]
+
+
+def connect_pi_focus_stage(
+    simulated: bool = False,
+    serialnum: Optional[str] = None,
+    serial_port: Optional[str] = None,
+    baudrate: int = 115200,
+    axis: str = "1",
+    reference: bool = True,
+    stage_config: Optional[StageConfig] = None,
+) -> PIFocusStage:
+    """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
+
+    With reference=True the bring-up references the axis, which MOVES the stage -- run with the
+    objective clear of the sample.
+    """
+    if simulated:
+        backend = _SimulatedC414(axis=axis)
+        backend.initialize(reference=reference)
+        return PIFocusStage(backend, stage_config=stage_config)
+
+    backend = C414FocusStage(axis=axis)
+    if serial_port:
+        port = serial_port
+    elif serialnum:
+        port = _resolve_port_by_sn(serialnum)
+    else:
+        raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
+    backend.connect_serial(port, baudrate=baudrate)
+    backend.initialize(reference=reference)
+    return PIFocusStage(backend, stage_config=stage_config)
