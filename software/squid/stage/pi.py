@@ -92,3 +92,71 @@ class _SimulatedC414:
 
     def close(self):
         pass
+
+
+class PIFocusStage(AbstractStage):
+    """Z-only AbstractStage backed by a C-414 / V-308. X / Y / theta are no-ops.
+
+    Z is pure pass-through: the backend's native mm is Squid's Z mm (no sign/offset,
+    no Z_AXIS.MOVEMENT_SIGN).
+    """
+
+    def __init__(self, c414, stage_config: Optional[StageConfig] = None):
+        super().__init__(stage_config)
+        self._c414 = c414
+
+    def move_z(self, rel_mm: float, blocking: bool = True):
+        self._c414.move_relative(rel_mm, wait=blocking)
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        self._c414.move_to(abs_mm, wait=blocking)
+
+    def get_pos(self) -> Pos:
+        return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._c414.get_position_mm(), theta_rad=None)
+
+    def get_state(self) -> StageStage:
+        return StageStage(busy=self._c414.is_moving())
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if not z:
+            return
+        if blocking:
+            self._c414.reference()
+        else:
+            threading.Thread(target=self._c414.reference, daemon=True, name="pi-z-home").start()
+
+    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if z:
+            self._log.warning(
+                "PIFocusStage.zero(z=True) is a no-op: the V-308 uses an absolute optical "
+                "reference. Use home() to re-reference."
+            )
+
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
+        if z_pos_mm is not None and z_neg_mm is not None:
+            self._c414.set_travel_limits(z_neg_mm, z_pos_mm)
+
+    def move_x(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_x")
+
+    def move_y(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_y")
+
+    def move_x_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_x_to")
+
+    def move_y_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_y_to")
+
+    def _no_xy(self, name: str):
+        self._log.warning(f"{name} ignored: PIFocusStage is a Z-only focus drive (pair via CombinedStage).")

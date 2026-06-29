@@ -49,3 +49,49 @@ def test_simulated_c414_move_and_clamp():
     assert sim.is_moving() is False
     sim.set_travel_limits(-1.0, 1.0)
     assert sim.move_to(5.0) == 1.0  # clamped to travel limit, like the controller
+
+
+def _make_referenced_sim():
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    return sim
+
+
+def _sim_pi_stage():
+    return squid.stage.pi.PIFocusStage(_make_referenced_sim(), stage_config=squid.config.get_stage_config())
+
+
+def test_pi_focus_z_passthrough_no_sign():
+    stage = _sim_pi_stage()
+    stage.move_z_to(1.0)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9  # native mm, NOT negated
+    stage.move_z(-0.5)
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9
+
+
+def test_pi_focus_zero_is_inert():
+    stage = _sim_pi_stage()
+    stage.move_z_to(1.0)
+    stage.zero(False, False, True, False)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9  # unchanged
+
+
+def test_pi_focus_home_references():
+    stage = _sim_pi_stage()
+    stage.move_z_to(2.0)
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(stage.get_pos().z_mm) < 1e-9
+
+
+def test_pi_focus_set_limits_reaches_backend():
+    stage = _sim_pi_stage()
+    stage.set_limits(z_pos_mm=1.0, z_neg_mm=-1.0)
+    stage.move_z_to(5.0)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9
+
+
+def test_pi_focus_xy_noop():
+    stage = _sim_pi_stage()
+    stage.move_x(1.0)
+    stage.move_y(1.0)
+    assert stage.get_pos().x_mm == 0.0 and stage.get_pos().y_mm == 0.0
