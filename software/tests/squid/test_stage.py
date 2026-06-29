@@ -95,3 +95,15 @@ def test_pi_focus_xy_noop():
     stage.move_x(1.0)
     stage.move_y(1.0)
     assert stage.get_pos().x_mm == 0.0 and stage.get_pos().y_mm == 0.0
+
+
+def test_combined_stage_routes_axes():
+    micro = get_test_micro()
+    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    z = _sim_pi_stage()
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined.move_z_to(1.0)
+    assert abs(combined.get_pos().z_mm - 1.0) < 1e-9  # Z from V-308
+    assert combined.get_pos().x_mm == 0.0  # X from cephla
+    combined.zero(False, False, True, False)  # z-zero routes to PIFocusStage (inert)
+    assert abs(combined.get_pos().z_mm - 1.0) < 1e-9

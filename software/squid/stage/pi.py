@@ -160,3 +160,70 @@ class PIFocusStage(AbstractStage):
 
     def _no_xy(self, name: str):
         self._log.warning(f"{name} ignored: PIFocusStage is a Z-only focus drive (pair via CombinedStage).")
+
+
+class CombinedStage(AbstractStage):
+    """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
+
+    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
+        super().__init__(stage_config or xy_stage.get_config())
+        self._xy = xy_stage
+        self._z = z_stage
+
+    def move_x(self, rel_mm: float, blocking: bool = True):
+        self._xy.move_x(rel_mm, blocking)
+
+    def move_y(self, rel_mm: float, blocking: bool = True):
+        self._xy.move_y(rel_mm, blocking)
+
+    def move_z(self, rel_mm: float, blocking: bool = True):
+        self._z.move_z(rel_mm, blocking)
+
+    def move_x_to(self, abs_mm: float, blocking: bool = True):
+        self._xy.move_x_to(abs_mm, blocking)
+
+    def move_y_to(self, abs_mm: float, blocking: bool = True):
+        self._xy.move_y_to(abs_mm, blocking)
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        self._z.move_z_to(abs_mm, blocking)
+
+    def get_pos(self) -> Pos:
+        xy, z = self._xy.get_pos(), self._z.get_pos()
+        return Pos(x_mm=xy.x_mm, y_mm=xy.y_mm, z_mm=z.z_mm, theta_rad=xy.theta_rad)
+
+    def get_state(self) -> StageStage:
+        return StageStage(busy=self._xy.get_state().busy or self._z.get_state().busy)
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if x or y or theta:
+            self._xy.home(x, y, False, theta, blocking)
+        if z:
+            self._z.home(False, False, True, False, blocking)
+
+    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if x or y or theta:
+            self._xy.zero(x, y, False, theta, blocking)
+        if z:
+            self._z.zero(False, False, True, False, blocking)
+
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
+        self._xy.set_limits(
+            x_pos_mm=x_pos_mm,
+            x_neg_mm=x_neg_mm,
+            y_pos_mm=y_pos_mm,
+            y_neg_mm=y_neg_mm,
+            theta_pos_rad=theta_pos_rad,
+            theta_neg_rad=theta_neg_rad,
+        )
+        self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
