@@ -83,6 +83,8 @@ if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
     import squid.stage.cephla
+if USE_PI_FOCUS_STAGE:
+    import squid.stage.pi
 from control.piezo import PiezoStage
 
 if USE_XERYON:

@@ -29,6 +29,7 @@ import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
+import squid.stage.pi
 import squid.stage.utils
 
 _log = squid.logging.get_logger(__name__)
@@ -330,6 +331,19 @@ class Microscope:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+
+        if control._def.USE_PI_FOCUS_STAGE:
+            pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
+            z_stage = squid.stage.pi.connect_pi_focus_stage(
+                simulated=pi_simulated,
+                serialnum=control._def.PI_FOCUS_STAGE_SN or None,
+                serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
+                baudrate=control._def.PI_FOCUS_BAUDRATE,
+                axis=control._def.PI_FOCUS_AXIS,
+                reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
+                stage_config=stage_config,
+            )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init

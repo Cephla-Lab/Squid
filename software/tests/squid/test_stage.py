@@ -139,3 +139,15 @@ def test_resolve_port_by_sn_missing_mentions_bind_rule(monkeypatch):
     monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
     with pytest.raises(RuntimeError, match="98-pi-c414-bind"):
         squid.stage.pi._resolve_port_by_sn("1UETR6I!")
+
+
+def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    scope.stage.move_z_to(0.3)
+    assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9

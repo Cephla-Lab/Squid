@@ -1093,6 +1093,15 @@ SQUID_FILTERWHEEL_CONFIGS = {
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
 
+# PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
+USE_PI_FOCUS_STAGE = False
+SIMULATE_PI_FOCUS_STAGE = False
+PI_FOCUS_STAGE_SN = ""  # FTDI/USB EEPROM serial (e.g. "1UETR6I!") -> resolved to a port
+PI_FOCUS_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM5)
+PI_FOCUS_BAUDRATE = 115200
+PI_FOCUS_AXIS = "1"
+PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
+
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
