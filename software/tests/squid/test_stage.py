@@ -4,6 +4,7 @@ import tempfile
 import squid.stage.cephla
 import squid.stage.prior
 import squid.stage.utils
+import squid.stage.pi
 import squid.config
 import squid.abc
 from tests.control.test_microcontroller import get_test_micro
@@ -33,3 +34,18 @@ def test_position_caching():
     p_read = squid.stage.utils.get_cached_position(cache_path=temp_cache_path)
 
     assert p_read == p
+
+
+# --- PI V-308 / C-414 focus stage --------------------------------------------
+
+
+def test_simulated_c414_move_and_clamp():
+    sim = squid.stage.pi._SimulatedC414(axis="1")
+    sim.initialize(reference=True)
+    assert sim.is_referenced() is True
+    assert sim.move_to(1.0) == 1.0
+    assert sim.get_position_mm() == 1.0
+    assert sim.move_relative(-0.25) == 0.75
+    assert sim.is_moving() is False
+    sim.set_travel_limits(-1.0, 1.0)
+    assert sim.move_to(5.0) == 1.0  # clamped to travel limit, like the controller
