@@ -17355,10 +17355,11 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_step.setRange(0.001, 1000)
         self.entry_step.setValue(1.0)
         self.entry_step.setSuffix(" μm")
-        self.entry_step.setDecimals(1)
+        self.entry_step.setDecimals(2)
         self.entry_step.setSingleStep(0.1)
         self.entry_step.setKeyboardTracking(False)
-        self.entry_step.setMaximumWidth(85)
+        # Slightly wider than zmin/zmax: 2 decimals ("1.00 μm") need ~1 extra char.
+        self.entry_step.setMaximumWidth(98)
         layout.addWidget(QLabel("Step:"), 0, 4)
         layout.addWidget(self.entry_step, 0, 5)
 
@@ -17666,6 +17667,11 @@ class RecordZStackMultiPointWidget(QFrame):
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
         try:
+            # Clear first: set_well_coordinates only adds wells not already present,
+            # so without clearing, already-selected wells keep their old tile geometry
+            # and the new size/overlap/shape would be silently ignored.
+            if self.scanCoordinates.has_regions():
+                self.scanCoordinates.clear_regions()
             self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
         except Exception as exc:
             self._log.warning(f"_update_scan_regions: set_well_coordinates failed: {exc}")

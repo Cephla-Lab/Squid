@@ -882,6 +882,35 @@ def test_fov_grid_wired_set_well_coordinates_receives_all_three_args(qtbot, simu
     sc.set_well_coordinates.assert_called_once_with(pytest.approx(1.5), pytest.approx(15.0), "Rectangle")
 
 
+def test_fov_grid_clears_regions_before_set_well_coordinates(qtbot, simulated_widget_deps):
+    """_update_scan_regions must clear_regions() BEFORE set_well_coordinates().
+
+    Regression guard: set_well_coordinates only adds wells not already present, so
+    without clearing first, already-selected wells keep their old tile geometry and
+    a new size/overlap/shape is silently ignored.
+    """
+    from unittest.mock import MagicMock, call
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = True  # there is an existing region to clear
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    sc.reset_mock()
+    sc.has_regions.return_value = True
+    w._update_scan_regions()
+
+    # clear_regions must be called, and must precede set_well_coordinates.
+    sc.clear_regions.assert_called_once()
+    sc.set_well_coordinates.assert_called_once()
+    relevant = [c for c in sc.method_calls if c[0] in ("clear_regions", "set_well_coordinates")]
+    assert relevant[0] == call.clear_regions()
+    assert relevant[1][0] == "set_well_coordinates"
+
+
 def test_fov_grid_no_crash_without_scan_coordinates(qtbot, simulated_widget_deps):
     """_update_scan_regions is a no-op when scanCoordinates is None."""
     from control.widgets import RecordZStackMultiPointWidget
