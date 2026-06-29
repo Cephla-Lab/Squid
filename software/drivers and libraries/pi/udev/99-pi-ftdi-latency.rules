@@ -1,0 +1,4 @@
+# Drop the FTDI VCP latency timer 16ms -> 1ms for the C-414's chatty GCS request/response
+# traffic (MOV then an ONT? settle poll). At the 16ms default the timer, not the 115200 baud
+# link, dominates per-command latency. Applies once 98-pi-c414-bind.rules has created the port.
+ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTRS{idVendor}=="1a72", ATTRS{idProduct}=="102b", ATTR{latency_timer}="1"
