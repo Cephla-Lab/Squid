@@ -341,6 +341,7 @@ class Microscope:
                 baudrate=control._def.PI_FOCUS_BAUDRATE,
                 axis=control._def.PI_FOCUS_AXIS,
                 reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
+                velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -1021,6 +1022,15 @@ class Microscope:
             self.stop_live()
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
+
+        # Release the stage's own resources (e.g. the PI C-414 serial handle). CephlaStage/
+        # PriorStage define no close() and are released via their underlying transports.
+        stage_close = getattr(self.stage, "close", None)
+        if callable(stage_close):
+            try:
+                stage_close()
+            except Exception as e:
+                self._log.warning(f"Error closing stage: {e}")
 
         if self.low_level_drivers.microcontroller:
             try:

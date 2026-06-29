@@ -149,5 +149,51 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    # skip_init leaves the V-308 unreferenced (reference=...and not skip_init); reference before moving.
+    scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_z_to(0.3)
     assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9
+
+
+def test_sim_move_requires_reference():
+    sim = squid.stage.pi._SimulatedC414()  # not referenced
+    with pytest.raises(RuntimeError, match="not referenced"):
+        sim.move_to(1.0)
+
+
+def test_pi_focus_close_closes_backend():
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
+    stage.close()
+    assert sim._closed is True
+
+
+def test_combined_stage_delegates_usteps_and_close():
+    micro = get_test_micro()
+    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    z = _sim_pi_stage()
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    # NavigationWidget.set_deltaX/Y/Z call these; must not AttributeError, and must match the XY stage.
+    assert combined.x_mm_to_usteps(1.0) == xy.x_mm_to_usteps(1.0)
+    assert combined.y_mm_to_usteps(1.0) == xy.y_mm_to_usteps(1.0)
+    assert combined.z_mm_to_usteps(1.0) == xy.z_mm_to_usteps(1.0)
+    combined.close()  # closes the V-308 backend; the Cephla XY stage has no close()
+    assert z._c414._closed is True
+
+
+def test_resolve_port_by_sn_numeric(monkeypatch):
+    # The config reader may coerce an all-digit serial to int; resolution must still match.
+    import serial.tools.list_ports
+
+    class _P:
+        def __init__(self, dev, sn):
+            self.device, self.serial_number = dev, sn
+
+    monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [_P("/dev/ttyUSB0", "12345")])
+    assert squid.stage.pi._resolve_port_by_sn(12345) == "/dev/ttyUSB0"
+
+
+def test_connect_pi_focus_requires_port():
+    # Hardware-free misconfiguration: raises before constructing C414FocusStage (no pipython needed).
+    with pytest.raises(RuntimeError, match="PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT"):
+        squid.stage.pi.connect_pi_focus_stage(simulated=False)

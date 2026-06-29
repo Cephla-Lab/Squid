@@ -1101,6 +1101,7 @@ PI_FOCUS_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM5)
 PI_FOCUS_BAUDRATE = 115200
 PI_FOCUS_AXIS = "1"
 PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
+PI_FOCUS_VELOCITY_MM_S = 0.0  # >0 sets the closed-loop velocity; 0 keeps the controller default
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False

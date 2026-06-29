@@ -26,6 +26,8 @@ WPA_PASSWORD = "100"
 PARAM_RANGE_LIMIT_MIN = 0x07000000
 PARAM_RANGE_LIMIT_MAX = 0x07000001
 
+_NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
+
 
 def _import_pipython():
     """Import pipython on demand. Real-hardware path only; keeps module import light."""
@@ -40,7 +42,12 @@ def _import_pipython():
 
 
 class _SimulatedC414:
-    """In-memory stand-in for C414FocusStage: instant, always on-target, no pipython."""
+    """In-memory stand-in for C414FocusStage: instant, always on-target, no pipython.
+
+    Mirrors the real driver's safety contract: moving before referencing raises, and an
+    absolute target is clamped to the travel limits (the C-414 Position Range Limit clamps
+    over-range targets rather than erroring).
+    """
 
     _LO_MM = -3.5
     _HI_MM = 3.5
@@ -51,6 +58,8 @@ class _SimulatedC414:
         self._referenced = False
         self._lo_mm = self._LO_MM
         self._hi_mm = self._HI_MM
+        self._vel_mm_s = None
+        self._closed = False
 
     def connect_serial(self, *args, **kwargs):
         pass
@@ -72,6 +81,9 @@ class _SimulatedC414:
     def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False):
         self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
 
+    def set_velocity(self, vel_mm_s: float):
+        self._vel_mm_s = float(vel_mm_s)
+
     def get_position_mm(self) -> float:
         return self._pos_mm
 
@@ -82,6 +94,8 @@ class _SimulatedC414:
         return True
 
     def move_to(self, z_mm: float, wait: bool = True, **kwargs) -> float:
+        if not self._referenced:
+            raise RuntimeError(_NOT_REFERENCED_MSG)
         self._pos_mm = min(max(float(z_mm), self._lo_mm), self._hi_mm)
         return self._pos_mm
 
@@ -92,39 +106,50 @@ class _SimulatedC414:
         pass
 
     def close(self):
-        pass
+        self._closed = True
 
 
 class PIFocusStage(AbstractStage):
     """Z-only AbstractStage backed by a C-414 / V-308. X / Y / theta are no-ops.
 
-    Z is pure pass-through: the backend's native mm is Squid's Z mm (no sign/offset,
-    no Z_AXIS.MOVEMENT_SIGN).
+    Z is pure pass-through: the backend's native mm is Squid's Z mm (no sign/offset, no
+    Z_AXIS.MOVEMENT_SIGN). A lock serialises every backend call so a non-blocking home()
+    cannot interleave GCS request/response framing with concurrent get_pos()/move_z().
     """
 
     def __init__(self, c414, stage_config: Optional[StageConfig] = None):
         super().__init__(stage_config)
         self._c414 = c414
+        self._lock = threading.RLock()  # the GCS backend is not thread-safe
 
     def move_z(self, rel_mm: float, blocking: bool = True):
-        self._c414.move_relative(rel_mm, wait=blocking)
+        with self._lock:
+            self._c414.move_relative(rel_mm, wait=blocking)
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
-        self._c414.move_to(abs_mm, wait=blocking)
+        with self._lock:
+            self._c414.move_to(abs_mm, wait=blocking)
 
     def get_pos(self) -> Pos:
-        return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._c414.get_position_mm(), theta_rad=None)
+        with self._lock:
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._c414.get_position_mm(), theta_rad=None)
 
     def get_state(self) -> StageStage:
-        return StageStage(busy=self._c414.is_moving())
+        with self._lock:
+            return StageStage(busy=self._c414.is_moving())
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if not z:
             return
         if blocking:
-            self._c414.reference()
+            with self._lock:
+                self._c414.reference()
         else:
-            threading.Thread(target=self._c414.reference, daemon=True, name="pi-z-home").start()
+            threading.Thread(target=self._reference_locked, daemon=True, name="pi-z-home").start()
+
+    def _reference_locked(self):
+        with self._lock:
+            self._c414.reference()
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if z:
@@ -145,7 +170,14 @@ class PIFocusStage(AbstractStage):
         theta_neg_rad: Optional[float] = None,
     ):
         if z_pos_mm is not None and z_neg_mm is not None:
-            self._c414.set_travel_limits(z_neg_mm, z_pos_mm)
+            with self._lock:
+                self._c414.set_travel_limits(z_neg_mm, z_pos_mm)
+        elif z_pos_mm is not None or z_neg_mm is not None:
+            self._log.warning("PIFocusStage.set_limits ignored a one-sided Z limit; pass both z_pos_mm and z_neg_mm.")
+
+    def close(self):
+        with self._lock:
+            self._c414.close()
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._no_xy("move_x")
@@ -228,6 +260,27 @@ class CombinedStage(AbstractStage):
             theta_neg_rad=theta_neg_rad,
         )
         self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
+
+    # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage,
+    # so the wrapper must expose them. X/Y come from the wrapped XY stage. The Z grid currently
+    # also delegates to the XY stage's Z config; making it V-308-correct is the deferred
+    # coordinate-frame fix (the V-308 is continuous, not microstepped).
+    def x_mm_to_usteps(self, mm: float):
+        return self._xy.x_mm_to_usteps(mm)
+
+    def y_mm_to_usteps(self, mm: float):
+        return self._xy.y_mm_to_usteps(mm)
+
+    def z_mm_to_usteps(self, mm: float):
+        return self._xy.z_mm_to_usteps(mm)
+
+    def close(self):
+        # Close the V-308 backend (its FTDI handle); the XY stage's resources are released
+        # elsewhere (Cephla via microcontroller.close()), so only close it if it offers close().
+        for stage in (self._z, self._xy):
+            close = getattr(stage, "close", None)
+            if callable(close):
+                close()
 
 
 class C414FocusStage:
@@ -326,6 +379,8 @@ class C414FocusStage:
 
     def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
         """Absolute move (mm). Returns the actual on-target position."""
+        if not self.is_referenced():
+            raise RuntimeError(_NOT_REFERENCED_MSG)
         self.gcs.MOV(self.axis, z_mm)
         if wait:
             self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
@@ -334,6 +389,8 @@ class C414FocusStage:
         return self.get_position_mm()
 
     def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
+        if not self.is_referenced():
+            raise RuntimeError(_NOT_REFERENCED_MSG)
         self.gcs.MVR(self.axis, dz_mm)
         if wait:
             self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
@@ -355,11 +412,17 @@ class C414FocusStage:
         self.close()
 
 
-def _resolve_port_by_sn(serialnum: str) -> str:
-    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path."""
+def _resolve_port_by_sn(serialnum) -> str:
+    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path.
+
+    Compares as strings: the config reader may coerce an all-digit serial to int, so we
+    normalise both sides. (A leading-zero numeric serial loses its zero at config-read time
+    and cannot be recovered here -- keep such serials quoted, or use PI_FOCUS_SERIAL_PORT.)
+    """
     import serial.tools.list_ports
 
-    matches = [p.device for p in serial.tools.list_ports.comports() if p.serial_number == serialnum]
+    target = str(serialnum)
+    matches = [p.device for p in serial.tools.list_ports.comports() if str(p.serial_number) == target]
     if not matches:
         raise RuntimeError(
             f"No serial port with serial_number={serialnum!r}. On Linux the C-414's custom-VID "
@@ -376,6 +439,7 @@ def connect_pi_focus_stage(
     baudrate: int = 115200,
     axis: str = "1",
     reference: bool = True,
+    velocity_mm_s: Optional[float] = None,
     stage_config: Optional[StageConfig] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
@@ -386,15 +450,26 @@ def connect_pi_focus_stage(
     if simulated:
         backend = _SimulatedC414(axis=axis)
         backend.initialize(reference=reference)
+        if velocity_mm_s:
+            backend.set_velocity(velocity_mm_s)
         return PIFocusStage(backend, stage_config=stage_config)
 
-    backend = C414FocusStage(axis=axis)
+    # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
+    # leaks an open handle.
     if serial_port:
         port = serial_port
     elif serialnum:
         port = _resolve_port_by_sn(serialnum)
     else:
         raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
-    backend.connect_serial(port, baudrate=baudrate)
-    backend.initialize(reference=reference)
+
+    backend = C414FocusStage(axis=axis)
+    try:
+        backend.connect_serial(port, baudrate=baudrate)
+        backend.initialize(reference=reference)
+        if velocity_mm_s:
+            backend.set_velocity(velocity_mm_s)
+    except Exception:
+        backend.close()  # release the GCS handle on any connect/init failure
+        raise
     return PIFocusStage(backend, stage_config=stage_config)
