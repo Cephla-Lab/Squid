@@ -6,7 +6,6 @@ import pathlib
 import tempfile
 import time
 import yaml
-from datetime import datetime
 from enum import Enum
 from threading import Thread
 from typing import Optional, Tuple, Any
@@ -17,6 +16,7 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
+from control.core.acquisition_setup import create_experiment_dir
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -437,12 +437,9 @@ class MultiPointController:
         self.overlap_percent = overlap_percent
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
-        # generate unique experiment ID
-        self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        # generate unique experiment ID and create its output directory
+        self.experiment_ID, experiment_dir = create_experiment_dir(self.base_path, experiment_ID)
         self.recording_start_time = time.time()
-        # create a new folder
-        experiment_dir = os.path.join(self.base_path, self.experiment_ID)
-        utils.ensure_directory_exists(experiment_dir)
         # Save acquisition configuration via ConfigRepository
         self.liveController.microscope.config_repo.save_acquisition_output(
             output_dir=experiment_dir,

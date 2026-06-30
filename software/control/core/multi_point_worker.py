@@ -45,6 +45,7 @@ from control.core.job_processing import (
     JobRunner,
     JobResult,
 )
+from control.core.acquisition_setup import compute_pixel_size_um
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
@@ -63,7 +64,442 @@ class SummarizeResult(NamedTuple):
     had_results: bool  # True if any results were pulled from queue
 
 
-class MultiPointWorker:
+class MultiPointWorkerBase:
+    """Shared acquisition mechanics (camera, stage, channel apply, single-frame
+    capture, frame callback, job dispatch, backpressure, abort, progress).
+
+    Owns NO orchestration loop — subclasses provide run() and the acquisition
+    state it operates on. Subclasses MUST call super().__init__(...) first, then
+    build the real job runners / backpressure controller and refine the
+    placeholder state (use_piezo, time_point, slack notifier, etc.).
+    """
+
+    def __init__(
+        self,
+        scope: Microscope,
+        live_controller: LiveController,
+        callbacks: MultiPointControllerFunctions,
+        abort_requested_fn: Callable[[], bool],
+        request_abort_fn: Callable[[], None],
+    ):
+        # Use type(self).__name__ so each subclass instance gets a logger named
+        # after its own concrete class (e.g. "RecordZStackWorker"), rather than
+        # after the class where the expression is written.  __class__ inside a
+        # method always refers to the defining class (MultiPointWorkerBase), not
+        # the runtime type, so type(self) is required to produce per-subclass names.
+        self._log = squid.logging.get_logger(type(self).__name__)
+        self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+
+        # Hardware / controller handles shared by all acquisition workers.
+        self.microscope: Microscope = scope
+        self.camera: AbstractCamera = scope.camera
+        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
+        self.stage: squid.abc.AbstractStage = scope.stage
+        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
+        self.liveController = live_controller
+
+        # Callback / abort plumbing shared by all acquisition workers.
+        self.callbacks: MultiPointControllerFunctions = callbacks
+        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
+        self.request_abort_fn: Callable[[], None] = request_abort_fn
+
+        # Optional SlackNotifier — subclasses set the real one if present.
+        self._slack_notifier = None
+
+        # Counters touched by the shared capture / frame-callback path. Subclasses
+        # may reset these per timepoint, but they must exist for the base methods.
+        self.image_count = 0
+        self._timepoint_image_count = 0
+        self._acquisition_error_count = 0
+
+        # Capture state refined by the subclass __init__ from acquisition params.
+        # Defaults are placeholders so lifted methods never read an unset attribute;
+        # subclasses overwrite these with the real per-acquisition values.
+        self.use_piezo = False
+        self.time_point = 0
+        self.z_piezo_um = 0.0
+
+        # Callback-based capture bookkeeping. This is for keeping track of whether
+        # or not we have the last image we tried to capture.
+        # NOTE(imo): Once we do overlapping triggering, we'll want to keep a queue of images we are expecting.
+        # For now, this is an improvement over blocking immediately while waiting for the next image!
+        self._ready_for_next_trigger = threading.Event()
+        # Set this to true so that the first frame capture can proceed.
+        self._ready_for_next_trigger.set()
+        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
+        # in flux and we need to make sure the object doesn't disappear.
+        self._image_callback_idle = threading.Event()
+        self._image_callback_idle.set()
+        # This is protected by the threading event above (aka set after clear, take copy before set)
+        self._current_capture_info: Optional[CaptureInfo] = None
+        # This is only touched via the image callback path.  Don't touch it outside of there!
+        self._current_round_images = {}
+
+        # Job-runner / backpressure handles. The real ones are heavily dependent on
+        # MultiPoint-specific acquisition state (selected configs, scan coords, zarr
+        # writer info, ...), so they are built by the subclass __init__. The base
+        # methods (_finish_jobs, _summarize_runner_outputs, _image_callback) only
+        # need these attributes to exist; placeholders keep them self-contained.
+        self._backpressure: Optional[BackpressureController] = None
+        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        self._abort_on_failed_job = True
+        self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
+
+    def update_use_piezo(self, value):
+        self.use_piezo = value
+        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
+
+    def wait_till_operation_is_completed(self):
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def move_to_z_level(self, z_mm):
+        self._log.debug("moving z")
+        self.stage.move_z_to(z_mm)
+        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+    def _select_config(self, config: AcquisitionChannel):
+        self.callbacks.signal_current_configuration(config)
+        self.liveController.set_microscope_mode(config)
+        self.wait_till_operation_is_completed()
+
+    def _frame_wait_timeout_s(self):
+        return (self.camera.get_total_frame_time() / 1e3) + 10
+
+    def _wait_for_outstanding_callback_images(self):
+        """Block until any in-flight triggered frame has been dispatched/processed."""
+        self._log.info("Waiting for any outstanding frames.")
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+
+        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last image to process!")
+
+        # No matter what, set the flags so things can continue
+        self._ready_for_next_trigger.set()
+        self._image_callback_idle.set()
+
+    def _sleep(self, sec):
+        time_to_sleep = max(sec, 1e-6)
+        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
+        time.sleep(time_to_sleep)
+
+    def _emit_plate_layout(self, image: np.ndarray) -> None:
+        """Hook for subclasses to emit a plate layout on the first image.
+
+        No-op in the base; MultiPointWorker overrides this with the plate-based
+        scan implementation. Lives here so the shared frame callback can call it
+        without referencing subclass-only behavior.
+        """
+        return
+
+    def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
+        """Process job results from output queues.
+
+        Args:
+            drain_all: If True, process ALL available results. If False, process at most one per queue.
+
+        Returns:
+            SummarizeResult with none_failed and had_results.
+        """
+        none_failed = True
+        had_results = False
+        for job_class, job_runner in self._job_runners:
+            if job_runner is None:
+                continue
+            out_queue = job_runner.output_queue()
+            if out_queue is None:
+                # Queue was cleared during shutdown
+                continue
+            while True:
+                try:
+                    job_result: JobResult = out_queue.get_nowait()
+                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    had_results = True
+                    if not drain_all:
+                        break  # Only process one result per queue if not draining
+                except queue.Empty:
+                    break
+                except ValueError:
+                    # Queue was closed during shutdown - nothing more to drain
+                    break
+
+        return SummarizeResult(none_failed=none_failed, had_results=had_results)
+
+    def _summarize_job_result(self, job_result: JobResult) -> bool:
+        """
+        Prints a summary, then returns True if the result was successful or False otherwise.
+        """
+        if job_result.exception is not None:
+            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+            self._acquisition_error_count += 1
+
+            # Send Slack error notification
+            if self._slack_notifier is not None:
+                try:
+                    context = {"job_id": job_result.job_id}
+                    self._slack_notifier.notify_error(
+                        str(job_result.exception),
+                        context,
+                    )
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack error notification: {e}")
+            return False
+        else:
+            self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+            # Handle ZarrWriteResult - notify viewer that frame is written
+            if isinstance(job_result.result, ZarrWriteResult):
+                r = job_result.result
+                self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
+            return True
+
+    def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
+        """Create a job instance for the given job class.
+
+        Returns None if the job should be skipped.
+        """
+        return job_class(capture_info=info, capture_image=JobImage(image_array=image))
+
+    def _finish_jobs(self, timeout_s=10):
+        # Drain and summarize all currently available job results before waiting for completion
+        self._summarize_runner_outputs(drain_all=True)
+
+        active_runners = [
+            (job_class, job_runner) for job_class, job_runner in self._job_runners if job_runner is not None
+        ]
+
+        self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
+        timeout_time = time.time() + timeout_s
+
+        def timed_out():
+            return time.time() > timeout_time
+
+        def time_left():
+            return max(timeout_time - time.time(), 0)
+
+        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
+        while not timed_out():
+            any_pending = False
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    any_pending = True
+                    break
+            if not any_pending:
+                break
+            # Process any available results while waiting
+            self._summarize_runner_outputs(drain_all=True)
+            time.sleep(0.1)
+        else:
+            # Timed out - kill any runners that still have pending jobs
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    self._log.error(
+                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
+                    )
+                    job_runner.kill()
+
+        # Drain results before shutdown
+        self._summarize_runner_outputs(drain_all=True)
+
+        # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
+        # Using daemon threads is safe here because:
+        # 1. All jobs are complete and results are already drained
+        # 2. The subprocess termination is best-effort cleanup only
+        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
+        # 4. This prevents slow subprocess termination from blocking acquisition completion
+        log = self._log  # Capture for closure
+
+        def shutdown_runner(job_runner, timeout):
+            try:
+                job_runner.shutdown(timeout)
+            except Exception as e:
+                log.error(f"Error shutting down job runner in background: {e}")
+
+        self._log.info("Shutting down job runners (non-blocking)...")
+        remaining_time = time_left()
+        for job_class, job_runner in active_runners:
+            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
+            t.start()
+
+        # Final drain of all output queues (should be empty, but check anyway)
+        self._summarize_runner_outputs(drain_all=True)
+
+        # Release backpressure resources now that all jobs are complete
+        try:
+            self._backpressure.close()
+        except Exception as e:
+            self._log.error(f"Error closing backpressure controller: {e}")
+
+    def _image_callback(self, camera_frame: CameraFrame):
+        try:
+            if self._ready_for_next_trigger.is_set():
+                self._log.warning(
+                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
+                )
+                return
+
+            self._image_callback_idle.clear()
+            with self._timing.get_timer("_image_callback"):
+                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
+                info = self._current_capture_info
+                self._current_capture_info = None
+
+                self._ready_for_next_trigger.set()
+                if not info:
+                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
+                    self.request_abort_fn()
+                    return
+
+                image = camera_frame.frame
+                if not camera_frame or image is None:
+                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
+                    self.request_abort_fn()
+                    return
+
+                # Increment image counter for Slack notification stats
+                self._timepoint_image_count += 1
+                self.image_count += 1
+
+                with self._timing.get_timer("job creation and dispatch"):
+                    # Wait for subprocess to be ready before first dispatch
+                    if not self._first_job_dispatched:
+                        for job_class, job_runner in self._job_runners:
+                            if job_runner is not None:
+                                t_wait_start = time.perf_counter()
+                                if job_runner.wait_ready(timeout_s=10.0):
+                                    t_wait_end = time.perf_counter()
+                                    wait_ms = (t_wait_end - t_wait_start) * 1000
+                                    if wait_ms > 10:  # Only log if we actually had to wait
+                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
+                                else:
+                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
+                        self._first_job_dispatched = True
+
+                    for job_class, job_runner in self._job_runners:
+                        job = self._create_job(job_class, info, image)
+                        if job is None:
+                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
+                        if job_runner is not None:
+                            if not job_runner.dispatch(job):
+                                self._log.error("Failed to dispatch multiprocessing job!")
+                                self.request_abort_fn()
+                                return
+                        else:
+                            try:
+                                # NOTE(imo): We don't have any way of people using results, so for now just
+                                # grab and ignore it.
+                                result = job.run()
+                            except Exception:
+                                self._log.exception("Failed to execute job, abandoning acquisition!")
+                                self.request_abort_fn()
+                                return
+
+                height, width = image.shape[:2]
+                # with self._timing.get_timer("crop_image"):
+                #     image_to_display = utils.crop_image(
+                #         image,
+                #         round(width * self.display_resolution_scaling),
+                #         round(height * self.display_resolution_scaling),
+                #     )
+                # Emit plate layout once on the first image so the unified mosaic
+                # widget can lay out the plate grid before tiles start arriving.
+                self._emit_plate_layout(image)
+                with self._timing.get_timer("image_to_display*.emit"):
+                    self.callbacks.signal_new_image(camera_frame, info)
+
+        finally:
+            self._image_callback_idle.set()
+
+    def acquire_camera_image(
+        self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
+    ):
+        self._select_config(config)
+
+        # trigger acquisition (including turning on the illumination) and read frame
+        camera_illumination_time = self.camera.get_exposure_time()
+        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            self.liveController.turn_on_illumination()
+            self.wait_till_operation_is_completed()
+            camera_illumination_time = None
+        elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
+                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
+                #   I am pretty sure this is broken!
+                self.microscope.addons.nl5.start_acquisition()
+        # This is some large timeout that we use just so as to not block forever
+        with self._timing.get_timer("_ready_for_next_trigger.wait"):
+            if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
+                self.request_abort_fn()
+                return
+
+        # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
+        # This is when we know the previous image's jobs have been dispatched (and counters incremented)
+        if self._backpressure.should_throttle():
+            with self._timing.get_timer("backpressure.wait_for_capacity"):
+                got_capacity = self._backpressure.wait_for_capacity()
+                if not got_capacity:
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+
+        with self._timing.get_timer("get_ready_for_trigger re-check"):
+            # This should be a noop - we have the frame already.  Still, check!
+            while not self.camera.get_ready_for_trigger():
+                self._sleep(0.001)
+
+            self._ready_for_next_trigger.clear()
+        with self._timing.get_timer("current_capture_info ="):
+            # Even though the capture time will be slightly after this, we need to capture and set the capture info
+            # before the trigger to be 100% sure the callback doesn't stomp on it.
+            # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
+            # much as we can, but don't use it here because we'd rather take the position as close as possible to the
+            # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
+            current_capture_info = CaptureInfo(
+                position=self.stage.get_pos(),
+                z_index=k,
+                capture_time=time.time(),
+                z_piezo_um=(self.z_piezo_um if self.use_piezo else None),
+                configuration=config,
+                save_directory=current_path,
+                file_id=file_ID,
+                region_id=region_id,
+                fov=fov,
+                configuration_idx=config_idx,
+                time_point=self.time_point,
+            )
+            self._current_capture_info = current_capture_info
+        with self._timing.get_timer("send_trigger"):
+            self.camera.send_trigger(illumination_time=camera_illumination_time)
+
+        with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
+                # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
+                # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
+                self._sleep(max(0.0, exposure_done_time - time.time()))
+            else:
+                # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
+                # To overcome this, just wait until the frame for this capture actually comes into the image
+                # callback.  That way we know we have it.  This also helps by making sure the illumination for this
+                # frame is on from before the trigger until after we get the frame (which guarantees it will be on
+                # for the full exposure).
+                #
+                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
+                # wrong.
+                non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
+                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
+                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
+                    self.request_abort_fn()
+                    # Let this fall through so we still turn off illumination.  Let the caller actually break out
+                    # of the acquisition.
+
+        # turn off the illumination if using software trigger
+        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            self.liveController.turn_off_illumination()
+
+
+class MultiPointWorker(MultiPointWorkerBase):
     def __init__(
         self,
         scope: Microscope,
@@ -82,8 +518,13 @@ class MultiPointWorker:
         prewarmed_job_runner: Optional[JobRunner] = None,
         prewarmed_bp_values: Optional["BackpressureValues"] = None,
     ):
-        self._log = squid.logging.get_logger(__class__.__name__)
-        self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+        super().__init__(
+            scope=scope,
+            live_controller=live_controller,
+            callbacks=callbacks,
+            abort_requested_fn=abort_requested_fn,
+            request_abort_fn=request_abort_fn,
+        )
         self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
         self._slack_notifier = slack_notifier  # Optional SlackNotifier for notifications
 
@@ -95,21 +536,12 @@ class MultiPointWorker:
         self._laser_af_successes = 0
         self._laser_af_failures = 0
         self._current_z_offset_um: float = 0.0
-        self.microscope: Microscope = scope
-        self.camera: AbstractCamera = scope.camera
-        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
-        self.stage: squid.abc.AbstractStage = scope.stage
-        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
-        self.liveController = live_controller
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
         self.fluidics = scope.addons.fluidics
         self.use_fluidics = acquisition_parameters.use_fluidics
 
-        self.callbacks: MultiPointControllerFunctions = callbacks
-        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
-        self.request_abort_fn: Callable[[], None] = request_abort_fn
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -128,15 +560,7 @@ class MultiPointWorker:
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
-        try:
-            pixel_factor = self.objectiveStore.get_pixel_size_factor()
-            sensor_pixel_um = self.camera.get_pixel_size_binned_um()
-            if pixel_factor is not None and sensor_pixel_um is not None:
-                self._pixel_size_um = float(pixel_factor) * float(sensor_pixel_um)
-            else:
-                self._pixel_size_um = None
-        except Exception:
-            self._pixel_size_um = None
+        self._pixel_size_um = compute_pixel_size_um(self.objectiveStore, self.camera)
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
@@ -153,7 +577,7 @@ class MultiPointWorker:
             physical_size_y_um=self._pixel_size_um,
         )
 
-        self.time_point = 0
+        self.time_point = 0  # also set in base __init__; re-set here for clarity
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
@@ -175,22 +599,8 @@ class MultiPointWorker:
         self.count = 0
 
         self.merged_image = None
-        self.image_count = 0
-
-        # This is for keeping track of whether or not we have the last image we tried to capture.
-        # NOTE(imo): Once we do overlapping triggering, we'll want to keep a queue of images we are expecting.
-        # For now, this is an improvement over blocking immediately while waiting for the next image!
-        self._ready_for_next_trigger = threading.Event()
-        # Set this to true so that the first frame capture can proceed.
-        self._ready_for_next_trigger.set()
-        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
-        # in flux and we need to make sure the object doesn't disappear.
-        self._image_callback_idle = threading.Event()
-        self._image_callback_idle.set()
-        # This is protected by the threading event above (aka set after clear, take copy before set)
-        self._current_capture_info: Optional[CaptureInfo] = None
-        # This is only touched via the image callback path.  Don't touch it outside of there!
-        self._current_round_images = {}
+        # image_count, the trigger-ready/idle events, and capture-info bookkeeping
+        # are initialized in MultiPointWorkerBase.__init__.
 
         self.skip_saving = acquisition_parameters.skip_saving
         job_classes = []
@@ -244,7 +654,6 @@ class MultiPointWorker:
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
-        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -352,10 +761,6 @@ class MultiPointWorker:
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
-
-    def update_use_piezo(self, value):
-        self.use_piezo = value
-        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def _is_well_based_acquisition(self) -> bool:
         """Check if regions represent a valid well-based acquisition.
@@ -590,92 +995,6 @@ class MultiPointWorker:
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
 
-    def _wait_for_outstanding_callback_images(self):
-        # If there are outstanding frames, wait for them to come in.
-        self._log.info("Waiting for any outstanding frames.")
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
-
-        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last image to process!")
-
-        # No matter what, set the flags so things can continue
-        self._ready_for_next_trigger.set()
-        self._image_callback_idle.set()
-
-    def _finish_jobs(self, timeout_s=10):
-        # Drain and summarize all currently available job results before waiting for completion
-        self._summarize_runner_outputs(drain_all=True)
-
-        active_runners = [
-            (job_class, job_runner) for job_class, job_runner in self._job_runners if job_runner is not None
-        ]
-
-        self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
-        timeout_time = time.time() + timeout_s
-
-        def timed_out():
-            return time.time() > timeout_time
-
-        def time_left():
-            return max(timeout_time - time.time(), 0)
-
-        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
-        while not timed_out():
-            any_pending = False
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    any_pending = True
-                    break
-            if not any_pending:
-                break
-            # Process any available results while waiting
-            self._summarize_runner_outputs(drain_all=True)
-            time.sleep(0.1)
-        else:
-            # Timed out - kill any runners that still have pending jobs
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    self._log.error(
-                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
-                    )
-                    job_runner.kill()
-
-        # Drain results before shutdown
-        self._summarize_runner_outputs(drain_all=True)
-
-        # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
-        # Using daemon threads is safe here because:
-        # 1. All jobs are complete and results are already drained
-        # 2. The subprocess termination is best-effort cleanup only
-        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
-        # 4. This prevents slow subprocess termination from blocking acquisition completion
-        log = self._log  # Capture for closure
-
-        def shutdown_runner(job_runner, timeout):
-            try:
-                job_runner.shutdown(timeout)
-            except Exception as e:
-                log.error(f"Error shutting down job runner in background: {e}")
-
-        self._log.info("Shutting down job runners (non-blocking)...")
-        remaining_time = time_left()
-        for job_class, job_runner in active_runners:
-            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
-            t.start()
-
-        # Final drain of all output queues (should be empty, but check anyway)
-        self._summarize_runner_outputs(drain_all=True)
-
-        # Release backpressure resources now that all jobs are complete
-        try:
-            self._backpressure.close()
-        except Exception as e:
-            self._log.error(f"Error closing backpressure controller: {e}")
-
-    def wait_till_operation_is_completed(self):
-        self.microcontroller.wait_till_operation_is_completed()
-
     def run_single_time_point(self):
         try:
             start = time.time()
@@ -799,78 +1118,6 @@ class MultiPointWorker:
         if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
-
-    def move_to_z_level(self, z_mm):
-        self._log.debug("moving z")
-        self.stage.move_z_to(z_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-
-    def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
-        """Process job results from output queues.
-
-        Args:
-            drain_all: If True, process ALL available results. If False, process at most one per queue.
-
-        Returns:
-            SummarizeResult with none_failed and had_results.
-        """
-        none_failed = True
-        had_results = False
-        for job_class, job_runner in self._job_runners:
-            if job_runner is None:
-                continue
-            out_queue = job_runner.output_queue()
-            if out_queue is None:
-                # Queue was cleared during shutdown
-                continue
-            while True:
-                try:
-                    job_result: JobResult = out_queue.get_nowait()
-                    none_failed = none_failed and self._summarize_job_result(job_result)
-                    had_results = True
-                    if not drain_all:
-                        break  # Only process one result per queue if not draining
-                except queue.Empty:
-                    break
-                except ValueError:
-                    # Queue was closed during shutdown - nothing more to drain
-                    break
-
-        return SummarizeResult(none_failed=none_failed, had_results=had_results)
-
-    def _summarize_job_result(self, job_result: JobResult) -> bool:
-        """
-        Prints a summary, then returns True if the result was successful or False otherwise.
-        """
-        if job_result.exception is not None:
-            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
-            self._acquisition_error_count += 1
-
-            # Send Slack error notification
-            if self._slack_notifier is not None:
-                try:
-                    context = {"job_id": job_result.job_id}
-                    self._slack_notifier.notify_error(
-                        str(job_result.exception),
-                        context,
-                    )
-                except Exception as e:
-                    self._log.warning(f"Failed to send Slack error notification: {e}")
-            return False
-        else:
-            self._log.info(f"Got result for job {job_result.job_id}, it completed!")
-            # Handle ZarrWriteResult - notify viewer that frame is written
-            if isinstance(job_result.result, ZarrWriteResult):
-                r = job_result.result
-                self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
-            return True
-
-    def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
-        """Create a job instance for the given job class.
-
-        Returns None if the job should be skipped.
-        """
-        return job_class(capture_info=info, capture_image=JobImage(image_array=image))
 
     def _emit_plate_layout(self, image: np.ndarray) -> None:
         """Emit plate_view_init for the unified mosaic widget on the first image.
@@ -1125,11 +1372,6 @@ class MultiPointWorker:
         # Increment FOV counter for Slack notification stats
         self._timepoint_fov_count += 1
 
-    def _select_config(self, config: AcquisitionChannel):
-        self.callbacks.signal_current_configuration(config)
-        self.liveController.set_microscope_mode(config)
-        self.wait_till_operation_is_completed()
-
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
@@ -1303,183 +1545,6 @@ class MultiPointWorker:
             return
         reason = "laser AF off" if not self.do_reflection_af else "'Apply channel offset' unchecked"
         self._log.info(f"[multi-point] {reason} — ignoring non-zero z-offsets on channels: [{summary}]")
-
-    def _image_callback(self, camera_frame: CameraFrame):
-        try:
-            if self._ready_for_next_trigger.is_set():
-                self._log.warning(
-                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
-                )
-                return
-
-            self._image_callback_idle.clear()
-            with self._timing.get_timer("_image_callback"):
-                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
-
-                self._ready_for_next_trigger.set()
-                if not info:
-                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self.request_abort_fn()
-                    return
-
-                image = camera_frame.frame
-                if not camera_frame or image is None:
-                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self.request_abort_fn()
-                    return
-
-                # Increment image counter for Slack notification stats
-                self._timepoint_image_count += 1
-                self.image_count += 1
-
-                with self._timing.get_timer("job creation and dispatch"):
-                    # Wait for subprocess to be ready before first dispatch
-                    if not self._first_job_dispatched:
-                        for job_class, job_runner in self._job_runners:
-                            if job_runner is not None:
-                                t_wait_start = time.perf_counter()
-                                if job_runner.wait_ready(timeout_s=10.0):
-                                    t_wait_end = time.perf_counter()
-                                    wait_ms = (t_wait_end - t_wait_start) * 1000
-                                    if wait_ms > 10:  # Only log if we actually had to wait
-                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
-                                else:
-                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
-                        self._first_job_dispatched = True
-
-                    for job_class, job_runner in self._job_runners:
-                        job = self._create_job(job_class, info, image)
-                        if job is None:
-                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self.request_abort_fn()
-                                return
-                        else:
-                            try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.request_abort_fn()
-                                return
-
-                height, width = image.shape[:2]
-                # with self._timing.get_timer("crop_image"):
-                #     image_to_display = utils.crop_image(
-                #         image,
-                #         round(width * self.display_resolution_scaling),
-                #         round(height * self.display_resolution_scaling),
-                #     )
-                # Emit plate layout once on the first image so the unified mosaic
-                # widget can lay out the plate grid before tiles start arriving.
-                self._emit_plate_layout(image)
-                with self._timing.get_timer("image_to_display*.emit"):
-                    self.callbacks.signal_new_image(camera_frame, info)
-
-        finally:
-            self._image_callback_idle.set()
-
-    def _frame_wait_timeout_s(self):
-        return (self.camera.get_total_frame_time() / 1e3) + 10
-
-    def acquire_camera_image(
-        self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
-    ):
-        self._select_config(config)
-
-        # trigger acquisition (including turning on the illumination) and read frame
-        camera_illumination_time = self.camera.get_exposure_time()
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
-            self.wait_till_operation_is_completed()
-            camera_illumination_time = None
-        elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
-                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
-                #   I am pretty sure this is broken!
-                self.microscope.addons.nl5.start_acquisition()
-        # This is some large timeout that we use just so as to not block forever
-        with self._timing.get_timer("_ready_for_next_trigger.wait"):
-            if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-                self.request_abort_fn()
-                return
-
-        # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
-        # This is when we know the previous image's jobs have been dispatched (and counters incremented)
-        if self._backpressure.should_throttle():
-            with self._timing.get_timer("backpressure.wait_for_capacity"):
-                got_capacity = self._backpressure.wait_for_capacity()
-                if not got_capacity:
-                    self._log.error(
-                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
-                    )
-
-        with self._timing.get_timer("get_ready_for_trigger re-check"):
-            # This should be a noop - we have the frame already.  Still, check!
-            while not self.camera.get_ready_for_trigger():
-                self._sleep(0.001)
-
-            self._ready_for_next_trigger.clear()
-        with self._timing.get_timer("current_capture_info ="):
-            # Even though the capture time will be slightly after this, we need to capture and set the capture info
-            # before the trigger to be 100% sure the callback doesn't stomp on it.
-            # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
-            # much as we can, but don't use it here because we'd rather take the position as close as possible to the
-            # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
-            current_capture_info = CaptureInfo(
-                position=self.stage.get_pos(),
-                z_index=k,
-                capture_time=time.time(),
-                z_piezo_um=(self.z_piezo_um if self.use_piezo else None),
-                configuration=config,
-                save_directory=current_path,
-                file_id=file_ID,
-                region_id=region_id,
-                fov=fov,
-                configuration_idx=config_idx,
-                time_point=self.time_point,
-            )
-            self._current_capture_info = current_capture_info
-        with self._timing.get_timer("send_trigger"):
-            self.camera.send_trigger(illumination_time=camera_illumination_time)
-
-        with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
-            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
-                # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
-                # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
-                self._sleep(max(0.0, exposure_done_time - time.time()))
-            else:
-                # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
-                # To overcome this, just wait until the frame for this capture actually comes into the image
-                # callback.  That way we know we have it.  This also helps by making sure the illumination for this
-                # frame is on from before the trigger until after we get the frame (which guarantees it will be on
-                # for the full exposure).
-                #
-                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
-                # wrong.
-                non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
-                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
-                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
-                    self.request_abort_fn()
-                    # Let this fall through so we still turn off illumination.  Let the caller actually break out
-                    # of the acquisition.
-
-        # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
-
-    def _sleep(self, sec):
-        time_to_sleep = max(sec, 1e-6)
-        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
-        time.sleep(time_to_sleep)
 
     def acquire_rgb_image(self, config, file_ID, current_path, k, region_id, fov):
         # go through the channels

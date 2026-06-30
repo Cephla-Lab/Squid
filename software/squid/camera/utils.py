@@ -171,6 +171,7 @@ class SimulatedCamera(AbstractCamera):
         self._continue_streaming = False
         self._streaming_thread: Optional[threading.Thread] = None
         self._last_trigger_timestamp = 0
+        self._target_frame_period_s: Optional[float] = None
 
         # This is for the migration to AbstractCamera.  It helps us find methods/properties that
         # some cameras had in the pre-AbstractCamera days.
@@ -208,6 +209,18 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def get_exposure_time(self) -> float:
         return self._exposure_time_ms
+
+    @debug_log
+    def set_frame_rate(self, fps: float) -> float:
+        if fps is None or fps <= 0:
+            self._target_frame_period_s = None
+            return 1000.0 / self.get_total_frame_time()
+        self._target_frame_period_s = 1.0 / fps
+        # Clamp to exposure-limited maximum (total frame time includes strobe)
+        total_frame_time_s = self.get_total_frame_time() / 1000.0
+        effective_period_s = max(self._target_frame_period_s, total_frame_time_s)
+        effective = 1.0 / effective_period_s
+        return effective
 
     @debug_log
     def get_strobe_time(self):
@@ -292,12 +305,11 @@ class SimulatedCamera(AbstractCamera):
             self._log.info("Starting streaming thread...")
             last_frame_time = time.time()
             while self._continue_streaming:
+                period_s = self._exposure_time_ms / 1000.0
+                if self._target_frame_period_s is not None:
+                    period_s = max(period_s, self._target_frame_period_s)
                 time_since = time.time() - last_frame_time
-                # use self._exposure_time and _acquisition_mode so as not to spam the logs,
-                # but this could case issues if subclassed for testing.
-                if (
-                    self._exposure_time_ms / 1000.0
-                ) - time_since <= 0 and self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                if time_since >= period_s and self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
                     self._next_frame()
                     last_frame_time = time.time()
                 time.sleep(0.001)
