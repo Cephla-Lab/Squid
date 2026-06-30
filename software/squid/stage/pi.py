@@ -129,6 +129,8 @@ class PIFocusStage(AbstractStage):
         self._c414 = c414
         self._home_mm = home_mm  # objective-clear "home" position Z moves to on home()
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
+        self._closed = False
+        self._busy = False  # set while an async home holds the lock, so get_state needn't block
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
@@ -143,6 +145,9 @@ class PIFocusStage(AbstractStage):
             return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._c414.get_position_mm(), theta_rad=None)
 
     def get_state(self) -> StageStage:
+        # If an async home holds the lock, report busy without blocking on it.
+        if self._busy:
+            return StageStage(busy=True)
         with self._lock:
             return StageStage(busy=self._c414.is_moving())
 
@@ -161,10 +166,16 @@ class PIFocusStage(AbstractStage):
             threading.Thread(target=self._home_z_locked, daemon=True, name="pi-z-home").start()
 
     def _home_z_locked(self):
-        with self._lock:
-            if not self._c414.is_referenced():
-                self._c414.reference()
-            self._c414.move_to(self._home_mm, wait=True)
+        self._busy = True
+        try:
+            with self._lock:
+                if self._closed:  # close() won the race; do not touch the torn-down handle
+                    return
+                if not self._c414.is_referenced():
+                    self._c414.reference()
+                self._c414.move_to(self._home_mm, wait=True)
+        finally:
+            self._busy = False
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if z:
@@ -192,6 +203,7 @@ class PIFocusStage(AbstractStage):
 
     def close(self):
         with self._lock:
+            self._closed = True
             self._c414.close()
 
     def z_mm_to_usteps(self, mm: float) -> float:
@@ -222,6 +234,7 @@ class CombinedStage(AbstractStage):
         super().__init__(stage_config or xy_stage.get_config())
         self._xy = xy_stage
         self._z = z_stage
+        self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._xy.move_x(rel_mm, blocking)
@@ -375,13 +388,22 @@ class C414FocusStage:
         return self.gcs.qTMN(self.axis)[self.axis], self.gcs.qTMX(self.axis)[self.axis]
 
     def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
-        """Fence the reachable Z range (Position Range Limit min/max). Requires command level 1."""
+        """Fence the reachable Z range (Position Range Limit min/max). Requires command level 1.
+
+        The requested range is clamped to the controller's physical travel (qTMN/qTMX) so a Z
+        config wider than the V-308 cannot write an SPA the controller would reject. CCL is
+        always dropped back to level 0, even if an SPA/WPA write raises.
+        """
+        lo, hi = self.hardware_limits_mm()
+        min_mm, max_mm = max(float(min_mm), lo), min(float(max_mm), hi)
         self.gcs.CCL(1, CCL_PASSWORD)
-        self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
-        self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
-        if persist:
-            self.gcs.WPA(WPA_PASSWORD)
-        self.gcs.CCL(0)
+        try:
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
+            if persist:
+                self.gcs.WPA(WPA_PASSWORD)
+        finally:
+            self.gcs.CCL(0)
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])

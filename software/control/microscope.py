@@ -334,9 +334,13 @@ class Microscope:
 
         if control._def.USE_PI_FOCUS_STAGE:
             pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
+            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
+            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
+            pi_sn = control._def.PI_FOCUS_STAGE_SN
+            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
             z_stage = squid.stage.pi.connect_pi_focus_stage(
                 simulated=pi_simulated,
-                serialnum=control._def.PI_FOCUS_STAGE_SN or None,
+                serialnum=pi_sn,
                 serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
                 baudrate=control._def.PI_FOCUS_BAUDRATE,
                 axis=control._def.PI_FOCUS_AXIS,
@@ -882,7 +886,7 @@ class Microscope:
         X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
         homing X, moving X clear, then homing Y.
         """
-        if control._def.HOMING_ENABLED_Z:
+        if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
             self.stage.home(x=False, y=False, z=True, theta=False)
 
         # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective

@@ -166,6 +166,7 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
     scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_z_to(0.3)
     assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9
+    scope.close()  # exercises Microscope.close() -> CombinedStage.close() (V-308 handle)
 
 
 def test_sim_move_requires_reference():
@@ -179,6 +180,26 @@ def test_pi_focus_close_closes_backend():
     stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
     stage.close()
     assert sim._closed is True
+
+
+def test_pi_focus_home_after_close_is_noop():
+    # Guards the non-blocking-home use-after-close race: once closed, home must not touch the backend.
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config(), home_mm=0.0)
+    stage.move_z_to(1.0)
+    stage.close()
+    stage.home(False, False, True, False, blocking=True)  # must return cleanly, not drive the closed handle
+    assert sim._closed is True
+
+
+def test_combined_stage_inits_scanning_position_attr():
+    micro = get_test_micro()
+    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    combined = squid.stage.pi.CombinedStage(
+        xy_stage=xy, z_stage=_sim_pi_stage(), stage_config=squid.config.get_stage_config()
+    )
+    # squid.stage.utils loading/scanning flow reads this; CephlaStage sets it, so CombinedStage must too.
+    assert combined._scanning_position_z_mm is None
 
 
 def test_combined_stage_delegates_usteps_and_close():
@@ -212,6 +233,7 @@ def test_pi_focus_retracts_z_before_xy_homing(monkeypatch):
     scope.stage.move_z_to(2.0)
     scope.home_xyz()
     assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6  # retracted to the objective-clear end
+    scope.close()
 
 
 def test_pi_focus_homing_references_and_retracts_z(monkeypatch):
@@ -230,6 +252,7 @@ def test_pi_focus_homing_references_and_retracts_z(monkeypatch):
     scope.home_xyz()  # must reference Z and retract it before XY, even starting unreferenced
     assert scope.stage.is_referenced() is True
     assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6
+    scope.close()
 
 
 def test_pi_focus_z_grid_is_sub_micron():
