@@ -470,8 +470,15 @@ class ObjectiveTurret4PosController:
 
     def _deenergize(self) -> None:
         """Remove holding current so the motor idles cold. The turret holds its slot
-        mechanically and the controller retains its position counter while powered."""
-        self._write_control(CW_DISABLE)
+        mechanically and the controller retains its position counter while powered.
+
+        Best-effort: this runs from finally blocks after a move/home, so a failed disable
+        must not replace the real timeout/fault that triggered the cleanup.
+        """
+        try:
+            self._write_control(CW_DISABLE)
+        except Exception as exc:
+            logger.warning("Failed to de-energize turret motor: %s", exc)
 
     def _write_holding(self, address: int, value: int) -> None:
         self._modbus.write_register(self._slave_id, address, value)

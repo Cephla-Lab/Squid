@@ -274,3 +274,18 @@ def test_home_deenergizes_when_idle(monkeypatch):
     controller.home()
     assert fake.control_word_writes()[-1] == CW_DISABLE
     controller.close()
+
+
+def test_deenergize_is_best_effort(monkeypatch):
+    # _deenergize() runs from finally blocks after a move/home, so a failed disable
+    # write must not raise and mask the real timeout/fault that triggered the cleanup.
+    controller, fake = _make_real_controller(monkeypatch)
+
+    def failing_write(slave_id, address, value):
+        if address == REG_CONTROL_WORD:
+            raise IOError("modbus link down")
+        fake.writes.append((address, value))
+
+    monkeypatch.setattr(fake, "write_register", failing_write)
+    controller._deenergize()  # must not raise despite the failing control-word write
+    controller.close()
