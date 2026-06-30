@@ -292,10 +292,8 @@ class ObjectiveTurret4PosController:
                 any(changed),
             )
 
-            # Leave the motor de-energized; home() and move_to_objective() energize on
-            # demand and de-energize again when idle. The turret holds its slot
-            # mechanically and the controller retains its position counter while powered.
-            self._write_control(CW_DISABLE)
+            # Leave the motor de-energized; home()/move_to_objective() energize on demand.
+            self._deenergize()
             self._is_open = True
         except Exception:
             self._modbus.disconnect()
@@ -318,8 +316,7 @@ class ObjectiveTurret4PosController:
             time.sleep(0.05)
             post = self.current_position_pulses
         finally:
-            # De-energize when idle: the turret holds its slot mechanically.
-            self._write_control(CW_DISABLE)
+            self._deenergize()
         self._current_objective = None
         logger.info("Homed: pre_set_zero=%d, post_set_zero=%d", pre, post)
 
@@ -409,8 +406,7 @@ class ObjectiveTurret4PosController:
         try:
             self._wait_for_position(target_pulses, timeout_s)
         finally:
-            # De-energize when idle: the turret holds its slot mechanically.
-            self._write_control(CW_DISABLE)
+            self._deenergize()
         logger.info(
             "Rotated to %s: target=%d, actual=%d",
             objective_name,
@@ -471,6 +467,11 @@ class ObjectiveTurret4PosController:
 
     def _write_control(self, value: int) -> None:
         self._modbus.write_register(self._slave_id, REG_CONTROL_WORD, value)
+
+    def _deenergize(self) -> None:
+        """Remove holding current so the motor idles cold. The turret holds its slot
+        mechanically and the controller retains its position counter while powered."""
+        self._write_control(CW_DISABLE)
 
     def _write_holding(self, address: int, value: int) -> None:
         self._modbus.write_register(self._slave_id, address, value)

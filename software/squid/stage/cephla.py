@@ -116,8 +116,7 @@ class CephlaStage(AbstractStage):
         # soft limit, so an out-of-range target never reports complete and the move times out.
         # (e.g. the objective-turret retract/restore commanding the post-home Z=0.0, which is
         # below MIN_POSITION). This mirrors the MIN_POSITION clamp on the backlash pre-move below.
-        z_config = self.get_config().Z_AXIS
-        clamped_abs_mm = min(max(abs_mm, z_config.MIN_POSITION), z_config.MAX_POSITION)
+        clamped_abs_mm = self.get_config().Z_AXIS.clamp_position(abs_mm)
         if clamped_abs_mm != abs_mm:
             self._log.debug(f"Clamped Z move target {abs_mm} mm to soft limit {clamped_abs_mm} mm.")
         abs_mm = clamped_abs_mm

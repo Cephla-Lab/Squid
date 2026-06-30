@@ -552,10 +552,8 @@ class Microscope:
                     # working soft floor), so don't restore Z to it after rotating — the cached-Z
                     # restore at GUI startup positions Z. Later objective changes (Z not freshly
                     # homed) restore the live focus position as before.
-                    z_just_homed = (not skip_init) and control._def.HOMING_ENABLED_Z
-                    self.addons.objective_changer.move_to_objective(
-                        control._def.DEFAULT_OBJECTIVE, restore_z=not z_just_homed
-                    )
+                    restore_z = skip_init or not control._def.HOMING_ENABLED_Z
+                    self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE, restore_z=restore_z)
             except KeyError as e:
                 raise RuntimeError(
                     f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "
