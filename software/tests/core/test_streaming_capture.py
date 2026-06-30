@@ -19,6 +19,9 @@ def test_recording_router_downsamples_and_indexes():
 
 
 def test_recording_writer_roundtrip(tmp_path):
+    import pytest
+
+    pytest.importorskip("tensorstore")  # optional dep; real ZarrWriter needs it
     T, Y, X = 4, 16, 12
     from control.core.zarr_writer import ZarrAcquisitionConfig
     from control.core.streaming_capture import RecordingWriter
@@ -310,6 +313,9 @@ def test_streaming_capture_partial_warns(caplog):
 
 def test_recording_writer_dropped_count_accessor(tmp_path):
     """dropped_count property returns the number of frames dropped due to a full queue."""
+    import pytest
+
+    pytest.importorskip("tensorstore")  # optional dep; real ZarrWriter needs it
     from control.core.zarr_writer import ZarrAcquisitionConfig
     from control.core.streaming_capture import RecordingWriter
 
