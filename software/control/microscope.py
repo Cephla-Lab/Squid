@@ -537,14 +537,25 @@ class Microscope:
 
         if self.addons.objective_changer:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
-            # homing on a software restart: the motor stays powered across close()/re-init
-            # and retains its position register, so a re-home would just be wasted motion.
+            # homing on a software restart: the controller retains its position counter
+            # across close()/re-init (the motor is de-energized but the drive stays
+            # powered), so a re-home would just be wasted motion.
             if control._def.USE_XERYON or not skip_init:
                 self.addons.objective_changer.home()
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             try:
-                self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+                if control._def.USE_XERYON:
+                    self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+                else:
+                    # Turret: when Z was just homed it sits at the home reference (0.0, below the
+                    # working soft floor), so don't restore Z to it after rotating — the cached-Z
+                    # restore at GUI startup positions Z. Later objective changes (Z not freshly
+                    # homed) restore the live focus position as before.
+                    z_just_homed = (not skip_init) and control._def.HOMING_ENABLED_Z
+                    self.addons.objective_changer.move_to_objective(
+                        control._def.DEFAULT_OBJECTIVE, restore_z=not z_just_homed
+                    )
             except KeyError as e:
                 raise RuntimeError(
                     f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "

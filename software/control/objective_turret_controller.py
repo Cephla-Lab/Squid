@@ -180,7 +180,9 @@ class ObjectiveTurret4PosControllerSimulation:
         self._require_open()
         logger.info("Simulated turret enabled")
 
-    def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
+    def move_to_objective(
+        self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S, restore_z: bool = True
+    ) -> None:
         self._require_open()
         if _is_alias_for_current(self._current_objective, objective_name, self._positions):
             self._current_objective = objective_name
@@ -189,7 +191,8 @@ class ObjectiveTurret4PosControllerSimulation:
 
         captured_z = self._retract_z_if_possible()
         self._current_objective = objective_name
-        self._restore_z_if_captured(captured_z)
+        if restore_z:
+            self._restore_z_if_captured(captured_z)
 
         logger.info(
             "Simulated turret moved to %s (position %d)",
@@ -289,7 +292,10 @@ class ObjectiveTurret4PosController:
                 any(changed),
             )
 
-            self.enable()
+            # Leave the motor de-energized; home() and move_to_objective() energize on
+            # demand and de-energize again when idle. The turret holds its slot
+            # mechanically and the controller retains its position counter while powered.
+            self._write_control(CW_DISABLE)
             self._is_open = True
         except Exception:
             self._modbus.disconnect()
@@ -303,13 +309,17 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_ENABLE)
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
-        self._wait_until_idle(timeout_s)
-        # Reset counter to 0 at the post-homing position so absolute slot targets
-        # land at the correct physical angle.
-        pre = self.current_position_pulses
-        self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
-        time.sleep(0.05)
-        post = self.current_position_pulses
+        try:
+            self._wait_until_idle(timeout_s)
+            # Reset counter to 0 at the post-homing position so absolute slot targets
+            # land at the correct physical angle.
+            pre = self.current_position_pulses
+            self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
+            time.sleep(0.05)
+            post = self.current_position_pulses
+        finally:
+            # De-energize when idle: the turret holds its slot mechanically.
+            self._write_control(CW_DISABLE)
         self._current_objective = None
         logger.info("Homed: pre_set_zero=%d, post_set_zero=%d", pre, post)
 
@@ -319,7 +329,9 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_STARTUP)
         self._write_control(CW_ENABLE)
 
-    def move_to_objective(self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S) -> None:
+    def move_to_objective(
+        self, objective_name: str, timeout_s: float = DEFAULT_MOVE_TIMEOUT_S, restore_z: bool = True
+    ) -> None:
         self._require_open()
         if _is_alias_for_current(self._current_objective, objective_name, self._positions):
             self._current_objective = objective_name
@@ -330,7 +342,8 @@ class ObjectiveTurret4PosController:
             self._rotate_to(objective_name, timeout_s)
             self._current_objective = objective_name
         finally:
-            self._restore_z_if_captured(captured_z)
+            if restore_z:
+                self._restore_z_if_captured(captured_z)
 
     def clear_alarm(self) -> None:
         self._write_control(CW_CLEAR_FAULT)
@@ -393,7 +406,11 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_ENABLE)
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
-        self._wait_for_position(target_pulses, timeout_s)
+        try:
+            self._wait_for_position(target_pulses, timeout_s)
+        finally:
+            # De-energize when idle: the turret holds its slot mechanically.
+            self._write_control(CW_DISABLE)
         logger.info(
             "Rotated to %s: target=%d, actual=%d",
             objective_name,
