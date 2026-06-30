@@ -51,6 +51,7 @@ def _build_simulated_microscope(crop_w: int, crop_h: int):
 
 
 def test_record_zstack_worker_smoke(tmp_path):
+    pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
@@ -169,6 +170,7 @@ def test_record_zstack_worker_smoke(tmp_path):
 
 
 def test_record_zstack_controller_smoke(tmp_path):
+    pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
