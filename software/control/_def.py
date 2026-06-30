@@ -1102,6 +1102,7 @@ PI_FOCUS_BAUDRATE = 115200
 PI_FOCUS_AXIS = "1"
 PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
 PI_FOCUS_VELOCITY_MM_S = 0.0  # >0 sets the closed-loop velocity; 0 keeps the controller default
+PI_FOCUS_SAFE_Z_MM = 0.0  # objective-clear Z (mm); Z retracts here before XY homing (0 = fully retracted)
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False

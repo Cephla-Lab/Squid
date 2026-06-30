@@ -876,12 +876,29 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then performs a coordinated X/Y homing sequence
-        that avoids the plate clamp actuation post by moving Y first, homing X,
+        Homes Z first if enabled, then (for a V-308 focus stage) retracts Z to the
+        objective-clear end before moving XY, then performs a coordinated X/Y homing
+        sequence that avoids the plate clamp actuation post by moving Y first, homing X,
         moving X clear, then homing Y.
         """
         if control._def.HOMING_ENABLED_Z:
             self.stage.home(x=False, y=False, z=True, theta=False)
+
+        # The V-308 voice coil has no self-locking and home_xyz does not otherwise retract Z,
+        # so before sweeping XY, drive Z to the objective-clear end (PI_FOCUS_SAFE_Z_MM) so the
+        # objective cannot drag through the sample. Gated on the PI stage; only if referenced,
+        # since a move on an unreferenced absolute axis is undefined (and guarded).
+        if control._def.USE_PI_FOCUS_STAGE:
+            is_referenced = getattr(self.stage, "is_referenced", None)
+            if callable(is_referenced) and is_referenced():
+                self._log.info(f"Retracting Z to {control._def.PI_FOCUS_SAFE_Z_MM} mm before XY homing.")
+                self.stage.move_z_to(control._def.PI_FOCUS_SAFE_Z_MM)
+            else:
+                self._log.warning(
+                    "USE_PI_FOCUS_STAGE: Z is not referenced; skipping the pre-XY-homing Z retract. "
+                    "Reference Z (home) before XY homing to guarantee the objective is clear."
+                )
+
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             # The plate clamp actuation post can get in the way of homing if we start with
             # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x

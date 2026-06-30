@@ -183,6 +183,39 @@ def test_combined_stage_delegates_usteps_and_close():
     assert z._c414._closed is True
 
 
+def test_pi_focus_retracts_z_before_xy_homing(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)  # isolate the Z retract
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
+    monkeypatch.setattr(control._def, "PI_FOCUS_SAFE_Z_MM", 0.0, raising=False)
+
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    scope.stage.home(x=False, y=False, z=True, theta=False)  # skip_init left it unreferenced; reference it
+    scope.stage.move_z_to(2.0)
+    scope.home_xyz()
+    assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6  # retracted to the objective-clear end
+
+
+def test_pi_focus_retract_skipped_when_unreferenced(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
+
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    assert scope.stage.is_referenced() is False  # skip_init -> not referenced
+    scope.home_xyz()  # must skip the Z retract (no move on an unreferenced axis) and not raise
+
+
 def test_pi_focus_z_grid_is_sub_micron():
     stage = _sim_pi_stage()
     # The GUI Z step grid is 1 / z_mm_to_usteps(1.0); must be sub-micron so um-scale Z steps

@@ -143,6 +143,10 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             return StageStage(busy=self._c414.is_moving())
 
+    def is_referenced(self) -> bool:
+        with self._lock:
+            return self._c414.is_referenced()
+
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if not z:
             return
@@ -237,6 +241,9 @@ class CombinedStage(AbstractStage):
 
     def get_state(self) -> StageStage:
         return StageStage(busy=self._xy.get_state().busy or self._z.get_state().busy)
+
+    def is_referenced(self) -> bool:
+        return self._z.is_referenced()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x or y or theta:
