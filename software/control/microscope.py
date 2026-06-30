@@ -342,6 +342,7 @@ class Microscope:
                 axis=control._def.PI_FOCUS_AXIS,
                 reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
                 velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
+                home_mm=control._def.PI_FOCUS_SAFE_Z_MM,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -876,28 +877,20 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then (for a V-308 focus stage) retracts Z to the
-        objective-clear end before moving XY, then performs a coordinated X/Y homing
-        sequence that avoids the plate clamp actuation post by moving Y first, homing X,
-        moving X clear, then homing Y.
+        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
+        retracts it to the objective-clear end before moving XY, then performs a coordinated
+        X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
+        homing X, moving X clear, then homing Y.
         """
         if control._def.HOMING_ENABLED_Z:
             self.stage.home(x=False, y=False, z=True, theta=False)
 
-        # The V-308 voice coil has no self-locking and home_xyz does not otherwise retract Z,
-        # so before sweeping XY, drive Z to the objective-clear end (PI_FOCUS_SAFE_Z_MM) so the
-        # objective cannot drag through the sample. Gated on the PI stage; only if referenced,
-        # since a move on an unreferenced absolute axis is undefined (and guarded).
+        # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
+        # is clear: home(z) references-if-needed and drives Z to the retracted home position
+        # (PI_FOCUS_SAFE_Z_MM). Gated on the PI stage so Cephla/Prior behaviour is unchanged.
         if control._def.USE_PI_FOCUS_STAGE:
-            is_referenced = getattr(self.stage, "is_referenced", None)
-            if callable(is_referenced) and is_referenced():
-                self._log.info(f"Retracting Z to {control._def.PI_FOCUS_SAFE_Z_MM} mm before XY homing.")
-                self.stage.move_z_to(control._def.PI_FOCUS_SAFE_Z_MM)
-            else:
-                self._log.warning(
-                    "USE_PI_FOCUS_STAGE: Z is not referenced; skipping the pre-XY-homing Z retract. "
-                    "Reference Z (home) before XY homing to guarantee the objective is clear."
-                )
+            self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
+            self.stage.home(x=False, y=False, z=True, theta=False)
 
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             # The plate clamp actuation post can get in the way of homing if we start with

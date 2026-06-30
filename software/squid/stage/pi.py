@@ -65,12 +65,13 @@ class _SimulatedC414:
         self._hi_mm = self._HI_MM
         self._vel_mm_s = None
         self._closed = False
+        self._ref_count = 0
 
     def connect_serial(self, *args, **kwargs):
         pass
 
     def initialize(self, reference: bool = True, **kwargs):
-        if reference:
+        if reference and not self._referenced:
             self.reference()
 
     def is_referenced(self) -> bool:
@@ -79,6 +80,7 @@ class _SimulatedC414:
     def reference(self, **kwargs):
         self._pos_mm = 0.0
         self._referenced = True
+        self._ref_count += 1
 
     def hardware_limits_mm(self) -> Tuple[float, float]:
         return (self._lo_mm, self._hi_mm)
@@ -122,9 +124,10 @@ class PIFocusStage(AbstractStage):
     cannot interleave GCS request/response framing with concurrent get_pos()/move_z().
     """
 
-    def __init__(self, c414, stage_config: Optional[StageConfig] = None):
+    def __init__(self, c414, stage_config: Optional[StageConfig] = None, home_mm: float = 0.0):
         super().__init__(stage_config)
         self._c414 = c414
+        self._home_mm = home_mm  # objective-clear "home" position Z moves to on home()
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
 
     def move_z(self, rel_mm: float, blocking: bool = True):
@@ -148,17 +151,20 @@ class PIFocusStage(AbstractStage):
             return self._c414.is_referenced()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        # Home = reference if needed (FRF skipped when already referenced, so no redundant
+        # sweep) then move Z to the objective-clear home position.
         if not z:
             return
         if blocking:
-            with self._lock:
-                self._c414.reference()
+            self._home_z_locked()
         else:
-            threading.Thread(target=self._reference_locked, daemon=True, name="pi-z-home").start()
+            threading.Thread(target=self._home_z_locked, daemon=True, name="pi-z-home").start()
 
-    def _reference_locked(self):
+    def _home_z_locked(self):
         with self._lock:
-            self._c414.reference()
+            if not self._c414.is_referenced():
+                self._c414.reference()
+            self._c414.move_to(self._home_mm, wait=True)
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if z:
@@ -456,19 +462,20 @@ def connect_pi_focus_stage(
     axis: str = "1",
     reference: bool = True,
     velocity_mm_s: Optional[float] = None,
+    home_mm: float = 0.0,
     stage_config: Optional[StageConfig] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
 
     With reference=True the bring-up references the axis, which MOVES the stage -- run with the
-    objective clear of the sample.
+    objective clear of the sample. home_mm is the objective-clear position home() drives Z to.
     """
     if simulated:
         backend = _SimulatedC414(axis=axis)
         backend.initialize(reference=reference)
         if velocity_mm_s:
             backend.set_velocity(velocity_mm_s)
-        return PIFocusStage(backend, stage_config=stage_config)
+        return PIFocusStage(backend, stage_config=stage_config, home_mm=home_mm)
 
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
     # leaks an open handle.
@@ -488,4 +495,4 @@ def connect_pi_focus_stage(
     except Exception:
         backend.close()  # release the GCS handle on any connect/init failure
         raise
-    return PIFocusStage(backend, stage_config=stage_config)
+    return PIFocusStage(backend, stage_config=stage_config, home_mm=home_mm)

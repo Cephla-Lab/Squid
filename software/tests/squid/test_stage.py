@@ -76,11 +76,24 @@ def test_pi_focus_zero_is_inert():
     assert abs(stage.get_pos().z_mm - 1.0) < 1e-9  # unchanged
 
 
-def test_pi_focus_home_references():
-    stage = _sim_pi_stage()
+def test_pi_focus_home_moves_home_without_resweep_when_referenced():
+    sim = _make_referenced_sim()  # already referenced (ref_count == 1)
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config(), home_mm=0.0)
     stage.move_z_to(2.0)
+    before = sim._ref_count
     stage.home(False, False, True, False, blocking=True)
-    assert abs(stage.get_pos().z_mm) < 1e-9
+    assert sim._ref_count == before  # no re-reference (no FRF re-sweep)
+    assert abs(stage.get_pos().z_mm - 0.0) < 1e-9  # but DID move to the home position
+
+
+def test_pi_focus_home_references_then_moves_when_unreferenced():
+    sim = squid.stage.pi._SimulatedC414()  # not referenced
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config(), home_mm=0.0)
+    assert sim.is_referenced() is False
+    stage.home(False, False, True, False, blocking=True)
+    assert sim.is_referenced() is True
+    assert sim._ref_count == 1  # referenced exactly once
+    assert abs(stage.get_pos().z_mm - 0.0) < 1e-9  # and at the home position
 
 
 def test_pi_focus_set_limits_reaches_backend():
@@ -201,7 +214,7 @@ def test_pi_focus_retracts_z_before_xy_homing(monkeypatch):
     assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6  # retracted to the objective-clear end
 
 
-def test_pi_focus_retract_skipped_when_unreferenced(monkeypatch):
+def test_pi_focus_homing_references_and_retracts_z(monkeypatch):
     import control._def
     import control.microscope
 
@@ -210,10 +223,13 @@ def test_pi_focus_retract_skipped_when_unreferenced(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
+    monkeypatch.setattr(control._def, "PI_FOCUS_SAFE_Z_MM", 0.0, raising=False)
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert scope.stage.is_referenced() is False  # skip_init -> not referenced
-    scope.home_xyz()  # must skip the Z retract (no move on an unreferenced axis) and not raise
+    scope.home_xyz()  # must reference Z and retract it before XY, even starting unreferenced
+    assert scope.stage.is_referenced() is True
+    assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6
 
 
 def test_pi_focus_z_grid_is_sub_micron():
