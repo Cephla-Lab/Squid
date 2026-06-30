@@ -26,10 +26,10 @@ WPA_PASSWORD = "100"
 PARAM_RANGE_LIMIT_MIN = 0x07000000
 PARAM_RANGE_LIMIT_MAX = 0x07000001
 
-# V-308 system resolution (~1 nm: 2 um sin/cos encoder period / 2^11 interpolation). The V-308 is
-# a continuous closed-loop drive, not microstepped; this only feeds the GUI's Z step grid
-# (1 / z_mm_to_usteps(1.0)) so um-scale Z steps are not snapped to a coarse stepper grid.
-_Z_RESOLUTION_MM = 1e-6
+# The V-308 is a continuous closed-loop drive (no microstep); its only "finest step" is the
+# encoder resolution. This value is the grid the GUI's ustep-based Z step snapping uses, so that
+# um-scale Z-stack slices are effectively not snapped (10 nm is sub-slice for any real stack).
+_Z_RESOLUTION_MM = 1e-5  # 10 nm
 
 _NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
 
@@ -206,10 +206,11 @@ class PIFocusStage(AbstractStage):
             self._closed = True
             self._c414.close()
 
-    def z_mm_to_usteps(self, mm: float) -> float:
-        # Continuous drive: report the fine V-308 resolution as the GUI Z step grid (the GUI uses
-        # 1 / z_mm_to_usteps(1.0)), so um-scale Z deltas are not snapped to a stepper microstep grid.
-        return mm / _Z_RESOLUTION_MM
+    def z_mm_to_usteps(self, mm: float) -> int:
+        # Continuous drive: report the V-308's ~10 nm resolution as the GUI Z step grid (the GUI
+        # uses 1 / z_mm_to_usteps(1.0)), so um-scale Z deltas are effectively not snapped. Rounds
+        # to an integer ustep like the stepper convert_real_units_to_ustep, for consistency.
+        return round(mm / _Z_RESOLUTION_MM)
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._no_xy("move_x")
@@ -235,6 +236,18 @@ class CombinedStage(AbstractStage):
         self._xy = xy_stage
         self._z = z_stage
         self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+
+        # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
+        # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
+        # (continuous ~10 nm) grid instead of the wrapped XY stepper grid, so Z-stack/autofocus
+        # steps are not snapped to the coarse stepper microstep grid. Only the resolution fields
+        # are overridden; range/speed/sign are preserved.
+        z_usteps_per_mm = abs(self._z.z_mm_to_usteps(1.0)) if hasattr(self._z, "z_mm_to_usteps") else 0.0
+        if z_usteps_per_mm:
+            fine_z = self._config.Z_AXIS.model_copy(
+                update={"SCREW_PITCH": 1.0, "MICROSTEPS_PER_STEP": 1, "FULL_STEPS_PER_REV": float(z_usteps_per_mm)}
+            )
+            self._config = self._config.model_copy(update={"Z_AXIS": fine_z})
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._xy.move_x(rel_mm, blocking)

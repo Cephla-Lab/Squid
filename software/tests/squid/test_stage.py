@@ -255,12 +255,24 @@ def test_pi_focus_homing_references_and_retracts_z(monkeypatch):
     scope.close()
 
 
-def test_pi_focus_z_grid_is_sub_micron():
+def test_pi_focus_z_grid_is_10nm():
     stage = _sim_pi_stage()
-    # The GUI Z step grid is 1 / z_mm_to_usteps(1.0); must be sub-micron so um-scale Z steps
-    # (e.g. a 1.0 um Z-stack slice) are not snapped to a coarse stepper grid.
+    # The GUI Z step grid is 1 / z_mm_to_usteps(1.0); for the continuous V-308 it is the 10 nm
+    # resolution, so um-scale Z-stack slices are effectively not snapped to a stepper grid.
     mm_per_ustep = 1.0 / stage.z_mm_to_usteps(1.0)
-    assert mm_per_ustep <= 1e-6 + 1e-15
+    assert abs(mm_per_ustep - 1e-5) < 1e-12
+
+
+def test_combined_stage_zaxis_reports_v308_grid():
+    micro = get_test_micro()
+    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    z = _sim_pi_stage()
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    # AutoFocus / multipoint snap Z steps via get_config().Z_AXIS; it must reflect the V-308's
+    # 10 nm grid, not the coarse Cephla stepper grid (this is the path [5] that z_mm_to_usteps missed).
+    grid = combined.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+    assert abs(grid) == abs(z.z_mm_to_usteps(1.0))
+    assert abs(grid) != abs(xy.get_config().Z_AXIS.convert_real_units_to_ustep(1.0))
 
 
 def test_resolve_port_by_sn_numeric(monkeypatch):
