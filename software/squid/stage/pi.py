@@ -344,6 +344,7 @@ class C414FocusStage:
         self._pitools = pitools
         self.gcs = GCSDevice(CONTROLLERNAME)
         self.axis = axis
+        self._is_referenced = False  # cached qFRF state; refreshed by is_referenced()/reference()
 
     # --- connection ----------------------------------------------------------
     def connect_serial(self, comport, baudrate: int = 115200) -> None:
@@ -378,7 +379,8 @@ class C414FocusStage:
             self.reference(timeout=ref_timeout)
 
     def is_referenced(self) -> bool:
-        return bool(self.gcs.qFRF(self.axis)[self.axis])
+        self._is_referenced = bool(self.gcs.qFRF(self.axis)[self.axis])
+        return self._is_referenced
 
     def reference(self, timeout: float = 60.0) -> None:
         """Reference move to the optical reference switch (MOVES the stage)."""
@@ -436,7 +438,7 @@ class C414FocusStage:
 
     def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
         """Absolute move (mm). Returns the actual on-target position."""
-        if not self.is_referenced():
+        if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
         self.gcs.MOV(self.axis, z_mm)
         if wait:
@@ -446,7 +448,7 @@ class C414FocusStage:
         return self.get_position_mm()
 
     def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
-        if not self.is_referenced():
+        if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
         self.gcs.MVR(self.axis, dz_mm)
         if wait:

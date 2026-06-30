@@ -158,4 +158,8 @@ def move_to_scanning_position(
 
 
 def move_z_axis_to_safety_position(stage: AbstractStage):
-    stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
+    if _def.USE_PI_FOCUS_STAGE:
+        # The V-308 has no Z_HOME_SAFETY_POINT concept; its retracted position is the safe Z.
+        stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
+    else:
+        stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
