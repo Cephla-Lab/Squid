@@ -346,7 +346,7 @@ class Microscope:
                 axis=control._def.PI_FOCUS_AXIS,
                 reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
                 velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
-                home_mm=control._def.PI_FOCUS_SAFE_Z_MM,
+                home_mm=control._def.OBJECTIVE_RETRACTED_POS_MM,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -890,8 +890,8 @@ class Microscope:
             self.stage.home(x=False, y=False, z=True, theta=False)
 
         # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
-        # is clear: home(z) references-if-needed and drives Z to the retracted home position
-        # (PI_FOCUS_SAFE_Z_MM). Gated on the PI stage so Cephla/Prior behaviour is unchanged.
+        # is clear: home(z) references-if-needed and drives Z to the retracted position
+        # (OBJECTIVE_RETRACTED_POS_MM). Gated on the PI stage so Cephla/Prior behaviour is unchanged.
         if control._def.USE_PI_FOCUS_STAGE:
             self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
             self.stage.home(x=False, y=False, z=True, theta=False)

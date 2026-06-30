@@ -1102,7 +1102,8 @@ PI_FOCUS_BAUDRATE = 115200
 PI_FOCUS_AXIS = "1"
 PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
 PI_FOCUS_VELOCITY_MM_S = 0.0  # >0 sets the closed-loop velocity; 0 keeps the controller default
-PI_FOCUS_SAFE_Z_MM = 0.0  # objective-clear Z (mm); Z retracts here before XY homing (0 = fully retracted)
+# Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid retract constant) on home() and
+# before XY homing -- set that for the V-308's objective-clear position.
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False

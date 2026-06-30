@@ -226,7 +226,7 @@ def test_pi_focus_retracts_z_before_xy_homing(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)  # isolate the Z retract
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
-    monkeypatch.setattr(control._def, "PI_FOCUS_SAFE_Z_MM", 0.0, raising=False)
+    monkeypatch.setattr(control._def, "OBJECTIVE_RETRACTED_POS_MM", 0.0, raising=False)
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     scope.stage.home(x=False, y=False, z=True, theta=False)  # skip_init left it unreferenced; reference it
@@ -245,7 +245,7 @@ def test_pi_focus_homing_references_and_retracts_z(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
-    monkeypatch.setattr(control._def, "PI_FOCUS_SAFE_Z_MM", 0.0, raising=False)
+    monkeypatch.setattr(control._def, "OBJECTIVE_RETRACTED_POS_MM", 0.0, raising=False)
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert scope.stage.is_referenced() is False  # skip_init -> not referenced
