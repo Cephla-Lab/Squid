@@ -26,6 +26,11 @@ WPA_PASSWORD = "100"
 PARAM_RANGE_LIMIT_MIN = 0x07000000
 PARAM_RANGE_LIMIT_MAX = 0x07000001
 
+# V-308 system resolution (~1 nm: 2 um sin/cos encoder period / 2^11 interpolation). The V-308 is
+# a continuous closed-loop drive, not microstepped; this only feeds the GUI's Z step grid
+# (1 / z_mm_to_usteps(1.0)) so um-scale Z steps are not snapped to a coarse stepper grid.
+_Z_RESOLUTION_MM = 1e-6
+
 _NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
 
 
@@ -179,6 +184,11 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             self._c414.close()
 
+    def z_mm_to_usteps(self, mm: float) -> float:
+        # Continuous drive: report the fine V-308 resolution as the GUI Z step grid (the GUI uses
+        # 1 / z_mm_to_usteps(1.0)), so um-scale Z deltas are not snapped to a stepper microstep grid.
+        return mm / _Z_RESOLUTION_MM
+
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._no_xy("move_x")
 
@@ -261,10 +271,9 @@ class CombinedStage(AbstractStage):
         )
         self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
 
-    # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage,
-    # so the wrapper must expose them. X/Y come from the wrapped XY stage. The Z grid currently
-    # also delegates to the XY stage's Z config; making it V-308-correct is the deferred
-    # coordinate-frame fix (the V-308 is continuous, not microstepped).
+    # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage, so
+    # the wrapper must expose them. X/Y come from the wrapped XY stage; Z comes from the V-308
+    # (continuous), not the XY stepper grid.
     def x_mm_to_usteps(self, mm: float):
         return self._xy.x_mm_to_usteps(mm)
 
@@ -272,7 +281,7 @@ class CombinedStage(AbstractStage):
         return self._xy.y_mm_to_usteps(mm)
 
     def z_mm_to_usteps(self, mm: float):
-        return self._xy.z_mm_to_usteps(mm)
+        return self._z.z_mm_to_usteps(mm)
 
     def close(self):
         # Close the V-308 backend (its FTDI handle); the XY stage's resources are released

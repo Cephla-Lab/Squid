@@ -173,12 +173,22 @@ def test_combined_stage_delegates_usteps_and_close():
     xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
     z = _sim_pi_stage()
     combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
-    # NavigationWidget.set_deltaX/Y/Z call these; must not AttributeError, and must match the XY stage.
-    assert combined.x_mm_to_usteps(1.0) == xy.x_mm_to_usteps(1.0)
+    # NavigationWidget.set_deltaX/Y/Z call these; must not AttributeError.
+    assert combined.x_mm_to_usteps(1.0) == xy.x_mm_to_usteps(1.0)  # X/Y from the XY stage
     assert combined.y_mm_to_usteps(1.0) == xy.y_mm_to_usteps(1.0)
-    assert combined.z_mm_to_usteps(1.0) == xy.z_mm_to_usteps(1.0)
+    # Z grid comes from the V-308 (continuous), not the coarse Cephla stepper grid.
+    assert combined.z_mm_to_usteps(1.0) == z.z_mm_to_usteps(1.0)
+    assert abs(combined.z_mm_to_usteps(1.0)) > abs(xy.z_mm_to_usteps(1.0))
     combined.close()  # closes the V-308 backend; the Cephla XY stage has no close()
     assert z._c414._closed is True
+
+
+def test_pi_focus_z_grid_is_sub_micron():
+    stage = _sim_pi_stage()
+    # The GUI Z step grid is 1 / z_mm_to_usteps(1.0); must be sub-micron so um-scale Z steps
+    # (e.g. a 1.0 um Z-stack slice) are not snapped to a coarse stepper grid.
+    mm_per_ustep = 1.0 / stage.z_mm_to_usteps(1.0)
+    assert mm_per_ustep <= 1e-6 + 1e-15
 
 
 def test_resolve_port_by_sn_numeric(monkeypatch):
