@@ -981,12 +981,15 @@ class _ApplyChannelOffsetMixin:
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
     def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
-        # Hide the checkbox when laser AF is off — the feature is meaningless without an
-        # AF reference anchor. Also clear the checked state so the underlying controller
-        # flag follows visibility (rather than silently retaining an inactive opt-in).
+        # Visibility follows laser AF (the offset is meaningless without an AF reference
+        # anchor), but the checked state is left untouched so the checkbox always reflects
+        # the real apply_channel_offset flag. Offset application is already double-gated on
+        # reflection AF in the worker (_apply_channel_z_offset), so a retained opt-in stays
+        # inert while laser AF is off and re-activates — still checked — when it returns.
+        # Previously this force-unchecked on AF-off but never re-checked on AF-on, so a
+        # laser-AF off->on cycle silently dropped the user's opt-in: the checkbox no longer
+        # matched what actually happened during acquisition.
         self.checkbox_applyChannelOffset.setVisible(laser_af_on)
-        if not laser_af_on:
-            self.checkbox_applyChannelOffset.setChecked(False)
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
