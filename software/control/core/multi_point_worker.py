@@ -1255,11 +1255,18 @@ class MultiPointWorker:
             self.z_piezo_um = clamped
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            self._log.info(
+                f"[z-offset] moved {actual_delta_um:+.2f} µm via piezo; piezo at {self.z_piezo_um:.2f} µm, "
+                f"actual stage z = {self.stage.get_pos().z_mm:.4f} mm"
+            )
             return actual_delta_um
         else:
             self.stage.move_z(delta_um / 1000)
             self.wait_till_operation_is_completed()
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._log.info(
+                f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.4f} mm"
+            )
             return delta_um
 
     # Sub-µm tolerance for offset deltas; well below stage µ-step and piezo step resolution.
