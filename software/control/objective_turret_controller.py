@@ -83,11 +83,17 @@ DRIVE_PARAM = 0
 # Homing defaults (auto-calibrated on first connect). Slot 1 sits at the limit
 # on this turret, so counter=0 lands at the switch — HOMING_ORIGIN_OFFSET=0
 # enforces that against any tool that may have written a non-zero offset.
+#
+# Values match the known-good NiMotion reference (ServoMotors/SingleMotor,
+# HomingConfig defaults). Earlier high speeds (search=1000, zero=200) plus
+# zero_return=1 made method-17 homing never assert motion-done — the turret
+# spun without the status word's RUNNING bit ever clearing. The reference's
+# search=50 / zero=20 / zero_return=0 home reliably against the neg-limit switch.
 HOMING_METHOD = 17
 HOMING_ORIGIN_OFFSET = 0
-HOMING_SEARCH_SPEED = 1000
-HOMING_ZERO_SPEED = 200
-HOMING_ZERO_RETURN = 1
+HOMING_SEARCH_SPEED = 50
+HOMING_ZERO_SPEED = 20
+HOMING_ZERO_RETURN = 0
 DI1_FUNCTION_NEG_LIMIT = 1
 
 # Polling
