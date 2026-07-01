@@ -52,13 +52,21 @@ Slack alert. A clean finish produces nothing.
 A manual run stops when you close the terminal or reboot. To keep it up independently of the
 GUI:
 
-- **Linux (systemd user service):** copy `systemd/squid-acquisition-watchdog.service` to
-  `~/.config/systemd/user/`, edit `WorkingDirectory` to your `software/` path, then:
+- **Linux (systemd user service)** — run these from the `software/` directory:
   ```bash
+  mkdir -p ~/.config/systemd/user
+  cp acquisition_watchdog/systemd/squid-acquisition-watchdog.service ~/.config/systemd/user/
+  # The shipped unit's WorkingDirectory is a placeholder (%h/Squid/software); point it here:
+  sed -i "s#^WorkingDirectory=.*#WorkingDirectory=$PWD#" ~/.config/systemd/user/squid-acquisition-watchdog.service
   systemctl --user daemon-reload
-  systemctl --user enable --now squid-acquisition-watchdog
+  systemctl --user enable --now squid-acquisition-watchdog   # auto-start at login + start now
+  systemctl --user status squid-acquisition-watchdog         # verify it's active
   ```
-  It starts at login, restarts on failure, and keeps running across GUI restarts.
+  Enable it once and it comes up at every login and restarts on failure (`Restart=always`) —
+  no need to launch it by hand. Logs: `journalctl --user -u squid-acquisition-watchdog -f`.
+  To keep it running before/without a graphical login, also run `loginctl enable-linger $USER`
+  once. (The unit runs `/usr/bin/python3`; if Squid runs on a different interpreter/venv, edit
+  the `ExecStart=` line to that python.)
 - **Windows (Task Scheduler):** run `windows/install.ps1` in PowerShell from `software\`. It
   registers a logon-triggered task (via `pythonw.exe`; make sure it's on `PATH`, or edit the
   path in the script).
