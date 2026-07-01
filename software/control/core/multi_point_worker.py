@@ -1257,7 +1257,7 @@ class MultiPointWorker:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             self._log.info(
                 f"[z-offset] moved {actual_delta_um:+.2f} µm via piezo; piezo at {self.z_piezo_um:.2f} µm, "
-                f"actual stage z = {self.stage.get_pos().z_mm:.4f} mm"
+                f"actual stage z = {self.stage.get_pos().z_mm:.5f} mm"
             )
             return actual_delta_um
         else:
@@ -1265,7 +1265,7 @@ class MultiPointWorker:
             self.wait_till_operation_is_completed()
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
             self._log.info(
-                f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.4f} mm"
+                f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.5f} mm"
             )
             return delta_um
 
