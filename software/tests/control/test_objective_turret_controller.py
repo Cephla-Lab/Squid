@@ -244,12 +244,16 @@ class _FakeModbus:
         return [value for (address, value) in self.writes if address == REG_CONTROL_WORD]
 
 
-def _make_real_controller(monkeypatch):
+def _make_real_controller(monkeypatch, **controller_kwargs):
     fake = _FakeModbus()
     monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
-    controller = ObjectiveTurret4PosController(serial_number="SIM", stage=None)
+    controller = ObjectiveTurret4PosController(serial_number="SIM", stage=None, **controller_kwargs)
     return controller, fake
+
+
+def _target_position_writes(fake):
+    return [value for (address, value) in fake.writes if address == REG_TARGET_POSITION]
 
 
 def test_init_leaves_motor_deenergized(monkeypatch):
@@ -289,3 +293,65 @@ def test_deenergize_is_best_effort(monkeypatch):
     monkeypatch.setattr(fake, "write_register", failing_write)
     controller._deenergize()  # must not raise despite the failing control-word write
     controller.close()
+
+
+def test_move_targets_have_no_offset_by_default(monkeypatch):
+    # Default (offset 0): slot N targets the bare (N-1)*pulses_per_position.
+    controller, fake = _make_real_controller(monkeypatch)
+    pp = controller.pulses_per_position
+    for name, index in OBJECTIVE_TURRET_POSITIONS.items():
+        fake.writes.clear()
+        controller.move_to_objective(name)
+        assert _target_position_writes(fake)[-1] == (index - 1) * pp
+    controller.close()
+
+
+def test_move_targets_include_slot1_offset(monkeypatch):
+    # A configured slot-1 offset is added to every slot target.
+    offset = 37
+    controller, fake = _make_real_controller(monkeypatch, slot1_offset_pulses=offset)
+    pp = controller.pulses_per_position
+    for name, index in OBJECTIVE_TURRET_POSITIONS.items():
+        fake.writes.clear()
+        controller.move_to_objective(name)
+        assert _target_position_writes(fake)[-1] == (index - 1) * pp + offset
+    controller.close()
+
+
+def test_move_targets_handle_negative_offset(monkeypatch):
+    # The offset may be negative (limit switch on the far side of slot 1); the
+    # signed 32-bit write and the tolerance check must handle a negative target.
+    offset = -30
+    controller, fake = _make_real_controller(monkeypatch, slot1_offset_pulses=offset)
+    pp = controller.pulses_per_position
+    fake.writes.clear()
+    controller.move_to_objective("4x")  # slot 1 -> negative absolute target
+    assert _target_position_writes(fake)[-1] == offset
+    fake.writes.clear()
+    controller.move_to_objective("40x")  # slot 4
+    assert _target_position_writes(fake)[-1] == 3 * pp + offset
+    controller.close()
+
+
+def test_slot1_offset_falls_back_to_def_when_not_passed(monkeypatch):
+    # With no explicit kwarg, the controller picks up the per-machine _def value.
+    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES", 25)
+    controller, fake = _make_real_controller(monkeypatch)
+    pp = controller.pulses_per_position
+    fake.writes.clear()
+    controller.move_to_objective("40x")  # slot index 4
+    assert _target_position_writes(fake)[-1] == 3 * pp + 25
+    controller.close()
+
+
+def test_sim_accepts_slot1_offset_kwarg():
+    # The simulation twin must accept the same kwarg (built from the same turret_kwargs).
+    sim = ObjectiveTurret4PosControllerSimulation(
+        serial_number="SIM-001",
+        positions=OBJECTIVE_TURRET_POSITIONS,
+        slot1_offset_pulses=42,
+    )
+    assert sim.is_open
+    sim.move_to_objective("20x")
+    assert sim.current_objective == "20x"
+    sim.close()

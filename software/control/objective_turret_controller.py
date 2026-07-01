@@ -80,9 +80,11 @@ EXPECTED_MIN_SPEED = 150
 # this firmware (motion is identical at 0 or 1). Set to 0 for documented-disabled.
 DRIVE_PARAM = 0
 
-# Homing defaults (auto-calibrated on first connect). Slot 1 sits at the limit
-# on this turret, so counter=0 lands at the switch — HOMING_ORIGIN_OFFSET=0
-# enforces that against any tool that may have written a non-zero offset.
+# Homing defaults (auto-calibrated on first connect). counter=0 is established at
+# the limit switch by the SET_ZERO in home(); HOMING_ORIGIN_OFFSET=0 keeps the
+# NiMotion's own homing-offset register out of the picture (SET_ZERO cancels it
+# anyway). On units where slot 1 does not sit exactly at the switch, the
+# correction is applied in software instead — see OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES.
 HOMING_METHOD = 17
 HOMING_ORIGIN_OFFSET = 0
 HOMING_SEARCH_SPEED = 1000
@@ -161,12 +163,14 @@ class ObjectiveTurret4PosControllerSimulation:
         timeout: float = 0.5,
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
+        slot1_offset_pulses: Optional[int] = None,  # accepted for constructor parity with the real controller
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
         self._is_open = True
         self._current_objective: Optional[str] = None
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
+        # slot1_offset_pulses is unused here: the simulation tracks objectives by name and never computes pulses.
         self._stage = stage
         logger.info("Simulated turret opened (sn=%s)", serial_number)
 
@@ -254,11 +258,15 @@ class ObjectiveTurret4PosController:
         timeout: float = 0.5,
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
+        slot1_offset_pulses: Optional[int] = None,
     ) -> None:
-        from control._def import OBJECTIVE_TURRET_POSITIONS
+        from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES
 
         self._slave_id = slave_id
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
+        self._slot1_offset_pulses = (
+            slot1_offset_pulses if slot1_offset_pulses is not None else OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES
+        )
         self._stage = stage
         self._current_objective: Optional[str] = None
         self._is_open = False
@@ -387,7 +395,7 @@ class ObjectiveTurret4PosController:
 
     def _rotate_to(self, objective_name: str, timeout_s: float) -> None:
         position_index = _resolve_position(objective_name, self._positions)
-        target_pulses = (position_index - 1) * self._pulses_per_position
+        target_pulses = (position_index - 1) * self._pulses_per_position + self._slot1_offset_pulses
 
         logger.info(
             "Rotating to %s: start=%d, target=%d",
