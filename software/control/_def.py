@@ -1288,6 +1288,7 @@ class SlackNotifications:
     NOTIFY_ON_ACQUISITION_START = False
     NOTIFY_ON_ACQUISITION_FINISHED = True
     SEND_MOSAIC_SNAPSHOTS = True
+    WATCHDOG_ENABLED = True  # Standalone acquisition watchdog: alert on crash / hang / error / abort
 
 
 try:

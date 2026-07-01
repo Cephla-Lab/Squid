@@ -19,8 +19,8 @@ Slack credentials are read from `cache/slack_settings.yaml` — the same file th
 Slack settings dialog writes (keys `bot_token`, `channel_id`, `enabled`). Run the
 watchdog from the `software/` directory (so the default `cache/slack_settings.yaml`
 path resolves), or pass `--slack-settings <path>`. To disable watchdog alerts on a
-machine without disabling the GUI's notifications, add `watchdog_enabled: false` to
-that YAML.
+machine without disabling the GUI's notifications, uncheck **"Enable watchdog alerts"**
+in the GUI's Slack settings dialog (or set `watchdog_enabled: false` in that YAML directly).
 
 ## Install as an always-on service
 - **Linux:** see `systemd/squid-acquisition-watchdog.service` (header has steps).
