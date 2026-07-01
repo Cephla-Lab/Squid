@@ -156,7 +156,7 @@ class MicroscopeAddons:
                 slave_id=control._def.OBJECTIVE_TURRET_SLAVE_ID,
                 baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
                 positions=control._def.OBJECTIVE_TURRET_POSITIONS,
-                slot1_offset_pulses=control._def.OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES,
+                offset_pulses=control._def.OBJECTIVE_TURRET_OFFSET_PULSES,
                 stage=stage,
             )
             objective_changer = (

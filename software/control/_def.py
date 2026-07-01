@@ -1221,10 +1221,11 @@ OBJECTIVE_TURRET_SLAVE_ID = 1
 OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
-# Pulse position of turret slot 1 relative to the homing switch (pulse 0), added
-# to every slot target. Corrects units whose limit switch does not sit exactly at
-# slot 1. 0 on all normal units; set per machine (may be negative).
-OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES = 0
+# Global pulse offset added to every turret slot target, shifting the whole slot
+# frame relative to the homing switch (pulse 0). Corrects units whose limit switch
+# does not sit exactly at slot 1. 0 on all normal units; set per machine (may be
+# negative).
+OBJECTIVE_TURRET_OFFSET_PULSES = 0
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:

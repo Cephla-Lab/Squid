@@ -84,7 +84,7 @@ DRIVE_PARAM = 0
 # the limit switch by the SET_ZERO in home(); HOMING_ORIGIN_OFFSET=0 keeps the
 # NiMotion's own homing-offset register out of the picture (SET_ZERO cancels it
 # anyway). On units where slot 1 does not sit exactly at the switch, the
-# correction is applied in software instead — see OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES.
+# correction is applied in software instead — see OBJECTIVE_TURRET_OFFSET_PULSES.
 HOMING_METHOD = 17
 HOMING_ORIGIN_OFFSET = 0
 HOMING_SEARCH_SPEED = 1000
@@ -163,14 +163,14 @@ class ObjectiveTurret4PosControllerSimulation:
         timeout: float = 0.5,
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
-        slot1_offset_pulses: Optional[int] = None,  # accepted for constructor parity with the real controller
+        offset_pulses: Optional[int] = None,  # accepted for constructor parity with the real controller
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
         self._is_open = True
         self._current_objective: Optional[str] = None
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
-        # slot1_offset_pulses is unused here: the simulation tracks objectives by name and never computes pulses.
+        # offset_pulses is unused here: the simulation tracks objectives by name and never computes pulses.
         self._stage = stage
         logger.info("Simulated turret opened (sn=%s)", serial_number)
 
@@ -258,15 +258,18 @@ class ObjectiveTurret4PosController:
         timeout: float = 0.5,
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
-        slot1_offset_pulses: Optional[int] = None,
+        offset_pulses: Optional[int] = None,
     ) -> None:
-        from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES
+        from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_TURRET_OFFSET_PULSES
 
         self._slave_id = slave_id
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
-        self._slot1_offset_pulses = (
-            slot1_offset_pulses if slot1_offset_pulses is not None else OBJECTIVE_TURRET_SLOT1_OFFSET_PULSES
-        )
+        offset = offset_pulses if offset_pulses is not None else OBJECTIVE_TURRET_OFFSET_PULSES
+        # Comes from per-machine .ini parsing; reject non-int so misconfiguration fails
+        # fast here instead of deep in the signed Modbus write (bool is an int subclass).
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            raise ValueError(f"OBJECTIVE_TURRET_OFFSET_PULSES must be an integer number of pulses, got {offset!r}")
+        self._offset_pulses = offset
         self._stage = stage
         self._current_objective: Optional[str] = None
         self._is_open = False
@@ -395,7 +398,7 @@ class ObjectiveTurret4PosController:
 
     def _rotate_to(self, objective_name: str, timeout_s: float) -> None:
         position_index = _resolve_position(objective_name, self._positions)
-        target_pulses = (position_index - 1) * self._pulses_per_position + self._slot1_offset_pulses
+        target_pulses = (position_index - 1) * self._pulses_per_position + self._offset_pulses
 
         logger.info(
             "Rotating to %s: start=%d, target=%d",
