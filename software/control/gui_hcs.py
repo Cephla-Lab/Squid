@@ -16,6 +16,15 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
+# On a Linux Wayland session, override napari's _wayland_fix, which forces
+# QT_QPA_PLATFORM=xcb + PYOPENGL_PLATFORM=glx on Nvidia. On recent hardware that
+# is backwards (XWayland renders the napari GL surface black; GLX context
+# tracking fails with "no valid context"). Native Wayland + EGL works; napari
+# uses setdefault(), so presetting both before import neutralizes its fix.
+# No-op on X11/macOS/Windows; respects an explicit override.
+if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 import re
 import time
 from enum import Enum, auto

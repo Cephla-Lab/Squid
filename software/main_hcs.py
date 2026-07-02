@@ -7,6 +7,18 @@ os.environ["QT_API"] = "pyqt5"
 import signal
 import sys
 
+# On a Linux Wayland session, napari's _wayland_fix (napari/__init__.py) forces
+# QT_QPA_PLATFORM=xcb + PYOPENGL_PLATFORM=glx on Nvidia, assuming XWayland+GLX is
+# more stable. On recent hardware/drivers (e.g. Blackwell + Mutter) that is
+# backwards: XWayland renders the napari GL surface black, and GLX context
+# tracking fails with "Attempt to retrieve context when no valid context" so
+# image layers never draw. Native Wayland + EGL is what works here. napari uses
+# setdefault(), so presetting both before it is imported neutralizes its fix.
+# No-op on X11/macOS/Windows, and respects an explicit override.
+if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
 # qt libraries
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
