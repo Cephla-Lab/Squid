@@ -198,3 +198,40 @@ def test_autofocus_correct_no_hardware_faults(service):
     with pytest.raises(FaultError) as exc:
         service.autofocus_correct(AutofocusCorrectRequest())
     assert exc.value.fault.category in (FaultCategory.CONFIG, FaultCategory.AUTOFOCUS)
+
+
+def test_initialize_probe_failure_faults_and_enters_error_state(service, sim_scope, monkeypatch):
+    """Verify that probe failures transition the instrument to ERROR state and raise HARDWARE_FAULT."""
+
+    def boom():
+        raise RuntimeError("stage communication lost")
+
+    monkeypatch.setattr(sim_scope.stage, "get_pos", boom)
+    with pytest.raises(FaultError) as exc:
+        service.initialize(home=True)  # home=True forces probes even from INITIALIZED
+    assert exc.value.fault.category == FaultCategory.HARDWARE_FAULT
+    assert exc.value.fault.code == 5001  # HARDWARE_FAULT_GENERIC
+    assert exc.value.fault.component == "stage"
+    assert service.state == InstrumentState.ERROR
+
+    # Recover so later tests (or monkeypatch cleanup) see INITIALIZED
+    monkeypatch.undo()
+    result = service.initialize(home=True)
+    assert result["state"] == "INITIALIZED"
+
+
+def test_acquire_camera_failure_is_recoverable_transient_fault(service, sim_scope, monkeypatch):
+    """Verify that camera acquisition failures produce recoverable HARDWARE_TRANSIENT faults."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("frame timeout")
+
+    monkeypatch.setattr(sim_scope, "acquire_image", boom)
+    with pytest.raises(FaultError) as exc:
+        service.acquire(AcquireRequest())
+    fault = exc.value.fault
+    assert fault.category == FaultCategory.HARDWARE_TRANSIENT
+    assert fault.code == 4001  # HARDWARE_TRANSIENT_TIMEOUT
+    assert fault.recoverable is True
+    assert fault.scheduler_action.value == "RETRY"
+    assert fault.component == "camera"
