@@ -498,3 +498,41 @@ class TestSquidLaserEngineRealClass:
         qtbot.wait(50)
         assert engine.is_connection_lost() is True
         assert any("simulated drop" in s for s in signals)
+
+    def test_open_serial_sets_write_timeout(self, monkeypatch):
+        # Regression: unbounded write_timeout let a stuck write hang GUI startup.
+        import control.squid_laser_engine as sle
+
+        captured = {}
+
+        class _RecordingSerial:
+            def __init__(self, port, write_timeout=None, **kwargs):
+                captured["port"] = port
+                captured["write_timeout"] = write_timeout
+
+        monkeypatch.setattr(sle.serial, "Serial", _RecordingSerial)
+        SquidLaserEngine(device="/dev/fake-laser")._open_serial()
+
+        assert captured["port"] == "/dev/fake-laser"
+        assert captured["write_timeout"] == SquidLaserEngine.WRITE_TIMEOUT_S
+
+    def test_write_timeout_does_not_block_startup(self, qtbot):
+        # Regression: a bounded write_timeout must surface as connection-lost, not a hang.
+        import serial
+
+        engine, fake = self._make_engine()
+
+        def raise_timeout(_data):
+            raise serial.SerialTimeoutException("simulated write timeout")
+
+        fake.write = raise_timeout
+        signals = []
+        engine.connection_lost.connect(lambda msg: signals.append(msg))
+        # Mark started without launching threads so _write_packet takes the running path.
+        engine._running.set()
+
+        t0 = time.time()
+        engine.wake_up_all()
+        assert time.time() - t0 < 1.0
+        assert engine.is_connection_lost() is True
+        assert any("simulated write timeout" in s for s in signals)
