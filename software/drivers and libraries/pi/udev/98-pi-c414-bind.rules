@@ -1,0 +1,10 @@
+# Bind the PI C-414's custom-VID FTDI (1a72:102b) to ftdi_sio so /dev/ttyUSB* appears.
+# The stock ftdi_sio id table only lists FTDI's own VID 0403; PI flashed a custom VID, so
+# the driver ignores the device by default and no serial port is created. This adds the id
+# at runtime (and on every replug/boot). See also 99-pi-ftdi-latency.rules.
+#
+# Install:
+#   sudo cp 98-pi-c414-bind.rules 99-pi-ftdi-latency.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a72", ATTR{idProduct}=="102b", \
+  RUN+="/bin/sh -c 'modprobe ftdi_sio; echo 1a72 102b > /sys/bus/usb-serial/drivers/ftdi_sio/new_id'"

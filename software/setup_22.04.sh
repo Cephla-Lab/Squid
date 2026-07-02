@@ -31,6 +31,7 @@ readonly SQUID_REPO_PATH_PARENT="$(dirname "${SQUID_REPO_PATH}")"
 readonly DAHENG_CAMERA_DRIVER_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux-x86_Gige-U3_32bits-64bits_1.2.1911.9122"
 readonly DAHENG_CAMERA_DRIVER_API_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux_Python_1.0.1905.9081/api"
 readonly TOUPCAM_UDEV_RULE_PATH="$SQUID_SOFTWARE_ROOT/drivers and libraries/toupcam/linux/udev/99-toupcam.rules"
+readonly PI_UDEV_RULE_DIR="$SQUID_SOFTWARE_ROOT/drivers and libraries/pi/udev"
 # update
 sudo apt update
 
@@ -63,6 +64,10 @@ pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile sci
 pip3 install opencv-python-headless opencv-contrib-python-headless
 pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
+# Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
+# squid.stage.pi imports it lazily and only needs it to connect to real hardware.
+pip3 install pipython
+
 # install camera drivers
 cd "$DAHENG_CAMERA_DRIVER_ROOT"
 ./Galaxy_camera.run
@@ -71,6 +76,13 @@ python3 setup.py build
 sudo python3 setup.py install
 cd "$SQUID_SOFTWARE_ROOT"
 sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
+
+# PI C-414 focus stage (USE_PI_FOCUS_STAGE): bind the custom-VID FTDI to ftdi_sio so
+# /dev/ttyUSB* appears, and lower the latency timer. Reload + trigger so it applies now.
+sudo cp "$PI_UDEV_RULE_DIR/98-pi-c414-bind.rules" "$PI_UDEV_RULE_DIR/99-pi-ftdi-latency.rules" /etc/udev/rules.d
+# Trigger with --action=add: the bind rule matches ACTION=="add", so a plain `udevadm
+# trigger` (which defaults to action=change) would NOT bind an already-connected C-414.
+sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=usb --subsystem-match=usb-serial --subsystem-match=tty
 
 # enable access to serial ports without sudo
 sudo usermod -aG dialout $USER

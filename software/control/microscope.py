@@ -29,6 +29,7 @@ import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
+import squid.stage.pi
 import squid.stage.utils
 
 _log = squid.logging.get_logger(__name__)
@@ -330,6 +331,28 @@ class Microscope:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+
+        if control._def.USE_PI_FOCUS_STAGE:
+            pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
+            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
+            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
+            pi_sn = control._def.PI_FOCUS_STAGE_SN
+            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
+            z_stage = squid.stage.pi.connect_pi_focus_stage(
+                simulated=pi_simulated,
+                serialnum=pi_sn,
+                serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
+                baudrate=control._def.PI_FOCUS_BAUDRATE,
+                axis=control._def.PI_FOCUS_AXIS,
+                reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
+                velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
+                home_mm=control._def.OBJECTIVE_RETRACTED_POS_MM,
+                invert_z=control._def.PI_FOCUS_INVERT_Z,
+                home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
+                z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                stage_config=stage_config,
+            )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
@@ -870,12 +893,23 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then performs a coordinated X/Y homing sequence
-        that avoids the plate clamp actuation post by moving Y first, homing X,
-        moving X clear, then homing Y.
+        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
+        retracts it to the objective-clear end before moving XY, then performs a coordinated
+        X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
+        homing X, moving X clear, then homing Y.
         """
-        if control._def.HOMING_ENABLED_Z:
+        if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
             self.stage.home(x=False, y=False, z=True, theta=False)
+
+        # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
+        # is clear: home(z) references-if-needed and drives Z to the retracted position
+        # (the positive travel limit when PI_FOCUS_HOME_TO_POSITIVE_LIMIT is set, e.g. an upright
+        # system; otherwise OBJECTIVE_RETRACTED_POS_MM). Gated on the PI stage so Cephla/Prior
+        # behaviour is unchanged.
+        if control._def.USE_PI_FOCUS_STAGE:
+            self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
+            self.stage.home(x=False, y=False, z=True, theta=False)
+
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             # The plate clamp actuation post can get in the way of homing if we start with
             # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
@@ -1016,6 +1050,15 @@ class Microscope:
             self.stop_live()
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
+
+        # Release the stage's own resources (e.g. the PI C-414 serial handle). CephlaStage/
+        # PriorStage define no close() and are released via their underlying transports.
+        stage_close = getattr(self.stage, "close", None)
+        if callable(stage_close):
+            try:
+                stage_close()
+            except Exception as e:
+                self._log.warning(f"Error closing stage: {e}")
 
         if self.low_level_drivers.microcontroller:
             try:

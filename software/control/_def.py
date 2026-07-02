@@ -1093,6 +1093,29 @@ SQUID_FILTERWHEEL_CONFIGS = {
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
 
+# PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
+USE_PI_FOCUS_STAGE = False
+SIMULATE_PI_FOCUS_STAGE = False
+PI_FOCUS_STAGE_SN = ""  # FTDI/USB EEPROM serial (e.g. "1UETR6I!") -> resolved to a port
+PI_FOCUS_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM5)
+PI_FOCUS_BAUDRATE = 115200
+PI_FOCUS_AXIS = "1"
+PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
+PI_FOCUS_VELOCITY_MM_S = 0.0  # >0 sets the closed-loop velocity; 0 keeps the controller default
+# Upright system: the V-308's native 0 is DOWN (objective toward the sample). Invert Z so Squid Z
+# increases toward the sample (Z+ = focus down) and Squid Z 0 = fully retracted; the mapping is
+# squid_z = (native positive travel limit) - native.
+PI_FOCUS_INVERT_Z = False
+# home()/retract drives Z to the stage's positive travel limit (furthest from the sample) instead
+# of OBJECTIVE_RETRACTED_POS_MM. Use this on an upright system where retract = objective UP.
+PI_FOCUS_HOME_TO_POSITIVE_LIMIT = False
+# Full physical Z travel (mm). On the C-414 qTMN/qTMX ARE the Position Range Limit, so fencing
+# shrinks them permanently (until power cycle); >0 restores [0, this] at connect so the inversion
+# offset / soft-limit fencing don't drift across software restarts. Set to the V-308's travel (7).
+PI_FOCUS_Z_TRAVEL_MM = 0.0
+# When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
+# retract constant) on home() and before XY homing -- set that for the objective-clear position.
+
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 

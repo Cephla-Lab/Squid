@@ -1,0 +1,687 @@
+"""
+Squid stage support for the PI V-308 voice-coil focus drive on a C-414 controller.
+
+Provides (1) ``C414FocusStage``, a GCS-2.0 driver over a serial (FTDI VCP) link via
+pipython's pure-Python PISerial gateway (no proprietary PI GCS DLL required), with
+``pipython`` imported lazily so this module imports fine without it; (2) ``_SimulatedC414``,
+a pure-Python stand-in for hardware-free / CI use; and (3) two ``squid.abc.AbstractStage``
+adapters -- ``PIFocusStage`` (Z-only) and ``CombinedStage`` (XY delegate + V-308 Z).
+
+Z is pure pass-through mm: the controller's native absolute mm is Squid's Z mm, with no sign
+flip or offset and no use of ``Z_AXIS.MOVEMENT_SIGN`` (that is a Cephla-stepper calibration).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from contextlib import suppress
+from typing import Optional, Tuple
+
+import squid.logging
+from squid.abc import AbstractStage, Pos, StageStage
+from squid.config import StageConfig
+
+_log = squid.logging.get_logger(__name__)
+
+CONTROLLERNAME = "C-414"
+CCL_PASSWORD = "advanced"
+WPA_PASSWORD = "100"
+PARAM_RANGE_LIMIT_MIN = 0x07000000
+PARAM_RANGE_LIMIT_MAX = 0x07000001
+
+# The V-308 is a continuous closed-loop drive (no microstep); its only "finest step" is the
+# encoder resolution. This value is the grid the GUI's ustep-based Z step snapping uses, so that
+# um-scale Z-stack slices are effectively not snapped (10 nm is sub-slice for any real stack).
+_Z_RESOLUTION_MM = 1e-5  # 10 nm
+
+_NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
+
+
+def _import_pipython():
+    """Import pipython on demand. Real-hardware path only; keeps module import light."""
+    try:
+        from pipython import GCSDevice, GCSError, pitools
+    except ImportError as exc:
+        raise ImportError(
+            "The PI V-308 focus stage requires the optional 'pipython' package "
+            "(pip install pipython); it is imported only when connecting to hardware."
+        ) from exc
+    return GCSDevice, GCSError, pitools
+
+
+class _SimulatedC414:
+    """In-memory stand-in for C414FocusStage: instant, always on-target, no pipython.
+
+    Mirrors the real driver's safety contract: moving before referencing raises, and an
+    absolute target is clamped to the travel limits (the C-414 Position Range Limit clamps
+    over-range targets rather than erroring).
+    """
+
+    # Mirror the V-308's real reported travel (qTMN/qTMX = 0..7 mm) so simulated clamping
+    # matches hardware behaviour.
+    _LO_MM = 0.0
+    _HI_MM = 7.0
+
+    def __init__(self, axis: str = "1"):
+        self.axis = axis
+        self._pos_mm = 0.0
+        self._referenced = False
+        self._lo_mm = self._LO_MM
+        self._hi_mm = self._HI_MM
+        self._vel_mm_s = None
+        self._closed = False
+        self._ref_count = 0
+
+    def connect_serial(self, *args, **kwargs):
+        pass
+
+    def initialize(self, reference: bool = True, **kwargs):
+        if reference and not self._referenced:
+            self.reference()
+
+    def is_referenced(self) -> bool:
+        return self._referenced
+
+    def reference(self, **kwargs):
+        self._pos_mm = 0.0
+        self._referenced = True
+        self._ref_count += 1
+
+    def hardware_limits_mm(self) -> Tuple[float, float]:
+        return (self._lo_mm, self._hi_mm)
+
+    def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False):
+        self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
+
+    def reset_range_limit(self, max_mm: float, min_mm: float = 0.0):
+        self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
+
+    def set_velocity(self, vel_mm_s: float):
+        self._vel_mm_s = float(vel_mm_s)
+
+    def get_position_mm(self) -> float:
+        return self._pos_mm
+
+    def is_moving(self) -> bool:
+        return False
+
+    def on_target(self) -> bool:
+        return True
+
+    def move_to(self, z_mm: float, wait: bool = True, **kwargs) -> float:
+        if not self._referenced:
+            raise RuntimeError(_NOT_REFERENCED_MSG)
+        self._pos_mm = min(max(float(z_mm), self._lo_mm), self._hi_mm)
+        return self._pos_mm
+
+    def move_relative(self, dz_mm: float, wait: bool = True, **kwargs) -> float:
+        return self.move_to(self._pos_mm + float(dz_mm), wait=wait)
+
+    def stop(self):
+        pass
+
+    def close(self):
+        self._closed = True
+
+
+class PIFocusStage(AbstractStage):
+    """Z-only AbstractStage backed by a C-414 / V-308. X / Y / theta are no-ops.
+
+    Z is pass-through by default (Squid Z == the backend's native mm). For an upright system,
+    pass ``invert_z=True``: the backend's native 0 is DOWN (objective toward the sample), so Z is
+    mapped ``squid_z = offset - native`` where ``offset`` is the native positive travel limit --
+    Squid Z 0 is then fully retracted and Z increases toward the sample. With
+    ``home_to_positive_limit=True`` home() retracts to the native positive travel limit (furthest
+    from the sample) rather than to ``home_mm``.
+
+    A lock serialises every backend call so a non-blocking home() cannot interleave GCS
+    request/response framing with concurrent get_pos()/move_z().
+    """
+
+    def __init__(
+        self,
+        c414,
+        stage_config: Optional[StageConfig] = None,
+        home_mm: float = 0.0,
+        invert_z: bool = False,
+        home_to_positive_limit: bool = False,
+    ):
+        super().__init__(stage_config)
+        self._c414 = c414
+        self._lock = threading.RLock()  # the GCS backend is not thread-safe
+        self._closed = False
+        self._busy = False  # set while an async home holds the lock, so get_state needn't block
+
+        self._invert = invert_z
+        native_lo, native_hi = c414.hardware_limits_mm()
+        # squid_z = offset - native when inverted (offset = native positive limit) so squid 0 is
+        # the retracted/away end; offset 0 keeps pure pass-through.
+        self._offset_mm = native_hi if invert_z else 0.0
+
+        # Home target expressed in NATIVE mm. On an upright system home() retracts to the positive
+        # travel limit (furthest from the sample); set_limits() narrows it to the fenced upper end.
+        self._home_to_pos_limit = home_to_positive_limit
+        self._home_native_mm = native_hi if home_to_positive_limit else home_mm
+
+    def _to_native(self, squid_mm: float) -> float:
+        return (self._offset_mm - squid_mm) if self._invert else squid_mm
+
+    def _to_squid(self, native_mm: float) -> float:
+        return (self._offset_mm - native_mm) if self._invert else native_mm
+
+    def move_z(self, rel_mm: float, blocking: bool = True):
+        with self._lock:
+            # A relative move flips sign under inversion (squid+ = native-), no offset.
+            self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        with self._lock:
+            self._c414.move_to(self._to_native(abs_mm), wait=blocking)
+
+    def get_pos(self) -> Pos:
+        with self._lock:
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._to_squid(self._c414.get_position_mm()), theta_rad=None)
+
+    def get_state(self) -> StageStage:
+        # If an async home holds the lock, report busy without blocking on it.
+        if self._busy:
+            return StageStage(busy=True)
+        with self._lock:
+            return StageStage(busy=self._c414.is_moving())
+
+    def is_referenced(self) -> bool:
+        with self._lock:
+            return self._c414.is_referenced()
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        # Home = reference if needed (FRF skipped when already referenced, so no redundant
+        # sweep) then move Z to the objective-clear home position.
+        if not z:
+            return
+        if blocking:
+            self._home_z_locked()
+        else:
+            threading.Thread(target=self._home_z_locked, daemon=True, name="pi-z-home").start()
+
+    def _home_z_locked(self):
+        self._busy = True
+        try:
+            with self._lock:
+                if self._closed:  # close() won the race; do not touch the torn-down handle
+                    return
+                if not self._c414.is_referenced():
+                    self._c414.reference()
+                # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,
+                # or the pass-through home_mm otherwise), so move the backend directly.
+                self._c414.move_to(self._home_native_mm, wait=True)
+        finally:
+            self._busy = False
+
+    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if z:
+            self._log.warning(
+                "PIFocusStage.zero(z=True) is a no-op: the V-308 uses an absolute optical "
+                "reference. Use home() to re-reference."
+            )
+
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
+        if z_pos_mm is not None and z_neg_mm is not None:
+            with self._lock:
+                # Map the software Z limits to native; inversion (squid = offset - native) reverses
+                # order, so take min/max after transforming both ends.
+                n1, n2 = self._to_native(z_pos_mm), self._to_native(z_neg_mm)
+                native_lo, native_hi = min(n1, n2), max(n1, n2)
+                self._c414.set_travel_limits(native_lo, native_hi)
+                if self._home_to_pos_limit:
+                    # Retract to the fenced upper (furthest-from-sample) end so home() stays within
+                    # the enforced range rather than driving to the raw hardware stop.
+                    self._home_native_mm = native_hi
+        elif z_pos_mm is not None or z_neg_mm is not None:
+            self._log.warning("PIFocusStage.set_limits ignored a one-sided Z limit; pass both z_pos_mm and z_neg_mm.")
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._c414.close()
+
+    def z_mm_to_usteps(self, mm: float) -> int:
+        # Continuous drive: report the V-308's ~10 nm resolution as the GUI Z step grid (the GUI
+        # uses 1 / z_mm_to_usteps(1.0)), so um-scale Z deltas are effectively not snapped. Rounds
+        # to an integer ustep like the stepper convert_real_units_to_ustep, for consistency.
+        return round(mm / _Z_RESOLUTION_MM)
+
+    def move_x(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_x")
+
+    def move_y(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_y")
+
+    def move_x_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_x_to")
+
+    def move_y_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_y_to")
+
+    def _no_xy(self, name: str):
+        self._log.warning(f"{name} ignored: PIFocusStage is a Z-only focus drive (pair via CombinedStage).")
+
+
+class CombinedStage(AbstractStage):
+    """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
+
+    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
+        super().__init__(stage_config or xy_stage.get_config())
+        self._xy = xy_stage
+        self._z = z_stage
+        self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+
+        # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
+        # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
+        # (continuous ~10 nm) grid instead of the wrapped XY stepper grid, so Z-stack/autofocus
+        # steps are not snapped to the coarse stepper microstep grid. Only the resolution fields
+        # are overridden; range/speed/sign are preserved.
+        z_usteps_per_mm = abs(self._z.z_mm_to_usteps(1.0)) if hasattr(self._z, "z_mm_to_usteps") else 0.0
+        if z_usteps_per_mm:
+            fine_z = self._config.Z_AXIS.model_copy(
+                update={"SCREW_PITCH": 1.0, "MICROSTEPS_PER_STEP": 1, "FULL_STEPS_PER_REV": float(z_usteps_per_mm)}
+            )
+            self._config = self._config.model_copy(update={"Z_AXIS": fine_z})
+
+    def move_x(self, rel_mm: float, blocking: bool = True):
+        self._xy.move_x(rel_mm, blocking)
+
+    def move_y(self, rel_mm: float, blocking: bool = True):
+        self._xy.move_y(rel_mm, blocking)
+
+    def move_z(self, rel_mm: float, blocking: bool = True):
+        self._z.move_z(rel_mm, blocking)
+
+    def move_x_to(self, abs_mm: float, blocking: bool = True):
+        self._xy.move_x_to(abs_mm, blocking)
+
+    def move_y_to(self, abs_mm: float, blocking: bool = True):
+        self._xy.move_y_to(abs_mm, blocking)
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        self._z.move_z_to(abs_mm, blocking)
+
+    def get_pos(self) -> Pos:
+        xy, z = self._xy.get_pos(), self._z.get_pos()
+        return Pos(x_mm=xy.x_mm, y_mm=xy.y_mm, z_mm=z.z_mm, theta_rad=xy.theta_rad)
+
+    def get_state(self) -> StageStage:
+        return StageStage(busy=self._xy.get_state().busy or self._z.get_state().busy)
+
+    def is_referenced(self) -> bool:
+        return self._z.is_referenced()
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if x or y or theta:
+            self._xy.home(x, y, False, theta, blocking)
+        if z:
+            self._z.home(False, False, True, False, blocking)
+
+    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if x or y or theta:
+            self._xy.zero(x, y, False, theta, blocking)
+        if z:
+            self._z.zero(False, False, True, False, blocking)
+
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
+        self._xy.set_limits(
+            x_pos_mm=x_pos_mm,
+            x_neg_mm=x_neg_mm,
+            y_pos_mm=y_pos_mm,
+            y_neg_mm=y_neg_mm,
+            theta_pos_rad=theta_pos_rad,
+            theta_neg_rad=theta_neg_rad,
+        )
+        self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
+
+    # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage, so
+    # the wrapper must expose them. X/Y come from the wrapped XY stage; Z comes from the V-308
+    # (continuous), not the XY stepper grid.
+    def x_mm_to_usteps(self, mm: float):
+        return self._xy.x_mm_to_usteps(mm)
+
+    def y_mm_to_usteps(self, mm: float):
+        return self._xy.y_mm_to_usteps(mm)
+
+    def z_mm_to_usteps(self, mm: float):
+        return self._z.z_mm_to_usteps(mm)
+
+    def close(self):
+        # Close the V-308 backend (its FTDI handle); the XY stage's resources are released
+        # elsewhere (Cephla via microcontroller.close()), so only close it if it offers close().
+        for stage in (self._z, self._xy):
+            close = getattr(stage, "close", None)
+            if callable(close):
+                close()
+
+
+class C414FocusStage:
+    """Single-axis closed-loop focus drive (V-308 on a C-414), GCS 2.0 via pipython.
+
+    SAFETY: the voice coil has no self-locking. ``reference()`` and ``autozero()`` MOVE the
+    stage -- run them with the objective clear of the sample.
+    """
+
+    def __init__(self, axis: str = "1"):
+        GCSDevice, GCSError, pitools = _import_pipython()
+        self._GCSDevice = GCSDevice
+        self._GCSError = GCSError
+        self._pitools = pitools
+        # The GCSDevice is created at connect time bound to a pure-Python gateway (PISerial /
+        # PISocket), so no proprietary PI GCS DLL (libpi_pi_gcs2.so, which `pip install
+        # pipython` does NOT provide) is required for serial/TCP on Linux. Creating a
+        # DLL-backed GCSDevice here would also register a connection callback that later
+        # fires against the missing DLL, so we defer construction to connect_*().
+        self.gcs = None
+        self._gateway = None  # pure-Python transport (PISerial/PISocket) held for a clean close()
+        self.axis = axis
+        self._is_referenced = False  # cached qFRF state; refreshed by is_referenced()/reference()
+        # Cached Position Range Limit [lo, hi] so moves can clamp to the reachable range without a
+        # qTMN/qTMX query each move; refreshed at connect and on set_travel_limits/reset_range_limit.
+        self._range_lo: Optional[float] = None
+        self._range_hi: Optional[float] = None
+
+    # --- connection ----------------------------------------------------------
+    def connect_serial(self, comport, baudrate: int = 115200) -> None:
+        """Connect over the FTDI virtual COM port (115200 8-N-1) -- the default path.
+
+        Uses pipython's pure-Python PISerial gateway; the proprietary PI GCS DLL is NOT
+        required (``gcs.ConnectRS232`` would need it and fails on a pip-only Linux install).
+        """
+        from pipython.pidevice.interfaces.piserial import PISerial
+
+        self._gateway = PISerial(port=comport, baudrate=baudrate)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=self._gateway)
+        self._after_connect()
+
+    def connect_tcpip(self, ipaddress: str, ipport: int = 50000) -> None:
+        """Connect over TCP/IP via the pure-Python PISocket gateway (no GCS DLL required)."""
+        from pipython.pidevice.interfaces.pisocket import PISocket
+
+        self._gateway = PISocket(host=ipaddress, port=ipport)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=self._gateway)
+        self._after_connect()
+
+    def connect_usb(self, serialnum: Optional[str] = None) -> None:
+        """Connect over USB via PI's GCS DLL (requires the PI GCS library install).
+
+        Unlike the serial/TCP paths, USB needs the proprietary libpi_pi_gcs2.so; prefer
+        connect_serial() on machines without PI's software installed.
+        """
+        self.gcs = self._GCSDevice(CONTROLLERNAME)
+        if serialnum is None:
+            found = self.gcs.EnumerateUSB(mask=CONTROLLERNAME)
+            if not found:
+                raise RuntimeError("No C-414 found on USB.")
+            serialnum = found[0].split()[-1]
+        self.gcs.ConnectUSB(serialnum=serialnum)
+        self._after_connect()
+
+    def _after_connect(self) -> None:
+        if self.axis not in self.gcs.axes:
+            self.axis = self.gcs.axes[0]
+        self._range_lo, self._range_hi = self.hardware_limits_mm()  # seed the clamp cache
+
+    def _clamp_target(self, z_mm: float) -> float:
+        """Clamp an absolute Z target to the cached Position Range Limit, warning if it was outside.
+
+        The C-414 rejects an out-of-range MOV/MVR with GCSError 'Position out of limits'; clamping
+        here turns a jog past the soft limit into a benign stop at the limit instead of an uncaught
+        exception in the GUI. Cache-miss (limits unknown) passes the value through unchanged.
+        """
+        lo, hi = self._range_lo, self._range_hi
+        if lo is None or hi is None:
+            return z_mm
+        clamped = min(max(z_mm, lo), hi)
+        if abs(clamped - z_mm) > 1e-9:
+            _log.warning(
+                "C-414 Z target %.5f mm is outside the range limit [%.5f, %.5f]; clamped to %.5f mm.",
+                z_mm,
+                lo,
+                hi,
+                clamped,
+            )
+        return clamped
+
+    # --- bring-up ------------------------------------------------------------
+    def initialize(self, reference: bool = True, ref_timeout: float = 60.0) -> None:
+        """Enable closed loop and (optionally) reference the axis (referencing MOVES it)."""
+        self.gcs.RON(self.axis, [True])
+        self.gcs.SVO(self.axis, [True])
+        if reference and not self.is_referenced():
+            self.reference(timeout=ref_timeout)
+
+    def is_referenced(self) -> bool:
+        self._is_referenced = bool(self.gcs.qFRF(self.axis)[self.axis])
+        return self._is_referenced
+
+    def reference(self, timeout: float = 60.0) -> None:
+        """Reference move to the optical reference switch (MOVES the stage)."""
+        self.gcs.FRF(self.axis)
+        self._pitools.waitonreferencing(self.gcs, axes=self.axis, timeout=timeout)
+        if not self.is_referenced():
+            raise RuntimeError("Reference move did not complete.")
+
+    def autozero(self, low_mm: float, timeout: float = 60.0) -> None:
+        """Compensate residual weight force so servo-off is safe (vertical mount; MOVES)."""
+        if not self.is_referenced():
+            raise RuntimeError("Axis must be referenced before autozero.")
+        self.gcs.ATZ(self.axis, [float(low_mm)])
+        self._pitools.waitonready(self.gcs, timeout=timeout)
+        if not bool(self.gcs.qATZ(self.axis)[self.axis]):
+            raise RuntimeError("Autozero did not succeed.")
+
+    # --- limits / config -----------------------------------------------------
+    def hardware_limits_mm(self) -> Tuple[float, float]:
+        return self.gcs.qTMN(self.axis)[self.axis], self.gcs.qTMX(self.axis)[self.axis]
+
+    def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
+        """Fence the reachable Z range (Position Range Limit min/max). Requires command level 1.
+
+        The requested range is clamped to the controller's physical travel (qTMN/qTMX) so a Z
+        config wider than the V-308 cannot write an SPA the controller would reject. CCL is
+        always dropped back to level 0, even if an SPA/WPA write raises.
+        """
+        lo, hi = self.hardware_limits_mm()
+        min_mm, max_mm = max(float(min_mm), lo), min(float(max_mm), hi)
+        self.gcs.CCL(1, CCL_PASSWORD)
+        try:
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
+            if persist:
+                self.gcs.WPA(WPA_PASSWORD)
+        finally:
+            self.gcs.CCL(0)
+        self._range_lo, self._range_hi = min_mm, max_mm  # refresh the clamp cache
+
+    def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
+        """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
+
+        On the C-414 qTMN/qTMX ARE the Position Range Limit params, so a prior set_travel_limits()
+        shrinks them and set_travel_limits() (which clamps to qTMN/qTMX) can never widen them back --
+        across software restarts without a power cycle the reachable range would drift smaller each
+        time. This writes the SPA directly WITHOUT clamping to the (possibly-shrunk) current range,
+        so call it once at connect with the stage's true travel before reading hardware_limits_mm().
+        """
+        self.gcs.CCL(1, CCL_PASSWORD)
+        try:
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, float(min_mm))
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
+        finally:
+            self.gcs.CCL(0)
+        self._range_lo, self._range_hi = float(min_mm), float(max_mm)  # refresh the clamp cache
+
+    def set_velocity(self, vel_mm_s: float) -> None:
+        self.gcs.VEL(self.axis, [vel_mm_s])
+
+    def get_velocity(self) -> float:
+        return self.gcs.qVEL(self.axis)[self.axis]
+
+    # --- motion --------------------------------------------------------------
+    def get_position_mm(self) -> float:
+        return self.gcs.qPOS(self.axis)[self.axis]
+
+    def on_target(self) -> bool:
+        return bool(self.gcs.qONT(self.axis)[self.axis])
+
+    def is_moving(self) -> bool:
+        return bool(self.gcs.IsMoving(self.axis)[self.axis])
+
+    def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
+        """Absolute move (mm), clamped to the range limit. Returns the actual on-target position."""
+        if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
+            raise RuntimeError(_NOT_REFERENCED_MSG)
+        self.gcs.MOV(self.axis, self._clamp_target(float(z_mm)))
+        if wait:
+            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
+            if settle_s:
+                time.sleep(settle_s)
+        return self.get_position_mm()
+
+    def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
+        if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
+            raise RuntimeError(_NOT_REFERENCED_MSG)
+        # Resolve to an absolute target and clamp it (MOV) rather than MVR, so a jog past the range
+        # limit stops at the limit with a warning instead of raising GCSError 'Position out of limits'.
+        target = self._clamp_target(self.get_position_mm() + float(dz_mm))
+        self.gcs.MOV(self.axis, target)
+        if wait:
+            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
+        return self.get_position_mm()
+
+    def stop(self) -> None:
+        if self.gcs is None:
+            return
+        with suppress(self._GCSError):
+            self.gcs.StopAll(noraise=True)
+
+    # --- teardown ------------------------------------------------------------
+    def close(self) -> None:
+        # A gateway (PISerial/PISocket) is closed via its own close(); GCSDevice.CloseConnection()
+        # raises AttributeError on a gateway (it targets the DLL interface). Only the USB/DLL path
+        # (no gateway) uses CloseConnection.
+        if self._gateway is not None:
+            with suppress(Exception):
+                self._gateway.close()
+            return
+        with suppress(Exception):
+            if self.gcs is not None:
+                self.gcs.CloseConnection()
+
+    def __enter__(self) -> "C414FocusStage":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def _resolve_port_by_sn(serialnum) -> str:
+    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path.
+
+    Compares as strings: the config reader may coerce an all-digit serial to int, so we
+    normalise both sides. (A leading-zero numeric serial loses its zero at config-read time
+    and cannot be recovered here -- keep such serials quoted, or use PI_FOCUS_SERIAL_PORT.)
+    """
+    import serial.tools.list_ports
+
+    target = str(serialnum)
+    matches = [p.device for p in serial.tools.list_ports.comports() if str(p.serial_number) == target]
+    if not matches:
+        raise RuntimeError(
+            f"No serial port with serial_number={serialnum!r}. On Linux the C-414's custom-VID "
+            f"FTDI needs the ftdi_sio bind rule (98-pi-c414-bind.rules) installed so /dev/ttyUSB* "
+            f"appears; verify it is present and the controller is powered."
+        )
+    return matches[0]
+
+
+def connect_pi_focus_stage(
+    simulated: bool = False,
+    serialnum: Optional[str] = None,
+    serial_port: Optional[str] = None,
+    baudrate: int = 115200,
+    axis: str = "1",
+    reference: bool = True,
+    velocity_mm_s: Optional[float] = None,
+    home_mm: float = 0.0,
+    invert_z: bool = False,
+    home_to_positive_limit: bool = False,
+    z_travel_mm: float = 0.0,
+    stage_config: Optional[StageConfig] = None,
+) -> PIFocusStage:
+    """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
+
+    With reference=True the bring-up references the axis, which MOVES the stage -- run with the
+    objective clear of the sample. home_mm is the objective-clear position home() drives Z to
+    (unless home_to_positive_limit is set). invert_z / home_to_positive_limit configure an upright
+    system (see PIFocusStage). z_travel_mm>0 restores the controller's Position Range Limit to the
+    full physical travel [0, z_travel_mm] at connect, so the inversion offset / fencing don't drift
+    across restarts (qTMN/qTMX on the C-414 ARE the range-limit params).
+    """
+    if simulated:
+        backend = _SimulatedC414(axis=axis)
+        backend.initialize(reference=reference)
+        if z_travel_mm:
+            backend.reset_range_limit(z_travel_mm)
+        if velocity_mm_s:
+            backend.set_velocity(velocity_mm_s)
+        return PIFocusStage(
+            backend,
+            stage_config=stage_config,
+            home_mm=home_mm,
+            invert_z=invert_z,
+            home_to_positive_limit=home_to_positive_limit,
+        )
+
+    # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
+    # leaks an open handle.
+    if serial_port:
+        port = serial_port
+    elif serialnum:
+        port = _resolve_port_by_sn(serialnum)
+    else:
+        raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
+
+    backend = C414FocusStage(axis=axis)
+    try:
+        backend.connect_serial(port, baudrate=baudrate)
+        backend.initialize(reference=reference)
+        if z_travel_mm:
+            backend.reset_range_limit(z_travel_mm)
+        if velocity_mm_s:
+            backend.set_velocity(velocity_mm_s)
+    except Exception:
+        backend.close()  # release the GCS handle on any connect/init failure
+        raise
+    return PIFocusStage(
+        backend,
+        stage_config=stage_config,
+        home_mm=home_mm,
+        invert_z=invert_z,
+        home_to_positive_limit=home_to_positive_limit,
+    )
