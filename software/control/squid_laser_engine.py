@@ -489,6 +489,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
     """USB-serial controller. Background query thread + receive thread."""
 
     BAUDRATE = 115200
+    WRITE_TIMEOUT_S = 2.0
 
     def __init__(
         self,
@@ -572,7 +573,7 @@ class SquidLaserEngine(SquidLaserEngineBase):
                 raise RuntimeError(f"SquidLaserEngine: no USB device found with serial number {self.sn!r}")
         elif port_path is None:
             raise RuntimeError("SquidLaserEngine: must provide either sn or device")
-        return serial.Serial(port_path, baudrate=self.BAUDRATE, timeout=0.1)
+        return serial.Serial(port_path, baudrate=self.BAUDRATE, timeout=0.1, write_timeout=self.WRITE_TIMEOUT_S)
 
     def _write_packet(self, packet: bytes) -> None:
         if self._serial is None or self.is_connection_lost():
