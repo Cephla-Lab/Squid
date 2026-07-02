@@ -45,6 +45,14 @@ class AutofocusRunRequest(_Strict):
     target_um: float = 0.0
 
 
+class AutofocusCorrectRequest(_Strict):
+    threshold_um: float = Field(default=10.0, gt=0, le=1000)
+
+
+class InitializeRequest(_Strict):
+    home: bool = False
+
+
 class AutofocusOverride(_Strict):
     reflection: Optional[bool] = None
     contrast: Optional[bool] = None
