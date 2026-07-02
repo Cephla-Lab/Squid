@@ -1,0 +1,91 @@
+"""Request bodies for the REST API. Responses are plain dicts assembled by the service."""
+
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class _Strict(BaseModel):
+    model_config = {"extra": "forbid"}
+
+
+class MoveRequest(_Strict):
+    mode: Literal["absolute", "relative"] = "absolute"
+    x: Optional[float] = None
+    y: Optional[float] = None
+    z: Optional[float] = None
+    block_until_complete: bool = True
+
+
+class ChannelSelectRequest(_Strict):
+    name: str
+
+
+class ExposureRequest(_Strict):
+    exposure_ms: float = Field(gt=0, le=10000)
+    channel: Optional[str] = None
+
+
+class IntensityRequest(_Strict):
+    channel: str
+    intensity: float = Field(ge=0, le=100)
+
+
+class ObjectiveRequest(_Strict):
+    name: str
+
+
+class AcquireRequest(_Strict):
+    channel: Optional[str] = None
+    save_path: Optional[str] = None
+
+
+class AutofocusRunRequest(_Strict):
+    mode: Literal["reflection"] = "reflection"
+    target_um: float = 0.0
+
+
+class AutofocusOverride(_Strict):
+    reflection: Optional[bool] = None
+    contrast: Optional[bool] = None
+
+
+class AcquisitionOverrides(_Strict):
+    wells: Optional[str] = None
+    output_path: Optional[str] = None
+    sample_format: Optional[str] = None
+
+
+class GridSpec(_Strict):
+    wells: str
+    channels: List[str] = Field(min_length=1)
+    nx: int = Field(default=2, ge=1, le=100)
+    ny: int = Field(default=2, ge=1, le=100)
+    overlap_percent: float = Field(default=10.0, ge=0, le=50)
+    wellplate_format: str = "96 well plate"
+
+
+class AcquisitionRequest(_Strict):
+    method: Optional[str] = None
+    yaml_path: Optional[str] = None
+    grid: Optional[GridSpec] = None
+    experiment_id: Optional[str] = None
+    operator: Optional[str] = None
+    scheduler_job_id: Optional[str] = None
+    autofocus: Optional[AutofocusOverride] = None
+    overrides: AcquisitionOverrides = Field(default_factory=AcquisitionOverrides)
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "AcquisitionRequest":
+        sources = [s for s in (self.method, self.yaml_path, self.grid) if s is not None]
+        if len(sources) != 1:
+            raise ValueError("Provide exactly one of: method, yaml_path, grid")
+        return self
+
+
+class AbortRequest(_Strict):
+    timeout_s: float = Field(default=60.0, ge=0, le=600)
+
+
+class PythonExecRequest(_Strict):
+    code: str

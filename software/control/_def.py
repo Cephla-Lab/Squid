@@ -1277,6 +1277,14 @@ CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
 
+# Core Service (REST + SSE API) settings; overridable via [CORE_SERVICE] in the machine INI
+CORE_SERVICE_ENABLED = True
+CORE_SERVICE_HOST = "127.0.0.1"
+CORE_SERVICE_PORT = 5060
+CORE_SERVICE_AUTH_ENABLED = False
+CORE_SERVICE_AUTH_TOKEN = ""
+CORE_SERVICE_METHODS_DIR = "machine_configs/acquisition_methods"
+
 
 # Slack Notifications - send real-time notifications during acquisition
 class SlackNotifications:
@@ -1442,6 +1450,34 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 ENABLE_NDVIEWER = _views_config.get("VIEWS", "enable_ndviewer").lower() in ("true", "1", "yes")
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
+
+    # Load Core Service settings from config file
+    try:
+        _core_service_config = ConfigParser()
+        _core_service_config.read(CACHED_CONFIG_FILE_PATH)
+        if _core_service_config.has_section("CORE_SERVICE"):
+            if _core_service_config.has_option("CORE_SERVICE", "enabled"):
+                CORE_SERVICE_ENABLED = _core_service_config.get("CORE_SERVICE", "enabled").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _core_service_config.has_option("CORE_SERVICE", "host"):
+                CORE_SERVICE_HOST = _core_service_config.get("CORE_SERVICE", "host")
+            if _core_service_config.has_option("CORE_SERVICE", "port"):
+                CORE_SERVICE_PORT = _core_service_config.getint("CORE_SERVICE", "port")
+            if _core_service_config.has_option("CORE_SERVICE", "auth_enabled"):
+                CORE_SERVICE_AUTH_ENABLED = _core_service_config.get("CORE_SERVICE", "auth_enabled").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _core_service_config.has_option("CORE_SERVICE", "auth_token"):
+                CORE_SERVICE_AUTH_TOKEN = _core_service_config.get("CORE_SERVICE", "auth_token")
+            if _core_service_config.has_option("CORE_SERVICE", "methods_dir"):
+                CORE_SERVICE_METHODS_DIR = _core_service_config.get("CORE_SERVICE", "methods_dir")
+    except Exception as e:
+        log.warning(f"Failed to load Core Service settings from config: {e}")
 
     # Load GENERAL settings from config file
     try:
