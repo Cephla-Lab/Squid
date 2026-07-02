@@ -358,3 +358,16 @@ def test_pi_focus_noninverted_unchanged():
     assert abs(stage.get_pos().z_mm - 2.0) < 1e-9
     stage.home(False, False, True, False, blocking=True)
     assert abs(stage.get_pos().z_mm - 0.5) < 1e-9  # home_mm pass-through
+
+
+def test_c414_clamp_target_graceful_limit():
+    # A jog past the range limit clamps (with a warning) instead of raising GCSError; needs pipython
+    # only to construct the driver object (no hardware / no connection is used).
+    pytest.importorskip("pipython")
+    dev = squid.stage.pi.C414FocusStage(axis="1")
+    dev._range_lo, dev._range_hi = 1.0, 6.95
+    assert dev._clamp_target(3.0) == 3.0  # in range -> unchanged
+    assert dev._clamp_target(10.0) == 6.95  # above hi -> clamped
+    assert dev._clamp_target(-2.0) == 1.0  # below lo -> clamped
+    dev._range_lo = dev._range_hi = None  # limits unknown -> pass through
+    assert dev._clamp_target(999.0) == 999.0

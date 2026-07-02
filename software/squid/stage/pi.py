@@ -18,8 +18,11 @@ import time
 from contextlib import suppress
 from typing import Optional, Tuple
 
+import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
+
+_log = squid.logging.get_logger(__name__)
 
 CONTROLLERNAME = "C-414"
 CCL_PASSWORD = "advanced"
@@ -398,6 +401,10 @@ class C414FocusStage:
         self._gateway = None  # pure-Python transport (PISerial/PISocket) held for a clean close()
         self.axis = axis
         self._is_referenced = False  # cached qFRF state; refreshed by is_referenced()/reference()
+        # Cached Position Range Limit [lo, hi] so moves can clamp to the reachable range without a
+        # qTMN/qTMX query each move; refreshed at connect and on set_travel_limits/reset_range_limit.
+        self._range_lo: Optional[float] = None
+        self._range_hi: Optional[float] = None
 
     # --- connection ----------------------------------------------------------
     def connect_serial(self, comport, baudrate: int = 115200) -> None:
@@ -438,6 +445,28 @@ class C414FocusStage:
     def _after_connect(self) -> None:
         if self.axis not in self.gcs.axes:
             self.axis = self.gcs.axes[0]
+        self._range_lo, self._range_hi = self.hardware_limits_mm()  # seed the clamp cache
+
+    def _clamp_target(self, z_mm: float) -> float:
+        """Clamp an absolute Z target to the cached Position Range Limit, warning if it was outside.
+
+        The C-414 rejects an out-of-range MOV/MVR with GCSError 'Position out of limits'; clamping
+        here turns a jog past the soft limit into a benign stop at the limit instead of an uncaught
+        exception in the GUI. Cache-miss (limits unknown) passes the value through unchanged.
+        """
+        lo, hi = self._range_lo, self._range_hi
+        if lo is None or hi is None:
+            return z_mm
+        clamped = min(max(z_mm, lo), hi)
+        if abs(clamped - z_mm) > 1e-9:
+            _log.warning(
+                "C-414 Z target %.5f mm is outside the range limit [%.5f, %.5f]; clamped to %.5f mm.",
+                z_mm,
+                lo,
+                hi,
+                clamped,
+            )
+        return clamped
 
     # --- bring-up ------------------------------------------------------------
     def initialize(self, reference: bool = True, ref_timeout: float = 60.0) -> None:
@@ -488,6 +517,7 @@ class C414FocusStage:
                 self.gcs.WPA(WPA_PASSWORD)
         finally:
             self.gcs.CCL(0)
+        self._range_lo, self._range_hi = min_mm, max_mm  # refresh the clamp cache
 
     def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
         """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
@@ -504,6 +534,7 @@ class C414FocusStage:
             self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
         finally:
             self.gcs.CCL(0)
+        self._range_lo, self._range_hi = float(min_mm), float(max_mm)  # refresh the clamp cache
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
@@ -522,10 +553,10 @@ class C414FocusStage:
         return bool(self.gcs.IsMoving(self.axis)[self.axis])
 
     def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
-        """Absolute move (mm). Returns the actual on-target position."""
+        """Absolute move (mm), clamped to the range limit. Returns the actual on-target position."""
         if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
-        self.gcs.MOV(self.axis, z_mm)
+        self.gcs.MOV(self.axis, self._clamp_target(float(z_mm)))
         if wait:
             self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
             if settle_s:
@@ -535,7 +566,10 @@ class C414FocusStage:
     def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
         if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
-        self.gcs.MVR(self.axis, dz_mm)
+        # Resolve to an absolute target and clamp it (MOV) rather than MVR, so a jog past the range
+        # limit stops at the limit with a warning instead of raising GCSError 'Position out of limits'.
+        target = self._clamp_target(self.get_position_mm() + float(dz_mm))
+        self.gcs.MOV(self.axis, target)
         if wait:
             self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
         return self.get_position_mm()
