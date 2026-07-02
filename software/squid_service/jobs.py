@@ -1,6 +1,5 @@
 """Acquisition job records and store (spec §9)."""
 
-import json
 import threading
 import uuid
 from enum import Enum
@@ -108,25 +107,29 @@ class JobStore:
             self._jobs[job.job_id] = job
             self._active_id = job.job_id
             self._done_events[job.job_id] = threading.Event()
-        return job
+            return job.model_copy(deep=True)
 
     def get(self, job_id: str) -> Optional[JobRecord]:
         with self._lock:
             job = self._jobs.get(job_id)
-        if job is None and self._persisted_last is not None and self._persisted_last.job_id == job_id:
+            if job is not None:
+                return job.model_copy(deep=True)
+        if self._persisted_last is not None and self._persisted_last.job_id == job_id:
             return self._persisted_last
-        return job
+        return None
 
     @property
     def active(self) -> Optional[JobRecord]:
         with self._lock:
-            return self._jobs.get(self._active_id) if self._active_id else None
+            job = self._jobs.get(self._active_id) if self._active_id else None
+            return job.model_copy(deep=True) if job is not None else None
 
     @property
     def last(self) -> Optional[JobRecord]:
         with self._lock:
             if self._last_id:
-                return self._jobs[self._last_id]
+                job = self._jobs[self._last_id]
+                return job.model_copy(deep=True)
         return self._persisted_last
 
     def mark_running(self, job_id: str) -> None:
@@ -167,10 +170,11 @@ class JobStore:
                 self._active_id = None
             self._last_id = job_id
             done = self._done_events.get(job_id)
+            job_copy = job.model_copy(deep=True)
         self._persist(job)
         if done:
             done.set()
-        return job
+        return job_copy
 
     def wait(self, job_id: str, timeout_s: float) -> bool:
         with self._lock:
