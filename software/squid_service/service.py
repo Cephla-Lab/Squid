@@ -681,6 +681,37 @@ class SquidCoreService:
     def _on_acq_stats(self, stats) -> None:
         self._acq_stats = stats
 
+    def _derive_end_reason(self) -> str:
+        """Fallback used by _on_acq_finished when AcquisitionStats never arrived.
+
+        multi_point_worker.py only calls ``signal_slack_acquisition_finished``
+        (and ``signal_slack_timepoint_notification``) inside
+        ``if self._slack_notifier is not None:`` blocks. With no Slack notifier
+        configured -- the default -- ``self._acq_stats`` stays None and the real
+        end reason (e.g. "user_abort", "error") never reaches us, so every
+        acquisition would otherwise be reported as outcome SUCCESS.
+
+        ``MultiPointWorker._compute_end_reason()`` (control/core/multi_point_worker.py:450)
+        is the worker's own authoritative classification: it reads
+        ``self._run_state_fatal``, ``self.abort_requested_fn()``, ``self._abort_cause``,
+        and ``self._acquisition_error_count`` and returns a string -- no mutation of
+        any state, so calling it again here is side-effect-free. It is invoked from
+        the ``finally`` block of ``MultiPointWorker.run()`` immediately before that
+        same block calls ``self.callbacks.signal_acquisition_finished()``, which is
+        what (via the chaining in ``_wrap_controller_callbacks``) eventually calls
+        this service's ``_on_acq_finished``. So by the time we get here the worker's
+        state is already final, and ``self._mpc.multiPointWorker`` has not yet been
+        cleared -- that only happens in ``MultiPointController.close()``, a separate
+        shutdown path -- so the reference is still valid.
+        """
+        worker = getattr(self._mpc, "multiPointWorker", None)
+        if worker is not None:
+            try:
+                return worker._compute_end_reason()
+            except Exception:
+                self._log.exception("worker._compute_end_reason() failed; falling back")
+        return "user_abort" if getattr(self._mpc, "abort_acqusition_requested", False) else "completed"
+
     def _on_acq_finished(self) -> None:
         job = self.jobs.active
         stats = self._acq_stats
@@ -691,7 +722,19 @@ class SquidCoreService:
         # A run_acquisition() validation failure fires finished WITHOUT start,
         # so the job never reached RUNNING (started_at is None).
         validation_failure = job is not None and job.started_at is None
-        runtime_reason = getattr(stats, "reason", "completed") if stats else "completed"
+        # See _derive_end_reason: without a Slack notifier, `stats` stays None
+        # even for real runs, so fall back to asking the worker directly. Skip
+        # that lookup for a validation failure -- runtime_reason is unused
+        # there (that branch hardcodes end_reason="error" below), and
+        # multiPointWorker could still reference a *previous* completed run.
+        worker = None
+        if stats is not None:
+            runtime_reason = getattr(stats, "reason", "completed")
+        elif validation_failure:
+            runtime_reason = "completed"
+        else:
+            worker = getattr(self._mpc, "multiPointWorker", None)
+            runtime_reason = self._derive_end_reason()
         # A runtime "error" drives the instrument to ERROR (URS ERR-STATE-001/002);
         # a pre-start validation failure is recoverable and returns to INITIALIZED.
         go_error = (not validation_failure) and runtime_reason == "error"
@@ -723,16 +766,32 @@ class SquidCoreService:
             output_dir = None
             if self._mpc.base_path and self._mpc.experiment_ID:
                 output_dir = os.path.join(self._mpc.base_path, self._mpc.experiment_ID)
-            errors_encountered = getattr(stats, "errors_encountered", 0) if stats else 0
+            if stats is not None:
+                errors_encountered = getattr(stats, "errors_encountered", 0)
+                image_count_written = getattr(stats, "total_images", self._images_seen)
+            else:
+                # No stats (no Slack notifier): fall back to the worker's own
+                # error counter and the service's own per-image counted total.
+                errors_encountered = getattr(worker, "_acquisition_error_count", 0)
+                image_count_written = self._images_seen
             result = JobResult(
                 output_dir=output_dir,
-                image_count_written=(getattr(stats, "total_images", self._images_seen) if stats else self._images_seen),
+                image_count_written=image_count_written,
                 partial_write=outcome is not JobOutcome.SUCCESS,
                 errors_encountered=errors_encountered,
                 end_reason=runtime_reason,
             )
             # save_failures mirrors the terminal error count (URS API-POLL-001).
-            self.jobs.update_progress(job.job_id, save_failures=errors_encountered)
+            progress_update = {"save_failures": errors_encountered}
+            if stats is None:
+                # signal_slack_timepoint_notification (which normally accumulates
+                # af_failures across the run via _on_timepoint_stats) is gated the
+                # same way, so without a notifier job.progress.af_failures never
+                # moves off 0. Merge the worker's own running total in now.
+                af_failures = getattr(worker, "_laser_af_failures", 0) or 0
+                if af_failures > job.progress.af_failures:
+                    progress_update["af_failures"] = af_failures
+            self.jobs.update_progress(job.job_id, **progress_update)
             fault = None
             if go_error:
                 fault = self._record_fault(

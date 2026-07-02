@@ -1,4 +1,6 @@
+import queue
 import time
+import types
 
 import pytest
 import yaml
@@ -139,19 +141,121 @@ def test_second_acquisition_rejected_while_running(service, sim_scope, tmp_path)
 
 
 def test_abort_acquisition(service, sim_scope, tmp_path):
+    # No Slack notifier is configured on this controller (ts.get_test_multi_point_controller
+    # never calls set_slack_notifier), which is exactly the gap this test guards: without it,
+    # AcquisitionStats never reaches the service via signal_slack_acquisition_finished, so
+    # _on_acq_finished must fall back to _derive_end_reason() to report ABORTED correctly.
     req = AcquisitionRequest(
         yaml_path=_write_yaml(tmp_path, sim_scope),
-        overrides={"output_path": str(tmp_path / "out3"), "wells": "A1:B3"},  # more work to abort
+        overrides={"output_path": str(tmp_path / "out3"), "wells": "A1:D6"},  # enough work to abort mid-run
     )
+    q = service.events.subscribe()
     handle = service.start_acquisition(req)
-    time.sleep(0.5)
-    result = service.abort_job(handle["job_id"], timeout_s=120.0)
+    try:
+        # Wait for the run to actually reach ACQUIRING before aborting, instead of a
+        # fixed sleep, so the abort is issued as early (and as reliably) as possible.
+        deadline = time.monotonic() + 10.0
+        reached_acquiring = False
+        while time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                ev = q.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if ev.event == "state_changed" and ev.data.get("new") == "ACQUIRING":
+                reached_acquiring = True
+                break
+        assert reached_acquiring, "acquisition never reached ACQUIRING before the abort was issued"
+
+        result = service.abort_job(handle["job_id"], timeout_s=120.0)
+    finally:
+        service.events.unsubscribe(q)
+
     assert result["timed_out"] is False
     job = result["job"]
     assert job["state"] == "COMPLETED"
-    # user_abort maps to ABORTED; a fast sim run may legitimately finish first
-    assert job["outcome"] in ("ABORTED", "SUCCESS")
+    if job["outcome"] == "SUCCESS":
+        pytest.skip(
+            "sim raced to completion before the abort landed (job finished before ABORTED "
+            "could be observed) even though ACQUIRING was seen first; not a fix regression"
+        )
+    assert job["outcome"] == "ABORTED"
+    assert result["clean"] is True
     assert service.state == InstrumentState.INITIALIZED
+
+
+# ---- end-reason fallback when no Slack notifier is configured -----------
+
+
+def test_derive_end_reason_used_when_stats_missing(sim_scope, tmp_path):
+    """_on_acq_finished must consult _derive_end_reason() (and thus the worker's
+    own _compute_end_reason()) when no AcquisitionStats arrived -- the situation
+    for every acquisition when no Slack notifier is configured (the default).
+
+    Drives _on_acq_start/_on_acq_finished directly against a service whose mpc is
+    a plain stub namespace (no real MultiPointController/-Worker involved), with a
+    fake worker exposing only what the service reads: _compute_end_reason(),
+    _acquisition_error_count, _laser_af_failures.
+    """
+    svc = SquidCoreService(
+        microscope=sim_scope,
+        simulation=True,
+        job_persist_path=tmp_path / "last_job.json",
+    )
+
+    fake_worker = types.SimpleNamespace(
+        _compute_end_reason=lambda: "error",
+        _acquisition_error_count=3,
+        _laser_af_failures=2,
+    )
+    svc._mpc = types.SimpleNamespace(
+        multiPointWorker=fake_worker,
+        abort_acqusition_requested=False,
+        base_path=str(tmp_path),
+        experiment_ID="stub_exp",
+    )
+
+    svc._on_acq_start(types.SimpleNamespace(experiment_ID="stub_exp"))
+    job_id = svc.jobs.active.job_id
+    assert svc._acq_stats is None  # no signal_slack_acquisition_finished ever fired
+
+    svc._on_acq_finished()
+
+    job = svc.get_job(job_id)
+    assert job["state"] == "COMPLETED"
+    assert job["outcome"] == "FAILURE"  # _REASON_TO_OUTCOME["error"]
+    assert job["result"]["end_reason"] == "error"
+    assert job["result"]["errors_encountered"] == 3
+    assert job["progress"]["af_failures"] == 2
+    assert job["progress"]["save_failures"] == 3
+    assert svc.state == InstrumentState.ERROR
+
+
+def test_derive_end_reason_falls_back_without_worker(sim_scope, tmp_path):
+    """When multiPointWorker is unavailable, fall back to the abort flag instead
+    of silently reporting SUCCESS."""
+    svc = SquidCoreService(
+        microscope=sim_scope,
+        simulation=True,
+        job_persist_path=tmp_path / "last_job2.json",
+    )
+    svc._mpc = types.SimpleNamespace(
+        multiPointWorker=None,
+        abort_acqusition_requested=True,
+        base_path=str(tmp_path),
+        experiment_ID="stub_exp2",
+    )
+
+    svc._on_acq_start(types.SimpleNamespace(experiment_ID="stub_exp2"))
+    job_id = svc.jobs.active.job_id
+
+    svc._on_acq_finished()
+
+    job = svc.get_job(job_id)
+    assert job["state"] == "COMPLETED"
+    assert job["outcome"] == "ABORTED"  # _REASON_TO_OUTCOME["user_abort"]
+    assert job["result"]["end_reason"] == "user_abort"
+    assert svc.state == InstrumentState.INITIALIZED
 
 
 def test_get_job_unknown_id_faults(service):
