@@ -291,3 +291,70 @@ def test_connect_pi_focus_requires_port():
     # Hardware-free misconfiguration: raises before constructing C414FocusStage (no pipython needed).
     with pytest.raises(RuntimeError, match="PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT"):
         squid.stage.pi.connect_pi_focus_stage(simulated=False)
+
+
+# --- PI V-308 upright / inverted-Z + range-limit reset ------------------------
+
+
+def _referenced_sim_with_travel(lo=0.0, hi=7.0):
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    sim.reset_range_limit(hi, lo)  # mirror the V-308's true travel
+    return sim
+
+
+def test_pi_focus_inverted_mapping():
+    # Upright: squid_z = (native positive limit) - native. Z+ moves toward the sample.
+    sim = _referenced_sim_with_travel(0.0, 7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, invert_z=True)
+    assert stage._offset_mm == 7.0
+    stage.move_z_to(1.0)  # squid 1.0 -> native 6.0
+    assert abs(sim.get_position_mm() - 6.0) < 1e-9
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9
+    before = sim.get_position_mm()
+    stage.move_z(0.5)  # Z+ (toward sample) -> native decreases
+    assert sim.get_position_mm() < before
+    assert abs(stage.get_pos().z_mm - 1.5) < 1e-9
+
+
+def test_pi_focus_inverted_home_retracts_to_positive_limit():
+    sim = _referenced_sim_with_travel(0.0, 7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, invert_z=True, home_to_positive_limit=True)
+    # software z [0.05, 6.0] -> native fence [1.0, 6.95]; home retracts to the fenced upper end.
+    stage.set_limits(z_pos_mm=6.0, z_neg_mm=0.05)
+    assert abs(sim._lo_mm - 1.0) < 1e-9 and abs(sim._hi_mm - 6.95) < 1e-9
+    stage.move_z_to(3.0)  # somewhere toward the sample
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(sim.get_position_mm() - 6.95) < 1e-9  # furthest from sample (native upper)
+    assert abs(stage.get_pos().z_mm - 0.05) < 1e-9
+
+
+def test_pi_focus_reset_range_limit_restores_travel():
+    # On the C-414 qTMN/qTMX ARE the range limit; a prior fence shrinks them. reset_range_limit
+    # widens them back (set_travel_limits could not, since it clamps to the shrunk range).
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    sim.set_travel_limits(0.05, 5.95)
+    assert sim.hardware_limits_mm() == (0.05, 5.95)
+    sim.reset_range_limit(7.0, 0.0)
+    assert sim.hardware_limits_mm() == (0.0, 7.0)
+
+
+def test_connect_pi_focus_offset_stable_across_prior_fence():
+    # Even if a prior session shrank the range, connect with z_travel_mm restores it so the
+    # inversion offset is the true travel (not the drifted value).
+    stage = squid.stage.pi.connect_pi_focus_stage(
+        simulated=True, invert_z=True, home_to_positive_limit=True, z_travel_mm=7.0
+    )
+    assert stage._offset_mm == 7.0
+
+
+def test_pi_focus_noninverted_unchanged():
+    # Default (no invert / no positive-limit home) stays pure pass-through.
+    sim = _referenced_sim_with_travel(0.0, 7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, home_mm=0.5)
+    assert stage._offset_mm == 0.0
+    stage.move_z_to(2.0)
+    assert abs(stage.get_pos().z_mm - 2.0) < 1e-9
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9  # home_mm pass-through

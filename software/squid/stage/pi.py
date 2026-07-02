@@ -91,6 +91,9 @@ class _SimulatedC414:
     def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False):
         self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
 
+    def reset_range_limit(self, max_mm: float, min_mm: float = 0.0):
+        self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
+
     def set_velocity(self, vel_mm_s: float):
         self._vel_mm_s = float(vel_mm_s)
 
@@ -122,30 +125,60 @@ class _SimulatedC414:
 class PIFocusStage(AbstractStage):
     """Z-only AbstractStage backed by a C-414 / V-308. X / Y / theta are no-ops.
 
-    Z is pure pass-through: the backend's native mm is Squid's Z mm (no sign/offset, no
-    Z_AXIS.MOVEMENT_SIGN). A lock serialises every backend call so a non-blocking home()
-    cannot interleave GCS request/response framing with concurrent get_pos()/move_z().
+    Z is pass-through by default (Squid Z == the backend's native mm). For an upright system,
+    pass ``invert_z=True``: the backend's native 0 is DOWN (objective toward the sample), so Z is
+    mapped ``squid_z = offset - native`` where ``offset`` is the native positive travel limit --
+    Squid Z 0 is then fully retracted and Z increases toward the sample. With
+    ``home_to_positive_limit=True`` home() retracts to the native positive travel limit (furthest
+    from the sample) rather than to ``home_mm``.
+
+    A lock serialises every backend call so a non-blocking home() cannot interleave GCS
+    request/response framing with concurrent get_pos()/move_z().
     """
 
-    def __init__(self, c414, stage_config: Optional[StageConfig] = None, home_mm: float = 0.0):
+    def __init__(
+        self,
+        c414,
+        stage_config: Optional[StageConfig] = None,
+        home_mm: float = 0.0,
+        invert_z: bool = False,
+        home_to_positive_limit: bool = False,
+    ):
         super().__init__(stage_config)
         self._c414 = c414
-        self._home_mm = home_mm  # objective-clear "home" position Z moves to on home()
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
 
+        self._invert = invert_z
+        native_lo, native_hi = c414.hardware_limits_mm()
+        # squid_z = offset - native when inverted (offset = native positive limit) so squid 0 is
+        # the retracted/away end; offset 0 keeps pure pass-through.
+        self._offset_mm = native_hi if invert_z else 0.0
+
+        # Home target expressed in NATIVE mm. On an upright system home() retracts to the positive
+        # travel limit (furthest from the sample); set_limits() narrows it to the fenced upper end.
+        self._home_to_pos_limit = home_to_positive_limit
+        self._home_native_mm = native_hi if home_to_positive_limit else home_mm
+
+    def _to_native(self, squid_mm: float) -> float:
+        return (self._offset_mm - squid_mm) if self._invert else squid_mm
+
+    def _to_squid(self, native_mm: float) -> float:
+        return (self._offset_mm - native_mm) if self._invert else native_mm
+
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
-            self._c414.move_relative(rel_mm, wait=blocking)
+            # A relative move flips sign under inversion (squid+ = native-), no offset.
+            self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
-            self._c414.move_to(abs_mm, wait=blocking)
+            self._c414.move_to(self._to_native(abs_mm), wait=blocking)
 
     def get_pos(self) -> Pos:
         with self._lock:
-            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._c414.get_position_mm(), theta_rad=None)
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._to_squid(self._c414.get_position_mm()), theta_rad=None)
 
     def get_state(self) -> StageStage:
         # If an async home holds the lock, report busy without blocking on it.
@@ -176,7 +209,9 @@ class PIFocusStage(AbstractStage):
                     return
                 if not self._c414.is_referenced():
                     self._c414.reference()
-                self._c414.move_to(self._home_mm, wait=True)
+                # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,
+                # or the pass-through home_mm otherwise), so move the backend directly.
+                self._c414.move_to(self._home_native_mm, wait=True)
         finally:
             self._busy = False
 
@@ -200,7 +235,15 @@ class PIFocusStage(AbstractStage):
     ):
         if z_pos_mm is not None and z_neg_mm is not None:
             with self._lock:
-                self._c414.set_travel_limits(z_neg_mm, z_pos_mm)
+                # Map the software Z limits to native; inversion (squid = offset - native) reverses
+                # order, so take min/max after transforming both ends.
+                n1, n2 = self._to_native(z_pos_mm), self._to_native(z_neg_mm)
+                native_lo, native_hi = min(n1, n2), max(n1, n2)
+                self._c414.set_travel_limits(native_lo, native_hi)
+                if self._home_to_pos_limit:
+                    # Retract to the fenced upper (furthest-from-sample) end so home() stays within
+                    # the enforced range rather than driving to the raw hardware stop.
+                    self._home_native_mm = native_hi
         elif z_pos_mm is not None or z_neg_mm is not None:
             self._log.warning("PIFocusStage.set_limits ignored a one-sided Z limit; pass both z_pos_mm and z_neg_mm.")
 
@@ -352,6 +395,7 @@ class C414FocusStage:
         # DLL-backed GCSDevice here would also register a connection callback that later
         # fires against the missing DLL, so we defer construction to connect_*().
         self.gcs = None
+        self._gateway = None  # pure-Python transport (PISerial/PISocket) held for a clean close()
         self.axis = axis
         self._is_referenced = False  # cached qFRF state; refreshed by is_referenced()/reference()
 
@@ -364,16 +408,16 @@ class C414FocusStage:
         """
         from pipython.pidevice.interfaces.piserial import PISerial
 
-        gateway = PISerial(port=comport, baudrate=baudrate)
-        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=gateway)
+        self._gateway = PISerial(port=comport, baudrate=baudrate)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=self._gateway)
         self._after_connect()
 
     def connect_tcpip(self, ipaddress: str, ipport: int = 50000) -> None:
         """Connect over TCP/IP via the pure-Python PISocket gateway (no GCS DLL required)."""
         from pipython.pidevice.interfaces.pisocket import PISocket
 
-        gateway = PISocket(host=ipaddress, port=ipport)
-        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=gateway)
+        self._gateway = PISocket(host=ipaddress, port=ipport)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=self._gateway)
         self._after_connect()
 
     def connect_usb(self, serialnum: Optional[str] = None) -> None:
@@ -445,6 +489,22 @@ class C414FocusStage:
         finally:
             self.gcs.CCL(0)
 
+    def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
+        """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
+
+        On the C-414 qTMN/qTMX ARE the Position Range Limit params, so a prior set_travel_limits()
+        shrinks them and set_travel_limits() (which clamps to qTMN/qTMX) can never widen them back --
+        across software restarts without a power cycle the reachable range would drift smaller each
+        time. This writes the SPA directly WITHOUT clamping to the (possibly-shrunk) current range,
+        so call it once at connect with the stage's true travel before reading hardware_limits_mm().
+        """
+        self.gcs.CCL(1, CCL_PASSWORD)
+        try:
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, float(min_mm))
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
+        finally:
+            self.gcs.CCL(0)
+
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
 
@@ -488,6 +548,13 @@ class C414FocusStage:
 
     # --- teardown ------------------------------------------------------------
     def close(self) -> None:
+        # A gateway (PISerial/PISocket) is closed via its own close(); GCSDevice.CloseConnection()
+        # raises AttributeError on a gateway (it targets the DLL interface). Only the USB/DLL path
+        # (no gateway) uses CloseConnection.
+        if self._gateway is not None:
+            with suppress(Exception):
+                self._gateway.close()
+            return
         with suppress(Exception):
             if self.gcs is not None:
                 self.gcs.CloseConnection()
@@ -528,19 +595,34 @@ def connect_pi_focus_stage(
     reference: bool = True,
     velocity_mm_s: Optional[float] = None,
     home_mm: float = 0.0,
+    invert_z: bool = False,
+    home_to_positive_limit: bool = False,
+    z_travel_mm: float = 0.0,
     stage_config: Optional[StageConfig] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
 
     With reference=True the bring-up references the axis, which MOVES the stage -- run with the
-    objective clear of the sample. home_mm is the objective-clear position home() drives Z to.
+    objective clear of the sample. home_mm is the objective-clear position home() drives Z to
+    (unless home_to_positive_limit is set). invert_z / home_to_positive_limit configure an upright
+    system (see PIFocusStage). z_travel_mm>0 restores the controller's Position Range Limit to the
+    full physical travel [0, z_travel_mm] at connect, so the inversion offset / fencing don't drift
+    across restarts (qTMN/qTMX on the C-414 ARE the range-limit params).
     """
     if simulated:
         backend = _SimulatedC414(axis=axis)
         backend.initialize(reference=reference)
+        if z_travel_mm:
+            backend.reset_range_limit(z_travel_mm)
         if velocity_mm_s:
             backend.set_velocity(velocity_mm_s)
-        return PIFocusStage(backend, stage_config=stage_config, home_mm=home_mm)
+        return PIFocusStage(
+            backend,
+            stage_config=stage_config,
+            home_mm=home_mm,
+            invert_z=invert_z,
+            home_to_positive_limit=home_to_positive_limit,
+        )
 
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
     # leaks an open handle.
@@ -555,9 +637,17 @@ def connect_pi_focus_stage(
     try:
         backend.connect_serial(port, baudrate=baudrate)
         backend.initialize(reference=reference)
+        if z_travel_mm:
+            backend.reset_range_limit(z_travel_mm)
         if velocity_mm_s:
             backend.set_velocity(velocity_mm_s)
     except Exception:
         backend.close()  # release the GCS handle on any connect/init failure
         raise
-    return PIFocusStage(backend, stage_config=stage_config, home_mm=home_mm)
+    return PIFocusStage(
+        backend,
+        stage_config=stage_config,
+        home_mm=home_mm,
+        invert_z=invert_z,
+        home_to_positive_limit=home_to_positive_limit,
+    )
