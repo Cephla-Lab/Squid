@@ -80,7 +80,9 @@ sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
 # PI C-414 focus stage (USE_PI_FOCUS_STAGE): bind the custom-VID FTDI to ftdi_sio so
 # /dev/ttyUSB* appears, and lower the latency timer. Reload + trigger so it applies now.
 sudo cp "$PI_UDEV_RULE_DIR/98-pi-c414-bind.rules" "$PI_UDEV_RULE_DIR/99-pi-ftdi-latency.rules" /etc/udev/rules.d
-sudo udevadm control --reload-rules && sudo udevadm trigger
+# Trigger with --action=add: the bind rule matches ACTION=="add", so a plain `udevadm
+# trigger` (which defaults to action=change) would NOT bind an already-connected C-414.
+sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=usb --subsystem-match=usb-serial --subsystem-match=tty
 
 # enable access to serial ports without sudo
 sudo usermod -aG dialout $USER

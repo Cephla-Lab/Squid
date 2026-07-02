@@ -2,3 +2,9 @@
 # traffic (MOV then an ONT? settle poll). At the 16ms default the timer, not the 115200 baud
 # link, dominates per-command latency. Applies once 98-pi-c414-bind.rules has created the port.
 ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTRS{idVendor}=="1a72", ATTRS{idProduct}=="102b", ATTR{latency_timer}="1"
+
+# Make the C-414's serial node world read/write so Squid can open it without the user being
+# in the dialout group (or having re-logged in after setup adds them). The latency ATTR above
+# lives on the usb-serial device; the /dev/ttyUSB* node itself is a "tty" device, so its MODE
+# must be set by a tty-subsystem rule.
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="1a72", ATTRS{idProduct}=="102b", MODE="0666"

@@ -1,7 +1,8 @@
 """
 Squid stage support for the PI V-308 voice-coil focus drive on a C-414 controller.
 
-Provides (1) ``C414FocusStage``, a GCS-2.0 driver over a serial (FTDI VCP) link, with
+Provides (1) ``C414FocusStage``, a GCS-2.0 driver over a serial (FTDI VCP) link via
+pipython's pure-Python PISerial gateway (no proprietary PI GCS DLL required), with
 ``pipython`` imported lazily so this module imports fine without it; (2) ``_SimulatedC414``,
 a pure-Python stand-in for hardware-free / CI use; and (3) two ``squid.abc.AbstractStage``
 adapters -- ``PIFocusStage`` (Z-only) and ``CombinedStage`` (XY delegate + V-308 Z).
@@ -54,8 +55,10 @@ class _SimulatedC414:
     over-range targets rather than erroring).
     """
 
-    _LO_MM = -3.5
-    _HI_MM = 3.5
+    # Mirror the V-308's real reported travel (qTMN/qTMX = 0..7 mm) so simulated clamping
+    # matches hardware behaviour.
+    _LO_MM = 0.0
+    _HI_MM = 7.0
 
     def __init__(self, axis: str = "1"):
         self.axis = axis
@@ -340,24 +343,46 @@ class C414FocusStage:
 
     def __init__(self, axis: str = "1"):
         GCSDevice, GCSError, pitools = _import_pipython()
+        self._GCSDevice = GCSDevice
         self._GCSError = GCSError
         self._pitools = pitools
-        self.gcs = GCSDevice(CONTROLLERNAME)
+        # The GCSDevice is created at connect time bound to a pure-Python gateway (PISerial /
+        # PISocket), so no proprietary PI GCS DLL (libpi_pi_gcs2.so, which `pip install
+        # pipython` does NOT provide) is required for serial/TCP on Linux. Creating a
+        # DLL-backed GCSDevice here would also register a connection callback that later
+        # fires against the missing DLL, so we defer construction to connect_*().
+        self.gcs = None
         self.axis = axis
         self._is_referenced = False  # cached qFRF state; refreshed by is_referenced()/reference()
 
     # --- connection ----------------------------------------------------------
     def connect_serial(self, comport, baudrate: int = 115200) -> None:
-        """Connect over the FTDI virtual COM port (115200 8-N-1) -- the default path."""
-        self.gcs.ConnectRS232(comport=comport, baudrate=baudrate)
+        """Connect over the FTDI virtual COM port (115200 8-N-1) -- the default path.
+
+        Uses pipython's pure-Python PISerial gateway; the proprietary PI GCS DLL is NOT
+        required (``gcs.ConnectRS232`` would need it and fails on a pip-only Linux install).
+        """
+        from pipython.pidevice.interfaces.piserial import PISerial
+
+        gateway = PISerial(port=comport, baudrate=baudrate)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=gateway)
         self._after_connect()
 
     def connect_tcpip(self, ipaddress: str, ipport: int = 50000) -> None:
-        self.gcs.ConnectTCPIP(ipaddress=ipaddress, ipport=ipport)
+        """Connect over TCP/IP via the pure-Python PISocket gateway (no GCS DLL required)."""
+        from pipython.pidevice.interfaces.pisocket import PISocket
+
+        gateway = PISocket(host=ipaddress, port=ipport)
+        self.gcs = self._GCSDevice(CONTROLLERNAME, gateway=gateway)
         self._after_connect()
 
     def connect_usb(self, serialnum: Optional[str] = None) -> None:
-        """Connect over USB via PI's GCS DLL (requires the PI software install)."""
+        """Connect over USB via PI's GCS DLL (requires the PI GCS library install).
+
+        Unlike the serial/TCP paths, USB needs the proprietary libpi_pi_gcs2.so; prefer
+        connect_serial() on machines without PI's software installed.
+        """
+        self.gcs = self._GCSDevice(CONTROLLERNAME)
         if serialnum is None:
             found = self.gcs.EnumerateUSB(mask=CONTROLLERNAME)
             if not found:
@@ -456,13 +481,16 @@ class C414FocusStage:
         return self.get_position_mm()
 
     def stop(self) -> None:
+        if self.gcs is None:
+            return
         with suppress(self._GCSError):
             self.gcs.StopAll(noraise=True)
 
     # --- teardown ------------------------------------------------------------
     def close(self) -> None:
         with suppress(Exception):
-            self.gcs.CloseConnection()
+            if self.gcs is not None:
+                self.gcs.CloseConnection()
 
     def __enter__(self) -> "C414FocusStage":
         return self
