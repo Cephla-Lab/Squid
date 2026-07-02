@@ -1,20 +1,27 @@
 """Transport-agnostic core service facade over the Microscope stack."""
 
+import dataclasses
+import json
 import math
 import os
+import shutil
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+import yaml as _yaml
+
 import squid.logging
 from squid_service import faults as F
 from squid_service.events import EventBus
 from squid_service.gui_bridge import GuiBridge
-from squid_service.jobs import JobStore
+from squid_service.jobs import JobOutcome, JobResult, JobState, JobStore
+from squid_service.methods import MethodRegistry
 from squid_service.models import (
     AcquireRequest,
+    AcquisitionRequest,
     AutofocusCorrectRequest,
     AutofocusRunRequest,
     ExposureRequest,
@@ -23,6 +30,7 @@ from squid_service.models import (
 )
 from squid_service.state import BUSY_STATES, InstrumentState, StateMachine
 from squid_service.timeutil import utc_now_iso
+from squid_service.wells import parse_well_names, well_center_mm
 
 API_VERSION = "v1"
 
@@ -37,6 +45,7 @@ class SquidCoreService:
         simulation: bool = False,
         initial_state: InstrumentState = InstrumentState.INITIALIZED,
         job_persist_path: Optional[Path] = None,
+        methods_dir: Optional[Path] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._microscope = microscope
@@ -47,12 +56,18 @@ class SquidCoreService:
         self.events = EventBus()
         self.fault_log = F.FaultLog()
         self.jobs = JobStore(persist_path=job_persist_path)
+        self.methods = MethodRegistry(methods_dir) if methods_dir is not None else None
         self._state = StateMachine(initial_state, on_transition=self._on_state_changed)
         self._command_lock = threading.Lock()
         self._python_exec_enabled = False
         self._acq_stats = None  # last AcquisitionStats from the worker
+        # Per-acquisition observer state (set on start, updated on the worker thread).
+        self._api_yaml_data = None
+        self._acq_t0 = time.monotonic()
+        self._images_seen = 0
+        self._last_progress_pub = 0.0
         if self._mpc is not None:
-            self._wrap_controller_callbacks()  # implemented in Task 9
+            self._wrap_controller_callbacks()
 
     # ---- infrastructure -------------------------------------------------
 
@@ -570,4 +585,740 @@ class SquidCoreService:
             controller.set_reference()
             return {"corrected": True, "displacement_um": displacement_um}
 
-    # --- acquisitions (Task 9) ---
+    # ---- acquisitions ------------------------------------------------------
+
+    _REASON_TO_OUTCOME = {
+        "completed": JobOutcome.SUCCESS,
+        "user_abort": JobOutcome.ABORTED,
+        "error": JobOutcome.FAILURE,
+        "completed_with_errors": JobOutcome.PARTIAL,
+    }
+
+    def _wrap_controller_callbacks(self) -> None:
+        """Chain our observers onto the controller's callbacks.
+
+        Originals always run first (the GUI keeps working); our handlers never
+        propagate exceptions into the acquisition worker. Wrapped ONCE at
+        construction: the controller later does its own ``dataclasses.replace``
+        of ``signal_acquisition_finished`` at run time, but that copies (and thus
+        preserves) our already-chained callbacks.
+        """
+        original = self._mpc.callbacks
+
+        def chain(first, second):
+            def call(*args, **kwargs):
+                try:
+                    first(*args, **kwargs)
+                finally:
+                    try:
+                        second(*args, **kwargs)
+                    except Exception:
+                        self._log.exception("core-service acquisition observer failed")
+
+            return call
+
+        self._mpc.callbacks = dataclasses.replace(
+            original,
+            signal_acquisition_start=chain(original.signal_acquisition_start, self._on_acq_start),
+            signal_acquisition_finished=chain(original.signal_acquisition_finished, self._on_acq_finished),
+            signal_new_image=chain(original.signal_new_image, self._on_new_image),
+            signal_overall_progress=chain(original.signal_overall_progress, self._on_overall_progress),
+            signal_slack_timepoint_notification=chain(
+                original.signal_slack_timepoint_notification, self._on_timepoint_stats
+            ),
+            signal_slack_acquisition_finished=chain(original.signal_slack_acquisition_finished, self._on_acq_stats),
+        )
+
+    # -- observers (run on the acquisition worker thread) --
+
+    def _on_acq_start(self, params) -> None:
+        if self.state != InstrumentState.ACQUIRING:
+            self._state.transition(InstrumentState.ACQUIRING)
+        if self.jobs.active is None:
+            # GUI-started acquisition: track it so API clients see truthful state/jobs
+            self.jobs.create(experiment_id=getattr(params, "experiment_ID", None), origin="gui")
+        job = self.jobs.active
+        self._acq_t0 = time.monotonic()
+        self._images_seen = 0
+        self._last_progress_pub = 0.0
+        self.jobs.mark_running(job.job_id)
+
+    def _on_new_image(self, frame, info) -> None:
+        job = self.jobs.active
+        if job is None:
+            return
+        self._images_seen += 1
+        elapsed = time.monotonic() - self._acq_t0
+        self.jobs.update_progress(job.job_id, images_acquired=self._images_seen, elapsed_s=elapsed)
+        now = time.monotonic()
+        if now - self._last_progress_pub >= 0.5:
+            self._last_progress_pub = now
+            progress = self.jobs.get(job.job_id).progress
+            self.events.publish("progress", {"job_id": job.job_id, **progress.model_dump()})
+
+    def _on_overall_progress(self, update) -> None:
+        job = self.jobs.active
+        if job is None:
+            return
+        self.jobs.update_progress(
+            job.job_id,
+            current_region=update.current_region,
+            total_regions=update.total_regions,
+            current_timepoint=update.current_timepoint,
+            total_timepoints=update.total_timepoints,
+        )
+
+    def _on_timepoint_stats(self, stats) -> None:
+        """Per-timepoint granularity: accumulate laser-AF failures across the run
+        (URS ERR-RES-001/003). Fires once per completed timepoint via Slack callback."""
+        job = self.jobs.active
+        if job is None:
+            return
+        failures = getattr(stats, "laser_af_failures", 0) or 0
+        if failures:
+            self.jobs.update_progress(job.job_id, af_failures=job.progress.af_failures + failures)
+
+    def _on_acq_stats(self, stats) -> None:
+        self._acq_stats = stats
+
+    def _on_acq_finished(self) -> None:
+        job = self.jobs.active
+        stats = self._acq_stats
+        self._acq_stats = None
+        yaml_data = getattr(self, "_api_yaml_data", None)
+        self._api_yaml_data = None
+
+        # A run_acquisition() validation failure fires finished WITHOUT start,
+        # so the job never reached RUNNING (started_at is None).
+        validation_failure = job is not None and job.started_at is None
+        runtime_reason = getattr(stats, "reason", "completed") if stats else "completed"
+        # A runtime "error" drives the instrument to ERROR (URS ERR-STATE-001/002);
+        # a pre-start validation failure is recoverable and returns to INITIALIZED.
+        go_error = (not validation_failure) and runtime_reason == "error"
+
+        try:
+            if self.state == InstrumentState.ACQUIRING:
+                self._state.transition(InstrumentState.PROCESSING)
+            if self.state == InstrumentState.PROCESSING:
+                self._state.transition(InstrumentState.ERROR if go_error else InstrumentState.INITIALIZED)
+        except Exception:
+            self._log.exception("state transition on acquisition finish failed")
+
+        if job is None:
+            return
+
+        if validation_failure:
+            fault = self._record_fault(
+                F.make_fault(
+                    F.FaultCategory.ACQUISITION,
+                    F.ACQUISITION_START_FAILED,
+                    "Acquisition failed controller validation before starting",
+                    terminal=True,
+                    component="acquisition",
+                )
+            )
+            completed = self.jobs.complete(job.job_id, JobOutcome.FAILURE, JobResult(end_reason="error"), fault=fault)
+        else:
+            outcome = self._REASON_TO_OUTCOME.get(runtime_reason, JobOutcome.SUCCESS)
+            output_dir = None
+            if self._mpc.base_path and self._mpc.experiment_ID:
+                output_dir = os.path.join(self._mpc.base_path, self._mpc.experiment_ID)
+            errors_encountered = getattr(stats, "errors_encountered", 0) if stats else 0
+            result = JobResult(
+                output_dir=output_dir,
+                image_count_written=(getattr(stats, "total_images", self._images_seen) if stats else self._images_seen),
+                partial_write=outcome is not JobOutcome.SUCCESS,
+                errors_encountered=errors_encountered,
+                end_reason=runtime_reason,
+            )
+            # save_failures mirrors the terminal error count (URS API-POLL-001).
+            self.jobs.update_progress(job.job_id, save_failures=errors_encountered)
+            fault = None
+            if go_error:
+                fault = self._record_fault(
+                    F.make_fault(
+                        F.FaultCategory.ACQUISITION,
+                        F.ACQUISITION_RUNTIME,
+                        "Acquisition failed during the run",
+                        terminal=True,
+                        component="acquisition",
+                    )
+                )
+            completed = self.jobs.complete(job.job_id, outcome, result, fault=fault)
+
+        if yaml_data is not None:
+            self._gui_bridge.set_acquisition_state(yaml_data, running=False)
+        self.events.publish(
+            "job_completed",
+            {
+                "job_id": completed.job_id,
+                "outcome": completed.outcome.value if completed.outcome else None,
+                "completed_at": completed.completed_at,
+            },
+        )
+
+    # -- source resolution & checks --
+
+    def _load_yaml_or_fault(self, yaml_path: str):
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        if not yaml_path or not os.path.exists(yaml_path):
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_BAD_VALUE,
+                    f"YAML file not found: {yaml_path}",
+                    detail={"yaml_path": yaml_path},
+                )
+            )
+        try:
+            yaml_data = parse_acquisition_yaml(yaml_path)
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+        except F.FaultError:
+            raise
+        except Exception as e:
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_BAD_VALUE,
+                    f"Failed to parse YAML: {e}",
+                    detail={"yaml_path": yaml_path},
+                )
+            )
+        return yaml_data, raw
+
+    def _resolve_yaml_path(self, req: AcquisitionRequest) -> str:
+        """Resolve a method name to its server-side YAML; a raw yaml_path passes through."""
+        if req.method is not None:
+            if self.methods is None:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.CONFIG,
+                        F.CONFIG_CAPABILITY_MISSING,
+                        "Method registry not attached; cannot run by method name",
+                        detail={"method": req.method},
+                    )
+                )
+            return str(self.methods.path_for(req.method))
+        return req.yaml_path
+
+    def _output_path_check(self, req: AcquisitionRequest, ctx: dict):
+        import control._def
+
+        def check_output_path():
+            base = req.overrides.output_path or getattr(control._def, "DEFAULT_SAVING_PATH", None)
+            if not base:
+                raise F.FaultError(
+                    F.make_fault(F.FaultCategory.IO, F.IO_GENERIC, "No output path and no DEFAULT_SAVING_PATH")
+                )
+            ctx["base_path"] = base
+            probe = base
+            while probe and not os.path.isdir(probe):
+                parent = os.path.dirname(probe)
+                if parent == probe:
+                    break
+                probe = parent
+            if not probe or not os.access(probe, os.W_OK):
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.IO,
+                        F.IO_PATH_NOT_WRITABLE,
+                        f"Output path not writable: {base}",
+                        detail={"output_path": base},
+                    )
+                )
+            ctx["free_bytes"] = shutil.disk_usage(probe).free
+
+        return check_output_path
+
+    def _yaml_checks(self, req: AcquisitionRequest):
+        """Ordered (name, callable) checks for a yaml_path/method acquisition.
+
+        Each callable raises FaultError on failure and threads context to later
+        checks via the shared ``ctx`` dict."""
+        import control._def
+        from control.acquisition_yaml_loader import validate_hardware
+
+        ctx = {}
+
+        def check_yaml():
+            yaml_path = self._resolve_yaml_path(req)
+            ctx["yaml_path"] = yaml_path
+            ctx["yaml_data"], ctx["raw"] = self._load_yaml_or_fault(yaml_path)
+
+        def check_widget_type():
+            if ctx["yaml_data"].widget_type != "wellplate":
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.INVALID_PARAM,
+                        F.INVALID_PARAM_BAD_VALUE,
+                        "Only wellplate-mode YAMLs are supported by the API "
+                        f"(got widget_type={ctx['yaml_data'].widget_type!r})",
+                    )
+                )
+
+        def check_hardware():
+            try:
+                binning = tuple(self._microscope.camera.get_binning())
+            except Exception:
+                binning = (1, 1)
+            validation = validate_hardware(
+                ctx["yaml_data"], self._microscope.objective_store.current_objective, binning
+            )
+            if not validation.is_valid:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.CONFIG,
+                        F.CONFIG_HARDWARE_MISMATCH,
+                        f"Hardware configuration mismatch: {validation.message}",
+                    )
+                )
+
+        def check_channels():
+            objective = self._microscope.objective_store.current_objective
+            available = {ch.name for ch in (self._microscope.live_controller.get_channels(objective) or [])}
+            if not ctx["yaml_data"].channel_names:
+                raise F.FaultError(
+                    F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, "YAML has no channels")
+                )
+            invalid = [ch for ch in ctx["yaml_data"].channel_names if ch not in available]
+            if invalid:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.CONFIG,
+                        F.CONFIG_UNKNOWN_CHANNEL,
+                        f"Invalid channels: {invalid}. Available: {sorted(available)}",
+                        detail={"invalid": invalid},
+                    )
+                )
+
+        def check_regions():
+            # sample_format override (URS API-LAB-002): validate before any hardware call.
+            if req.overrides.sample_format:
+                try:
+                    control._def.get_wellplate_settings(req.overrides.sample_format)
+                except ValueError as e:
+                    raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
+            if req.overrides.wells:
+                fmt = req.overrides.sample_format or ctx["raw"].get("sample", {}).get(
+                    "wellplate_format", "96 well plate"
+                )
+                try:
+                    settings = control._def.get_wellplate_settings(fmt)
+                    for name in parse_well_names(req.overrides.wells):
+                        well_center_mm(name, settings)
+                except ValueError as e:
+                    raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
+            elif not ctx["yaml_data"].wellplate_regions:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.INVALID_PARAM,
+                        F.INVALID_PARAM_BAD_VALUE,
+                        "No regions in YAML and no wells override provided",
+                    )
+                )
+
+        checks = [
+            ("yaml", check_yaml),
+            ("widget_type", check_widget_type),
+            ("hardware", check_hardware),
+            ("channels", check_channels),
+            ("regions", check_regions),
+            ("output_path", self._output_path_check(req, ctx)),
+        ]
+        return checks, ctx
+
+    def _grid_checks(self, req: AcquisitionRequest):
+        """Ordered checks for a grid acquisition (URS API-COMPAT-002 parity)."""
+        import control._def
+
+        grid = req.grid
+        ctx = {}
+
+        def check_channels():
+            objective = self._microscope.objective_store.current_objective
+            available = {ch.name for ch in (self._microscope.live_controller.get_channels(objective) or [])}
+            invalid = [c for c in grid.channels if c not in available]
+            if invalid:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.CONFIG,
+                        F.CONFIG_UNKNOWN_CHANNEL,
+                        f"Invalid channels: {invalid}. Available: {sorted(available)}",
+                        detail={"invalid": invalid},
+                    )
+                )
+
+        def check_wellplate_format():
+            try:
+                ctx["settings"] = control._def.get_wellplate_settings(grid.wellplate_format)
+            except ValueError as e:
+                raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
+
+        def check_regions():
+            settings = ctx.get("settings") or control._def.get_wellplate_settings(grid.wellplate_format)
+            try:
+                for name in parse_well_names(grid.wells):
+                    well_center_mm(name, settings)
+            except ValueError as e:
+                raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
+
+        checks = [
+            ("channels", check_channels),
+            ("wellplate_format", check_wellplate_format),
+            ("regions", check_regions),
+            ("output_path", self._output_path_check(req, ctx)),
+        ]
+        return checks, ctx
+
+    def _acquisition_checks(self, req: AcquisitionRequest):
+        if req.grid is not None:
+            return self._grid_checks(req)
+        return self._yaml_checks(req)
+
+    def _run_checks_report(self, checks, ctx, skip_names=()) -> dict:
+        """Run checks, never raising for a check failure; report each as ok/failed/skipped.
+
+        Once the ``yaml`` check fails there is no parsed YAML for the later checks to
+        read, so they are reported "skipped" rather than crashing on missing context.
+        """
+        results = []
+        ok = True
+        yaml_failed = False
+        for name, fn in checks:
+            if name in skip_names:
+                continue
+            if yaml_failed:
+                results.append({"name": name, "ok": False, "message": "skipped (yaml check failed)"})
+                continue
+            try:
+                fn()
+                results.append({"name": name, "ok": True, "message": ""})
+            except F.FaultError as e:
+                ok = False
+                yaml_failed = yaml_failed or name == "yaml"
+                results.append({"name": name, "ok": False, "message": e.fault.message})
+            except Exception as e:
+                ok = False
+                yaml_failed = yaml_failed or name == "yaml"
+                results.append({"name": name, "ok": False, "message": str(e)})
+        return {"ok": ok, "checks": results, "free_bytes": ctx.get("free_bytes")}
+
+    def preflight(self, req: AcquisitionRequest) -> dict:
+        checks, ctx = self._acquisition_checks(req)
+        return self._run_checks_report(checks, ctx)
+
+    # -- controller configuration --
+
+    def _configure_regions(self, yaml_data, raw: dict, wells_override, sample_format_override) -> None:
+        import control._def
+
+        sc = self._scan_coordinates
+        sc.clear_regions()
+        current_z = self._microscope.stage.get_pos().z_mm
+        scan_size = yaml_data.scan_size_mm or 2.0
+        shape = yaml_data.scan_shape or "Square"
+        if wells_override:
+            fmt = sample_format_override or raw.get("sample", {}).get("wellplate_format", "96 well plate")
+            settings = control._def.get_wellplate_settings(fmt)
+            for name in parse_well_names(wells_override):
+                x, y = well_center_mm(name, settings)
+                sc.add_region(
+                    well_id=name,
+                    center_x=x,
+                    center_y=y,
+                    scan_size_mm=scan_size,
+                    overlap_percent=yaml_data.overlap_percent,
+                    shape=shape,
+                )
+                if name in sc.region_centers:
+                    sc.region_centers[name][2] = current_z
+        else:
+            for region in yaml_data.wellplate_regions:
+                name = region.get("name", "region")
+                center = region.get("center_mm", [0, 0, 0])
+                sc.add_region(
+                    well_id=name,
+                    center_x=center[0],
+                    center_y=center[1],
+                    scan_size_mm=scan_size,
+                    overlap_percent=yaml_data.overlap_percent,
+                    shape=region.get("shape", shape),
+                )
+                if name in sc.region_centers:
+                    sc.region_centers[name][2] = center[2] if len(center) > 2 else current_z
+        sc.sort_coordinates()
+
+    def _configure_grid_regions(self, grid) -> None:
+        import control._def
+
+        sc = self._scan_coordinates
+        sc.clear_regions()
+        current_z = self._microscope.stage.get_pos().z_mm
+        settings = control._def.get_wellplate_settings(grid.wellplate_format)
+        for name in parse_well_names(grid.wells):
+            x, y = well_center_mm(name, settings)
+            sc.add_flexible_region(
+                region_id=name,
+                center_x=x,
+                center_y=y,
+                center_z=current_z,
+                Nx=grid.nx,
+                Ny=grid.ny,
+                overlap_percent=grid.overlap_percent,
+            )
+        sc.sort_coordinates()
+
+    def _configure_controller(self, yaml_data) -> None:
+        self._mpc.set_NX(1)
+        self._mpc.set_NY(1)
+        self._mpc.set_NZ(yaml_data.nz)
+        self._mpc.set_deltaZ(yaml_data.delta_z_um)
+        self._mpc.set_Nt(yaml_data.nt)
+        self._mpc.set_deltat(yaml_data.delta_t_s)
+        self._mpc.do_autofocus = yaml_data.contrast_af
+        self._mpc.do_reflection_af = yaml_data.laser_af
+        self._mpc.use_piezo = yaml_data.use_piezo
+        self._mpc.set_selected_configurations(yaml_data.channel_names)
+
+    def _configure_grid_controller(self, grid) -> None:
+        self._mpc.set_NX(1)
+        self._mpc.set_NY(1)
+        self._mpc.set_NZ(1)
+        self._mpc.set_deltaZ(1.0)
+        self._mpc.set_Nt(1)
+        self._mpc.set_deltat(0.0)
+        self._mpc.do_autofocus = False
+        self._mpc.do_reflection_af = False
+        self._mpc.use_piezo = False
+        self._mpc.set_selected_configurations(grid.channels)
+
+    def _apply_autofocus_override(self, req: AcquisitionRequest) -> None:
+        """URS API-ACQ-003: request overrides beat both YAML and grid defaults."""
+        if req.autofocus:
+            if req.autofocus.reflection is not None:
+                self._mpc.do_reflection_af = req.autofocus.reflection
+            if req.autofocus.contrast is not None:
+                self._mpc.do_autofocus = req.autofocus.contrast
+
+    def _write_api_request_json(self, req: AcquisitionRequest, output_dir: str, source: str) -> None:
+        """URS ERR-OBS-003/005: persist the originating request alongside the data.
+        Log-and-continue on failure so a write hiccup never blocks acquisition."""
+        try:
+            payload = {
+                "operator": req.operator,
+                "scheduler_job_id": req.scheduler_job_id,
+                "experiment_id": self._mpc.experiment_ID,
+                "source": source,
+                "api_version": API_VERSION,
+                "software_version": self.version().get("software_version"),
+                "firmware_version": self._firmware_version_str(),
+                "accepted_at": utc_now_iso(),
+            }
+            os.makedirs(output_dir, exist_ok=True)
+            with open(os.path.join(output_dir, "api_request.json"), "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            self._log.warning(f"Could not write api_request.json: {e}")
+
+    # -- start / jobs --
+
+    def start_acquisition(self, req: AcquisitionRequest) -> dict:
+        if self._mpc is None or self._scan_coordinates is None:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.CONFIG,
+                    F.CONFIG_CAPABILITY_MISSING,
+                    "Acquisition controller not attached to the core service",
+                )
+            )
+        with self._exclusive("acquisition"):
+            if self._mpc.acquisition_in_progress():
+                self._fail(
+                    F.make_fault(
+                        F.FaultCategory.PROTOCOL,
+                        F.PROTOCOL_WRONG_STATE,
+                        "Acquisition already in progress",
+                        detail={"current_state": self.state.value},
+                    )
+                )
+            checks, ctx = self._acquisition_checks(req)
+            try:
+                for _, fn in checks:
+                    fn()
+            except F.FaultError as e:
+                raise F.FaultError(self._record_fault(e.fault))
+            base_path = ctx["base_path"]
+
+            if req.grid is not None:
+                grid = req.grid
+                self._configure_grid_regions(grid)
+                self._configure_grid_controller(grid)
+                channel_count = len(grid.channels)
+                nz, nt = 1, 1
+                source = "grid"
+                yaml_data = None
+            else:
+                yaml_data, raw = ctx["yaml_data"], ctx["raw"]
+                self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format)
+                self._configure_controller(yaml_data)
+                channel_count = len(yaml_data.channel_names)
+                nz, nt = yaml_data.nz, yaml_data.nt
+                source = req.method if req.method is not None else req.yaml_path
+
+            self._apply_autofocus_override(req)
+            self._mpc.set_base_path(base_path)
+            self._mpc.start_new_experiment(req.experiment_id or "api_acquisition")
+            output_dir = os.path.join(base_path, self._mpc.experiment_ID)
+            self._write_api_request_json(req, output_dir, source)
+
+            total_fovs = sum(len(v) for v in self._scan_coordinates.region_fov_coordinates.values())
+            total_images = total_fovs * channel_count * nz * nt
+            job = self.jobs.create(
+                experiment_id=self._mpc.experiment_ID,
+                origin="api",
+                expected_total_images=total_images,
+                expected_total_regions=len(self._scan_coordinates.region_fov_coordinates),
+                expected_total_timepoints=nt,
+                operator=req.operator,
+                scheduler_job_id=req.scheduler_job_id,
+            )
+            self._api_yaml_data = yaml_data
+            if yaml_data is not None:
+                self._gui_bridge.sync_yaml_to_widgets(yaml_data, ctx.get("yaml_path"))
+                self._gui_bridge.set_acquisition_state(yaml_data, running=True)
+            self._state.transition(InstrumentState.ACQUIRING)
+            try:
+                self._mpc.run_acquisition()
+            except Exception as e:
+                if self.state == InstrumentState.ACQUIRING:
+                    self._state.transition(InstrumentState.INITIALIZED)
+                fault = self._record_fault(
+                    F.make_fault(
+                        F.FaultCategory.ACQUISITION,
+                        F.ACQUISITION_START_FAILED,
+                        f"Failed to start acquisition: {e}",
+                        terminal=True,
+                        component="acquisition",
+                    )
+                )
+                self.jobs.complete(job.job_id, JobOutcome.FAILURE, JobResult(end_reason="error"), fault=fault)
+                raise F.FaultError(fault)
+            return {
+                "job_id": job.job_id,
+                "kind": "acquisition",
+                "experiment_id": self._mpc.experiment_ID,
+                "expected_fov_count": total_fovs,
+                "expected_image_count": total_images,
+                "output_dir": output_dir,
+                "accepted_at": job.accepted_at,
+            }
+
+    def get_job(self, job_id: str) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.PROTOCOL,
+                    F.PROTOCOL_UNKNOWN_RESOURCE,
+                    f"Unknown job: {job_id}",
+                    detail={"job_id": job_id},
+                )
+            )
+        return job.model_dump()
+
+    def last_job(self) -> dict:
+        job = self.jobs.last
+        if job is None:
+            self._fail(F.make_fault(F.FaultCategory.PROTOCOL, F.PROTOCOL_UNKNOWN_RESOURCE, "No completed job yet"))
+        return job.model_dump()
+
+    def abort_job(self, job_id: str, timeout_s: float = 60.0) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.PROTOCOL,
+                    F.PROTOCOL_UNKNOWN_RESOURCE,
+                    f"Unknown job: {job_id}",
+                    detail={"job_id": job_id},
+                )
+            )
+        if job.state == JobState.COMPLETED:
+            return {"clean": job.outcome == JobOutcome.ABORTED, "timed_out": False, "job": job.model_dump()}
+        self._mpc.request_abort_aquisition()  # controller API is misspelled; do not "fix"
+        finished = self.jobs.wait(job_id, timeout_s=timeout_s)
+        final = self.jobs.get(job_id)
+        return {
+            "clean": bool(finished and final.outcome == JobOutcome.ABORTED),
+            "timed_out": not finished,
+            "job": final.model_dump(),
+        }
+
+    # -- named method registry (URS API-METH-001..005) --
+
+    def _require_methods(self) -> None:
+        if self.methods is None:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.CONFIG,
+                    F.CONFIG_CAPABILITY_MISSING,
+                    "Method registry not attached to the core service",
+                )
+            )
+
+    def list_methods(self) -> dict:
+        self._require_methods()
+        return {"methods": self.methods.list()}
+
+    def get_method(self, name: str) -> dict:
+        self._require_methods()
+        try:
+            return self.methods.get(name)
+        except F.FaultError as e:
+            raise F.FaultError(self._record_fault(e.fault))
+
+    def create_method(self, name: str, config: dict) -> dict:
+        self._require_methods()
+        try:
+            self.methods.save(name, config, overwrite=False)
+        except F.FaultError as e:
+            raise F.FaultError(self._record_fault(e.fault))
+        return {"name": name, "created": True}
+
+    def update_method(self, name: str, config: dict) -> dict:
+        self._require_methods()
+        try:
+            self.methods.save(name, config, overwrite=True)
+        except F.FaultError as e:
+            raise F.FaultError(self._record_fault(e.fault))
+        return {"name": name, "updated": True}
+
+    def delete_method(self, name: str) -> dict:
+        self._require_methods()
+        if self.jobs.active is not None:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.PROTOCOL,
+                    F.PROTOCOL_WRONG_STATE,
+                    "Cannot delete a method while an acquisition is active",
+                    detail={"method": name},
+                )
+            )
+        try:
+            self.methods.delete(name)
+        except F.FaultError as e:
+            raise F.FaultError(self._record_fault(e.fault))
+        return {"name": name, "deleted": True}
+
+    def validate_method(self, name: str) -> dict:
+        """URS API-METH-004: run the yaml/widget/hardware/channels/regions checks
+        (not output_path) against a stored method and return the preflight-style list."""
+        self._require_methods()
+        try:
+            path = str(self.methods.path_for(name))
+        except F.FaultError as e:
+            raise F.FaultError(self._record_fault(e.fault))
+        checks, ctx = self._yaml_checks(AcquisitionRequest(yaml_path=path))
+        return self._run_checks_report(checks, ctx, skip_names={"output_path"})

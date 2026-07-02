@@ -35,6 +35,11 @@ class JobProgress(BaseModel):
     total_timepoints: int = 0
     elapsed_s: float = 0.0
     estimated_remaining_s: Optional[float] = None
+    # Failure counters (URS API-POLL-001, ERR-RES-001/003). af_failures is
+    # accumulated across timepoints from each TimepointStats.laser_af_failures;
+    # save_failures is set once at completion from AcquisitionStats.errors_encountered.
+    af_failures: int = 0
+    save_failures: int = 0
 
 
 class JobResult(BaseModel):
@@ -51,6 +56,9 @@ class JobRecord(BaseModel):
     kind: str = "acquisition"
     experiment_id: Optional[str] = None
     origin: str = "api"  # "api" or "gui"
+    # Audit fields (URS ERR-OBS-003/005): who/what requested the run.
+    operator: Optional[str] = None
+    scheduler_job_id: Optional[str] = None
     state: JobState
     accepted_at: str
     started_at: Optional[str] = None
@@ -90,11 +98,15 @@ class JobStore:
         expected_total_images: int = 0,
         expected_total_regions: int = 0,
         expected_total_timepoints: int = 0,
+        operator: Optional[str] = None,
+        scheduler_job_id: Optional[str] = None,
     ) -> JobRecord:
         job = JobRecord(
             job_id=uuid.uuid4().hex[:12],
             experiment_id=experiment_id,
             origin=origin,
+            operator=operator,
+            scheduler_job_id=scheduler_job_id,
             state=JobState.ACCEPTED,
             accepted_at=utc_now_iso(),
             progress=JobProgress(
