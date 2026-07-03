@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import control.microscope
 import tests.control.test_stubs as ts
 from squid_service.config import ServiceConfig
+from squid_service.events import EventBus
 from squid_service.rest.app import create_app
 from squid_service.rest.sse import sse_event_stream
 from squid_service.service import SquidCoreService
@@ -183,6 +184,76 @@ def test_sse_live_tail_stops_on_disconnect(service):
     assert received[0]["event"] == "session_started"
     assert received[1]["event"] == "progress"
     assert json.loads(received[1]["data"])["n"] == 99
+    assert service.events._subscribers == []  # finally unsubscribed
+
+
+def test_sse_emits_resume_gap_on_evicted_history(service):
+    # Swap in a small-buffer bus BEFORE publishing so the ring buffer actually
+    # evicts history: with buffer_size=3 and 10 published events, only ids
+    # 8-10 survive. Requesting Last-Event-Id=1 must surface a resume_gap
+    # (the client missed evicted events 2-7) followed by the surviving tail.
+    service.events = EventBus(buffer_size=3)
+    for n in range(1, 11):
+        service.events.publish("progress", {"n": n})
+
+    async def collect():
+        received = []
+        gen = sse_event_stream(service, "1", _never_disconnected)
+        try:
+            async for event in gen:
+                received.append(event)
+                if len(received) >= 5:
+                    break
+        finally:
+            await gen.aclose()
+        return received
+
+    received = asyncio.run(collect())
+    assert [e["event"] for e in received] == [
+        "session_started",
+        "resume_gap",
+        "progress",
+        "progress",
+        "progress",
+    ]
+    replayed_ids = [int(e["id"]) for e in received[2:]]
+    assert replayed_ids == [8, 9, 10]  # only the surviving buffered events, in id order
+    assert service.events._subscribers == []  # finally unsubscribed
+
+
+def test_sse_dedupes_replayed_events_from_live_queue(service):
+    # The generator subscribes BEFORE replay is computed, so events published
+    # between the session_started yield and the replay call land in both the
+    # ring buffer (replayed) and the already-active subscriber queue (live).
+    # The yielded_up_to guard in the tail loop must skip those live-queue
+    # copies so nothing is delivered twice.
+    async def collect():
+        received = []
+        gen = sse_event_stream(service, "0", _never_disconnected)
+        try:
+            received.append(await gen.__anext__())  # session_started; subscription now active
+            service.events.publish("progress", {"n": 1})
+            service.events.publish("progress", {"n": 2})
+            service.events.publish("progress", {"n": 3})
+            for _ in range(3):
+                received.append(await gen.__anext__())  # delivered via bus.replay_since
+            service.events.publish("progress", {"n": 4})
+            received.append(await gen.__anext__())  # live tail; must not repeat 1-3
+        finally:
+            await gen.aclose()
+        return received
+
+    received = asyncio.run(collect())
+    assert [e["event"] for e in received] == [
+        "session_started",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+    ]
+    ids = [int(e["id"]) for e in received]
+    assert ids[1:] == [1, 2, 3, 4]
+    assert len(ids) == len(set(ids))  # no id delivered twice (replay vs. live queue)
     assert service.events._subscribers == []  # finally unsubscribed
 
 
