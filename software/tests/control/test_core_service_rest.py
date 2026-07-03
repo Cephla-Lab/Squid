@@ -508,3 +508,47 @@ def test_debug_settings_get_performance_mode_null_headless(client):
     r = client.get("/v1/debug/settings")
     assert r.status_code == 200
     assert r.json()["performance_mode"] is None
+
+
+def test_debug_settings_save_downsampled_overview_roundtrip(client):
+    import control._def
+
+    original = control._def.SAVE_DOWNSAMPLED_OVERVIEW
+    try:
+        got = client.get("/v1/debug/settings")
+        assert got.json()["save_downsampled_overview"] == original
+
+        posted = client.post("/v1/debug/settings", json={"save_downsampled_overview": not original})
+        assert posted.status_code == 200
+        assert posted.json()["save_downsampled_overview"] == (not original)
+        assert control._def.SAVE_DOWNSAMPLED_OVERVIEW == (not original)
+    finally:
+        control._def.SAVE_DOWNSAMPLED_OVERVIEW = original
+
+
+# ---- catch-all fault handlers (URS API-ERR-003) -----------------------------
+
+
+def test_internal_error_handler_is_canonical_and_sanitized(service, monkeypatch):
+    # TestClient re-raises server exceptions by default; disable that so we can
+    # observe the 500 response the ServerErrorMiddleware produces from our handler.
+    app = create_app(service, ServiceConfig())
+    client = TestClient(app, raise_server_exceptions=False)
+
+    def boom():
+        raise ValueError("SECRET internal detail that must not leak")
+
+    monkeypatch.setattr(service, "get_position", boom)
+    r = client.get("/v1/motion/position")
+    assert r.status_code == 500
+    error = r.json()["error"]
+    assert error["code"] == 5999  # HARDWARE_FAULT_INTERNAL
+    assert error["category"] == "HARDWARE_FAULT"
+    assert error["message"] == "Internal server error"
+    assert "SECRET" not in json.dumps(error)  # no exception detail leaked
+
+
+def test_unknown_route_is_canonical_404(client):
+    r = client.get("/v1/no/such/route")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == 1001  # PROTOCOL_UNKNOWN_RESOURCE

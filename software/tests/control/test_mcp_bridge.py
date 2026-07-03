@@ -84,6 +84,7 @@ def test_tool_list_includes_urs_delta_and_skips_display_plate_view():
         "microscope_get_view_settings",
         "microscope_set_view_settings",
         "microscope_set_save_downsampled_images",
+        "microscope_set_save_downsampled_overview",
         "microscope_set_display_mosaic_view",
         "microscope_get_methods",
         "microscope_run_method",

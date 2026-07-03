@@ -220,6 +220,29 @@ def test_initialize_probe_failure_faults_and_enters_error_state(service, sim_sco
     assert result["state"] == "INITIALIZED"
 
 
+def test_initialize_homing_failure_faults_and_enters_error_state(service, sim_scope, monkeypatch):
+    """A homing failure during initialize(home=True) must transition the instrument
+    to ERROR and raise HARDWARE_FAULT (component 'stage'), not strand it in
+    INITIALIZING (busy) forever. initialize() must recover once homing works again.
+    """
+
+    def boom():
+        raise RuntimeError("homing motor stalled")
+
+    monkeypatch.setattr(sim_scope, "home_xyz", boom)
+    with pytest.raises(FaultError) as exc:
+        service.initialize(home=True)  # probes pass, homing fails
+    assert exc.value.fault.category == FaultCategory.HARDWARE_FAULT
+    assert exc.value.fault.code == 5001  # HARDWARE_FAULT_GENERIC
+    assert exc.value.fault.component == "stage"
+    assert service.state == InstrumentState.ERROR
+
+    monkeypatch.undo()
+    result = service.initialize(home=True)
+    assert result["state"] == "INITIALIZED"
+    assert result["home_performed"] is True
+
+
 def test_acquire_camera_failure_is_recoverable_transient_fault(service, sim_scope, monkeypatch):
     """Verify that camera acquisition failures produce recoverable HARDWARE_TRANSIENT faults."""
 

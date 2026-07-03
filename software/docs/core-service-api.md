@@ -323,6 +323,14 @@ Additionally, **plate-handling endpoints do not exist at all yet** (no routes re
 URS API-PLATE-* (loading/unloading/presence sensing). There is currently no REST equivalent; plate handling
 remains GUI-only.
 
+## Known limitations
+
+- **GUI/API acquisition race**: the API's 409 "already in progress" guard reads the controller state, but
+  acquisitions started from the **GUI** bypass the service's command lock. If a GUI-initiated and an
+  API-initiated start land in the same instant, they can race on the shared `MultiPointController`. Do not
+  operate the GUI while a scheduler is driving the instrument through the API. A follow-up will route GUI
+  starts through the service so a single lock serializes both paths.
+
 ## Configuration
 
 `[CORE_SERVICE]` section in the machine `.ini` config (all keys optional; defaults shown):

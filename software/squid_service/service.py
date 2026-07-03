@@ -30,7 +30,7 @@ from squid_service.models import (
     LaserAfImageRequest,
     MoveRequest,
 )
-from squid_service.state import BUSY_STATES, InstrumentState, StateMachine
+from squid_service.state import InstrumentState, StateMachine
 from squid_service.timeutil import utc_now_iso
 from squid_service.wells import parse_well_names, well_center_mm
 
@@ -90,7 +90,14 @@ class SquidCoreService:
 
     @contextmanager
     def _exclusive(self, component: str):
-        """Serialize state-changing commands; reject when the instrument is busy (spec §3)."""
+        """Serialize state-changing commands; only allow them from INITIALIZED (spec §3).
+
+        Rejecting every non-INITIALIZED state (not just BUSY_STATES) is deliberate:
+        it keeps moves/imaging/autofocus/acquisitions out of ERROR (URS API-LIFE-003).
+        Otherwise ``start_acquisition`` would create a job while in ERROR and then die
+        on the illegal ERROR->ACQUIRING transition, orphaning that job behind a raw 500.
+        Only ``reset()``/``initialize()`` recover from ERROR, and neither uses this guard.
+        """
         if not self._command_lock.acquire(blocking=False):
             self._fail(
                 F.make_fault(
@@ -102,7 +109,7 @@ class SquidCoreService:
                 )
             )
         try:
-            if self.state in BUSY_STATES:
+            if self.state != InstrumentState.INITIALIZED:
                 self._fail(
                     F.make_fault(
                         F.FaultCategory.PROTOCOL,
@@ -283,7 +290,19 @@ class SquidCoreService:
 
             home_performed = False
             if home:
-                self._microscope.home_xyz()
+                try:
+                    self._microscope.home_xyz()
+                except Exception as e:
+                    self._state.transition(InstrumentState.ERROR)
+                    self._fail(
+                        F.make_fault(
+                            F.FaultCategory.HARDWARE_FAULT,
+                            F.HARDWARE_FAULT_GENERIC,
+                            f"Homing failed during initialize: {e}",
+                            component="stage",
+                            detail={"verified_components": list(verified_components)},
+                        )
+                    )
                 home_performed = True
 
             self._state.transition(InstrumentState.INITIALIZED)
@@ -608,7 +627,16 @@ class SquidCoreService:
                 )
             if abs(displacement_um) > req.threshold_um:
                 return {"corrected": False, "displacement_um": displacement_um}
-            controller.move_to_target(0.0)
+            # move_to_target refuses (returns False) when the correction would exceed
+            # the laser-AF operating range; don't set a new reference off an unmoved
+            # stage and don't report success.
+            moved = controller.move_to_target(0.0)
+            if not moved:
+                return {
+                    "corrected": False,
+                    "displacement_um": displacement_um,
+                    "reason": "displacement exceeds laser AF operating range",
+                }
             controller.set_reference()
             return {"corrected": True, "displacement_um": displacement_um}
 
@@ -1230,6 +1258,24 @@ class SquidCoreService:
             )
         sc.sort_coordinates()
 
+    def _reset_z_range_and_focus_map(self, nz: int, delta_z_um: float) -> None:
+        """Mirror the GUI's pre-run path (widgets.py toggle_acquisition ~6472-6487 /
+        ~8826-8849): derive z_range from the *current* stage z on every run and clear
+        any focus-map state left over from a prior GUI/API acquisition.
+
+        MultiPointController.run_acquisition only derives z_range when it is None
+        (multi_point_controller.py:701), so without this the first run's range would
+        leak into every later API run. The GUI likewise always calls set_z_range and
+        set_focus_map(None) before starting; the API exposes no focus-map option, so
+        we clear focus_map/gen_focus_map/use_manual_focus_map outright to prevent a
+        stale focus map from a GUI session from bleeding into an API acquisition.
+        """
+        z = self._microscope.stage.get_pos().z_mm
+        self._mpc.set_z_range(z, z + delta_z_um / 1000.0 * (nz - 1))
+        self._mpc.set_focus_map(None)
+        self._mpc.gen_focus_map = False
+        self._mpc.use_manual_focus_map = False
+
     def _configure_controller(self, yaml_data) -> None:
         self._mpc.set_NX(1)
         self._mpc.set_NY(1)
@@ -1241,6 +1287,7 @@ class SquidCoreService:
         self._mpc.do_reflection_af = yaml_data.laser_af
         self._mpc.use_piezo = yaml_data.use_piezo
         self._mpc.set_selected_configurations(yaml_data.channel_names)
+        self._reset_z_range_and_focus_map(yaml_data.nz, yaml_data.delta_z_um)
 
     def _configure_grid_controller(self, grid) -> None:
         self._mpc.set_NX(1)
@@ -1253,6 +1300,7 @@ class SquidCoreService:
         self._mpc.do_reflection_af = False
         self._mpc.use_piezo = False
         self._mpc.set_selected_configurations(grid.channels)
+        self._reset_z_range_and_focus_map(1, 0.0)  # grid mode: single z plane -> (z, z)
 
     def _apply_autofocus_override(self, req: AcquisitionRequest) -> None:
         """URS API-ACQ-003: request overrides beat both YAML and grid defaults."""
@@ -1581,6 +1629,7 @@ class SquidCoreService:
         return {
             "performance_mode": self._gui_bridge.get_performance_mode(),
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "save_downsampled_overview": control._def.SAVE_DOWNSAMPLED_OVERVIEW,
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
         }
 
@@ -1608,6 +1657,9 @@ class SquidCoreService:
 
         if req.save_downsampled_well_images is not None:
             control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = req.save_downsampled_well_images
+
+        if req.save_downsampled_overview is not None:
+            control._def.SAVE_DOWNSAMPLED_OVERVIEW = req.save_downsampled_overview
 
         if req.display_mosaic_view is not None:
             control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = req.display_mosaic_view

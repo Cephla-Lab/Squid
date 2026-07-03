@@ -105,6 +105,14 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --no-launch --wait
 python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5060
 ```
 
+Non-loopback binds **require** authentication (the service refuses to start without `auth_enabled=true` +
+`auth_token`; see [Core Service API — Authentication](core-service-api.md#authentication)). The script reads
+the bearer token from the `SQUID_API_TOKEN` environment variable and sends it on every request:
+
+```bash
+SQUID_API_TOKEN=your-token python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5060
+```
+
 ## Command Line Options
 
 | Option | Description |

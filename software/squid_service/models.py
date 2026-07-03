@@ -126,4 +126,5 @@ class DebugSettingsRequest(_Strict):
 
     performance_mode: Optional[bool] = None
     save_downsampled_well_images: Optional[bool] = None
+    save_downsampled_overview: Optional[bool] = None
     display_mosaic_view: Optional[bool] = None

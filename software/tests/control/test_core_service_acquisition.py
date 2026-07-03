@@ -8,7 +8,7 @@ import yaml
 import control.microscope
 import tests.control.test_stubs as ts
 from squid_service.faults import FaultCategory, FaultError
-from squid_service.models import AcquisitionRequest
+from squid_service.models import AcquisitionRequest, MoveRequest
 from squid_service.service import SquidCoreService
 from squid_service.state import InstrumentState
 
@@ -352,3 +352,85 @@ def test_validate_method_ok(service, sim_scope):
     names = {c["name"] for c in result["checks"]}
     assert "output_path" not in names
     assert {"yaml", "widget_type", "hardware", "channels", "regions"} <= names
+
+
+# ---- ERROR-state rejection + recovery (URS API-LIFE-003) ----------------
+
+
+def test_error_state_rejects_commands_creates_no_job_then_recovers(service, sim_scope, tmp_path, monkeypatch):
+    """While ERROR, state-changing commands must be rejected with a canonical
+    PROTOCOL_WRONG_STATE (409) carrying detail.current_state=="ERROR" and must NOT
+    create a job. Only reset()/initialize() recover; afterwards a real acquisition
+    runs end-to-end.
+    """
+
+    # Drive the service into ERROR via a probe failure during initialize(home=True).
+    def boom():
+        raise RuntimeError("stage communication lost")
+
+    monkeypatch.setattr(sim_scope.stage, "get_pos", boom)
+    with pytest.raises(FaultError):
+        service.initialize(home=True)
+    monkeypatch.undo()
+    assert service.state == InstrumentState.ERROR
+
+    req = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope),
+        overrides={"output_path": str(tmp_path / "err_out")},
+    )
+
+    # start_acquisition is rejected before any job is created.
+    with pytest.raises(FaultError) as exc:
+        service.start_acquisition(req)
+    assert exc.value.fault.category == FaultCategory.PROTOCOL
+    assert exc.value.fault.code == 1002  # PROTOCOL_WRONG_STATE
+    assert exc.value.fault.detail["current_state"] == "ERROR"
+    assert service.jobs.active is None  # no phantom active job
+
+    # move gets the same rejection.
+    with pytest.raises(FaultError) as exc2:
+        service.move(MoveRequest(mode="absolute", x=1.0))
+    assert exc2.value.fault.code == 1002
+    assert exc2.value.fault.detail["current_state"] == "ERROR"
+
+    # reset() recovers to INITIALIZED, then a real acquisition succeeds.
+    assert service.reset()["state"] == "INITIALIZED"
+    assert service.state == InstrumentState.INITIALIZED
+
+    handle = service.start_acquisition(req)
+    assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+    assert service.get_job(handle["job_id"])["outcome"] == "SUCCESS"
+
+
+# ---- z_range refresh per run (no stale leakage) -------------------------
+
+
+def test_start_acquisition_refreshes_z_range_from_current_stage_z(service, sim_scope, tmp_path):
+    """_configure_controller must derive z_range from the *current* stage z on every
+    run (mirroring the GUI pre-run path), not reuse a value derived once by the
+    controller. With nz=1 the range collapses to (z, z).
+    """
+    z1 = 1.0
+    service.move(MoveRequest(mode="absolute", z=z1))
+    req1 = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope),
+        overrides={"output_path": str(tmp_path / "z1_out")},
+    )
+    handle1 = service.start_acquisition(req1)
+    try:
+        assert service._mpc.z_range == pytest.approx([z1, z1], abs=0.01)
+    finally:
+        assert service.jobs.wait(handle1["job_id"], timeout_s=120.0)
+
+    # Move Z, run again: the second run's z_range must update, not reuse z1's value.
+    z2 = 2.0
+    service.move(MoveRequest(mode="absolute", z=z2))
+    req2 = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope),
+        overrides={"output_path": str(tmp_path / "z2_out")},
+    )
+    handle2 = service.start_acquisition(req2)
+    try:
+        assert service._mpc.z_range == pytest.approx([z2, z2], abs=0.01)
+    finally:
+        assert service.jobs.wait(handle2["job_id"], timeout_s=120.0)

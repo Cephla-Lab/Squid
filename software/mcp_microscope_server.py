@@ -30,9 +30,20 @@ def make_client(transport: Optional[httpx.AsyncBaseTransport] = None) -> httpx.A
     return httpx.AsyncClient(base_url=base_url, headers=headers, timeout=60.0, transport=transport)
 
 
-async def _call(client: httpx.AsyncClient, method: str, path: str, body: Optional[dict] = None) -> dict:
+async def _call(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    body: Optional[dict] = None,
+    timeout: Optional[float] = None,
+) -> dict:
+    # A per-call timeout overrides the client default for long-running ops (home,
+    # abort) so the HTTP timeout always outlives the server-side operation timeout.
+    request_kwargs = {"json": body}
+    if timeout is not None:
+        request_kwargs["timeout"] = timeout
     try:
-        response = await client.request(method, path, json=body)
+        response = await client.request(method, path, **request_kwargs)
     except httpx.TransportError as e:
         return {
             "error": {
@@ -86,7 +97,8 @@ async def _move_relative(c, a):
 
 
 async def _home(c, a):
-    return await _call(c, "POST", "/v1/motion/home")
+    # Homing all axes can take a while; give the HTTP call a generous timeout.
+    return await _call(c, "POST", "/v1/motion/home", timeout=300.0)
 
 
 async def _start_live(c, a):
@@ -178,7 +190,10 @@ async def _abort_acquisition(c, a):
         return {
             "error": {"category": "PROTOCOL", "code": 1002, "message": "No acquisition in progress", "terminal": False}
         }
-    return await _call(c, "POST", f"/v1/jobs/{job_id}/abort", {"timeout_s": a.get("timeout_s", 60.0)})
+    # The server blocks up to timeout_s draining the abort; the HTTP call must
+    # outlive that (+10s slack) or the client times out before the server replies.
+    timeout_s = a.get("timeout_s", 60.0)
+    return await _call(c, "POST", f"/v1/jobs/{job_id}/abort", {"timeout_s": timeout_s}, timeout=timeout_s + 10.0)
 
 
 async def _python_exec(c, a):
@@ -231,6 +246,10 @@ async def _set_view_settings(c, a):
 
 async def _set_save_downsampled_images(c, a):
     return await _call(c, "POST", "/v1/debug/settings", {"save_downsampled_well_images": a["enabled"]})
+
+
+async def _set_save_downsampled_overview(c, a):
+    return await _call(c, "POST", "/v1/debug/settings", {"save_downsampled_overview": a["enabled"]})
 
 
 async def _set_display_mosaic_view(c, a):
@@ -445,6 +464,15 @@ _TOOLS: Dict[str, tuple] = {
             ["enabled"],
         ),
         _set_save_downsampled_images,
+    ),
+    "microscope_set_save_downsampled_overview": (
+        _tool(
+            "set_save_downsampled_overview",
+            "Enable/disable saving the downsampled mosaic overview image (takes effect on next acquisition)",
+            {"enabled": _BOOL},
+            ["enabled"],
+        ),
+        _set_save_downsampled_overview,
     ),
     "microscope_set_display_mosaic_view": (
         _tool(

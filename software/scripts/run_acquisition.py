@@ -38,6 +38,16 @@ def api(host: str, port: int) -> str:
     return f"http://{host}:{port}"
 
 
+def auth_headers() -> dict:
+    """Bearer auth header built from SQUID_API_TOKEN, if set.
+
+    Non-loopback binds require auth (the service refuses to start otherwise), so
+    set SQUID_API_TOKEN when talking to a remote host. Empty dict on loopback.
+    """
+    token = os.environ.get("SQUID_API_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def wait_for_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -53,7 +63,7 @@ def wait_for_server(
     while time.monotonic() < deadline:
         attempt += 1
         try:
-            if httpx.get(f"{api(host, port)}/v1/healthz", timeout=2.0).status_code == 200:
+            if httpx.get(f"{api(host, port)}/v1/healthz", headers=auth_headers(), timeout=2.0).status_code == 200:
                 elapsed = time.monotonic() - start_time
                 print(f"Server ready after {attempt} attempts ({elapsed:.1f}s)")
                 return True
@@ -123,7 +133,12 @@ def run_preflight(args) -> int:
     """POST /v1/acquisitions/preflight and print the check results."""
     print("\n=== DRY RUN (server-side preflight) ===")
     try:
-        r = httpx.post(f"{api(args.host, args.port)}/v1/acquisitions/preflight", json=build_body(args), timeout=30.0)
+        r = httpx.post(
+            f"{api(args.host, args.port)}/v1/acquisitions/preflight",
+            json=build_body(args),
+            headers=auth_headers(),
+            timeout=30.0,
+        )
     except httpx.TransportError as e:
         print(f"Error contacting server: {e}")
         return 1
@@ -162,7 +177,7 @@ def start_and_wait(args) -> int:
     """
     base = api(args.host, args.port)
     try:
-        r = httpx.post(f"{base}/v1/acquisitions", json=build_body(args), timeout=60.0)
+        r = httpx.post(f"{base}/v1/acquisitions", json=build_body(args), headers=auth_headers(), timeout=60.0)
     except httpx.TransportError as e:
         print(f"Error starting acquisition: {e}")
         return 1
@@ -186,7 +201,7 @@ def start_and_wait(args) -> int:
     start_time = time.time()
     while True:
         try:
-            job = httpx.get(f"{base}/v1/jobs/{job_id}", timeout=10.0).json()
+            job = httpx.get(f"{base}/v1/jobs/{job_id}", headers=auth_headers(), timeout=10.0).json()
             consecutive_errors = 0
         except httpx.TransportError as e:
             consecutive_errors += 1
@@ -336,7 +351,9 @@ Examples:
         """
         if gui_process:
             try:
-                status = httpx.get(f"{api(args.host, args.port)}/v1/system/status", timeout=2.0).json()
+                status = httpx.get(
+                    f"{api(args.host, args.port)}/v1/system/status", headers=auth_headers(), timeout=2.0
+                ).json()
                 if status.get("current_job_id"):
                     print("\nWARNING: Acquisition is still in progress!")
                     print("Terminating GUI will abort the acquisition and may result in data loss.")
