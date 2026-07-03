@@ -94,6 +94,15 @@ def test_tool_list_includes_urs_delta_and_skips_display_plate_view():
     assert "microscope_set_display_plate_view" not in names
 
 
+def test_tool_list_includes_acquire_laser_af_image():
+    # URS API-COMPAT-002 follow-up: the legacy TCP `_cmd_acquire_laser_af_image`
+    # command was dropped when the bridge was rewritten; it must be restored
+    # with its original argument names.
+    tools = bridge.tool_definitions()
+    tool = next(t for t in tools if t.name == "microscope_acquire_laser_af_image")
+    assert set(tool.inputSchema["properties"]) == {"save_path", "use_last_frame"}
+
+
 def test_dispatch_run_acquisition_maps_legacy_grid_args(asgi_client, sim_scope):
     # asgi_client's service has no MultiPointController/ScanCoordinates attached
     # (see the fixture above), so a body that's well-formed enough to pass
@@ -189,4 +198,14 @@ def test_dispatch_autofocus_status_and_store_reference(asgi_client):
     # The default simulated scope has no reflection-AF hardware, so this must
     # surface a canonical fault rather than crash.
     result = _run(bridge.dispatch(asgi_client, "microscope_store_af_reference", {}))
+    assert result["error"]["category"] in ("CONFIG", "AUTOFOCUS")
+
+
+def test_dispatch_acquire_laser_af_image_not_ready(asgi_client):
+    # Same sim scope as test_dispatch_autofocus_status_and_store_reference:
+    # AF hardware is configured but no frame has been streamed, so the
+    # default use_last_frame=True request must surface a canonical fault
+    # (AUTOFOCUS_NOT_READY here, or CONFIG_CAPABILITY_MISSING on a config
+    # with no AF hardware at all) rather than being dropped/unmapped.
+    result = _run(bridge.dispatch(asgi_client, "microscope_acquire_laser_af_image", {}))
     assert result["error"]["category"] in ("CONFIG", "AUTOFOCUS")

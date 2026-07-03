@@ -18,6 +18,7 @@ from squid_service.models import (
     ExposureRequest,
     InitializeRequest,
     IntensityRequest,
+    LaserAfImageRequest,
     MethodCreateRequest,
     MethodUpdateRequest,
     MoveRequest,
@@ -180,6 +181,10 @@ def build_routers():
     @autofocus.post("/correct")
     def af_correct(request: Request, body: AutofocusCorrectRequest = AutofocusCorrectRequest()):
         return _svc(request).autofocus_correct(body)
+
+    @autofocus.post("/acquire_image")
+    def af_acquire_image(request: Request, body: LaserAfImageRequest = LaserAfImageRequest()):
+        return _svc(request).autofocus_acquire_image(body)
 
     acquisitions = APIRouter(prefix="/v1/acquisitions", tags=["acquisitions"])
 

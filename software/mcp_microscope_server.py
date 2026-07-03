@@ -143,6 +143,11 @@ async def _autofocus(c, a):
     return await _call(c, "POST", "/v1/autofocus/run", {"target_um": a.get("target_um", 0.0)})
 
 
+async def _acquire_laser_af_image(c, a):
+    body = _pick(a, {"save_path": "save_path", "use_last_frame": "use_last_frame"})
+    return await _call(c, "POST", "/v1/autofocus/acquire_image", body)
+
+
 async def _run_acquisition_from_yaml(c, a):
     body = {
         "yaml_path": a["yaml_path"],
@@ -470,6 +475,14 @@ _TOOLS: Dict[str, tuple] = {
     "microscope_store_af_reference": (
         _tool("store_af_reference", "Capture the current laser spot as the new reflection-AF reference"),
         _store_af_reference,
+    ),
+    "microscope_acquire_laser_af_image": (
+        _tool(
+            "acquire_laser_af_image",
+            "Acquire an image from the laser autofocus camera; optionally save to disk",
+            {"save_path": _STR, "use_last_frame": _BOOL},
+        ),
+        _acquire_laser_af_image,
     ),
 }
 

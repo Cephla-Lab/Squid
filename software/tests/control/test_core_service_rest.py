@@ -391,6 +391,18 @@ def test_autofocus_store_reference_and_correct_rest(client):
     assert r2.status_code in (422, 503)
 
 
+def test_autofocus_acquire_image_not_ready_is_canonical_fault(client):
+    # This fixture's config has laser-AF hardware present (support_laser_autofocus
+    # = True in configuration_Squid+.ini) but no frame has been streamed yet, so
+    # the default use_last_frame=True request must surface AUTOFOCUS_NOT_READY
+    # rather than crash or silently return no image. On a config with no AF
+    # hardware at all this would instead be CONFIG_CAPABILITY_MISSING -- assert
+    # both possibilities like the sibling store_reference/correct tests do.
+    r = client.post("/v1/autofocus/acquire_image", json={})
+    assert r.json()["error"]["category"] in ("CONFIG", "AUTOFOCUS")
+    assert r.status_code in (422, 503)
+
+
 # ---- Task 11: python_exec debug endpoint + URS delta (/v1/debug/settings) ---
 
 

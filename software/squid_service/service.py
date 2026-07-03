@@ -27,6 +27,7 @@ from squid_service.models import (
     DebugSettingsRequest,
     ExposureRequest,
     IntensityRequest,
+    LaserAfImageRequest,
     MoveRequest,
 )
 from squid_service.state import BUSY_STATES, InstrumentState, StateMachine
@@ -610,6 +611,80 @@ class SquidCoreService:
             controller.move_to_target(0.0)
             controller.set_reference()
             return {"corrected": True, "displacement_um": displacement_um}
+
+    def autofocus_acquire_image(self, req: LaserAfImageRequest) -> dict:
+        """Restores the legacy TCP `_cmd_acquire_laser_af_image`: grab a frame
+        from the laser-AF camera, either the most recently captured frame
+        (`use_last_frame=True`, the default) or a freshly triggered one, with
+        the same optional TIFF/npy save behavior as `acquire()`.
+        """
+        with self._exclusive("autofocus"):
+            self._require_af_hardware()
+            camera_focus = self._microscope.addons.camera_focus
+
+            import numpy as np
+
+            if req.use_last_frame:
+                frame = getattr(camera_focus, "_current_frame", None)
+                if frame is None:
+                    self._fail(
+                        F.make_fault(
+                            F.FaultCategory.AUTOFOCUS,
+                            F.AUTOFOCUS_NOT_READY,
+                            "no frame captured yet; start the AF camera stream or set use_last_frame=false",
+                            recoverable=True,
+                            scheduler_action=F.SchedulerAction.RETRY,
+                            component="autofocus",
+                        )
+                    )
+                image = np.squeeze(frame.frame)
+            else:
+                camera_focus.send_trigger()
+                try:
+                    image = camera_focus.read_frame()
+                except RuntimeError as e:
+                    image = None
+                    error = e
+                else:
+                    error = None
+                if image is None:
+                    self._fail(
+                        F.make_fault(
+                            F.FaultCategory.HARDWARE_TRANSIENT,
+                            F.HARDWARE_TRANSIENT_TIMEOUT,
+                            f"Laser AF frame capture failed{f': {error}' if error else ''}",
+                            recoverable=True,
+                            scheduler_action=F.SchedulerAction.RETRY,
+                            component="autofocus.camera",
+                        )
+                    )
+
+            result = {
+                "acquired": True,
+                "used_last_frame": req.use_last_frame,
+                "shape": list(image.shape),
+                "dtype": str(image.dtype),
+            }
+            if req.save_path:
+                directory = os.path.dirname(req.save_path) or "."
+                if not os.path.isdir(directory) or not os.access(directory, os.W_OK):
+                    self._fail(
+                        F.make_fault(
+                            F.FaultCategory.IO,
+                            F.IO_PATH_NOT_WRITABLE,
+                            f"Directory not writable: {directory}",
+                            detail={"path": req.save_path},
+                        )
+                    )
+                try:
+                    import tifffile
+
+                    tifffile.imwrite(req.save_path, image)
+                    result["saved_to"] = req.save_path
+                except ImportError:
+                    np.save(req.save_path, image)
+                    result["saved_to"] = req.save_path + ".npy"
+            return result
 
     # ---- acquisitions ------------------------------------------------------
 

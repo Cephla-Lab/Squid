@@ -49,6 +49,11 @@ class AutofocusCorrectRequest(_Strict):
     threshold_um: float = Field(default=10.0, gt=0, le=1000)
 
 
+class LaserAfImageRequest(_Strict):
+    save_path: Optional[str] = None
+    use_last_frame: bool = True
+
+
 class InitializeRequest(_Strict):
     home: bool = False
 
