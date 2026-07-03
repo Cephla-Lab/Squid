@@ -2,6 +2,8 @@
 
 This document describes how to run automated acquisitions using the `run_acquisition.py` script, or directly via the REST API. This approach is ideal for batch processing, CI pipelines, or headless operation.
 
+**New here?** The [Plate Scan Quickstart](quickstart-plate-scan.md) is the fastest way in — three ways to launch a scan, copy-paste examples, verified against the simulator.
+
 For AI-assisted control via Claude Code, see [MCP Integration](mcp_integration.md). For the full REST API reference (endpoints, faults, jobs, SSE), see [Core Service API](core-service-api.md).
 
 ## Overview
