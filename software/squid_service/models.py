@@ -53,6 +53,15 @@ class InitializeRequest(_Strict):
     home: bool = False
 
 
+class MethodCreateRequest(_Strict):
+    name: str
+    config: dict
+
+
+class MethodUpdateRequest(_Strict):
+    config: dict
+
+
 class AutofocusOverride(_Strict):
     reflection: Optional[bool] = None
     contrast: Optional[bool] = None

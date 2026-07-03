@@ -191,6 +191,31 @@ class SquidCoreService:
             "firmware_version": self._firmware_version_str(),
         }
 
+    def sample_formats(self) -> dict:
+        """URS API-LAB-001: list every known sample/wellplate format and its layout.
+
+        Mirrors ``control._def.WELLPLATE_FORMAT_SETTINGS`` (populated by
+        ``read_sample_formats_csv``/``load_formats``, ~control/_def.py:1128-1170),
+        accessed via the module (not a top-level import) so MCP-driven cache
+        reloads are reflected without restarting the service.
+        """
+        import control._def
+
+        return {
+            "formats": [
+                {
+                    "name": name,
+                    "rows": settings["rows"],
+                    "cols": settings["cols"],
+                    "well_spacing_mm": settings["well_spacing_mm"],
+                    "well_size_mm": settings["well_size_mm"],
+                    "a1_x_mm": settings["a1_x_mm"],
+                    "a1_y_mm": settings["a1_y_mm"],
+                }
+                for name, settings in control._def.WELLPLATE_FORMAT_SETTINGS.items()
+            ]
+        }
+
     def initialize(self, home: bool = False) -> dict:
         """Recover to INITIALIZED, verifying read-only subsystem access (URS API-LIFE-002).
 
