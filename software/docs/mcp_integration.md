@@ -5,22 +5,32 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 ## Architecture
 
 ```
-┌─────────────┐     stdio      ┌──────────────────┐     TCP:5050     ┌─────────────────────────┐
-│ Claude Code │ ◄────────────► │ MCP Server       │ ◄──────────────► │ MicroscopeControlServer │
-│             │                │ (mcp_microscope_ │                  │ (runs inside GUI)       │
-│             │                │  server.py)      │                  │                         │
-└─────────────┘                └──────────────────┘                  └────────────┬────────────┘
-                                                                                  │
-                                                                                  ▼
-                                                                     ┌─────────────────────────┐
-                                                                     │ Microscope Hardware     │
-                                                                     │ (stage, camera, etc.)   │
-                                                                     └─────────────────────────┘
+┌─────────────┐     stdio      ┌──────────────────┐     REST :5060     ┌─────────────────────────┐
+│ Claude Code │ ◄────────────► │ MCP Server       │ ◄──────────────►   │ squid_service           │
+│             │                │ (curated tools;  │      HTTP/JSON     │ (SquidCoreService,      │
+│             │                │  mcp_microscope_ │                    │  runs inside the GUI)   │
+│             │                │  server.py)      │                    │                         │
+└─────────────┘                └──────────────────┘                    └────────────┬────────────┘
+                                                                                     │
+                                                                                     ▼
+                                                                        ┌─────────────────────────┐
+                                                                        │ Microscope Hardware     │
+                                                                        │ (stage, camera, etc.)   │
+                                                                        └─────────────────────────┘
 ```
 
 1. **Claude Code** connects to the MCP server via stdio
-2. **MCP Server** (`mcp_microscope_server.py`) translates MCP tool calls to TCP commands
-3. **MicroscopeControlServer** (`control/microscope_control_server.py`) runs inside the GUI process and executes commands on the microscope
+2. **MCP Server** (`mcp_microscope_server.py`) is a thin, static, curated-tool bridge that translates each MCP tool call into one or more REST calls (via `httpx`), targeting `SQUID_API_URL` (default `http://127.0.0.1:5060`)
+3. **squid_service** (`squid_service/service.py` + `squid_service/rest/`) runs inside the GUI process, serves the REST+SSE API described in [Core Service API](core-service-api.md), and executes commands on the microscope
+
+The legacy TCP control server (port 5050, newline-delimited JSON) still runs alongside the REST API for backward compatibility, but the MCP bridge no longer talks to it.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SQUID_API_URL` | `http://127.0.0.1:5060` | Base URL of the REST API the MCP bridge talks to |
+| `SQUID_API_TOKEN` | unset | Bearer token, sent as `Authorization: Bearer <token>` when set (needed only if the server has auth enabled — see [Core Service API — Authentication](core-service-api.md#authentication)) |
 
 ## Setup
 
@@ -44,12 +54,14 @@ This automatically:
 
 ### On-Demand Control Server
 
-The MCP control server does **not** start automatically when the GUI launches. It starts when:
+The control server does **not** start automatically when the GUI launches. Starting it brings up both the
+REST API (port 5060, used by the MCP bridge) and the legacy TCP server (port 5050) together. It starts when:
 
 | Action | Result |
 |--------|--------|
 | **Settings → Launch Claude Code** | Auto-starts server, then launches Claude Code |
 | **Settings → Enable MCP Control Server** | Manually start/stop the server |
+| `python3 main_hcs.py --start-server` | Starts the server at GUI launch |
 
 This improves security by only running the server when needed.
 
@@ -104,7 +116,8 @@ The `python_exec` command is disabled by default for security. To enable it:
 | Command | Description |
 |---------|-------------|
 | `ping` | Check if server is running |
-| `get_status` | Get comprehensive microscope status |
+| `get_status` | Get comprehensive microscope status (state, active job, latest fault) |
+| `get_capabilities` | Channels, objectives, stage travel, camera, simulation flag |
 | `get_position` | Get current XYZ stage position (mm) |
 
 ### Stage Movement
@@ -143,23 +156,44 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `get_current_objective` | - | Get current objective |
 | `set_objective` | `objective_name` | Switch objective |
 
-### Multi-Point Acquisition
+### Autofocus
 
 | Command | Parameters | Description |
 |---------|------------|-------------|
-| `run_acquisition` | `wells`, `channels`, `nx`, `ny`, `wellplate_format`, `overlap_percent` | Run automated well plate scan |
-| `run_acquisition_from_yaml` | `yaml_path`, `wells`, `base_path` | Run acquisition from saved YAML config |
-| `get_acquisition_status` | - | Check acquisition progress |
-| `abort_acquisition` | - | Stop running acquisition |
+| `autofocus` | `target_um` | Run reflection (laser) autofocus at the current position |
+| `autofocus_status` | - | Reflection (laser) autofocus hardware/reference readiness |
+| `store_af_reference` | - | Capture the current laser spot as the new reflection-AF reference |
 
-> **Note:** `run_acquisition_from_yaml` only supports wellplate mode. For scripted automation, see [Automation](automation.md).
-
-### Performance
+### Multi-Point Acquisition & Methods
 
 | Command | Parameters | Description |
 |---------|------------|-------------|
-| `set_performance_mode` | `enabled` | Toggle performance mode (faster, less RAM) |
-| `get_performance_mode` | - | Check performance mode state |
+| `run_acquisition` | `wells`, `channels`, `nx`, `ny`, `wellplate_format`, `overlap_percent`, `experiment_id`, `base_path` | Run a grid-mode multi-well acquisition; returns a job handle |
+| `run_acquisition_from_yaml` | `yaml_path`, `wells`, `base_path`, `experiment_id` | Run acquisition from a saved YAML config; returns a job handle |
+| `get_methods` | - | List named acquisition methods stored on the server |
+| `run_method` | `method`, `experiment_id`, `wells`, `base_path`, `operator` | Start an acquisition from a named server-side method; returns a job handle |
+| `get_acquisition_status` | - | Instrument status plus active or last job progress |
+| `get_job` | `job_id` | Get a job record by id |
+| `abort_acquisition` | `timeout_s` | Gracefully abort the running acquisition |
+
+> **Note:** All acquisition commands only support wellplate mode. FlexibleMultiPoint acquisitions must be run
+> from the GUI. For scripted automation, see [Automation](automation.md). Acquisition methods live under
+> `machine_configs/acquisition_methods/`; see [Core Service API — Method registry](core-service-api.md#method-registry).
+
+### Performance & View Settings
+
+| Command | Parameters | Description |
+|---------|------------|-------------|
+| `set_performance_mode` | `enabled` | Toggle performance mode (faster, less RAM); requires a GUI |
+| `get_performance_mode` | - | Get current performance/view debug settings |
+| `get_view_settings` | - | Get downsampled-well-image saving + mosaic display + performance mode |
+| `set_view_settings` | `save_downsampled_well_images`, `display_mosaic_view` | Set multiple view settings at once |
+| `set_save_downsampled_images` | `enabled` | Enable/disable saving per-well downsampled TIFFs (next acquisition) |
+| `set_display_mosaic_view` | `enabled` | Enable/disable mosaic view display (immediate) |
+
+> **Note:** `microscope_set_display_plate_view` does not exist. The legacy `DISPLAY_PLATE_VIEW` flag it
+> toggled was removed — plate view was unified into the mosaic view (`UnifiedMosaicWidget`), governed solely
+> by `display_mosaic_view`.
 
 ### Direct Python Access
 
@@ -253,22 +287,30 @@ else:
 
 ## Protocol Details
 
-The TCP protocol uses newline-delimited JSON:
+The MCP bridge talks HTTP/JSON to the REST API (see [Core Service API](core-service-api.md) for the full
+endpoint reference). Successful responses are plain JSON objects; every non-2xx response body is a
+canonical Fault, so agents can branch on `category`/`code`/`terminal` instead of parsing free-text errors:
 
-**Request:**
 ```json
-{"command": "move_to", "params": {"x_mm": 50.0, "y_mm": 25.0}}
+{
+  "error": {
+    "category": "INVALID_PARAM",
+    "code": 2001,
+    "recoverable": false,
+    "scheduler_action": "REJECT_PLATE",
+    "component": "stage.x",
+    "message": "x target 200.000 mm outside [0.0, 120.0]",
+    "detail": {"axis": "x", "target_mm": 200.0},
+    "timestamp": "2026-07-02T12:00:00Z",
+    "terminal": false,
+    "operator_intervention_required": false,
+    "plate_removable": true
+  }
+}
 ```
 
-**Response (success):**
-```json
-{"success": true, "result": {"moved_to": {"x_mm": 50.0, "y_mm": 25.0, "z_mm": 1.2}}}
-```
-
-**Response (error):**
-```json
-{"success": false, "error": "Error message here"}
-```
+The MCP bridge returns this JSON verbatim as the tool's text result (it does not raise/throw), so a tool
+call that "failed" still returns successfully to Claude Code — inspect the `error` key to detect it.
 
 ## Troubleshooting
 
@@ -284,12 +326,23 @@ The TCP protocol uses newline-delimited JSON:
 ### "Cannot connect to microscope"
 - Ensure the Squid GUI is running
 - Enable the control server via **Settings → Enable MCP Control Server** (or use **Launch Claude Code** which auto-starts it)
-- Verify port 5050 is not blocked
+- Verify port 5060 (REST API) is not blocked; the bridge reports the exact URL it tried in the error message
+- If `SQUID_API_URL` is set, confirm it points at the right host/port
 
 ### Command timeout
-- Long acquisitions may exceed the default 30s timeout
-- Check `get_acquisition_status` for progress on running scans
+- Long acquisitions run asynchronously as jobs; a "timeout" on `run_acquisition_from_yaml`/`run_method`/`run_acquisition`
+  only means the *start* request was slow — the acquisition itself keeps running
+- Check `get_acquisition_status` or `get_job` for progress on running scans
 
 ### "Channel not found"
 - Channel names are objective-specific
 - Use `get_channels` to list available channels for current objective
+
+### 401 Unauthorized
+- Only occurs when the server has auth enabled (non-default; required for non-loopback binds)
+- Set `SQUID_API_TOKEN` in the environment Claude Code runs in
+
+## See Also
+
+- [Core Service API](core-service-api.md) - Full REST API reference (endpoints, faults, jobs, SSE)
+- [Automation](automation.md) - Scripted acquisitions via `run_acquisition.py` or `curl`

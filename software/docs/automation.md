@@ -1,26 +1,31 @@
 # Automated Acquisition via Scripts
 
-This document describes how to run automated acquisitions using the `run_acquisition.py` script. This approach is ideal for batch processing, CI pipelines, or headless operation.
+This document describes how to run automated acquisitions using the `run_acquisition.py` script, or directly via the REST API. This approach is ideal for batch processing, CI pipelines, or headless operation.
 
-For AI-assisted control via Claude Code, see [MCP Integration](mcp_integration.md).
+For AI-assisted control via Claude Code, see [MCP Integration](mcp_integration.md). For the full REST API reference (endpoints, faults, jobs, SSE), see [Core Service API](core-service-api.md).
 
 ## Overview
 
 The automation workflow:
-1. Configure and save an acquisition in the GUI (creates `acquisition.yaml`)
-2. Run the acquisition programmatically using the saved YAML
+1. Configure and save an acquisition in the GUI (creates `acquisition.yaml`), or define a named server-side method under `machine_configs/acquisition_methods/`
+2. Run the acquisition programmatically using the saved YAML (or method name) via the REST API
 3. Optionally override parameters like wells or save location
 
-**Note:** Only wellplate mode acquisitions are supported via scripting. FlexibleMultiPoint acquisitions must be run from the GUI.
+**Note:** Only wellplate mode acquisitions are supported via scripting/the REST API. FlexibleMultiPoint acquisitions must be run from the GUI.
 
 ## Prerequisites
 
 - Squid software installed and configured
-- Python environment with Squid dependencies
+- Python environment with Squid dependencies (includes `httpx`)
 
 ## Enabling the Control Server
 
-The TCP control server must be running to accept commands.
+The Squid GUI process serves the automation API on two ports:
+
+- **REST API (port 5060)** — the current API; used by `run_acquisition.py`, the MCP bridge, and any `curl`/`httpx` client. See [Core Service API](core-service-api.md).
+- **Legacy TCP control server (port 5050)** — newline-delimited JSON protocol; **deprecated**, kept only for backward compatibility with older integrations.
+
+Both start together.
 
 **Option 1: Via command line (recommended for automation)**
 ```bash
@@ -30,6 +35,21 @@ python3 main_hcs.py --start-server
 **Option 2: Via GUI**
 - Go to Settings and check "Enable MCP Control Server"
 
+### curl quick-start
+
+```bash
+# Is the service alive?
+curl http://127.0.0.1:5060/v1/healthz
+
+# Instrument state, active job, latest fault
+curl http://127.0.0.1:5060/v1/system/status
+
+# Start an acquisition from a saved YAML (returns 202 + job handle)
+curl -X POST http://127.0.0.1:5060/v1/acquisitions \
+  -H "Content-Type: application/json" \
+  -d '{"yaml_path": "/path/to/acquisition.yaml"}'
+```
+
 ## Basic Usage
 
 ### Run an acquisition
@@ -37,15 +57,23 @@ python3 main_hcs.py --start-server
 python scripts/run_acquisition.py --yaml /path/to/acquisition.yaml --wait
 ```
 
+### Run from a named server-side method
+```bash
+python scripts/run_acquisition.py --method my_method --wait
+```
+
 ### Run in simulation mode
 ```bash
 python scripts/run_acquisition.py --yaml /path/to/acquisition.yaml --simulation --wait
 ```
 
-### Validate YAML without running (dry run)
+### Validate against the live instrument without running (dry run)
 ```bash
-python scripts/run_acquisition.py --yaml /path/to/acquisition.yaml --dry-run
+python scripts/run_acquisition.py --yaml /path/to/acquisition.yaml --no-launch --dry-run
 ```
+This runs the server-side preflight checks (`POST /v1/acquisitions/preflight`) — YAML parsing, widget type,
+hardware match, channel names, regions, and output path — without starting the acquisition. It requires a
+reachable server (launch the GUI first, or omit `--no-launch` to let the script launch it).
 
 ## Parameter Overrides
 
@@ -74,23 +102,25 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --no-launch --wait
 
 ### Custom host/port
 ```bash
-python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5050
+python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5060
 ```
 
 ## Command Line Options
 
 | Option | Description |
 |--------|-------------|
-| `--yaml`, `-y` | Path to acquisition.yaml file (required) |
+| `--yaml`, `-y` | Path to acquisition.yaml file (exactly one of `--yaml`/`--method` required) |
+| `--method` | Name of a server-side acquisition method under `machine_configs/acquisition_methods/` (alternative to `--yaml`) |
 | `--wells`, `-w` | Override wells from YAML (e.g., 'A1:B3' or 'A1,A2,B1') |
 | `--base-path` | Override save location |
 | `--simulation` | Run in simulation mode (no hardware) |
 | `--wait` | Wait for acquisition to complete |
+| `--timeout` | Acquisition timeout in seconds (only with `--wait`) |
 | `--no-launch` | Don't launch GUI, connect to existing one |
-| `--dry-run` | Validate YAML without running |
+| `--dry-run` | Run server-side preflight checks only; don't start the acquisition |
 | `--verbose`, `-v` | Show detailed output |
-| `--host` | Server host (default: localhost) |
-| `--port` | Server port (default: 5050) |
+| `--host` | REST API host (default: 127.0.0.1) |
+| `--port` | REST API port (default: 5060) |
 
 ## Exit Codes
 
@@ -148,11 +178,11 @@ jobs:
 ### "Control server did not become available"
 - Ensure the GUI is running with `--start-server` flag
 - Or enable via Settings → Enable MCP Control Server
-- Check that port 5050 is not blocked
+- Check that port 5060 (REST API) is not blocked
 
-### "TCP command only supports wellplate mode"
+### "Only wellplate-mode YAMLs are supported by the API"
 - The YAML was saved from FlexibleMultiPoint mode
-- Re-save the acquisition using wellplate mode, or run from GUI
+- FlexibleMultiPoint acquisitions must be run from the GUI, not via the script/REST API
 
 ### "Hardware configuration mismatch"
 - The current objective or camera binning differs from when YAML was saved
@@ -162,7 +192,13 @@ jobs:
 - The script will retry up to 10 consecutive errors before failing
 - Check network connectivity and GUI status
 
+### 401 Unauthorized
+- Auth is only required when the server is bound to a non-loopback host; see
+  [Core Service API — Authentication](core-service-api.md#authentication)
+- Pass a token with `-H "Authorization: Bearer <token>"` (curl) or set `SQUID_API_TOKEN` (MCP bridge)
+
 ## See Also
 
+- [Core Service API](core-service-api.md) - Full REST API reference (endpoints, faults, jobs, SSE)
 - [MCP Integration](mcp_integration.md) - Control via Claude Code / AI agents
 - [Configuration System](configuration-system.md) - Setting up imaging channels and profiles
