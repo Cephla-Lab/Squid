@@ -1470,12 +1470,22 @@ class SquidCoreService:
         if image is not None and isinstance(image, np.ndarray):
             path = os.path.join(tempfile.gettempdir(), "squid_python_exec_image.tiff")
             try:
-                import tifffile
+                try:
+                    import tifffile
 
-                tifffile.imwrite(path, image)
-            except ImportError:
-                path = path.replace(".tiff", ".npy")
-                np.save(path, image)
+                    tifffile.imwrite(path, image)
+                except ImportError:
+                    path = path.replace(".tiff", ".npy")
+                    np.save(path, image)
+            except Exception as e:
+                self._fail(
+                    F.make_fault(
+                        F.FaultCategory.IO,
+                        F.IO_GENERIC,
+                        f"python_exec image save failed: {e}",
+                        detail={"exception": type(e).__name__},
+                    )
+                )
             response["image_path"] = path
             response["image_shape"] = list(image.shape)
             response["image_dtype"] = str(image.dtype)

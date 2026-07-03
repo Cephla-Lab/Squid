@@ -423,6 +423,25 @@ def test_python_exec_bad_code_is_invalid_param_fault(client, service):
         service.set_python_exec_enabled(False)
 
 
+def test_python_exec_image_autosave(client, service):
+    service.set_python_exec_enabled(True)
+    try:
+        r = client.post(
+            "/v1/debug/python_exec",
+            json={"code": "image = np.zeros((4, 4), dtype=np.uint16)"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["image_shape"] == [4, 4]
+        assert body["image_dtype"] == "uint16"
+        assert body["image_path"].endswith((".tiff", ".npy"))
+        import os
+
+        assert os.path.exists(body["image_path"])
+    finally:
+        service.set_python_exec_enabled(False)
+
+
 def test_debug_settings_view_settings_roundtrip_headless(client):
     # client's service has NO gui attached (see fixtures above), which is exactly
     # what's needed to exercise the headless performance_mode behavior below.
