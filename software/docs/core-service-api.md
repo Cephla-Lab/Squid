@@ -7,7 +7,7 @@ is the API used by [`scripts/run_acquisition.py`](../scripts/run_acquisition.py)
 
 ## Overview
 
-- **Base URL:** `http://127.0.0.1:5060` by default (see [Configuration](#configuration) to change host/port)
+- **Base URL:** `http://127.0.0.1:8060` by default (see [Configuration](#configuration) to change host/port)
 - **Interactive docs:** `GET /docs` (Swagger UI) and `GET /openapi.json` are always available, unauthenticated-or-not per the auth setting
 - **Transport:** HTTP/1.1 + JSON only — there is no TLS termination built in; put a reverse proxy in front if you need it on a non-loopback network
 - **Versioning:** all routes are prefixed `/v1/...`, except `GET /healthz` (unversioned, always open)
@@ -205,7 +205,7 @@ Acquisitions are asynchronous jobs:
 
 ```bash
 # 1. Start (accepts a job, returns immediately)
-curl -i -X POST http://127.0.0.1:5060/v1/acquisitions \
+curl -i -X POST http://127.0.0.1:8060/v1/acquisitions \
   -H "Content-Type: application/json" \
   -d '{"yaml_path": "/path/to/acquisition.yaml", "overrides": {"output_path": "/data/out"}}'
 # HTTP/1.1 202 Accepted
@@ -215,7 +215,7 @@ curl -i -X POST http://127.0.0.1:5060/v1/acquisitions \
 #  "accepted_at": "2026-07-02T12:00:00Z"}
 
 # 2. Poll until COMPLETED (see Polling guidance below)
-curl http://127.0.0.1:5060/v1/jobs/c46b7c7d825b
+curl http://127.0.0.1:8060/v1/jobs/c46b7c7d825b
 # {"job_id": "...", "state": "RUNNING", "progress": {"images_acquired": 2, "total_images": 6, ...}, ...}
 # ... poll again ...
 # {"job_id": "...", "state": "COMPLETED", "outcome": "SUCCESS",
@@ -246,11 +246,11 @@ directory configured by `methods_dir` (default `machine_configs/acquisition_meth
 named `<name>.yaml`.
 
 ```bash
-curl -X POST http://127.0.0.1:5060/v1/methods \
+curl -X POST http://127.0.0.1:8060/v1/methods \
   -H "Content-Type: application/json" \
   -d '{"name": "daily_scan", "config": {"acquisition": {"widget_type": "wellplate"}, ...}}'
 
-curl -X POST http://127.0.0.1:5060/v1/acquisitions -d '{"method": "daily_scan"}'
+curl -X POST http://127.0.0.1:8060/v1/acquisitions -d '{"method": "daily_scan"}'
 ```
 
 `GET /v1/methods` returns a summary per method including `estimated_duration_s`, which is **always `null`
@@ -278,7 +278,7 @@ events, not on a faster clock.
 that need low-latency updates don't have to poll `/v1/jobs/{id}` at all:
 
 ```bash
-curl -N -H "Last-Event-Id: 0" http://127.0.0.1:5060/v1/events
+curl -N -H "Last-Event-Id: 0" http://127.0.0.1:8060/v1/events
 ```
 
 - The stream always opens with a `session_started` event (`session_id`, `current_state`, `last_event_id`).
@@ -339,7 +339,7 @@ remains GUI-only.
 [CORE_SERVICE]
 enabled = true
 host = 127.0.0.1
-port = 5060
+port = 8060
 auth_enabled = false
 auth_token =
 methods_dir = machine_configs/acquisition_methods
@@ -349,7 +349,7 @@ methods_dir = machine_configs/acquisition_methods
 |-----|---------|-------|
 | `enabled` | `true` | Set `false` to disable the REST API entirely (the legacy TCP server is unaffected) |
 | `host` | `127.0.0.1` | Bind address. Non-loopback requires `auth_enabled=true` + `auth_token` (see [Authentication](#authentication)) |
-| `port` | `5060` | Bind port |
+| `port` | `8060` | Bind port. Deliberately NOT 5060 (the original spec value): browsers block port 5060 (SIP) via their unsafe-port lists (`ERR_UNSAFE_PORT` in Chrome/Edge), which would make `/docs` unreachable |
 | `auth_enabled` | `false` | See [Authentication](#authentication) |
 | `auth_token` | `""` | Bearer token; required (non-empty) when `auth_enabled=true` |
 | `methods_dir` | `machine_configs/acquisition_methods` | Directory for the [method registry](#method-registry), relative to the `software/` working directory |

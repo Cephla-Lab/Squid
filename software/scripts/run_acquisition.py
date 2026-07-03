@@ -26,7 +26,7 @@ import httpx
 
 # Constants
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 5060
+DEFAULT_PORT = 8060
 CONNECTION_TIMEOUT = 120  # seconds to wait for server
 CONNECTION_RETRY_INTERVAL = 2.0  # seconds
 JOB_POLL_INTERVAL = 2.0  # seconds

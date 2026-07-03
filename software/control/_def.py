@@ -1280,7 +1280,7 @@ ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
 # Core Service (REST + SSE API) settings; overridable via [CORE_SERVICE] in the machine INI
 CORE_SERVICE_ENABLED = True
 CORE_SERVICE_HOST = "127.0.0.1"
-CORE_SERVICE_PORT = 5060
+CORE_SERVICE_PORT = 8060
 CORE_SERVICE_AUTH_ENABLED = False
 CORE_SERVICE_AUTH_TOKEN = ""
 CORE_SERVICE_METHODS_DIR = "machine_configs/acquisition_methods"

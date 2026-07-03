@@ -5,7 +5,7 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 ## Architecture
 
 ```
-┌─────────────┐     stdio      ┌──────────────────┐     REST :5060     ┌─────────────────────────┐
+┌─────────────┐     stdio      ┌──────────────────┐     REST :8060     ┌─────────────────────────┐
 │ Claude Code │ ◄────────────► │ MCP Server       │ ◄──────────────►   │ squid_service           │
 │             │                │ (curated tools;  │      HTTP/JSON     │ (SquidCoreService,      │
 │             │                │  mcp_microscope_ │                    │  runs inside the GUI)   │
@@ -20,7 +20,7 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 ```
 
 1. **Claude Code** connects to the MCP server via stdio
-2. **MCP Server** (`mcp_microscope_server.py`) is a thin, static, curated-tool bridge that translates each MCP tool call into one or more REST calls (via `httpx`), targeting `SQUID_API_URL` (default `http://127.0.0.1:5060`)
+2. **MCP Server** (`mcp_microscope_server.py`) is a thin, static, curated-tool bridge that translates each MCP tool call into one or more REST calls (via `httpx`), targeting `SQUID_API_URL` (default `http://127.0.0.1:8060`)
 3. **squid_service** (`squid_service/service.py` + `squid_service/rest/`) runs inside the GUI process, serves the REST+SSE API described in [Core Service API](core-service-api.md), and executes commands on the microscope
 
 The legacy TCP control server (port 5050, newline-delimited JSON) still runs alongside the REST API for backward compatibility, but the MCP bridge no longer talks to it.
@@ -29,7 +29,7 @@ The legacy TCP control server (port 5050, newline-delimited JSON) still runs alo
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SQUID_API_URL` | `http://127.0.0.1:5060` | Base URL of the REST API the MCP bridge talks to |
+| `SQUID_API_URL` | `http://127.0.0.1:8060` | Base URL of the REST API the MCP bridge talks to |
 | `SQUID_API_TOKEN` | unset | Bearer token, sent as `Authorization: Bearer <token>` when set (needed only if the server has auth enabled — see [Core Service API — Authentication](core-service-api.md#authentication)) |
 
 ## Setup
@@ -55,7 +55,7 @@ This automatically:
 ### On-Demand Control Server
 
 The control server does **not** start automatically when the GUI launches. Starting it brings up both the
-REST API (port 5060, used by the MCP bridge) and the legacy TCP server (port 5050) together. It starts when:
+REST API (port 8060, used by the MCP bridge) and the legacy TCP server (port 5050) together. It starts when:
 
 | Action | Result |
 |--------|--------|
@@ -326,7 +326,7 @@ call that "failed" still returns successfully to Claude Code — inspect the `er
 ### "Cannot connect to microscope"
 - Ensure the Squid GUI is running
 - Enable the control server via **Settings → Enable MCP Control Server** (or use **Launch Claude Code** which auto-starts it)
-- Verify port 5060 (REST API) is not blocked; the bridge reports the exact URL it tried in the error message
+- Verify port 8060 (REST API) is not blocked; the bridge reports the exact URL it tried in the error message
 - If `SQUID_API_URL` is set, confirm it points at the right host/port
 
 ### Command timeout

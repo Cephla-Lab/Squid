@@ -8,7 +8,7 @@ from squid_service.models import AcquisitionRequest, ExposureRequest, MoveReques
 def test_defaults_are_loopback_no_auth():
     cfg = ServiceConfig()
     assert cfg.host == "127.0.0.1"
-    assert cfg.port == 5060
+    assert cfg.port == 8060
     assert cfg.auth_enabled is False
 
 

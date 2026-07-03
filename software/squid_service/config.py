@@ -16,7 +16,7 @@ def _is_loopback(host: str) -> bool:
 
 class ServiceConfig(BaseModel):
     host: str = "127.0.0.1"
-    port: int = 5060
+    port: int = 8060
     auth_enabled: bool = False
     auth_token: str = ""
     methods_dir: str = "machine_configs/acquisition_methods"
@@ -40,7 +40,7 @@ class ServiceConfig(BaseModel):
 
         return cls(
             host=getattr(control._def, "CORE_SERVICE_HOST", "127.0.0.1"),
-            port=getattr(control._def, "CORE_SERVICE_PORT", 5060),
+            port=getattr(control._def, "CORE_SERVICE_PORT", 8060),
             auth_enabled=getattr(control._def, "CORE_SERVICE_AUTH_ENABLED", False),
             auth_token=getattr(control._def, "CORE_SERVICE_AUTH_TOKEN", ""),
             methods_dir=getattr(control._def, "CORE_SERVICE_METHODS_DIR", "machine_configs/acquisition_methods"),

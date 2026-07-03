@@ -1,5 +1,5 @@
 """
-DEPRECATED: superseded by the Squid Core Service REST API (squid_service/, port 5060)
+DEPRECATED: superseded by the Squid Core Service REST API (squid_service/, port 8060)
 and the rewritten MCP bridge. Kept for one release for external TCP clients.
 See docs/core-service-api.md. No new commands should be added here.
 

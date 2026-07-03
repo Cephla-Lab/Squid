@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP stdio bridge for the Squid Core Service REST API.
 
-Claude Code <-stdio-> this bridge <-HTTP:5060-> squid_service (inside the GUI).
+Claude Code <-stdio-> this bridge <-HTTP:8060-> squid_service (inside the GUI).
 Tool names and argument names are kept compatible with the previous TCP-based
 bridge so existing .mcp.json configs and pre-approved permissions keep working.
 Errors are returned as the canonical Fault JSON ({"error": {category, code,
@@ -18,7 +18,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-DEFAULT_API_URL = "http://127.0.0.1:5060"
+DEFAULT_API_URL = "http://127.0.0.1:8060"
 
 
 def make_client(transport: Optional[httpx.AsyncBaseTransport] = None) -> httpx.AsyncClient:

@@ -22,7 +22,7 @@ The automation workflow:
 
 The Squid GUI process serves the automation API on two ports:
 
-- **REST API (port 5060)** — the current API; used by `run_acquisition.py`, the MCP bridge, and any `curl`/`httpx` client. See [Core Service API](core-service-api.md).
+- **REST API (port 8060)** — the current API; used by `run_acquisition.py`, the MCP bridge, and any `curl`/`httpx` client. See [Core Service API](core-service-api.md).
 - **Legacy TCP control server (port 5050)** — newline-delimited JSON protocol; **deprecated**, kept only for backward compatibility with older integrations.
 
 Both start together.
@@ -39,13 +39,13 @@ python3 main_hcs.py --start-server
 
 ```bash
 # Is the service alive?
-curl http://127.0.0.1:5060/v1/healthz
+curl http://127.0.0.1:8060/v1/healthz
 
 # Instrument state, active job, latest fault
-curl http://127.0.0.1:5060/v1/system/status
+curl http://127.0.0.1:8060/v1/system/status
 
 # Start an acquisition from a saved YAML (returns 202 + job handle)
-curl -X POST http://127.0.0.1:5060/v1/acquisitions \
+curl -X POST http://127.0.0.1:8060/v1/acquisitions \
   -H "Content-Type: application/json" \
   -d '{"yaml_path": "/path/to/acquisition.yaml"}'
 ```
@@ -102,7 +102,7 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --no-launch --wait
 
 ### Custom host/port
 ```bash
-python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5060
+python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 8060
 ```
 
 Non-loopback binds **require** authentication (the service refuses to start without `auth_enabled=true` +
@@ -110,7 +110,7 @@ Non-loopback binds **require** authentication (the service refuses to start with
 the bearer token from the `SQUID_API_TOKEN` environment variable and sends it on every request:
 
 ```bash
-SQUID_API_TOKEN=your-token python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 5060
+SQUID_API_TOKEN=your-token python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 --port 8060
 ```
 
 ## Command Line Options
@@ -128,7 +128,7 @@ SQUID_API_TOKEN=your-token python scripts/run_acquisition.py --yaml acquisition.
 | `--dry-run` | Run server-side preflight checks only; don't start the acquisition |
 | `--verbose`, `-v` | Show detailed output |
 | `--host` | REST API host (default: 127.0.0.1) |
-| `--port` | REST API port (default: 5060) |
+| `--port` | REST API port (default: 8060) |
 
 ## Exit Codes
 
@@ -186,7 +186,7 @@ jobs:
 ### "Control server did not become available"
 - Ensure the GUI is running with `--start-server` flag
 - Or enable via Settings → Enable MCP Control Server
-- Check that port 5060 (REST API) is not blocked
+- Check that port 8060 (REST API) is not blocked
 
 ### "Only wellplate-mode YAMLs are supported by the API"
 - The YAML was saved from FlexibleMultiPoint mode
