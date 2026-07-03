@@ -2389,14 +2389,19 @@ class HighContentScreeningGui(QMainWindow):
         QTimer.singleShot(250, self._do_wayland_surface_kick)
 
     def _do_wayland_surface_kick(self):
-        if self.isMaximized() or self.isFullScreen():
-            # A maximized/fullscreen Wayland window ignores resize requests. The
-            # window-state change itself produces the configure event we need, so
-            # drop the maximized state but pin the normal geometry to the current
-            # on-screen size — the size doesn't visibly change — then re-maximize.
-            geo = self.geometry()
+        if self.isFullScreen():
+            # A fullscreen Wayland window ignores resize requests; toggling the
+            # window state is what produces the configure event we need. Qt keeps
+            # the pre-fullscreen geometry across the toggle, so don't touch it.
             self.showNormal()
-            self.setGeometry(geo)
+            QTimer.singleShot(0, self.showFullScreen)
+        elif self.isMaximized():
+            # Same for a maximized window. Do NOT setGeometry() to the maximized
+            # size to hide the restore flash — that overwrites the window's stored
+            # restore geometry, after which the maximize/restore toggle no longer
+            # changes anything and the window is stuck at full size. Qt already
+            # preserves the real restore geometry across showNormal/showMaximized.
+            self.showNormal()
             QTimer.singleShot(0, self.showMaximized)
         else:
             geo = self.geometry()
