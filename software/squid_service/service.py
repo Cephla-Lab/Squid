@@ -24,6 +24,7 @@ from squid_service.models import (
     AcquisitionRequest,
     AutofocusCorrectRequest,
     AutofocusRunRequest,
+    DebugSettingsRequest,
     ExposureRequest,
     IntensityRequest,
     MoveRequest,
@@ -1406,3 +1407,124 @@ class SquidCoreService:
             raise F.FaultError(self._record_fault(e.fault))
         checks, ctx = self._yaml_checks(AcquisitionRequest(yaml_path=path))
         return self._run_checks_report(checks, ctx, skip_names={"output_path"})
+
+    # ---- debug ---------------------------------------------------------------
+
+    def set_python_exec_enabled(self, enabled: bool) -> None:
+        self._python_exec_enabled = enabled
+        (self._log.warning if enabled else self._log.info)(f"python_exec {'ENABLED' if enabled else 'disabled'}")
+
+    def python_exec_status(self) -> dict:
+        return {"enabled": self._python_exec_enabled}
+
+    def python_exec(self, code: str) -> dict:
+        """Execute arbitrary Python with the microscope objects in scope.
+
+        NOT SANDBOXED. Gated by the GUI opt-in toggle; the service refuses when
+        disabled. Only expose this endpoint on loopback binds.
+        """
+        import tempfile
+
+        import numpy as np
+
+        if not self._python_exec_enabled:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.PROTOCOL,
+                    F.PROTOCOL_FORBIDDEN,
+                    "python_exec is disabled; enable it via Settings in the GUI",
+                )
+            )
+        namespace = {
+            "microscope": self._microscope,
+            "stage": self._microscope.stage,
+            "camera": self._microscope.camera,
+            "live_controller": self._microscope.live_controller,
+            "objective_store": self._microscope.objective_store,
+            "multipoint_controller": self._mpc,
+            "scan_coordinates": self._scan_coordinates,
+            "np": np,
+            "result": None,
+            "image": None,
+        }
+        try:
+            exec(code, namespace)  # noqa: S102 - intentionally unsandboxed, opt-in debug tool
+        except Exception as e:
+            self._fail(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_BAD_VALUE,
+                    f"python_exec failed: {e}",
+                    detail={"exception": type(e).__name__},
+                )
+            )
+        response = {}
+        result = namespace.get("result")
+        if result is not None:
+            try:
+                json.dumps(result)
+                response["result"] = result
+            except (TypeError, ValueError):
+                response["result"] = str(result)
+        image = namespace.get("image")
+        if image is not None and isinstance(image, np.ndarray):
+            path = os.path.join(tempfile.gettempdir(), "squid_python_exec_image.tiff")
+            try:
+                import tifffile
+
+                tifffile.imwrite(path, image)
+            except ImportError:
+                path = path.replace(".tiff", ".npy")
+                np.save(path, image)
+            response["image_path"] = path
+            response["image_shape"] = list(image.shape)
+            response["image_dtype"] = str(image.dtype)
+        return response
+
+    def debug_settings(self) -> dict:
+        """URS API-COMPAT-002 delta: REST parity for the legacy TCP view/performance
+        debug commands (_cmd_get_view_settings / _cmd_get_performance_mode).
+        `performance_mode` is None when no GUI is attached (headless service).
+
+        Note: the legacy `display_plate_view` field is intentionally not
+        reproduced here -- `control._def.DISPLAY_PLATE_VIEW` no longer exists in
+        this codebase; plate view was unified into the mosaic view
+        (UnifiedMosaicWidget), governed solely by `display_mosaic_view`.
+        """
+        import control._def
+
+        return {
+            "performance_mode": self._gui_bridge.get_performance_mode(),
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+        }
+
+    def set_debug_settings(self, req: DebugSettingsRequest) -> dict:
+        """URS API-COMPAT-002 delta: REST parity for the legacy TCP
+        _cmd_set_view_settings / _cmd_set_performance_mode commands. View settings
+        are applied directly to `control._def` (module import, so MCP-driven
+        reloads and other readers see the change immediately); `performance_mode`
+        is dispatched fire-and-forget to the GUI thread (see GuiBridge.set_performance_mode)
+        and so may not be reflected in the returned snapshot yet.
+        """
+        import control._def
+
+        if req.performance_mode is not None:
+            if not self._gui_bridge.has_gui:
+                self._fail(
+                    F.make_fault(
+                        F.FaultCategory.CONFIG,
+                        F.CONFIG_CAPABILITY_MISSING,
+                        "No GUI attached; cannot set performance_mode",
+                        component="debug",
+                    )
+                )
+            self._gui_bridge.set_performance_mode(req.performance_mode)
+
+        if req.save_downsampled_well_images is not None:
+            control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = req.save_downsampled_well_images
+
+        if req.display_mosaic_view is not None:
+            control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = req.display_mosaic_view
+
+        return self.debug_settings()

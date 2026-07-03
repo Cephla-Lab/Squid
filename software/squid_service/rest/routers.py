@@ -14,6 +14,7 @@ from squid_service.models import (
     AutofocusCorrectRequest,
     AutofocusRunRequest,
     ChannelSelectRequest,
+    DebugSettingsRequest,
     ExposureRequest,
     InitializeRequest,
     IntensityRequest,
@@ -21,6 +22,7 @@ from squid_service.models import (
     MethodUpdateRequest,
     MoveRequest,
     ObjectiveRequest,
+    PythonExecRequest,
 )
 
 
@@ -236,4 +238,22 @@ def build_routers():
     def validate_method(request: Request, name: str):
         return _svc(request).validate_method(name)
 
-    return [meta, system, motion, imaging, autofocus, acquisitions, jobs, methods]
+    debug = APIRouter(prefix="/v1/debug", tags=["debug"])
+
+    @debug.post("/python_exec")
+    def python_exec(request: Request, body: PythonExecRequest):
+        return _svc(request).python_exec(body.code)
+
+    @debug.get("/python_exec/status")
+    def python_exec_status(request: Request):
+        return _svc(request).python_exec_status()
+
+    @debug.get("/settings")
+    def get_debug_settings(request: Request):
+        return _svc(request).debug_settings()
+
+    @debug.post("/settings")
+    def set_debug_settings(request: Request, body: DebugSettingsRequest):
+        return _svc(request).set_debug_settings(body)
+
+    return [meta, system, motion, imaging, autofocus, acquisitions, jobs, methods, debug]

@@ -106,3 +106,19 @@ class AbortRequest(_Strict):
 
 class PythonExecRequest(_Strict):
     code: str
+
+
+class DebugSettingsRequest(_Strict):
+    """URS API-COMPAT-002: REST parity for the legacy TCP view/performance debug
+    commands (_cmd_set_view_settings / _cmd_set_performance_mode). All fields are
+    optional; only the ones provided are changed.
+
+    Note: `display_plate_view` from the original TCP command set is intentionally
+    omitted -- the underlying `control._def.DISPLAY_PLATE_VIEW` flag no longer
+    exists in this codebase (plate view was unified into the mosaic view /
+    UnifiedMosaicWidget, governed solely by `display_mosaic_view`).
+    """
+
+    performance_mode: Optional[bool] = None
+    save_downsampled_well_images: Optional[bool] = None
+    display_mosaic_view: Optional[bool] = None

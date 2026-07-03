@@ -389,3 +389,91 @@ def test_autofocus_store_reference_and_correct_rest(client):
     r2 = client.post("/v1/autofocus/correct", json={})
     assert r2.json()["error"]["category"] in ("CONFIG", "AUTOFOCUS")
     assert r2.status_code in (422, 503)
+
+
+# ---- Task 11: python_exec debug endpoint + URS delta (/v1/debug/settings) ---
+
+
+def test_python_exec_disabled_by_default(client):
+    status = client.get("/v1/debug/python_exec/status")
+    assert status.json() == {"enabled": False}
+    r = client.post("/v1/debug/python_exec", json={"code": "result = 1 + 1"})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == 1005
+
+
+def test_python_exec_when_enabled(client, service):
+    service.set_python_exec_enabled(True)
+    try:
+        r = client.post("/v1/debug/python_exec", json={"code": "result = {'x': stage.get_pos().x_mm}"})
+        assert r.status_code == 200
+        assert "x" in r.json()["result"]
+    finally:
+        service.set_python_exec_enabled(False)
+
+
+def test_python_exec_bad_code_is_invalid_param_fault(client, service):
+    service.set_python_exec_enabled(True)
+    try:
+        r = client.post("/v1/debug/python_exec", json={"code": "this is not valid python"})
+        assert r.status_code == 400
+        assert r.json()["error"]["category"] == "INVALID_PARAM"
+        assert r.json()["error"]["code"] == 2002
+    finally:
+        service.set_python_exec_enabled(False)
+
+
+def test_debug_settings_view_settings_roundtrip_headless(client):
+    # client's service has NO gui attached (see fixtures above), which is exactly
+    # what's needed to exercise the headless performance_mode behavior below.
+    import control._def
+
+    original_wells = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES
+    original_mosaic = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
+    try:
+        got = client.get("/v1/debug/settings")
+        assert got.status_code == 200
+        body = got.json()
+        assert body["performance_mode"] is None  # headless -> null
+        assert body["save_downsampled_well_images"] == original_wells
+        assert body["display_mosaic_view"] == original_mosaic
+
+        flipped = {
+            "save_downsampled_well_images": not original_wells,
+            "display_mosaic_view": not original_mosaic,
+        }
+        posted = client.post("/v1/debug/settings", json=flipped)
+        assert posted.status_code == 200
+        assert posted.json()["save_downsampled_well_images"] == flipped["save_downsampled_well_images"]
+        assert posted.json()["display_mosaic_view"] == flipped["display_mosaic_view"]
+        assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES == flipped["save_downsampled_well_images"]
+        assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY == flipped["display_mosaic_view"]
+
+        got2 = client.get("/v1/debug/settings")
+        assert got2.json()["save_downsampled_well_images"] == flipped["save_downsampled_well_images"]
+        assert got2.json()["display_mosaic_view"] == flipped["display_mosaic_view"]
+
+        # Set the two settings back independently (both directions exercised).
+        restored = client.post(
+            "/v1/debug/settings",
+            json={"save_downsampled_well_images": original_wells, "display_mosaic_view": original_mosaic},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["save_downsampled_well_images"] == original_wells
+        assert restored.json()["display_mosaic_view"] == original_mosaic
+    finally:
+        control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = original_wells
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_mosaic
+
+
+def test_debug_settings_performance_mode_headless_is_config_fault(client):
+    r = client.post("/v1/debug/settings", json={"performance_mode": True})
+    assert r.status_code == 422
+    assert r.json()["error"]["category"] == "CONFIG"
+    assert r.json()["error"]["code"] == 3003
+
+
+def test_debug_settings_get_performance_mode_null_headless(client):
+    r = client.get("/v1/debug/settings")
+    assert r.status_code == 200
+    assert r.json()["performance_mode"] is None

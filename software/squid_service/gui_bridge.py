@@ -1,5 +1,7 @@
 """Qt-thread bridge for GUI side effects. Headless-safe: no-ops without a GUI."""
 
+from typing import Optional
+
 import squid.logging
 
 try:
@@ -14,6 +16,10 @@ class GuiBridge:
     def __init__(self, gui=None):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._gui = gui
+
+    @property
+    def has_gui(self) -> bool:
+        return self._gui is not None
 
     def _widget_for_type(self, widget_type: str):
         if self._gui is None:
@@ -60,3 +66,27 @@ class GuiBridge:
                 self._log.error("invokeMethod(set_acquisition_running_state) failed")
         except Exception as e:
             self._log.error(f"GUI acquisition-state update failed: {e}")
+
+    def get_performance_mode(self) -> Optional[bool]:
+        """None when headless (no GUI attached) -- callers surface this as null."""
+        if self._gui is None:
+            return None
+        return bool(getattr(self._gui, "performance_mode", False))
+
+    def set_performance_mode(self, enabled: bool) -> None:
+        """Mirrors the legacy TCP `_cmd_set_performance_mode`. Fire-and-forget
+        (CLAUDE.md-approved pattern here: no caller needs to wait for completion) --
+        schedules the toggle on the Qt main thread and returns immediately."""
+        if not QT_AVAILABLE or self._gui is None:
+            return
+        if not hasattr(self._gui, "performanceModeToggle"):
+            self._log.error("performanceModeToggle not available on GUI")
+            return
+
+        def update():
+            try:
+                self._gui.performanceModeToggle.setChecked(enabled)
+            except Exception as e:
+                self._log.error(f"GUI performance-mode toggle failed: {e}")
+
+        QTimer.singleShot(0, update)
