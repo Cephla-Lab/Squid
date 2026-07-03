@@ -5,7 +5,7 @@ starting/monitoring acquisitions, moving the stage, selecting channels, running 
 is the API used by [`scripts/run_acquisition.py`](../scripts/run_acquisition.py) and the
 [MCP bridge](mcp_integration.md); it can also be driven directly with `curl`/`httpx`/any HTTP client.
 
-> **New here? Start with the [Plate Scan Quickstart](quickstart-plate-scan.md)** — the 5-minute,
+> **New here? Start with the [API Quickstart](quickstart-api.md)** — the 5-minute,
 > copy-paste version. This document is the complete reference.
 
 ## Overview

@@ -79,5 +79,5 @@ Only turn this on when you need it — it is not sandboxed.
 
 ## Not using Claude?
 
-The same capabilities are plain HTTP — see the [Plate Scan Quickstart](quickstart-plate-scan.md)
+The same capabilities are plain HTTP — see the [API Quickstart](quickstart-api.md)
 for `curl` examples and the [`run_acquisition.py`](automation.md) CLI.
