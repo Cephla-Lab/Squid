@@ -168,6 +168,8 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --wait
 #   "scan wells A1 to B3 in brightfield and 488, then tell me when it's done"
 ```
 
+For the plain-English/Claude route, see the [Control-with-Claude Quickstart](quickstart-mcp.md).
+
 ## If something fails
 
 Every error is a structured fault you can branch on — never a bare string:

@@ -2,6 +2,10 @@
 
 This document describes how to use the Model Context Protocol (MCP) integration to control the Squid microscope from Claude Code or other MCP-compatible AI agents.
 
+> **New here? Start with the [Control-with-Claude Quickstart](quickstart-mcp.md)** — launch in
+> two clicks and drive the microscope in plain English. This document is the full reference
+> (setup options, complete tool list, fault shape, troubleshooting).
+
 ## Architecture
 
 ```
