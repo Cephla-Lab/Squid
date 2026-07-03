@@ -1,4 +1,8 @@
 """
+DEPRECATED: superseded by the Squid Core Service REST API (squid_service/, port 5060)
+and the rewritten MCP bridge. Kept for one release for external TCP clients.
+See docs/core-service-api.md. No new commands should be added here.
+
 TCP Control Server for Squid Microscope
 
 This module provides a TCP socket server that runs inside the GUI process,

@@ -94,7 +94,7 @@ Every non-2xx response body is `{"error": <Fault>}` — see [Fault model](#fault
 |--------|------|------|-------------|
 | POST | `/v1/acquisitions/preflight` | `AcquisitionRequest` | Run validation checks without starting anything |
 | POST | `/v1/acquisitions` | `AcquisitionRequest` | Start an acquisition. **202** + `Location: /v1/jobs/{id}` on acceptance |
-| GET | `/v1/jobs/last` | | Most recent job (must be requested before `/{job_id}` matches) |
+| GET | `/v1/jobs/last` | | Most recent job |
 | GET | `/v1/jobs/{job_id}` | | Job record: state, progress, result, outcome |
 | POST | `/v1/jobs/{job_id}/abort` | `{"timeout_s": float}` (optional) | Gracefully abort a running job |
 | POST | `/v1/jobs/{job_id}/emergency_stop` | | **501** |
