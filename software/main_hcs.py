@@ -166,15 +166,15 @@ if __name__ == "__main__":
         core_service = None
         core_rest_server = None
         if control._def.CORE_SERVICE_ENABLED:
-            from pathlib import Path
-
-            from squid_service.config import ServiceConfig
-            from squid_service.gui_bridge import GuiBridge
-            from squid_service.rest.app import create_app
-            from squid_service.rest.server import CoreServiceServer
-            from squid_service.service import SquidCoreService
-
             try:
+                from pathlib import Path
+
+                from squid_service.config import ServiceConfig
+                from squid_service.gui_bridge import GuiBridge
+                from squid_service.rest.app import create_app
+                from squid_service.rest.server import CoreServiceServer
+                from squid_service.service import SquidCoreService
+
                 _service_config = ServiceConfig.from_def()
                 core_service = SquidCoreService(
                     microscope=microscope,
