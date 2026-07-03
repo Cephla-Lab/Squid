@@ -163,8 +163,39 @@ if __name__ == "__main__":
         # Ensure clean shutdown of control server socket on app exit
         app.aboutToQuit.connect(control_server.stop)
 
+        core_service = None
+        core_rest_server = None
+        if control._def.CORE_SERVICE_ENABLED:
+            from pathlib import Path
+
+            from squid_service.config import ServiceConfig
+            from squid_service.gui_bridge import GuiBridge
+            from squid_service.rest.app import create_app
+            from squid_service.rest.server import CoreServiceServer
+            from squid_service.service import SquidCoreService
+
+            try:
+                _service_config = ServiceConfig.from_def()
+                core_service = SquidCoreService(
+                    microscope=microscope,
+                    multipoint_controller=win.multipointController,
+                    scan_coordinates=win.scanCoordinates,
+                    gui_bridge=GuiBridge(win),
+                    simulation=args.simulation,
+                    job_persist_path=Path("cache/last_job.json"),
+                    methods_dir=Path(_service_config.methods_dir),
+                )
+                core_rest_server = CoreServiceServer(
+                    create_app(core_service, _service_config), _service_config.host, _service_config.port
+                )
+                app.aboutToQuit.connect(core_rest_server.stop)
+            except Exception as e:
+                log.error(f"Core service setup failed; REST API unavailable: {e}")
+
         def start_control_server_if_needed():
             """Start the control server if not already running."""
+            if core_rest_server is not None and not core_rest_server.is_running():
+                core_rest_server.start()
             if not control_server.is_running():
                 control_server.start()
                 log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
@@ -200,6 +231,8 @@ if __name__ == "__main__":
                 else:
                     control_server.stop()
                     log.info("MCP control server stopped")
+                    if core_rest_server is not None:
+                        core_rest_server.stop()
 
             control_server_action.toggled.connect(on_control_server_toggled)
             settings_menu.addAction(control_server_action)
@@ -226,10 +259,14 @@ if __name__ == "__main__":
                     )
                     if reply == QMessageBox.Yes:
                         control_server.set_python_exec_enabled(True)
+                        if core_service is not None:
+                            core_service.set_python_exec_enabled(True)
                     else:
                         python_exec_action.setChecked(False)
                 else:
                     control_server.set_python_exec_enabled(False)
+                    if core_service is not None:
+                        core_service.set_python_exec_enabled(False)
 
             python_exec_action.toggled.connect(on_python_exec_toggled)
             settings_menu.addAction(python_exec_action)
