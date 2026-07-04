@@ -144,11 +144,20 @@ class RecordZStackController:
         # reproducible/auditable: acquisition_channels.yaml records objective +
         # every channel used by either phase.
         try:
+            # Dedupe by name (recording entry wins): channels are identified by
+            # name, so a channel used by both phases must not appear twice with
+            # different settings in the snapshot.
             channels = []
+            seen_names = set()
+            candidates = []
             if params.recording_enabled and params.recording_channel is not None:
-                channels.append(params.recording_channel)
+                candidates.append(params.recording_channel)
             if params.zstack_enabled:
-                channels.extend(params.zstack_channels)
+                candidates.extend(params.zstack_channels)
+            for ch in candidates:
+                if ch.name not in seen_names:
+                    seen_names.add(ch.name)
+                    channels.append(ch)
             self._microscope.config_repo.save_acquisition_output(
                 output_dir=experiment_dir,
                 objective=self._objective_store.current_objective,
