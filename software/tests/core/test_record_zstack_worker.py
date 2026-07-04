@@ -108,7 +108,7 @@ def test_record_zstack_worker_smoke(tmp_path):
         recording_channel=recording_channel,
         fps=fps,
         duration_s=duration_s,
-        recording_z_offset_um=0.0,
+        recording_bottom_z_offset_um=0.0,
         zstack_enabled=True,
         zstack_channels=zstack_channels,
         z_min_um=-1.0,
@@ -246,7 +246,7 @@ def test_record_zstack_controller_smoke(tmp_path):
         recording_channel=recording_channel,
         fps=fps,
         duration_s=duration_s,
-        recording_z_offset_um=0.0,
+        recording_bottom_z_offset_um=0.0,
         zstack_enabled=True,
         zstack_channels=zstack_channels,
         z_min_um=-1.0,
@@ -364,7 +364,7 @@ def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_ch
         recording_channel=channels[0],
         fps=10.0,
         duration_s=0.2,
-        recording_z_offset_um=0.0,
+        recording_bottom_z_offset_um=0.0,
         zstack_enabled=zstack_enabled,
         zstack_channels=list(channels[zstack_channel_slice]) if zstack_enabled else [],
         z_min_um=0.0,
@@ -754,3 +754,19 @@ def test_config_snapshot_dedupes_channels_by_name(tmp_path):
     snapshot = yaml.safe_load(open(Path(tmp_path) / params.experiment_id / "acquisition_channels.yaml"))
     names = [c["name"] for c in snapshot["channels"]]
     assert len(names) == len(set(names)), f"duplicate channel names in snapshot: {names}"
+
+
+def test_recording_plane_offsets():
+    from control.core.record_zstack_controller import recording_plane_offsets_um
+
+    assert recording_plane_offsets_um(-2.0, 3, 4.0) == [-2.0, 2.0, 6.0]
+    assert recording_plane_offsets_um(5.0, 1, 1.0) == [5.0]  # Nz=1: dz irrelevant
+
+
+def test_recording_plane_offsets_validation():
+    from control.core.record_zstack_controller import recording_plane_offsets_um
+
+    with pytest.raises(ValueError):
+        recording_plane_offsets_um(0.0, 0, 1.0)  # Nz < 1
+    with pytest.raises(ValueError):
+        recording_plane_offsets_um(0.0, 2, 0.0)  # dz <= 0 with Nz > 1
