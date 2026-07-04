@@ -1106,6 +1106,17 @@ def test_recording_offset_caption_and_build_parameters(qtbot, simulated_widget_d
     w.entry_recording_Nz.setValue(3)
     w.entry_recording_dz.setValue(4.0)
 
+    # Without Laser AF there is no reference plane to offset from: the field
+    # is hidden and its (stale) value must not reach the parameters.
+    assert not w.checkbox_laser_af.isChecked()
+    assert w.entry_recording_bottom_z.isHidden()
+    assert w.label_recording_bottom_z.isHidden()
+    assert w.build_parameters().recording_bottom_z_offset_um == 0.0
+
+    w.checkbox_laser_af.setChecked(True)
+    assert not w.entry_recording_bottom_z.isHidden()
+    assert not w.label_recording_bottom_z.isHidden()
+
     # Caption uses multi-plane wording when Nz > 1 and reverts at Nz == 1.
     assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
     w.entry_recording_Nz.setValue(1)
