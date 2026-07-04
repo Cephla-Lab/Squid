@@ -659,3 +659,43 @@ def test_probe_frame_shape_rejects_color_frames():
     fake_self = SimpleNamespace(camera=_FakeColorCamera())
     with pytest.raises(ValueError, match="monochrome"):
         RecordZStackWorker._probe_frame_shape(fake_self)
+
+
+def test_record_fails_fast_on_dropped_frames(tmp_path, monkeypatch):
+    """R2: sustained backpressure drops are the systematic slow-disk condition
+    the fail-fast was written for — record() must abort the acquisition, not
+    grind through hours of half-blank FOVs."""
+    pytest.importorskip("tensorstore")
+    import control.core.record_zstack_worker as worker_mod
+
+    class _DroppyWriter:
+        """Stand-in RecordingWriter that reports backpressure drops."""
+
+        def __init__(self, cfg, **kwargs):
+            self.dropped_count = 5
+            self.write_error_count = 0
+            self.finalize_wedged = False
+
+        def start(self):
+            pass
+
+        def enqueue(self, frame, t, c, z):
+            pass
+
+        def mark_incomplete(self, captured, expected):
+            pass
+
+        def finalize(self, timeout_s=30.0):
+            pass
+
+        def abort(self):
+            pass
+
+    monkeypatch.setattr(worker_mod, "RecordingWriter", _DroppyWriter)
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    worker.run()
+
+    assert aborted["v"] is True, "acquisition continued despite dropped recording frames"
