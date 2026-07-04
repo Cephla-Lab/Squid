@@ -770,3 +770,72 @@ def test_recording_plane_offsets_validation():
         recording_plane_offsets_um(0.0, 0, 1.0)  # Nz < 1
     with pytest.raises(ValueError):
         recording_plane_offsets_um(0.0, 2, 0.0)  # dz <= 0 with Nz > 1
+
+
+def test_recording_path_plane_naming():
+    from types import SimpleNamespace
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    fake_self = SimpleNamespace(experiment_path="/exp")
+    single = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1)
+    multi = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, plane_idx=2, n_planes=3)
+    assert single.endswith("recording/t0/B2/fov_1.ome.zarr")  # Nz=1 keeps today's name
+    assert multi.endswith("recording/t0/B2/fov_1_z2.ome.zarr")
+
+
+def test_record_multi_plane_writes_one_zarr_per_plane(tmp_path):
+    """Nz=3 → three per-plane recordings per FOV with correct names, shapes,
+    and plane metadata; Nz=1 filename compatibility is covered by the smoke test."""
+    pytest.importorskip("tensorstore")
+    import json
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    worker.params.recording_Nz = 3
+    worker.params.recording_dz_um = 2.0
+    worker.params.recording_bottom_z_offset_um = -2.0
+
+    worker.run()
+    assert not aborted["v"]
+
+    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
+    names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
+    assert names == ["fov_0_z0.ome.zarr", "fov_0_z1.ome.zarr", "fov_0_z2.ome.zarr"]
+
+    for j, name in enumerate(names):
+        meta = json.load(open(rec_dir / name / "zarr.json"))
+        squid_attrs = meta["attributes"]["_squid"]
+        assert squid_attrs["plane_index"] == j
+        assert squid_attrs["n_planes"] == 3
+        assert abs(squid_attrs["plane_z_offset_um"] - (-2.0 + j * 2.0)) < 1e-9
+        assert squid_attrs["acquisition_complete"] is True
+        assert squid_attrs["shape"][1:3] == [1, 1]  # (T,1,1,Y,X) per plane
+
+
+def test_record_multi_plane_abort_between_planes(tmp_path):
+    """Abort after the first plane completes → exactly one plane file, no error,
+    run() still finishes (state restore + done marker)."""
+    pytest.importorskip("tensorstore")
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    worker.params.recording_Nz = 3
+    worker.params.recording_dz_um = 1.0
+
+    orig = worker._record_one_plane
+
+    def record_then_abort(*args, **kwargs):
+        emitted = orig(*args, **kwargs)
+        aborted["v"] = True  # user presses Stop right after plane 0 finishes
+        return emitted
+
+    worker._record_one_plane = record_then_abort
+    worker.run()
+
+    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
+    names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
+    assert names == ["fov_0_z0.ome.zarr"], f"expected only plane 0 after abort, got {names}"
+    assert (Path(tmp_path) / "state_restore" / ".done").exists()

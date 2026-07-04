@@ -44,6 +44,7 @@ from control.core.zarr_writer import ZarrAcquisitionConfig
 from control.core.record_zstack_controller import (
     RecordZStackAcquisitionParameters,
     frame_count,
+    recording_plane_offsets_um,
     zstack_offsets_um,
     zstack_plane_count,
 )
@@ -344,24 +345,27 @@ class RecordZStackWorker(MultiPointWorkerBase):
 
     # ---------------------------------------------------------------- record
     def record(self, t_idx: int, region_id, fov_idx: int, z_ref: float) -> int:
-        """Record a continuous stream to a per-FOV recording zarr, then restore Z.
+        """Record per-plane continuous streams for this FOV, then restore Z.
 
-        Returns the number of frames emitted.
+        Plane j records at ``z_ref + recording_bottom_z_offset_um + j*recording_dz_um``
+        (one Zarr store per plane; Nz=1 keeps the historical single-plane layout
+        byte-identical to before per-plane recording existed).  The recording
+        channel, achievable fps, dataset frame count, and illumination are all
+        established once per FOV and shared across every plane.  Returns the
+        total number of frames emitted across all planes.
         """
         # Apply the recording channel (exposure/gain/illumination settings).
         rec_channel = self.params.recording_channel
         if rec_channel is not None:
             self._select_config(rec_channel)
 
-        # Move to z_ref + recording offset.
-        self._move_z_to_offset(z_ref, self.params.recording_bottom_z_offset_um)
-
         # Size the dataset, pacing, and time metadata from the fps the camera can
         # actually deliver: a camera clamped below the requested rate (exposure
         # limit, PRECISE_FRAMERATE max) can never fill fps*duration frames within
         # duration seconds — the run would stall to the timeout and leave the
         # trailing planes blank.  The mode switch happens first because toupcam
-        # resets its frame-rate strategy on mode change.
+        # resets its frame-rate strategy on mode change.  This is established
+        # once per FOV (not per plane): every plane records at the same fps.
         self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
         effective_fps = self.params.fps
         try:
@@ -374,13 +378,83 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 effective_fps = achievable_fps
         except Exception:
             log.exception("set_frame_rate probe failed; assuming the requested fps")
-
+        if effective_fps != self.params.fps:
+            # The probe requested the original fps; align the camera hint with
+            # the clamped rate every plane will actually pace/size against.
+            # Each plane's ContinuousFrameSource is already_configured=True and
+            # will not repeat this call.
+            try:
+                self.camera.set_frame_rate(effective_fps)
+            except Exception:
+                log.exception("failed to re-apply clamped frame rate")
         T = max(1, frame_count(effective_fps, self.params.duration_s))
-        out = self._recording_path(t_idx, region_id, fov_idx)
+
+        offsets = recording_plane_offsets_um(
+            self.params.recording_bottom_z_offset_um, self.params.recording_Nz, self.params.recording_dz_um
+        )
+        n_planes = len(offsets)
+
+        # The CONTINUOUS stream does not gate illumination per-frame, and
+        # set_microscope_mode only energizes illumination when live (we are not
+        # live here). Illumination stays on across all planes of this FOV (no
+        # flicker, fewer MCU commands); _record_one_plane assumes it is already
+        # energized.
+        total_emitted = 0
+        self.liveController.turn_on_illumination()
+        try:
+            for plane_idx, plane_offset_um in enumerate(offsets):
+                if plane_idx > 0 and self.abort_requested_fn():
+                    log.info(f"abort requested; skipping recording planes {plane_idx}..{n_planes - 1}")
+                    break
+                self._move_z_to_offset(z_ref, plane_offset_um)
+                total_emitted += self._record_one_plane(
+                    t_idx, region_id, fov_idx, plane_idx, n_planes, plane_offset_um, effective_fps, T
+                )
+        finally:
+            self.liveController.turn_off_illumination()
+
+        # Restore the camera to a software-trigger-friendly state and Z reference.
+        try:
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        except Exception:
+            log.exception("Failed to restore software-trigger acquisition mode after recording")
+        self.stage.move_z_to(z_ref)
+        self.wait_till_operation_is_completed()
+        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        return total_emitted
+
+    def _record_one_plane(
+        self,
+        t_idx: int,
+        region_id,
+        fov_idx: int,
+        plane_idx: int,
+        n_planes: int,
+        plane_offset_um: float,
+        effective_fps: float,
+        T: int,
+    ) -> int:
+        """Record one plane's continuous stream to its own Zarr store.
+
+        Assumes illumination is already on, the fps/mode/T setup already ran in
+        ``record()``, and the stage is already at the plane.  Returns the number
+        of frames emitted for this plane.
+        """
+        rec_channel = self.params.recording_channel
+        out = self._recording_path(t_idx, region_id, fov_idx, plane_idx=plane_idx, n_planes=n_planes)
         y, x, dtype = self._frame_shape
 
         rec_channel_name = rec_channel.name if rec_channel is not None else "REC"
         rec_color = rec_channel.display_color if rec_channel is not None else "#FFFFFF"
+        # Nz=1 keeps extra_squid_attrs=None so single-plane output metadata is
+        # byte-identical to before per-plane recording existed.
+        extra_attrs = None
+        if n_planes > 1:
+            extra_attrs = {
+                "plane_index": plane_idx,
+                "plane_z_offset_um": plane_offset_um,
+                "n_planes": n_planes,
+            }
         cfg = ZarrAcquisitionConfig(
             output_path=out,
             shape=(T, 1, 1, y, x),
@@ -392,14 +466,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
             channel_colors=[rec_color],
             channel_wavelengths=[None],
             is_hcs=False,
+            extra_squid_attrs=extra_attrs,
         )
-        if effective_fps != self.params.fps:
-            # The probe requested the original fps; align the camera hint with
-            # the clamped rate we will actually pace/size against.
-            try:
-                self.camera.set_frame_rate(effective_fps)
-            except Exception:
-                log.exception("failed to re-apply clamped frame rate")
         writer = RecordingWriter(cfg)
         cap = StreamingCapture(
             ContinuousFrameSource(self.camera, effective_fps, already_configured=True),
@@ -410,35 +478,21 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         # Generous timeout: enough to gather T frames even at a slow effective rate.
         timeout = self.params.duration_s * 3 + 5
-
-        # The CONTINUOUS stream does not gate illumination per-frame, and
-        # set_microscope_mode only energizes illumination when live (we are not
-        # live here). Turn illumination on for the whole recording, off in finally,
-        # so the recorded frames are not dark.
-        self.liveController.turn_on_illumination()
-        try:
-            emitted = cap.run(timeout=timeout)
-        finally:
-            self.liveController.turn_off_illumination()
-        log.info(f"recording done t={t_idx} region={region_id} fov={fov_idx}: {emitted}/{T} frames")
-
-        # Restore the camera to a software-trigger-friendly state and Z reference.
-        try:
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        except Exception:
-            log.exception("Failed to restore software-trigger acquisition mode after recording")
-        self.stage.move_z_to(z_ref)
-        self.wait_till_operation_is_completed()
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        # Fail fast on write errors OR a wedged drain thread: either way the
-        # cause is almost always systematic (full disk, stalled mount), so
-        # continuing would burn the timeout at every remaining FOV producing
-        # blank data.  A wedged finalize returns before errors are countable,
-        # which is why write_error_count alone is not sufficient.
-        # run() catches this, aborts, and signals finished.
+        emitted = cap.run(timeout=timeout)
+        log.info(
+            f"recording done t={t_idx} region={region_id} fov={fov_idx} "
+            f"plane={plane_idx + 1}/{n_planes}: {emitted}/{T} frames"
+        )
+        # Fail fast on write errors OR a wedged drain thread OR dropped frames:
+        # either way the cause is almost always systematic (full disk, stalled
+        # mount), so continuing would burn the timeout at every remaining
+        # plane/FOV producing blank data.  A wedged finalize returns before
+        # errors are countable, which is why write_error_count alone is not
+        # sufficient.  record() lets this propagate; run() catches it, aborts,
+        # and signals finished.
         if writer.write_error_count > 0 or writer.finalize_wedged or writer.dropped_count > 0:
             raise RuntimeError(
-                f"recording failed at t={t_idx} region={region_id} fov={fov_idx} "
+                f"recording failed at t={t_idx} region={region_id} fov={fov_idx} plane={plane_idx} "
                 f"(write errors={writer.write_error_count}, dropped={writer.dropped_count}, "
                 f"drain wedged={writer.finalize_wedged}); store sealed incomplete: {out}"
             )
@@ -583,15 +637,15 @@ class RecordZStackWorker(MultiPointWorkerBase):
             dtype = np.uint16
         return int(height), int(width), np.dtype(dtype)
 
-    def _recording_path(self, t_idx: int, region_id, fov_idx: int) -> str:
-        """Per-(t, region, fov) recording dataset path under {experiment}/recording."""
-        return os.path.join(
-            self.experiment_path,
-            "recording",
-            f"t{t_idx}",
-            str(region_id),
-            f"fov_{fov_idx}.ome.zarr",
-        )
+    def _recording_path(self, t_idx: int, region_id, fov_idx: int, plane_idx: int = 0, n_planes: int = 1) -> str:
+        """Per-(t, region, fov[, plane]) recording dataset path under {experiment}/recording.
+
+        Single-plane recordings (n_planes == 1) keep the historical
+        ``fov_{k}.ome.zarr`` name; multi-plane recordings get one store per
+        plane: ``fov_{k}_z{j}.ome.zarr``.
+        """
+        fov_name = f"fov_{fov_idx}.ome.zarr" if n_planes == 1 else f"fov_{fov_idx}_z{plane_idx}.ome.zarr"
+        return os.path.join(self.experiment_path, "recording", f"t{t_idx}", str(region_id), fov_name)
 
     def _zstack_dir(self, region_id) -> str:
         """Directory passed as ``current_path`` to the inherited capture path.
