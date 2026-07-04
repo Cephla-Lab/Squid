@@ -1094,7 +1094,7 @@ def test_recording_dz_hidden_when_nz_is_one(qtbot, simulated_widget_deps):
     assert w.label_recording_dz.isHidden()
 
 
-def test_recording_planes_label_and_build_parameters(qtbot, simulated_widget_deps):
+def test_recording_offset_caption_and_build_parameters(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
@@ -1106,10 +1106,11 @@ def test_recording_planes_label_and_build_parameters(qtbot, simulated_widget_dep
     w.entry_recording_Nz.setValue(3)
     w.entry_recording_dz.setValue(4.0)
 
-    # Label reflects the span and the per-FOV time cost (3 planes x 2 s).
-    text = w.label_recording_planes.text()
-    assert "3 planes" in text
-    assert "6.0 s" in text
+    # Caption uses multi-plane wording when Nz > 1 and reverts at Nz == 1.
+    assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
+    w.entry_recording_Nz.setValue(1)
+    assert w.label_recording_bottom_z.text() == "Z offset:"
+    w.entry_recording_Nz.setValue(3)
 
     params = w.build_parameters()
     assert params.recording_bottom_z_offset_um == -2.0
