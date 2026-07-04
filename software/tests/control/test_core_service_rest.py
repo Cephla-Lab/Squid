@@ -368,6 +368,42 @@ def test_acquisition_by_method_name_e2e(client, sim_scope, tmp_path):
     assert job["outcome"] == "SUCCESS"
 
 
+def test_acquisition_wells_method_with_z_reference_e2e(client, sim_scope, tmp_path):
+    """A method specifying wells by name, run with an explicit z_reference in the body,
+    is accepted (202) and runs to completion over REST."""
+    config = {
+        "acquisition": {"widget_type": "wellplate"},
+        "sample": {"wellplate_format": "96 well plate"},
+        "z_stack": {"nz": 1, "delta_z_mm": 0.001},
+        "time_series": {"nt": 1, "delta_t_s": 0.0},
+        "channels": [{"name": _first_channel(sim_scope)}],
+        "autofocus": {"contrast_af": False, "laser_af": False},
+        "wellplate_scan": {"scan_size_mm": 0.5, "overlap_percent": 10, "wells": "A1"},
+    }
+    created = client.post("/v1/methods", json={"name": "rest_wells_method", "config": config})
+    assert created.status_code == 201
+
+    body = {
+        "method": "rest_wells_method",
+        "experiment_id": "rest_wells_zref",
+        "z_reference": {"z_mm": 3.0},
+        "overrides": {"output_path": str(tmp_path / "out_wells")},
+    }
+    accepted = client.post("/v1/acquisitions", json=body)
+    assert accepted.status_code == 202
+    job_id = accepted.json()["job_id"]
+    assert accepted.headers["location"] == f"/v1/jobs/{job_id}"
+
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        job = client.get(f"/v1/jobs/{job_id}").json()
+        if job["state"] == "COMPLETED":
+            break
+        time.sleep(0.5)
+    assert job["state"] == "COMPLETED"
+    assert job["outcome"] == "SUCCESS"
+
+
 def test_sample_formats_endpoint(client):
     r = client.get("/v1/sample_formats")
     assert r.status_code == 200

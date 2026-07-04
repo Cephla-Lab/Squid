@@ -434,3 +434,147 @@ def test_start_acquisition_refreshes_z_range_from_current_stage_z(service, sim_s
         assert service._mpc.z_range == pytest.approx([z2, z2], abs=0.01)
     finally:
         assert service.jobs.wait(handle2["job_id"], timeout_s=120.0)
+
+
+# ---- wells-by-name method + z_reference policy (Task 16) ----------------
+
+
+def _wells_config(sim_scope, wells="A1", **overrides):
+    """A wellplate method that specifies wells by NAME (no regions)."""
+    cfg = {
+        "acquisition": {"widget_type": "wellplate"},
+        "sample": {"wellplate_format": "96 well plate"},
+        "z_stack": {"nz": 1, "delta_z_mm": 0.001},
+        "time_series": {"nt": 1, "delta_t_s": 0.0},
+        "channels": [{"name": _first_channel(sim_scope)}],
+        "autofocus": {"contrast_af": False, "laser_af": False},
+        "wellplate_scan": {"scan_size_mm": 0.5, "overlap_percent": 10, "wells": wells},
+    }
+    for section, value in overrides.items():
+        cfg[section] = {**cfg.get(section, {}), **value} if isinstance(value, dict) else value
+    return cfg
+
+
+def test_method_with_wells_e2e(service, sim_scope, tmp_path):
+    """A method specifying wells by name (no regions) runs end-to-end, and the derived
+    region X/Y match the plate-definition coordinates from well_center_mm."""
+    import control._def
+    from squid_service.wells import well_center_mm
+
+    service.create_method("wells_method", _wells_config(sim_scope, wells="A1"))
+    req = AcquisitionRequest(method="wells_method", overrides={"output_path": str(tmp_path / "wells_out")})
+    handle = service.start_acquisition(req)
+    try:
+        settings = control._def.get_wellplate_settings("96 well plate")
+        exp_x, exp_y = well_center_mm("A1", settings)
+        centers = service._scan_coordinates.region_centers
+        assert "A1" in centers
+        assert centers["A1"][0] == pytest.approx(exp_x, abs=1e-6)
+        assert centers["A1"][1] == pytest.approx(exp_y, abs=1e-6)
+    finally:
+        assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+    assert service.get_job(handle["job_id"])["outcome"] == "SUCCESS"
+
+
+def test_z_reference_z_mm_sets_z_range_and_region_z(service, sim_scope, tmp_path):
+    """z_reference={"z_mm": v} makes v the run's Z baseline: z_range[0]==v and each
+    derived region's z==v (independent of the current stage z)."""
+    service.move(MoveRequest(mode="absolute", z=1.0))  # current z deliberately != z_mm
+    z_mm = 3.0  # inside the sim Z limits [0.05, 7]
+    service.create_method("wells_zmm", _wells_config(sim_scope, wells="A1"))
+    req = AcquisitionRequest(
+        method="wells_zmm",
+        z_reference={"z_mm": z_mm},
+        overrides={"output_path": str(tmp_path / "zmm_out")},
+    )
+    handle = service.start_acquisition(req)
+    try:
+        assert service._mpc.z_range == pytest.approx([z_mm, z_mm], abs=1e-6)
+        assert service._scan_coordinates.region_centers["A1"][2] == pytest.approx(z_mm, abs=1e-6)
+    finally:
+        assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+
+
+def test_z_reference_z_mm_out_of_limits_faults_no_job(service, sim_scope, tmp_path):
+    """An out-of-limits z_mm is rejected with INVALID_PARAM_OUT_OF_RANGE (2001,
+    component stage.z) and creates no job."""
+    zmax = sim_scope.stage.get_config().Z_AXIS.MAX_POSITION
+    service.create_method("wells_bad_z", _wells_config(sim_scope, wells="A1"))
+    req = AcquisitionRequest(
+        method="wells_bad_z",
+        z_reference={"z_mm": zmax + 100.0},
+        overrides={"output_path": str(tmp_path / "badz_out")},
+    )
+    # preflight reports the failed z_reference check
+    pre = service.preflight(req)
+    assert pre["ok"] is False
+    assert any(c["name"] == "z_reference" and not c["ok"] for c in pre["checks"])
+
+    with pytest.raises(FaultError) as exc:
+        service.start_acquisition(req)
+    assert exc.value.fault.category == FaultCategory.INVALID_PARAM
+    assert exc.value.fault.code == 2001  # INVALID_PARAM_OUT_OF_RANGE
+    assert exc.value.fault.component == "stage.z"
+    assert service.jobs.active is None
+
+
+def test_z_reference_autofocus_without_reference_rejected(service, sim_scope, tmp_path):
+    """z_reference='autofocus' with laser AF enabled but no stored reference: preflight
+    reports the failed check and start_acquisition raises AUTOFOCUS_NOT_READY (8002),
+    creating no job. (Sim boots with support_laser_autofocus but no reference set.)"""
+    assert service.autofocus_status()["reference_set"] is False
+    service.create_method("wells_af", _wells_config(sim_scope, wells="A1", autofocus={"laser_af": True}))
+    req = AcquisitionRequest(
+        method="wells_af",
+        z_reference="autofocus",
+        overrides={"output_path": str(tmp_path / "af_out")},
+    )
+    pre = service.preflight(req)
+    assert pre["ok"] is False
+    assert any(c["name"] == "z_reference" and not c["ok"] for c in pre["checks"])
+
+    with pytest.raises(FaultError) as exc:
+        service.start_acquisition(req)
+    assert exc.value.fault.category == FaultCategory.AUTOFOCUS
+    assert exc.value.fault.code == 8002  # AUTOFOCUS_NOT_READY
+    assert service.jobs.active is None
+
+
+def test_z_reference_autofocus_with_af_disabled_is_invalid_param(service, sim_scope, tmp_path):
+    """z_reference='autofocus' but no AF mode enabled for the run -> INVALID_PARAM."""
+    service.create_method("wells_noaf", _wells_config(sim_scope, wells="A1"))
+    req = AcquisitionRequest(
+        method="wells_noaf",
+        z_reference="autofocus",
+        overrides={"output_path": str(tmp_path / "noaf_out")},
+    )
+    with pytest.raises(FaultError) as exc:
+        service.start_acquisition(req)
+    assert exc.value.fault.category == FaultCategory.INVALID_PARAM
+    assert exc.value.fault.code == 2002  # INVALID_PARAM_BAD_VALUE
+    assert service.jobs.active is None
+
+
+def test_z_stacking_from_center_baseline(service, sim_scope, tmp_path):
+    """FROM CENTER semantics (verified against widgets.py/multi_point_worker.py): the
+    service does NOT pre-shift z_range. z_range[0] is set to the baseline z0 and the
+    controller's z_stacking_config is set to "FROM CENTER" so the WORKER performs the
+    half-stack shift at run time (prepare_z_stack / move_z_back_after_stack). Headlessly
+    we therefore assert z_range[0]==z0 and z_stacking_config=="FROM CENTER"; the physical
+    center-at-z0 is realized by the worker's stage moves, not by a z_range midpoint.
+    """
+    z_mm = 3.0
+    cfg = _wells_config(sim_scope, wells="A1", z_stack={"nz": 3, "delta_z_mm": 0.002, "config": "FROM CENTER"})
+    service.create_method("wells_center", cfg)
+    req = AcquisitionRequest(
+        method="wells_center",
+        z_reference={"z_mm": z_mm},
+        overrides={"output_path": str(tmp_path / "center_out")},
+    )
+    handle = service.start_acquisition(req)
+    try:
+        assert service._mpc.z_stacking_config == "FROM CENTER"
+        assert service._mpc.z_range[0] == pytest.approx(z_mm, abs=1e-6)
+        assert service._mpc.z_range[1] == pytest.approx(z_mm + 0.002 * (3 - 1), abs=1e-6)
+    finally:
+        assert service.jobs.wait(handle["job_id"], timeout_s=120.0)

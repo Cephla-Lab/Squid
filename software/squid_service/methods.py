@@ -123,6 +123,7 @@ class MethodRegistry:
                 "channels": data.channel_names,
                 "objective": data.objective_name,
                 "wellplate_format": raw.get("sample", {}).get("wellplate_format"),
+                "wells": data.wells,
                 "nz": data.nz,
                 "nt": data.nt,
                 "estimated_duration_s": None,  # best-effort placeholder, documented

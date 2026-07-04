@@ -29,6 +29,7 @@ from squid_service.models import (
     IntensityRequest,
     LaserAfImageRequest,
     MoveRequest,
+    ZMillimeters,
 )
 from squid_service.state import InstrumentState, StateMachine
 from squid_service.timeutil import utc_now_iso
@@ -1088,13 +1089,16 @@ class SquidCoreService:
                     control._def.get_wellplate_settings(req.overrides.sample_format)
                 except ValueError as e:
                     raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
-            if req.overrides.wells:
+            # Region precedence (URS wells-by-name): overrides.wells -> yaml wells ->
+            # yaml regions -> fault. Both wells sources derive X/Y from the plate.
+            effective_wells = req.overrides.wells or ctx["yaml_data"].wells
+            if effective_wells:
                 fmt = req.overrides.sample_format or ctx["raw"].get("sample", {}).get(
                     "wellplate_format", "96 well plate"
                 )
                 try:
                     settings = control._def.get_wellplate_settings(fmt)
-                    for name in parse_well_names(req.overrides.wells):
+                    for name in parse_well_names(effective_wells):
                         well_center_mm(name, settings)
                 except ValueError as e:
                     raise F.FaultError(F.make_fault(F.FaultCategory.INVALID_PARAM, F.INVALID_PARAM_BAD_VALUE, str(e)))
@@ -1113,6 +1117,12 @@ class SquidCoreService:
             ("hardware", check_hardware),
             ("channels", check_channels),
             ("regions", check_regions),
+            # Effective AF flags read lazily from the parsed yaml (ctx populated by
+            # check_yaml) so the request-override precedence matches the run.
+            (
+                "z_reference",
+                self._z_reference_check(req, lambda: (ctx["yaml_data"].laser_af, ctx["yaml_data"].contrast_af)),
+            ),
             ("output_path", self._output_path_check(req, ctx)),
         ]
         return checks, ctx
@@ -1156,6 +1166,9 @@ class SquidCoreService:
             ("channels", check_channels),
             ("wellplate_format", check_wellplate_format),
             ("regions", check_regions),
+            # Grid runs carry no AF flags of their own; the base is (False, False) and
+            # only request overrides can enable AF for a z_reference="autofocus" run.
+            ("z_reference", self._z_reference_check(req, lambda: (False, False))),
             ("output_path", self._output_path_check(req, ctx)),
         ]
         return checks, ctx
@@ -1197,20 +1210,101 @@ class SquidCoreService:
         checks, ctx = self._acquisition_checks(req)
         return self._run_checks_report(checks, ctx)
 
+    # -- z-reference policy --
+
+    def _effective_af_flags(self, req: AcquisitionRequest, base_reflection: bool, base_contrast: bool):
+        """The (reflection, contrast) AF flags that will actually run, i.e. the yaml/grid
+        base with req.autofocus overrides applied (mirrors _apply_autofocus_override)."""
+        reflection, contrast = base_reflection, base_contrast
+        if req.autofocus:
+            if req.autofocus.reflection is not None:
+                reflection = req.autofocus.reflection
+            if req.autofocus.contrast is not None:
+                contrast = req.autofocus.contrast
+        return reflection, contrast
+
+    def _z_reference_check(self, req: AcquisitionRequest, base_flags_fn):
+        """Build the named ``z_reference`` preflight check for this request.
+
+        ``base_flags_fn`` returns the run's base (reflection, contrast) AF flags; it is
+        called lazily so a yaml-backed run can read the parsed flags from ``ctx``.
+        """
+
+        def check_z_reference():
+            zref = req.z_reference
+            if isinstance(zref, ZMillimeters):
+                zcfg = self._microscope.stage.get_config().Z_AXIS
+                if not (zcfg.MIN_POSITION <= zref.z_mm <= zcfg.MAX_POSITION):
+                    raise F.FaultError(
+                        F.make_fault(
+                            F.FaultCategory.INVALID_PARAM,
+                            F.INVALID_PARAM_OUT_OF_RANGE,
+                            f"z_reference.z_mm {zref.z_mm} outside stage Z limits "
+                            f"[{zcfg.MIN_POSITION}, {zcfg.MAX_POSITION}]",
+                            component="stage.z",
+                            detail={"z_mm": zref.z_mm, "min": zcfg.MIN_POSITION, "max": zcfg.MAX_POSITION},
+                        )
+                    )
+            elif zref == "autofocus":
+                reflection, contrast = self._effective_af_flags(req, *base_flags_fn())
+                if not (reflection or contrast):
+                    raise F.FaultError(
+                        F.make_fault(
+                            F.FaultCategory.INVALID_PARAM,
+                            F.INVALID_PARAM_BAD_VALUE,
+                            "z_reference='autofocus' requires an autofocus mode enabled for this run "
+                            "(set autofocus.reflection/contrast or the method's laser_af/contrast_af)",
+                            component="z_reference",
+                        )
+                    )
+                if reflection and not self.autofocus_status()["reference_set"]:
+                    raise F.FaultError(
+                        F.make_fault(
+                            F.FaultCategory.AUTOFOCUS,
+                            F.AUTOFOCUS_NOT_READY,
+                            "z_reference='autofocus' requires a stored reflection-AF reference; "
+                            "store one (POST /v1/autofocus/store_reference) before acquiring",
+                            component="autofocus",
+                        )
+                    )
+                if not reflection and getattr(self._mpc, "autofocusController", None) is None:
+                    raise F.FaultError(
+                        F.make_fault(
+                            F.FaultCategory.AUTOFOCUS,
+                            F.AUTOFOCUS_NOT_READY,
+                            "z_reference='autofocus' requires the contrast-autofocus controller, "
+                            "which is not attached to this service",
+                            component="autofocus",
+                        )
+                    )
+            # "current": nothing to validate; z0 comes from the stage at run start.
+
+        return check_z_reference
+
+    def _resolve_z_reference(self, req: AcquisitionRequest) -> float:
+        """Return the Z baseline z0 for this run. z_mm limits are already enforced by
+        the ``z_reference`` preflight check that runs before this in start_acquisition."""
+        zref = req.z_reference
+        if isinstance(zref, ZMillimeters):
+            return zref.z_mm
+        # "current" and "autofocus" both baseline on the current stage z.
+        return self._microscope.stage.get_pos().z_mm
+
     # -- controller configuration --
 
-    def _configure_regions(self, yaml_data, raw: dict, wells_override, sample_format_override) -> None:
+    def _configure_regions(self, yaml_data, raw: dict, wells_override, sample_format_override, z0: float) -> None:
         import control._def
 
         sc = self._scan_coordinates
         sc.clear_regions()
-        current_z = self._microscope.stage.get_pos().z_mm
         scan_size = yaml_data.scan_size_mm or 2.0
         shape = yaml_data.scan_shape or "Square"
-        if wells_override:
+        # Region precedence: overrides.wells -> yaml wells -> explicit yaml regions.
+        effective_wells = wells_override or yaml_data.wells
+        if effective_wells:
             fmt = sample_format_override or raw.get("sample", {}).get("wellplate_format", "96 well plate")
             settings = control._def.get_wellplate_settings(fmt)
-            for name in parse_well_names(wells_override):
+            for name in parse_well_names(effective_wells):
                 x, y = well_center_mm(name, settings)
                 sc.add_region(
                     well_id=name,
@@ -1221,7 +1315,7 @@ class SquidCoreService:
                     shape=shape,
                 )
                 if name in sc.region_centers:
-                    sc.region_centers[name][2] = current_z
+                    sc.region_centers[name][2] = z0
         else:
             for region in yaml_data.wellplate_regions:
                 name = region.get("name", "region")
@@ -1235,15 +1329,14 @@ class SquidCoreService:
                     shape=region.get("shape", shape),
                 )
                 if name in sc.region_centers:
-                    sc.region_centers[name][2] = center[2] if len(center) > 2 else current_z
+                    sc.region_centers[name][2] = center[2] if len(center) > 2 else z0
         sc.sort_coordinates()
 
-    def _configure_grid_regions(self, grid) -> None:
+    def _configure_grid_regions(self, grid, z0: float) -> None:
         import control._def
 
         sc = self._scan_coordinates
         sc.clear_regions()
-        current_z = self._microscope.stage.get_pos().z_mm
         settings = control._def.get_wellplate_settings(grid.wellplate_format)
         for name in parse_well_names(grid.wells):
             x, y = well_center_mm(name, settings)
@@ -1251,17 +1344,24 @@ class SquidCoreService:
                 region_id=name,
                 center_x=x,
                 center_y=y,
-                center_z=current_z,
+                center_z=z0,
                 Nx=grid.nx,
                 Ny=grid.ny,
                 overlap_percent=grid.overlap_percent,
             )
         sc.sort_coordinates()
 
-    def _reset_z_range_and_focus_map(self, nz: int, delta_z_um: float) -> None:
-        """Mirror the GUI's pre-run path (widgets.py toggle_acquisition ~6472-6487 /
-        ~8826-8849): derive z_range from the *current* stage z on every run and clear
-        any focus-map state left over from a prior GUI/API acquisition.
+    def _reset_z_range_and_focus_map(self, z0: float, nz: int, delta_z_um: float) -> None:
+        """Set z_range from the resolved baseline z0 and clear focus-map state.
+
+        Mirrors the GUI's pre-run path (widgets.py toggle_acquisition ~6472-6487): the
+        GUI ALWAYS sets z_range = (baseline_z, baseline_z + span) regardless of
+        z_stacking_config -- i.e. z_range[0] is the baseline and the FROM CENTER / FROM
+        TOP shifts are performed by the worker at run time (multi_point_worker.py:
+        initialize_z_stack moves to z_range[0]; prepare_z_stack / move_z_back_after_stack
+        do the FROM CENTER half-stack shift per FOV). So we deliberately do NOT pre-shift
+        z_range for FROM CENTER here -- that would double-shift. The caller sets the
+        controller's z_stacking_config so the worker applies the shift.
 
         MultiPointController.run_acquisition only derives z_range when it is None
         (multi_point_controller.py:701), so without this the first run's range would
@@ -1270,13 +1370,12 @@ class SquidCoreService:
         we clear focus_map/gen_focus_map/use_manual_focus_map outright to prevent a
         stale focus map from a GUI session from bleeding into an API acquisition.
         """
-        z = self._microscope.stage.get_pos().z_mm
-        self._mpc.set_z_range(z, z + delta_z_um / 1000.0 * (nz - 1))
+        self._mpc.set_z_range(z0, z0 + delta_z_um / 1000.0 * (nz - 1))
         self._mpc.set_focus_map(None)
         self._mpc.gen_focus_map = False
         self._mpc.use_manual_focus_map = False
 
-    def _configure_controller(self, yaml_data) -> None:
+    def _configure_controller(self, yaml_data, z0: float) -> None:
         self._mpc.set_NX(1)
         self._mpc.set_NY(1)
         self._mpc.set_NZ(yaml_data.nz)
@@ -1286,10 +1385,15 @@ class SquidCoreService:
         self._mpc.do_autofocus = yaml_data.contrast_af
         self._mpc.do_reflection_af = yaml_data.laser_af
         self._mpc.use_piezo = yaml_data.use_piezo
+        # Honor the method's z_stacking_config so the worker applies FROM CENTER / FROM
+        # TOP shifts (the API path previously left this at the controller default).
+        self._mpc.z_stacking_config = yaml_data.z_stacking_config
         self._mpc.set_selected_configurations(yaml_data.channel_names)
-        self._reset_z_range_and_focus_map(yaml_data.nz, yaml_data.delta_z_um)
+        self._reset_z_range_and_focus_map(z0, yaml_data.nz, yaml_data.delta_z_um)
 
-    def _configure_grid_controller(self, grid) -> None:
+    def _configure_grid_controller(self, grid, z0: float) -> None:
+        import control._def
+
         self._mpc.set_NX(1)
         self._mpc.set_NY(1)
         self._mpc.set_NZ(1)
@@ -1299,8 +1403,9 @@ class SquidCoreService:
         self._mpc.do_autofocus = False
         self._mpc.do_reflection_af = False
         self._mpc.use_piezo = False
+        self._mpc.z_stacking_config = control._def.Z_STACKING_CONFIG  # single plane; reset any stale value
         self._mpc.set_selected_configurations(grid.channels)
-        self._reset_z_range_and_focus_map(1, 0.0)  # grid mode: single z plane -> (z, z)
+        self._reset_z_range_and_focus_map(z0, 1, 0.0)  # grid mode: single z plane -> (z0, z0)
 
     def _apply_autofocus_override(self, req: AcquisitionRequest) -> None:
         """URS API-ACQ-003: request overrides beat both YAML and grid defaults."""
@@ -1359,18 +1464,21 @@ class SquidCoreService:
                 raise F.FaultError(self._record_fault(e.fault))
             base_path = ctx["base_path"]
 
+            # Resolve the Z baseline z0 for this run (z_reference policy). z_mm limits
+            # were already enforced by the z_reference check above.
+            z0 = self._resolve_z_reference(req)
             if req.grid is not None:
                 grid = req.grid
-                self._configure_grid_regions(grid)
-                self._configure_grid_controller(grid)
+                self._configure_grid_regions(grid, z0)
+                self._configure_grid_controller(grid, z0)
                 channel_count = len(grid.channels)
                 nz, nt = 1, 1
                 source = "grid"
                 yaml_data = None
             else:
                 yaml_data, raw = ctx["yaml_data"], ctx["raw"]
-                self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format)
-                self._configure_controller(yaml_data)
+                self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format, z0)
+                self._configure_controller(yaml_data, z0)
                 channel_count = len(yaml_data.channel_names)
                 nz, nt = yaml_data.nz, yaml_data.nt
                 source = req.method if req.method is not None else req.yaml_path
