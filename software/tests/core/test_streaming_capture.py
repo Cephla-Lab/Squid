@@ -529,3 +529,82 @@ def test_recording_writer_byte_bound_drops(tmp_path, monkeypatch):
     release.set()
     rw.finalize(timeout_s=2.0)
     assert dropped >= 3, f"byte cap not enforced: only {dropped} frames dropped"
+
+
+def test_dropped_frames_seal_store_incomplete(tmp_path, monkeypatch):
+    """Round-2: frames dropped by backpressure leave fill-value holes, so the
+    store must NOT be sealed acquisition_complete=True (CountStop still counts
+    routed frames, so the completeness attribute was lying)."""
+    import threading
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(10))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: calls.append("finalize"))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: calls.append("abort"))
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=1)
+    rw.start()
+    for i in range(4):  # first wedges in write, second queues, rest drop
+        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+    assert rw.dropped_count > 0
+    release.set()
+    rw.finalize(timeout_s=5.0)
+
+    assert calls == ["abort"], f"store with dropped frames sealed via {calls}, expected incomplete seal"
+    assert rw.finalize_wedged is False
+
+
+def test_finalize_wedged_flag_feeds_fail_fast(tmp_path, monkeypatch):
+    """Round-2: when finalize() takes the wedged-drain fallback it returns with
+    the drain thread still running — the caller's write_error_count check reads
+    0 and the fail-fast never fires.  The writer must expose the wedged state."""
+    import threading
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
+    rw.start()
+    for i in range(3):
+        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+    rw.finalize(timeout_s=1.0)  # sentinel can't be queued -> wedged fallback
+    still_wedged = rw.finalize_wedged
+    release.set()
+    assert still_wedged is True
+
+
+def test_finalize_total_time_respects_timeout_budget(tmp_path, monkeypatch):
+    """Round-2: the sentinel put and the join must share ONE timeout budget —
+    a late-accepted sentinel followed by a full-length join blocked callers
+    for up to ~2x timeout_s."""
+    import time as _time
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: _time.sleep(0.95))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
+    rw.start()
+    # f0 wedges the drain mid-write; f1+f2 then fill the queue, so the sentinel
+    # is accepted LATE (~0.75s into the 1.0s put deadline) — the join must use
+    # only the remaining budget, not a fresh full timeout.
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    _time.sleep(0.2)  # let the drain thread take f0 and start the slow write
+    rw.enqueue(np.zeros((4, 4), np.uint16), 1, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 2, 0, 0)
+    t0 = _time.monotonic()
+    rw.finalize(timeout_s=1.0)
+    took = _time.monotonic() - t0
+    assert took < 1.5, f"finalize(timeout_s=1.0) blocked {took:.1f}s — put+join must share one budget"

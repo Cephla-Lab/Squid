@@ -998,3 +998,26 @@ def test_refresh_channel_list_drops_stale_zstack_rows(qtbot, simulated_widget_de
     w.refresh_channel_list()
 
     assert "BF LED matrix full" not in w._zstack_channel_names
+
+
+def test_refresh_channel_list_preserves_state_on_failure(qtbot, simulated_widget_deps):
+    """Round-2: a transient get_channels failure (or empty result) during an
+    objective/profile switch must NOT wipe the user's configured z-stack rows
+    and channel combos — keep the existing lists until a successful refresh."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w._add_zstack_channel_row("BF LED matrix full")
+    combo_count_before = w._recording_ch_combo.count()
+
+    w.liveController.get_channels.side_effect = RuntimeError("config repo hiccup")
+    w.refresh_channel_list()
+    assert w._zstack_channel_names == ["BF LED matrix full"], "rows wiped on transient failure"
+    assert w._recording_ch_combo.count() == combo_count_before, "combo wiped on transient failure"
+
+    w.liveController.get_channels.side_effect = None
+    w.liveController.get_channels.return_value = []
+    w.refresh_channel_list()
+    assert w._zstack_channel_names == ["BF LED matrix full"], "rows wiped on empty channel list"
+    assert w._recording_ch_combo.count() == combo_count_before
