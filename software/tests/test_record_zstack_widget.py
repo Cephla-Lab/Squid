@@ -952,3 +952,15 @@ def test_toggle_acquisition_calls_update_scan_regions_before_run(qtbot, simulate
     assert "set_well_coordinates" in call_order
     assert "run_acquisition" in call_order
     assert call_order.index("set_well_coordinates") < call_order.index("run_acquisition")
+
+
+def test_emit_selected_channels_is_a_safe_noop(qtbot, simulated_widget_deps):
+    """gui_hcs.onTabChanged duck-types emit_selected_channels() on whichever record
+    tab widget becomes current; the widget must provide it (same contract as
+    display_progress_bar) or every switch to the tab raises AttributeError."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.emit_selected_channels()  # must not raise
