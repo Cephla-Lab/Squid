@@ -17294,7 +17294,9 @@ class RecordZStackMultiPointWidget(QFrame):
         table_row.addStretch(1)
         vbox.addLayout(table_row)
 
-        # Row 1: Nz | FPS + Duration | computed planes/time summary
+        # Single row: Nz | Z offset (+ dz when Nz > 1) | FPS + Duration.
+        # dz is hidden when Nz == 1, and the offset caption switches between
+        # "Z offset" (Nz == 1) and "Bottom Z offset" (Nz > 1).
         def _vline() -> QFrame:
             line = QFrame()
             line.setFrameShape(QFrame.VLine)
@@ -17312,6 +17314,34 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_Nz.setMaximumWidth(70)
         self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
         fps_row.addWidget(self.entry_recording_Nz)
+
+        fps_row.addSpacing(4)
+        self.label_recording_bottom_z = QLabel("Z offset:")
+        fps_row.addWidget(self.label_recording_bottom_z)
+        self.entry_recording_bottom_z = QDoubleSpinBox()
+        self.entry_recording_bottom_z.setRange(-500.0, 500.0)
+        self.entry_recording_bottom_z.setDecimals(1)
+        self.entry_recording_bottom_z.setSingleStep(0.5)
+        self.entry_recording_bottom_z.setValue(0.0)
+        self.entry_recording_bottom_z.setSuffix(" µm")
+        self.entry_recording_bottom_z.setKeyboardTracking(False)
+        self.entry_recording_bottom_z.setMaximumWidth(95)
+        self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
+        fps_row.addWidget(self.entry_recording_bottom_z)
+
+        fps_row.addSpacing(4)
+        self.label_recording_dz = QLabel("dz:")
+        fps_row.addWidget(self.label_recording_dz)
+        self.entry_recording_dz = QDoubleSpinBox()
+        self.entry_recording_dz.setRange(0.05, 100.0)
+        self.entry_recording_dz.setDecimals(2)
+        self.entry_recording_dz.setSingleStep(0.5)
+        self.entry_recording_dz.setValue(1.0)
+        self.entry_recording_dz.setSuffix(" µm")
+        self.entry_recording_dz.setKeyboardTracking(False)
+        self.entry_recording_dz.setMaximumWidth(95)
+        self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
+        fps_row.addWidget(self.entry_recording_dz)
 
         fps_row.addSpacing(4)
         fps_row.addWidget(_vline())
@@ -17338,41 +17368,6 @@ class RecordZStackMultiPointWidget(QFrame):
 
         fps_row.addStretch(1)
         vbox.addLayout(fps_row)
-
-        # Row 2: Z offset (caption becomes "Bottom Z offset" when Nz > 1) | dz
-        # (dz hidden when Nz == 1)
-        plane_row = QHBoxLayout()
-        plane_row.setSpacing(4)
-
-        self.label_recording_bottom_z = QLabel("Z offset:")
-        plane_row.addWidget(self.label_recording_bottom_z)
-        self.entry_recording_bottom_z = QDoubleSpinBox()
-        self.entry_recording_bottom_z.setRange(-500.0, 500.0)
-        self.entry_recording_bottom_z.setDecimals(1)
-        self.entry_recording_bottom_z.setSingleStep(0.5)
-        self.entry_recording_bottom_z.setValue(0.0)
-        self.entry_recording_bottom_z.setSuffix(" µm")
-        self.entry_recording_bottom_z.setKeyboardTracking(False)
-        self.entry_recording_bottom_z.setMaximumWidth(95)
-        self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
-        plane_row.addWidget(self.entry_recording_bottom_z)
-
-        plane_row.addSpacing(4)
-        self.label_recording_dz = QLabel("dz:")
-        plane_row.addWidget(self.label_recording_dz)
-        self.entry_recording_dz = QDoubleSpinBox()
-        self.entry_recording_dz.setRange(0.05, 100.0)
-        self.entry_recording_dz.setDecimals(2)
-        self.entry_recording_dz.setSingleStep(0.5)
-        self.entry_recording_dz.setValue(1.0)
-        self.entry_recording_dz.setSuffix(" µm")
-        self.entry_recording_dz.setKeyboardTracking(False)
-        self.entry_recording_dz.setMaximumWidth(95)
-        self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
-        plane_row.addWidget(self.entry_recording_dz)
-
-        plane_row.addStretch(1)
-        vbox.addLayout(plane_row)
 
         # Wire up dz-visibility / caption updates (both driven by Nz alone)
         self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
