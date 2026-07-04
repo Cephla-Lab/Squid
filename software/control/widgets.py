@@ -17727,6 +17727,13 @@ class RecordZStackMultiPointWidget(QFrame):
                         return ch.model_copy(deep=True)
             except Exception:
                 pass
+            # The fallback has no illumination-source mapping, so the acquisition
+            # would run dark — warn loudly so the cause is diagnosable.
+            self._log.warning(
+                f"channel {name!r} not found for objective "
+                f"{getattr(self.objectiveStore, 'current_objective', '?')!r}; "
+                f"using a bare fallback with no illumination mapping (images may be dark)"
+            )
             return AcquisitionChannel(
                 name=name,
                 camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
@@ -17835,6 +17842,28 @@ class RecordZStackMultiPointWidget(QFrame):
         """
         self.btn_startAcquisition.setChecked(False)
         self.signal_acquisition_started.emit(False)
+
+    def refresh_channel_list(self) -> None:
+        """Repopulate the channel combos from liveController.
+
+        Channel sets are per-objective (and per-profile): after an objective or
+        profile change, stale names would silently fall back to a bare-bones
+        channel with no illumination source and acquire dark images.  Mirrors
+        WellplateMultiPointWidget.refresh_channel_list.  The previous recording
+        selection is kept when it still exists; z-stack rows whose channel no
+        longer exists are removed.
+        """
+        prev_recording = self._recording_channel_name()
+        self._populate_channel_combo(self._recording_ch_combo)
+        if prev_recording:
+            idx = self._recording_ch_combo.findText(prev_recording)
+            if idx >= 0:
+                self._recording_ch_combo.setCurrentIndex(idx)
+        self._populate_channel_combo(self.combobox_zstack_add_channel)
+        available = {self._recording_ch_combo.itemText(i) for i in range(self._recording_ch_combo.count())}
+        for name in [n for n in self._zstack_channel_names if n not in available]:
+            self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")
+            self._remove_zstack_channel_row(name)
 
     def emit_selected_channels(self) -> None:
         """No-op stub: RecordZStackMultiPointWidget has no channel list to broadcast.

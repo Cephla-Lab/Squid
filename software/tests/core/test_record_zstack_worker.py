@@ -501,3 +501,102 @@ def test_recording_uses_achievable_fps_when_camera_clamps(tmp_path):
         f"time_increment_s={squid_attrs['time_increment_s']} does not match the "
         f"achievable rate (1/{achievable:.2f})"
     )
+
+
+def test_move_xy_honors_z_component():
+    """F11: (x, y, z) scan coordinates carry a stored per-FOV focus plane
+    (flexible regions, update_fov_z); dropping z means recording/z-stacking at
+    the previous FOV's focus on tilted samples."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    stage = MagicMock()
+    fake_self = SimpleNamespace(stage=stage, _sleep=lambda s: None, wait_till_operation_is_completed=lambda: None)
+    RecordZStackWorker._move_xy(fake_self, (1.0, 2.0, 3.5))
+    stage.move_x_to.assert_called_once_with(1.0)
+    stage.move_y_to.assert_called_once_with(2.0)
+    stage.move_z_to.assert_called_once_with(3.5)
+
+
+def test_move_xy_two_tuple_does_not_move_z():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    stage = MagicMock()
+    fake_self = SimpleNamespace(stage=stage, _sleep=lambda s: None, wait_till_operation_is_completed=lambda: None)
+    RecordZStackWorker._move_xy(fake_self, (1.0, 2.0))
+    stage.move_z_to.assert_not_called()
+
+
+def test_wait_for_dt_paces_from_acquisition_start(tmp_path):
+    """F12: dt is the interval between timepoint STARTS (t0 + k*dt, matching
+    MultiPointWorker and the recorded time_increment_s metadata), not a wait
+    appended after each timepoint's work."""
+    import time as _time
+
+    pytest.importorskip("tensorstore")
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    worker.params.dt_s = 2.0
+    worker._acq_start_time = _time.time() - 100.0  # the work already overran the interval
+
+    t0 = _time.monotonic()
+    ok = worker._wait_for_dt(1)
+    took = _time.monotonic() - t0
+
+    assert ok
+    assert took < 1.0, f"_wait_for_dt slept {took:.1f}s though t=1's start time is long past"
+
+
+def test_controller_writes_config_snapshot_and_done_file(tmp_path):
+    """F15: every experiment dir must carry the settings snapshot
+    (acquisition_channels.yaml) and completion marker (.done) that every
+    multipoint acquisition produces — downstream watchers depend on both."""
+    pytest.importorskip("tensorstore")
+    import control._def
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import (
+        RecordZStackAcquisitionParameters,
+        RecordZStackController,
+    )
+
+    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+    scope = _build_simulated_microscope(64, 48)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
+    laser_af = ts.get_test_laser_autofocus_controller(scope)
+    channels = live_controller.get_channels(scope.objective_store.default_objective)
+    scope.camera.set_exposure_time(1)
+
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=None,  # no FOVs — completion bookkeeping is what's under test
+        callbacks=NoOpCallbacks,
+    )
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="bookkeeping",
+        Nt=1,
+        recording_enabled=True,
+        recording_channel=channels[0],
+        fps=10.0,
+        duration_s=0.2,
+    )
+    try:
+        controller.run_acquisition(params)
+        controller.join(timeout=60)
+    finally:
+        controller.close()
+
+    exp = Path(params.base_path) / params.experiment_id
+    assert exp.is_dir()
+    assert (exp / "acquisition_channels.yaml").exists(), "settings snapshot missing from experiment dir"
+    assert (exp / ".done").exists(), "completion marker missing from experiment dir"

@@ -1650,6 +1650,10 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(
                 self.wellplateMultiPointWidget.handle_objective_change
             )
+        if ENABLE_RECORDING and self.recordZStackWidget is not None:
+            # Channel sets are per-objective: repopulate the tab's channel combos
+            # so stale names don't fall back to a no-illumination bare channel.
+            self.objectivesWidget.signal_objective_changed.connect(self.recordZStackWidget.refresh_channel_list)
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
@@ -2395,6 +2399,8 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.refresh_channel_list()
         if self.multiPointWithFluidicsWidget:
             self.multiPointWithFluidicsWidget.refresh_channel_list()
+        if self.recordZStackWidget is not None:
+            self.recordZStackWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
@@ -2895,6 +2901,15 @@ class HighContentScreeningGui(QMainWindow):
                 self.multipointController.close()
             except Exception:
                 self.log.exception(f"Error closing multipoint controller during {context}")
+
+        # Clean up record+z-stack controller: aborts any running acquisition and
+        # shuts down its JobRunner subprocess so Zarr writers finalize instead of
+        # being killed mid-write (corrupted store).
+        if getattr(self, "recordZStackController", None) is not None:
+            try:
+                self.recordZStackController.close()
+            except Exception:
+                self.log.exception(f"Error closing record z-stack controller during {context}")
 
         # Clean up NDViewer
         if self.ndviewerTab is not None:

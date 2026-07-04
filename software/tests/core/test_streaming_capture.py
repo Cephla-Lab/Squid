@@ -505,3 +505,27 @@ def test_recording_router_still_downsamples_faster_camera():
     stamps = [100.0 + i * 0.05 for i in range(20)]  # 20 fps camera, 10 fps target
     accepted = [s for s in stamps if r.route(s) is not None]
     assert len(accepted) == 10, f"expected 10/20 accepted, got {len(accepted)}"
+
+
+def test_recording_writer_byte_bound_drops(tmp_path, monkeypatch):
+    """F7: the queue must bound MEMORY, not just frame count — 256 full-res
+    16-bit frames is ~13 GB.  Frames beyond max_bytes drop like a full queue."""
+    import threading
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+
+    frame = np.zeros((100, 100), np.uint16)  # 20 kB each
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=256, max_bytes=50_000)
+    rw.start()
+    for i in range(6):  # 120 kB total >> 50 kB cap; first frame wedges in write
+        rw.enqueue(frame, i, 0, 0)
+    dropped = rw.dropped_count
+    release.set()
+    rw.finalize(timeout_s=2.0)
+    assert dropped >= 3, f"byte cap not enforced: only {dropped} frames dropped"
