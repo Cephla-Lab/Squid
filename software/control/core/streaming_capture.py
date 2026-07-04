@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -25,19 +26,29 @@ class CountStop:
 
 
 class RecordingRouter:
-    """Maps incoming frames to (t,c,z)=(t_index,0,0), downsampling to `fps`."""
+    """Maps incoming frames to (t,c,z)=(t_index,0,0), downsampling to `fps`.
+
+    Emission slots are anchored to the FIRST frame's timestamp (slot k opens at
+    ``first_ts + k*period``), not to the previous emission: with the camera
+    running at the target rate, host-side delivery jitter around the period
+    would otherwise reject roughly alternate frames and halve the effective
+    capture rate.  A quarter-period tolerance absorbs per-frame jitter, and
+    absolute slots self-correct — one late frame never delays later slots, so
+    the long-run rate stays at ``fps``.
+    """
 
     def __init__(self, fps: float):
-        self._min_period = 1.0 / fps if fps and fps > 0 else 0.0
+        self._period = 1.0 / fps if fps and fps > 0 else 0.0
         self._t_index = 0
-        self._last_emit_ts: Optional[float] = None
+        self._first_ts: Optional[float] = None
 
     def route(self, timestamp: float) -> Optional[Tuple[int, int, int]]:
-        if self._last_emit_ts is not None and (timestamp - self._last_emit_ts) < self._min_period - 1e-9:
+        if self._first_ts is None:
+            self._first_ts = timestamp
+        elif self._period > 0 and (timestamp - self._first_ts) < (self._t_index - 0.25) * self._period:
             return None
         idx = (self._t_index, 0, 0)
         self._t_index += 1
-        self._last_emit_ts = timestamp
         return idx
 
 
@@ -61,6 +72,7 @@ class RecordingWriter:
         self._q: "queue.Queue" = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._dropped = 0
+        self._write_errors = 0
         self._abort_requested = threading.Event()
         # True only once the drain thread has actually been started.  finalize()/
         # abort() must not join (or push the sentinel to) a thread that never
@@ -119,9 +131,19 @@ class RecordingWriter:
                 try:
                     self._writer.write_frame(frame, t=t, c=c, z=z)
                 except Exception as e:
+                    self._write_errors += 1
                     _log.error(f"recording write_frame failed t={t}: {e}")
         finally:
             if self._abort_requested.is_set():
+                self._writer.abort()
+            elif self._write_errors > 0:
+                # Never stamp acquisition_complete=True on a store with failed
+                # writes: the missing planes are silent fill values.  abort()
+                # seals it acquisition_complete=False so readers can tell.
+                _log.error(
+                    f"{self._write_errors} write error(s) during recording; "
+                    f"sealing store as incomplete instead of complete"
+                )
                 self._writer.abort()
             else:
                 self._writer.finalize()
@@ -131,14 +153,39 @@ class RecordingWriter:
         """Total frames dropped due to a full queue (diagnosable in slow-disk runs)."""
         return self._dropped
 
-    def finalize(self) -> None:
-        """Flush the queue, join the drain thread (which finalizes the ZarrWriter)."""
+    @property
+    def write_error_count(self) -> int:
+        """Total write_frame failures on the drain thread (0 on a healthy run)."""
+        return self._write_errors
+
+    def finalize(self, timeout_s: float = 30.0) -> None:
+        """Flush the queue, join the drain thread (which seals the ZarrWriter).
+
+        The sentinel push is bounded: with the drain thread wedged inside a
+        stalled write and the queue full, a bare ``put`` would block the
+        acquisition thread forever (the join timeout below would never be
+        reached).  After ``timeout_s`` of no queue space, fall back to the
+        abort path and return — the daemon drain thread seals the store
+        whenever the stalled write finally returns.
+        """
         if not self._started:
             # start() never got the thread running (e.g. initialize() raised).
             # Nothing to flush or join; let the original error propagate.
             return
-        self._q.put(_SENTINEL)
-        self._thread.join(timeout=30.0)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                self._q.put(_SENTINEL, timeout=min(1.0, max(0.1, timeout_s)))
+                break
+            except queue.Full:
+                if time.monotonic() >= deadline:
+                    _log.error(
+                        f"drain thread wedged (queue full for {timeout_s:.0f}s); "
+                        f"switching to abort — recording will be sealed incomplete"
+                    )
+                    self._abort_requested.set()
+                    return
+        self._thread.join(timeout=timeout_s)
         if self._thread.is_alive():
             _log.warning("drain thread still alive after finalize() join timeout")
 
@@ -250,7 +297,20 @@ class StreamingCapture:
         self._writer.start()
         try:
             self._source.start(self._on_frame)
-            self._done.wait(timeout)  # FakeSource sets _done synchronously; real camera via callback
+            # Poll abort_fn while waiting: the frame callback also samples it, but
+            # if the camera delivers no frames at all (stall, misconfigured
+            # trigger) the callback never runs and a bare wait(timeout) would
+            # ignore Stop for the full timeout — and then seal the store as
+            # complete.  (FakeSource sets _done synchronously; the first wait()
+            # returns immediately in that case.)
+            deadline = (time.monotonic() + timeout) if timeout is not None else None
+            while not self._done.wait(0.2):
+                if self._abort_fn():
+                    self._aborted = True
+                    self._done.set()
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
         finally:
             # Assumes source.stop() quiesces the camera delivery thread. With cameras
             # that don't join their callback thread on stop, a final in-flight frame may
