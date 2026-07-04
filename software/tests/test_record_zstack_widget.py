@@ -964,3 +964,37 @@ def test_emit_selected_channels_is_a_safe_noop(qtbot, simulated_widget_deps):
     qtbot.addWidget(w)
 
     w.emit_selected_channels()  # must not raise
+
+
+def test_refresh_channel_list_repopulates_combos(qtbot, simulated_widget_deps):
+    """Channel sets are per-objective: after an objective/profile change the
+    combos must repopulate, or stale names silently fall back to a bare
+    channel with no illumination source (dark acquisition)."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.liveController.get_channels.return_value = [
+        _make_channel("New Channel A"),
+        _make_channel("New Channel B"),
+    ]
+    w.refresh_channel_list()
+
+    rec_names = [w._recording_ch_combo.itemText(i) for i in range(w._recording_ch_combo.count())]
+    add_names = [w.combobox_zstack_add_channel.itemText(i) for i in range(w.combobox_zstack_add_channel.count())]
+    assert rec_names == ["New Channel A", "New Channel B"]
+    assert add_names == ["New Channel A", "New Channel B"]
+
+
+def test_refresh_channel_list_drops_stale_zstack_rows(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w._add_zstack_channel_row("BF LED matrix full")  # valid for the old objective
+
+    w.liveController.get_channels.return_value = [_make_channel("New Channel A")]
+    w.refresh_channel_list()
+
+    assert "BF LED matrix full" not in w._zstack_channel_names
