@@ -76,7 +76,7 @@ curl -X POST http://127.0.0.1:8060/v1/methods \
       "autofocus": {"contrast_af": false, "laser_af": true},
       "wellplate_scan": {
         "scan_size_mm": 1.5, "overlap_percent": 10,
-        "regions": [{"name": "A1", "center_mm": [14.3, 11.36, 2.1], "shape": "Square"}]
+        "wells": "A1:B3"
       }
     }
   }'
@@ -87,9 +87,18 @@ curl -X POST http://127.0.0.1:8060/v1/acquisitions \
        "overrides": {"wells": "A1:D6", "output_path": "/data/exp42"}}'
 ```
 
+Name wells with `wellplate_scan.wells` (`"A1:B3"` range or `"A1,A2,B1"` list) — X/Y are
+derived from the plate definition, so no coordinates are stored in the method. **Z is not
+stored in a wells-by-name method**: by default the run baselines on the current stage
+position at start. Pass `"z_reference": {"z_mm": 2.1}` on the acquisition request for an
+explicit baseline, or `"z_reference": "autofocus"` to require a stored/ready autofocus for
+the run. For irregular or manually-placed regions, `wellplate_scan.regions` with per-region
+`center_mm` (including Z) is still supported — but a method uses either `wells` **or**
+`regions`, not both.
+
 `curl http://127.0.0.1:8060/v1/methods` lists methods; `GET /v1/methods/{name}` shows one.
-A `wells` override replaces the stored regions. You can also author a method by saving an
-acquisition in the GUI and copying its YAML into `machine_configs/acquisition_methods/`.
+A `wells` override replaces the stored wells/regions. You can also author a method by saving
+an acquisition in the GUI and copying its YAML into `machine_configs/acquisition_methods/`.
 
 ### C. Existing GUI-saved YAML
 

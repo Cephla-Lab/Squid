@@ -239,7 +239,24 @@ active fails with a `PROTOCOL_WRONG_STATE` (1002) fault.
 
 Optional fields: `experiment_id`, `operator`, `scheduler_job_id` (audit trail, written to
 `<output_dir>/api_request.json`), `autofocus: {"reflection": bool?, "contrast": bool?}` (override the
-YAML/method's autofocus flags), and `overrides: {"wells", "output_path", "sample_format"}`.
+YAML/method's autofocus flags), `overrides: {"wells", "output_path", "sample_format"}`, and
+`z_reference` (see below).
+
+**`z_reference`** chooses the Z baseline for the run (the `z_range[0]` the worker starts each
+z-stack from). It is one of:
+
+- `"current"` (default) — baseline on the stage's Z position at run start (today's behavior).
+- `{"z_mm": <float>}` — an explicit absolute Z baseline, validated against the stage Z limits
+  (`INVALID_PARAM` / code 2001, component `stage.z`, if outside).
+- `"autofocus"` — baseline on the current Z but require autofocus for this run: preflight fails
+  with `INVALID_PARAM` if no AF mode is enabled (after `autofocus` overrides), or with
+  `AUTOFOCUS_NOT_READY` (8002) if reflection AF has no stored reference / the contrast-AF
+  controller is unattached.
+
+`z_reference` applies to `method`, `yaml_path`, and `grid` runs identically. It replaces any Z
+that would otherwise come from the stage; for wells-by-name methods (which store no Z) it is the
+only Z source. `z_stacking_config` ("FROM BOTTOM"/"FROM CENTER"/"FROM TOP") in the method still
+governs how the stack is placed relative to that baseline.
 
 ## Method registry
 
@@ -247,6 +264,13 @@ A **method** is an acquisition YAML (same schema as a GUI-saved `acquisition.yam
 clients reference it by name instead of by filesystem path (URS API-METH-001..005). Methods live in the
 directory configured by `methods_dir` (default `machine_configs/acquisition_methods/`), one file per method
 named `<name>.yaml`.
+
+**Selecting wells by name.** A wellplate method may name its wells with `wellplate_scan.wells` — a range
+`"A1:B3"` or comma list `"A1,A2,B1"` (a YAML list of names is also accepted and normalized to the comma
+form). X/Y are derived from the plate definition (same machinery as the `overrides.wells` path), so no
+coordinates are stored and no Z is stored. A method specifies **either** `wells` **or** `regions` (explicit
+`center_mm` per region, needed for irregular/manual layouts) — providing both is rejected when the method is
+parsed. `GET /v1/methods` includes the method's `wells` in its summary.
 
 ```bash
 curl -X POST http://127.0.0.1:8060/v1/methods \
