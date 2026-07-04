@@ -67,12 +67,17 @@ class RecordingWriter:
     concurrently with the drain thread still inside `write_frame`.
     """
 
-    def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 256):
+    def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 256, max_bytes: int = 2 * 1024**3):
         self._writer = ZarrWriter(config)
         self._q: "queue.Queue" = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._dropped = 0
         self._write_errors = 0
+        # Byte cap alongside the count cap: 256 full-resolution 16-bit frames is
+        # ~13 GB, so a count-only bound can OOM the process on a slow disk.
+        self._max_bytes = max_bytes
+        self._held_bytes = 0
+        self._bytes_lock = threading.Lock()
         self._abort_requested = threading.Event()
         # True only once the drain thread has actually been started.  finalize()/
         # abort() must not join (or push the sentinel to) a thread that never
@@ -105,9 +110,23 @@ class RecordingWriter:
         bounded queue is full (drain thread cannot keep up with disk I/O) the frame
         is dropped and counted rather than waiting for space.
         """
+        nbytes = int(getattr(frame, "nbytes", 0))
+        with self._bytes_lock:
+            over_cap = self._held_bytes + nbytes > self._max_bytes
+            if not over_cap:
+                self._held_bytes += nbytes
+        if over_cap:
+            self._dropped += 1
+            _log.warning(
+                f"recording byte cap reached ({self._max_bytes} B); dropped frame t={t} "
+                f"(total dropped={self._dropped})"
+            )
+            return
         try:
             self._q.put_nowait((frame, t, c, z))
         except queue.Full:
+            with self._bytes_lock:
+                self._held_bytes -= nbytes
             self._dropped += 1
             _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
 
@@ -133,6 +152,9 @@ class RecordingWriter:
                 except Exception as e:
                     self._write_errors += 1
                     _log.error(f"recording write_frame failed t={t}: {e}")
+                finally:
+                    with self._bytes_lock:
+                        self._held_bytes -= int(getattr(frame, "nbytes", 0))
         finally:
             if self._abort_requested.is_set():
                 self._writer.abort()

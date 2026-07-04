@@ -135,6 +135,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         # Probing captures a frame, so it happens in run() after live view stops.
         self._frame_shape: Optional[Tuple[int, int, np.dtype]] = None
+        # Set at the top of run(); _wait_for_dt paces timepoint STARTS from it.
+        self._acq_start_time: Optional[float] = None
 
         if params.zstack_enabled and self.zstack_channels:
             self._setup_zstack_job_runner(prewarmed_job_runner, prewarmed_bp_values)
@@ -251,6 +253,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             if self.params.zstack_enabled and self._job_runners:
                 self._backpressure.reset()
 
+            self._acq_start_time = time.time()
             for t_idx in range(self.params.Nt):
                 self.time_point = t_idx
                 if t_idx > 0 and self.params.dt_s > 0:
@@ -300,6 +303,16 @@ class RecordZStackWorker(MultiPointWorkerBase):
                     self.liveController.start_live()
                 except Exception:
                     log.exception("Failed to restart live view after acquisition")
+            # Completion marker for downstream watchers (mirrors multipoint's
+            # _on_acquisition_completed). Written on abort too: the directory is
+            # final either way, and the zarr attrs record completeness.
+            try:
+                from control.utils import create_done_file
+
+                if os.path.isdir(self.experiment_path):
+                    create_done_file(self.experiment_path)
+            except Exception:
+                log.exception("Failed to write completion marker (.done)")
             try:
                 self.callbacks.signal_acquisition_finished()
             except Exception:
@@ -502,6 +515,13 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
         self.stage.move_y_to(coord[1])
         self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
+        # (x, y, z) coords carry a stored per-FOV focus plane (flexible regions,
+        # update_fov_z) — honor it like MultiPointWorker.move_to_coordinate, or
+        # establish_reference() would reuse the previous FOV's Z on tilted samples.
+        if len(coord) > 2 and coord[2] is not None:
+            self.stage.move_z_to(coord[2])
+            self.wait_till_operation_is_completed()
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _move_z_to_offset(self, z_ref: float, offset_um: float) -> None:
         """Move to ``z_ref + offset_um`` (offset in µm, z_ref in mm) via the stage."""
@@ -569,11 +589,21 @@ class RecordZStackWorker(MultiPointWorkerBase):
         return path
 
     def _wait_for_dt(self, t_idx: int) -> bool:
-        """Sleep until it's time for time point ``t_idx`` (abort-aware).
+        """Sleep until time point ``t_idx``'s scheduled start (abort-aware).
 
-        Returns False if an abort was requested while waiting.
+        Starts are paced at ``acquisition_start + t_idx * dt`` (matching
+        MultiPointWorker and the recorded ``time_increment_s`` metadata) —
+        NOT ``dt`` after the previous timepoint's work finished, which would
+        stretch the real sampling interval to ``dt + work`` while the metadata
+        still claimed ``dt``.  Returns False if an abort was requested.
         """
-        deadline = time.time() + self.params.dt_s
+        start = self._acq_start_time if self._acq_start_time is not None else time.time()
+        deadline = start + t_idx * self.params.dt_s
+        if time.time() > deadline:
+            log.warning(
+                f"time point {t_idx} starting late: per-timepoint work exceeded dt={self.params.dt_s:g}s; "
+                f"recorded time_increment_s underestimates the real interval"
+            )
         while time.time() < deadline:
             if self.abort_requested_fn():
                 return False
