@@ -17311,7 +17311,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_Nz.setRange(1, 100)
         self.entry_recording_Nz.setValue(1)
         self.entry_recording_Nz.setKeyboardTracking(False)
-        self.entry_recording_Nz.setMaximumWidth(70)
+        self.entry_recording_Nz.setMaximumWidth(55)
         self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
         fps_row.addWidget(self.entry_recording_Nz)
 
@@ -17325,7 +17325,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_bottom_z.setValue(0.0)
         self.entry_recording_bottom_z.setSuffix(" µm")
         self.entry_recording_bottom_z.setKeyboardTracking(False)
-        self.entry_recording_bottom_z.setMaximumWidth(95)
+        self.entry_recording_bottom_z.setMaximumWidth(85)
         self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
         fps_row.addWidget(self.entry_recording_bottom_z)
 
@@ -17339,7 +17339,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_dz.setValue(1.0)
         self.entry_recording_dz.setSuffix(" µm")
         self.entry_recording_dz.setKeyboardTracking(False)
-        self.entry_recording_dz.setMaximumWidth(95)
+        self.entry_recording_dz.setMaximumWidth(85)
         self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
         fps_row.addWidget(self.entry_recording_dz)
 
@@ -17353,7 +17353,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_fps.setDecimals(0)
         self.entry_fps.setValue(10.0)
         self.entry_fps.setKeyboardTracking(False)
-        self.entry_fps.setMaximumWidth(100)
+        self.entry_fps.setMaximumWidth(60)
         fps_row.addWidget(self.entry_fps)
 
         fps_row.addSpacing(4)
@@ -17364,14 +17364,16 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_duration.setValue(1.0)
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
-        self.entry_duration.setMaximumWidth(90)
+        self.entry_duration.setMaximumWidth(75)
         fps_row.addWidget(self.entry_duration)
 
         fps_row.addStretch(1)
         vbox.addLayout(fps_row)
 
-        # Wire up dz-visibility / caption updates (both driven by Nz alone)
+        # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the offset
+        # is relative to the AF reference plane), and the offset caption (Nz).
         self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
+        self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
         self._update_recording_planes_ui()
 
         return grp
@@ -17537,11 +17539,17 @@ class RecordZStackMultiPointWidget(QFrame):
             self.label_zstack_planes.setText("-- planes")
 
     def _update_recording_planes_ui(self) -> None:
-        """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement)
-        and switch the Z-offset caption between single- and multi-plane wording."""
+        """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement),
+        show the Z-offset field only when Laser AF is enabled (the offset is
+        relative to the AF reference plane; without AF the user positions Z
+        directly), and switch the offset caption between single- and
+        multi-plane wording."""
         multi = self.entry_recording_Nz.value() > 1
         self.label_recording_dz.setVisible(multi)
         self.entry_recording_dz.setVisible(multi)
+        use_af = self.checkbox_laser_af.isChecked()
+        self.label_recording_bottom_z.setVisible(use_af)
+        self.entry_recording_bottom_z.setVisible(use_af)
         self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
 
     def _add_zstack_channel_row(
@@ -17847,7 +17855,11 @@ class RecordZStackMultiPointWidget(QFrame):
             recording_channel=recording_channel,
             fps=self.entry_fps.value(),
             duration_s=self.entry_duration.value(),
-            recording_bottom_z_offset_um=self.entry_recording_bottom_z.value(),
+            # The Z-offset field is hidden without Laser AF (no AF reference
+            # plane to offset from) — a hidden value must not silently apply.
+            recording_bottom_z_offset_um=(
+                self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
+            ),
             recording_Nz=self.entry_recording_Nz.value(),
             recording_dz_um=self.entry_recording_dz.value(),
             zstack_enabled=self.checkbox_zstack.isChecked(),
