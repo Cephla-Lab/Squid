@@ -699,3 +699,58 @@ def test_record_fails_fast_on_dropped_frames(tmp_path, monkeypatch):
     worker.run()
 
     assert aborted["v"] is True, "acquisition continued despite dropped recording frames"
+
+
+def test_config_snapshot_dedupes_channels_by_name(tmp_path):
+    """R10: recording the same channel that is also z-stacked must not produce
+    two same-name entries in acquisition_channels.yaml (channels are identified
+    by name; duplicate names make the snapshot ambiguous)."""
+    pytest.importorskip("tensorstore")
+    import yaml
+
+    import control._def
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import (
+        RecordZStackAcquisitionParameters,
+        RecordZStackController,
+    )
+
+    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+    scope = _build_simulated_microscope(64, 48)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
+    laser_af = ts.get_test_laser_autofocus_controller(scope)
+    channels = live_controller.get_channels(scope.objective_store.default_objective)
+    scope.camera.set_exposure_time(1)
+
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=None,
+        callbacks=NoOpCallbacks,
+    )
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="dedupe",
+        Nt=1,
+        recording_enabled=True,
+        recording_channel=channels[0],
+        fps=10.0,
+        duration_s=0.2,
+        zstack_enabled=True,
+        zstack_channels=[channels[0], channels[1]],  # channel 0 in BOTH phases
+        z_min_um=0.0,
+        z_max_um=1.0,
+        z_step_um=1.0,
+    )
+    try:
+        controller.run_acquisition(params)
+        controller.join(timeout=60)
+    finally:
+        controller.close()
+
+    snapshot = yaml.safe_load(open(Path(tmp_path) / params.experiment_id / "acquisition_channels.yaml"))
+    names = [c["name"] for c in snapshot["channels"]]
+    assert len(names) == len(set(names)), f"duplicate channel names in snapshot: {names}"
