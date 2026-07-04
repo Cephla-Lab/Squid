@@ -79,6 +79,10 @@ class RecordingWriter:
         self._held_bytes = 0
         self._bytes_lock = threading.Lock()
         self._abort_requested = threading.Event()
+        # True when finalize() gave up on a wedged drain thread: write errors
+        # may still be accruing after finalize() returns, so callers must not
+        # trust write_error_count == 0 as "healthy" — check this flag too.
+        self._finalize_wedged = False
         # True only once the drain thread has actually been started.  finalize()/
         # abort() must not join (or push the sentinel to) a thread that never
         # started, otherwise a failure in start()'s initialize() would surface as
@@ -117,10 +121,13 @@ class RecordingWriter:
                 self._held_bytes += nbytes
         if over_cap:
             self._dropped += 1
-            _log.warning(
-                f"recording byte cap reached ({self._max_bytes} B); dropped frame t={t} "
-                f"(total dropped={self._dropped})"
-            )
+            # Rate-limited: this runs on the hot camera delivery thread, and a
+            # stalled disk would otherwise log (and do handler I/O) at fps rate.
+            if self._dropped == 1 or self._dropped % 100 == 0:
+                _log.warning(
+                    f"recording byte cap reached ({self._max_bytes} B); dropped frame t={t} "
+                    f"(total dropped={self._dropped})"
+                )
             return
         try:
             self._q.put_nowait((frame, t, c, z))
@@ -128,7 +135,8 @@ class RecordingWriter:
             with self._bytes_lock:
                 self._held_bytes -= nbytes
             self._dropped += 1
-            _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
+            if self._dropped == 1 or self._dropped % 100 == 0:
+                _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
 
     def _drain(self) -> None:
         """Background thread: sole owner of ZarrWriter after start().
@@ -158,13 +166,16 @@ class RecordingWriter:
         finally:
             if self._abort_requested.is_set():
                 self._writer.abort()
-            elif self._write_errors > 0:
+            elif self._write_errors > 0 or self._dropped > 0:
                 # Never stamp acquisition_complete=True on a store with failed
-                # writes: the missing planes are silent fill values.  abort()
-                # seals it acquisition_complete=False so readers can tell.
+                # writes OR dropped frames: either way some planes are silent
+                # fill values (StreamingCapture counts routed frames, so its
+                # stop condition is satisfied even when enqueue dropped them).
+                # abort() seals acquisition_complete=False so readers can tell;
+                # the queue was already drained, so no captured data is lost.
                 _log.error(
-                    f"{self._write_errors} write error(s) during recording; "
-                    f"sealing store as incomplete instead of complete"
+                    f"recording store sealed INCOMPLETE: {self._write_errors} write error(s), "
+                    f"{self._dropped} dropped frame(s)"
                 )
                 self._writer.abort()
             else:
@@ -179,6 +190,15 @@ class RecordingWriter:
     def write_error_count(self) -> int:
         """Total write_frame failures on the drain thread (0 on a healthy run)."""
         return self._write_errors
+
+    @property
+    def finalize_wedged(self) -> bool:
+        """True if finalize() gave up on a wedged drain thread.
+
+        In that state write_error_count may still be 0 (the errors happen after
+        finalize() returned), so fail-fast callers must treat wedged as failure.
+        """
+        return self._finalize_wedged
 
     def finalize(self, timeout_s: float = 30.0) -> None:
         """Flush the queue, join the drain thread (which seals the ZarrWriter).
@@ -205,10 +225,15 @@ class RecordingWriter:
                         f"drain thread wedged (queue full for {timeout_s:.0f}s); "
                         f"switching to abort — recording will be sealed incomplete"
                     )
+                    self._finalize_wedged = True
                     self._abort_requested.set()
                     return
-        self._thread.join(timeout=timeout_s)
+        # The put and the join share ONE budget: a sentinel accepted late must
+        # not be followed by a fresh full-length join (callers would block for
+        # up to ~2x timeout_s).
+        self._thread.join(timeout=max(0.1, deadline - time.monotonic()))
         if self._thread.is_alive():
+            self._finalize_wedged = True
             _log.warning("drain thread still alive after finalize() join timeout")
 
     def abort(self) -> None:

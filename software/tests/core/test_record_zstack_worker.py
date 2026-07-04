@@ -165,7 +165,9 @@ def test_record_zstack_worker_smoke(tmp_path):
 #
 # Same 2-well x 2-FOV geometry as the D2 test but driven through
 # RecordZStackController.run_acquisition() + join().
-# Also exercises Nt=2 with a short dt_s=0.1 (two time-points).
+# Also exercises Nt=2 with dt_s=0.0 (continuous: no grid pacing, so both
+# time-points run even though the per-timepoint work exceeds any short dt —
+# with dt>0 the worker now SKIPS missed slots, mirroring MultiPointWorker).
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +240,7 @@ def test_record_zstack_controller_smoke(tmp_path):
         base_path=str(tmp_path),
         experiment_id="ctrl_smoke",
         Nt=Nt,
-        dt_s=0.1,  # short inter-timepoint delay
+        dt_s=0.0,  # continuous: dt>0 would skip slots missed while working
         use_laser_af=False,
         recording_enabled=True,
         recording_channel=recording_channel,
@@ -543,7 +545,7 @@ def test_wait_for_dt_paces_from_acquisition_start(tmp_path):
         tmp_path, recording_enabled=True, zstack_enabled=False
     )
     worker.params.dt_s = 2.0
-    worker._acq_start_time = _time.time() - 100.0  # the work already overran the interval
+    worker._acq_start_time = _time.monotonic() - 100.0  # the work already overran the interval
 
     t0 = _time.monotonic()
     ok = worker._wait_for_dt(1)
@@ -600,3 +602,60 @@ def test_controller_writes_config_snapshot_and_done_file(tmp_path):
     assert exp.is_dir()
     assert (exp / "acquisition_channels.yaml").exists(), "settings snapshot missing from experiment dir"
     assert (exp / ".done").exists(), "completion marker missing from experiment dir"
+
+
+def test_pace_timepoint_skips_missed_slots(tmp_path):
+    """Round-2 parity: MultiPointWorker skips timepoints whose slot already
+    passed (grid-preserving); running them late back-to-back silently breaks
+    the recorded time_increment_s for the rest of the run."""
+    import time as _time
+
+    pytest.importorskip("tensorstore")
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    worker.params.dt_s = 2.0
+
+    worker._acq_start_time = _time.monotonic() - 100.0
+    assert worker._pace_timepoint(1) == "skip"
+
+    worker._acq_start_time = _time.monotonic()
+    assert worker._pace_timepoint(0) == "run"
+
+    aborted["v"] = True
+    assert worker._pace_timepoint(1) in ("abort", "skip")  # never 'run' while aborted
+
+
+def test_probe_frame_shape_rejects_color_frames():
+    """Round-2: a color (Y,X,3) probe frame silently produced a 2-D dataset
+    that every write then failed against; reject it with a clear error."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    color = np.zeros((50, 60, 3), dtype=np.uint8)
+
+    class _FakeColorCamera:
+        def get_resolution(self):
+            return (60, 50)
+
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+        def send_trigger(self):
+            pass
+
+        def read_camera_frame(self):
+            return SimpleNamespace(frame=color)
+
+    fake_self = SimpleNamespace(camera=_FakeColorCamera())
+    with pytest.raises(ValueError, match="monochrome"):
+        RecordZStackWorker._probe_frame_shape(fake_self)
