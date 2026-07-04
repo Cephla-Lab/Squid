@@ -139,3 +139,34 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
+    """Switching to the Record + Z-Stack tab must not hide the well selector dock.
+
+    The tab's own validation requires selected wells, so onTabChanged has to
+    treat it like Wellplate Multipoint when deciding well-selector visibility.
+    Also exercises the tab switch end-to-end, which duck-calls
+    emit_selected_channels() on the widget.
+    """
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+    # The tab is gated by ENABLE_RECORDING; force it on regardless of the local INI.
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    tabw = win.recordTabWidget
+    labels = [tabw.tabText(i) for i in range(tabw.count())]
+    assert "Record + Z-Stack" in labels
+
+    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+
+    assert not win.dock_wellSelection.isHidden(), "well selector dock must stay available on the Record + Z-Stack tab"
