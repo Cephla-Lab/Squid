@@ -1,12 +1,24 @@
 """Request bodies for the REST API. Responses are plain dicts assembled by the service."""
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class _Strict(BaseModel):
     model_config = {"extra": "forbid"}
+
+
+class ZMillimeters(_Strict):
+    """Explicit absolute Z baseline (mm) for an acquisition run."""
+
+    z_mm: float
+
+
+# Z baseline policy for a run: "current" (today's default -- use the stage z at run
+# start), "autofocus" (baseline on current z but require a ready AF for this run), or an
+# explicit {"z_mm": <float>} absolute position validated against the stage Z limits.
+ZReference = Union[Literal["current", "autofocus"], ZMillimeters]
 
 
 class MoveRequest(_Strict):
@@ -96,6 +108,7 @@ class AcquisitionRequest(_Strict):
     scheduler_job_id: Optional[str] = None
     autofocus: Optional[AutofocusOverride] = None
     overrides: AcquisitionOverrides = Field(default_factory=AcquisitionOverrides)
+    z_reference: ZReference = "current"
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> "AcquisitionRequest":

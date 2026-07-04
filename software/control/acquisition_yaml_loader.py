@@ -42,6 +42,10 @@ class AcquisitionYAMLData:
     overlap_percent: float = 10.0
     scan_shape: Optional[str] = None
     wellplate_regions: Optional[List[Dict]] = None  # [{name, center_mm, shape}, ...]
+    # Wells-by-name (additive): X/Y derived from the plate definition at run time.
+    # Mutually exclusive with wellplate_regions. Normalized to a comma-separated string
+    # ("A1:B3" or "A1,B2,C3"); None when the method uses explicit regions instead.
+    wells: Optional[str] = None
 
     # Flexible-specific
     nx: int = 1
@@ -108,6 +112,21 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
 
+    # Wells-by-name (additive): accept a string ("A1:B3", "A1,B2") or a YAML list of
+    # names (joined with ","). Normalize empty/absent to None. Mutually exclusive with
+    # a non-empty regions list.
+    wells_raw = wellplate_scan.get("wells")
+    if isinstance(wells_raw, (list, tuple)):
+        wells = ",".join(str(w).strip() for w in wells_raw)
+    elif wells_raw is not None:
+        wells = str(wells_raw).strip()
+    else:
+        wells = None
+    if not wells:
+        wells = None
+    if wells and wellplate_regions:
+        raise ValueError("wellplate_scan: specify either 'wells' or 'regions', not both")
+
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -134,6 +153,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         overlap_percent=overlap,
         scan_shape=scan_shape,
         wellplate_regions=wellplate_regions,
+        wells=wells,
         # Flexible-specific
         nx=flexible_scan.get("nx", 1),
         ny=flexible_scan.get("ny", 1),

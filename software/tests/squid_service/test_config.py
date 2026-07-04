@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from squid_service.config import ServiceConfig
-from squid_service.models import AcquisitionRequest, ExposureRequest, MoveRequest
+from squid_service.models import AcquisitionRequest, ExposureRequest, MoveRequest, ZMillimeters
 
 
 def test_defaults_are_loopback_no_auth():
@@ -68,3 +68,29 @@ def test_grid_spec_validation():
     assert req.grid.nx == 2 and req.grid.wellplate_format == "96 well plate"
     with pytest.raises(ValidationError):
         AcquisitionRequest(grid={"wells": "A1", "channels": []})  # empty channels
+
+
+def test_z_reference_defaults_to_current():
+    req = AcquisitionRequest(yaml_path="/tmp/a.yaml")
+    assert req.z_reference == "current"
+
+
+def test_z_reference_accepts_literals():
+    assert AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference="current").z_reference == "current"
+    assert AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference="autofocus").z_reference == "autofocus"
+
+
+def test_z_reference_accepts_z_mm_object():
+    req = AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference={"z_mm": 3.2})
+    assert isinstance(req.z_reference, ZMillimeters)
+    assert req.z_reference.z_mm == 3.2
+
+
+def test_z_reference_rejects_garbage():
+    with pytest.raises(ValidationError):
+        AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference="somewhere")
+    with pytest.raises(ValidationError):
+        AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference=3.2)  # bare float, not {"z_mm": ...}
+    with pytest.raises(ValidationError):
+        # extra keys are forbidden on the strict z_mm model
+        AcquisitionRequest(yaml_path="/tmp/a.yaml", z_reference={"z_mm": 3.2, "unit": "mm"})
