@@ -350,9 +350,14 @@ class RecordZStackWorker(MultiPointWorkerBase):
         Plane j records at ``z_ref + recording_bottom_z_offset_um + j*recording_dz_um``
         (one Zarr store per plane; Nz=1 keeps the historical single-plane layout
         byte-identical to before per-plane recording existed).  The recording
-        channel, achievable fps, dataset frame count, and illumination are all
-        established once per FOV and shared across every plane.  Returns the
-        total number of frames emitted across all planes.
+        channel, achievable fps, and dataset frame count are all established
+        once per FOV and shared across every plane.  The stage moves to the
+        first plane with illumination OFF (matching the pre-multi-plane
+        behavior), illumination then turns on for the remainder of the FOV
+        (not toggled between planes), and the camera-mode + stage-Z restore
+        always runs on the way out — normal completion, an abort between
+        planes, or a plane raising the fail-fast ``RuntimeError`` below.
+        Returns the total number of frames emitted across all planes.
         """
         # Apply the recording channel (exposure/gain/illumination settings).
         rec_channel = self.params.recording_channel
@@ -394,33 +399,42 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         n_planes = len(offsets)
 
-        # The CONTINUOUS stream does not gate illumination per-frame, and
-        # set_microscope_mode only energizes illumination when live (we are not
-        # live here). Illumination stays on across all planes of this FOV (no
-        # flicker, fewer MCU commands); _record_one_plane assumes it is already
-        # energized.
+        # Move to the first plane with illumination OFF (matches the
+        # pre-multi-plane behavior: the sample must not be illuminated during
+        # the Z move + settle). The CONTINUOUS stream does not gate
+        # illumination per-frame, and set_microscope_mode only energizes
+        # illumination when live (we are not live here), so illumination is
+        # turned on explicitly here and stays on across all planes of this FOV
+        # (no flicker between planes, fewer MCU commands); _record_one_plane
+        # assumes it is already energized.
         total_emitted = 0
+        self._move_z_to_offset(z_ref, offsets[0])
         self.liveController.turn_on_illumination()
         try:
             for plane_idx, plane_offset_um in enumerate(offsets):
-                if plane_idx > 0 and self.abort_requested_fn():
-                    log.info(f"abort requested; skipping recording planes {plane_idx}..{n_planes - 1}")
-                    break
-                self._move_z_to_offset(z_ref, plane_offset_um)
+                if plane_idx > 0:
+                    if self.abort_requested_fn():
+                        log.info(f"abort requested; skipping recording planes {plane_idx}..{n_planes - 1}")
+                        break
+                    self._move_z_to_offset(z_ref, plane_offset_um)
                 total_emitted += self._record_one_plane(
                     t_idx, region_id, fov_idx, plane_idx, n_planes, plane_offset_um, effective_fps, T
                 )
         finally:
             self.liveController.turn_off_illumination()
-
-        # Restore the camera to a software-trigger-friendly state and Z reference.
-        try:
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        except Exception:
-            log.exception("Failed to restore software-trigger acquisition mode after recording")
-        self.stage.move_z_to(z_ref)
-        self.wait_till_operation_is_completed()
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            # Restore the camera to a software-trigger-friendly state and Z
+            # reference. Runs on every exit path — normal completion, the
+            # abort break above, and a plane raising the fail-fast
+            # RuntimeError below — so the stage is never left at a plane
+            # offset. Exceptions here are only logged so they don't mask an
+            # in-flight RuntimeError from _record_one_plane.
+            try:
+                self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            except Exception:
+                log.exception("Failed to restore software-trigger acquisition mode after recording")
+            self.stage.move_z_to(z_ref)
+            self.wait_till_operation_is_completed()
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
         return total_emitted
 
     def _record_one_plane(
@@ -488,7 +502,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # mount), so continuing would burn the timeout at every remaining
         # plane/FOV producing blank data.  A wedged finalize returns before
         # errors are countable, which is why write_error_count alone is not
-        # sufficient.  record() lets this propagate; run() catches it, aborts,
+        # sufficient.  record()'s finally still restores illumination/camera
+        # mode/stage-Z before this propagates; run() then catches it, aborts,
         # and signals finished.
         if writer.write_error_count > 0 or writer.finalize_wedged or writer.dropped_count > 0:
             raise RuntimeError(

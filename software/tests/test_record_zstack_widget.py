@@ -1117,8 +1117,14 @@ def test_recording_planes_label_and_build_parameters(qtbot, simulated_widget_dep
     assert params.recording_dz_um == 4.0
 
 
-def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps):
-    """Widget.validate() must reject dz<=0 when Nz>1 (delegated to the helper)."""
+def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatch):
+    """Widget.validate() must forward the recording_nz/recording_dz_um spinbox
+    values to the helper.  The spinbox minimums (Nz>=1, dz>0) make invalid
+    values unreachable through the UI, so asserting only ``validate() is
+    None`` would still pass even if those kwargs were silently dropped from
+    the call.  Intercept the helper instead and assert the actual kwargs it
+    receives."""
+    import control.widgets as widgets_mod
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
@@ -1128,9 +1134,18 @@ def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps):
     w.checkbox_zstack.setChecked(False)
     w.entry_recording_Nz.setValue(3)
     w.entry_recording_dz.setValue(4.0)
-    assert w.validate() is None
-    # The spinbox minimum prevents dz<=0 in the UI, so drive the helper wiring
-    # check through build-parameters-level values instead: Nz spin min is 1,
-    # dz spin min is > 0 — validate() passing Nz/dz through is what's under test.
-    w.entry_recording_Nz.setValue(1)
-    assert w.validate() is None
+
+    real_validate = widgets_mod._validate_record_zstack_params
+    captured = {}
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return real_validate(**kwargs)
+
+    monkeypatch.setattr(widgets_mod, "_validate_record_zstack_params", spy)
+
+    result = w.validate()
+
+    assert result is None
+    assert captured.get("recording_nz") == 3
+    assert captured.get("recording_dz_um") == 4.0
