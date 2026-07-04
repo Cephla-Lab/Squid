@@ -380,3 +380,128 @@ def test_streaming_capture_logs_dropped_summary(caplog):
         cap.run()
 
     assert any("dropped" in rec.getMessage() and "3" in rec.getMessage() for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Review-fix tests: fail-loud drain (F2), bounded finalize (F3), abort wake (F4)
+# ---------------------------------------------------------------------------
+
+
+def _stub_zarr_cfg(tmp_path):
+    from control.core.zarr_writer import ZarrAcquisitionConfig
+
+    return ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "rec.ome.zarr"),
+        shape=(4, 1, 1, 4, 4),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+    )
+
+
+def test_recording_writer_write_errors_seal_incomplete(tmp_path, monkeypatch):
+    """If write_frame fails, the store must NOT be sealed acquisition_complete=True:
+    the drain thread must count the failures and seal via abort() instead."""
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    calls = []
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+
+    def boom(self, image, t, c, z, fov=None):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ZarrWriter, "write_frame", boom)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: calls.append("finalize"))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: calls.append("abort"))
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path))
+    rw.start()
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 1, 0, 0)
+    rw.finalize()
+
+    assert rw.write_error_count == 2
+    assert calls == ["abort"], f"expected incomplete seal via abort(), got {calls}"
+
+
+def test_recording_writer_finalize_bounded_when_drain_wedged(tmp_path, monkeypatch):
+    """finalize() must not block forever pushing the sentinel onto a full queue
+    while the drain thread is wedged inside a stalled write."""
+    import threading
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
+    rw.start()
+    # First frame wedges the drain thread inside write_frame; two more fill the queue.
+    for i in range(3):
+        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+
+    t = threading.Thread(target=lambda: rw.finalize(timeout_s=1.0), daemon=True)
+    t.start()
+    t.join(timeout=5.0)
+    still_stuck = t.is_alive()
+    release.set()  # let the drain thread exit before asserting
+    assert not still_stuck, "finalize() deadlocked on the full bounded queue"
+
+
+def test_streaming_capture_abort_wakes_without_frames():
+    """Stop/abort must work even when the camera delivers no frames at all:
+    run() must poll abort_fn rather than sampling it only in the frame callback."""
+    import time as _time
+
+    class _NoFrameSource:
+        def start(self, on_frame):
+            pass
+
+        def stop(self):
+            pass
+
+    w = _RecordingStubWriter()
+    cap = StreamingCapture(
+        _NoFrameSource(),
+        RecordingRouter(fps=10.0),
+        CountStop(5),
+        w,
+        abort_fn=lambda: True,  # user pressed Stop
+    )
+    t0 = _time.monotonic()
+    emitted = cap.run(timeout=10.0)
+    took = _time.monotonic() - t0
+
+    assert emitted == 0
+    assert took < 2.0, f"abort took {took:.1f}s — run() ignored abort while no frames arrived"
+    assert w.aborted is True, "aborted capture must be sealed as aborted"
+    assert w.finalized is False, "aborted capture must not be sealed as complete"
+
+
+def test_recording_router_tolerates_delivery_jitter():
+    """F5: with the camera running AT the target rate, ms-level host delivery
+    jitter must not reject frames — anchoring to the previous emission made
+    every slightly-early frame fail the gate and halved the effective rate."""
+    r = RecordingRouter(fps=10.0)
+    # 10 fps arrivals with a 1 ms early wobble on every other frame.
+    stamps = [100.0 + i * 0.1 - (0.001 if i % 2 else 0.0) for i in range(10)]
+    accepted = [s for s in stamps if r.route(s) is not None]
+    assert len(accepted) == 10, f"only {len(accepted)}/10 at-rate frames accepted (jitter rejected frames)"
+
+
+def test_recording_router_still_downsamples_faster_camera():
+    """The jitter fix must not break downsampling: a camera at 2x the target
+    rate should still have roughly half its frames rejected."""
+    r = RecordingRouter(fps=10.0)
+    stamps = [100.0 + i * 0.05 for i in range(20)]  # 20 fps camera, 10 fps target
+    accepted = [s for s in stamps if r.route(s) is not None]
+    assert len(accepted) == 10, f"expected 10/20 accepted, got {len(accepted)}"
