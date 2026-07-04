@@ -354,7 +354,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             self._select_config(rec_channel)
 
         # Move to z_ref + recording offset.
-        self._move_z_to_offset(z_ref, self.params.recording_z_offset_um)
+        self._move_z_to_offset(z_ref, self.params.recording_bottom_z_offset_um)
 
         # Size the dataset, pacing, and time metadata from the fps the camera can
         # actually deliver: a camera clamped below the requested rate (exposure

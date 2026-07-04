@@ -16958,6 +16958,8 @@ def _validate_record_zstack_params(
     zstack_channel_names: List[str],
     use_laser_af: bool,
     laser_af_has_reference: bool,
+    recording_nz: int = 1,
+    recording_dz_um: float = 1.0,
 ) -> Optional[str]:
     """Return an error string describing the first validation failure, or None if valid."""
     if not base_path:
@@ -16977,6 +16979,10 @@ def _validate_record_zstack_params(
             return f"Recording: fps×duration yields 0 frames (fps={fps}, duration={duration_s}s). Increase one or both."
         if not recording_channel_name:
             return "A channel must be chosen for the Recording phase."
+        if recording_nz < 1:
+            return "Recording Nz must be at least 1."
+        if recording_nz > 1 and recording_dz_um <= 0:
+            return "Recording dz must be > 0 when Nz > 1."
     if zstack_enabled:
         if z_max <= z_min:
             return "Z-Stack: z_max must be greater than z_min."
@@ -17787,7 +17793,7 @@ class RecordZStackMultiPointWidget(QFrame):
             recording_channel=recording_channel,
             fps=self.entry_fps.value(),
             duration_s=self.entry_duration.value(),
-            recording_z_offset_um=self.entry_recording_z_offset.value(),
+            recording_bottom_z_offset_um=self.entry_recording_z_offset.value(),
             zstack_enabled=self.checkbox_zstack.isChecked(),
             zstack_channels=zstack_channels,
             z_min_um=self.entry_zmin.value(),

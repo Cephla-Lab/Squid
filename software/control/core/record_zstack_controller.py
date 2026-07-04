@@ -25,6 +25,19 @@ def zstack_offsets_um(z_min_um: float, z_max_um: float, step_um: float) -> List[
     return [round(z_min_um + i * step_um, 6) for i in range(zstack_plane_count(z_min_um, z_max_um, step_um))]
 
 
+def recording_plane_offsets_um(bottom_um: float, nz: int, dz_um: float) -> List[float]:
+    """Offsets (µm, relative to the z reference) of the Nz recording planes.
+
+    Plane j sits at bottom_um + j*dz_um.  Nz=1 is the single-plane case and
+    ignores dz_um (the widget hides dz entirely for Nz=1).
+    """
+    if nz < 1:
+        raise ValueError("require Nz >= 1")
+    if nz > 1 and dz_um <= 0:
+        raise ValueError("require dz > 0 when Nz > 1")
+    return [round(bottom_um + j * dz_um, 6) for j in range(nz)]
+
+
 @dataclass
 class RecordZStackAcquisitionParameters:
     base_path: str
@@ -37,7 +50,10 @@ class RecordZStackAcquisitionParameters:
     recording_channel: Optional[AcquisitionChannel] = None
     fps: float = 10.0
     duration_s: float = 1.0
-    recording_z_offset_um: float = 0.0
+    # Recording planes: plane j at z_ref + recording_bottom_z_offset_um + j*recording_dz_um.
+    recording_bottom_z_offset_um: float = 0.0
+    recording_Nz: int = 1
+    recording_dz_um: float = 1.0
     # z-stack phase
     zstack_enabled: bool = False
     zstack_channels: List[AcquisitionChannel] = field(default_factory=list)

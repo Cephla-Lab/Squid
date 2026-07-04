@@ -1061,3 +1061,14 @@ def test_refresh_channel_list_warns_on_silent_selection_swap(qtbot, simulated_wi
     assert any(
         prev in rec.message and "Only Channel" in rec.message for rec in caplog.records
     ), f"no warning about the recording selection changing from {prev!r}"
+
+
+def test_validate_helper_recording_nz_and_dz():
+    params = _base_params(recording_enabled=True, recording_nz=0)
+    assert _validate_record_zstack_params(**params) is not None  # Nz < 1
+    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.0)
+    assert _validate_record_zstack_params(**params) is not None  # dz <= 0 with Nz > 1
+    params = _base_params(recording_enabled=True, recording_nz=1, recording_dz_um=0.0)
+    assert _validate_record_zstack_params(**params) is None  # Nz=1: dz irrelevant
+    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.5)
+    assert _validate_record_zstack_params(**params) is None
