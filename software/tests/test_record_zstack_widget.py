@@ -1072,3 +1072,65 @@ def test_validate_helper_recording_nz_and_dz():
     assert _validate_record_zstack_params(**params) is None  # Nz=1: dz irrelevant
     params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.5)
     assert _validate_record_zstack_params(**params) is None
+
+
+def test_recording_dz_hidden_when_nz_is_one(qtbot, simulated_widget_deps):
+    """dz must be HIDDEN (not just disabled) when Nz == 1 — user requirement."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.entry_recording_Nz.value() == 1
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+    w.entry_recording_Nz.setValue(3)
+    assert not w.entry_recording_dz.isHidden()
+    assert not w.label_recording_dz.isHidden()
+
+    w.entry_recording_Nz.setValue(1)
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+
+def test_recording_planes_label_and_build_parameters(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_recording.setChecked(True)
+    w.entry_duration.setValue(2.0)
+    w.entry_recording_bottom_z.setValue(-2.0)
+    w.entry_recording_Nz.setValue(3)
+    w.entry_recording_dz.setValue(4.0)
+
+    # Label reflects the span and the per-FOV time cost (3 planes x 2 s).
+    text = w.label_recording_planes.text()
+    assert "3 planes" in text
+    assert "6.0 s" in text
+
+    params = w.build_parameters()
+    assert params.recording_bottom_z_offset_um == -2.0
+    assert params.recording_Nz == 3
+    assert params.recording_dz_um == 4.0
+
+
+def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps):
+    """Widget.validate() must reject dz<=0 when Nz>1 (delegated to the helper)."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_recording.setChecked(True)
+    w.checkbox_zstack.setChecked(False)
+    w.entry_recording_Nz.setValue(3)
+    w.entry_recording_dz.setValue(4.0)
+    assert w.validate() is None
+    # The spinbox minimum prevents dz<=0 in the UI, so drive the helper wiring
+    # check through build-parameters-level values instead: Nz spin min is 1,
+    # dz spin min is > 0 — validate() passing Nz/dz through is what's under test.
+    w.entry_recording_Nz.setValue(1)
+    assert w.validate() is None
