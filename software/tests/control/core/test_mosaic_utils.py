@@ -9,6 +9,7 @@ from control.core.mosaic_utils import (
     _pyrdown_chain,
     calculate_overlap_pixels,
     downsample_tile,
+    resample_tile_to_pixel_size,
     parse_well_id,
     format_well_id,
 )
@@ -401,3 +402,35 @@ class TestDownsamplingPerformance:
         # INTER_LINEAR should be fastest
         assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA_FAST]
         assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA]
+
+
+class TestResampleTileToPixelSize:
+    def test_shrinks_to_exact_dims(self):
+        tile = np.full((100, 100), 100, dtype=np.uint16)
+        out = resample_tile_to_pixel_size(tile, 1.0, 2.0)  # scale 0.5
+        assert out.shape == (50, 50)
+
+    def test_large_shrink(self):
+        tile = np.full((1000, 1000), 100, dtype=np.uint16)
+        out = resample_tile_to_pixel_size(tile, 0.2, 2.0)  # scale 0.1
+        assert out.shape == (100, 100)
+
+    def test_enlarges_when_source_coarser_than_target(self):
+        tile = np.full((100, 100), 100, dtype=np.uint16)
+        out = resample_tile_to_pixel_size(tile, 4.0, 2.0)  # scale 2.0
+        assert out.shape == (200, 200)
+
+    def test_identity_when_source_equals_target(self):
+        tile = np.full((100, 100), 100, dtype=np.uint16)
+        out = resample_tile_to_pixel_size(tile, 2.0, 2.0)
+        assert out is tile
+
+    def test_preserves_dtype(self):
+        tile = np.full((100, 100), 100, dtype=np.uint16)
+        out = resample_tile_to_pixel_size(tile, 1.0, 2.0)
+        assert out.dtype == np.uint16
+
+    def test_preserves_rgb_channels(self):
+        tile = np.full((100, 100, 3), 100, dtype=np.uint8)
+        out = resample_tile_to_pixel_size(tile, 1.0, 2.0)
+        assert out.shape == (50, 50, 3)

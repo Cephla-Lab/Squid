@@ -12,8 +12,11 @@
 // Version 1.2 = CMD_EXECUTION_ERROR reported on failed moves + MOVETO_W2 command
 // Version 1.3 = strobe ISR latches illumination source at start (race fix when
 //               channel switched during live HW-triggered acquisition)
+// Version 1.4 = filter-wheel (W/W2) home resets xmin/xmax to full range (rotary
+//               axis has no travel end-stop); fixes intermittent post-home
+//               MOVETO_W CMD_EXECUTION_ERROR (home left xmin = L - C > offset)
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 3
+#define FIRMWARE_VERSION_MINOR 4
 
 #include "def/def_v1.h"
 

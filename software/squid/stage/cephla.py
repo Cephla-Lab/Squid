@@ -111,6 +111,16 @@ class CephlaStage(AbstractStage):
             )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
+        # Clamp to the configured Z soft limits before commanding the move. The firmware's
+        # absolute MOVETO_Z records the requested target unclamped but parks the motor at the
+        # soft limit, so an out-of-range target never reports complete and the move times out.
+        # (e.g. the objective-turret retract/restore commanding the post-home Z=0.0, which is
+        # below MIN_POSITION). This mirrors the MIN_POSITION clamp on the backlash pre-move below.
+        clamped_abs_mm = self.get_config().Z_AXIS.clamp_position(abs_mm)
+        if clamped_abs_mm != abs_mm:
+            self._log.debug(f"Clamped Z move target {abs_mm} mm to soft limit {clamped_abs_mm} mm.")
+        abs_mm = clamped_abs_mm
+
         # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
         # are moving in the negative (down) z direction, we need to move past our mark a bit then
         # back up.  If we are already moving in the "up" position, we can move straight there.

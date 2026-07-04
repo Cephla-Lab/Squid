@@ -68,6 +68,7 @@ In the channel, type:
 | Include mosaic snapshots | Attach screenshot with timepoint notifications |
 | Notify on acquisition start | Send message when acquisition begins |
 | Notify on acquisition finished | Send summary when acquisition completes |
+| Enable watchdog alerts | Let the standalone acquisition watchdog alert on a crashed / hung / aborted / errored run — independent of the master switch, and requires the watchdog process to be running (see `acquisition_watchdog/README.md`) |
 
 ## Notification Examples
 

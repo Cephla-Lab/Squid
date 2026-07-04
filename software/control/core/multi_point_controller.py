@@ -28,6 +28,7 @@ from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+import squid.acquisition_state
 import squid.logging
 
 
@@ -689,6 +690,7 @@ class MultiPointController:
             log_memory("ACQUISITION START", include_children=True)
 
         thread_started = False
+        self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
             self._log.info("start multipoint")
             self._start_position = self.stage.get_pos()
@@ -749,7 +751,7 @@ class MultiPointController:
 
             # run the acquisition
             self.timestamp_acquisition_started = time.time()
-            if self.focus_map:
+            if self.focus_map and not acquire_current_fov:
                 self._log.info("Using focus surface for Z interpolation")
                 for region_id in scan_position_information.scan_region_names:
                     region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
@@ -869,6 +871,28 @@ class MultiPointController:
                 self.overlap_percent,
             )
 
+            # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
+            # self._run_state_writer is already a NullRunStateWriter (set before the outer try); it
+            # stays one if start() below fails, so a breadcrumb write failure never breaks acquisition.
+            try:
+                expected = {
+                    "timepoints": self.Nt,
+                    "regions": len(scan_position_information.scan_region_coords_mm),
+                    "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
+                    "channels": len(self.selected_configurations),
+                    "z": self.NZ,
+                }
+                config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
+                self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
+                    experiment_id=self.experiment_ID,
+                    pid=os.getpid(),
+                    config_path=config_path,
+                    output_path=experiment_path,
+                    expected=expected,
+                )
+            except Exception as e:
+                self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
+
             # Get pre-warmed job runner and its shared backpressure values
             # (starts a new one warming for next acquisition)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
@@ -890,6 +914,7 @@ class MultiPointController:
                     slack_notifier=self._slack_notifier,
                     prewarmed_job_runner=prewarmed_runner,
                     prewarmed_bp_values=prewarmed_bp_values,
+                    run_state_writer=self._run_state_writer,
                 )
             except Exception:
                 # Clean up pre-warmed runner if worker creation failed.
@@ -909,6 +934,9 @@ class MultiPointController:
             self.thread.start()
         finally:
             if not thread_started:
+                # Acquisition never launched a worker — close out the breadcrumb so the
+                # watchdog doesn't later misread the lingering "running" state as a hang.
+                self._run_state_writer.end("error", None)
                 self._stop_per_acquisition_log()
                 # Stop memory monitor if acquisition setup failed
                 if self._memory_monitor is not None:

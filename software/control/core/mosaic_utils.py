@@ -148,6 +148,43 @@ def downsample_tile(
     return downsampled
 
 
+def resample_tile_to_pixel_size(
+    tile: np.ndarray,
+    source_pixel_size_um: float,
+    target_pixel_size_um: float,
+) -> np.ndarray:
+    """Resample a tile so its pixel size is (nominally) ``target_pixel_size_um``.
+
+    Unlike :func:`downsample_tile` (integer downsample factors only), this resamples
+    to an exact target so tiles acquired at different magnifications all land on one
+    shared grid in Full View. Output dims are ``round(dim * source / target)``, so the
+    rendered pixel size matches the target to within integer-dimension rounding.
+
+    Shrinking (source < target) reuses the fast pyrDown chain; enlarging (objective
+    coarser than target) uses INTER_LINEAR. Returns the tile unchanged when the output
+    dimensions equal the input.
+    """
+    if source_pixel_size_um <= 0 or target_pixel_size_um <= 0:
+        return tile
+
+    scale = source_pixel_size_um / target_pixel_size_um
+    new_width = max(1, int(round(tile.shape[1] * scale)))
+    new_height = max(1, int(round(tile.shape[0] * scale)))
+
+    if new_width == tile.shape[1] and new_height == tile.shape[0]:
+        return tile
+
+    if scale < 1.0:
+        resampled = _pyrdown_chain(tile, new_width, new_height)
+    else:
+        resampled = cv2.resize(tile, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+    if resampled.dtype != tile.dtype:
+        resampled = resampled.astype(tile.dtype)
+
+    return resampled
+
+
 def parse_well_id(well_id: str) -> Tuple[int, int]:
     """Parse well ID string to (row, col) indices.
 
