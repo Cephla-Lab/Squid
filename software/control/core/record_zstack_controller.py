@@ -136,8 +136,27 @@ class RecordZStackController:
         from control.core.record_zstack_worker import RecordZStackWorker
 
         # Resolve and create a timestamped unique output directory.
-        resolved_id, _dir = create_experiment_dir(params.base_path, params.experiment_id)
+        resolved_id, experiment_dir = create_experiment_dir(params.base_path, params.experiment_id)
         params.experiment_id = resolved_id
+
+        # Snapshot the acquisition settings into the experiment directory
+        # (mirrors MultiPointController.start_new_experiment) so the run is
+        # reproducible/auditable: acquisition_channels.yaml records objective +
+        # every channel used by either phase.
+        try:
+            channels = []
+            if params.recording_enabled and params.recording_channel is not None:
+                channels.append(params.recording_channel)
+            if params.zstack_enabled:
+                channels.extend(params.zstack_channels)
+            self._microscope.config_repo.save_acquisition_output(
+                output_dir=experiment_dir,
+                objective=self._objective_store.current_objective,
+                channels=channels,
+                confocal_mode=self._live_controller.is_confocal_mode(),
+            )
+        except Exception:
+            log.exception("Failed to save acquisition settings snapshot to the experiment directory")
 
         # Collect scan coordinates: {region_id: [(x_mm, y_mm[, z_mm]), ...]}
         scan_region_fov_coords = {}
