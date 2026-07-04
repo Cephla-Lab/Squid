@@ -253,12 +253,14 @@ class RecordZStackWorker(MultiPointWorkerBase):
             if self.params.zstack_enabled and self._job_runners:
                 self._backpressure.reset()
 
-            self._acq_start_time = time.time()
+            self._acq_start_time = time.monotonic()
             for t_idx in range(self.params.Nt):
                 self.time_point = t_idx
-                if t_idx > 0 and self.params.dt_s > 0:
-                    if not self._wait_for_dt(t_idx):
-                        break
+                action = self._pace_timepoint(t_idx)
+                if action == "skip":
+                    continue
+                if action == "abort":
+                    break
                 if self.abort_requested_fn():
                     break
 
@@ -421,13 +423,17 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self.stage.move_z_to(z_ref)
         self.wait_till_operation_is_completed()
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        # Fail fast on write errors: the cause is almost always systematic (full
-        # disk, shape mismatch), so continuing would record blank data at every
-        # remaining FOV.  run() catches this, aborts, and signals finished.
-        if writer.write_error_count > 0:
+        # Fail fast on write errors OR a wedged drain thread: either way the
+        # cause is almost always systematic (full disk, stalled mount), so
+        # continuing would burn the timeout at every remaining FOV producing
+        # blank data.  A wedged finalize returns before errors are countable,
+        # which is why write_error_count alone is not sufficient.
+        # run() catches this, aborts, and signals finished.
+        if writer.write_error_count > 0 or writer.finalize_wedged:
             raise RuntimeError(
-                f"{writer.write_error_count} recording write error(s) at t={t_idx} "
-                f"region={region_id} fov={fov_idx}; store sealed incomplete: {out}"
+                f"recording failed at t={t_idx} region={region_id} fov={fov_idx} "
+                f"(write errors={writer.write_error_count}, drain wedged={writer.finalize_wedged}); "
+                f"store sealed incomplete: {out}"
             )
         return emitted
 
@@ -444,11 +450,11 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # The inherited capture path (acquire_camera_image) branches on
         # liveController.trigger_mode, so the LiveController and the camera must agree
         # on software-trigger mode.  set_trigger_mode(SOFTWARE) sets both the camera
-        # acquisition mode and the microcontroller trigger mode; capture the previous
-        # LiveController mode and restore it in the finally.  Manage the streaming
-        # lifecycle locally so it never interferes with the recording phase's
-        # CONTINUOUS streaming.
-        prev_trigger_mode = getattr(self.liveController, "trigger_mode", None)
+        # acquisition mode and the microcontroller trigger mode.  No per-FOV restore:
+        # run()'s finally restores the user's trigger mode once at the end of the
+        # acquisition — restoring per FOV would flip-flop the camera and MCU 2x per
+        # FOV for no benefit.  Manage the streaming lifecycle locally so it never
+        # interferes with the recording phase's CONTINUOUS streaming.
         try:
             self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
         except Exception:
@@ -499,12 +505,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.camera.stop_streaming()
             except Exception:
                 log.exception("Failed to stop streaming after z-stack")
-            # Restore the LiveController trigger mode captured before the z-stack.
-            if prev_trigger_mode is not None and prev_trigger_mode != TriggerMode.SOFTWARE:
-                try:
-                    self.liveController.set_trigger_mode(prev_trigger_mode)
-                except Exception:
-                    log.exception("Failed to restore LiveController trigger mode after z-stack")
             self.stage.move_z_to(z_ref)
             self.wait_till_operation_is_completed()
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
@@ -556,6 +556,13 @@ class RecordZStackWorker(MultiPointWorkerBase):
             except Exception:
                 log.exception("failed to stop streaming after probe frame")
         if frame is not None:
+            if frame.ndim != 2:
+                # A color frame (Y, X, 3) would silently produce a 2-D dataset
+                # that every write then fails against — reject it up front.
+                raise ValueError(
+                    f"recording supports monochrome frames only; camera delivered shape {frame.shape} "
+                    f"(set the camera to a mono pixel format for the recording phase)"
+                )
             return int(frame.shape[0]), int(frame.shape[1]), frame.dtype
         log.warning("sizing recording dataset from get_resolution(); may mismatch delivered frames")
         width, height = self.camera.get_resolution()
@@ -588,24 +595,36 @@ class RecordZStackWorker(MultiPointWorkerBase):
         path = os.path.join(self.experiment_path, "zstack", str(region_id))
         return path
 
+    def _pace_timepoint(self, t_idx: int) -> str:
+        """Decide how to handle time point ``t_idx``: 'run', 'skip', or 'abort'.
+
+        Starts are paced on the absolute grid ``acquisition_start + t_idx*dt``.
+        A slot whose start already passed is SKIPPED (grid-preserving, mirrors
+        MultiPointWorker's skip loop) — running it late would silently stretch
+        the real sampling interval while the recorded ``time_increment_s``
+        metadata still claims ``dt``.
+        """
+        if t_idx == 0 or self.params.dt_s <= 0:
+            return "run"
+        start = self._acq_start_time if self._acq_start_time is not None else time.monotonic()
+        if time.monotonic() > start + t_idx * self.params.dt_s:
+            log.warning(
+                f"skipping time point {t_idx}: per-timepoint work exceeded dt={self.params.dt_s:g}s "
+                f"(grid-preserving skip, mirrors MultiPointWorker)"
+            )
+            return "skip"
+        return "run" if self._wait_for_dt(t_idx) else "abort"
+
     def _wait_for_dt(self, t_idx: int) -> bool:
         """Sleep until time point ``t_idx``'s scheduled start (abort-aware).
 
-        Starts are paced at ``acquisition_start + t_idx * dt`` (matching
-        MultiPointWorker and the recorded ``time_increment_s`` metadata) —
-        NOT ``dt`` after the previous timepoint's work finished, which would
-        stretch the real sampling interval to ``dt + work`` while the metadata
-        still claimed ``dt``.  Returns False if an abort was requested.
+        Uses time.monotonic() so an NTP clock step mid-acquisition cannot skew
+        or collapse the remaining intervals.  Returns False on abort.
         """
-        start = self._acq_start_time if self._acq_start_time is not None else time.time()
+        start = self._acq_start_time if self._acq_start_time is not None else time.monotonic()
         deadline = start + t_idx * self.params.dt_s
-        if time.time() > deadline:
-            log.warning(
-                f"time point {t_idx} starting late: per-timepoint work exceeded dt={self.params.dt_s:g}s; "
-                f"recorded time_increment_s underestimates the real interval"
-            )
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if self.abort_requested_fn():
                 return False
-            self._sleep(min(0.1, max(0.0, deadline - time.time())))
+            self._sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         return True
