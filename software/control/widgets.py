@@ -17294,9 +17294,28 @@ class RecordZStackMultiPointWidget(QFrame):
         table_row.addStretch(1)
         vbox.addLayout(table_row)
 
-        # Row 1: FPS | Duration
+        # Row 1: Nz | FPS + Duration | computed planes/time summary
+        def _vline() -> QFrame:
+            line = QFrame()
+            line.setFrameShape(QFrame.VLine)
+            line.setFrameShadow(QFrame.Sunken)
+            return line
+
         fps_row = QHBoxLayout()
         fps_row.setSpacing(4)
+
+        fps_row.addWidget(QLabel("Nz:"))
+        self.entry_recording_Nz = QSpinBox()
+        self.entry_recording_Nz.setRange(1, 100)
+        self.entry_recording_Nz.setValue(1)
+        self.entry_recording_Nz.setKeyboardTracking(False)
+        self.entry_recording_Nz.setMaximumWidth(70)
+        self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
+        fps_row.addWidget(self.entry_recording_Nz)
+
+        fps_row.addSpacing(4)
+        fps_row.addWidget(_vline())
+        fps_row.addSpacing(4)
 
         fps_row.addWidget(QLabel("FPS:"))
         self.entry_fps = QDoubleSpinBox()
@@ -17320,11 +17339,13 @@ class RecordZStackMultiPointWidget(QFrame):
         fps_row.addStretch(1)
         vbox.addLayout(fps_row)
 
-        # Row 2: Bottom Z | Nz | dz (dz hidden when Nz == 1)
+        # Row 2: Z offset (caption becomes "Bottom Z offset" when Nz > 1) | dz
+        # (dz hidden when Nz == 1)
         plane_row = QHBoxLayout()
         plane_row.setSpacing(4)
 
-        plane_row.addWidget(QLabel("Bottom Z:"))
+        self.label_recording_bottom_z = QLabel("Z offset:")
+        plane_row.addWidget(self.label_recording_bottom_z)
         self.entry_recording_bottom_z = QDoubleSpinBox()
         self.entry_recording_bottom_z.setRange(-500.0, 500.0)
         self.entry_recording_bottom_z.setDecimals(1)
@@ -17335,16 +17356,6 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_recording_bottom_z.setMaximumWidth(95)
         self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
         plane_row.addWidget(self.entry_recording_bottom_z)
-
-        plane_row.addSpacing(4)
-        plane_row.addWidget(QLabel("Nz:"))
-        self.entry_recording_Nz = QSpinBox()
-        self.entry_recording_Nz.setRange(1, 100)
-        self.entry_recording_Nz.setValue(1)
-        self.entry_recording_Nz.setKeyboardTracking(False)
-        self.entry_recording_Nz.setMaximumWidth(70)
-        self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
-        plane_row.addWidget(self.entry_recording_Nz)
 
         plane_row.addSpacing(4)
         self.label_recording_dz = QLabel("dz:")
@@ -17363,19 +17374,8 @@ class RecordZStackMultiPointWidget(QFrame):
         plane_row.addStretch(1)
         vbox.addLayout(plane_row)
 
-        # Row 3: computed planes/time summary
-        planes_row = QHBoxLayout()
-        planes_row.setSpacing(4)
-        self.label_recording_planes = QLabel("")
-        planes_row.addWidget(self.label_recording_planes)
-        planes_row.addStretch(1)
-        vbox.addLayout(planes_row)
-
-        # Wire up recording plane count / dz-visibility updates
+        # Wire up dz-visibility / caption updates (both driven by Nz alone)
         self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
-        self.entry_recording_dz.valueChanged.connect(self._update_recording_planes_ui)
-        self.entry_recording_bottom_z.valueChanged.connect(self._update_recording_planes_ui)
-        self.entry_duration.valueChanged.connect(self._update_recording_planes_ui)
         self._update_recording_planes_ui()
 
         return grp
@@ -17542,20 +17542,11 @@ class RecordZStackMultiPointWidget(QFrame):
 
     def _update_recording_planes_ui(self) -> None:
         """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement)
-        and refresh the computed planes/time summary label."""
-        nz = self.entry_recording_Nz.value()
-        multi = nz > 1
+        and switch the Z-offset caption between single- and multi-plane wording."""
+        multi = self.entry_recording_Nz.value() > 1
         self.label_recording_dz.setVisible(multi)
         self.entry_recording_dz.setVisible(multi)
-        bottom = self.entry_recording_bottom_z.value()
-        per_fov_s = nz * self.entry_duration.value()
-        if multi:
-            top = bottom + (nz - 1) * self.entry_recording_dz.value()
-            self.label_recording_planes.setText(
-                f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
-            )
-        else:
-            self.label_recording_planes.setText(f"1 plane @ {bottom:+.1f} µm — {per_fov_s:.1f} s/FOV")
+        self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
 
     def _add_zstack_channel_row(
         self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
