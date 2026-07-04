@@ -1656,6 +1656,10 @@ class HighContentScreeningGui(QMainWindow):
             # bare channel (dark acquisition).
             self.objectivesWidget.signal_objective_changed.connect(self.recordZStackWidget.refresh_channel_list)
             self.profileWidget.signal_profile_changed.connect(self.recordZStackWidget.refresh_channel_list)
+            # Well clicks rebuild this tab's FOV grid (wellplate's handler
+            # early-returns when its own tab is not current, so without this the
+            # selector gives no coverage feedback on the Record + Z-Stack tab).
+            self.wellSelectionWidget.signal_wellSelected.connect(self.recordZStackWidget.on_well_selection_changed)
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
@@ -2436,9 +2440,13 @@ class HighContentScreeningGui(QMainWindow):
             # trigger flexible regions update
             self.flexibleMultiPointWidget.update_fov_positions()
 
+        if is_record_zstack_acquisition:
+            # Regions were cleared above; rebuild the FOV grid for the current
+            # well selection so the navigation viewer shows scan coverage.
+            self.recordZStackWidget._update_scan_regions()
+
         self.toggleWellSelector(
-            (is_wellplate_acquisition or is_record_zstack_acquisition)
-            and self.wellSelectionWidget.format != "glass slide"
+            self._tab_uses_well_selector(index) and self.wellSelectionWidget.format != "glass slide"
         )
         acquisitionWidget = self.recordTabWidget.widget(index)
         acquisitionWidget.emit_selected_channels()
@@ -2558,6 +2566,23 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
+    def _tab_uses_well_selector(self, index) -> bool:
+        """True if the record tab at ``index`` drives acquisitions from the well
+        selector (Wellplate Multipoint and Record + Z-Stack): both onTabChanged
+        and toggleAcquisitionStart must agree on this, or the selector is hidden
+        and never restored after an acquisition on one of these tabs."""
+        is_wellplate = (
+            (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
+            if ENABLE_WELLPLATE_MULTIPOINT
+            else False
+        )
+        is_record_zstack = (
+            (index == self.recordTabWidget.indexOf(self.recordZStackWidget))
+            if self.recordZStackWidget is not None
+            else False
+        )
+        return is_wellplate or is_record_zstack
+
     def toggleWellSelector(self, show, remember_state=True):
         if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
             self.dock_wellSelection.setVisible(True)
@@ -2604,16 +2629,14 @@ class HighContentScreeningGui(QMainWindow):
         if acquisition_started:
             self.liveControlWidget.toggle_autolevel(not acquisition_started)
 
-        # hide well selector during acquisition
-        is_wellplate_acquisition = (
-            (current_index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
-            if ENABLE_WELLPLATE_MULTIPOINT
-            else False
-        )
-        if is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide":
+        # hide well selector during acquisition; restore it afterwards on tabs
+        # that drive acquisitions from it.  remember_state=False everywhere:
+        # acquisition start/stop is transient and must not overwrite the user's
+        # remembered visibility preference.
+        if self._tab_uses_well_selector(current_index) and self.wellSelectionWidget.format != "glass slide":
             self.toggleWellSelector(not acquisition_started, remember_state=False)
         else:
-            self.toggleWellSelector(False)
+            self.toggleWellSelector(False, remember_state=False)
 
         # display acquisition progress bar during acquisition
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
@@ -2909,7 +2932,10 @@ class HighContentScreeningGui(QMainWindow):
         # being killed mid-write (corrupted store).
         if getattr(self, "recordZStackController", None) is not None:
             try:
-                self.recordZStackController.close()
+                # 30s: the worker's unwind can legitimately take this long on a
+                # slow disk (RecordingWriter finalize budget + job drain + stage
+                # restores); a 5s join let teardown race the still-running worker.
+                self.recordZStackController.close(timeout_s=30.0)
             except Exception:
                 self.log.exception(f"Error closing record z-stack controller during {context}")
 

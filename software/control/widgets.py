@@ -17426,9 +17426,16 @@ class RecordZStackMultiPointWidget(QFrame):
 
     # ---------------------------------------------------------------------- helpers
 
-    def _populate_channel_combo(self, combo: QComboBox) -> None:
-        """Populate a channel QComboBox from liveController."""
+    def _populate_channel_combo(self, combo: QComboBox, names: Optional[List[str]] = None) -> None:
+        """Populate a channel QComboBox from liveController (or a pre-fetched list).
+
+        ``names`` lets refresh_channel_list share this path with its fetch-first
+        bail-out semantics instead of duplicating the population code.
+        """
         combo.clear()
+        if names is not None:
+            combo.addItems(names)
+            return
         try:
             channels = self.liveController.get_channels(self.objectiveStore.current_objective)
             for ch in channels:
@@ -17843,6 +17850,18 @@ class RecordZStackMultiPointWidget(QFrame):
         self.btn_startAcquisition.setChecked(False)
         self.signal_acquisition_started.emit(False)
 
+    def on_well_selection_changed(self) -> None:
+        """Rebuild the FOV grid when the well selection changes on this tab.
+
+        Connected in gui_hcs to wellSelectionWidget.signal_wellSelected —
+        WellplateMultiPointWidget's equivalent handler early-returns when its
+        own tab is not current, so this widget needs its own.  No-op when
+        another record tab is current.
+        """
+        if self.tab_widget is not None and self.tab_widget.currentWidget() is not self:
+            return
+        self._update_scan_regions()
+
     def refresh_channel_list(self) -> None:
         """Repopulate the channel combos from liveController.
 
@@ -17870,12 +17889,16 @@ class RecordZStackMultiPointWidget(QFrame):
         names = [ch.name for ch in channels]
 
         prev_recording = self._recording_channel_name()
-        self._recording_ch_combo.clear()
-        self._recording_ch_combo.addItems(names)
+        self._populate_channel_combo(self._recording_ch_combo, names=names)
         if prev_recording and prev_recording in names:
             self._recording_ch_combo.setCurrentIndex(names.index(prev_recording))
-        self.combobox_zstack_add_channel.clear()
-        self.combobox_zstack_add_channel.addItems(names)
+        elif prev_recording:
+            self._log.warning(
+                f"recording channel {prev_recording!r} is not available for the current "
+                f"objective/profile; selection changed to {names[0]!r} — review the recording "
+                f"exposure/gain/illumination before starting an acquisition"
+            )
+        self._populate_channel_combo(self.combobox_zstack_add_channel, names=names)
         for name in [n for n in self._zstack_channel_names if n not in names]:
             self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")
             self._remove_zstack_channel_row(name)

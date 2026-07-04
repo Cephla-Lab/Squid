@@ -393,9 +393,16 @@ class RecordZStackWorker(MultiPointWorkerBase):
             channel_wavelengths=[None],
             is_hcs=False,
         )
+        if effective_fps != self.params.fps:
+            # The probe requested the original fps; align the camera hint with
+            # the clamped rate we will actually pace/size against.
+            try:
+                self.camera.set_frame_rate(effective_fps)
+            except Exception:
+                log.exception("failed to re-apply clamped frame rate")
         writer = RecordingWriter(cfg)
         cap = StreamingCapture(
-            ContinuousFrameSource(self.camera, effective_fps),
+            ContinuousFrameSource(self.camera, effective_fps, already_configured=True),
             RecordingRouter(effective_fps),
             CountStop(T),
             writer,

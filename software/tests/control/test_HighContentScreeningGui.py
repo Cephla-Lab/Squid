@@ -93,3 +93,30 @@ def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
     tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
 
     assert not win.dock_wellSelection.isHidden(), "well selector dock must stay available on the Record + Z-Stack tab"
+
+
+def test_record_zstack_acquisition_finish_keeps_well_selector(qtbot, monkeypatch):
+    """R6: toggleAcquisitionStart(False) after a Record + Z-Stack acquisition
+    must not hide the well selector dock (only the wellplate branch kept it)."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    tabw = win.recordTabWidget
+    labels = [tabw.tabText(i) for i in range(tabw.count())]
+    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+    assert not win.dock_wellSelection.isHidden()
+
+    win.toggleAcquisitionStart(True)  # acquisition starts: selector hides
+    assert win.dock_wellSelection.isHidden()
+    win.toggleAcquisitionStart(False)  # acquisition ends: selector must return
+    assert not win.dock_wellSelection.isHidden(), "well selector not restored after Record+Z-Stack acquisition"

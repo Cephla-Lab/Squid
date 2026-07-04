@@ -1021,3 +1021,43 @@ def test_refresh_channel_list_preserves_state_on_failure(qtbot, simulated_widget
     w.refresh_channel_list()
     assert w._zstack_channel_names == ["BF LED matrix full"], "rows wiped on empty channel list"
     assert w._recording_ch_combo.count() == combo_count_before
+
+
+def test_on_well_selection_changed_rebuilds_regions(qtbot, simulated_widget_deps):
+    """R7: well clicks while this tab is current must rebuild the FOV grid so
+    the navigation viewer shows scan coverage (wellplate's handler early-returns
+    for other tabs, leaving this tab's preview inert)."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    sc = w.scanCoordinates
+    sc.reset_mock()
+
+    w.on_well_selection_changed()
+
+    assert sc.set_well_coordinates.called, "well selection change did not rebuild the FOV grid"
+
+
+def test_refresh_channel_list_warns_on_silent_selection_swap(qtbot, simulated_widget_deps, caplog):
+    """R8: when the previously selected recording channel vanishes after an
+    objective/profile change, the combo falls back to the first channel — that
+    swap must be loud, or the next Start records the wrong channel."""
+    import logging
+
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    # Select the second channel, then refresh with a set that lacks it.
+    w._recording_ch_combo.setCurrentIndex(1)
+    prev = w._recording_ch_combo.currentText()
+    w.liveController.get_channels.return_value = [_make_channel("Only Channel")]
+
+    with caplog.at_level(logging.WARNING):
+        w.refresh_channel_list()
+
+    assert w._recording_ch_combo.currentText() == "Only Channel"
+    assert any(
+        prev in rec.message and "Only Channel" in rec.message for rec in caplog.records
+    ), f"no warning about the recording selection changing from {prev!r}"

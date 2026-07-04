@@ -750,3 +750,48 @@ def test_join_timeout_is_not_wedged(tmp_path, monkeypatch):
         rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
     rw.finalize(timeout_s=0.5)  # join times out while the drain makes progress
     assert rw.finalize_wedged is False, "slow-but-progressing drain wrongly flagged wedged"
+
+
+def test_frame_source_skips_reconfig_when_already_configured():
+    """R11: record() already probes set_acquisition_mode + set_frame_rate for
+    the achievable fps; ContinuousFrameSource repeating both doubles the camera
+    reconfiguration (mode switch + strobe/exposure re-send) on every FOV."""
+    from control.core.streaming_capture import ContinuousFrameSource
+
+    class _CountingCamera:
+        def __init__(self):
+            self.mode_calls = 0
+            self.rate_calls = 0
+
+        def set_acquisition_mode(self, mode):
+            self.mode_calls += 1
+
+        def set_frame_rate(self, fps):
+            self.rate_calls += 1
+            return fps
+
+        def add_frame_callback(self, cb):
+            return 1
+
+        def remove_frame_callback(self, cb_id):
+            pass
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+    cam = _CountingCamera()
+    src = ContinuousFrameSource(cam, fps=10.0, already_configured=True)
+    src.start(lambda f: None)
+    src.stop()
+    assert cam.mode_calls == 0 and cam.rate_calls == 0, (
+        f"already-configured source still reconfigured the camera " f"(mode={cam.mode_calls}, rate={cam.rate_calls})"
+    )
+
+    cam2 = _CountingCamera()
+    src2 = ContinuousFrameSource(cam2, fps=10.0)
+    src2.start(lambda f: None)
+    src2.stop()
+    assert cam2.mode_calls == 1 and cam2.rate_calls == 1  # default behavior unchanged
