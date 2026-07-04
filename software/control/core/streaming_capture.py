@@ -26,29 +26,37 @@ class CountStop:
 
 
 class RecordingRouter:
-    """Maps incoming frames to (t,c,z)=(t_index,0,0), downsampling to `fps`.
+    """Maps incoming frames to (t,c,z)=(slot,0,0), downsampling to `fps`.
 
-    Emission slots are anchored to the FIRST frame's timestamp (slot k opens at
-    ``first_ts + k*period``), not to the previous emission: with the camera
-    running at the target rate, host-side delivery jitter around the period
-    would otherwise reject roughly alternate frames and halve the effective
-    capture rate.  A quarter-period tolerance absorbs per-frame jitter, and
-    absolute slots self-correct — one late frame never delays later slots, so
-    the long-run rate stays at ``fps``.
+    Each accepted frame goes to the slot NEAREST its arrival time relative to
+    the first frame (``slot = round(elapsed / period)``, ties rounding down);
+    a frame whose nearest slot is already filled is rejected.  This anchors
+    pacing absolutely (host-delivery jitter around the period cannot reject
+    at-rate frames or halve the capture rate) and, after a delivery stall, a
+    burst of frames does NOT back-fill the missed slots — the stall stays in
+    the data as fill-value holes, keeping the time axis honest (the store is
+    then sealed incomplete by the under-delivery path).
     """
 
     def __init__(self, fps: float):
         self._period = 1.0 / fps if fps and fps > 0 else 0.0
-        self._t_index = 0
+        self._t_index = 0  # next unfilled slot
         self._first_ts: Optional[float] = None
 
     def route(self, timestamp: float) -> Optional[Tuple[int, int, int]]:
         if self._first_ts is None:
             self._first_ts = timestamp
-        elif self._period > 0 and (timestamp - self._first_ts) < (self._t_index - 0.25) * self._period:
-            return None
-        idx = (self._t_index, 0, 0)
-        self._t_index += 1
+            slot = 0
+        elif self._period > 0:
+            # Nearest slot; the epsilon makes exact half-period ties round DOWN
+            # so a 2x-rate camera still has alternate frames rejected.
+            slot = int((timestamp - self._first_ts) / self._period + 0.5 - 1e-9)
+            if slot < self._t_index:
+                return None
+        else:
+            slot = self._t_index
+        idx = (slot, 0, 0)
+        self._t_index = slot + 1
         return idx
 
 
@@ -83,6 +91,14 @@ class RecordingWriter:
         # may still be accruing after finalize() returns, so callers must not
         # trust write_error_count == 0 as "healthy" — check this flag too.
         self._finalize_wedged = False
+        # Set instead of the abort flag when finalize() gives up on a wedged
+        # drain: the drain writes the remaining CAPTURED frames whenever the
+        # stall clears, then exits and seals (abort would discard them).
+        self._flush_and_exit = threading.Event()
+        # (captured, expected) reported by the capture when frames never
+        # arrived (camera stall) — drops/errors are counted here, but only the
+        # capture knows about frames it expected and never saw.
+        self._incomplete_info: Optional[Tuple[int, int]] = None
         # True only once the drain thread has actually been started.  finalize()/
         # abort() must not join (or push the sentinel to) a thread that never
         # started, otherwise a failure in start()'s initialize() would surface as
@@ -151,6 +167,8 @@ class RecordingWriter:
                 try:
                     item = self._q.get(timeout=0.1)
                 except queue.Empty:
+                    if self._flush_and_exit.is_set():
+                        break  # backlog flushed after a wedged finalize()
                     continue
                 if item is _SENTINEL:
                     break
@@ -166,18 +184,22 @@ class RecordingWriter:
         finally:
             if self._abort_requested.is_set():
                 self._writer.abort()
-            elif self._write_errors > 0 or self._dropped > 0:
+            elif self._write_errors > 0 or self._dropped > 0 or self._incomplete_info is not None:
                 # Never stamp acquisition_complete=True on a store with failed
-                # writes OR dropped frames: either way some planes are silent
-                # fill values (StreamingCapture counts routed frames, so its
-                # stop condition is satisfied even when enqueue dropped them).
-                # abort() seals acquisition_complete=False so readers can tell;
-                # the queue was already drained, so no captured data is lost.
-                _log.error(
-                    f"recording store sealed INCOMPLETE: {self._write_errors} write error(s), "
-                    f"{self._dropped} dropped frame(s)"
-                )
-                self._writer.abort()
+                # writes, dropped frames, or frames that never arrived: some
+                # planes are silent fill values.  Seal acquisition_complete=False
+                # with the counts, but do NOT mark it "aborted" — this was not a
+                # user abort, and the queue was drained so no captured data is
+                # lost.
+                extra = {
+                    "incomplete": True,
+                    "write_errors": self._write_errors,
+                    "dropped_frames": self._dropped,
+                }
+                if self._incomplete_info is not None:
+                    extra["captured_frames"], extra["expected_frames"] = self._incomplete_info
+                _log.error(f"recording store sealed INCOMPLETE: {extra}")
+                self._writer.abort(mark_aborted=False, extra_attrs=extra)
             else:
                 self._writer.finalize()
 
@@ -199,6 +221,16 @@ class RecordingWriter:
         finalize() returned), so fail-fast callers must treat wedged as failure.
         """
         return self._finalize_wedged
+
+    def mark_incomplete(self, captured: int, expected: int) -> None:
+        """Record that the capture under-delivered (frames never arrived).
+
+        Called by StreamingCapture before finalize() when the stop condition
+        was not met with no user abort — drops and write errors are counted
+        internally, but only the capture knows about frames it expected and
+        never saw.  Makes the drain seal the store acquisition_complete=False.
+        """
+        self._incomplete_info = (int(captured), int(expected))
 
     def finalize(self, timeout_s: float = 30.0) -> None:
         """Flush the queue, join the drain thread (which seals the ZarrWriter).
@@ -222,19 +254,24 @@ class RecordingWriter:
             except queue.Full:
                 if time.monotonic() >= deadline:
                     _log.error(
-                        f"drain thread wedged (queue full for {timeout_s:.0f}s); "
-                        f"switching to abort — recording will be sealed incomplete"
+                        f"drain thread wedged (queue full for {timeout_s:.0f}s); giving up the wait — "
+                        f"the captured backlog will be flushed and sealed whenever the stall clears"
                     )
                     self._finalize_wedged = True
-                    self._abort_requested.set()
+                    # Flush-and-exit, NOT abort: the queued frames are captured
+                    # data; the daemon drain writes them once the stalled write
+                    # returns, then exits and seals the store.
+                    self._flush_and_exit.set()
                     return
         # The put and the join share ONE budget: a sentinel accepted late must
         # not be followed by a fresh full-length join (callers would block for
         # up to ~2x timeout_s).
         self._thread.join(timeout=max(0.1, deadline - time.monotonic()))
         if self._thread.is_alive():
-            self._finalize_wedged = True
-            _log.warning("drain thread still alive after finalize() join timeout")
+            # Slow but progressing backlog — NOT wedged (flagging it would
+            # fail-fast whole multi-well runs over stores that finish fine).
+            # The daemon drain seals the store when it finishes.
+            _log.warning("drain thread still writing after finalize() join timeout; store seals when it finishes")
 
     def abort(self) -> None:
         """Signal the drain thread to stop (which aborts the ZarrWriter)."""
@@ -334,6 +371,12 @@ class StreamingCapture:
             return
         idx = self._router.route(camera_frame.timestamp)
         if idx is not None:
+            expected = self._stop.expected() if hasattr(self._stop, "expected") else None
+            if expected is not None and idx[0] >= expected:
+                # The router's slot ran past the dataset (a delivery stall
+                # pushed the timeline beyond T): nothing left to record into.
+                self._done.set()
+                return
             self._writer.enqueue(camera_frame.frame, *idx)
             self._emitted += 1
             if self._stop.met(self._emitted):
@@ -373,14 +416,17 @@ class StreamingCapture:
                 # Aborted mid-capture: seal the recording as incomplete, not complete.
                 self._writer.abort()
             else:
-                self._writer.finalize()
                 if expected is not None and self._emitted < expected:
-                    # Stop condition was not met (slow camera / timeout): the trailing
-                    # zarr planes are fill values, not real data.  Warn loudly.
+                    # Stop condition was not met (slow camera / stall / timeout):
+                    # some zarr planes are fill values, not real data.  Tell the
+                    # writer so the store is sealed acquisition_complete=False.
                     _log.warning(
                         f"streaming capture incomplete: captured {self._emitted}/{expected} "
-                        f"frames; trailing planes are blank fill"
+                        f"frames; missing planes are blank fill"
                     )
+                    if hasattr(self._writer, "mark_incomplete"):
+                        self._writer.mark_incomplete(self._emitted, expected)
+                self._writer.finalize()
             # Surface total dropped frames so slow-disk runs are diagnosable without
             # grepping individual per-frame warnings.
             dropped = self._writer.dropped_count if hasattr(self._writer, "dropped_count") else 0

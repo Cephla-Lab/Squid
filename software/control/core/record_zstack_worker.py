@@ -429,11 +429,11 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # blank data.  A wedged finalize returns before errors are countable,
         # which is why write_error_count alone is not sufficient.
         # run() catches this, aborts, and signals finished.
-        if writer.write_error_count > 0 or writer.finalize_wedged:
+        if writer.write_error_count > 0 or writer.finalize_wedged or writer.dropped_count > 0:
             raise RuntimeError(
                 f"recording failed at t={t_idx} region={region_id} fov={fov_idx} "
-                f"(write errors={writer.write_error_count}, drain wedged={writer.finalize_wedged}); "
-                f"store sealed incomplete: {out}"
+                f"(write errors={writer.write_error_count}, dropped={writer.dropped_count}, "
+                f"drain wedged={writer.finalize_wedged}); store sealed incomplete: {out}"
             )
         return emitted
 

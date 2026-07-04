@@ -15,7 +15,9 @@ def test_recording_router_downsamples_and_indexes():
     assert r.route(100.00) == (0, 0, 0)  # first frame always emits
     assert r.route(100.05) is None  # 50 ms later -> skip
     assert r.route(100.10) == (1, 0, 0)  # 100 ms later -> emit, t=1
-    assert r.route(100.30) == (2, 0, 0)  # emit, t=2
+    # 300 ms after the anchor -> slot 3 (slot 2 stays a fill hole: frames map
+    # to the slot matching their arrival time; gaps are not compressed).
+    assert r.route(100.30) == (3, 0, 0)
 
 
 def test_recording_writer_roundtrip(tmp_path):
@@ -417,8 +419,8 @@ def test_recording_writer_write_errors_seal_incomplete(tmp_path, monkeypatch):
         raise RuntimeError("disk full")
 
     monkeypatch.setattr(ZarrWriter, "write_frame", boom)
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: calls.append("finalize"))
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: calls.append("abort"))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append("finalize"))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append("abort"))
 
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path))
     rw.start()
@@ -440,20 +442,25 @@ def test_recording_writer_finalize_bounded_when_drain_wedged(tmp_path, monkeypat
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
     monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
     rw.start()
     # First frame wedges the drain thread inside write_frame; two more fill the queue.
-    for i in range(3):
-        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    import time as _t
+
+    _t.sleep(0.2)  # let the drain take f0 so f1+f2 truly fill the queue
+    rw.enqueue(np.zeros((4, 4), np.uint16), 1, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 2, 0, 0)
 
     t = threading.Thread(target=lambda: rw.finalize(timeout_s=1.0), daemon=True)
     t.start()
     t.join(timeout=5.0)
     still_stuck = t.is_alive()
     release.set()  # let the drain thread exit before asserting
+    rw._thread.join(timeout=5.0)  # don't leak the drain into the next test
     assert not still_stuck, "finalize() deadlocked on the full bounded queue"
 
 
@@ -517,8 +524,8 @@ def test_recording_writer_byte_bound_drops(tmp_path, monkeypatch):
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
     monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
     frame = np.zeros((100, 100), np.uint16)  # 20 kB each
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=256, max_bytes=50_000)
@@ -528,6 +535,7 @@ def test_recording_writer_byte_bound_drops(tmp_path, monkeypatch):
     dropped = rw.dropped_count
     release.set()
     rw.finalize(timeout_s=2.0)
+    rw._thread.join(timeout=5.0)  # don't leak the drain into the next test
     assert dropped >= 3, f"byte cap not enforced: only {dropped} frames dropped"
 
 
@@ -543,8 +551,8 @@ def test_dropped_frames_seal_store_incomplete(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
     monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(10))
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: calls.append("finalize"))
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: calls.append("abort"))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append("finalize"))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append("abort"))
 
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=1)
     rw.start()
@@ -569,16 +577,21 @@ def test_finalize_wedged_flag_feeds_fail_fast(tmp_path, monkeypatch):
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
     monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
     rw.start()
-    for i in range(3):
-        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    import time as _t
+
+    _t.sleep(0.2)  # drain takes f0 (wedges); f1+f2 then fill the queue
+    rw.enqueue(np.zeros((4, 4), np.uint16), 1, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 2, 0, 0)
     rw.finalize(timeout_s=1.0)  # sentinel can't be queued -> wedged fallback
     still_wedged = rw.finalize_wedged
     release.set()
+    rw._thread.join(timeout=5.0)  # don't leak the drain into the next test
     assert still_wedged is True
 
 
@@ -592,8 +605,8 @@ def test_finalize_total_time_respects_timeout_budget(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
     monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: _time.sleep(0.95))
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
     rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
     rw.start()
@@ -607,4 +620,133 @@ def test_finalize_total_time_respects_timeout_budget(tmp_path, monkeypatch):
     t0 = _time.monotonic()
     rw.finalize(timeout_s=1.0)
     took = _time.monotonic() - t0
+    rw._thread.join(timeout=10.0)  # drain finishes backlog; don't leak into the next test
     assert took < 1.5, f"finalize(timeout_s=1.0) blocked {took:.1f}s — put+join must share one budget"
+
+
+# ---------------------------------------------------------------------------
+# Round-2-complete fixes (R1, R3, R4, R5, R9)
+# ---------------------------------------------------------------------------
+
+
+def test_under_delivery_marks_store_incomplete(tmp_path, monkeypatch):
+    """R1: a capture that times out with emitted < expected must not let the
+    drain seal acquisition_complete=True — StreamingCapture must tell the
+    writer the capture is incomplete."""
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    calls = []
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: None)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append(("finalize",)))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append(("abort", k)))
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path))
+    rw.start()
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    rw.mark_incomplete(captured=1, expected=4)  # camera stalled at 1/4 frames
+    rw.finalize(timeout_s=5.0)
+
+    assert len(calls) == 1 and calls[0][0] == "abort", f"expected incomplete seal, got {calls}"
+    extra = calls[0][1].get("extra_attrs") or {}
+    assert extra.get("captured_frames") == 1 and extra.get("expected_frames") == 4
+    assert calls[0][1].get("mark_aborted") is False, "under-delivery is not a user abort"
+
+
+def test_streaming_capture_calls_mark_incomplete_on_timeout():
+    """R1 (capture side): run() must call writer.mark_incomplete when the stop
+    condition was not met (frames never arrived — no drops, no write errors)."""
+    frames = [_FakeFrame(100.0 + i, np.zeros((4, 4), np.uint16)) for i in range(3)]
+
+    class _StubWriterWithIncomplete(_RecordingStubWriter):
+        def __init__(self):
+            super().__init__()
+            self.incomplete = None
+
+        def mark_incomplete(self, captured, expected):
+            self.incomplete = (captured, expected)
+
+    w = _StubWriterWithIncomplete()
+    cap = StreamingCapture(
+        _FakeSource(frames),
+        RecordingRouter(fps=0.0),
+        CountStop(10),  # only 3 will arrive
+        w,
+        abort_fn=lambda: False,
+    )
+    emitted = cap.run(timeout=0.5)
+    assert emitted == 3
+    assert w.incomplete == (3, 10), "run() must flag under-delivery to the writer"
+    assert w.finalized is True and w.aborted is False
+
+
+def test_router_leaves_holes_after_stall():
+    """R3: a burst after a delivery stall must NOT back-fill consecutive slots
+    (compressing the time axis) — frames map to the slot matching their actual
+    arrival time, leaving fill holes for the stall."""
+    r = RecordingRouter(fps=10.0)
+    stamps = [100.0, 100.1, 102.0, 102.001, 102.002, 102.1]
+    slots = [r.route(s) for s in stamps]
+    accepted = [s[0] for s in slots if s is not None]
+    assert accepted == [0, 1, 20, 21], f"expected stall gap preserved as holes (slots [0, 1, 20, 21]), got {accepted}"
+
+
+def test_wedged_finalize_flushes_backlog_instead_of_discarding(tmp_path, monkeypatch):
+    """R4: when finalize() gives up on a wedged drain, the already-captured
+    queued frames must still be written once the stall clears — the old abort
+    path discarded them."""
+    import threading
+    import time as _time
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    writing = threading.Event()
+    written = []
+
+    def slow_write(self, image, t, c, z, fov=None):
+        writing.set()  # drain dequeued a frame and entered the write
+        release.wait(20)
+        written.append(t)
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", slow_write)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=2)
+    rw.start()
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    assert writing.wait(5.0)  # drain took f0 and is wedged; f1, f2 now queue
+    rw.enqueue(np.zeros((4, 4), np.uint16), 1, 0, 0)
+    rw.enqueue(np.zeros((4, 4), np.uint16), 2, 0, 0)
+    rw.finalize(timeout_s=0.5)
+    assert rw.finalize_wedged is True
+
+    release.set()  # stall clears
+    deadline = _time.monotonic() + 5.0
+    while len(written) < 3 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    rw._thread.join(timeout=5.0)  # don't leak the drain into the next test
+    assert written == [0, 1, 2], f"queued captured frames discarded after wedge: only {written} written"
+
+
+def test_join_timeout_is_not_wedged(tmp_path, monkeypatch):
+    """R5: a drain that is slow but steadily writing a backlog is NOT wedged —
+    flagging it aborts whole multi-well runs over stores that finish fine."""
+    import time as _time
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: _time.sleep(0.4))
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=8)
+    rw.start()
+    for i in range(4):  # ~1.6s of backlog, sentinel enqueues immediately
+        rw.enqueue(np.zeros((4, 4), np.uint16), i, 0, 0)
+    rw.finalize(timeout_s=0.5)  # join times out while the drain makes progress
+    assert rw.finalize_wedged is False, "slow-but-progressing drain wrongly flagged wedged"
