@@ -2407,6 +2407,13 @@ class HighContentScreeningGui(QMainWindow):
             if ENABLE_WELLPLATE_MULTIPOINT
             else False
         )
+        # Record + Z-Stack selects wells like Wellplate Multipoint, so it needs the
+        # well selector too (its validation rejects acquisitions with no wells).
+        is_record_zstack_acquisition = (
+            (index == self.recordTabWidget.indexOf(self.recordZStackWidget))
+            if self.recordZStackWidget is not None
+            else False
+        )
         self.scanCoordinates.clear_regions()
 
         if is_wellplate_acquisition:
@@ -2421,7 +2428,10 @@ class HighContentScreeningGui(QMainWindow):
             # trigger flexible regions update
             self.flexibleMultiPointWidget.update_fov_positions()
 
-        self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
+        self.toggleWellSelector(
+            (is_wellplate_acquisition or is_record_zstack_acquisition)
+            and self.wellSelectionWidget.format != "glass slide"
+        )
         acquisitionWidget = self.recordTabWidget.widget(index)
         acquisitionWidget.emit_selected_channels()
 

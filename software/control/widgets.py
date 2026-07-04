@@ -17836,6 +17836,14 @@ class RecordZStackMultiPointWidget(QFrame):
         self.btn_startAcquisition.setChecked(False)
         self.signal_acquisition_started.emit(False)
 
+    def emit_selected_channels(self) -> None:
+        """No-op stub: RecordZStackMultiPointWidget has no channel list to broadcast.
+
+        Required so ``onTabChanged`` in gui_hcs can call this on whatever widget
+        is the current record tab without checking the type (same contract as
+        ``display_progress_bar`` below).
+        """
+
     def display_progress_bar(self, show: bool) -> None:
         """No-op stub: RecordZStackMultiPointWidget has no progress bar.
 
