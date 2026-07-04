@@ -17853,15 +17853,30 @@ class RecordZStackMultiPointWidget(QFrame):
         selection is kept when it still exists; z-stack rows whose channel no
         longer exists are removed.
         """
+        # Fetch FIRST and bail out on failure or an empty result: clearing the
+        # combos before a failed fetch would leave them empty and the stale-row
+        # pruning below would then wipe every configured z-stack row (with the
+        # user's per-row exposure/gain/illumination edits) on a transient error.
+        try:
+            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+        except Exception as exc:
+            self._log.warning(f"refresh_channel_list: get_channels failed; keeping existing lists: {exc}")
+            return
+        if not channels:
+            self._log.warning(
+                "refresh_channel_list: no channels for the current objective/profile; keeping existing lists"
+            )
+            return
+        names = [ch.name for ch in channels]
+
         prev_recording = self._recording_channel_name()
-        self._populate_channel_combo(self._recording_ch_combo)
-        if prev_recording:
-            idx = self._recording_ch_combo.findText(prev_recording)
-            if idx >= 0:
-                self._recording_ch_combo.setCurrentIndex(idx)
-        self._populate_channel_combo(self.combobox_zstack_add_channel)
-        available = {self._recording_ch_combo.itemText(i) for i in range(self._recording_ch_combo.count())}
-        for name in [n for n in self._zstack_channel_names if n not in available]:
+        self._recording_ch_combo.clear()
+        self._recording_ch_combo.addItems(names)
+        if prev_recording and prev_recording in names:
+            self._recording_ch_combo.setCurrentIndex(names.index(prev_recording))
+        self.combobox_zstack_add_channel.clear()
+        self.combobox_zstack_add_channel.addItems(names)
+        for name in [n for n in self._zstack_channel_names if n not in names]:
             self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")
             self._remove_zstack_channel_row(name)
 

@@ -1651,9 +1651,11 @@ class HighContentScreeningGui(QMainWindow):
                 self.wellplateMultiPointWidget.handle_objective_change
             )
         if ENABLE_RECORDING and self.recordZStackWidget is not None:
-            # Channel sets are per-objective: repopulate the tab's channel combos
-            # so stale names don't fall back to a no-illumination bare channel.
+            # Channel sets are per-objective AND per-profile: repopulate the tab's
+            # channel combos so stale names don't fall back to a no-illumination
+            # bare channel (dark acquisition).
             self.objectivesWidget.signal_objective_changed.connect(self.recordZStackWidget.refresh_channel_list)
+            self.profileWidget.signal_profile_changed.connect(self.recordZStackWidget.refresh_channel_list)
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
