@@ -133,7 +133,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._zstack_offsets: List[float] = (
             zstack_offsets_um(params.z_min_um, params.z_max_um, params.z_step_um) if params.zstack_enabled else []
         )
-        self._frame_shape: Tuple[int, int, np.dtype] = self._probe_frame_shape()
+        # Probing captures a frame, so it happens in run() after live view stops.
+        self._frame_shape: Optional[Tuple[int, int, np.dtype]] = None
 
         if params.zstack_enabled and self.zstack_channels:
             self._setup_zstack_job_runner(prewarmed_job_runner, prewarmed_bp_values)
@@ -228,6 +229,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
         """
         # Quiesce live view once for the whole acquisition (restored in finally).
         was_live = bool(getattr(self.liveController, "is_live", False))
+        # Capture pre-acquisition hardware state so the finally can put the
+        # camera/MCU/LiveController back the way the user had them: both phases
+        # change the trigger mode, and every z-stack channel apply overwrites
+        # the current channel configuration (exposure/gain/illumination).
+        prev_trigger_mode = getattr(self.liveController, "trigger_mode", None)
+        prev_configuration = getattr(self.liveController, "currentConfiguration", None)
         if was_live:
             try:
                 self.liveController.stop_live()
@@ -235,6 +242,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 log.exception("Failed to stop live view before acquisition")
 
         try:
+            if self.params.recording_enabled:
+                # Size the recording datasets from one real processed frame.
+                # Deferred to here (not __init__) so the probe capture only
+                # touches the camera after live view has been stopped.
+                self._frame_shape = self._probe_frame_shape()
+
             if self.params.zstack_enabled and self._job_runners:
                 self._backpressure.reset()
 
@@ -267,6 +280,20 @@ class RecordZStackWorker(MultiPointWorkerBase):
                     self._finish_jobs()
                 except Exception:
                     log.exception("Error finishing z-stack jobs")
+            # Restore pre-acquisition hardware state: channel configuration first
+            # (exposure/gain/illumination source), then trigger mode (which for
+            # HARDWARE reads currentConfiguration.exposure_time), so camera +
+            # LiveController + MCU agree again before live view resumes.
+            if prev_configuration is not None:
+                try:
+                    self.liveController.set_microscope_mode(prev_configuration)
+                except Exception:
+                    log.exception("Failed to restore channel configuration after acquisition")
+            if prev_trigger_mode is not None:
+                try:
+                    self.liveController.set_trigger_mode(prev_trigger_mode)
+                except Exception:
+                    log.exception("Failed to restore trigger mode after acquisition")
             # Restart live view once, only if it was running before the acquisition.
             if was_live:
                 try:
@@ -314,7 +341,26 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # Move to z_ref + recording offset.
         self._move_z_to_offset(z_ref, self.params.recording_z_offset_um)
 
-        T = frame_count(self.params.fps, self.params.duration_s)
+        # Size the dataset, pacing, and time metadata from the fps the camera can
+        # actually deliver: a camera clamped below the requested rate (exposure
+        # limit, PRECISE_FRAMERATE max) can never fill fps*duration frames within
+        # duration seconds — the run would stall to the timeout and leave the
+        # trailing planes blank.  The mode switch happens first because toupcam
+        # resets its frame-rate strategy on mode change.
+        self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+        effective_fps = self.params.fps
+        try:
+            achievable_fps = self.camera.set_frame_rate(self.params.fps)
+            if achievable_fps and 0 < achievable_fps < self.params.fps:
+                log.warning(
+                    f"camera cannot deliver {self.params.fps:g} fps "
+                    f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"
+                )
+                effective_fps = achievable_fps
+        except Exception:
+            log.exception("set_frame_rate probe failed; assuming the requested fps")
+
+        T = max(1, frame_count(effective_fps, self.params.duration_s))
         out = self._recording_path(t_idx, region_id, fov_idx)
         y, x, dtype = self._frame_shape
 
@@ -326,7 +372,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             dtype=dtype,
             pixel_size_um=self._pixel_size_um if self._pixel_size_um is not None else 1.0,
             z_step_um=None,
-            time_increment_s=(1.0 / self.params.fps) if self.params.fps and self.params.fps > 0 else None,
+            time_increment_s=(1.0 / effective_fps) if effective_fps and effective_fps > 0 else None,
             channel_names=[rec_channel_name],
             channel_colors=[rec_color],
             channel_wavelengths=[None],
@@ -334,8 +380,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         writer = RecordingWriter(cfg)
         cap = StreamingCapture(
-            ContinuousFrameSource(self.camera, self.params.fps),
-            RecordingRouter(self.params.fps),
+            ContinuousFrameSource(self.camera, effective_fps),
+            RecordingRouter(effective_fps),
             CountStop(T),
             writer,
             abort_fn=self.abort_requested_fn,
@@ -362,6 +408,14 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self.stage.move_z_to(z_ref)
         self.wait_till_operation_is_completed()
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        # Fail fast on write errors: the cause is almost always systematic (full
+        # disk, shape mismatch), so continuing would record blank data at every
+        # remaining FOV.  run() catches this, aborts, and signals finished.
+        if writer.write_error_count > 0:
+            raise RuntimeError(
+                f"{writer.write_error_count} recording write error(s) at t={t_idx} "
+                f"region={region_id} fov={fov_idx}; store sealed incomplete: {out}"
+            )
         return emitted
 
     # ---------------------------------------------------------------- zstack
@@ -389,6 +443,11 @@ class RecordZStackWorker(MultiPointWorkerBase):
             # Fall back to setting the camera directly so capture can still proceed.
             try:
                 self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                # Keep the LiveController's view of the mode in sync with the
+                # camera: the inherited acquire_camera_image branches on
+                # liveController.trigger_mode to gate illumination, so a stale
+                # mode here would capture the entire z-stack dark.
+                self.liveController.trigger_mode = TriggerMode.SOFTWARE
             except Exception:
                 log.exception("Failed to set camera software-trigger mode for z-stack")
         self.camera.start_streaming()
@@ -452,7 +511,33 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _probe_frame_shape(self) -> Tuple[int, int, np.dtype]:
-        """Return (Y, X, dtype) for the recording dataset from the camera resolution."""
+        """Return (Y, X, dtype) for the recording dataset from one processed frame.
+
+        ``get_resolution()`` reports the sensor/binned size, but frames delivered
+        to callbacks pass through ``_process_raw_frame`` (software crop, rotation,
+        ROI).  On cameras where the two differ, a dataset sized from
+        ``get_resolution()`` makes every ``write_frame`` fail — a blank recording.
+        Capture one real frame and size the dataset from it; fall back to
+        ``get_resolution()`` only if the probe capture fails.
+        """
+        frame = None
+        try:
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.camera.start_streaming()
+            self.camera.send_trigger()
+            cam_frame = self.camera.read_camera_frame()
+            if cam_frame is not None:
+                frame = cam_frame.frame
+        except Exception:
+            log.exception("probe-frame capture failed; falling back to get_resolution()")
+        finally:
+            try:
+                self.camera.stop_streaming()
+            except Exception:
+                log.exception("failed to stop streaming after probe frame")
+        if frame is not None:
+            return int(frame.shape[0]), int(frame.shape[1]), frame.dtype
+        log.warning("sizing recording dataset from get_resolution(); may mismatch delivered frames")
         width, height = self.camera.get_resolution()
         # Map pixel format to numpy dtype (MONO8 -> uint8, else uint16).
         try:
