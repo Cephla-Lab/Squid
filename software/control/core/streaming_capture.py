@@ -301,17 +301,23 @@ class ContinuousFrameSource:
     callback, and starts/stops streaming.
     """
 
-    def __init__(self, camera, fps: float):
+    def __init__(self, camera, fps: float, already_configured: bool = False):
         self._camera = camera
         self._fps = fps
+        # True when the caller already set CONTINUOUS mode + frame rate (the
+        # achievable-fps probe in record() does exactly that): skip repeating
+        # both, which on toupcam costs a mode switch plus a strobe/exposure
+        # re-send per FOV.
+        self._already_configured = already_configured
         self._cb_id: Optional[int] = None
 
     def start(self, on_frame: Callable) -> None:
         # Order matters: switching to CONTINUOUS resets the frame-rate strategy to
         # MAX on toupcam, wiping any earlier fps hint.  Set the mode FIRST, then the
         # frame rate, so the PRECISE_FRAMERATE hint survives the mode switch.
-        self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-        self._camera.set_frame_rate(self._fps)
+        if not self._already_configured:
+            self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+            self._camera.set_frame_rate(self._fps)
         self._cb_id = self._camera.add_frame_callback(on_frame)
         self._camera.start_streaming()
 
