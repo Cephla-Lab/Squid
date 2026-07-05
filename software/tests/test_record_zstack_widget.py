@@ -1510,6 +1510,38 @@ def test_apply_yaml_settings_checks_time_checkbox_and_shows_frame(qtbot, simulat
     assert w.time_controls_frame.isHidden() is False
 
 
+def test_apply_yaml_settings_refreshes_time_tab_styling(qtbot, simulated_widget_deps):
+    """Fix Round 2: loading a multi-timepoint YAML (nt > 1) must also refresh the
+    Time tab's stylesheet (border/background), not just the checkbox state and
+    frame visibility. checkbox_time.toggled is blocked during the load, so the
+    normal _on_time_toggled -> _update_tab_styles path never fires; the fix calls
+    _update_tab_styles() directly in the finally block. Compare against a second
+    widget where checkbox_time is toggled normally (unblocked) to avoid hardcoding
+    the expected stylesheet string."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w_loaded = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w_loaded)
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
+    w_loaded._apply_yaml_settings(yaml_data)
+
+    # Reference widget: toggle checkbox_time normally (signals not blocked), so
+    # _on_time_toggled -> _update_tab_styles runs through its ordinary path.
+    w_reference = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w_reference)
+    w_reference.checkbox_time.setChecked(True)
+
+    assert w_reference.checkbox_time.isChecked() is True
+    assert w_loaded.time_frame.styleSheet() == w_reference.time_frame.styleSheet()
+    assert w_loaded.time_controls_frame.styleSheet() == w_reference.time_controls_frame.styleSheet()
+    # Guard against both sides trivially being empty strings (which would make
+    # the equality assertions above vacuous rather than a real regression check).
+    assert w_reference.time_frame.styleSheet() != ""
+    assert w_reference.time_controls_frame.styleSheet() != ""
+
+
 def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
