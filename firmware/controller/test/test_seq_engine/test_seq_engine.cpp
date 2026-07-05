@@ -179,6 +179,87 @@ void test_model_readiness_spaces_triggers(void) {
     TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= end0 + 20000);
 }
 
+// THE core feature: next channel's filter move starts at exposure end (readout
+// begins), NOT after readout completes. Saves (filter_move ∥ readout) per frame.
+void test_filter_move_overlaps_readout(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 2;
+    l.z_settle_us = 0;
+    l.dz = 0;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[0].filter_wheel = 3;
+    ch[0].filter_pos = 1;
+    ch[1].filter_wheel = 3;
+    ch[1].filter_pos = 2;
+    hal.move_duration_us[3] = 15000;
+    SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, exposure 10000, readout 20000
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 2000000);
+    // exposure0 ends at assert0 + 10500; find the filter move to pos 2:
+    uint32_t end0 = hal.plans[0].t_deassert_us;
+    uint32_t t_move2 = 0;
+    for (auto& c : hal.calls) {
+        if (c.what == "move" && c.a == 3 && c.b == 2) t_move2 = c.t_us;
+    }
+    // within a tick of exposure end — i.e., DURING readout:
+    TEST_ASSERT_TRUE(t_move2 >= end0 && t_move2 <= end0 + 200);
+    // and frame1 fires when BOTH readout (end0+20000) and move (t_move2+15000) done:
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= end0 + 20000);
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us <= end0 + 20000 + 200);
+}
+
+// Z step for the next layer also overlaps the last channel's readout.
+void test_z_step_overlaps_readout_between_layers(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 1;  // piezo dz = 120
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 2000000);
+    uint32_t end0 = hal.plans[0].t_deassert_us;
+    uint32_t t_dac1 = 0;
+    for (auto& c : hal.calls) {
+        if (c.what == "dac" && c.a == 7 && (uint16_t)c.b == 40120) t_dac1 = c.t_us;
+    }
+    TEST_ASSERT_TRUE(t_dac1 >= end0 && t_dac1 <= end0 + 200);
+}
+
+// Z_INNER order: full stack of channel 0, then channel 1; per-channel z_offset applied.
+void test_z_inner_order_and_z_offset(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 2;
+    l.order = (uint8_t)Order::ZInner;
+    l.z_settle_us = 0;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].z_offset = 40;  // channel 1 offset
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].readout_time_us = 0;
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 3000000);
+    TEST_ASSERT_EQUAL_UINT32(4, e.progress().frames_fired);
+    // Piezo targets in order: 40000, 40120 (ch0 L0,L1), 40040, 40160 (ch1 L0,L1),
+    // then 40000 (return_to_start).
+    std::vector<uint16_t> targets;
+    for (auto& c : hal.calls) {
+        if (c.what == "dac" && c.a == 7) targets.push_back((uint16_t)c.b);
+    }
+    uint16_t expect[5] = {40000, 40120, 40040, 40160, 40000};
+    TEST_ASSERT_EQUAL(5, (int)targets.size());
+    for (int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_UINT16(expect[i], targets[i]);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -186,5 +267,8 @@ int main(int, char**) {
     RUN_TEST(test_stepper_settle_gates_exposure);
     RUN_TEST(test_filter_wheel_gates_exposure);
     RUN_TEST(test_model_readiness_spaces_triggers);
+    RUN_TEST(test_filter_move_overlaps_readout);
+    RUN_TEST(test_z_step_overlaps_readout_between_layers);
+    RUN_TEST(test_z_inner_order_and_z_offset);
     return UNITY_END();
 }
