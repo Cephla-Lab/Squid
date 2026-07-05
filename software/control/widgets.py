@@ -17999,6 +17999,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # _stored_time_params — invoking it here could clobber the Nt/dt
             # values just loaded from the YAML.
             self.time_controls_frame.setVisible(self.checkbox_time.isChecked())
+            # _update_tab_styles() only refreshes stylesheets on
+            # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
+            # the current checkbox states — it has no interaction with Nt/dt or
+            # _stored_time_params, so (unlike _on_time_toggled) it's safe to call
+            # directly here. Without it, the Time tab's border/background stays
+            # in its stale "inactive" styling even after the checkbox/frame
+            # visibility above are updated to reflect the loaded YAML.
+            self._update_tab_styles()
             self._update_zstack_planes_label()
             self._update_scan_regions()
 
