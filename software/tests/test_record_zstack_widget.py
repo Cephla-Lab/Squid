@@ -1653,7 +1653,13 @@ def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_pat
 
 def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_deps, tmp_path):
     """Save via build_parameters()+_save_record_zstack_yaml, load into a fresh widget,
-    and confirm the fresh widget's build_parameters() matches (excluding base_path/experiment_id)."""
+    and confirm the fresh widget's build_parameters() output matches exactly (excluding base_path/experiment_id).
+
+    Tests round-trip serialization and deserialization via YAML for all user-facing settings:
+    - recording channel and its numeric settings (exposure_time, analog_gain, illumination_intensity)
+    - z-stack channels and their numeric settings
+    - acquisition parameters (FPS, duration, z-range, XY mode)
+    """
     from control.core.record_zstack_controller import _save_record_zstack_yaml
     from control.acquisition_yaml_loader import parse_acquisition_yaml
     from control.widgets import RecordZStackMultiPointWidget
@@ -1682,12 +1688,23 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
     w2._apply_yaml_settings(yaml_data)
     params2 = w2.build_parameters()
 
+    # Acquisition control parameters
     assert params2.recording_enabled == params1.recording_enabled
     assert params2.fps == pytest.approx(params1.fps)
     assert params2.duration_s == pytest.approx(params1.duration_s)
     assert params2.zstack_enabled == params1.zstack_enabled
-    assert [c.name for c in params2.zstack_channels] == [c.name for c in params1.zstack_channels]
     assert params2.z_min_um == pytest.approx(params1.z_min_um)
     assert params2.z_max_um == pytest.approx(params1.z_max_um)
     assert params2.z_step_um == pytest.approx(params1.z_step_um)
     assert params2.xy_mode == params1.xy_mode
+
+    # Recording channel (enabled above, so should be non-None)
+    assert params2.recording_channel == params1.recording_channel
+
+    # Z-stack channels: check channel names and numeric settings
+    assert [c.name for c in params2.zstack_channels] == [c.name for c in params1.zstack_channels]
+    assert len(params2.zstack_channels) == len(params1.zstack_channels)
+    for ch2, ch1 in zip(params2.zstack_channels, params1.zstack_channels):
+        assert ch2.exposure_time == pytest.approx(ch1.exposure_time)
+        assert ch2.analog_gain == pytest.approx(ch1.analog_gain)
+        assert ch2.illumination_intensity == pytest.approx(ch1.illumination_intensity)
