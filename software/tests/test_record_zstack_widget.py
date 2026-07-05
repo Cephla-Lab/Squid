@@ -1678,6 +1678,38 @@ def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_pat
     assert w.combobox_xy_mode.currentText() == "Current Position"
 
 
+def test_load_acquisition_yaml_malformed_channel_shows_warning_not_exception(qtbot, simulated_widget_deps, tmp_path):
+    """Final-review Finding 2: _apply_yaml_settings() calls
+    AcquisitionChannel.model_validate() on recording_channel/zstack_channels with no
+    guard. A YAML with valid syntax/widget_type but a malformed channel dict (here,
+    missing the required camera_settings field) must not crash the drop/button slot
+    with an uncaught pydantic ValidationError -- the shared
+    AcquisitionYAMLDropMixin._load_acquisition_yaml() must catch it, log, warn, and
+    return False, exactly like the existing YAML-parse-error path a few lines above it."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    yaml_path = tmp_path / "malformed.yaml"
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: record_zstack\n"
+        "  xy_mode: Current Position\n"
+        "recording:\n"
+        "  enabled: true\n"
+        "  channel:\n"
+        "    name: Foo\n"  # missing required camera_settings -> pydantic ValidationError
+    )
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+        result = w._load_acquisition_yaml(str(yaml_path))
+
+    assert result is False
+    mock_warn.assert_called_once()
+    assert mock_warn.call_args[0][1] == "Load Error"
+
+
 def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_deps, tmp_path):
     """Save via build_parameters()+_save_record_zstack_yaml, load into a fresh widget,
     and confirm the fresh widget's build_parameters() output matches exactly (excluding base_path/experiment_id).
