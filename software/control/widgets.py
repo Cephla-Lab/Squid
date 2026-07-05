@@ -17924,6 +17924,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         widgets_to_block = [
             self.entry_Nt,
             self.entry_dt,
+            self.checkbox_time,
             self.checkbox_laser_af,
             self.checkbox_recording,
             self._recording_ch_combo,
@@ -17946,6 +17947,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             widget.blockSignals(True)
 
         try:
+            self.checkbox_time.setChecked(yaml_data.nt > 1)
             self.entry_Nt.setValue(yaml_data.nt)
             self.entry_dt.setValue(yaml_data.delta_t_s)
             self.checkbox_laser_af.setChecked(yaml_data.laser_af)
@@ -17956,9 +17958,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 idx = self._recording_ch_combo.findText(ch.name)
                 if idx >= 0:
                     self._recording_ch_combo.setCurrentIndex(idx)
-                self._recording_exp_spin.setValue(ch.exposure_time)
-                self._recording_gain_spin.setValue(ch.analog_gain)
-                self._recording_illum_spin.setValue(ch.illumination_intensity)
+                    self._recording_exp_spin.setValue(ch.exposure_time)
+                    self._recording_gain_spin.setValue(ch.analog_gain)
+                    self._recording_illum_spin.setValue(ch.illumination_intensity)
+                else:
+                    self._log.warning(
+                        f"_apply_yaml_settings: recording channel {ch.name!r} not found in current "
+                        "objective's channels; keeping existing recording row settings"
+                    )
             self.entry_fps.setValue(yaml_data.fps)
             self.entry_duration.setValue(yaml_data.duration_s)
             self.entry_recording_z_offset.setValue(yaml_data.recording_z_offset_um)
@@ -17985,6 +17992,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         finally:
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            # checkbox_time's toggled signal was blocked above, so the normal
+            # _on_time_toggled-driven visibility refresh didn't fire. Set the
+            # frame's visibility directly rather than calling _on_time_toggled
+            # itself, since that method also stores/restores Nt/dt via
+            # _stored_time_params — invoking it here could clobber the Nt/dt
+            # values just loaded from the YAML.
+            self.time_controls_frame.setVisible(self.checkbox_time.isChecked())
             self._update_zstack_planes_label()
             self._update_scan_regions()
 
