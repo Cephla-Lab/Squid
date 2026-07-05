@@ -1563,7 +1563,20 @@ def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widg
 
 
 def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
-    """Verify that clicking Save Settings button calls _save_record_zstack_yaml with correct parameters."""
+    """Verify that clicking Save Settings runs the REAL save chain end to end:
+    _on_save_settings_clicked -> build_parameters -> _build_objective_info ->
+    _save_record_zstack_yaml -> a real YAML file on disk. Only QFileDialog is mocked
+    (real file dialogs can't run in tests).
+
+    simulated_widget_deps's stub objectiveStore/liveController are plain MagicMocks
+    with no objectives_dict/camera attributes configured, so the real
+    _build_objective_info() would otherwise produce MagicMock leaf values (e.g. for
+    magnification/pixel_size_um) that yaml.dump() cannot serialize -- a failure that
+    _save_record_zstack_yaml() swallows internally (logs and returns) via its own
+    pre-existing try/except. Hardening just these two stubs (not the shared fixture)
+    gives _build_objective_info() cleanly-serializable values so the real save runs
+    for real and actually writes the file.
+    """
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
@@ -1572,66 +1585,67 @@ def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path
     w.checkbox_zstack.setChecked(True)
     w._add_zstack_channel_row("BF LED matrix full")
 
-    # Mock the underlying save function to verify it gets called
-    save_called = []
+    # Harden this test's own objectiveStore/camera stubs so _build_objective_info()
+    # returns real, YAML-serializable values instead of MagicMock leaves.
+    w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
+    w.objectiveStore.current_objective = "10x"
+    w.objectiveStore.get_pixel_size_factor.return_value = 1.0
 
-    def mock_save(params, path, scan_coords, objective_info):
-        save_called.append((params, path))
-        # Write a minimal YAML file to satisfy the test assertion
-        with open(path, "w") as f:
-            f.write("acquisition:\n  widget_type: record_zstack\n")
-
-    monkeypatch.setattr("control.core.record_zstack_controller._save_record_zstack_yaml", mock_save)
+    camera = MagicMock()
+    camera.get_binning.return_value = (1, 1)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+    w.liveController.camera = camera
 
     save_path = tmp_path / "my_preset.yaml"
     monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
 
     w.btn_saveSettings.click()
 
-    # Verify save was called with correct path
-    assert len(save_called) == 1
-    assert save_called[0][1] == str(save_path)
-
-    # Verify file was created with correct structure
+    # Verify the REAL file was written by the REAL _save_record_zstack_yaml call.
     assert save_path.exists()
     import yaml as pyyaml
 
     data = pyyaml.safe_load(save_path.read_text())
     assert data["acquisition"]["widget_type"] == "record_zstack"
+    assert data["z_stack"]["enabled"] is True
+    assert data["z_stack"]["channels"][0]["name"] == "BF LED matrix full"
+    assert data["objective"]["name"] == "10x"
+    assert data["objective"]["magnification"] == pytest.approx(10.0)
+    assert data["objective"]["pixel_size_um"] == pytest.approx(0.5)
+    assert data["objective"]["camera_binning"] == [1, 1]
 
 
 def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
-    """Verify that clicking Load Settings button calls _load_acquisition_yaml with correct path."""
+    """Verify that clicking Load Settings runs the REAL load chain end to end:
+    _on_load_settings_clicked -> _load_acquisition_yaml -> parse_acquisition_yaml ->
+    validate_hardware -> _apply_yaml_settings. Only QFileDialog is mocked (real file
+    dialogs can't run in tests); a real, valid record_zstack YAML file is written to
+    disk and actually read back.
+
+    The YAML has no objective:/camera_binning keys, so yaml_data.objective_name and
+    yaml_data.camera_binning are both falsy and validate_hardware() reports
+    is_valid=True -- no mismatch dialog blocks the test.
+    """
     from control.widgets import RecordZStackMultiPointWidget
-    from unittest.mock import patch
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
     qtbot.addWidget(w)
 
-    # Mock _load_acquisition_yaml to track the call and apply test data
-    load_called = []
-
-    def mock_load(self, path):
-        load_called.append(path)
-        # Simulate loading by calling _apply_yaml_settings with test data
-        from control.acquisition_yaml_loader import RecordZStackYAMLData
-
-        yaml_data = RecordZStackYAMLData(widget_type="record_zstack", xy_mode="Current Position", nt=7, delta_t_s=1.0)
-        self._apply_yaml_settings(yaml_data)
-
     yaml_path = tmp_path / "preset.yaml"
-    yaml_path.write_text("dummy")  # File just needs to exist
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: record_zstack\n"
+        "  xy_mode: Current Position\n"
+        "time_series:\n"
+        "  nt: 7\n"
+        "  delta_t_s: 1.0\n"
+    )
 
     monkeypatch.setattr("control.widgets.QFileDialog.getOpenFileName", lambda *a, **kw: (str(yaml_path), ""))
 
-    # Patch the instance method
-    with patch.object(w, "_load_acquisition_yaml", mock_load.__get__(w, type(w))):
-        w.btn_loadSettings.click()
+    w.btn_loadSettings.click()
 
-    # Verify _load_acquisition_yaml was called with correct path
-    assert len(load_called) == 1
-    assert load_called[0] == str(yaml_path)
-
-    # Verify settings were applied
+    # Verify settings were applied via the REAL parse -> validate -> apply chain.
     assert w.entry_Nt.value() == 7
+    assert w.entry_dt.value() == pytest.approx(1.0)
     assert w.combobox_xy_mode.currentText() == "Current Position"
