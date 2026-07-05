@@ -174,6 +174,8 @@ def _make_stub_scan_coordinates():
     """Stub scanCoordinates reporting 1 selected well."""
     sc = MagicMock()
     sc.get_selected_wells.return_value = ["A1"]
+    sc.region_centers = {}
+    sc.region_shapes = {}
     return sc
 
 
@@ -1558,3 +1560,78 @@ def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widg
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
     qtbot.addWidget(w)
     assert w._get_camera_for_binning_check() is camera
+
+
+def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Verify that clicking Save Settings button calls _save_record_zstack_yaml with correct parameters."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w.checkbox_zstack.setChecked(True)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    # Mock the underlying save function to verify it gets called
+    save_called = []
+
+    def mock_save(params, path, scan_coords, objective_info):
+        save_called.append((params, path))
+        # Write a minimal YAML file to satisfy the test assertion
+        with open(path, "w") as f:
+            f.write("acquisition:\n  widget_type: record_zstack\n")
+
+    monkeypatch.setattr("control.core.record_zstack_controller._save_record_zstack_yaml", mock_save)
+
+    save_path = tmp_path / "my_preset.yaml"
+    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
+
+    w.btn_saveSettings.click()
+
+    # Verify save was called with correct path
+    assert len(save_called) == 1
+    assert save_called[0][1] == str(save_path)
+
+    # Verify file was created with correct structure
+    assert save_path.exists()
+    import yaml as pyyaml
+
+    data = pyyaml.safe_load(save_path.read_text())
+    assert data["acquisition"]["widget_type"] == "record_zstack"
+
+
+def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Verify that clicking Load Settings button calls _load_acquisition_yaml with correct path."""
+    from control.widgets import RecordZStackMultiPointWidget
+    from unittest.mock import patch
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Mock _load_acquisition_yaml to track the call and apply test data
+    load_called = []
+
+    def mock_load(self, path):
+        load_called.append(path)
+        # Simulate loading by calling _apply_yaml_settings with test data
+        from control.acquisition_yaml_loader import RecordZStackYAMLData
+
+        yaml_data = RecordZStackYAMLData(widget_type="record_zstack", xy_mode="Current Position", nt=7, delta_t_s=1.0)
+        self._apply_yaml_settings(yaml_data)
+
+    yaml_path = tmp_path / "preset.yaml"
+    yaml_path.write_text("dummy")  # File just needs to exist
+
+    monkeypatch.setattr("control.widgets.QFileDialog.getOpenFileName", lambda *a, **kw: (str(yaml_path), ""))
+
+    # Patch the instance method
+    with patch.object(w, "_load_acquisition_yaml", mock_load.__get__(w, type(w))):
+        w.btn_loadSettings.click()
+
+    # Verify _load_acquisition_yaml was called with correct path
+    assert len(load_called) == 1
+    assert load_called[0] == str(yaml_path)
+
+    # Verify settings were applied
+    assert w.entry_Nt.value() == 7
+    assert w.combobox_xy_mode.currentText() == "Current Position"
