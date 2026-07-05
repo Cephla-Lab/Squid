@@ -1,13 +1,11 @@
 /**
- * CRC-16/CCITT-FALSE implementation.
+ * CRC-16/CCITT-FALSE implementation (polynomial 0x1021, initial value 0xFFFF).
  *
- * Polynomial: 0x1021
- * Initial value: 0xFFFF
- * This is CRC-16/CCITT-FALSE (also known as CRC-16/IBM-3740).
- *
- * The lookup table is byte-identical to the protocol-v2-phase1 branch
- * (commit da8e2af0) and to the mirrored Python codec in
- * software/control/protocol_v2/crc16.py.
+ * The 256-entry table below is the standard CRC-16/CCITT table for poly 0x1021
+ * — the same values any correct generator produces. The Python mirror
+ * (software/control/protocol_v2/crc16.py) computes an identical table at
+ * import; the shared check value 0x29B1 and the C<->Python golden vectors
+ * guarantee the two stay in lockstep.
  */
 
 #include "protocol/crc16.h"
@@ -54,8 +52,8 @@ uint16_t crc16_ccitt(const uint8_t* data, size_t length)
 {
     uint16_t crc = 0xFFFF;  // Initial value
 
-    while (length--) {
-        crc = (uint16_t)((crc << 8) ^ CRC16_TABLE[((crc >> 8) ^ *data++) & 0xFF]);
+    for (size_t i = 0; i < length; ++i) {
+        crc = (uint16_t)((crc << 8) ^ CRC16_TABLE[((crc >> 8) ^ data[i]) & 0xFF]);
     }
 
     return crc;

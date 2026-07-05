@@ -1,11 +1,13 @@
 /**
  * CRC-16/CCITT-FALSE for protocol v2 framing.
  *
- * Polynomial 0x1021, initial value 0xFFFF, no reflection, no final XOR
- * (CRC-16/CCITT-FALSE, aka CRC-16/IBM-3740). Table-driven.
+ * Standard CRC-16/CCITT-FALSE (aka CRC-16/IBM-3740): polynomial 0x1021,
+ * initial value 0xFFFF, no input/output reflection, no final XOR. Table-driven.
+ * Canonical check value: crc16("123456789") == 0x29B1.
  *
- * Ported verbatim from the protocol-v2-phase1 branch (commit da8e2af0,
- * firmware/controller/src/utils/crc16). Pure C++, no Arduino dependencies.
+ * This is the wire-integrity contract: it must agree byte-for-byte with the
+ * host codec (software/control/protocol_v2/crc16.py). Pure C++, no Arduino
+ * dependencies, so it is included directly in native unit tests.
  */
 
 #ifndef PROTOCOL_CRC16_H
