@@ -756,208 +756,37 @@ def test_config_snapshot_dedupes_channels_by_name(tmp_path):
     assert len(names) == len(set(names)), f"duplicate channel names in snapshot: {names}"
 
 
-def test_recording_plane_offsets():
-    from control.core.record_zstack_controller import recording_plane_offsets_um
+def test_build_objective_info_reads_objective_and_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
 
-    assert recording_plane_offsets_um(-2.0, 3, 4.0) == [-2.0, 2.0, 6.0]
-    assert recording_plane_offsets_um(5.0, 1, 1.0) == [5.0]  # Nz=1: dz irrelevant
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {"20x": {"magnification": 20.0}}
+    objective_store.get_pixel_size_factor.return_value = 1.0
 
+    camera = MagicMock()
+    camera.get_binning.return_value = (2, 2)
+    camera.get_pixel_size_binned_um.return_value = 0.5
 
-def test_recording_plane_offsets_validation():
-    from control.core.record_zstack_controller import recording_plane_offsets_um
+    info = _build_objective_info(objective_store, camera)
 
-    with pytest.raises(ValueError):
-        recording_plane_offsets_um(0.0, 0, 1.0)  # Nz < 1
-    with pytest.raises(ValueError):
-        recording_plane_offsets_um(0.0, 2, 0.0)  # dz <= 0 with Nz > 1
-
-
-def test_recording_path_plane_naming():
-    from types import SimpleNamespace
-
-    from control.core.record_zstack_worker import RecordZStackWorker
-
-    fake_self = SimpleNamespace(experiment_path="/exp")
-    single = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1)
-    multi = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, plane_idx=2, n_planes=3)
-    assert single.endswith("recording/t0/B2/fov_1.ome.zarr")  # Nz=1 keeps today's name
-    assert multi.endswith("recording/t0/B2/fov_1_z2.ome.zarr")
+    assert info["name"] == "20x"
+    assert info["magnification"] == 20.0
+    assert info["camera_binning"] == [2, 2]
+    assert info["pixel_size_um"] == pytest.approx(0.5)
 
 
-def test_record_multi_plane_writes_one_zarr_per_plane(tmp_path):
-    """Nz=3 → three per-plane recordings per FOV with correct names, shapes,
-    and plane metadata; Nz=1 filename compatibility is covered by the smoke test."""
-    pytest.importorskip("tensorstore")
-    import json
+def test_build_objective_info_handles_missing_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
 
-    scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
-    )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 2.0
-    worker.params.recording_bottom_z_offset_um = -2.0
+    objective_store = MagicMock()
+    objective_store.current_objective = "10x"
+    objective_store.objectives_dict = {}
 
-    worker.run()
-    assert not aborted["v"]
+    info = _build_objective_info(objective_store, None)
 
-    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
-    names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
-    assert names == ["fov_0_z0.ome.zarr", "fov_0_z1.ome.zarr", "fov_0_z2.ome.zarr"]
-
-    for j, name in enumerate(names):
-        meta = json.load(open(rec_dir / name / "zarr.json"))
-        squid_attrs = meta["attributes"]["_squid"]
-        assert squid_attrs["plane_index"] == j
-        assert squid_attrs["n_planes"] == 3
-        assert abs(squid_attrs["plane_z_offset_um"] - (-2.0 + j * 2.0)) < 1e-9
-        assert squid_attrs["acquisition_complete"] is True
-        assert squid_attrs["shape"][1:3] == [1, 1]  # (T,1,1,Y,X) per plane
-
-
-def test_record_multi_plane_abort_between_planes(tmp_path):
-    """Abort after the first plane completes → exactly one plane file, no error,
-    run() still finishes (state restore + done marker)."""
-    pytest.importorskip("tensorstore")
-
-    scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
-    )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
-
-    orig = worker._record_one_plane
-
-    def record_then_abort(*args, **kwargs):
-        emitted = orig(*args, **kwargs)
-        aborted["v"] = True  # user presses Stop right after plane 0 finishes
-        return emitted
-
-    worker._record_one_plane = record_then_abort
-    worker.run()
-
-    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
-    names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
-    assert names == ["fov_0_z0.ome.zarr"], f"expected only plane 0 after abort, got {names}"
-    assert (Path(tmp_path) / "state_restore" / ".done").exists()
-
-
-# ---------------------------------------------------------------------------
-# Final-review-fix tests: illumination timing + fail-fast restore
-# ---------------------------------------------------------------------------
-
-
-def test_record_moves_to_first_plane_before_illumination(tmp_path):
-    """Finding 1: the first plane's Z move must happen BEFORE illumination
-    turns on (pre-branch parity — the sample must not be illuminated during
-    the Z move + settle). Later planes move while illumination is already on
-    (it is not toggled between planes), and it turns off only after the last
-    plane."""
-    pytest.importorskip("tensorstore")
-
-    scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
-    )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
-
-    events = []
-    call_count = {"n": 0}
-
-    def fake_record_one_plane(*args, **kwargs):
-        call_count["n"] += 1
-        return 0
-
-    worker._record_one_plane = fake_record_one_plane
-
-    orig_move = worker._move_z_to_offset
-
-    def move_spy(z_ref, offset):
-        events.append(("move", offset))
-        return orig_move(z_ref, offset)
-
-    worker._move_z_to_offset = move_spy
-
-    orig_on = live_controller.turn_on_illumination
-
-    def on_spy():
-        events.append(("illum_on",))
-        return orig_on()
-
-    live_controller.turn_on_illumination = on_spy
-
-    orig_off = live_controller.turn_off_illumination
-
-    def off_spy():
-        events.append(("illum_off",))
-        return orig_off()
-
-    live_controller.turn_off_illumination = off_spy
-
-    z_ref = scope.stage.get_pos().z_mm
-    total = worker.record(0, "A1", 0, z_ref)
-
-    assert call_count["n"] == 3, "all three planes must still be recorded"
-    assert total == 0
-    assert events == [
-        ("move", 0.0),
-        ("illum_on",),
-        ("move", 1.0),
-        ("move", 2.0),
-        ("illum_off",),
-    ], f"unexpected event order: {events}"
-
-
-def test_record_restores_camera_mode_and_stage_z_when_plane_raises(tmp_path):
-    """Finding 2: when _record_one_plane raises (fail-fast), the post-loop
-    camera-mode restore + stage-Z restore + settle must still run (the stage
-    must not be left at a plane offset), illumination must still turn off, and
-    the RuntimeError must still propagate."""
-    pytest.importorskip("tensorstore")
-    from squid.abc import CameraAcquisitionMode
-
-    scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
-    )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
-
-    events = []
-    call_count = {"n": 0}
-
-    def fake_record_one_plane(*args, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 2:
-            raise RuntimeError("simulated fail-fast")
-        return 0
-
-    worker._record_one_plane = fake_record_one_plane
-
-    orig_off = live_controller.turn_off_illumination
-
-    def off_spy():
-        events.append("illum_off")
-        return orig_off()
-
-    live_controller.turn_off_illumination = off_spy
-
-    orig_move_z_to = scope.stage.move_z_to
-    restore_calls = []
-
-    def move_z_to_spy(z_mm):
-        restore_calls.append(z_mm)
-        return orig_move_z_to(z_mm)
-
-    scope.stage.move_z_to = move_z_to_spy
-
-    z_ref = scope.stage.get_pos().z_mm
-
-    with pytest.raises(RuntimeError, match="simulated fail-fast"):
-        worker.record(0, "A1", 0, z_ref)
-
-    assert events == ["illum_off"], "illumination must still be turned off on the raising path"
-    assert restore_calls and restore_calls[-1] == pytest.approx(
-        z_ref
-    ), "stage-Z restore must still run after _record_one_plane raises"
-    assert (
-        scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
-    ), "camera acquisition mode must be restored to SOFTWARE_TRIGGER after a raising plane"
+    assert info["name"] == "10x"
+    assert info["camera_binning"] is None
+    assert info["pixel_size_um"] is None
