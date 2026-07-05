@@ -53,3 +53,45 @@ jobs:
           git diff --exit-code \
             software/tests/data/protocol_v2_golden.json \
             firmware/controller/test/test_golden/golden_cases.h
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Install static-analysis tools
+        run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tidy
+
+      - name: cppcheck (protocol + boot + hal core)
+        working-directory: ./firmware/controller
+        run: |
+          cppcheck --std=c++11 --enable=warning,performance,portability,style \
+            --inline-suppr --suppress=missingIncludeSystem --error-exitcode=1 \
+            -I src src/protocol src/boot/boot.cpp src/hal/boards
+
+      - name: clang-tidy (pure protocol + boot + hal sources)
+        working-directory: ./firmware/controller
+        run: |
+          clang-tidy \
+            src/protocol/claims.cpp src/protocol/cobs.cpp src/protocol/crc16.cpp \
+            src/protocol/framer.cpp src/protocol/slots.cpp src/protocol/dispatch_v2.cpp \
+            src/boot/boot.cpp \
+            src/hal/boards/board_squid_v1.cpp src/hal/boards/board_squid_v2.cpp \
+            -- -std=c++11 -Isrc
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Install clang (with libFuzzer)
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build + run libFuzzer over the RX->dispatch->TX path (60s)
+        working-directory: ./firmware/controller
+        run: |
+          clang++ -std=c++11 -g -fsanitize=address,fuzzer -I src \
+            fuzz/fuzz_framer.cpp src/protocol/*.cpp -o fuzz_framer
+          ./fuzz_framer -max_total_time=60 -timeout=10 -rss_limit_mb=2048

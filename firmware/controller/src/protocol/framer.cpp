@@ -10,7 +10,15 @@
 namespace protocol {
 
 Framer::Framer(FrameSink& sink, ByteSink& out)
-    : sink_(sink), out_(out), counters_(), rx_len_(0), rx_overflowed_(false) {}
+    : sink_(sink),
+      out_(out),
+      counters_(),
+      rx_buf_{},
+      rx_len_(0),
+      rx_overflowed_(false),
+      dec_buf_{},
+      tx_dec_{},
+      tx_enc_{} {}
 
 void Framer::feed_rx(uint8_t byte) {
     if (byte == 0x00) {

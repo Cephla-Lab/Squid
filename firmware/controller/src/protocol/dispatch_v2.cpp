@@ -52,7 +52,7 @@ static void h_diag(Dispatcher& d, const uint8_t* payload, size_t len, ResponseWr
 // --- Dispatcher -----------------------------------------------------------
 
 Dispatcher::Dispatcher(SlotManager& slots, StateProvider& provider)
-    : slots_(slots), provider_(provider), framer_(nullptr) {
+    : slots_(slots), provider_(provider), framer_(nullptr), resp_buf_{} {
     memset(registry_, 0, sizeof(registry_));
 }
 
