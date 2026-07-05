@@ -270,6 +270,105 @@ channels:
         assert result.channel_names == ["Valid Channel", "Another Valid"]
 
 
+class TestParseRecordZstackYAML:
+    """Tests for parse_acquisition_yaml with widget_type: record_zstack."""
+
+    def test_parse_record_zstack_yaml_select_wells(self, tmp_path):
+        yaml_content = """
+acquisition:
+  widget_type: record_zstack
+  xy_mode: Select Wells
+objective:
+  name: 20x
+  camera_binning:
+    - 1
+    - 1
+time_series:
+  nt: 3
+  delta_t_s: 5.0
+autofocus:
+  laser_af: true
+recording:
+  enabled: true
+  channel:
+    name: BF LED matrix full
+  fps: 15.0
+  duration_s: 2.0
+  z_offset_um: 1.5
+z_stack:
+  enabled: true
+  channels:
+    - name: Fluorescence 488 nm Ex
+  z_min_um: -2.0
+  z_max_um: 2.0
+  z_step_um: 0.5
+wellplate_scan:
+  scan_size_mm: 1.2
+  overlap_percent: 12.0
+  regions:
+    - name: A1
+      center_mm: [1.0, 2.0, 0.1]
+      shape: Square
+"""
+        yaml_file = tmp_path / "test_record.yaml"
+        yaml_file.write_text(yaml_content)
+
+        result = parse_acquisition_yaml(str(yaml_file))
+
+        assert result.widget_type == "record_zstack"
+        assert result.xy_mode == "Select Wells"
+        assert result.objective_name == "20x"
+        assert result.camera_binning == (1, 1)
+        assert result.nt == 3
+        assert result.delta_t_s == 5.0
+        assert result.laser_af is True
+        assert result.recording_enabled is True
+        assert result.recording_channel == {"name": "BF LED matrix full"}
+        assert result.fps == 15.0
+        assert result.duration_s == 2.0
+        assert result.recording_z_offset_um == 1.5
+        assert result.zstack_enabled is True
+        assert result.zstack_channels == [{"name": "Fluorescence 488 nm Ex"}]
+        assert result.z_min_um == -2.0
+        assert result.z_max_um == 2.0
+        assert result.z_step_um == 0.5
+        assert result.scan_size_mm == 1.2
+        assert result.overlap_percent == 12.0
+        assert result.wellplate_regions == [{"name": "A1", "center_mm": [1.0, 2.0, 0.1], "shape": "Square"}]
+
+    def test_parse_record_zstack_yaml_minimal_defaults(self, tmp_path):
+        yaml_content = """
+acquisition:
+  widget_type: record_zstack
+"""
+        yaml_file = tmp_path / "test_minimal_record.yaml"
+        yaml_file.write_text(yaml_content)
+
+        result = parse_acquisition_yaml(str(yaml_file))
+
+        assert result.widget_type == "record_zstack"
+        assert result.recording_enabled is False
+        assert result.recording_channel is None
+        assert result.zstack_channels == []
+        assert result.wellplate_regions is None
+
+    def test_validate_hardware_accepts_record_zstack_yaml_data(self, tmp_path):
+        """validate_hardware() duck-types .objective_name/.camera_binning; must work unchanged."""
+        yaml_content = """
+acquisition:
+  widget_type: record_zstack
+objective:
+  name: 20x
+  camera_binning: [1, 1]
+"""
+        yaml_file = tmp_path / "test_record_hw.yaml"
+        yaml_file.write_text(yaml_content)
+        result = parse_acquisition_yaml(str(yaml_file))
+
+        validation = validate_hardware(result, current_objective="20x", current_binning=(1, 1))
+        assert validation.is_valid is True
+
+
 class TestValidateHardware:
     """Tests for validate_hardware function."""
 
