@@ -368,6 +368,86 @@ void test_no_overlap_when_readout_unsafe(void) {
     TEST_ASSERT_TRUE(t_move >= end0 + 20000);  // move waited out the readout
 }
 
+void test_cancel_finishes_current_exposure_then_stops(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 10;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    // run until mid-exposure of frame 2, then cancel:
+    while (e.progress().frames_fired < 2) {
+        hal.now_us += 100;
+        e.tick(hal.now_us);
+    }
+    uint32_t t_cancel = hal.now_us;
+    e.cancel();
+    run_until(e, hal, t_cancel + 2000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);  // no frame 3
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::Canceled, e.progress().abort_error);
+    // exposure 2's plan was never truncated: its deassert time stands as scheduled
+    TEST_ASSERT_TRUE(hal.plans[1].t_deassert_us > t_cancel);
+    // return_to_start honored: last HAL call is the piezo returning to 40000
+    TEST_ASSERT_EQUAL_STRING("dac", hal.calls.back().what.c_str());
+    TEST_ASSERT_EQUAL_UINT16(40000, (uint16_t)hal.calls.back().b);
+}
+
+void test_min_trigger_period_enforced(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 3;
+    l.n_channels = 1;
+    l.dz = 0;
+    l.z_settle_us = 0;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].readout_time_us = 0;
+    cams[0].min_trigger_period_us = 50000;
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 1000000);
+    TEST_ASSERT_EQUAL(3, (int)hal.plans.size());
+    for (int i = 1; i < 3; i++)
+        TEST_ASSERT_TRUE(hal.plans[i].t_assert_us - hal.plans[i - 1].t_assert_us >= 50000);
+}
+
+// Whole-run invariants over a mixed program (property-style, deterministic inputs).
+void test_run_invariants(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 5;
+    l.n_channels = 3;
+    l.z_settle_us = 1000;
+    SeqChannel ch[3] = {good_channel(), good_channel(), good_channel()};
+    ch[1].filter_wheel = 3;
+    ch[1].filter_pos = 2;
+    ch[2].filter_wheel = 3;
+    ch[2].filter_pos = 4;
+    hal.move_duration_us[3] = 7000;
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 10000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(15, e.progress().frames_fired);  // Nz × Nch
+    // Invariant 1: exposures never overlap each other.
+    for (size_t i = 1; i < hal.plans.size(); i++)
+        TEST_ASSERT_TRUE(hal.plans[i].t_assert_us >= hal.plans[i - 1].t_deassert_us);
+    // Invariant 2: no motion/DAC command lands inside any exposure window.
+    for (auto& c : hal.calls) {
+        if (c.what != "move" && c.what != "dac") continue;
+        for (auto& p : hal.plans) {
+            TEST_ASSERT_FALSE(c.t_us > p.t_assert_us && c.t_us < p.t_deassert_us);
+        }
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -383,5 +463,8 @@ int main(int, char**) {
     RUN_TEST(test_ready_line_blocks_until_asserted);
     RUN_TEST(test_wait_timeout_aborts_with_all_off);
     RUN_TEST(test_no_overlap_when_readout_unsafe);
+    RUN_TEST(test_cancel_finishes_current_exposure_then_stops);
+    RUN_TEST(test_min_trigger_period_enforced);
+    RUN_TEST(test_run_invariants);
     return UNITY_END();
 }
