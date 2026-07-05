@@ -212,6 +212,22 @@ struct PROTO_PACKED FaultEntryWire {
     uint16_t rsv;
 };
 
+// --- Layout guarantees (enforced on EVERY target that includes this header:
+// native tests, teensy41, teensy41_boardv2, CI). Packed structs keep these
+// identical on x86_64 and ARM; any drift breaks the build here, at the source
+// of truth, rather than only in the native test.
+static_assert(sizeof(FrameHeader) == 4, "FrameHeader must be 4 bytes");
+static_assert(sizeof(Slot) == 4, "Slot must be 4 bytes");
+static_assert(sizeof(RingEntry) == 4, "RingEntry must be 4 bytes");
+static_assert(sizeof(AxisStateWire) == 8, "AxisStateWire must be 8 bytes");
+static_assert(sizeof(SeqProgressWire) == 12, "SeqProgressWire must be 12 bytes");
+static_assert(sizeof(StandardResponse) == 158, "StandardResponse must be 158 bytes");
+static_assert(sizeof(HelloPayload) == 16, "HelloPayload must be 16 bytes");
+static_assert(sizeof(InfoPayload) == 22, "InfoPayload must be 22 bytes");
+static_assert(sizeof(DiagPayload) == 40, "DiagPayload must be 40 bytes");
+static_assert(sizeof(FaultEntryWire) == 8, "FaultEntryWire must be 8 bytes");
+static_assert(kMaxFrame == sizeof(FrameHeader) + kMaxPayload + 2, "frame budget: header + payload + crc16");
+
 }  // namespace protocol
 
 #endif  // PROTOCOL_FRAMES_H
