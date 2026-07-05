@@ -1544,6 +1544,33 @@ def test_apply_yaml_settings_refreshes_time_tab_styling(qtbot, simulated_widget_
     assert w_reference.time_controls_frame.styleSheet() != ""
 
 
+def test_apply_yaml_settings_resyncs_xy_controls_frame_visibility(qtbot, simulated_widget_deps):
+    """Final-review Finding 1: like checkbox_time's toggled signal, checkbox_xy's
+    toggled signal (and combobox_xy_mode's currentTextChanged) are blocked during
+    the load, so the normal _on_xy_mode_changed-driven visibility refresh never
+    fires. Loading a YAML with xy_mode="Current Position" onto a widget that starts
+    in its default state (XY checked, Select Wells, controls visible) must still
+    hide xy_controls_frame and disable combobox_xy_mode's peer state correctly."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Sanity check on the default state before loading.
+    assert w.checkbox_xy.isChecked() is True
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+    assert w.xy_controls_frame.isHidden() is False
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", xy_mode="Current Position")
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    # The FOV overlap/shape/size controls don't apply in Current Position mode.
+    assert w.xy_controls_frame.isHidden() is True
+
+
 def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
