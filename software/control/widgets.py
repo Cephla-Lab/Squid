@@ -17479,32 +17479,32 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         vbox.addWidget(self.recording_channel_table)
 
-        # Row 1: FPS + Duration | Nz (+ dz when Nz > 1).
-        # Row 2 (own row, shown only when Laser AF is on): Z/Bottom-Z offset —
-        # kept off the main row so it doesn't shift Nz/dz/FPS/Dur when it
-        # appears/disappears. dz is hidden when Nz == 1, and the offset
-        # caption switches between "Z offset" (Nz == 1) and "Bottom Z offset"
-        # (Nz > 1).
+        # Grid, not two independent HBoxes: FPS/Duration | Nz (+ dz when Nz > 1)
+        # on row 0, with the Z/Bottom-Z offset on row 1 sharing Nz's columns
+        # (5-6) so it lines up under Nz exactly, regardless of font/platform
+        # metrics, rather than an HBox row starting flush-left. dz is hidden
+        # when Nz == 1; the offset caption switches between "Z offset"
+        # (Nz == 1) and "Bottom Z offset" (Nz > 1).
         def _vline() -> QFrame:
             line = QFrame()
             line.setFrameShape(QFrame.VLine)
             line.setFrameShadow(QFrame.Sunken)
             return line
 
-        fps_row = QHBoxLayout()
-        fps_row.setSpacing(4)
+        recording_grid = QGridLayout()
+        recording_grid.setHorizontalSpacing(4)
+        recording_grid.setVerticalSpacing(2)
 
-        fps_row.addWidget(QLabel("FPS:"))
+        recording_grid.addWidget(QLabel("FPS:"), 0, 0)
         self.entry_fps = QDoubleSpinBox()
         self.entry_fps.setRange(1, 1000)
         self.entry_fps.setDecimals(0)
         self.entry_fps.setValue(10.0)
         self.entry_fps.setKeyboardTracking(False)
         self.entry_fps.setMaximumWidth(60)
-        fps_row.addWidget(self.entry_fps)
+        recording_grid.addWidget(self.entry_fps, 0, 1)
 
-        fps_row.addSpacing(4)
-        fps_row.addWidget(QLabel("Dur:"))
+        recording_grid.addWidget(QLabel("Dur:"), 0, 2)
         self.entry_duration = QDoubleSpinBox()
         self.entry_duration.setRange(1, 3600)
         self.entry_duration.setDecimals(0)
@@ -17512,24 +17512,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
         self.entry_duration.setMaximumWidth(75)
-        fps_row.addWidget(self.entry_duration)
+        recording_grid.addWidget(self.entry_duration, 0, 3)
 
-        fps_row.addSpacing(4)
-        fps_row.addWidget(_vline())
-        fps_row.addSpacing(4)
+        recording_grid.addWidget(_vline(), 0, 4)
 
-        fps_row.addWidget(QLabel("Nz:"))
+        recording_grid.addWidget(QLabel("Nz:"), 0, 5)
         self.entry_recording_Nz = QSpinBox()
         self.entry_recording_Nz.setRange(1, 100)
         self.entry_recording_Nz.setValue(1)
         self.entry_recording_Nz.setKeyboardTracking(False)
         self.entry_recording_Nz.setMaximumWidth(55)
         self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
-        fps_row.addWidget(self.entry_recording_Nz)
+        recording_grid.addWidget(self.entry_recording_Nz, 0, 6)
 
-        fps_row.addSpacing(4)
         self.label_recording_dz = QLabel("dz:")
-        fps_row.addWidget(self.label_recording_dz)
+        recording_grid.addWidget(self.label_recording_dz, 0, 7)
         self.entry_recording_dz = QDoubleSpinBox()
         self.entry_recording_dz.setRange(0.05, 100.0)
         self.entry_recording_dz.setDecimals(2)
@@ -17539,17 +17536,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_recording_dz.setKeyboardTracking(False)
         self.entry_recording_dz.setMaximumWidth(85)
         self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
-        fps_row.addWidget(self.entry_recording_dz)
+        recording_grid.addWidget(self.entry_recording_dz, 0, 8)
 
-        fps_row.addStretch(1)
-        vbox.addLayout(fps_row)
+        recording_grid.setColumnStretch(9, 1)
 
-        # Bottom/Z offset gets its own row so it doesn't shift the row above
-        # when it appears/disappears with Laser AF.
-        bottom_z_row = QHBoxLayout()
-        bottom_z_row.setSpacing(4)
+        # Row 1: Z/Bottom-Z offset, placed in Nz's own columns (5-6).
         self.label_recording_bottom_z = QLabel("Z offset:")
-        bottom_z_row.addWidget(self.label_recording_bottom_z)
+        recording_grid.addWidget(self.label_recording_bottom_z, 1, 5)
         self.entry_recording_bottom_z = QDoubleSpinBox()
         self.entry_recording_bottom_z.setRange(-500.0, 500.0)
         self.entry_recording_bottom_z.setDecimals(1)
@@ -17559,13 +17552,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_recording_bottom_z.setKeyboardTracking(False)
         self.entry_recording_bottom_z.setMaximumWidth(85)
         self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
-        bottom_z_row.addWidget(self.entry_recording_bottom_z)
-        bottom_z_row.addStretch(1)
-        self.recording_bottom_z_frame = QFrame()
-        self.recording_bottom_z_frame.setLayout(bottom_z_row)
-        vbox.addWidget(self.recording_bottom_z_frame)
+        recording_grid.addWidget(self.entry_recording_bottom_z, 1, 6)
 
-        # Wire up dz visibility (Nz), Z-offset row visibility (Laser AF — the
+        vbox.addLayout(recording_grid)
+
+        # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the
         # offset is relative to the AF reference plane), and the offset caption (Nz).
         self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
         self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
@@ -17810,7 +17801,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.label_recording_dz.setVisible(multi)
         self.entry_recording_dz.setVisible(multi)
         use_af = self.checkbox_laser_af.isChecked()
-        self.recording_bottom_z_frame.setVisible(use_af)
+        self.label_recording_bottom_z.setVisible(use_af)
+        self.entry_recording_bottom_z.setVisible(use_af)
         self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
         self.entry_recording_bottom_z.setToolTip(
             "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
