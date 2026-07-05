@@ -17108,6 +17108,19 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.addWidget(self.lineEdit_experimentID, 1)  # stretch=1 → fills to the right edge
         vbox.addLayout(row2)
 
+        # Row 3: Save/Load full settings (reusable across acquisitions, unlike the
+        # per-run acquisition_channels.yaml audit snapshot).
+        row3 = QHBoxLayout()
+        row3.setSpacing(6)
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
+        row3.addWidget(self.btn_saveSettings)
+        self.btn_loadSettings = QPushButton("Load Settings…")
+        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
+        row3.addWidget(self.btn_loadSettings)
+        row3.addStretch(1)
+        vbox.addLayout(row3)
+
         return grp
 
     def _build_wells_fov_group(self) -> QGroupBox:
@@ -17680,6 +17693,31 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         path = QFileDialog.getExistingDirectory(self, "Select Saving Directory", self.lineEdit_savingDir.text())
         if path:
             self.lineEdit_savingDir.setText(path)
+
+    def _on_save_settings_clicked(self) -> None:
+        """Save full current settings to a user-chosen YAML file (no acquisition run required)."""
+        from control.core.record_zstack_controller import _build_objective_info, _save_record_zstack_yaml
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Record/Z-Stack Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if not path:
+            return
+        self._update_scan_regions()
+        params = self.build_parameters()
+        objective_info = _build_objective_info(self.objectiveStore, getattr(self.liveController, "camera", None))
+        try:
+            _save_record_zstack_yaml(params, path, self.scanCoordinates, objective_info)
+            self._log.info(f"Settings saved to {path}")
+        except Exception as exc:
+            self._log.error(f"Failed to save settings: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+
+    def _on_load_settings_clicked(self) -> None:
+        """Load full settings from a user-chosen YAML file via the same path as drag-and-drop."""
+        path, _ = QFileDialog.getOpenFileName(self, "Load Record/Z-Stack Settings", "", "YAML Files (*.yaml *.yml)")
+        if path:
+            self._load_acquisition_yaml(path)
 
     def _update_zstack_planes_label(self) -> None:
         from control.core.record_zstack_controller import zstack_plane_count
