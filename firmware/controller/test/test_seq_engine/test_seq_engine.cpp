@@ -260,6 +260,44 @@ void test_z_inner_order_and_z_offset(void) {
     for (int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_UINT16(expect[i], targets[i]);
 }
 
+void test_edge_mode_pulse_and_modeled_exposure_end(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].trigger_mode = (uint8_t)TriggerMode::Edge;  // strobe 500
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 1000000);
+    const ExposurePlan& p = hal.plans[0];
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + kEdgePulseUs, p.t_deassert_us);  // 50 µs
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 500 + 10000, p.t_illum_off_us);  // model
+}
+
+// Two cameras, different strobe delays: both scheduled at the same assert instant;
+// the step is one frame event; readiness tracked per camera.
+void test_two_cameras_simultaneous_exposure(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].camera_mask = 0x03;
+    SeqCameraConfig cams[2] = {cam_level(), cam_level()};
+    cams[1].strobe_delay_us = 2000;
+    cams[1].readout_time_us = 40000;
+    e.load(l, ch, cams, 2, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 1000000);
+    TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
+    TEST_ASSERT_EQUAL_UINT32(hal.plans[0].t_assert_us, hal.plans[1].t_assert_us);
+    TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // one step = one frame event
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -270,5 +308,7 @@ int main(int, char**) {
     RUN_TEST(test_filter_move_overlaps_readout);
     RUN_TEST(test_z_step_overlaps_readout_between_layers);
     RUN_TEST(test_z_inner_order_and_z_offset);
+    RUN_TEST(test_edge_mode_pulse_and_modeled_exposure_end);
+    RUN_TEST(test_two_cameras_simultaneous_exposure);
     return UNITY_END();
 }
