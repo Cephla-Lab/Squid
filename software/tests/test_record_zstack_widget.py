@@ -1374,3 +1374,87 @@ def test_unchecking_time_resets_and_restores_nt_dt(qtbot, simulated_widget_deps)
     w.checkbox_time.setChecked(True)
     assert w.entry_Nt.value() == 5
     assert w.entry_dt.value() == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# AcquisitionYAMLDropMixin integration (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    yaml_data = RecordZStackYAMLData(
+        widget_type="record_zstack",
+        xy_mode="Current Position",
+        nt=4,
+        delta_t_s=2.5,
+        laser_af=True,
+        recording_enabled=True,
+        recording_channel={
+            "name": "BF LED matrix full",
+            "camera_settings": {"exposure_time_ms": 33.0, "gain_mode": 1.0},
+            "illumination_settings": {"intensity": 60.0},
+        },
+        fps=25.0,
+        duration_s=3.0,
+        recording_z_offset_um=2.0,
+        zstack_enabled=True,
+        zstack_channels=[
+            {
+                "name": "Fluorescence 488 nm Ex",
+                "camera_settings": {"exposure_time_ms": 80.0, "gain_mode": 0.5},
+                "illumination_settings": {"intensity": 40.0},
+            }
+        ],
+        z_min_um=-4.0,
+        z_max_um=4.0,
+        z_step_um=2.0,
+        scan_size_mm=2.0,
+        overlap_percent=15.0,
+    )
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.entry_Nt.value() == 4
+    assert w.entry_dt.value() == pytest.approx(2.5)
+    assert w.checkbox_laser_af.isChecked() is True
+    assert w.checkbox_recording.isChecked() is True
+    assert w._recording_channel_name() == "BF LED matrix full"
+    assert w._recording_exposure() == pytest.approx(33.0)
+    assert w._recording_gain() == pytest.approx(1.0)
+    assert w._recording_illumination() == pytest.approx(60.0)
+    assert w.entry_fps.value() == pytest.approx(25.0)
+    assert w.entry_duration.value() == pytest.approx(3.0)
+    assert w.entry_recording_z_offset.value() == pytest.approx(2.0)
+    assert w.checkbox_zstack.isChecked() is True
+    assert w._zstack_channel_names == ["Fluorescence 488 nm Ex"]
+    assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((80.0, 0.5, 40.0))
+    assert w.entry_zmin.value() == pytest.approx(-4.0)
+    assert w.entry_zmax.value() == pytest.approx(4.0)
+    assert w.entry_step.value() == pytest.approx(2.0)
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    assert w.entry_scan_size.value() == pytest.approx(2.0)
+    assert w.entry_overlap.value() == pytest.approx(15.0)
+
+
+def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert w._get_expected_widget_type() == "record_zstack"
+
+
+def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    camera = object()
+    simulated_widget_deps["liveController"].camera = camera
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert w._get_camera_for_binning_check() is camera
