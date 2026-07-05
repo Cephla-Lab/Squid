@@ -6,10 +6,14 @@ on:
     paths:
       - 'firmware/**'
       - '.github/workflows/firmware.yml'
+      - 'software/control/protocol_v2/**'
+      - 'software/tools/gen_protocol_golden.py'
   pull_request:
     paths:
       - 'firmware/**'
       - '.github/workflows/firmware.yml'
+      - 'software/control/protocol_v2/**'
+      - 'software/tools/gen_protocol_golden.py'
 
 jobs:
   build-and-test:
@@ -42,3 +46,10 @@ jobs:
       - name: Run unit tests
         run: pio test -e native
         working-directory: ./firmware/controller
+
+      - name: Check protocol-v2 golden vectors are up to date
+        run: |
+          python software/tools/gen_protocol_golden.py
+          git diff --exit-code \
+            software/tests/data/protocol_v2_golden.json \
+            firmware/controller/test/test_golden/golden_cases.h
