@@ -2004,3 +2004,101 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
         assert ch2.exposure_time == pytest.approx(ch1.exposure_time)
         assert ch2.analog_gain == pytest.approx(ch1.analog_gain)
         assert ch2.illumination_intensity == pytest.approx(ch1.illumination_intensity)
+
+
+def test_validate_helper_recording_nz_and_dz():
+    params = _base_params(recording_enabled=True, recording_nz=0)
+    assert _validate_record_zstack_params(**params) is not None  # Nz < 1
+    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.0)
+    assert _validate_record_zstack_params(**params) is not None  # dz <= 0 with Nz > 1
+    params = _base_params(recording_enabled=True, recording_nz=1, recording_dz_um=0.0)
+    assert _validate_record_zstack_params(**params) is None  # Nz=1: dz irrelevant
+    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.5)
+    assert _validate_record_zstack_params(**params) is None
+
+
+def test_recording_dz_hidden_when_nz_is_one(qtbot, simulated_widget_deps):
+    """dz must be HIDDEN (not just disabled) when Nz == 1 — user requirement."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.entry_recording_Nz.value() == 1
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+    w.entry_recording_Nz.setValue(3)
+    assert not w.entry_recording_dz.isHidden()
+    assert not w.label_recording_dz.isHidden()
+
+    w.entry_recording_Nz.setValue(1)
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+
+def test_recording_offset_caption_and_build_parameters(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_recording.setChecked(True)
+    w.entry_duration.setValue(2.0)
+    w.entry_recording_bottom_z.setValue(-2.0)
+    w.entry_recording_Nz.setValue(3)
+    w.entry_recording_dz.setValue(4.0)
+
+    # Without Laser AF there is no reference plane to offset from: the field
+    # is hidden and its (stale) value must not reach the parameters.
+    assert not w.checkbox_laser_af.isChecked()
+    assert w.recording_bottom_z_frame.isHidden()
+    assert w.build_parameters().recording_bottom_z_offset_um == 0.0
+
+    w.checkbox_laser_af.setChecked(True)
+    assert not w.recording_bottom_z_frame.isHidden()
+
+    # Caption uses multi-plane wording when Nz > 1 and reverts at Nz == 1.
+    assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
+    w.entry_recording_Nz.setValue(1)
+    assert w.label_recording_bottom_z.text() == "Z offset:"
+    w.entry_recording_Nz.setValue(3)
+
+    params = w.build_parameters()
+    assert params.recording_bottom_z_offset_um == -2.0
+    assert params.recording_Nz == 3
+    assert params.recording_dz_um == 4.0
+
+
+def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatch):
+    """Widget.validate() must forward the recording_nz/recording_dz_um spinbox
+    values to the helper.  The spinbox minimums (Nz>=1, dz>0) make invalid
+    values unreachable through the UI, so asserting only ``validate() is
+    None`` would still pass even if those kwargs were silently dropped from
+    the call.  Intercept the helper instead and assert the actual kwargs it
+    receives."""
+    import control.widgets as widgets_mod
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_recording.setChecked(True)
+    w.checkbox_zstack.setChecked(False)
+    w.entry_recording_Nz.setValue(3)
+    w.entry_recording_dz.setValue(4.0)
+
+    real_validate = widgets_mod._validate_record_zstack_params
+    captured = {}
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return real_validate(**kwargs)
+
+    monkeypatch.setattr(widgets_mod, "_validate_record_zstack_params", spy)
+
+    result = w.validate()
+
+    assert result is None
+    assert captured.get("recording_nz") == 3
+    assert captured.get("recording_dz_um") == 4.0
