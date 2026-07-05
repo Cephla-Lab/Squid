@@ -18037,6 +18037,17 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # _stored_time_params — invoking it here could clobber the Nt/dt
             # values just loaded from the YAML.
             self.time_controls_frame.setVisible(self.checkbox_time.isChecked())
+            # checkbox_xy's toggled signal and combobox_xy_mode's currentTextChanged
+            # signal were both blocked above too, so the normal
+            # _on_xy_toggled/_on_xy_mode_changed-driven visibility refresh didn't
+            # fire either. Mirror _on_xy_mode_changed's condition directly (rather
+            # than calling it) for the same reason as checkbox_time above: calling
+            # the handlers could re-trigger stored-mode restore logic that would
+            # clobber the xy_mode just loaded from the YAML.
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+            self.xy_controls_frame.setVisible(
+                self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells"
+            )
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or
