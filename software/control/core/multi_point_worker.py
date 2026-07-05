@@ -697,7 +697,9 @@ class MultiPointWorker:
         # Using daemon threads is safe here because:
         # 1. All jobs are complete and results are already drained
         # 2. The subprocess termination is best-effort cleanup only
-        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
+        # 3. If the app exits before these threads complete, main_hcs.py calls
+        #    shutdown_all_job_runners() before os._exit() (os._exit skips the
+        #    multiprocessing atexit hook that would normally reap daemon children)
         # 4. This prevents slow subprocess termination from blocking acquisition completion
         log = self._log  # Capture for closure
 
