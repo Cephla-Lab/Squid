@@ -18005,6 +18005,9 @@ class RecordZStackMultiPointWidget(QFrame):
             z_min_um=self.entry_zmin.value(),
             z_max_um=self.entry_zmax.value(),
             z_step_um=self.entry_step.value(),
+            xy_mode=self.combobox_xy_mode.currentText(),
+            scan_size_mm=self.entry_scan_size.value(),
+            overlap_percent=self.entry_overlap.value(),
         )
 
     def toggle_acquisition(self, pressed: bool) -> None:

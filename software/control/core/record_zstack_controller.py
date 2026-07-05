@@ -44,6 +44,10 @@ class RecordZStackAcquisitionParameters:
     z_min_um: float = -3.0
     z_max_um: float = 3.0
     z_step_um: float = 1.0
+    # XY / well-selection state (needed to save a full reusable settings snapshot)
+    xy_mode: str = "Select Wells"
+    scan_size_mm: float = 0.1
+    overlap_percent: float = 10.0
 
 
 class RecordZStackController:

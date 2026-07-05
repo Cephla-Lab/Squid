@@ -271,6 +271,22 @@ def test_build_parameters_recording_phase(qtbot, simulated_widget_deps):
     assert params.recording_channel is not None
 
 
+def test_build_parameters_includes_xy_mode_and_scan_settings(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    w.entry_scan_size.setValue(1.5)
+    w.entry_overlap.setValue(12.0)
+
+    params = w.build_parameters()
+    assert params.xy_mode == "Current Position"
+    assert params.scan_size_mm == pytest.approx(1.5)
+    assert params.overlap_percent == pytest.approx(12.0)
+
+
 def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
