@@ -833,6 +833,52 @@ _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
 }
 
 
+def _parse_well_name(well_name: str):
+    """Parse well name like 'C4' to (row, col) indices. Returns (None, None) if unparseable."""
+    match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
+    if not match:
+        return None, None
+
+    row_str, col_str = match.groups()
+    row = 0
+    for char in row_str:
+        row = row * 26 + (ord(char) - ord("A") + 1)
+    row -= 1
+    col = int(col_str) - 1
+    return row, col
+
+
+def _load_well_regions(well_selection_widget, regions) -> None:
+    """Select *regions* (from a dropped acquisition YAML) in *well_selection_widget*.
+
+    Shared by WellplateMultiPointWidget and RecordZStackMultiPointWidget, both of which
+    receive the same shared well-selection grid instance via gui_hcs.py. No-op when
+    well_selection_widget is None (glass-slide mode / not yet wired).
+    """
+    if not well_selection_widget:
+        return
+
+    well_selection_widget.blockSignals(True)
+    try:
+        well_selection_widget.clearSelection()
+        has_selection = False
+        for region in regions:
+            well_name = region.get("name", "")
+            if not well_name:
+                continue
+            row, col = _parse_well_name(well_name)
+            if row is not None and col is not None:
+                if row < well_selection_widget.rowCount() and col < well_selection_widget.columnCount():
+                    item = well_selection_widget.item(row, col)
+                    if item:
+                        item.setSelected(True)
+                        has_selection = True
+    finally:
+        well_selection_widget.blockSignals(False)
+
+    well_selection_widget.signal_wellSelected.emit(has_selection)
+
+
 class AcquisitionYAMLDropMixin:
     """Mixin class providing drag-and-drop functionality for loading acquisition YAML files.
 
@@ -9297,7 +9343,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Load well regions if present and update XY checkbox state
             if yaml_data.wellplate_regions:
-                self._load_well_regions(yaml_data.wellplate_regions)
+                _load_well_regions(self.well_selection_widget, yaml_data.wellplate_regions)
                 self.checkbox_xy.setChecked(True)
             else:
                 self.checkbox_xy.setChecked(False)
@@ -9316,59 +9362,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
-
-    def _load_well_regions(self, regions):
-        """Load well regions from YAML and select them in the well selector."""
-        if not self.well_selection_widget:
-            return
-
-        # Block signals during batch selection to prevent multiple updates
-        self.well_selection_widget.blockSignals(True)
-
-        try:
-            # Clear current selection
-            self.well_selection_widget.clearSelection()
-
-            has_selection = False
-            # Parse well names and select them
-            for region in regions:
-                well_name = region.get("name", "")
-                if not well_name:
-                    continue
-
-                # Parse well name (e.g., "C4" -> row=2, col=3)
-                row, col = self._parse_well_name(well_name)
-                if row is not None and col is not None:
-                    # Check bounds
-                    if row < self.well_selection_widget.rowCount() and col < self.well_selection_widget.columnCount():
-                        item = self.well_selection_widget.item(row, col)
-                        if item:
-                            item.setSelected(True)
-                            has_selection = True
-        finally:
-            # Unblock signals
-            self.well_selection_widget.blockSignals(False)
-
-        # Emit signal once to trigger coordinate update
-        self.well_selection_widget.signal_wellSelected.emit(has_selection)
-
-    def _parse_well_name(self, well_name: str):
-        """Parse well name like 'C4' to (row, col) indices."""
-        match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
-        if not match:
-            return None, None
-
-        row_str, col_str = match.groups()
-
-        # Convert row letters to index (A=0, B=1, ..., AA=26, etc.)
-        row = 0
-        for char in row_str:
-            row = row * 26 + (ord(char) - ord("A") + 1)
-        row -= 1  # Convert to 0-based index
-
-        col = int(col_str) - 1  # Convert to 0-based index
-
-        return row, col
 
 
 class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
