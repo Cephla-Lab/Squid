@@ -1440,6 +1440,74 @@ def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps
     assert w.combobox_xy_mode.currentText() == "Current Position"
     assert w.entry_scan_size.value() == pytest.approx(2.0)
     assert w.entry_overlap.value() == pytest.approx(15.0)
+    assert w.checkbox_time.isChecked() is True
+
+
+def test_apply_yaml_settings_unknown_recording_channel_keeps_existing_row(qtbot, simulated_widget_deps, caplog):
+    """Fix Round 1 / Finding 1: when the YAML's recording channel name isn't in the
+    current combo (e.g. objective changed, or the channel was renamed/removed since
+    the YAML was saved), the exposure/gain/illumination spinboxes must NOT be
+    silently paired with a channel that doesn't match the combo's selection."""
+    import logging
+
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Pre-set the recording row to known, distinct values that must survive untouched.
+    w._recording_ch_combo.setCurrentIndex(0)
+    pre_channel_name = w._recording_ch_combo.currentText()
+    w._recording_exp_spin.setValue(11.0)
+    w._recording_gain_spin.setValue(2.0)
+    w._recording_illum_spin.setValue(22.0)
+
+    yaml_data = RecordZStackYAMLData(
+        widget_type="record_zstack",
+        recording_enabled=True,
+        recording_channel={
+            "name": "Channel Not In Combo",
+            "camera_settings": {"exposure_time_ms": 99.0, "gain_mode": 9.0},
+            "illumination_settings": {"intensity": 99.0},
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        w._apply_yaml_settings(yaml_data)
+
+    # Combo selection and spinbox values are unchanged -- no name/value mismatch.
+    assert w._recording_ch_combo.currentText() == pre_channel_name
+    assert w._recording_exp_spin.value() == pytest.approx(11.0)
+    assert w._recording_gain_spin.value() == pytest.approx(2.0)
+    assert w._recording_illum_spin.value() == pytest.approx(22.0)
+    assert any(
+        "Channel Not In Combo" in rec.message for rec in caplog.records
+    ), "expected a warning naming the missing recording channel"
+
+
+def test_apply_yaml_settings_checks_time_checkbox_and_shows_frame(qtbot, simulated_widget_deps):
+    """Fix Round 1 / Finding 2: loading a multi-timepoint YAML (nt > 1) must check
+    checkbox_time and make the time-controls frame visible immediately, not just
+    update entry_Nt/entry_dt under the hood."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Sanity check on the default (unchecked) state before loading.
+    assert w.checkbox_time.isChecked() is False
+    assert w.time_controls_frame.isHidden() is True
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.checkbox_time.isChecked() is True
+    assert w.entry_Nt.value() == 4
+    assert w.entry_dt.value() == pytest.approx(2.0)
+    assert w.time_controls_frame.isHidden() is False
 
 
 def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
