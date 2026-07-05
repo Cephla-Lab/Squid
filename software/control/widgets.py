@@ -16997,7 +16997,7 @@ def _validate_record_zstack_params(
     return None
 
 
-class RecordZStackMultiPointWidget(QFrame):
+class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
 
     Construction pattern mirrors WellplateMultiPointWidget:
@@ -17026,6 +17026,7 @@ class RecordZStackMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.navigationViewer = navigationViewer
@@ -17906,6 +17907,86 @@ class RecordZStackMultiPointWidget(QFrame):
                 self.scanCoordinates.add_region("current", pos.x_mm, pos.y_mm, 0.01, 0, "Square")
         except Exception as exc:
             self._log.warning(f"_update_scan_regions: failed: {exc}")
+
+    # ---------------------------------------------------------------------- AcquisitionYAMLDropMixin
+
+    def _get_expected_widget_type(self) -> str:
+        return "record_zstack"
+
+    def _get_camera_for_binning_check(self):
+        """RecordZStackMultiPointWidget has no multipointController; use liveController's camera."""
+        return getattr(self.liveController, "camera", None)
+
+    def _apply_yaml_settings(self, yaml_data) -> None:
+        """Apply parsed RecordZStackYAMLData to widget controls."""
+        from control.models.acquisition_config import AcquisitionChannel
+
+        widgets_to_block = [
+            self.entry_Nt,
+            self.entry_dt,
+            self.checkbox_laser_af,
+            self.checkbox_recording,
+            self._recording_ch_combo,
+            self._recording_exp_spin,
+            self._recording_gain_spin,
+            self._recording_illum_spin,
+            self.entry_fps,
+            self.entry_duration,
+            self.entry_recording_z_offset,
+            self.checkbox_zstack,
+            self.entry_zmin,
+            self.entry_zmax,
+            self.entry_step,
+            self.combobox_xy_mode,
+            self.checkbox_xy,
+            self.entry_overlap,
+            self.entry_scan_size,
+        ]
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+            self.checkbox_laser_af.setChecked(yaml_data.laser_af)
+
+            self.checkbox_recording.setChecked(yaml_data.recording_enabled)
+            if yaml_data.recording_channel:
+                ch = AcquisitionChannel.model_validate(yaml_data.recording_channel)
+                idx = self._recording_ch_combo.findText(ch.name)
+                if idx >= 0:
+                    self._recording_ch_combo.setCurrentIndex(idx)
+                self._recording_exp_spin.setValue(ch.exposure_time)
+                self._recording_gain_spin.setValue(ch.analog_gain)
+                self._recording_illum_spin.setValue(ch.illumination_intensity)
+            self.entry_fps.setValue(yaml_data.fps)
+            self.entry_duration.setValue(yaml_data.duration_s)
+            self.entry_recording_z_offset.setValue(yaml_data.recording_z_offset_um)
+
+            self.checkbox_zstack.setChecked(yaml_data.zstack_enabled)
+            for name in list(self._zstack_channel_names):
+                self._remove_zstack_channel_row(name)
+            for ch_data in yaml_data.zstack_channels:
+                ch = AcquisitionChannel.model_validate(ch_data)
+                self._add_zstack_channel_row(ch.name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
+            self.entry_zmin.setValue(yaml_data.z_min_um)
+            self.entry_zmax.setValue(yaml_data.z_max_um)
+            self.entry_step.setValue(yaml_data.z_step_um)
+
+            if yaml_data.xy_mode in ("Current Position", "Select Wells"):
+                self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
+            if yaml_data.scan_size_mm is not None:
+                self.entry_scan_size.setValue(yaml_data.scan_size_mm)
+            self.entry_overlap.setValue(yaml_data.overlap_percent)
+
+            if yaml_data.wellplate_regions:
+                _load_well_regions(self.well_selection_widget, yaml_data.wellplate_regions)
+                self.checkbox_xy.setChecked(True)
+        finally:
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+            self._update_zstack_planes_label()
+            self._update_scan_regions()
 
     def _laser_af_has_reference(self) -> bool:
         """Return True if the laser autofocus controller has a captured reference."""
