@@ -27,8 +27,12 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build controller firmware (Teensy 4.1)
+      - name: Build controller firmware (Teensy 4.1, Squid v1 board)
         run: pio run -e teensy41
+        working-directory: ./firmware/controller
+
+      - name: Build controller firmware (Teensy 4.1, Squid v2 board)
+        run: pio run -e teensy41_boardv2
         working-directory: ./firmware/controller
 
       - name: Build joystick firmware (Teensy LC)
