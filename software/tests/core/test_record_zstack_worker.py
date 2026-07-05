@@ -867,6 +867,80 @@ def test_save_record_zstack_yaml_omits_wellplate_scan_for_current_position(tmp_p
     assert "wellplate_scan" not in data
 
 
+def test_save_record_zstack_yaml_raises_on_write_failure(tmp_path):
+    """Final-review Finding 3: _save_record_zstack_yaml() must let a real write
+    failure (e.g. target directory doesn't exist) propagate rather than swallowing
+    it internally. The two real call sites (run_acquisition()'s snapshot and the
+    Save Settings button handler) each already have their own appropriate
+    try/except one level up; swallowing here just made the button handler's
+    warning dialog unreachable."""
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+
+    params = RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+    # Parent directory doesn't exist -> open() raises FileNotFoundError (an OSError).
+    yaml_path = tmp_path / "does_not_exist" / "acquisition.yaml"
+
+    with pytest.raises(OSError):
+        _save_record_zstack_yaml(params, str(yaml_path))
+
+
+def test_run_acquisition_survives_snapshot_write_failure(tmp_path, monkeypatch):
+    """Final-review Finding 3: run_acquisition()'s own try/except around
+    _save_record_zstack_yaml (a real acquisition's settings snapshot) must still
+    degrade gracefully -- i.e. NOT raise out of run_acquisition() -- now that the
+    inner swallow inside _save_record_zstack_yaml itself has been removed."""
+    from unittest.mock import MagicMock
+    import control.core.record_zstack_controller as rzc
+
+    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
+
+    class DummyWorker:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("control.core.record_zstack_worker.RecordZStackWorker", DummyWorker)
+
+    def _raise_on_save(*args, **kwargs):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(rzc, "_save_record_zstack_yaml", _raise_on_save)
+
+    def _write_channels_yaml(output_dir, **kw):
+        (Path(output_dir) / "acquisition_channels.yaml").write_text("channels: []\n")
+
+    microscope = MagicMock()
+    microscope.config_repo.save_acquisition_output.side_effect = _write_channels_yaml
+    microscope.camera.get_binning.return_value = (1, 1)
+    microscope.camera.get_pixel_size_binned_um.return_value = 0.5
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {}
+    objective_store.get_pixel_size_factor.return_value = 1.0
+    callbacks = MagicMock()
+
+    controller = rzc.RecordZStackController(
+        microscope=microscope,
+        live_controller=MagicMock(),
+        laser_autofocus_controller=None,
+        objective_store=objective_store,
+        scan_coordinates=None,
+        callbacks=callbacks,
+    )
+    params = rzc.RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+
+    # Must not raise, even though _save_record_zstack_yaml raises internally.
+    controller.run_acquisition(params)
+    controller.join(timeout=5.0)
+
+    experiment_dir = next(tmp_path.iterdir())
+    assert (experiment_dir / "acquisition_channels.yaml").exists()
+    # The failed snapshot must not have produced a (possibly partial) acquisition.yaml.
+    assert not (experiment_dir / "acquisition.yaml").exists()
+
+
 def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
     """acquisition_channels.yaml (existing) and acquisition.yaml (new) both land in the experiment dir.
 

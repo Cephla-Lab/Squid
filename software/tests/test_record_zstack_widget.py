@@ -1642,6 +1642,41 @@ def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path
     assert data["objective"]["camera_binning"] == [1, 1]
 
 
+def test_save_settings_button_shows_warning_when_write_fails(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Final-review Finding 3: when the underlying _save_record_zstack_yaml() write
+    genuinely fails, _on_save_settings_clicked()'s own try/except must reach the user
+    via QMessageBox.warning -- it must NOT log "Settings saved" and silently show no
+    warning. Mirrors test_save_settings_button_writes_yaml's structure but points the
+    save at a path inside a non-existent directory so the real open() raises."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w.checkbox_zstack.setChecked(True)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
+    w.objectiveStore.current_objective = "10x"
+    w.objectiveStore.get_pixel_size_factor.return_value = 1.0
+
+    camera = MagicMock()
+    camera.get_binning.return_value = (1, 1)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+    w.liveController.camera = camera
+
+    # Parent directory doesn't exist -> the real open() call raises OSError.
+    save_path = tmp_path / "does_not_exist" / "my_preset.yaml"
+    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+        w.btn_saveSettings.click()
+
+    assert not save_path.exists()
+    mock_warn.assert_called_once()
+    assert mock_warn.call_args[0][1] == "Save Error"
+
+
 def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
     """Verify that clicking Load Settings runs the REAL load chain end to end:
     _on_load_settings_clicked -> _load_acquisition_yaml -> parse_acquisition_yaml ->
