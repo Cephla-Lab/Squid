@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -826,13 +826,67 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
         self.close()
 
 
+_ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
+    "wellplate": "Wellplate Multipoint",
+    "flexible": "Flexible Multipoint",
+    "record_zstack": "Record + Z-Stack",
+}
+
+
+def _parse_well_name(well_name: str):
+    """Parse well name like 'C4' to (row, col) indices. Returns (None, None) if unparseable."""
+    match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
+    if not match:
+        return None, None
+
+    row_str, col_str = match.groups()
+    row = 0
+    for char in row_str:
+        row = row * 26 + (ord(char) - ord("A") + 1)
+    row -= 1
+    col = int(col_str) - 1
+    return row, col
+
+
+def _load_well_regions(well_selection_widget, regions) -> None:
+    """Select *regions* (from a dropped acquisition YAML) in *well_selection_widget*.
+
+    Shared by WellplateMultiPointWidget and RecordZStackMultiPointWidget, both of which
+    receive the same shared well-selection grid instance via gui_hcs.py. No-op when
+    well_selection_widget is None (glass-slide mode / not yet wired).
+    """
+    if not well_selection_widget:
+        return
+
+    well_selection_widget.blockSignals(True)
+    try:
+        well_selection_widget.clearSelection()
+        has_selection = False
+        for region in regions:
+            well_name = region.get("name", "")
+            if not well_name:
+                continue
+            row, col = _parse_well_name(well_name)
+            if row is not None and col is not None:
+                if row < well_selection_widget.rowCount() and col < well_selection_widget.columnCount():
+                    item = well_selection_widget.item(row, col)
+                    if item:
+                        item.setSelected(True)
+                        has_selection = True
+    finally:
+        well_selection_widget.blockSignals(False)
+
+    well_selection_widget.signal_wellSelected.emit(has_selection)
+
+
 class AcquisitionYAMLDropMixin:
     """Mixin class providing drag-and-drop functionality for loading acquisition YAML files.
 
     Widgets using this mixin must:
     1. Call `self.setAcceptDrops(True)` in __init__
-    2. Have `self._log`, `self.multipointController`, `self.objectiveStore` attributes
-    3. Implement `_get_expected_widget_type()` returning "wellplate" or "flexible"
+    2. Have `self._log`, `self.objectiveStore` attributes, and override
+       `_get_camera_for_binning_check()` unless they have `self.multipointController.camera`
+    3. Implement `_get_expected_widget_type()` returning "wellplate", "flexible", or "record_zstack"
     4. Implement `_apply_yaml_settings(yaml_data)` to apply settings to the widget
     """
 
@@ -900,11 +954,18 @@ class AcquisitionYAMLDropMixin:
         """Return the expected widget_type for this widget. Override in subclass."""
         raise NotImplementedError("Subclass must implement _get_expected_widget_type()")
 
-    def _get_other_widget_name(self) -> str:
-        """Return the name of the other widget type for error messages."""
-        if self._get_expected_widget_type() == "wellplate":
-            return "Flexible Multipoint"
-        return "Wellplate Multipoint"
+    def _get_other_widget_name(self, actual_widget_type: str) -> str:
+        """Return the display name of the widget that handles *actual_widget_type* files."""
+        return _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES.get(actual_widget_type, actual_widget_type)
+
+    def _get_camera_for_binning_check(self):
+        """Return the camera used for the binning-mismatch check on load.
+
+        Default assumes self.multipointController.camera (wellplate/flexible).
+        Widgets without a multipointController (e.g. RecordZStackMultiPointWidget)
+        must override this.
+        """
+        return getattr(self.multipointController, "camera", None)
 
     def _load_acquisition_yaml(self, file_path: str) -> bool:
         """Load acquisition settings from YAML file.
@@ -927,14 +988,14 @@ class AcquisitionYAMLDropMixin:
                 self,
                 "Widget Type Mismatch",
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
-                f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
+                f"Please drop this file on the {self._get_other_widget_name(yaml_data.widget_type)} widget instead.",
             )
             return False
 
         # Validate hardware
         current_binning = (1, 1)
         try:
-            camera = getattr(self.multipointController, "camera", None)
+            camera = self._get_camera_for_binning_check()
             if camera and hasattr(camera, "get_binning"):
                 current_binning = tuple(camera.get_binning())
         except Exception as e:
@@ -951,8 +1012,18 @@ class AcquisitionYAMLDropMixin:
             dialog.exec_()
             return False
 
-        # Apply settings with signal blocking
-        self._apply_yaml_settings(yaml_data)
+        # Apply settings with signal blocking. Subclasses (currently only
+        # RecordZStackMultiPointWidget) may validate embedded channel dicts via
+        # pydantic inside _apply_yaml_settings(); a malformed-but-syntactically-valid
+        # YAML can raise there. Catch broadly here (mirroring the parse-error
+        # handling above) so a bad drop/button-load degrades to a warning dialog
+        # instead of crashing the Qt slot.
+        try:
+            self._apply_yaml_settings(yaml_data)
+        except Exception as e:
+            self._log.error(f"Failed to apply YAML settings from {file_path}: {e}")
+            QMessageBox.warning(self, "Load Error", f"Failed to apply YAML settings:\n{e}")
+            return False
         self._log.info(f"Loaded acquisition settings from: {file_path}")
         return True
 
@@ -9282,7 +9353,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Load well regions if present and update XY checkbox state
             if yaml_data.wellplate_regions:
-                self._load_well_regions(yaml_data.wellplate_regions)
+                _load_well_regions(self.well_selection_widget, yaml_data.wellplate_regions)
                 self.checkbox_xy.setChecked(True)
             else:
                 self.checkbox_xy.setChecked(False)
@@ -9301,59 +9372,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
-
-    def _load_well_regions(self, regions):
-        """Load well regions from YAML and select them in the well selector."""
-        if not self.well_selection_widget:
-            return
-
-        # Block signals during batch selection to prevent multiple updates
-        self.well_selection_widget.blockSignals(True)
-
-        try:
-            # Clear current selection
-            self.well_selection_widget.clearSelection()
-
-            has_selection = False
-            # Parse well names and select them
-            for region in regions:
-                well_name = region.get("name", "")
-                if not well_name:
-                    continue
-
-                # Parse well name (e.g., "C4" -> row=2, col=3)
-                row, col = self._parse_well_name(well_name)
-                if row is not None and col is not None:
-                    # Check bounds
-                    if row < self.well_selection_widget.rowCount() and col < self.well_selection_widget.columnCount():
-                        item = self.well_selection_widget.item(row, col)
-                        if item:
-                            item.setSelected(True)
-                            has_selection = True
-        finally:
-            # Unblock signals
-            self.well_selection_widget.blockSignals(False)
-
-        # Emit signal once to trigger coordinate update
-        self.well_selection_widget.signal_wellSelected.emit(has_selection)
-
-    def _parse_well_name(self, well_name: str):
-        """Parse well name like 'C4' to (row, col) indices."""
-        match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
-        if not match:
-            return None, None
-
-        row_str, col_str = match.groups()
-
-        # Convert row letters to index (A=0, B=1, ..., AA=26, etc.)
-        row = 0
-        for char in row_str:
-            row = row * 26 + (ord(char) - ord("A") + 1)
-        row -= 1  # Convert to 0-based index
-
-        col = int(col_str) - 1  # Convert to 0-based index
-
-        return row, col
 
 
 class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
@@ -16995,7 +17013,7 @@ def _validate_record_zstack_params(
     return None
 
 
-class RecordZStackMultiPointWidget(QFrame):
+class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
 
     Construction pattern mirrors WellplateMultiPointWidget:
@@ -17024,6 +17042,7 @@ class RecordZStackMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.navigationViewer = navigationViewer
@@ -17105,6 +17124,19 @@ class RecordZStackMultiPointWidget(QFrame):
         row2.addWidget(self.lineEdit_experimentID, 1)  # stretch=1 → fills to the right edge
         vbox.addLayout(row2)
 
+        # Row 3: Save/Load full settings (reusable across acquisitions, unlike the
+        # per-run acquisition_channels.yaml audit snapshot).
+        row3 = QHBoxLayout()
+        row3.setSpacing(6)
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
+        row3.addWidget(self.btn_saveSettings)
+        self.btn_loadSettings = QPushButton("Load Settings…")
+        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
+        row3.addWidget(self.btn_loadSettings)
+        row3.addStretch(1)
+        vbox.addLayout(row3)
+
         return grp
 
     def _build_wells_fov_group(self) -> QGroupBox:
@@ -17115,8 +17147,8 @@ class RecordZStackMultiPointWidget(QFrame):
         vbox.setSpacing(6)
 
         # Consistent widths so label+field pairs line up cleanly across rows.
-        field_w = 90  # spinbox / combo width
-        pair_gap = 14  # horizontal gap between adjacent label+field pairs
+        field_w = 70  # spinbox / combo width
+        pair_gap = 6  # horizontal gap between adjacent label+field pairs
 
         def _pair_label(text: str) -> QLabel:
             lbl = QLabel(text)
@@ -17125,10 +17157,53 @@ class RecordZStackMultiPointWidget(QFrame):
 
         # First-column labels share a width so the first field of each row aligns
         # (sized for the wider "Overlap:" label).
-        first_label_w = 66
+        first_label_w = 52
 
-        # Row 1: FOV overlap + Region shape + Region size
-        row1 = QHBoxLayout()
+        # --- XY / Time tabs row: mirrors WellplateMultiPointWidget's XY/Z/Time
+        # tabs (checkbox + combo in a frame that highlights when active). Z is
+        # skipped here since the "Z-Stack phase" group below already covers
+        # z-stacking for this widget. Laser AF is a standalone toggle, so it's
+        # placed as a plain checkbox in this row rather than in its own tab
+        # frame — mirroring how WellplateMultiPointWidget places its own Laser
+        # AF checkbox as a bare widget outside the tabs.
+        self.checkbox_xy = QCheckBox("XY")
+        self.checkbox_xy.setChecked(True)
+        self.combobox_xy_mode = QComboBox()
+        self.combobox_xy_mode.addItems(["Current Position", "Select Wells"])
+        self.combobox_xy_mode.setMaximumWidth(130)
+        # Select Wells (tile a grid over the selected wells) is the default so
+        # existing tiling behavior is unchanged out of the box; Current
+        # Position is a single FOV at the live stage position, bypassing
+        # well selection entirely.
+        self.combobox_xy_mode.setCurrentText("Select Wells")
+        self.xy_frame = QFrame()
+        xy_layout = QHBoxLayout(self.xy_frame)
+        xy_layout.setContentsMargins(8, 4, 8, 4)
+        xy_layout.addWidget(self.checkbox_xy)
+        xy_layout.addWidget(self.combobox_xy_mode)
+
+        self.checkbox_time = QCheckBox("Time")
+        self.checkbox_time.setChecked(False)
+        self.time_frame = QFrame()
+        time_frame_layout = QHBoxLayout(self.time_frame)
+        time_frame_layout.setContentsMargins(8, 4, 8, 4)
+        time_frame_layout.addWidget(self.checkbox_time)
+        time_frame_layout.addStretch()
+
+        self.checkbox_laser_af = QCheckBox("Laser AF")
+        self.checkbox_laser_af.setChecked(False)
+
+        tabs_row = QHBoxLayout()
+        tabs_row.setSpacing(4)
+        tabs_row.addWidget(self.xy_frame, 2)
+        tabs_row.addWidget(self.time_frame, 1)
+        tabs_row.addWidget(self.checkbox_laser_af)
+        vbox.addLayout(tabs_row)
+
+        # Row 1: FOV overlap + Region shape + Region size (hidden when XY unchecked)
+        self.xy_controls_frame = QFrame()
+        row1 = QHBoxLayout(self.xy_controls_frame)
+        row1.setContentsMargins(0, 0, 0, 0)
         row1.setSpacing(4)
 
         overlap_label = _pair_label("Overlap:")
@@ -17146,7 +17221,9 @@ class RecordZStackMultiPointWidget(QFrame):
         row1.addWidget(_pair_label("Shape:"))
         self.combobox_shape = QComboBox()
         self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
-        self.combobox_shape.setFixedWidth(field_w)
+        # Wider than field_w: word options ("Rectangle") need more room than
+        # the numeric+suffix spinboxes elsewhere in this row.
+        self.combobox_shape.setFixedWidth(90)
         row1.addWidget(self.combobox_shape)
 
         row1.addSpacing(pair_gap)
@@ -17161,10 +17238,12 @@ class RecordZStackMultiPointWidget(QFrame):
         row1.addWidget(self.entry_scan_size)
 
         row1.addStretch(1)
-        vbox.addLayout(row1)
+        vbox.addWidget(self.xy_controls_frame)
 
-        # Row 2: Nt + dt
-        row2 = QHBoxLayout()
+        # Row 2: Nt + dt (hidden when Time unchecked)
+        self.time_controls_frame = QFrame()
+        row2 = QHBoxLayout(self.time_controls_frame)
+        row2.setContentsMargins(0, 0, 0, 0)
         row2.setSpacing(4)
 
         nt_label = _pair_label("Nt:")
@@ -17187,14 +17266,8 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_dt.setFixedWidth(field_w)
         row2.addWidget(self.entry_dt)
 
-        # Laser reflection AF checkbox shares the Nt/dt row (room to the right of dt).
-        row2.addSpacing(pair_gap)
-        self.checkbox_laser_af = QCheckBox("Laser AF")
-        self.checkbox_laser_af.setChecked(False)
-        row2.addWidget(self.checkbox_laser_af)
-
         row2.addStretch(1)
-        vbox.addLayout(row2)
+        vbox.addWidget(self.time_controls_frame)
 
         # Separator below this section, before the Recording phase group.
         sep = QFrame()
@@ -17207,7 +17280,117 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_scan_size.valueChanged.connect(self._update_scan_regions)
         self.combobox_shape.currentIndexChanged.connect(self._update_scan_regions)
 
+        # Wire XY/Time toggle behavior and initialize their visibility/styling.
+        self._stored_time_params = None
+        self._stored_xy_mode = None
+        self.checkbox_xy.toggled.connect(self._on_xy_toggled)
+        self.combobox_xy_mode.currentTextChanged.connect(self._on_xy_mode_changed)
+        self.checkbox_time.toggled.connect(self._on_time_toggled)
+        self._on_xy_toggled(self.checkbox_xy.isChecked())
+        self._on_time_toggled(self.checkbox_time.isChecked())
+
         return grp
+
+    def _on_xy_toggled(self, checked: bool) -> None:
+        """Enable/disable the mode combo, forcing Current Position (single
+        stage-position FOV) when unchecked and restoring the previously
+        selected mode when re-checked — mirrors WellplateMultiPointWidget's
+        on_xy_toggled.
+        """
+        self.combobox_xy_mode.setEnabled(checked)
+        old_mode = self.combobox_xy_mode.currentText()
+        if checked:
+            if self._stored_xy_mode is not None:
+                self.combobox_xy_mode.setCurrentText(self._stored_xy_mode)
+        else:
+            self._stored_xy_mode = self.combobox_xy_mode.currentText()
+            self.combobox_xy_mode.setCurrentText("Current Position")
+        self._update_tab_styles()
+        if self.combobox_xy_mode.currentText() == old_mode:
+            # currentTextChanged didn't fire (mode unchanged), so
+            # _on_xy_mode_changed never rebuilt the region — do it here.
+            self._update_scan_regions()
+
+    def _on_xy_mode_changed(self, mode: str) -> None:
+        """Show the FOV-tiling controls only for Select Wells; Current
+        Position always uses a fixed single FOV at the live stage position.
+        """
+        self.xy_controls_frame.setVisible(self.checkbox_xy.isChecked() and mode == "Select Wells")
+        self._update_scan_regions()
+
+    def _on_time_toggled(self, checked: bool) -> None:
+        """Show/hide the Nt/dt controls, resetting to a single timepoint when
+        unchecked and restoring the previous Nt/dt when re-checked (mirrors
+        WellplateMultiPointWidget's store/restore of Time parameters).
+        """
+        self.time_controls_frame.setVisible(checked)
+        if checked:
+            if self._stored_time_params is not None:
+                nt, dt = self._stored_time_params
+                self.entry_Nt.setValue(nt)
+                self.entry_dt.setValue(dt)
+        else:
+            self._stored_time_params = (self.entry_Nt.value(), self.entry_dt.value())
+            self.entry_Nt.setValue(1)
+            self.entry_dt.setValue(0)
+        self._update_tab_styles()
+
+    def _update_tab_styles(self) -> None:
+        """Border/background styling for the XY/Time tabs (colors mirror
+        WellplateMultiPointWidget.update_tab_styles: orange for XY, green for Time).
+        """
+        xy_active_style = """
+            QFrame {
+                border: 1px solid #FF8C00;
+                border-radius: 2px;
+            }
+        """
+        xy_controls_style = """
+            QFrame {
+                background-color: rgba(255, 140, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+                color: black;
+            }
+            QFrame QComboBox QAbstractItemView {
+                background-color: white;
+                color: black;
+                selection-background-color: palette(highlight);
+                selection-color: palette(highlighted-text);
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+        time_active_style = """
+            QFrame {
+                border: 1px solid #00A000;
+                border-radius: 2px;
+            }
+        """
+        time_controls_style = """
+            QFrame {
+                background-color: rgba(0, 160, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+                color: black;
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+        inactive_style = """
+            QFrame {
+                border: 1px solid palette(mid);
+                border-radius: 2px;
+            }
+        """
+        self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
+        self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+        self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
+        self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
 
     def _build_recording_group(self) -> QGroupBox:
         grp = QGroupBox("Recording phase")
@@ -17234,11 +17417,13 @@ class RecordZStackMultiPointWidget(QFrame):
         self.recording_channel_table.setFixedHeight(
             self.recording_channel_table.horizontalHeader().height() + self.recording_channel_table.rowHeight(0) + 8
         )
-        # Bound table width to match the z-stack table and force the 5 columns to
-        # fit (Channel truncates via Stretch) instead of showing a horizontal scrollbar.
+        # Force the 5 columns to fit (Channel truncates via Stretch) instead of
+        # showing a horizontal scrollbar. No fixed width: the panel's actual
+        # available width varies with which other tab last drove the main
+        # window's width, so the table fills whatever space it's given rather
+        # than gambling on a specific pixel value.
         self.recording_channel_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # Match the z-stack channel table width so the two tables align as one column.
-        self.recording_channel_table.setFixedWidth(530)
+        self.recording_channel_table.setMinimumWidth(300)
 
         # Col 0: channel combo. Let it shrink within the Stretch column instead of
         # demanding its full text width (otherwise the long channel name forces the
@@ -17257,7 +17442,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self._recording_exp_spin.setSuffix(" ms")
         self._recording_exp_spin.setDecimals(1)
         self._recording_exp_spin.setKeyboardTracking(False)
-        self._recording_exp_spin.setMaximumWidth(85)
+        self._recording_exp_spin.setMaximumWidth(68)
         self.recording_channel_table.setCellWidget(0, 1, self._recording_exp_spin)
 
         # Col 2: gain spinbox
@@ -17266,7 +17451,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self._recording_gain_spin.setValue(0.0)
         self._recording_gain_spin.setDecimals(2)
         self._recording_gain_spin.setKeyboardTracking(False)
-        self._recording_gain_spin.setMaximumWidth(60)
+        self._recording_gain_spin.setMaximumWidth(48)
         self.recording_channel_table.setCellWidget(0, 2, self._recording_gain_spin)
 
         # Col 3: illumination spinbox
@@ -17276,7 +17461,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self._recording_illum_spin.setSuffix(" %")
         self._recording_illum_spin.setDecimals(1)
         self._recording_illum_spin.setKeyboardTracking(False)
-        self._recording_illum_spin.setMaximumWidth(76)
+        self._recording_illum_spin.setMaximumWidth(60)
         self.recording_channel_table.setCellWidget(0, 3, self._recording_illum_spin)
 
         # Col 4: ↻ copy-from-live button
@@ -17286,13 +17471,13 @@ class RecordZStackMultiPointWidget(QFrame):
         self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
         self.recording_channel_table.setCellWidget(0, 4, self.btn_copy_from_live)
 
-        # Bound the table width to match the z-stack table: wrap in an HBox
-        # with a trailing stretch so it doesn't expand to fill the panel.
-        table_row = QHBoxLayout()
-        table_row.setContentsMargins(0, 0, 0, 0)
-        table_row.addWidget(self.recording_channel_table)
-        table_row.addStretch(1)
-        vbox.addLayout(table_row)
+        # Seed the row from the selected channel's own configured settings
+        # (not the hardcoded defaults above) whenever the selection changes,
+        # including the initial population.
+        self._recording_ch_combo.currentIndexChanged.connect(self._on_recording_channel_changed)
+        self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
+
+        vbox.addWidget(self.recording_channel_table)
 
         # Single row: Nz | Z offset (+ dz when Nz > 1) | FPS + Duration.
         # dz is hidden when Nz == 1, and the offset caption switches between
@@ -17396,7 +17581,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_zmin.setDecimals(1)
         self.entry_zmin.setSingleStep(0.5)
         self.entry_zmin.setKeyboardTracking(False)
-        self.entry_zmin.setMaximumWidth(85)
+        self.entry_zmin.setMaximumWidth(68)  # a hair more than zmax: room for the "-" sign
         layout.addWidget(QLabel("Z-min:"), 0, 0)
         layout.addWidget(self.entry_zmin, 0, 1)
 
@@ -17407,7 +17592,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_zmax.setDecimals(1)
         self.entry_zmax.setSingleStep(0.5)
         self.entry_zmax.setKeyboardTracking(False)
-        self.entry_zmax.setMaximumWidth(85)
+        self.entry_zmax.setMaximumWidth(62)
         layout.addWidget(QLabel("Z-max:"), 0, 2)
         layout.addWidget(self.entry_zmax, 0, 3)
 
@@ -17419,7 +17604,7 @@ class RecordZStackMultiPointWidget(QFrame):
         self.entry_step.setSingleStep(0.1)
         self.entry_step.setKeyboardTracking(False)
         # Slightly wider than zmin/zmax: 2 decimals ("1.00 μm") need ~1 extra char.
-        self.entry_step.setMaximumWidth(98)
+        self.entry_step.setMaximumWidth(68)
         layout.addWidget(QLabel("Step:"), 0, 4)
         layout.addWidget(self.entry_step, 0, 5)
 
@@ -17441,11 +17626,14 @@ class RecordZStackMultiPointWidget(QFrame):
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.zstack_channel_table.setMinimumHeight(80)
         self.zstack_channel_table.setMaximumHeight(200)
-        # Match the recording channel table width so the two tables align as one column.
-        self.zstack_channel_table.setFixedWidth(530)
+        # No fixed width — see the matching comment on recording_channel_table.
+        self.zstack_channel_table.setMinimumWidth(300)
         self.zstack_channel_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.zstack_channel_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        layout.addWidget(self.zstack_channel_table, 1, 0, 1, 7)
+        # Span into the stretch column (7) too, so the table fills the full
+        # group width instead of stopping at the Z-min/Z-max/Step row's
+        # narrower natural width.
+        layout.addWidget(self.zstack_channel_table, 1, 0, 1, 8)
 
         # Row 2: Add channel dropdown + button (capped combo with "+ Add" right after,
         # then a trailing stretch so the row doesn't span the full panel width)
@@ -17454,7 +17642,7 @@ class RecordZStackMultiPointWidget(QFrame):
         add_row.setSpacing(4)
         self.combobox_zstack_add_channel = QComboBox()
         self._populate_channel_combo(self.combobox_zstack_add_channel)
-        self.combobox_zstack_add_channel.setMaximumWidth(260)
+        self.combobox_zstack_add_channel.setMaximumWidth(170)
         add_row.addWidget(self.combobox_zstack_add_channel)
         self.btn_zstack_add_channel = QPushButton("+ Add")
         self.btn_zstack_add_channel.setMaximumWidth(60)
@@ -17503,6 +17691,45 @@ class RecordZStackMultiPointWidget(QFrame):
         except Exception as exc:
             self._log.warning(f"Could not populate channel combo: {exc}")
 
+    def _find_channel(self, name: str):
+        """Look up channel *name* in liveController.get_channels() for the
+        current objective. Returns None if not found or unavailable.
+
+        Shared by _channel_settings (used to seed new rows) and
+        build_parameters._make_channel_base (used to build the acquisition
+        channel), so both see the same channel for the same name.
+        """
+        try:
+            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+            for ch in channels:
+                if ch.name == name:
+                    return ch
+        except Exception as exc:
+            self._log.warning(f"_find_channel: could not fetch channel {name!r}: {exc}")
+        return None
+
+    def _channel_settings(self, name: str) -> Tuple[float, float, float]:
+        """Return (exposure, gain, illumination) configured for channel *name*.
+
+        Falls back to (50.0, 0.0, 50.0) if the channel can't be found, so newly
+        added rows are seeded from the channel's own settings (as known by
+        liveController) instead of an arbitrary hardcoded default.
+        """
+        ch = self._find_channel(name)
+        if ch is not None:
+            return ch.exposure_time, ch.analog_gain, ch.illumination_intensity
+        return 50.0, 0.0, 50.0
+
+    def _on_recording_channel_changed(self, index: int) -> None:
+        """Reseed the recording row's exposure/gain/illum from the newly selected channel."""
+        name = self._recording_ch_combo.currentText()
+        if not name:
+            return
+        exposure, gain, illum = self._channel_settings(name)
+        self._recording_exp_spin.setValue(exposure)
+        self._recording_gain_spin.setValue(gain)
+        self._recording_illum_spin.setValue(illum)
+
     # ---------------------------------------------------------------------- recording table accessors
 
     def _recording_channel_name(self) -> Optional[str]:
@@ -17528,6 +17755,31 @@ class RecordZStackMultiPointWidget(QFrame):
         path = QFileDialog.getExistingDirectory(self, "Select Saving Directory", self.lineEdit_savingDir.text())
         if path:
             self.lineEdit_savingDir.setText(path)
+
+    def _on_save_settings_clicked(self) -> None:
+        """Save full current settings to a user-chosen YAML file (no acquisition run required)."""
+        from control.core.record_zstack_controller import _build_objective_info, _save_record_zstack_yaml
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Record/Z-Stack Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if not path:
+            return
+        self._update_scan_regions()
+        params = self.build_parameters()
+        objective_info = _build_objective_info(self.objectiveStore, getattr(self.liveController, "camera", None))
+        try:
+            _save_record_zstack_yaml(params, path, self.scanCoordinates, objective_info)
+            self._log.info(f"Settings saved to {path}")
+        except Exception as exc:
+            self._log.error(f"Failed to save settings: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+
+    def _on_load_settings_clicked(self) -> None:
+        """Load full settings from a user-chosen YAML file via the same path as drag-and-drop."""
+        path, _ = QFileDialog.getOpenFileName(self, "Load Record/Z-Stack Settings", "", "YAML Files (*.yaml *.yml)")
+        if path:
+            self._load_acquisition_yaml(path)
 
     def _update_zstack_planes_label(self) -> None:
         from control.core.record_zstack_controller import zstack_plane_count
@@ -17567,9 +17819,11 @@ class RecordZStackMultiPointWidget(QFrame):
         row = self.zstack_channel_table.rowCount()
         self.zstack_channel_table.insertRow(row)
 
-        # Col 0: channel name (read-only)
+        # Col 0: channel name (read-only). Tooltip shows the full name since
+        # the Stretch column truncates long names visually.
         item = QTableWidgetItem(name)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        item.setToolTip(name)
         self.zstack_channel_table.setItem(row, 0, item)
 
         # Col 1: exposure spinbox
@@ -17712,7 +17966,8 @@ class RecordZStackMultiPointWidget(QFrame):
         """Add the currently selected channel in the add-channel combo to the z-stack table."""
         name = self.combobox_zstack_add_channel.currentText()
         if name:
-            self._add_zstack_channel_row(name)
+            exposure, gain, illum = self._channel_settings(name)
+            self._add_zstack_channel_row(name, exposure, gain, illum)
 
     def _get_selected_well_count(self) -> int:
         """Return the number of currently selected wells.
@@ -17736,26 +17991,159 @@ class RecordZStackMultiPointWidget(QFrame):
         return 1
 
     def _update_scan_regions(self) -> None:
-        """Update the FOV grid from the current overlap/shape/scan-size settings.
+        """Update the FOV grid from the current XY mode.
 
         Mirrors WellplateMultiPointWidget.update_coordinates.  Called whenever
-        entry_overlap, entry_scan_size, or combobox_shape changes, and also at
-        the start of toggle_acquisition to ensure the grid is current.
+        entry_overlap, entry_scan_size, or combobox_shape changes, when the XY
+        checkbox/mode changes, and also at the start of toggle_acquisition to
+        ensure the grid is current.
+
+        Select Wells mode tiles a grid (per overlap/shape/size) over the
+        currently selected wells. Current Position mode (also forced when XY
+        is unchecked) ignores well selection entirely and uses a single small
+        FOV at the live stage position, mirroring
+        WellplateMultiPointWidget.set_coordinates_to_current_position.
         """
         if self.scanCoordinates is None:
             return
-        scan_size_mm = self.entry_scan_size.value()
-        overlap_percent = self.entry_overlap.value()
-        shape = self.combobox_shape.currentText()
         try:
             # Clear first: set_well_coordinates only adds wells not already present,
             # so without clearing, already-selected wells keep their old tile geometry
             # and the new size/overlap/shape would be silently ignored.
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
-            self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
+            if self.combobox_xy_mode.currentText() == "Select Wells":
+                self.scanCoordinates.set_well_coordinates(
+                    self.entry_scan_size.value(), self.entry_overlap.value(), self.combobox_shape.currentText()
+                )
+            else:  # "Current Position"
+                pos = self.stage.get_pos()
+                self.scanCoordinates.add_region("current", pos.x_mm, pos.y_mm, 0.01, 0, "Square")
         except Exception as exc:
-            self._log.warning(f"_update_scan_regions: set_well_coordinates failed: {exc}")
+            self._log.warning(f"_update_scan_regions: failed: {exc}")
+
+    # ---------------------------------------------------------------------- AcquisitionYAMLDropMixin
+
+    def _get_expected_widget_type(self) -> str:
+        return "record_zstack"
+
+    def _get_camera_for_binning_check(self):
+        """RecordZStackMultiPointWidget has no multipointController; use liveController's camera."""
+        return getattr(self.liveController, "camera", None)
+
+    def _apply_yaml_settings(self, yaml_data) -> None:
+        """Apply parsed RecordZStackYAMLData to widget controls."""
+        from control.models.acquisition_config import AcquisitionChannel
+
+        widgets_to_block = [
+            self.entry_Nt,
+            self.entry_dt,
+            self.checkbox_time,
+            self.checkbox_laser_af,
+            self.checkbox_recording,
+            self._recording_ch_combo,
+            self._recording_exp_spin,
+            self._recording_gain_spin,
+            self._recording_illum_spin,
+            self.entry_fps,
+            self.entry_duration,
+            self.entry_recording_Nz,
+            self.entry_recording_bottom_z,
+            self.entry_recording_dz,
+            self.checkbox_zstack,
+            self.entry_zmin,
+            self.entry_zmax,
+            self.entry_step,
+            self.combobox_xy_mode,
+            self.checkbox_xy,
+            self.entry_overlap,
+            self.entry_scan_size,
+        ]
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            self.checkbox_time.setChecked(yaml_data.nt > 1)
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+            self.checkbox_laser_af.setChecked(yaml_data.laser_af)
+
+            self.checkbox_recording.setChecked(yaml_data.recording_enabled)
+            if yaml_data.recording_channel:
+                ch = AcquisitionChannel.model_validate(yaml_data.recording_channel)
+                idx = self._recording_ch_combo.findText(ch.name)
+                if idx >= 0:
+                    self._recording_ch_combo.setCurrentIndex(idx)
+                    self._recording_exp_spin.setValue(ch.exposure_time)
+                    self._recording_gain_spin.setValue(ch.analog_gain)
+                    self._recording_illum_spin.setValue(ch.illumination_intensity)
+                else:
+                    self._log.warning(
+                        f"_apply_yaml_settings: recording channel {ch.name!r} not found in current "
+                        "objective's channels; keeping existing recording row settings"
+                    )
+            self.entry_fps.setValue(yaml_data.fps)
+            self.entry_duration.setValue(yaml_data.duration_s)
+            self.entry_recording_Nz.setValue(yaml_data.recording_nz)
+            self.entry_recording_dz.setValue(yaml_data.recording_dz_um)
+            self.entry_recording_bottom_z.setValue(yaml_data.recording_bottom_z_offset_um)
+
+            self.checkbox_zstack.setChecked(yaml_data.zstack_enabled)
+            for name in list(self._zstack_channel_names):
+                self._remove_zstack_channel_row(name)
+            for ch_data in yaml_data.zstack_channels:
+                ch = AcquisitionChannel.model_validate(ch_data)
+                self._add_zstack_channel_row(ch.name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
+            self.entry_zmin.setValue(yaml_data.z_min_um)
+            self.entry_zmax.setValue(yaml_data.z_max_um)
+            self.entry_step.setValue(yaml_data.z_step_um)
+
+            if yaml_data.xy_mode in ("Current Position", "Select Wells"):
+                self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
+            if yaml_data.scan_size_mm is not None:
+                self.entry_scan_size.setValue(yaml_data.scan_size_mm)
+            self.entry_overlap.setValue(yaml_data.overlap_percent)
+
+            if yaml_data.wellplate_regions:
+                _load_well_regions(self.well_selection_widget, yaml_data.wellplate_regions)
+                self.checkbox_xy.setChecked(True)
+        finally:
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+            # checkbox_time's toggled signal was blocked above, so the normal
+            # _on_time_toggled-driven visibility refresh didn't fire. Set the
+            # frame's visibility directly rather than calling _on_time_toggled
+            # itself, since that method also stores/restores Nt/dt via
+            # _stored_time_params — invoking it here could clobber the Nt/dt
+            # values just loaded from the YAML.
+            self.time_controls_frame.setVisible(self.checkbox_time.isChecked())
+            # checkbox_xy's toggled signal and combobox_xy_mode's currentTextChanged
+            # signal were both blocked above too, so the normal
+            # _on_xy_toggled/_on_xy_mode_changed-driven visibility refresh didn't
+            # fire either. Mirror _on_xy_mode_changed's condition directly (rather
+            # than calling it) for the same reason as checkbox_time above: calling
+            # the handlers could re-trigger stored-mode restore logic that would
+            # clobber the xy_mode just loaded from the YAML.
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+            self.xy_controls_frame.setVisible(
+                self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells"
+            )
+            # _update_tab_styles() only refreshes stylesheets on
+            # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
+            # the current checkbox states — it has no interaction with Nt/dt or
+            # _stored_time_params, so (unlike _on_time_toggled) it's safe to call
+            # directly here. Without it, the Time tab's border/background stays
+            # in its stale "inactive" styling even after the checkbox/frame
+            # visibility above are updated to reflect the loaded YAML.
+            self._update_tab_styles()
+            # entry_recording_Nz's valueChanged and checkbox_laser_af's toggled
+            # signals were both blocked above too, so the normal
+            # _update_recording_planes_ui-driven dz/bottom-Z visibility refresh
+            # didn't fire. Unlike _on_time_toggled, _update_recording_planes_ui
+            # has no stored-state side effects, so it's safe to call directly.
+            self._update_recording_planes_ui()
+            self._update_zstack_planes_label()
+            self._update_scan_regions()
 
     def _laser_af_has_reference(self) -> bool:
         """Return True if the laser autofocus controller has a captured reference."""
@@ -17771,10 +18159,18 @@ class RecordZStackMultiPointWidget(QFrame):
 
         Delegates to the pure helper _validate_record_zstack_params so the
         rules can be tested independently of Qt.
+
+        Current Position mode doesn't use well selection at all (it acquires
+        at the live stage position), so it's treated as always having its one
+        implicit "well" satisfied.
         """
+        if self.combobox_xy_mode.currentText() == "Current Position":
+            selected_well_count = 1
+        else:
+            selected_well_count = self._get_selected_well_count()
         return _validate_record_zstack_params(
             base_path=self.lineEdit_savingDir.text().strip(),
-            selected_well_count=self._get_selected_well_count(),
+            selected_well_count=selected_well_count,
             recording_enabled=self.checkbox_recording.isChecked(),
             fps=self.entry_fps.value(),
             duration_s=self.entry_duration.value(),
@@ -17802,14 +18198,10 @@ class RecordZStackMultiPointWidget(QFrame):
 
         def _make_channel_base(name: str) -> AcquisitionChannel:
             """Return a copy of the named channel from liveController, or a bare-bones fallback."""
-            try:
-                channels = self.liveController.get_channels(self.objectiveStore.current_objective)
-                for ch in channels:
-                    if ch.name == name:
-                        # Return a copy so inline-editor mutations don't corrupt the source
-                        return ch.model_copy(deep=True)
-            except Exception:
-                pass
+            ch = self._find_channel(name)
+            if ch is not None:
+                # Return a copy so inline-editor mutations don't corrupt the source
+                return ch.model_copy(deep=True)
             # The fallback has no illumination-source mapping, so the acquisition
             # would run dark — warn loudly so the cause is diagnosable.
             self._log.warning(
@@ -17867,6 +18259,9 @@ class RecordZStackMultiPointWidget(QFrame):
             z_min_um=self.entry_zmin.value(),
             z_max_um=self.entry_zmax.value(),
             z_step_um=self.entry_step.value(),
+            xy_mode=self.combobox_xy_mode.currentText(),
+            scan_size_mm=self.entry_scan_size.value(),
+            overlap_percent=self.entry_overlap.value(),
         )
 
     def toggle_acquisition(self, pressed: bool) -> None:
@@ -17970,16 +18365,29 @@ class RecordZStackMultiPointWidget(QFrame):
             return
         names = [ch.name for ch in channels]
 
+        # Repopulating transiently selects other channels (clear() then
+        # addItems() auto-selects index 0), firing currentIndexChanged along
+        # the way and reseeding the exposure/gain/illum spinboxes from their
+        # base config. Block signals so only a genuine selection change (the
+        # previous channel no longer being available) triggers a reseed —
+        # otherwise the user's manually edited values would be silently lost
+        # even though the selected channel is unchanged from their perspective.
         prev_recording = self._recording_channel_name()
+        self._recording_ch_combo.blockSignals(True)
         self._populate_channel_combo(self._recording_ch_combo, names=names)
+        channel_changed = True
         if prev_recording and prev_recording in names:
             self._recording_ch_combo.setCurrentIndex(names.index(prev_recording))
+            channel_changed = False
         elif prev_recording:
             self._log.warning(
                 f"recording channel {prev_recording!r} is not available for the current "
                 f"objective/profile; selection changed to {names[0]!r} — review the recording "
                 f"exposure/gain/illumination before starting an acquisition"
             )
+        self._recording_ch_combo.blockSignals(False)
+        if channel_changed:
+            self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
         self._populate_channel_combo(self.combobox_zstack_add_channel, names=names)
         for name in [n for n in self._zstack_channel_names if n not in names]:
             self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")

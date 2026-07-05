@@ -1,11 +1,16 @@
 import math
+import os
+import time
 from dataclasses import dataclass, field
 from threading import Event, Thread
 from typing import List, Optional
 
+import yaml
+
 import squid.logging
 import control._def
 from control.models.acquisition_config import AcquisitionChannel
+from control.utils import serialize_for_yaml as _serialize_for_yaml
 
 log = squid.logging.get_logger("RecordZStackController")
 
@@ -38,6 +43,105 @@ def recording_plane_offsets_um(bottom_um: float, nz: int, dz_um: float) -> List[
     return [round(bottom_um + j * dz_um, 6) for j in range(nz)]
 
 
+def _build_objective_info(objective_store, camera) -> dict:
+    """Build the informational `objective:` YAML section.
+
+    Mirrors the dict multi_point_controller.py builds before calling
+    _save_acquisition_yaml, adapted to tolerate camera=None (the record widget's
+    Save-button path may not always have a live camera reference).
+    """
+    current_objective = objective_store.current_objective
+    objective_dict = getattr(objective_store, "objectives_dict", {}).get(current_objective, {})
+
+    camera_binning = None
+    pixel_size_um = None
+    if camera is not None and hasattr(camera, "get_binning"):
+        camera_binning = list(camera.get_binning())
+    if camera is not None and hasattr(camera, "get_pixel_size_binned_um"):
+        try:
+            pixel_size_um = objective_store.get_pixel_size_factor() * camera.get_pixel_size_binned_um()
+        except Exception:
+            pixel_size_um = None
+
+    return {
+        "name": current_objective,
+        "magnification": objective_dict.get("magnification"),
+        "pixel_size_um": pixel_size_um,
+        "camera_binning": camera_binning,
+    }
+
+
+def _save_record_zstack_yaml(
+    params: "RecordZStackAcquisitionParameters",
+    yaml_path: str,
+    scan_coordinates=None,
+    objective_info: dict = None,
+) -> None:
+    """Save full record/z-stack acquisition settings to *yaml_path*.
+
+    Mirrors multi_point_controller.py's _save_acquisition_yaml for the
+    wellplate/flexible widgets, but kept separate: this widget's shape
+    (recording phase with fps/duration/z-offset, z-stack as min/max/step,
+    two channel lists) doesn't fit the shared builder without polluting it
+    with fields the other two widgets have no reason to know about.
+    """
+    yaml_dict = {
+        "acquisition": {
+            "experiment_id": params.experiment_id,
+            "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "widget_type": "record_zstack",
+            "xy_mode": params.xy_mode,
+        },
+        "objective": objective_info or {},
+        "time_series": {
+            "nt": params.Nt,
+            "delta_t_s": params.dt_s,
+        },
+        "autofocus": {
+            "laser_af": params.use_laser_af,
+        },
+        "recording": {
+            "enabled": params.recording_enabled,
+            "channel": _serialize_for_yaml(params.recording_channel) if params.recording_channel else None,
+            "fps": params.fps,
+            "duration_s": params.duration_s,
+            "bottom_z_offset_um": params.recording_bottom_z_offset_um,
+            "nz": params.recording_Nz,
+            "dz_um": params.recording_dz_um,
+        },
+        "z_stack": {
+            "enabled": params.zstack_enabled,
+            "channels": [_serialize_for_yaml(ch) for ch in params.zstack_channels],
+            "z_min_um": params.z_min_um,
+            "z_max_um": params.z_max_um,
+            "z_step_um": params.z_step_um,
+        },
+    }
+
+    if params.xy_mode == "Select Wells":
+        region_centers = getattr(scan_coordinates, "region_centers", {}) or {}
+        region_shapes = getattr(scan_coordinates, "region_shapes", {}) or {}
+        yaml_dict["wellplate_scan"] = {
+            "scan_size_mm": params.scan_size_mm,
+            "overlap_percent": params.overlap_percent,
+            "regions": [
+                {"name": name, "center_mm": _serialize_for_yaml(center), "shape": region_shapes.get(name)}
+                for name, center in region_centers.items()
+            ],
+        }
+
+    # Let OSError/yaml.YAMLError propagate: both real call sites already handle
+    # failures appropriately one level up -- run_acquisition()'s snapshot call site
+    # wraps this in try/except Exception: log.exception(...) so a failed settings
+    # snapshot never aborts a real acquisition, and the Save Settings button
+    # handler (_on_save_settings_clicked) wraps this in try/except Exception:
+    # QMessageBox.warning(...) so the user is told the save failed. Swallowing the
+    # error here made that button's warning dialog unreachable.
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write(f"# Record/Z-Stack Acquisition Parameters - {params.experiment_id}\n\n")
+        yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
 @dataclass
 class RecordZStackAcquisitionParameters:
     base_path: str
@@ -60,6 +164,10 @@ class RecordZStackAcquisitionParameters:
     z_min_um: float = -3.0
     z_max_um: float = 3.0
     z_step_um: float = 1.0
+    # XY / well-selection state (needed to save a full reusable settings snapshot)
+    xy_mode: str = "Select Wells"
+    scan_size_mm: float = 0.1
+    overlap_percent: float = 10.0
 
 
 class RecordZStackController:
@@ -182,6 +290,19 @@ class RecordZStackController:
             )
         except Exception:
             log.exception("Failed to save acquisition settings snapshot to the experiment directory")
+
+        # Full reusable settings snapshot (superset of acquisition_channels.yaml above,
+        # written alongside it — not a replacement; see design doc's "Snapshot files" decision).
+        try:
+            objective_info = _build_objective_info(self._objective_store, getattr(self._microscope, "camera", None))
+            _save_record_zstack_yaml(
+                params,
+                os.path.join(experiment_dir, "acquisition.yaml"),
+                self._scan_coordinates,
+                objective_info,
+            )
+        except Exception:
+            log.exception("Failed to save full record_zstack acquisition.yaml snapshot")
 
         # Collect scan coordinates: {region_id: [(x_mm, y_mm[, z_mm]), ...]}
         scan_region_fov_coords = {}

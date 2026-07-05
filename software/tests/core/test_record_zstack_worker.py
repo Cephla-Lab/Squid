@@ -961,3 +961,251 @@ def test_record_restores_camera_mode_and_stage_z_when_plane_raises(tmp_path):
     assert (
         scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
     ), "camera acquisition mode must be restored to SOFTWARE_TRIGGER after a raising plane"
+
+
+def test_build_objective_info_reads_objective_and_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
+
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {"20x": {"magnification": 20.0}}
+    objective_store.get_pixel_size_factor.return_value = 1.0
+
+    camera = MagicMock()
+    camera.get_binning.return_value = (2, 2)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+
+    info = _build_objective_info(objective_store, camera)
+
+    assert info["name"] == "20x"
+    assert info["magnification"] == 20.0
+    assert info["camera_binning"] == [2, 2]
+    assert info["pixel_size_um"] == pytest.approx(0.5)
+
+
+def test_build_objective_info_handles_missing_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
+
+    objective_store = MagicMock()
+    objective_store.current_objective = "10x"
+    objective_store.objectives_dict = {}
+
+    info = _build_objective_info(objective_store, None)
+
+    assert info["name"] == "10x"
+    assert info["camera_binning"] is None
+    assert info["pixel_size_um"] is None
+
+
+def test_save_record_zstack_yaml_writes_full_schema(tmp_path):
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+    from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
+
+    channel = AcquisitionChannel(
+        name="BF LED matrix full",
+        camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
+        illumination_settings=IlluminationSettings(intensity=50.0),
+    )
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="my_exp",
+        Nt=3,
+        dt_s=5.0,
+        use_laser_af=True,
+        recording_enabled=True,
+        recording_channel=channel,
+        fps=15.0,
+        duration_s=2.0,
+        recording_bottom_z_offset_um=1.5,
+        recording_Nz=3,
+        recording_dz_um=0.8,
+        zstack_enabled=True,
+        zstack_channels=[channel],
+        z_min_um=-2.0,
+        z_max_um=2.0,
+        z_step_um=0.5,
+        xy_mode="Select Wells",
+        scan_size_mm=1.2,
+        overlap_percent=10.0,
+    )
+
+    scan_coordinates = type(
+        "FakeScanCoordinates", (), {"region_centers": {"A1": [1.0, 2.0, 0.1]}, "region_shapes": {"A1": "Square"}}
+    )()
+
+    yaml_path = tmp_path / "acquisition.yaml"
+    _save_record_zstack_yaml(params, str(yaml_path), scan_coordinates, {"name": "20x"})
+
+    import yaml as pyyaml
+
+    data = pyyaml.safe_load(yaml_path.read_text())
+
+    assert data["acquisition"]["widget_type"] == "record_zstack"
+    assert data["acquisition"]["xy_mode"] == "Select Wells"
+    assert data["objective"]["name"] == "20x"
+    assert data["time_series"] == {"nt": 3, "delta_t_s": 5.0}
+    assert data["autofocus"] == {"laser_af": True}
+    assert data["recording"]["enabled"] is True
+    assert data["recording"]["channel"]["name"] == "BF LED matrix full"
+    assert data["recording"]["fps"] == 15.0
+    assert data["recording"]["duration_s"] == 2.0
+    assert data["recording"]["bottom_z_offset_um"] == 1.5
+    assert data["recording"]["nz"] == 3
+    assert data["recording"]["dz_um"] == 0.8
+    assert data["z_stack"]["enabled"] is True
+    assert len(data["z_stack"]["channels"]) == 1
+    assert data["z_stack"]["z_min_um"] == -2.0
+    assert data["z_stack"]["z_max_um"] == 2.0
+    assert data["z_stack"]["z_step_um"] == 0.5
+    assert data["wellplate_scan"]["scan_size_mm"] == 1.2
+    assert data["wellplate_scan"]["regions"] == [{"name": "A1", "center_mm": [1.0, 2.0, 0.1], "shape": "Square"}]
+
+
+def test_save_record_zstack_yaml_omits_wellplate_scan_for_current_position(tmp_path):
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path), experiment_id="my_exp", xy_mode="Current Position"
+    )
+    yaml_path = tmp_path / "acquisition.yaml"
+    _save_record_zstack_yaml(params, str(yaml_path))
+
+    import yaml as pyyaml
+
+    data = pyyaml.safe_load(yaml_path.read_text())
+    assert "wellplate_scan" not in data
+
+
+def test_save_record_zstack_yaml_raises_on_write_failure(tmp_path):
+    """Final-review Finding 3: _save_record_zstack_yaml() must let a real write
+    failure (e.g. target directory doesn't exist) propagate rather than swallowing
+    it internally. The two real call sites (run_acquisition()'s snapshot and the
+    Save Settings button handler) each already have their own appropriate
+    try/except one level up; swallowing here just made the button handler's
+    warning dialog unreachable."""
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+
+    params = RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+    # Parent directory doesn't exist -> open() raises FileNotFoundError (an OSError).
+    yaml_path = tmp_path / "does_not_exist" / "acquisition.yaml"
+
+    with pytest.raises(OSError):
+        _save_record_zstack_yaml(params, str(yaml_path))
+
+
+def test_run_acquisition_survives_snapshot_write_failure(tmp_path, monkeypatch):
+    """Final-review Finding 3: run_acquisition()'s own try/except around
+    _save_record_zstack_yaml (a real acquisition's settings snapshot) must still
+    degrade gracefully -- i.e. NOT raise out of run_acquisition() -- now that the
+    inner swallow inside _save_record_zstack_yaml itself has been removed."""
+    from unittest.mock import MagicMock
+    import control.core.record_zstack_controller as rzc
+
+    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
+
+    class DummyWorker:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("control.core.record_zstack_worker.RecordZStackWorker", DummyWorker)
+
+    def _raise_on_save(*args, **kwargs):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(rzc, "_save_record_zstack_yaml", _raise_on_save)
+
+    def _write_channels_yaml(output_dir, **kw):
+        (Path(output_dir) / "acquisition_channels.yaml").write_text("channels: []\n")
+
+    microscope = MagicMock()
+    microscope.config_repo.save_acquisition_output.side_effect = _write_channels_yaml
+    microscope.camera.get_binning.return_value = (1, 1)
+    microscope.camera.get_pixel_size_binned_um.return_value = 0.5
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {}
+    objective_store.get_pixel_size_factor.return_value = 1.0
+    callbacks = MagicMock()
+
+    controller = rzc.RecordZStackController(
+        microscope=microscope,
+        live_controller=MagicMock(),
+        laser_autofocus_controller=None,
+        objective_store=objective_store,
+        scan_coordinates=None,
+        callbacks=callbacks,
+    )
+    params = rzc.RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+
+    # Must not raise, even though _save_record_zstack_yaml raises internally.
+    controller.run_acquisition(params)
+    controller.join(timeout=5.0)
+
+    experiment_dir = next(tmp_path.iterdir())
+    assert (experiment_dir / "acquisition_channels.yaml").exists()
+    # The failed snapshot must not have produced a (possibly partial) acquisition.yaml.
+    assert not (experiment_dir / "acquisition.yaml").exists()
+
+
+def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
+    """acquisition_channels.yaml (existing) and acquisition.yaml (new) both land in the experiment dir.
+
+    Stubs RecordZStackWorker entirely (a no-op .run()) so this test only exercises the
+    synchronous setup code in run_acquisition() — the YAML-writing calls happen before the
+    worker/thread are created. Exercising the real worker with mocked hardware would be slow
+    and flaky; that's covered by this module's existing worker-level tests instead.
+    """
+    from unittest.mock import MagicMock
+    import control.core.record_zstack_controller as rzc
+
+    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
+
+    class DummyWorker:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            pass
+
+    # run_acquisition() does `from control.core.record_zstack_worker import RecordZStackWorker`
+    # as a local import at call time, so patching the source module's attribute (not
+    # record_zstack_controller's namespace) is what actually intercepts it.
+    monkeypatch.setattr("control.core.record_zstack_worker.RecordZStackWorker", DummyWorker)
+
+    def _write_channels_yaml(output_dir, **kw):
+        # microscope is a full MagicMock, so save_acquisition_output's real disk write
+        # (which the existing acquisition_channels.yaml tests exercise for real) doesn't
+        # happen here; write a stand-in so the "both files exist" assertion reflects the
+        # real run_acquisition() call order rather than the (irrelevant) file contents.
+        (Path(output_dir) / "acquisition_channels.yaml").write_text("channels: []\n")
+
+    microscope = MagicMock()
+    microscope.config_repo.save_acquisition_output.side_effect = _write_channels_yaml
+    microscope.camera.get_binning.return_value = (1, 1)
+    microscope.camera.get_pixel_size_binned_um.return_value = 0.5
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {}
+    objective_store.get_pixel_size_factor.return_value = 1.0
+    callbacks = MagicMock()
+
+    controller = rzc.RecordZStackController(
+        microscope=microscope,
+        live_controller=MagicMock(),
+        laser_autofocus_controller=None,
+        objective_store=objective_store,
+        scan_coordinates=None,
+        callbacks=callbacks,
+    )
+    params = rzc.RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+    controller.run_acquisition(params)
+    controller.join(timeout=5.0)
+
+    experiment_dir = next(tmp_path.iterdir())
+    assert (experiment_dir / "acquisition_channels.yaml").exists()
+    assert (experiment_dir / "acquisition.yaml").exists()

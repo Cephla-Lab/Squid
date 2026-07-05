@@ -174,6 +174,8 @@ def _make_stub_scan_coordinates():
     """Stub scanCoordinates reporting 1 selected well."""
     sc = MagicMock()
     sc.get_selected_wells.return_value = ["A1"]
+    sc.region_centers = {}
+    sc.region_shapes = {}
     return sc
 
 
@@ -181,7 +183,7 @@ def _make_stub_scan_coordinates():
 def simulated_widget_deps(tmp_path):
     """Provide lightweight stub dependencies for RecordZStackMultiPointWidget."""
     stage = MagicMock()
-    stage.get_pos.return_value = MagicMock(z_mm=0.0)
+    stage.get_pos.return_value = MagicMock(x_mm=1.5, y_mm=2.5, z_mm=0.0)
 
     return dict(
         stage=stage,
@@ -271,6 +273,22 @@ def test_build_parameters_recording_phase(qtbot, simulated_widget_deps):
     assert params.recording_channel is not None
 
 
+def test_build_parameters_includes_xy_mode_and_scan_settings(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    w.entry_scan_size.setValue(1.5)
+    w.entry_overlap.setValue(12.0)
+
+    params = w.build_parameters()
+    assert params.xy_mode == "Current Position"
+    assert params.scan_size_mm == pytest.approx(1.5)
+    assert params.overlap_percent == pytest.approx(12.0)
+
+
 def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
@@ -281,6 +299,19 @@ def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
     # Both the internal list AND the table must stay at 1 entry after dedup.
     assert w._zstack_channel_names.count("BF LED matrix full") == 1
     assert w.zstack_channel_table.rowCount() == 1
+
+
+def test_zstack_channel_row_tooltip_shows_full_name(qtbot, simulated_widget_deps):
+    """The Channel column truncates long names visually (narrow Stretch column),
+    so the full name must be available as a tooltip on hover."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
+
+    item = w.zstack_channel_table.item(0, 0)
+    assert item.toolTip() == "Fluorescence 488 nm Ex"
 
 
 def test_validate_helper_recording_bad_duration():
@@ -1061,6 +1092,720 @@ def test_refresh_channel_list_warns_on_silent_selection_swap(qtbot, simulated_wi
     assert any(
         prev in rec.message and "Only Channel" in rec.message for rec in caplog.records
     ), f"no warning about the recording selection changing from {prev!r}"
+
+
+def test_refresh_channel_list_preserves_user_edited_recording_settings(qtbot, simulated_widget_deps):
+    """R9: refresh_channel_list() must not silently reset the user's manually
+    edited recording exposure/gain/illumination when the selected channel is
+    still available afterward — even though repopulating the combo transiently
+    fires currentIndexChanged for other channels along the way."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w._recording_exp_spin.setValue(999.0)
+    w._recording_gain_spin.setValue(77.0)
+    w._recording_illum_spin.setValue(88.0)
+
+    # Same channel list, same selection still available (e.g. an objective
+    # switch that doesn't change the configured channels).
+    w.refresh_channel_list()
+
+    assert w._recording_exposure() == pytest.approx(999.0)
+    assert w._recording_gain() == pytest.approx(77.0)
+    assert w._recording_illumination() == pytest.approx(88.0)
+
+
+# ---------------------------------------------------------------------------
+# Channel-add seeds from the channel's configured live-controller settings
+# (instead of the hardcoded 50 ms / 0 gain / 50% defaults).
+# ---------------------------------------------------------------------------
+
+
+def test_zstack_add_channel_seeds_from_channel_config(qtbot, simulated_widget_deps):
+    """Clicking + Add on a channel must seed its row from that channel's own
+    configured exposure/gain/illumination, not the hardcoded (50, 0, 50)."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_zstack.setChecked(True)  # unchecked group box disables its children
+    w.combobox_zstack_add_channel.setCurrentText("Fluorescence 488 nm Ex")
+    w.btn_zstack_add_channel.click()
+
+    exposure, gain, illum = w._get_zstack_row_values("Fluorescence 488 nm Ex")
+    assert exposure == pytest.approx(123.0)
+    assert gain == pytest.approx(4.0)
+    assert illum == pytest.approx(77.0)
+
+
+def test_recording_row_seeds_from_channel_config_on_construction(qtbot, simulated_widget_deps):
+    """The recording table's initial row must reflect the first channel's own
+    configured settings, not the hardcoded (50, 0, 50) defaults."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w._recording_channel_name() == "BF LED matrix full"
+    assert w._recording_exposure() == pytest.approx(12.0)
+    assert w._recording_gain() == pytest.approx(1.5)
+    assert w._recording_illumination() == pytest.approx(33.0)
+
+
+def test_recording_row_seeds_from_channel_config_on_selection_change(qtbot, simulated_widget_deps):
+    """Switching the recording channel combo must reseed exposure/gain/illum
+    from the newly selected channel's own configured settings."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
+
+    assert w._recording_exposure() == pytest.approx(123.0)
+    assert w._recording_gain() == pytest.approx(4.0)
+    assert w._recording_illumination() == pytest.approx(77.0)
+
+
+# ---------------------------------------------------------------------------
+# XY / Time tabbed row (mirrors WellplateMultiPointWidget, skipping Z).
+# ---------------------------------------------------------------------------
+
+
+def test_checkbox_xy_exists_and_defaults_checked(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.checkbox_xy.isChecked() is True
+    assert w.combobox_xy_mode.isEnabled() is True
+    # isHidden() reflects the explicit show/hide flag; isVisible() would be
+    # False regardless since the top-level widget itself is never shown().
+    assert w.xy_controls_frame.isHidden() is False
+
+
+def test_unchecking_xy_hides_scan_grid_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_xy.setChecked(False)
+    assert w.xy_controls_frame.isHidden() is True
+    assert w.combobox_xy_mode.isEnabled() is False
+
+    w.checkbox_xy.setChecked(True)
+    assert w.xy_controls_frame.isHidden() is False
+    assert w.combobox_xy_mode.isEnabled() is True
+
+
+def test_combobox_xy_mode_has_current_position_and_select_wells(qtbot, simulated_widget_deps):
+    """The XY mode combo offers both modes, defaulting to Select Wells so
+    existing tiling behavior is unchanged out of the box."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    items = [w.combobox_xy_mode.itemText(i) for i in range(w.combobox_xy_mode.count())]
+    assert items == ["Current Position", "Select Wells"]
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+
+
+def test_selecting_current_position_mode_hides_scan_grid_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.xy_controls_frame.isHidden() is True
+
+    w.combobox_xy_mode.setCurrentText("Select Wells")
+    assert w.xy_controls_frame.isHidden() is False
+
+
+def test_current_position_mode_uses_live_stage_position(qtbot, simulated_widget_deps):
+    """Current Position mode must build a single region at the live stage
+    position via add_region, bypassing well selection entirely."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    sc.set_well_coordinates.reset_mock()  # construction seeds the default Select Wells mode
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+
+    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
+    sc.set_well_coordinates.assert_not_called()
+
+
+def test_unchecking_xy_forces_current_position_and_restores_on_recheck(qtbot, simulated_widget_deps):
+    """Mirrors WellplateMultiPointWidget: unchecking XY forces Current
+    Position (single stage-position FOV) and disables the mode combo;
+    re-checking restores whatever mode was previously selected."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_xy.setChecked(False)
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    assert w.combobox_xy_mode.isEnabled() is False
+    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
+
+    w.checkbox_xy.setChecked(True)
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+    assert w.combobox_xy_mode.isEnabled() is True
+
+
+def test_toggling_xy_rebuilds_scan_region_exactly_once(qtbot, simulated_widget_deps):
+    """Toggling XY changes combobox_xy_mode's text, which already triggers
+    _update_scan_regions() via _on_xy_mode_changed — _on_xy_toggled must not
+    also call it unconditionally, or the region gets rebuilt twice (including
+    an extra stage.get_pos() query) per toggle."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.stage.get_pos.reset_mock()
+    w.checkbox_xy.setChecked(False)
+    w.stage.get_pos.assert_called_once()
+
+    w.stage.get_pos.reset_mock()
+    sc.set_well_coordinates.reset_mock()
+    w.checkbox_xy.setChecked(True)
+    sc.set_well_coordinates.assert_called_once()
+
+
+def test_validate_current_position_mode_bypasses_well_selection(qtbot, simulated_widget_deps):
+    """With no wells selected, Current Position mode must still validate
+    (it doesn't need any wells), while Select Wells mode still requires one."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = {}
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_zstack.setChecked(True)
+    w.entry_zmin.setValue(-1.0)
+    w.entry_zmax.setValue(1.0)
+    w.entry_step.setValue(1.0)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    assert w.validate() is not None  # Select Wells (default) with 0 wells: still rejected
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.validate() is None
+
+
+# ---------------------------------------------------------------------------
+# Time tabbed row (mirrors WellplateMultiPointWidget).
+# ---------------------------------------------------------------------------
+
+
+def test_checkbox_time_exists_and_defaults_unchecked(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.checkbox_time.isChecked() is False
+    assert w.time_controls_frame.isHidden() is True
+
+
+def test_checking_time_shows_nt_dt_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_time.setChecked(True)
+    assert w.time_controls_frame.isHidden() is False
+
+
+def test_unchecking_time_resets_and_restores_nt_dt(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_time.setChecked(True)
+    w.entry_Nt.setValue(5)
+    w.entry_dt.setValue(10.0)
+
+    w.checkbox_time.setChecked(False)
+    assert w.entry_Nt.value() == 1
+    assert w.entry_dt.value() == pytest.approx(0.0)
+    assert w.time_controls_frame.isHidden() is True
+
+    w.checkbox_time.setChecked(True)
+    assert w.entry_Nt.value() == 5
+    assert w.entry_dt.value() == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# AcquisitionYAMLDropMixin integration (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    yaml_data = RecordZStackYAMLData(
+        widget_type="record_zstack",
+        xy_mode="Current Position",
+        nt=4,
+        delta_t_s=2.5,
+        laser_af=True,
+        recording_enabled=True,
+        recording_channel={
+            "name": "BF LED matrix full",
+            "camera_settings": {"exposure_time_ms": 33.0, "gain_mode": 1.0},
+            "illumination_settings": {"intensity": 60.0},
+        },
+        fps=25.0,
+        duration_s=3.0,
+        recording_bottom_z_offset_um=2.0,
+        recording_nz=3,
+        recording_dz_um=1.5,
+        zstack_enabled=True,
+        zstack_channels=[
+            {
+                "name": "Fluorescence 488 nm Ex",
+                "camera_settings": {"exposure_time_ms": 80.0, "gain_mode": 0.5},
+                "illumination_settings": {"intensity": 40.0},
+            }
+        ],
+        z_min_um=-4.0,
+        z_max_um=4.0,
+        z_step_um=2.0,
+        scan_size_mm=2.0,
+        overlap_percent=15.0,
+    )
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.entry_Nt.value() == 4
+    assert w.entry_dt.value() == pytest.approx(2.5)
+    assert w.checkbox_laser_af.isChecked() is True
+    assert w.checkbox_recording.isChecked() is True
+    assert w._recording_channel_name() == "BF LED matrix full"
+    assert w._recording_exposure() == pytest.approx(33.0)
+    assert w._recording_gain() == pytest.approx(1.0)
+    assert w._recording_illumination() == pytest.approx(60.0)
+    assert w.entry_fps.value() == pytest.approx(25.0)
+    assert w.entry_duration.value() == pytest.approx(3.0)
+    assert w.entry_recording_bottom_z.value() == pytest.approx(2.0)
+    assert w.entry_recording_Nz.value() == 3
+    assert w.entry_recording_dz.value() == pytest.approx(1.5)
+    assert w.checkbox_zstack.isChecked() is True
+    assert w._zstack_channel_names == ["Fluorescence 488 nm Ex"]
+    assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((80.0, 0.5, 40.0))
+    assert w.entry_zmin.value() == pytest.approx(-4.0)
+    assert w.entry_zmax.value() == pytest.approx(4.0)
+    assert w.entry_step.value() == pytest.approx(2.0)
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    assert w.entry_scan_size.value() == pytest.approx(2.0)
+    assert w.entry_overlap.value() == pytest.approx(15.0)
+    assert w.checkbox_time.isChecked() is True
+
+
+def test_apply_yaml_settings_unknown_recording_channel_keeps_existing_row(qtbot, simulated_widget_deps, caplog):
+    """Fix Round 1 / Finding 1: when the YAML's recording channel name isn't in the
+    current combo (e.g. objective changed, or the channel was renamed/removed since
+    the YAML was saved), the exposure/gain/illumination spinboxes must NOT be
+    silently paired with a channel that doesn't match the combo's selection."""
+    import logging
+
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Pre-set the recording row to known, distinct values that must survive untouched.
+    w._recording_ch_combo.setCurrentIndex(0)
+    pre_channel_name = w._recording_ch_combo.currentText()
+    w._recording_exp_spin.setValue(11.0)
+    w._recording_gain_spin.setValue(2.0)
+    w._recording_illum_spin.setValue(22.0)
+
+    yaml_data = RecordZStackYAMLData(
+        widget_type="record_zstack",
+        recording_enabled=True,
+        recording_channel={
+            "name": "Channel Not In Combo",
+            "camera_settings": {"exposure_time_ms": 99.0, "gain_mode": 9.0},
+            "illumination_settings": {"intensity": 99.0},
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        w._apply_yaml_settings(yaml_data)
+
+    # Combo selection and spinbox values are unchanged -- no name/value mismatch.
+    assert w._recording_ch_combo.currentText() == pre_channel_name
+    assert w._recording_exp_spin.value() == pytest.approx(11.0)
+    assert w._recording_gain_spin.value() == pytest.approx(2.0)
+    assert w._recording_illum_spin.value() == pytest.approx(22.0)
+    assert any(
+        "Channel Not In Combo" in rec.message for rec in caplog.records
+    ), "expected a warning naming the missing recording channel"
+
+
+def test_apply_yaml_settings_checks_time_checkbox_and_shows_frame(qtbot, simulated_widget_deps):
+    """Fix Round 1 / Finding 2: loading a multi-timepoint YAML (nt > 1) must check
+    checkbox_time and make the time-controls frame visible immediately, not just
+    update entry_Nt/entry_dt under the hood."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Sanity check on the default (unchecked) state before loading.
+    assert w.checkbox_time.isChecked() is False
+    assert w.time_controls_frame.isHidden() is True
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.checkbox_time.isChecked() is True
+    assert w.entry_Nt.value() == 4
+    assert w.entry_dt.value() == pytest.approx(2.0)
+    assert w.time_controls_frame.isHidden() is False
+
+
+def test_apply_yaml_settings_refreshes_time_tab_styling(qtbot, simulated_widget_deps):
+    """Fix Round 2: loading a multi-timepoint YAML (nt > 1) must also refresh the
+    Time tab's stylesheet (border/background), not just the checkbox state and
+    frame visibility. checkbox_time.toggled is blocked during the load, so the
+    normal _on_time_toggled -> _update_tab_styles path never fires; the fix calls
+    _update_tab_styles() directly in the finally block. Compare against a second
+    widget where checkbox_time is toggled normally (unblocked) to avoid hardcoding
+    the expected stylesheet string."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w_loaded = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w_loaded)
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
+    w_loaded._apply_yaml_settings(yaml_data)
+
+    # Reference widget: toggle checkbox_time normally (signals not blocked), so
+    # _on_time_toggled -> _update_tab_styles runs through its ordinary path.
+    w_reference = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w_reference)
+    w_reference.checkbox_time.setChecked(True)
+
+    assert w_reference.checkbox_time.isChecked() is True
+    assert w_loaded.time_frame.styleSheet() == w_reference.time_frame.styleSheet()
+    assert w_loaded.time_controls_frame.styleSheet() == w_reference.time_controls_frame.styleSheet()
+    # Guard against both sides trivially being empty strings (which would make
+    # the equality assertions above vacuous rather than a real regression check).
+    assert w_reference.time_frame.styleSheet() != ""
+    assert w_reference.time_controls_frame.styleSheet() != ""
+
+
+def test_apply_yaml_settings_resyncs_xy_controls_frame_visibility(qtbot, simulated_widget_deps):
+    """Final-review Finding 1: like checkbox_time's toggled signal, checkbox_xy's
+    toggled signal (and combobox_xy_mode's currentTextChanged) are blocked during
+    the load, so the normal _on_xy_mode_changed-driven visibility refresh never
+    fires. Loading a YAML with xy_mode="Current Position" onto a widget that starts
+    in its default state (XY checked, Select Wells, controls visible) must still
+    hide xy_controls_frame and disable combobox_xy_mode's peer state correctly."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Sanity check on the default state before loading.
+    assert w.checkbox_xy.isChecked() is True
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+    assert w.xy_controls_frame.isHidden() is False
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", xy_mode="Current Position")
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    # The FOV overlap/shape/size controls don't apply in Current Position mode.
+    assert w.xy_controls_frame.isHidden() is True
+
+
+def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert w._get_expected_widget_type() == "record_zstack"
+
+
+def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    camera = object()
+    simulated_widget_deps["liveController"].camera = camera
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert w._get_camera_for_binning_check() is camera
+
+
+def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Verify that clicking Save Settings runs the REAL save chain end to end:
+    _on_save_settings_clicked -> build_parameters -> _build_objective_info ->
+    _save_record_zstack_yaml -> a real YAML file on disk. Only QFileDialog is mocked
+    (real file dialogs can't run in tests).
+
+    simulated_widget_deps's stub objectiveStore/liveController are plain MagicMocks
+    with no objectives_dict/camera attributes configured, so the real
+    _build_objective_info() would otherwise produce MagicMock leaf values (e.g. for
+    magnification/pixel_size_um) that yaml.dump() cannot serialize -- a failure that
+    _save_record_zstack_yaml() swallows internally (logs and returns) via its own
+    pre-existing try/except. Hardening just these two stubs (not the shared fixture)
+    gives _build_objective_info() cleanly-serializable values so the real save runs
+    for real and actually writes the file.
+    """
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w.checkbox_zstack.setChecked(True)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    # Harden this test's own objectiveStore/camera stubs so _build_objective_info()
+    # returns real, YAML-serializable values instead of MagicMock leaves.
+    w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
+    w.objectiveStore.current_objective = "10x"
+    w.objectiveStore.get_pixel_size_factor.return_value = 1.0
+
+    camera = MagicMock()
+    camera.get_binning.return_value = (1, 1)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+    w.liveController.camera = camera
+
+    save_path = tmp_path / "my_preset.yaml"
+    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
+
+    w.btn_saveSettings.click()
+
+    # Verify the REAL file was written by the REAL _save_record_zstack_yaml call.
+    assert save_path.exists()
+    import yaml as pyyaml
+
+    data = pyyaml.safe_load(save_path.read_text())
+    assert data["acquisition"]["widget_type"] == "record_zstack"
+    assert data["z_stack"]["enabled"] is True
+    assert data["z_stack"]["channels"][0]["name"] == "BF LED matrix full"
+    assert data["objective"]["name"] == "10x"
+    assert data["objective"]["magnification"] == pytest.approx(10.0)
+    assert data["objective"]["pixel_size_um"] == pytest.approx(0.5)
+    assert data["objective"]["camera_binning"] == [1, 1]
+
+
+def test_save_settings_button_shows_warning_when_write_fails(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Final-review Finding 3: when the underlying _save_record_zstack_yaml() write
+    genuinely fails, _on_save_settings_clicked()'s own try/except must reach the user
+    via QMessageBox.warning -- it must NOT log "Settings saved" and silently show no
+    warning. Mirrors test_save_settings_button_writes_yaml's structure but points the
+    save at a path inside a non-existent directory so the real open() raises."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w.checkbox_zstack.setChecked(True)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
+    w.objectiveStore.current_objective = "10x"
+    w.objectiveStore.get_pixel_size_factor.return_value = 1.0
+
+    camera = MagicMock()
+    camera.get_binning.return_value = (1, 1)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+    w.liveController.camera = camera
+
+    # Parent directory doesn't exist -> the real open() call raises OSError.
+    save_path = tmp_path / "does_not_exist" / "my_preset.yaml"
+    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+        w.btn_saveSettings.click()
+
+    assert not save_path.exists()
+    mock_warn.assert_called_once()
+    assert mock_warn.call_args[0][1] == "Save Error"
+
+
+def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Verify that clicking Load Settings runs the REAL load chain end to end:
+    _on_load_settings_clicked -> _load_acquisition_yaml -> parse_acquisition_yaml ->
+    validate_hardware -> _apply_yaml_settings. Only QFileDialog is mocked (real file
+    dialogs can't run in tests); a real, valid record_zstack YAML file is written to
+    disk and actually read back.
+
+    The YAML has no objective:/camera_binning keys, so yaml_data.objective_name and
+    yaml_data.camera_binning are both falsy and validate_hardware() reports
+    is_valid=True -- no mismatch dialog blocks the test.
+    """
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    yaml_path = tmp_path / "preset.yaml"
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: record_zstack\n"
+        "  xy_mode: Current Position\n"
+        "time_series:\n"
+        "  nt: 7\n"
+        "  delta_t_s: 1.0\n"
+    )
+
+    monkeypatch.setattr("control.widgets.QFileDialog.getOpenFileName", lambda *a, **kw: (str(yaml_path), ""))
+
+    w.btn_loadSettings.click()
+
+    # Verify settings were applied via the REAL parse -> validate -> apply chain.
+    assert w.entry_Nt.value() == 7
+    assert w.entry_dt.value() == pytest.approx(1.0)
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+
+
+def test_load_acquisition_yaml_malformed_channel_shows_warning_not_exception(qtbot, simulated_widget_deps, tmp_path):
+    """Final-review Finding 2: _apply_yaml_settings() calls
+    AcquisitionChannel.model_validate() on recording_channel/zstack_channels with no
+    guard. A YAML with valid syntax/widget_type but a malformed channel dict (here,
+    missing the required camera_settings field) must not crash the drop/button slot
+    with an uncaught pydantic ValidationError -- the shared
+    AcquisitionYAMLDropMixin._load_acquisition_yaml() must catch it, log, warn, and
+    return False, exactly like the existing YAML-parse-error path a few lines above it."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    yaml_path = tmp_path / "malformed.yaml"
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: record_zstack\n"
+        "  xy_mode: Current Position\n"
+        "recording:\n"
+        "  enabled: true\n"
+        "  channel:\n"
+        "    name: Foo\n"  # missing required camera_settings -> pydantic ValidationError
+    )
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+        result = w._load_acquisition_yaml(str(yaml_path))
+
+    assert result is False
+    mock_warn.assert_called_once()
+    assert mock_warn.call_args[0][1] == "Load Error"
+
+
+def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_deps, tmp_path):
+    """Save via build_parameters()+_save_record_zstack_yaml, load into a fresh widget,
+    and confirm the fresh widget's build_parameters() output matches exactly (excluding base_path/experiment_id).
+
+    Tests round-trip serialization and deserialization via YAML for all user-facing settings:
+    - recording channel and its numeric settings (exposure_time, analog_gain, illumination_intensity)
+    - z-stack channels and their numeric settings
+    - acquisition parameters (FPS, duration, z-range, XY mode)
+    """
+    from control.core.record_zstack_controller import _save_record_zstack_yaml
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w1 = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w1)
+    w1.lineEdit_savingDir.setText(str(tmp_path))
+    w1.checkbox_recording.setChecked(True)
+    w1.entry_fps.setValue(30.0)
+    w1.entry_duration.setValue(4.0)
+    w1.checkbox_zstack.setChecked(True)
+    w1._add_zstack_channel_row("Fluorescence 488 nm Ex", exposure=80.0, gain=1.0, illumination=45.0)
+    w1.entry_zmin.setValue(-5.0)
+    w1.entry_zmax.setValue(5.0)
+    w1.entry_step.setValue(2.5)
+    w1.combobox_xy_mode.setCurrentText("Current Position")
+
+    params1 = w1.build_parameters()
+    yaml_path = tmp_path / "roundtrip.yaml"
+    _save_record_zstack_yaml(params1, str(yaml_path))
+
+    yaml_data = parse_acquisition_yaml(str(yaml_path))
+
+    w2 = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w2)
+    w2._apply_yaml_settings(yaml_data)
+    params2 = w2.build_parameters()
+
+    # Acquisition control parameters
+    assert params2.recording_enabled == params1.recording_enabled
+    assert params2.fps == pytest.approx(params1.fps)
+    assert params2.duration_s == pytest.approx(params1.duration_s)
+    assert params2.zstack_enabled == params1.zstack_enabled
+    assert params2.z_min_um == pytest.approx(params1.z_min_um)
+    assert params2.z_max_um == pytest.approx(params1.z_max_um)
+    assert params2.z_step_um == pytest.approx(params1.z_step_um)
+    assert params2.xy_mode == params1.xy_mode
+
+    # Recording channel (enabled above, so should be non-None)
+    assert params2.recording_channel == params1.recording_channel
+
+    # Z-stack channels: check channel names and numeric settings
+    assert [c.name for c in params2.zstack_channels] == [c.name for c in params1.zstack_channels]
+    assert len(params2.zstack_channels) == len(params1.zstack_channels)
+    for ch2, ch1 in zip(params2.zstack_channels, params1.zstack_channels):
+        assert ch2.exposure_time == pytest.approx(ch1.exposure_time)
+        assert ch2.analog_gain == pytest.approx(ch1.analog_gain)
+        assert ch2.illumination_intensity == pytest.approx(ch1.illumination_intensity)
 
 
 def test_validate_helper_recording_nz_and_dz():
