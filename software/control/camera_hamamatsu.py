@@ -224,7 +224,14 @@ class HamamatsuCamera(AbstractCamera):
         Returns the rate the camera accepted, or the exposure-limited max on any
         failure, so callers can still size/pace against a real number (base contract).
         """
-        fallback = 1000.0 / self.get_total_frame_time()
+        try:
+            fallback = 1000.0 / self.get_total_frame_time()
+        except Exception:
+            # get_strobe_time() raises on a DCAM read error; honor the "always
+            # returns a usable rate" contract by assuming the requested rate (the
+            # caller then paces/sizes against it, same as if we'd never capped).
+            self._log.exception("could not read frame timing; assuming the requested rate.")
+            fallback = float(fps) if fps and fps > 0 else 0.0
         if fps is None or fps <= 0:
             return fallback
         try:
@@ -241,9 +248,9 @@ class HamamatsuCamera(AbstractCamera):
                     self._log.warning("Could not set fast readout speed; achievable fps may be limited.")
 
                 attr = self._camera.prop_getattr(DCAM_IDPROP.INTERNALFRAMERATE)
-                if isinstance(attr, bool) or attr is None:
+                if isinstance(attr, bool):
                     self._log.warning(
-                        "INTERNALFRAMERATE not available on this camera; leaving free-run rate at the camera default."
+                        "INTERNALFRAMERATE not available on this camera; leaving the internal frame rate uncapped."
                     )
                     return fallback
                 target = max(attr.valuemin, min(float(fps), attr.valuemax))
@@ -252,8 +259,8 @@ class HamamatsuCamera(AbstractCamera):
                 achieved = self._camera.prop_getvalue(DCAM_IDPROP.INTERNALFRAMERATE)
             if isinstance(achieved, bool):
                 return fallback
-            self._log.info(f"set_frame_rate({fps}) set INTERNALFRAMERATE -> {float(achieved):.3f} fps")
-            return float(achieved)
+            self._log.info(f"set_frame_rate({fps}) set INTERNALFRAMERATE -> {achieved:.3f} fps")
+            return achieved
         except Exception:
             self._log.exception("set_frame_rate failed; falling back to exposure-limited max.")
             return fallback
