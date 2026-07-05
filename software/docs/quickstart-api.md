@@ -10,6 +10,17 @@ cd software
 python3 main_hcs.py --simulation --start-server   # drop --simulation on a real instrument
 ```
 
+No screen attached, or driving the instrument from a scheduler? Run the same API
+without the GUI:
+
+```bash
+python3 main_headless.py --simulation             # Ctrl+C or SIGTERM to stop
+```
+
+Headless mode serves the identical API; on shutdown an in-flight acquisition is
+aborted safely first. There is no live view — images go to disk and progress
+comes from `/v1/jobs`.
+
 Wait ~30 s, then confirm the API is up:
 
 ```bash

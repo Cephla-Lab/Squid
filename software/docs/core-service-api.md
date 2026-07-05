@@ -14,6 +14,9 @@ is the API used by [`scripts/run_acquisition.py`](../scripts/run_acquisition.py)
 - **Interactive docs:** `GET /docs` (Swagger UI) and `GET /openapi.json` are always available, unauthenticated-or-not per the auth setting
 - **Transport:** HTTP/1.1 + JSON only — there is no TLS termination built in; put a reverse proxy in front if you need it on a non-loopback network
 - **Versioning:** all routes are prefixed `/v1/...`, except `GET /healthz` (unversioned, always open)
+- **Two ways to serve it:** inside the GUI process (`main_hcs.py --start-server`, or the Settings toggle) or
+  GUI-free via `python3 main_headless.py [--simulation]` — same API, same configuration. Headless mode stops on
+  SIGINT/SIGTERM, aborting any in-flight acquisition before closing the hardware; there is no live view.
 
 ### Deviations from the (aspirational) spec
 
