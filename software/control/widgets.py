@@ -826,13 +826,21 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
         self.close()
 
 
+_ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
+    "wellplate": "Wellplate Multipoint",
+    "flexible": "Flexible Multipoint",
+    "record_zstack": "Record/Z-Stack",
+}
+
+
 class AcquisitionYAMLDropMixin:
     """Mixin class providing drag-and-drop functionality for loading acquisition YAML files.
 
     Widgets using this mixin must:
     1. Call `self.setAcceptDrops(True)` in __init__
-    2. Have `self._log`, `self.multipointController`, `self.objectiveStore` attributes
-    3. Implement `_get_expected_widget_type()` returning "wellplate" or "flexible"
+    2. Have `self._log`, `self.objectiveStore` attributes, and override
+       `_get_camera_for_binning_check()` unless they have `self.multipointController.camera`
+    3. Implement `_get_expected_widget_type()` returning "wellplate", "flexible", or "record_zstack"
     4. Implement `_apply_yaml_settings(yaml_data)` to apply settings to the widget
     """
 
@@ -900,11 +908,18 @@ class AcquisitionYAMLDropMixin:
         """Return the expected widget_type for this widget. Override in subclass."""
         raise NotImplementedError("Subclass must implement _get_expected_widget_type()")
 
-    def _get_other_widget_name(self) -> str:
-        """Return the name of the other widget type for error messages."""
-        if self._get_expected_widget_type() == "wellplate":
-            return "Flexible Multipoint"
-        return "Wellplate Multipoint"
+    def _get_other_widget_name(self, actual_widget_type: str) -> str:
+        """Return the display name of the widget that handles *actual_widget_type* files."""
+        return _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES.get(actual_widget_type, actual_widget_type)
+
+    def _get_camera_for_binning_check(self):
+        """Return the camera used for the binning-mismatch check on load.
+
+        Default assumes self.multipointController.camera (wellplate/flexible).
+        Widgets without a multipointController (e.g. RecordZStackMultiPointWidget)
+        must override this.
+        """
+        return getattr(self.multipointController, "camera", None)
 
     def _load_acquisition_yaml(self, file_path: str) -> bool:
         """Load acquisition settings from YAML file.
@@ -927,14 +942,14 @@ class AcquisitionYAMLDropMixin:
                 self,
                 "Widget Type Mismatch",
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
-                f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
+                f"Please drop this file on the {self._get_other_widget_name(yaml_data.widget_type)} widget instead.",
             )
             return False
 
         # Validate hardware
         current_binning = (1, 1)
         try:
-            camera = getattr(self.multipointController, "camera", None)
+            camera = self._get_camera_for_binning_check()
             if camera and hasattr(camera, "get_binning"):
                 current_binning = tuple(camera.get_binning())
         except Exception as e:
