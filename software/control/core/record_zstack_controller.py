@@ -115,12 +115,16 @@ def _save_record_zstack_yaml(
             ],
         }
 
-    try:
-        with open(yaml_path, "w", encoding="utf-8") as f:
-            f.write(f"# Record/Z-Stack Acquisition Parameters - {params.experiment_id}\n\n")
-            yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    except (OSError, yaml.YAMLError) as exc:
-        log.error("Failed to write record_zstack acquisition YAML file '%s': %s", yaml_path, exc)
+    # Let OSError/yaml.YAMLError propagate: both real call sites already handle
+    # failures appropriately one level up -- run_acquisition()'s snapshot call site
+    # wraps this in try/except Exception: log.exception(...) so a failed settings
+    # snapshot never aborts a real acquisition, and the Save Settings button
+    # handler (_on_save_settings_clicked) wraps this in try/except Exception:
+    # QMessageBox.warning(...) so the user is told the save failed. Swallowing the
+    # error here made that button's warning dialog unreachable.
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write(f"# Record/Z-Stack Acquisition Parameters - {params.experiment_id}\n\n")
+        yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
 @dataclass
