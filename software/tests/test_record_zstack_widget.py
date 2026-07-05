@@ -1757,6 +1757,10 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
     - recording channel and its numeric settings (exposure_time, analog_gain, illumination_intensity)
     - z-stack channels and their numeric settings
     - acquisition parameters (FPS, duration, z-range, XY mode)
+    - multi-plane recording fields (Laser AF on, Nz, dz, bottom-Z offset) -- build_parameters()
+      forces recording_bottom_z_offset_um to 0.0 when Laser AF is off (see
+      _update_recording_planes_ui), so Laser AF must be enabled for the bottom-Z value to
+      round-trip meaningfully.
     """
     from control.core.record_zstack_controller import _save_record_zstack_yaml
     from control.acquisition_yaml_loader import parse_acquisition_yaml
@@ -1766,8 +1770,12 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
     qtbot.addWidget(w1)
     w1.lineEdit_savingDir.setText(str(tmp_path))
     w1.checkbox_recording.setChecked(True)
+    w1.checkbox_laser_af.setChecked(True)
     w1.entry_fps.setValue(30.0)
     w1.entry_duration.setValue(4.0)
+    w1.entry_recording_Nz.setValue(3)
+    w1.entry_recording_dz.setValue(2.5)
+    w1.entry_recording_bottom_z.setValue(-4.0)
     w1.checkbox_zstack.setChecked(True)
     w1._add_zstack_channel_row("Fluorescence 488 nm Ex", exposure=80.0, gain=1.0, illumination=45.0)
     w1.entry_zmin.setValue(-5.0)
@@ -1798,6 +1806,12 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
 
     # Recording channel (enabled above, so should be non-None)
     assert params2.recording_channel == params1.recording_channel
+
+    # Multi-plane recording fields (Laser AF on, Nz/dz/bottom-Z offset)
+    assert params2.use_laser_af == params1.use_laser_af
+    assert params2.recording_Nz == params1.recording_Nz
+    assert params2.recording_dz_um == pytest.approx(params1.recording_dz_um)
+    assert params2.recording_bottom_z_offset_um == pytest.approx(params1.recording_bottom_z_offset_um)
 
     # Z-stack channels: check channel names and numeric settings
     assert [c.name for c in params2.zstack_channels] == [c.name for c in params1.zstack_channels]
