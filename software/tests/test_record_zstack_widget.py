@@ -181,7 +181,7 @@ def _make_stub_scan_coordinates():
 def simulated_widget_deps(tmp_path):
     """Provide lightweight stub dependencies for RecordZStackMultiPointWidget."""
     stage = MagicMock()
-    stage.get_pos.return_value = MagicMock(z_mm=0.0)
+    stage.get_pos.return_value = MagicMock(x_mm=1.5, y_mm=2.5, z_mm=0.0)
 
     return dict(
         stage=stage,
@@ -281,6 +281,19 @@ def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
     # Both the internal list AND the table must stay at 1 entry after dedup.
     assert w._zstack_channel_names.count("BF LED matrix full") == 1
     assert w.zstack_channel_table.rowCount() == 1
+
+
+def test_zstack_channel_row_tooltip_shows_full_name(qtbot, simulated_widget_deps):
+    """The Channel column truncates long names visually (narrow Stretch column),
+    so the full name must be available as a tooltip on hover."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
+
+    item = w.zstack_channel_table.item(0, 0)
+    assert item.toolTip() == "Fluorescence 488 nm Ex"
 
 
 def test_validate_helper_recording_bad_duration():
@@ -1061,3 +1074,287 @@ def test_refresh_channel_list_warns_on_silent_selection_swap(qtbot, simulated_wi
     assert any(
         prev in rec.message and "Only Channel" in rec.message for rec in caplog.records
     ), f"no warning about the recording selection changing from {prev!r}"
+
+
+def test_refresh_channel_list_preserves_user_edited_recording_settings(qtbot, simulated_widget_deps):
+    """R9: refresh_channel_list() must not silently reset the user's manually
+    edited recording exposure/gain/illumination when the selected channel is
+    still available afterward — even though repopulating the combo transiently
+    fires currentIndexChanged for other channels along the way."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w._recording_exp_spin.setValue(999.0)
+    w._recording_gain_spin.setValue(77.0)
+    w._recording_illum_spin.setValue(88.0)
+
+    # Same channel list, same selection still available (e.g. an objective
+    # switch that doesn't change the configured channels).
+    w.refresh_channel_list()
+
+    assert w._recording_exposure() == pytest.approx(999.0)
+    assert w._recording_gain() == pytest.approx(77.0)
+    assert w._recording_illumination() == pytest.approx(88.0)
+
+
+# ---------------------------------------------------------------------------
+# Channel-add seeds from the channel's configured live-controller settings
+# (instead of the hardcoded 50 ms / 0 gain / 50% defaults).
+# ---------------------------------------------------------------------------
+
+
+def test_zstack_add_channel_seeds_from_channel_config(qtbot, simulated_widget_deps):
+    """Clicking + Add on a channel must seed its row from that channel's own
+    configured exposure/gain/illumination, not the hardcoded (50, 0, 50)."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_zstack.setChecked(True)  # unchecked group box disables its children
+    w.combobox_zstack_add_channel.setCurrentText("Fluorescence 488 nm Ex")
+    w.btn_zstack_add_channel.click()
+
+    exposure, gain, illum = w._get_zstack_row_values("Fluorescence 488 nm Ex")
+    assert exposure == pytest.approx(123.0)
+    assert gain == pytest.approx(4.0)
+    assert illum == pytest.approx(77.0)
+
+
+def test_recording_row_seeds_from_channel_config_on_construction(qtbot, simulated_widget_deps):
+    """The recording table's initial row must reflect the first channel's own
+    configured settings, not the hardcoded (50, 0, 50) defaults."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w._recording_channel_name() == "BF LED matrix full"
+    assert w._recording_exposure() == pytest.approx(12.0)
+    assert w._recording_gain() == pytest.approx(1.5)
+    assert w._recording_illumination() == pytest.approx(33.0)
+
+
+def test_recording_row_seeds_from_channel_config_on_selection_change(qtbot, simulated_widget_deps):
+    """Switching the recording channel combo must reseed exposure/gain/illum
+    from the newly selected channel's own configured settings."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
+
+    assert w._recording_exposure() == pytest.approx(123.0)
+    assert w._recording_gain() == pytest.approx(4.0)
+    assert w._recording_illumination() == pytest.approx(77.0)
+
+
+# ---------------------------------------------------------------------------
+# XY / Time tabbed row (mirrors WellplateMultiPointWidget, skipping Z).
+# ---------------------------------------------------------------------------
+
+
+def test_checkbox_xy_exists_and_defaults_checked(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.checkbox_xy.isChecked() is True
+    assert w.combobox_xy_mode.isEnabled() is True
+    # isHidden() reflects the explicit show/hide flag; isVisible() would be
+    # False regardless since the top-level widget itself is never shown().
+    assert w.xy_controls_frame.isHidden() is False
+
+
+def test_unchecking_xy_hides_scan_grid_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_xy.setChecked(False)
+    assert w.xy_controls_frame.isHidden() is True
+    assert w.combobox_xy_mode.isEnabled() is False
+
+    w.checkbox_xy.setChecked(True)
+    assert w.xy_controls_frame.isHidden() is False
+    assert w.combobox_xy_mode.isEnabled() is True
+
+
+def test_combobox_xy_mode_has_current_position_and_select_wells(qtbot, simulated_widget_deps):
+    """The XY mode combo offers both modes, defaulting to Select Wells so
+    existing tiling behavior is unchanged out of the box."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    items = [w.combobox_xy_mode.itemText(i) for i in range(w.combobox_xy_mode.count())]
+    assert items == ["Current Position", "Select Wells"]
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+
+
+def test_selecting_current_position_mode_hides_scan_grid_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.xy_controls_frame.isHidden() is True
+
+    w.combobox_xy_mode.setCurrentText("Select Wells")
+    assert w.xy_controls_frame.isHidden() is False
+
+
+def test_current_position_mode_uses_live_stage_position(qtbot, simulated_widget_deps):
+    """Current Position mode must build a single region at the live stage
+    position via add_region, bypassing well selection entirely."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    sc.set_well_coordinates.reset_mock()  # construction seeds the default Select Wells mode
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+
+    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
+    sc.set_well_coordinates.assert_not_called()
+
+
+def test_unchecking_xy_forces_current_position_and_restores_on_recheck(qtbot, simulated_widget_deps):
+    """Mirrors WellplateMultiPointWidget: unchecking XY forces Current
+    Position (single stage-position FOV) and disables the mode combo;
+    re-checking restores whatever mode was previously selected."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_xy.setChecked(False)
+    assert w.combobox_xy_mode.currentText() == "Current Position"
+    assert w.combobox_xy_mode.isEnabled() is False
+    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
+
+    w.checkbox_xy.setChecked(True)
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+    assert w.combobox_xy_mode.isEnabled() is True
+
+
+def test_toggling_xy_rebuilds_scan_region_exactly_once(qtbot, simulated_widget_deps):
+    """Toggling XY changes combobox_xy_mode's text, which already triggers
+    _update_scan_regions() via _on_xy_mode_changed — _on_xy_toggled must not
+    also call it unconditionally, or the region gets rebuilt twice (including
+    an extra stage.get_pos() query) per toggle."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.has_regions.return_value = False
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.stage.get_pos.reset_mock()
+    w.checkbox_xy.setChecked(False)
+    w.stage.get_pos.assert_called_once()
+
+    w.stage.get_pos.reset_mock()
+    sc.set_well_coordinates.reset_mock()
+    w.checkbox_xy.setChecked(True)
+    sc.set_well_coordinates.assert_called_once()
+
+
+def test_validate_current_position_mode_bypasses_well_selection(qtbot, simulated_widget_deps):
+    """With no wells selected, Current Position mode must still validate
+    (it doesn't need any wells), while Select Wells mode still requires one."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    sc = MagicMock()
+    sc.get_selected_wells.return_value = {}
+    simulated_widget_deps["scanCoordinates"] = sc
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test")
+    w.checkbox_zstack.setChecked(True)
+    w.entry_zmin.setValue(-1.0)
+    w.entry_zmax.setValue(1.0)
+    w.entry_step.setValue(1.0)
+    w._add_zstack_channel_row("BF LED matrix full")
+
+    assert w.validate() is not None  # Select Wells (default) with 0 wells: still rejected
+
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.validate() is None
+
+
+# ---------------------------------------------------------------------------
+# Time tabbed row (mirrors WellplateMultiPointWidget).
+# ---------------------------------------------------------------------------
+
+
+def test_checkbox_time_exists_and_defaults_unchecked(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.checkbox_time.isChecked() is False
+    assert w.time_controls_frame.isHidden() is True
+
+
+def test_checking_time_shows_nt_dt_controls(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_time.setChecked(True)
+    assert w.time_controls_frame.isHidden() is False
+
+
+def test_unchecking_time_resets_and_restores_nt_dt(qtbot, simulated_widget_deps):
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_time.setChecked(True)
+    w.entry_Nt.setValue(5)
+    w.entry_dt.setValue(10.0)
+
+    w.checkbox_time.setChecked(False)
+    assert w.entry_Nt.value() == 1
+    assert w.entry_dt.value() == pytest.approx(0.0)
+    assert w.time_controls_frame.isHidden() is True
+
+    w.checkbox_time.setChecked(True)
+    assert w.entry_Nt.value() == 5
+    assert w.entry_dt.value() == pytest.approx(10.0)
