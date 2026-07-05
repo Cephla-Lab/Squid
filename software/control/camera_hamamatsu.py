@@ -210,6 +210,54 @@ class HamamatsuCamera(AbstractCamera):
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
+    def set_frame_rate(self, fps: float) -> float:
+        """Cap the internal free-run rate (DCAM INTERNALFRAMERATE) for recording.
+
+        In CONTINUOUS (internal-trigger) mode the sensor otherwise free-runs at its
+        exposure/readout-limited maximum, forcing the read thread to process frames
+        the recording pipeline only downsamples away.  Setting INTERNALFRAMERATE caps
+        delivery near the requested rate.  Exposure is unaffected: the frame period is
+        constrained to be >= exposure + readout, so a too-fast request is clamped by
+        the camera (reflected in the read-back) while a slower request just adds
+        inter-frame dead time.
+
+        Returns the rate the camera accepted, or the exposure-limited max on any
+        failure, so callers can still size/pace against a real number (base contract).
+        """
+        fallback = 1000.0 / self.get_total_frame_time()
+        if fps is None or fps <= 0:
+            return fallback
+        try:
+            with self._pause_streaming():
+                # Fast readout FIRST: high frame rates need it, and the sensor's
+                # default may be the low-noise (slow) mode whose INTERNALFRAMERATE
+                # ceiling is far below `fps`.  It also raises the valuemax we read
+                # next, so the clamp isn't pinned to the slow-mode limit.  Best-
+                # effort — log if it doesn't take, but still try to set the rate.
+                # NOTE: this leaves the camera in fast readout after a recording
+                # (not restored); acceptable for throughput-oriented recording, see
+                # PR notes / follow-up to make readout speed configurable.
+                if not self._set_prop(DCAM_IDPROP.READOUTSPEED, DCAMPROP.READOUTSPEED.FASTEST):
+                    self._log.warning("Could not set fast readout speed; achievable fps may be limited.")
+
+                attr = self._camera.prop_getattr(DCAM_IDPROP.INTERNALFRAMERATE)
+                if isinstance(attr, bool) or attr is None:
+                    self._log.warning(
+                        "INTERNALFRAMERATE not available on this camera; leaving free-run rate at the camera default."
+                    )
+                    return fallback
+                target = max(attr.valuemin, min(float(fps), attr.valuemax))
+                if not self._set_prop(DCAM_IDPROP.INTERNALFRAMERATE, target):
+                    return fallback
+                achieved = self._camera.prop_getvalue(DCAM_IDPROP.INTERNALFRAMERATE)
+            if isinstance(achieved, bool):
+                return fallback
+            self._log.info(f"set_frame_rate({fps}) set INTERNALFRAMERATE -> {float(achieved):.3f} fps")
+            return float(achieved)
+        except Exception:
+            self._log.exception("set_frame_rate failed; falling back to exposure-limited max.")
+            return fallback
+
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
             raise ValueError("Only the RAW frame format is supported by this camera.")
