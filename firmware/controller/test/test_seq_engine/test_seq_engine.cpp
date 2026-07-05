@@ -298,6 +298,76 @@ void test_two_cameras_simultaneous_exposure(void) {
     TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // one step = one frame event
 }
 
+void test_ready_line_blocks_until_asserted(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.z_settle_us = 0;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].ready_line = 0;
+    cams[0].ready_active_high = 1;
+    hal.ready_lines[0] = false;
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 30000);
+    TEST_ASSERT_EQUAL(0, (int)hal.plans.size());  // still gated
+    hal.ready_lines[0] = true;
+    run_until(e, hal, 60000);
+    TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
+    TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 30000);
+}
+
+void test_wait_timeout_aborts_with_all_off(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].ready_line = 0;
+    hal.ready_lines[0] = false;  // never ready
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, /*wait_timeout_us=*/100000);
+    run_until(e, hal, 300000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::WaitTimeout, e.progress().abort_error);
+    bool all_off_called = false;
+    for (auto& c : hal.calls) {
+        if (c.what == "all_off") all_off_called = true;
+    }
+    TEST_ASSERT_TRUE(all_off_called);
+}
+
+// Rolling shutter: readout_overlap_safe=0 defers PREP(k+1) until the camera is done
+// reading out — no motion during its readout.
+void test_no_overlap_when_readout_unsafe(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 2;
+    l.dz = 0;
+    l.z_settle_us = 0;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].filter_wheel = 3;
+    ch[1].filter_pos = 2;
+    SeqCameraConfig cams[1] = {cam_level()};  // readout 20000
+    cams[0].readout_overlap_safe = 0;
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 2000000);
+    uint32_t end0 = hal.plans[0].t_deassert_us;
+    uint32_t t_move = 0;
+    for (auto& c : hal.calls) {
+        if (c.what == "move" && c.a == 3) t_move = c.t_us;
+    }
+    TEST_ASSERT_TRUE(t_move >= end0 + 20000);  // move waited out the readout
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -310,5 +380,8 @@ int main(int, char**) {
     RUN_TEST(test_z_inner_order_and_z_offset);
     RUN_TEST(test_edge_mode_pulse_and_modeled_exposure_end);
     RUN_TEST(test_two_cameras_simultaneous_exposure);
+    RUN_TEST(test_ready_line_blocks_until_asserted);
+    RUN_TEST(test_wait_timeout_aborts_with_all_off);
+    RUN_TEST(test_no_overlap_when_readout_unsafe);
     return UNITY_END();
 }

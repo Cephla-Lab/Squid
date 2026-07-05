@@ -66,6 +66,9 @@ class SeqEngine {
     uint32_t settle_done_us_ = 0;  // stack-move settle gate
     bool settle_armed_ = false;    // stepper: set on first in-position observation
     uint32_t cur_exposure_end_us_ = 0;
+    // Rolling-shutter support: PREP of the next step is deferred until cameras with
+    // readout_overlap_safe == 0 finish reading out (no motion during their readout).
+    uint32_t overlap_hold_until_us_ = 0;
     uint32_t last_trigger_us_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
     bool cancel_requested_ = false;

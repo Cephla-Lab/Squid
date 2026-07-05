@@ -126,6 +126,7 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
     step_to_layer_channel(k, &layer, &chi);
     const SeqChannel& ch = channels_[chi];
     cur_exposure_end_us_ = 0;
+    overlap_hold_until_us_ = 0;
     for (uint8_t cam = 0; cam < n_cameras_; cam++) {
         if (!((ch.camera_mask >> cam) & 1)) continue;
         const SeqCameraConfig& cc = cams_[cam];
@@ -145,6 +146,8 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
                                                             : p.t_deassert_us;
         readout_done_us_[cam] = end + cc.readout_time_us;
         if (end > cur_exposure_end_us_) cur_exposure_end_us_ = end;
+        if (!cc.readout_overlap_safe && readout_done_us_[cam] > overlap_hold_until_us_)
+            overlap_hold_until_us_ = readout_done_us_[cam];
     }
     progress_.frames_fired++;
     progress_.layer = layer;
@@ -169,7 +172,7 @@ void SeqEngine::tick(uint32_t now_us) {
             if (now_us >= wait_deadline_us_) fail(SeqError::WaitTimeout, 0);
             break;
         case SeqState::Exposing: {
-            if (now_us < cur_exposure_end_us_) break;
+            if (now_us < cur_exposure_end_us_ || now_us < overlap_hold_until_us_) break;
             // Exposure over -> readout window begins: advance and PREP the next step
             // NOW — this is the overlap that hides filter/z moves behind readout.
             step_++;
