@@ -114,9 +114,77 @@ void test_piezo_step_and_settle_gate_exposure(void) {
     TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= t_dac1 + 3000);
 }
 
+// Stepper stack axis: exposure gated on in_position + settle.
+void test_stepper_settle_gates_exposure(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
+    l.stack_axis_id = 2;  // Z
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.z_settle_us = 4000;
+    hal.move_duration_us[2] = 8000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1, 100000);
+    e.start(0, 5000000);
+    run_until(e, hal, 1000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    // assert >= move done (8000) + settle (4000); 100 µs tick quantum tolerance
+    TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 12000);
+    TEST_ASSERT_TRUE(hal.plans[0].t_assert_us <= 12300);
+}
+
+// Filter-wheel move longer than z move dominates the WAIT.
+void test_filter_wheel_gates_exposure(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.z_settle_us = 0;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].filter_wheel = 3;  // FILTER1 axis id
+    ch[0].filter_pos = 5;
+    hal.move_duration_us[3] = 50000;
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 1000000);
+    TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 50000);
+    // Filter move command must have been issued at PREP time (t=0), not lazily:
+    // calls[0] = dac (piezo target), calls[1] = move (filter wheel).
+    TEST_ASSERT_EQUAL_STRING("move", hal.calls[1].what.c_str());
+    TEST_ASSERT_EQUAL_UINT32(0, hal.calls[1].t_us);
+}
+
+// Model-based readiness: second frame waits out readout_time even though motion is
+// instant.
+void test_model_readiness_spaces_triggers(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 1;
+    l.dz = 0;
+    l.z_settle_us = 0;
+    SeqChannel ch[1] = {good_channel()};      // exposure 10000
+    SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, readout 20000
+    e.load(l, ch, cams, 1, 40000);
+    e.start(0, 5000000);
+    run_until(e, hal, 2000000);
+    TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
+    uint32_t end0 = hal.plans[0].t_deassert_us;  // = assert0 + 10500
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= end0 + 20000);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
     RUN_TEST(test_piezo_step_and_settle_gate_exposure);
+    RUN_TEST(test_stepper_settle_gates_exposure);
+    RUN_TEST(test_filter_wheel_gates_exposure);
+    RUN_TEST(test_model_readiness_spaces_triggers);
     return UNITY_END();
 }
