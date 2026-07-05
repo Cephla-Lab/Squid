@@ -155,7 +155,8 @@ controller/
 ├── platformio.ini                   # PlatformIO config
 ├── test/                            # Unit tests (run with pio test -e native)
 │   ├── test_crc8/                  # CRC8 checksum tests
-│   └── test_protocol/              # Protocol/command ID tests
+│   ├── test_protocol/              # Protocol/command ID tests
+│   └── test_seq_engine/            # Sequencer engine timing tests (virtual clock)
 └── src/
     ├── commands/                    # Command handlers
     │   ├── commands.cpp/h          # General commands
@@ -163,6 +164,13 @@ controller/
     │   └── stage_commands.cpp/h    # Motion control
     ├── def/
     │   └── def_v1.h                # Hardware configuration
+    ├── sequencer/                   # Hardware-sequenced acquisition engine (pure C++,
+    │   │                           #   natively tested; NOT yet wired to hardware —
+    │   │                           #   protocol v2 Phase D does the binding)
+    │   ├── seq_types.cpp/h         # Acquisition program structs + validation
+    │   ├── seq_hal.h               # Hardware interface the engine drives
+    │   └── seq_engine.cpp/h        # Timing state machine (readout overlap, trigger-
+    │                               #   ready gating, cancel/abort semantics)
     ├── tmc/                         # TMC stepper driver library
     ├── utils/
     │   └── crc8.cpp/h              # CRC calculation
