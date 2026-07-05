@@ -1012,8 +1012,18 @@ class AcquisitionYAMLDropMixin:
             dialog.exec_()
             return False
 
-        # Apply settings with signal blocking
-        self._apply_yaml_settings(yaml_data)
+        # Apply settings with signal blocking. Subclasses (currently only
+        # RecordZStackMultiPointWidget) may validate embedded channel dicts via
+        # pydantic inside _apply_yaml_settings(); a malformed-but-syntactically-valid
+        # YAML can raise there. Catch broadly here (mirroring the parse-error
+        # handling above) so a bad drop/button-load degrades to a warning dialog
+        # instead of crashing the Qt slot.
+        try:
+            self._apply_yaml_settings(yaml_data)
+        except Exception as e:
+            self._log.error(f"Failed to apply YAML settings from {file_path}: {e}")
+            QMessageBox.warning(self, "Load Error", f"Failed to apply YAML settings:\n{e}")
+            return False
         self._log.info(f"Loaded acquisition settings from: {file_path}")
         return True
 
