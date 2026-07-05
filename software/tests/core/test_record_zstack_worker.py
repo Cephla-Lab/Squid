@@ -754,3 +754,39 @@ def test_config_snapshot_dedupes_channels_by_name(tmp_path):
     snapshot = yaml.safe_load(open(Path(tmp_path) / params.experiment_id / "acquisition_channels.yaml"))
     names = [c["name"] for c in snapshot["channels"]]
     assert len(names) == len(set(names)), f"duplicate channel names in snapshot: {names}"
+
+
+def test_build_objective_info_reads_objective_and_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
+
+    objective_store = MagicMock()
+    objective_store.current_objective = "20x"
+    objective_store.objectives_dict = {"20x": {"magnification": 20.0}}
+    objective_store.get_pixel_size_factor.return_value = 1.0
+
+    camera = MagicMock()
+    camera.get_binning.return_value = (2, 2)
+    camera.get_pixel_size_binned_um.return_value = 0.5
+
+    info = _build_objective_info(objective_store, camera)
+
+    assert info["name"] == "20x"
+    assert info["magnification"] == 20.0
+    assert info["camera_binning"] == [2, 2]
+    assert info["pixel_size_um"] == pytest.approx(0.5)
+
+
+def test_build_objective_info_handles_missing_camera():
+    from unittest.mock import MagicMock
+    from control.core.record_zstack_controller import _build_objective_info
+
+    objective_store = MagicMock()
+    objective_store.current_objective = "10x"
+    objective_store.objectives_dict = {}
+
+    info = _build_objective_info(objective_store, None)
+
+    assert info["name"] == "10x"
+    assert info["camera_binning"] is None
+    assert info["pixel_size_um"] is None

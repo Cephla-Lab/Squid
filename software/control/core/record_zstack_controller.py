@@ -25,6 +25,34 @@ def zstack_offsets_um(z_min_um: float, z_max_um: float, step_um: float) -> List[
     return [round(z_min_um + i * step_um, 6) for i in range(zstack_plane_count(z_min_um, z_max_um, step_um))]
 
 
+def _build_objective_info(objective_store, camera) -> dict:
+    """Build the informational `objective:` YAML section.
+
+    Mirrors the dict multi_point_controller.py builds before calling
+    _save_acquisition_yaml, adapted to tolerate camera=None (the record widget's
+    Save-button path may not always have a live camera reference).
+    """
+    current_objective = objective_store.current_objective
+    objective_dict = getattr(objective_store, "objectives_dict", {}).get(current_objective, {})
+
+    camera_binning = None
+    pixel_size_um = None
+    if camera is not None and hasattr(camera, "get_binning"):
+        camera_binning = list(camera.get_binning())
+    if camera is not None and hasattr(camera, "get_pixel_size_binned_um"):
+        try:
+            pixel_size_um = objective_store.get_pixel_size_factor() * camera.get_pixel_size_binned_um()
+        except Exception:
+            pixel_size_um = None
+
+    return {
+        "name": current_objective,
+        "magnification": objective_dict.get("magnification"),
+        "pixel_size_um": pixel_size_um,
+        "camera_binning": camera_binning,
+    }
+
+
 @dataclass
 class RecordZStackAcquisitionParameters:
     base_path: str
