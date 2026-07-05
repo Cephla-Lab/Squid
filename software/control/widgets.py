@@ -17803,6 +17803,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.label_recording_bottom_z.setVisible(use_af)
         self.entry_recording_bottom_z.setVisible(use_af)
         self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
+        self.entry_recording_bottom_z.setToolTip(
+            "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
+        )
 
     def _add_zstack_channel_row(
         self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
@@ -18269,6 +18272,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         On start (pressed=True):
           - validate(); show QMessageBox.warning and un-check button on failure.
+          - if Recording is enabled, show a QMessageBox.question confirming the
+            plane-count/Z-range/per-FOV-duration summary; un-check button and
+            abort if the user answers No.
           - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
           - call recordZStackController.run_acquisition(self.build_parameters()).
 
@@ -18295,6 +18301,30 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.btn_startAcquisition.setChecked(False)
                 QMessageBox.warning(self, "Invalid Parameters", error)
                 return
+
+            # One last look at the recording plane summary before starting.
+            # bottom must use the same effective-value logic as build_parameters()
+            # (the field is hidden and stale when Laser AF is off, so a hidden
+            # value must not silently apply -- see the comment there).
+            if self.checkbox_recording.isChecked():
+                nz = self.entry_recording_Nz.value()
+                bottom = self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
+                per_fov_s = nz * self.entry_duration.value()
+                if nz > 1:
+                    top = bottom + (nz - 1) * self.entry_recording_dz.value()
+                    summary = f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
+                else:
+                    summary = f"1 plane @ {bottom:+.1f} µm — {per_fov_s:.1f} s/FOV"
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Recording",
+                    f"Recording: {summary}\n\nStart acquisition?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply != QMessageBox.Yes:
+                    self.btn_startAcquisition.setChecked(False)
+                    return
 
             # Refresh the per-well FOV grid before building parameters so the
             # scan regions reflect the current overlap/shape/region-size settings.

@@ -25,6 +25,7 @@ from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+from qtpy.QtWidgets import QMessageBox
 
 from control.widgets import _validate_record_zstack_params
 
@@ -581,6 +582,193 @@ def test_toggle_acquisition_stop_calls_request_abort(qtbot, simulated_widget_dep
 
     ctrl.request_abort.assert_called_once()
     ctrl.run_acquisition.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Confirmation dialog: recording plane summary shown before Start proceeds
+# ---------------------------------------------------------------------------
+
+
+def _make_valid_recording_widget(qtbot, deps, *, laser_af=False):
+    """Return a widget pre-configured for a valid recording-only acquisition.
+
+    Recording is enabled, Z-Stack is disabled. If laser_af is True, a stub
+    laser_autofocus_controller reporting a reference plane is wired in and
+    checkbox_laser_af is checked (needed for validate() to pass when Laser AF
+    is on) -- the caller is then free to set entry_recording_bottom_z.
+    """
+    from control.widgets import RecordZStackMultiPointWidget
+
+    deps = dict(deps)
+    if laser_af:
+        laser_ctrl = MagicMock()
+        laser_ctrl.laser_af_properties.has_reference = True
+        deps["laser_autofocus_controller"] = laser_ctrl
+
+    w = RecordZStackMultiPointWidget(**deps)
+    qtbot.addWidget(w)
+    w.lineEdit_savingDir.setText("/tmp/test_confirm")
+    w.checkbox_zstack.setChecked(False)
+    w.checkbox_recording.setChecked(True)
+    if laser_af:
+        w.checkbox_laser_af.setChecked(True)
+    return w
+
+
+def test_toggle_acquisition_confirm_single_plane_summary_and_yes_proceeds(qtbot, simulated_widget_deps):
+    """Nz == 1: the confirmation dialog shows the single-plane summary and
+    answering Yes lets the acquisition start."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
+    w.entry_recording_Nz.setValue(1)
+    w.entry_recording_bottom_z.setValue(-1.5)
+    w.entry_duration.setValue(2.0)
+
+    expected = f"1 plane @ {-1.5:+.1f} µm — {1 * 2.0:.1f} s/FOV"
+
+    captured = {}
+
+    def fake_question(parent, title, text, *args, **kwargs):
+        captured["title"] = title
+        captured["text"] = text
+        return QMessageBox.Yes
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
+        w.toggle_acquisition(True)
+
+    assert expected in captured["text"]
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_toggle_acquisition_confirm_multi_plane_summary_and_yes_proceeds(qtbot, simulated_widget_deps):
+    """Nz > 1: the confirmation dialog shows the multi-plane summary with the
+    correct computed top (bottom + (nz - 1) * dz) and answering Yes proceeds."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
+    w.entry_recording_Nz.setValue(4)
+    w.entry_recording_bottom_z.setValue(-3.0)
+    w.entry_recording_dz.setValue(2.0)
+    # entry_duration has 0 decimals (whole seconds only) -- use a value that
+    # can't be affected by rounding.
+    w.entry_duration.setValue(3.0)
+
+    nz, bottom, dz, duration = 4, -3.0, 2.0, 3.0
+    top = bottom + (nz - 1) * dz
+    per_fov_s = nz * duration
+    expected = f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
+
+    captured = {}
+
+    def fake_question(parent, title, text, *args, **kwargs):
+        captured["text"] = text
+        return QMessageBox.Yes
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
+        w.toggle_acquisition(True)
+
+    assert expected in captured["text"]
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_toggle_acquisition_confirm_uses_zero_offset_when_laser_af_off(qtbot, simulated_widget_deps):
+    """Laser AF OFF: the summary's bottom must be 0.0, not whatever stale value
+    is left sitting in entry_recording_bottom_z from when Laser AF was on.
+
+    This mirrors build_parameters()'s effective-value logic
+    (entry_recording_bottom_z.value() if checkbox_laser_af.isChecked() else 0.0)
+    -- the dialog must not show a number that doesn't match what actually runs.
+    """
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    laser_ctrl = MagicMock()
+    laser_ctrl.laser_af_properties.has_reference = True
+    simulated_widget_deps["laser_autofocus_controller"] = laser_ctrl
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
+    # Leave a nonzero stale value in the field, then turn Laser AF back off.
+    w.entry_recording_bottom_z.setValue(7.5)
+    w.checkbox_laser_af.setChecked(False)
+    w.entry_recording_Nz.setValue(1)
+    w.entry_duration.setValue(1.0)
+
+    assert w.entry_recording_bottom_z.value() == pytest.approx(7.5)  # stale value still sitting there
+    assert not w.checkbox_laser_af.isChecked()
+
+    captured = {}
+
+    def fake_question(parent, title, text, *args, **kwargs):
+        captured["text"] = text
+        return QMessageBox.Yes
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
+        w.toggle_acquisition(True)
+
+    assert "+0.0" in captured["text"]
+    assert "+7.5" not in captured["text"]
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_toggle_acquisition_confirm_no_aborts_start(qtbot, simulated_widget_deps):
+    """Answering No to the confirmation dialog must NOT start the acquisition,
+    and must leave the Start button unchecked."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
+    w.btn_startAcquisition.setChecked(True)
+
+    with patch("control.widgets.QMessageBox.question", return_value=QMessageBox.No):
+        w.toggle_acquisition(True)
+
+    ctrl.run_acquisition.assert_not_called()
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_toggle_acquisition_no_confirm_when_recording_disabled(qtbot, simulated_widget_deps):
+    """When the Recording phase is not enabled, no confirmation dialog should
+    appear at all -- Start proceeds straight through as before."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)  # zstack-only, recording off
+    assert not w.checkbox_recording.isChecked()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("QMessageBox.question must not be called when recording is disabled")
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fail_if_called):
+        w.toggle_acquisition(True)
+
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_recording_bottom_z_tooltip_matches_caption(qtbot, simulated_widget_deps):
+    """The entry_recording_bottom_z tooltip must track the same multi/single
+    wording as its label caption (label_recording_bottom_z), so it doesn't go
+    stale (e.g. still saying "Bottom plane offset" when Nz == 1 and the label
+    already reverted to "Z offset:")."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Default is Nz == 1 (single plane).
+    assert w.entry_recording_Nz.value() == 1
+    assert w.label_recording_bottom_z.text() == "Z offset:"
+    assert w.entry_recording_bottom_z.toolTip() == "Offset relative to the Z reference"
+
+    w.entry_recording_Nz.setValue(3)
+    assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
+    assert w.entry_recording_bottom_z.toolTip() == "Bottom plane offset relative to the Z reference"
+
+    w.entry_recording_Nz.setValue(1)
+    assert w.label_recording_bottom_z.text() == "Z offset:"
+    assert w.entry_recording_bottom_z.toolTip() == "Offset relative to the Z reference"
 
 
 # ---------------------------------------------------------------------------
