@@ -829,7 +829,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
     "wellplate": "Wellplate Multipoint",
     "flexible": "Flexible Multipoint",
-    "record_zstack": "Record/Z-Stack",
+    "record_zstack": "Record + Z-Stack",
 }
 
 
