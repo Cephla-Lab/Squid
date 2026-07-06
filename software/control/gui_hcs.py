@@ -2347,8 +2347,10 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.update_fov_positions()
 
         self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
+        # Non-multipoint tabs (Simple Recording, Tracking) don't have channel selection.
         acquisitionWidget = self.recordTabWidget.widget(index)
-        acquisitionWidget.emit_selected_channels()
+        if hasattr(acquisitionWidget, "emit_selected_channels"):
+            acquisitionWidget.emit_selected_channels()
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -2526,8 +2528,11 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.toggleWellSelector(False)
 
-        # display acquisition progress bar during acquisition
-        self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
+        # display acquisition progress bar during acquisition (non-multipoint tabs
+        # like Simple Recording can be current when a workflow/TCP acquisition starts)
+        current_widget = self.recordTabWidget.currentWidget()
+        if hasattr(current_widget, "display_progress_bar"):
+            current_widget.display_progress_bar(acquisition_started)
 
     def _update_ram_monitor_visibility(self):
         """Update RAM monitor widget visibility based on setting."""
