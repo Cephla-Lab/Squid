@@ -87,3 +87,63 @@ def test_set_frame_rate_fallback_returns_continuous_max_when_option_unavailable(
     # Request 30 fps; camera can't reach it, so we get its true continuous max (~28), not ~14.
     achievable = cam.set_frame_rate(30.0)
     assert 27.5 < achievable < 28.5, achievable
+
+
+# --- Frame-rate capability (settable vs not) ------------------------------------------
+
+
+def test_simulated_camera_reports_frame_rate_settable():
+    # The simulated (and ToupTek) cameras can command a rate; only cameras like Hamamatsu can't.
+    assert _sim_camera().can_set_frame_rate() is True
+
+
+def test_base_estimate_frame_rate_is_sequential():
+    # Base default assumes sequential timing: 1000 / (exposure + strobe).
+    cam = _sim_camera()
+    cam.set_exposure_time(10)
+    expected = 1000.0 / (10.0 + cam.get_strobe_time())
+    assert abs(cam.estimate_frame_rate(10.0) - expected) < 1e-6
+
+
+def test_hamamatsu_frame_rate_not_settable_and_overlap_estimate():
+    # Hamamatsu's DCAM library isn't present off-instrument; this runs only where it imports.
+    import pytest
+
+    try:
+        import control.camera_hamamatsu as ham
+    except (ImportError, OSError):
+        pytest.skip("Hamamatsu DCAM library not available on this platform")
+
+    from types import SimpleNamespace
+
+    from control.dcamapi4 import DCAM_IDPROP
+
+    cam = object.__new__(ham.HamamatsuCamera)
+    assert cam.can_set_frame_rate() is False
+
+    # Per-property stub: INTERNAL_FRAMERATE (authoritative free-run rate) vs INTERNAL_LINEINTERVAL
+    # (10 us/line, used by the formula). line_interval 10 us over 2000 rows -> 20 ms readout.
+    def _prop(pid):
+        if pid == DCAM_IDPROP.INTERNALFRAMERATE:
+            return 42.0
+        return 0.00001
+
+    cam._camera = SimpleNamespace(prop_getvalue=_prop)
+    cam._capabilities = SimpleNamespace(binning_to_resolution={(1, 1): (2000, 2000)})
+    cam._exposure_time_ms = 5.0
+
+    # estimate_frame_rate (widget preview at a hypothetical exposure) uses the overlap formula.
+    assert abs(cam.estimate_frame_rate(5.0) - 50.0) < 1e-6  # readout(20) > exposure(5) -> 1000/20
+    assert abs(cam.estimate_frame_rate(40.0) - 25.0) < 1e-6  # exposure(40) > readout(20) -> 1000/40
+
+    # set_frame_rate reports the camera's authoritative INTERNAL_FRAMERATE, not the formula.
+    assert abs(cam.set_frame_rate(999.0) - 42.0) < 1e-6
+
+    # ...falling back to the formula estimate when the authoritative read fails.
+    def _prop_fr_unreadable(pid):
+        if pid == DCAM_IDPROP.INTERNALFRAMERATE:
+            return False  # DCAM read failure sentinel
+        return 0.00001
+
+    cam._camera = SimpleNamespace(prop_getvalue=_prop_fr_unreadable)
+    assert abs(cam.set_frame_rate(999.0) - 50.0) < 1e-6  # exposure 5ms < readout 20ms -> 1000/20

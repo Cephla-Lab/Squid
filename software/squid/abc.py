@@ -536,6 +536,28 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._log.debug(f"set_frame_rate({fps}) no-op on base camera; max≈{max_fps:.2f} fps")
         return max_fps
 
+    def can_set_frame_rate(self) -> bool:
+        """Whether this camera can be commanded to a specific continuous frame rate.
+
+        Defaults to True; a subclass returns False only when it is known to merely free-run at
+        its exposure/readout-limited maximum in continuous mode (e.g. Hamamatsu, whose
+        INTERNAL_FRAMERATE/FRAMEINTERVAL are read-only). Note: the True default does NOT prove a
+        camera truly honors a commanded rate — a subclass still on the base set_frame_rate no-op
+        reports True yet only free-runs. Callers use this to decide whether to present fps as
+        settable / honor a requested fps, or to record at the achievable max and show it read-only.
+        """
+        return True
+
+    def estimate_frame_rate(self, exposure_ms: float) -> float:
+        """Best-effort continuous free-run fps at a hypothetical exposure, without changing
+        camera state (a UI preview helper).
+
+        Base default assumes sequential timing (readout + exposure). Cameras whose
+        continuous mode pipelines exposure with readout (overlap) should override to
+        max(readout, exposure). Reads timing properties only; never mutates.
+        """
+        return 1000.0 / (exposure_ms + self.get_strobe_time())
+
     @abc.abstractmethod
     def set_frame_format(self, frame_format: CameraFrameFormat):
         """

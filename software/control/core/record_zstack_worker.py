@@ -366,7 +366,18 @@ class RecordZStackWorker(MultiPointWorkerBase):
         effective_fps = self.params.fps
         try:
             achievable_fps = self.camera.set_frame_rate(self.params.fps)
-            if achievable_fps and 0 < achievable_fps < self.params.fps:
+            if not self.camera.can_set_frame_rate():
+                # fps is not settable on this camera (e.g. Hamamatsu free-runs at its
+                # exposure/readout-limited max in CONTINUOUS). Record at the achievable
+                # rate; params.fps is only a display value for these cameras.
+                if achievable_fps and achievable_fps > 0:
+                    if abs(achievable_fps - self.params.fps) > 0.01:
+                        log.info(
+                            f"camera fps not settable; recording at achievable ≈ {achievable_fps:.2f} fps "
+                            f"(requested {self.params.fps:g})"
+                        )
+                    effective_fps = achievable_fps
+            elif achievable_fps and 0 < achievable_fps < self.params.fps:
                 log.warning(
                     f"camera cannot deliver {self.params.fps:g} fps "
                     f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"

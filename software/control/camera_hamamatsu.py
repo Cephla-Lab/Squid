@@ -210,6 +210,44 @@ class HamamatsuCamera(AbstractCamera):
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
+    def _readout_time_ms(self) -> float:
+        """Pure, exposure-independent sensor readout period in ms (line interval x rows).
+
+        Unlike get_strobe_time() this excludes trigger_delay: in CONTINUOUS free-run the
+        exposure pipelines (overlaps) with readout, so the frame period is
+        max(readout, exposure) rather than their sum.
+        """
+        resolution = self.get_resolution()
+        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
+        if isinstance(line_interval_s, bool):
+            raise CameraError("Failed to read INTERNAL_LINEINTERVAL from camera")
+        return line_interval_s * resolution[1] * 1000.0
+
+    def estimate_frame_rate(self, exposure_ms: float) -> float:
+        """Achievable continuous free-run fps at `exposure_ms`.
+
+        In CONTINUOUS mode the ORCA overlaps exposure with sensor readout, so the frame
+        period is max(readout, exposure) - NOT get_total_frame_time() (readout + exposure),
+        which under-reports the free-run rate by ~2x. Reads timing only; never mutates.
+        """
+        return 1000.0 / max(self._readout_time_ms(), exposure_ms)
+
+    def can_set_frame_rate(self) -> bool:
+        # In CONTINUOUS mode the ORCA free-runs at the exposure/readout-limited max;
+        # INTERNAL_FRAMERATE and INTERNAL_FRAMEINTERVAL are read-only (bench-verified:
+        # DCAMERR.NOTWRITABLE in every camera state). The rate can be read, not commanded.
+        return False
+
+    def set_frame_rate(self, fps: float) -> float:
+        # Not settable (see can_set_frame_rate). Report the camera's authoritative free-run
+        # rate: INTERNAL_FRAMERATE is read-only but READABLE, and reflects the current readout
+        # mode (fast/standard/ultraquiet), bit depth, ROI and exposure — no modeling needed.
+        # Fall back to the exposure/readout estimate only if the read fails. Writes nothing.
+        rate = self._camera.prop_getvalue(DCAM_IDPROP.INTERNALFRAMERATE)
+        if isinstance(rate, bool) or not rate or rate <= 0:
+            return self.estimate_frame_rate(self.get_exposure_time())
+        return float(rate)
+
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
             raise ValueError("Only the RAW frame format is supported by this camera.")
