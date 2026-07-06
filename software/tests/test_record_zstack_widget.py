@@ -335,26 +335,60 @@ def _make_live_channel(name: str, exposure: float, gain: float, intensity: float
     )
 
 
-def test_copy_from_live_populates_recording_fields(qtbot, simulated_widget_deps):
-    """Copy-from-Live reads currentConfiguration and sets the recording table row."""
+def test_copy_from_live_uses_selected_channels_own_settings(qtbot, simulated_widget_deps):
+    """Bug fix: the (Recording) button must refresh from the recording row's own
+    selected channel, not whatever channel currently happens to be active in the
+    Live tab (currentConfiguration) — clicking it must not switch the row's
+    channel selection either."""
     from control.widgets import RecordZStackMultiPointWidget
 
-    live_ch = _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0)
-    simulated_widget_deps["liveController"].currentConfiguration = live_ch
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
+    ]
+    # Live tab is showing a *different* channel than the one selected in the
+    # recording row below — currentConfiguration must be ignored entirely.
+    simulated_widget_deps["liveController"].currentConfiguration = _make_live_channel(
+        "BF LED matrix full", exposure=999.0, gain=99.0, intensity=99.0
+    )
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
     qtbot.addWidget(w)
 
-    # Enable the recording group so its child widgets are interactive
     w.checkbox_recording.setChecked(True)
+    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
     w.btn_copy_from_live.click()
 
-    # Channel combo in table row should be updated to the live channel name
+    # Channel selection must be unchanged.
     assert w._recording_channel_name() == "Fluorescence 488 nm Ex"
-    # Spinboxes in table row should reflect live channel values
+    # Spinboxes must reflect that channel's own settings, not currentConfiguration's.
     assert w._recording_exposure() == pytest.approx(33.0)
     assert w._recording_gain() == pytest.approx(2.5)
     assert w._recording_illumination() == pytest.approx(75.0)
+
+
+def test_copy_zstack_row_from_live_uses_that_channels_own_settings(qtbot, simulated_widget_deps):
+    """Same bug fix as test_copy_from_live_uses_selected_channels_own_settings,
+    for the per-row z-stack '⟳' button: it must use the row's own channel
+    (name), not whatever channel currently happens to be active in the Live tab."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
+    ]
+    simulated_widget_deps["liveController"].currentConfiguration = _make_live_channel(
+        "BF LED matrix full", exposure=999.0, gain=99.0, intensity=99.0
+    )
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_zstack.setChecked(True)
+    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
+    w._copy_zstack_row_from_live("Fluorescence 488 nm Ex")
+
+    assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((33.0, 2.5, 75.0))
 
 
 def test_add_remove_zstack_channel_row_syncs_list_and_table(qtbot, simulated_widget_deps):

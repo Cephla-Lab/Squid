@@ -17442,6 +17442,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr_font = hdr.font()
+        hdr_font.setBold(False)
+        hdr.setFont(hdr_font)
         self.recording_channel_table.verticalHeader().setVisible(False)
         self.recording_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         # Force the 5 columns to fit (Channel truncates via Stretch) instead of
@@ -17491,9 +17494,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._recording_illum_spin.setMaximumWidth(60)
         self.recording_channel_table.setCellWidget(0, 3, self._recording_illum_spin)
 
-        # Col 4: ↻ copy-from-live button
+        # Col 4: ↻ refresh-from-channel-config button
         self.btn_copy_from_live = QPushButton("↻")
-        self.btn_copy_from_live.setToolTip("Copy current live channel settings (channel, exposure, gain, illumination)")
+        self.btn_copy_from_live.setToolTip("Refresh exposure/gain/illumination from this channel's current settings")
         self.btn_copy_from_live.setMaximumWidth(28)
         self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
         self.recording_channel_table.setCellWidget(0, 4, self.btn_copy_from_live)
@@ -17630,6 +17633,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr_font = hdr.font()
+        hdr_font.setBold(False)
+        hdr.setFont(hdr_font)
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.zstack_channel_table.setMinimumHeight(80)
         self.zstack_channel_table.setMaximumHeight(200)
@@ -17879,7 +17885,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         btn_layout.setSpacing(2)
 
         btn_live = QPushButton("⟳")
-        btn_live.setToolTip(f"Copy current live settings into '{name}' row")
+        btn_live.setToolTip(f"Refresh exposure/gain/illumination from '{name}'s current settings")
         btn_live.setMaximumWidth(28)
         btn_live.clicked.connect(lambda checked=False, n=name: self._copy_zstack_row_from_live(n))
         btn_layout.addWidget(btn_live)
@@ -17951,33 +17957,27 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         return 50.0, 0.0, 50.0
 
     def _copy_recording_from_live(self) -> None:
-        """Copy current live channel settings into the recording table row."""
-        try:
-            live_ch = self.liveController.currentConfiguration
-            if live_ch is None:
-                return
-            combo = self.recording_channel_table.cellWidget(0, 0)
-            if combo is not None:
-                idx = combo.findText(live_ch.name)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-            self._recording_exp_spin.setValue(live_ch.exposure_time)
-            self._recording_gain_spin.setValue(live_ch.analog_gain)
-            self._recording_illum_spin.setValue(live_ch.illumination_intensity)
-        except Exception as exc:
-            self._log.warning(f"Copy-from-Live failed: {exc}")
+        """Refresh the recording row's exposure/gain/illumination from its own
+        selected channel's current settings.
+
+        Was previously pulling from liveController.currentConfiguration (whatever
+        channel happens to be active in the Live tab), which silently switched the
+        row's channel selection whenever it differed from the row's own channel.
+        """
+        name = self._recording_ch_combo.currentText()
+        if not name:
+            return
+        exposure, gain, illum = self._channel_settings(name)
+        self._recording_exp_spin.setValue(exposure)
+        self._recording_gain_spin.setValue(gain)
+        self._recording_illum_spin.setValue(illum)
 
     def _copy_zstack_row_from_live(self, name: str) -> None:
-        """Copy current live channel settings into the z-stack row for *name*."""
-        try:
-            live_ch = self.liveController.currentConfiguration
-            if live_ch is None:
-                return
-            self._set_zstack_row_values(
-                name, live_ch.exposure_time, live_ch.analog_gain, live_ch.illumination_intensity
-            )
-        except Exception as exc:
-            self._log.warning(f"Copy-from-Live for z-stack row '{name}' failed: {exc}")
+        """Refresh z-stack row *name*'s exposure/gain/illumination from *name*'s
+        own current settings (see _copy_recording_from_live for why this no
+        longer reads liveController.currentConfiguration)."""
+        exposure, gain, illum = self._channel_settings(name)
+        self._set_zstack_row_values(name, exposure, gain, illum)
 
     def _on_zstack_add_channel_clicked(self) -> None:
         """Add the currently selected channel in the add-channel combo to the z-stack table."""
