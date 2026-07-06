@@ -40,3 +40,50 @@ def test_simulated_camera_honors_frame_rate():
     cam.stop_streaming()
     # ~20 fps over ~1s -> well under 40, comfortably over 5 (loose bounds for CI).
     assert 5 <= len(received) <= 40
+
+
+def _bare_toupcam(strobe_time_us, exposure_ms):
+    """A ToupcamCamera with just the attributes set_frame_rate/_continuous_max_framerate touch.
+
+    Built without __init__ (no hardware) so the readout-vs-exposure rate math can be
+    tested against the exact values the real ITR3CMOS26000KMA produces (strobe_time_us=35666).
+    """
+    from control.camera_toupcam import ToupcamCamera, StrobeInfo
+
+    cam = object.__new__(ToupcamCamera)
+    cam._log = squid.logging.get_logger("test_toupcam_fps")
+    cam._strobe_info = StrobeInfo(strobe_time_us=float(strobe_time_us), trigger_delay_us=15666.0)
+    cam._exposure_time = float(exposure_ms)
+    return cam
+
+
+def test_continuous_max_framerate_is_readout_limited_not_triggered_frame_time():
+    # ITR3CMOS26000KMA: readout period 35.666 ms => ~28 fps free-run, exposure (20ms) < readout.
+    # The BUG returned 1000/get_total_frame_time() = 1000/(20 + (35666+15666)/1000) = ~14 fps.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+    fps = cam._continuous_max_framerate()
+    assert 27.5 < fps < 28.5, fps  # readout-limited ~28, NOT the halved ~14
+
+
+def test_continuous_max_framerate_is_exposure_limited_for_long_exposure():
+    # Exposure (100 ms) longer than readout (35.666 ms) => continuous rate is exposure-limited.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=100.0)
+    fps = cam._continuous_max_framerate()
+    assert 9.5 < fps < 10.5, fps  # 1000/100
+
+
+def test_set_frame_rate_fallback_returns_continuous_max_when_option_unavailable():
+    # On this camera get_Option(MAX_PRECISE_FRAMERATE) raises E_UNEXPECTED, so set_frame_rate
+    # must fall back to the readout/exposure-limited continuous max (~28 fps), NOT ~14 fps.
+    import control.toupcam as toupcam
+
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+
+    class _FailingOptionCam:
+        def get_Option(self, opt):
+            raise toupcam.HRESULTException(-2147418113)  # E_UNEXPECTED, as seen on the real device
+
+    cam._camera = _FailingOptionCam()
+    # Request 30 fps; camera can't reach it, so we get its true continuous max (~28), not ~14.
+    achievable = cam.set_frame_rate(30.0)
+    assert 27.5 < achievable < 28.5, achievable
