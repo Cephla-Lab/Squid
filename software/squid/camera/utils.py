@@ -346,7 +346,20 @@ class SimulatedCamera(AbstractCamera):
         return self._streaming_thread and self._streaming_thread.is_alive()
 
     @debug_log
-    def read_camera_frame(self) -> CameraFrame:
+    def read_camera_frame(self) -> Optional[CameraFrame]:
+        # Match the real camera / AbstractCamera contract: wait for a frame rather
+        # than returning whatever _current_frame happens to be right now.  In
+        # CONTINUOUS mode _current_frame is None until the streaming thread produces
+        # the first frame, so an immediate return would hand callers None (e.g. the
+        # recording frame-shape probe, which then can't size its dataset).  The
+        # software-trigger path is unaffected: send_trigger() sets _current_frame
+        # synchronously before the read, so this returns immediately.  Bounded by a
+        # timeout so a stopped/idle stream returns (the last frame or None) instead
+        # of blocking forever.
+        timeout_s = (self._exposure_time_ms / 1000.0) * 1.02 + 4
+        deadline = time.time() + timeout_s
+        while self._current_frame is None and time.time() < deadline:
+            time.sleep(0.001)
         return self._current_frame
 
     @debug_log
