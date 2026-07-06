@@ -584,9 +584,7 @@ class ToupcamCamera(AbstractCamera):
         """
         readout_ms = self._strobe_info.strobe_time_us / 1000.0
         frame_ms = max(readout_ms, self.get_exposure_time())
-        if frame_ms > 0:
-            return 1000.0 / frame_ms
-        return 1000.0 / self.get_total_frame_time()
+        return 1000.0 / frame_ms
 
     def set_frame_rate(self, fps: float) -> float:
         """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
@@ -603,8 +601,7 @@ class ToupcamCamera(AbstractCamera):
             The achievable frame rate in fps.  When the PRECISE_FRAMERATE option can be
             read/set, that is the clamped requested rate; otherwise (the option is
             unavailable on this model) it is the sensor's readout/exposure-limited
-            continuous maximum — NOT the triggered-mode total frame time, which would
-            under-report the free-run rate by ~2x.
+            continuous maximum (see _continuous_max_framerate).
         """
         if fps is None or fps <= 0:
             return self._continuous_max_framerate()
