@@ -4172,6 +4172,7 @@ class LiveControlWidget(QFrame):
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
+        self._sync_trigger_fps_enabled()
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
@@ -4361,6 +4362,22 @@ class LiveControlWidget(QFrame):
 
     def update_trigger_mode(self):
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+        self._sync_trigger_fps_enabled()
+
+    def _sync_trigger_fps_enabled(self):
+        # In CONTINUOUS mode the camera free-runs at its own internal rate and the
+        # fps setting does nothing (LiveController.set_trigger_fps is inert there),
+        # so keep the control from lying: disable it and explain why.
+        active = self.liveController.trigger_fps_is_active()
+        self.entry_triggerFPS.setEnabled(active)
+        self.entry_triggerFPS.setToolTip(
+            ""
+            if active
+            else (
+                "Frame rate is set by the camera's internal timing in Continuous mode; "
+                "this control only applies in Software/Hardware trigger modes."
+            )
+        )
 
     def update_config_exposure_time(self, new_value):
         if self.is_switching_mode == False:
