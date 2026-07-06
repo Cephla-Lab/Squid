@@ -661,6 +661,79 @@ def test_probe_frame_shape_rejects_color_frames():
         RecordZStackWorker._probe_frame_shape(fake_self)
 
 
+def test_probe_frame_shape_uses_continuous_and_never_triggers():
+    """Regression: starting a recording with Live in SOFTWARE-trigger mode left
+    an outstanding trigger, so the old probe's send_trigger() was rejected
+    ("trigger too early") and it fell back to the wrong get_resolution() size,
+    failing every write on cropped cameras.  The probe must run in CONTINUOUS
+    mode (what recording uses) and never call send_trigger, so trigger state
+    can't block it, and must size from the delivered (cropped) frame."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+    from squid.abc import CameraAcquisitionMode
+
+    processed = np.zeros((2084, 2084), dtype=np.uint16)  # cropped delivered shape
+    modes = []
+
+    class _FakeCamera:
+        def get_resolution(self):
+            return (3104, 2084)  # raw binned sensor (width, height) — must NOT be used
+
+        def set_acquisition_mode(self, mode):
+            modes.append(mode)
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+        def send_trigger(self, *args, **kwargs):
+            raise AssertionError("probe must not send a trigger in CONTINUOUS mode")
+
+        def read_camera_frame(self):
+            return SimpleNamespace(frame=processed)
+
+    fake_self = SimpleNamespace(camera=_FakeCamera())
+    y, x, dtype = RecordZStackWorker._probe_frame_shape(fake_self)
+
+    assert (y, x) == (2084, 2084), f"expected cropped delivered shape, got ({y}, {x})"
+    assert dtype == np.uint16
+    assert CameraAcquisitionMode.CONTINUOUS in modes, "probe must set CONTINUOUS mode"
+
+
+def test_probe_frame_shape_aborts_when_no_frame_delivered():
+    """If the camera delivers no probe frame, the probe must raise (aborting the
+    run with a clear error) rather than sizing from get_resolution() — the raw
+    sensor size, which makes every write fail on cropped cameras (a blank run)."""
+    from types import SimpleNamespace
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    class _FakeCamera:
+        def get_resolution(self):
+            return (3104, 2084)
+
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+        def read_camera_frame(self):
+            return None
+
+    fake_self = SimpleNamespace(camera=_FakeCamera())
+    with pytest.raises(RuntimeError, match="probe"):
+        RecordZStackWorker._probe_frame_shape(fake_self)
+
+
 def test_record_fails_fast_on_dropped_frames(tmp_path, monkeypatch):
     """R2: sustained backpressure drops are the systematic slow-disk condition
     the fail-fast was written for — record() must abort the acquisition, not

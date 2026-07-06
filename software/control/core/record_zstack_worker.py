@@ -607,50 +607,50 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _probe_frame_shape(self) -> Tuple[int, int, np.dtype]:
-        """Return (Y, X, dtype) for the recording dataset from one processed frame.
+        """Return (Y, X, dtype) for the recording dataset from one real processed frame.
 
-        ``get_resolution()`` reports the sensor/binned size, but frames delivered
-        to callbacks pass through ``_process_raw_frame`` (software crop, rotation,
-        ROI).  On cameras where the two differ, a dataset sized from
-        ``get_resolution()`` makes every ``write_frame`` fail — a blank recording.
-        Capture one real frame and size the dataset from it; fall back to
-        ``get_resolution()`` only if the probe capture fails.
+        Frames delivered to callbacks pass through ``_process_raw_frame`` (software
+        crop, rotation, ROI), so their shape can differ from ``get_resolution()``
+        (the raw binned sensor size).  Sizing the dataset from the sensor size makes
+        every ``write_frame`` fail on cropped cameras — a blank recording.
+
+        Probe in CONTINUOUS mode — the same mode the recording phase uses — and read
+        one free-run frame, so the probed shape is exactly what recording writes.
+        CONTINUOUS needs no ``send_trigger``, so a Live view left in SOFTWARE-trigger
+        mode (with an outstanding trigger that makes ``get_ready_for_trigger`` reject
+        an immediate trigger) can't block the probe — the failure that previously
+        dropped it onto the wrong ``get_resolution`` size and failed every write.
         """
         frame = None
         try:
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
             self.camera.start_streaming()
-            self.camera.send_trigger()
             cam_frame = self.camera.read_camera_frame()
             if cam_frame is not None:
                 frame = cam_frame.frame
         except Exception:
-            log.exception("probe-frame capture failed; falling back to get_resolution()")
+            log.exception("probe-frame capture failed")
         finally:
             try:
                 self.camera.stop_streaming()
             except Exception:
                 log.exception("failed to stop streaming after probe frame")
-        if frame is not None:
-            if frame.ndim != 2:
-                # A color frame (Y, X, 3) would silently produce a 2-D dataset
-                # that every write then fails against — reject it up front.
-                raise ValueError(
-                    f"recording supports monochrome frames only; camera delivered shape {frame.shape} "
-                    f"(set the camera to a mono pixel format for the recording phase)"
-                )
-            return int(frame.shape[0]), int(frame.shape[1]), frame.dtype
-        log.warning("sizing recording dataset from get_resolution(); may mismatch delivered frames")
-        width, height = self.camera.get_resolution()
-        # Map pixel format to numpy dtype (MONO8 -> uint8, else uint16).
-        try:
-            from squid.config import CameraPixelFormat
-
-            fmt = self.camera.get_pixel_format()
-            dtype = np.uint8 if fmt == CameraPixelFormat.MONO8 else np.uint16
-        except Exception:
-            dtype = np.uint16
-        return int(height), int(width), np.dtype(dtype)
+        if frame is None:
+            # No usable frame: sizing from get_resolution() (raw sensor size) would
+            # mismatch the cropped delivery and fail every write, so abort with a
+            # clear reason instead of grinding out a blank, incomplete recording.
+            raise RuntimeError(
+                "recording could not capture a probe frame to size the dataset "
+                "(camera delivered no frame in CONTINUOUS mode); aborting recording"
+            )
+        if frame.ndim != 2:
+            # A color frame (Y, X, 3) would silently produce a 2-D dataset that
+            # every write then fails against — reject it up front.
+            raise ValueError(
+                f"recording supports monochrome frames only; camera delivered shape {frame.shape} "
+                f"(set the camera to a mono pixel format for the recording phase)"
+            )
+        return int(frame.shape[0]), int(frame.shape[1]), frame.dtype
 
     def _recording_path(self, t_idx: int, region_id, fov_idx: int, plane_idx: int = 0, n_planes: int = 1) -> str:
         """Per-(t, region, fov[, plane]) recording dataset path under {experiment}/recording.
