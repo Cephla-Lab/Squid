@@ -17016,6 +17016,33 @@ def _validate_record_zstack_params(
     return None
 
 
+def _set_layout_widgets_visible(layout, visible: bool) -> None:
+    """Recursively show/hide every widget inside *layout*, including nested
+    sub-layouts.
+
+    Used to collapse a checkable QGroupBox's body when unchecked — Qt's own
+    checkable-QGroupBox behavior only disables (grays out) its content, it
+    doesn't hide it, which leaves an unchecked phase's fields visible and
+    still taking up vertical space.
+    """
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        w = item.widget()
+        if w is not None:
+            w.setVisible(visible)
+            continue
+        sub_layout = item.layout()
+        if sub_layout is not None:
+            _set_layout_widgets_visible(sub_layout, visible)
+
+
+def _set_header_not_bold(header: QHeaderView) -> None:
+    """Un-bold a QHeaderView's section labels (Qt's default header font is bold)."""
+    font = header.font()
+    font.setBold(False)
+    header.setFont(font)
+
+
 class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
 
@@ -17077,19 +17104,35 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
 
+        def _section_divider() -> QFrame:
+            # Thin sunken line to mark a section boundary — distinct from
+            # the boxed/sunken look a whole QGroupBox border gives under the
+            # Fusion style, which is what these sections used to use.
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setFrameShadow(QFrame.Sunken)
+            return sep
+
         layout.addWidget(self._build_output_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_wells_fov_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_recording_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_zstack_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_start_group())
         layout.addStretch(1)
 
         scroll.setWidget(inner)
         outer_layout.addWidget(scroll)
 
-    def _build_output_group(self) -> QGroupBox:
-        grp = QGroupBox()
-        grp.setFlat(True)
+    def _build_output_group(self) -> QFrame:
+        # Plain QFrame (no border/title chrome) — matches the rest of the app's
+        # convention (e.g. WellplateMultiPointWidget's saving-path/experiment-ID
+        # rows aren't boxed at all); a QGroupBox still renders a visible box
+        # under the Fusion style even when flat.
+        grp = QFrame()
         vbox = QVBoxLayout(grp)
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
@@ -17127,24 +17170,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.addWidget(self.lineEdit_experimentID, 1)  # stretch=1 → fills to the right edge
         vbox.addLayout(row2)
 
-        # Row 3: Save/Load full settings (reusable across acquisitions, unlike the
-        # per-run acquisition_channels.yaml audit snapshot).
-        row3 = QHBoxLayout()
-        row3.setSpacing(6)
-        self.btn_saveSettings = QPushButton("Save Settings…")
-        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
-        row3.addWidget(self.btn_saveSettings)
-        self.btn_loadSettings = QPushButton("Load Settings…")
-        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
-        row3.addWidget(self.btn_loadSettings)
-        row3.addStretch(1)
-        vbox.addLayout(row3)
-
         return grp
 
-    def _build_wells_fov_group(self) -> QGroupBox:
-        grp = QGroupBox()
-        grp.setFlat(True)
+    def _build_wells_fov_group(self) -> QFrame:
+        # Plain QFrame — see _build_output_group.
+        grp = QFrame()
         vbox = QVBoxLayout(grp)
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
@@ -17272,12 +17302,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.addStretch(1)
         vbox.addWidget(self.time_controls_frame)
 
-        # Separator below this section, before the Recording phase group.
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        vbox.addWidget(sep)
-
         # Wire FOV-grid signals
         self.entry_overlap.valueChanged.connect(self._update_scan_regions)
         self.entry_scan_size.valueChanged.connect(self._update_scan_regions)
@@ -17395,15 +17419,32 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
         self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
 
-    def _build_recording_group(self) -> QGroupBox:
-        grp = QGroupBox("Recording phase")
-        grp.setCheckable(True)
-        grp.setChecked(False)
-        self.checkbox_recording = grp  # expose as checkbox_recording for callers
+    def _build_recording_group(self) -> QFrame:
+        # Plain QFrame (no border/title chrome), matching the rest of the app's
+        # convention (e.g. WellplateMultiPointWidget) rather than a QGroupBox —
+        # a checkable QGroupBox still renders a visible box under the Fusion
+        # style even when flat. The checkbox is a standalone header widget so
+        # collapsing its content doesn't require any QGroupBox-specific behavior.
+        grp = QFrame()
+        outer_vbox = QVBoxLayout(grp)
+        outer_vbox.setContentsMargins(4, 2, 4, 2)
+        outer_vbox.setSpacing(4)
 
-        vbox = QVBoxLayout(grp)
-        vbox.setContentsMargins(4, 2, 4, 2)
+        self.checkbox_recording = QCheckBox("Recording phase")
+        self.checkbox_recording.setChecked(True)
+        header_font = self.checkbox_recording.font()
+        header_font.setBold(True)
+        self.checkbox_recording.setFont(header_font)
+        outer_vbox.addWidget(self.checkbox_recording)
+
+        # No margins here — outer_vbox already applies the frame-level
+        # (4, 2, 4, 2) margin; adding another would double-indent this
+        # content relative to the checkbox header above it.
+        vbox = QVBoxLayout()
+        vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(4)
+        outer_vbox.addLayout(vbox)
+        self._recording_content_vbox = vbox
 
         # Row 0: single-row channel table (Channel | Exp (ms) | Gain | Illum (%) | ↻)
         self.recording_channel_table = QTableWidget(1, 5)
@@ -17414,12 +17455,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        _set_header_not_bold(hdr)
         self.recording_channel_table.verticalHeader().setVisible(False)
         self.recording_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        # Use a generous fixed height so the single data row and header are fully visible.
-        self.recording_channel_table.setFixedHeight(
-            self.recording_channel_table.horizontalHeader().height() + self.recording_channel_table.rowHeight(0) + 8
-        )
         # Force the 5 columns to fit (Channel truncates via Stretch) instead of
         # showing a horizontal scrollbar. No fixed width: the panel's actual
         # available width varies with which other tab last drove the main
@@ -17467,9 +17505,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._recording_illum_spin.setMaximumWidth(60)
         self.recording_channel_table.setCellWidget(0, 3, self._recording_illum_spin)
 
-        # Col 4: ↻ copy-from-live button
+        # Col 4: ↻ refresh-from-channel-config button
         self.btn_copy_from_live = QPushButton("↻")
-        self.btn_copy_from_live.setToolTip("Copy current live channel settings (channel, exposure, gain, illumination)")
+        self.btn_copy_from_live.setToolTip("Refresh exposure/gain/illumination from this channel's current settings")
         self.btn_copy_from_live.setMaximumWidth(28)
         self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
         self.recording_channel_table.setCellWidget(0, 4, self.btn_copy_from_live)
@@ -17479,6 +17517,19 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # including the initial population.
         self._recording_ch_combo.currentIndexChanged.connect(self._on_recording_channel_changed)
         self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
+
+        # Size the table to exactly fit the header + single row, now that the
+        # cell widgets (which are taller than plain text) are in place — doing
+        # this before the widgets were added left a fixed height too tall,
+        # showing empty space below the row. The padding is the table's own
+        # top+bottom frame border (not a guessed constant), so it stays
+        # correct if the frame style changes.
+        self.recording_channel_table.resizeRowsToContents()
+        self.recording_channel_table.setFixedHeight(
+            self.recording_channel_table.horizontalHeader().height()
+            + self.recording_channel_table.rowHeight(0)
+            + 2 * self.recording_channel_table.frameWidth()
+        )
 
         vbox.addWidget(self.recording_channel_table)
 
@@ -17579,17 +17630,34 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
         self._update_recording_planes_ui()
 
+        # Collapse the whole phase's fields when unchecked (Qt's checkable
+        # QGroupBox only grays them out; a plain QCheckBox has no built-in
+        # equivalent, so this is done explicitly).
+        self.checkbox_recording.toggled.connect(lambda checked: _set_layout_widgets_visible(vbox, checked))
+        _set_layout_widgets_visible(vbox, self.checkbox_recording.isChecked())
+
         return grp
 
-    def _build_zstack_group(self) -> QGroupBox:
-        grp = QGroupBox("Z-Stack phase")
-        grp.setCheckable(True)
-        grp.setChecked(False)
-        self.checkbox_zstack = grp  # expose as checkbox_zstack for callers
+    def _build_zstack_group(self) -> QFrame:
+        # Plain QFrame + standalone checkbox header — see _build_recording_group.
+        grp = QFrame()
+        outer_vbox = QVBoxLayout(grp)
+        outer_vbox.setContentsMargins(4, 2, 4, 2)
+        outer_vbox.setSpacing(4)
 
-        layout = QGridLayout(grp)
-        layout.setContentsMargins(4, 2, 4, 2)
+        self.checkbox_zstack = QCheckBox("Z-Stack phase")
+        self.checkbox_zstack.setChecked(False)
+        header_font = self.checkbox_zstack.font()
+        header_font.setBold(True)
+        self.checkbox_zstack.setFont(header_font)
+        outer_vbox.addWidget(self.checkbox_zstack)
+
+        # No margins here — see the matching comment in _build_recording_group.
+        layout = QGridLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        outer_vbox.addLayout(layout)
+        self._zstack_content_layout = layout
 
         # Row 0: Z-min | Z-max | Step | Computed planes on one row
         self.entry_zmin = QDoubleSpinBox()
@@ -17641,6 +17709,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        _set_header_not_bold(hdr)
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.zstack_channel_table.setMinimumHeight(80)
         self.zstack_channel_table.setMaximumHeight(200)
@@ -17675,13 +17744,37 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_step.valueChanged.connect(self._update_zstack_planes_label)
         self._update_zstack_planes_label()
 
+        # Collapse the whole phase's fields when unchecked (see _build_recording_group).
+        self.checkbox_zstack.toggled.connect(lambda checked: _set_layout_widgets_visible(layout, checked))
+        _set_layout_widgets_visible(layout, self.checkbox_zstack.isChecked())
+
         return grp
 
-    def _build_start_group(self) -> QGroupBox:
-        grp = QGroupBox()
+    def _build_start_group(self) -> QFrame:
+        # Plain QFrame — see _build_output_group.
+        grp = QFrame()
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
+
+        # Save/Load full settings (reusable across acquisitions, unlike the
+        # per-run acquisition_channels.yaml audit snapshot). Hidden by
+        # default — drag-and-drop of an acquisition YAML onto the widget
+        # covers the same functionality without permanently using UI space.
+        self.settings_buttons_frame = QFrame()
+        settings_row = QHBoxLayout(self.settings_buttons_frame)
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
+        settings_row.addWidget(self.btn_saveSettings)
+        self.btn_loadSettings = QPushButton("Load Settings…")
+        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
+        settings_row.addWidget(self.btn_loadSettings)
+        settings_row.addStretch(1)
+        self.settings_buttons_frame.setVisible(False)
+        layout.addWidget(self.settings_buttons_frame)
+
         self.btn_startAcquisition = QPushButton("Start Acquisition")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
@@ -17945,7 +18038,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         btn_layout.setSpacing(2)
 
         btn_live = QPushButton("⟳")
-        btn_live.setToolTip(f"Copy current live settings into '{name}' row")
+        btn_live.setToolTip(f"Refresh exposure/gain/illumination from '{name}'s current settings")
         btn_live.setMaximumWidth(28)
         btn_live.clicked.connect(lambda checked=False, n=name: self._copy_zstack_row_from_live(n))
         btn_layout.addWidget(btn_live)
@@ -18017,33 +18110,38 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         return 50.0, 0.0, 50.0
 
     def _copy_recording_from_live(self) -> None:
-        """Copy current live channel settings into the recording table row."""
-        try:
-            live_ch = self.liveController.currentConfiguration
-            if live_ch is None:
-                return
-            combo = self.recording_channel_table.cellWidget(0, 0)
-            if combo is not None:
-                idx = combo.findText(live_ch.name)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-            self._recording_exp_spin.setValue(live_ch.exposure_time)
-            self._recording_gain_spin.setValue(live_ch.analog_gain)
-            self._recording_illum_spin.setValue(live_ch.illumination_intensity)
-        except Exception as exc:
-            self._log.warning(f"Copy-from-Live failed: {exc}")
+        """Refresh the recording row's exposure/gain/illumination from its own
+        selected channel's current settings.
+
+        Was previously pulling from liveController.currentConfiguration (whatever
+        channel happens to be active in the Live tab), which silently switched the
+        row's channel selection whenever it differed from the row's own channel.
+
+        Uses _find_channel() rather than _channel_settings() so a lookup miss
+        (e.g. the objective changed elsewhere and this channel no longer
+        exists) leaves the row untouched instead of silently resetting it to
+        _channel_settings()'s hardcoded (50, 0, 50) fallback.
+        """
+        name = self._recording_ch_combo.currentText()
+        if not name:
+            return
+        ch = self._find_channel(name)
+        if ch is None:
+            self._log.warning(f"Copy-from-Live: channel {name!r} not found; leaving recording row unchanged")
+            return
+        self._recording_exp_spin.setValue(ch.exposure_time)
+        self._recording_gain_spin.setValue(ch.analog_gain)
+        self._recording_illum_spin.setValue(ch.illumination_intensity)
 
     def _copy_zstack_row_from_live(self, name: str) -> None:
-        """Copy current live channel settings into the z-stack row for *name*."""
-        try:
-            live_ch = self.liveController.currentConfiguration
-            if live_ch is None:
-                return
-            self._set_zstack_row_values(
-                name, live_ch.exposure_time, live_ch.analog_gain, live_ch.illumination_intensity
-            )
-        except Exception as exc:
-            self._log.warning(f"Copy-from-Live for z-stack row '{name}' failed: {exc}")
+        """Refresh z-stack row *name*'s exposure/gain/illumination from *name*'s
+        own current settings (see _copy_recording_from_live for why this uses
+        _find_channel() instead of _channel_settings())."""
+        ch = self._find_channel(name)
+        if ch is None:
+            self._log.warning(f"Copy-from-Live for z-stack row {name!r}: channel not found; leaving row unchanged")
+            return
+        self._set_zstack_row_values(name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
 
     def _on_zstack_add_channel_clicked(self) -> None:
         """Add the currently selected channel in the add-channel combo to the z-stack table."""
@@ -18211,6 +18309,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.xy_controls_frame.setVisible(
                 self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells"
             )
+            # checkbox_recording's/checkbox_zstack's toggled signals were blocked
+            # above too, so the collapse-when-unchecked visibility sync in
+            # _build_recording_group/_build_zstack_group didn't fire either.
+            _set_layout_widgets_visible(self._recording_content_vbox, self.checkbox_recording.isChecked())
+            _set_layout_widgets_visible(self._zstack_content_layout, self.checkbox_zstack.isChecked())
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or
