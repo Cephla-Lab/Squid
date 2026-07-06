@@ -30,9 +30,10 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch):
-    """Regression: onTabChanged called emit_selected_channels() on every record tab,
-    but RecordingWidget (Simple Recording) doesn't have that method, so selecting
-    the tab raised AttributeError on machines with ENABLE_RECORDING on."""
+    """Regression: onTabChanged used to call emit_selected_channels() on every record
+    tab and toggleAcquisitionStart called display_progress_bar() on the current tab,
+    but RecordingWidget (Simple Recording) has neither method, so selecting the tab
+    raised AttributeError on machines with ENABLE_RECORDING on."""
 
     def confirm_exit(parent, title, text, *args, **kwargs):
         if title == "Confirm Exit":
@@ -60,6 +61,37 @@ def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch):
     # (workflow/TCP acquisitions can start while a non-multipoint tab is current).
     win.toggleAcquisitionStart(True)
     win.toggleAcquisitionStart(False)
+
+
+def test_acquisition_start_emits_selected_channels(qtbot, monkeypatch):
+    """The napari multichannel viewer is initialized from signal_acquisition_channels.
+    That signal must be emitted when the acquisition starts (alongside
+    signal_acquisition_shape), for both the button path and the TCP path."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    widget = win.wellplateMultiPointWidget
+    emitted = []
+    widget.signal_acquisition_channels.connect(emitted.append)
+
+    # _set_ui_acquisition_running is the shared start path (button + TCP/invokeMethod).
+    widget._set_ui_acquisition_running(nz=1, delta_z_um=1.0)
+    try:
+        assert emitted, "signal_acquisition_channels was not emitted at acquisition start"
+        assert emitted[-1] == widget.channel_sequence.ordered_selected_names()
+    finally:
+        # Unwind the acquisition-running UI state (signal_acquisition_started=True
+        # disabled the other tabs via toggleAcquisitionStart).
+        win.toggleAcquisitionStart(False)
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch):
