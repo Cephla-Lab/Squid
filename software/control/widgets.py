@@ -17091,19 +17091,35 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
 
+        def _section_divider() -> QFrame:
+            # Thin sunken line to mark a section boundary — distinct from
+            # the boxed/sunken look a whole QGroupBox border gives under the
+            # Fusion style, which is what these sections used to use.
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setFrameShadow(QFrame.Sunken)
+            return sep
+
         layout.addWidget(self._build_output_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_wells_fov_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_recording_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_zstack_group())
+        layout.addWidget(_section_divider())
         layout.addWidget(self._build_start_group())
         layout.addStretch(1)
 
         scroll.setWidget(inner)
         outer_layout.addWidget(scroll)
 
-    def _build_output_group(self) -> QGroupBox:
-        grp = QGroupBox()
-        grp.setFlat(True)
+    def _build_output_group(self) -> QFrame:
+        # Plain QFrame (no border/title chrome) — matches the rest of the app's
+        # convention (e.g. WellplateMultiPointWidget's saving-path/experiment-ID
+        # rows aren't boxed at all); a QGroupBox still renders a visible box
+        # under the Fusion style even when flat.
+        grp = QFrame()
         vbox = QVBoxLayout(grp)
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
@@ -17156,9 +17172,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         return grp
 
-    def _build_wells_fov_group(self) -> QGroupBox:
-        grp = QGroupBox()
-        grp.setFlat(True)
+    def _build_wells_fov_group(self) -> QFrame:
+        # Plain QFrame — see _build_output_group.
+        grp = QFrame()
         vbox = QVBoxLayout(grp)
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
@@ -17286,12 +17302,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.addStretch(1)
         vbox.addWidget(self.time_controls_frame)
 
-        # Separator below this section, before the Recording phase group.
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        vbox.addWidget(sep)
-
         # Wire FOV-grid signals
         self.entry_overlap.valueChanged.connect(self._update_scan_regions)
         self.entry_scan_size.valueChanged.connect(self._update_scan_regions)
@@ -17409,15 +17419,28 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
         self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
 
-    def _build_recording_group(self) -> QGroupBox:
-        grp = QGroupBox("Recording phase")
-        grp.setCheckable(True)
-        grp.setChecked(True)
-        self.checkbox_recording = grp  # expose as checkbox_recording for callers
+    def _build_recording_group(self) -> QFrame:
+        # Plain QFrame (no border/title chrome), matching the rest of the app's
+        # convention (e.g. WellplateMultiPointWidget) rather than a QGroupBox —
+        # a checkable QGroupBox still renders a visible box under the Fusion
+        # style even when flat. The checkbox is a standalone header widget so
+        # collapsing its content doesn't require any QGroupBox-specific behavior.
+        grp = QFrame()
+        outer_vbox = QVBoxLayout(grp)
+        outer_vbox.setContentsMargins(4, 2, 4, 2)
+        outer_vbox.setSpacing(4)
 
-        vbox = QVBoxLayout(grp)
+        self.checkbox_recording = QCheckBox("Recording phase")
+        self.checkbox_recording.setChecked(True)
+        header_font = self.checkbox_recording.font()
+        header_font.setBold(True)
+        self.checkbox_recording.setFont(header_font)
+        outer_vbox.addWidget(self.checkbox_recording)
+
+        vbox = QVBoxLayout()
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(4)
+        outer_vbox.addLayout(vbox)
 
         # Row 0: single-row channel table (Channel | Exp (ms) | Gain | Illum (%) | ↻)
         self.recording_channel_table = QTableWidget(1, 5)
@@ -17532,23 +17555,32 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         fps_row.addStretch(1)
         vbox.addLayout(fps_row)
 
-        # Collapse the whole phase's fields when unchecked instead of the
-        # default checkable-QGroupBox behavior (grayed out but still shown,
-        # still taking up vertical space).
-        grp.toggled.connect(lambda checked: _set_layout_widgets_visible(vbox, checked))
-        _set_layout_widgets_visible(vbox, grp.isChecked())
+        # Collapse the whole phase's fields when unchecked (Qt's checkable
+        # QGroupBox only grays them out; a plain QCheckBox has no built-in
+        # equivalent, so this is done explicitly).
+        self.checkbox_recording.toggled.connect(lambda checked: _set_layout_widgets_visible(vbox, checked))
+        _set_layout_widgets_visible(vbox, self.checkbox_recording.isChecked())
 
         return grp
 
-    def _build_zstack_group(self) -> QGroupBox:
-        grp = QGroupBox("Z-Stack phase")
-        grp.setCheckable(True)
-        grp.setChecked(False)
-        self.checkbox_zstack = grp  # expose as checkbox_zstack for callers
+    def _build_zstack_group(self) -> QFrame:
+        # Plain QFrame + standalone checkbox header — see _build_recording_group.
+        grp = QFrame()
+        outer_vbox = QVBoxLayout(grp)
+        outer_vbox.setContentsMargins(4, 2, 4, 2)
+        outer_vbox.setSpacing(4)
 
-        layout = QGridLayout(grp)
+        self.checkbox_zstack = QCheckBox("Z-Stack phase")
+        self.checkbox_zstack.setChecked(False)
+        header_font = self.checkbox_zstack.font()
+        header_font.setBold(True)
+        self.checkbox_zstack.setFont(header_font)
+        outer_vbox.addWidget(self.checkbox_zstack)
+
+        layout = QGridLayout()
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
+        outer_vbox.addLayout(layout)
 
         # Row 0: Z-min | Z-max | Step | Computed planes on one row
         self.entry_zmin = QDoubleSpinBox()
@@ -17634,11 +17666,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_step.valueChanged.connect(self._update_zstack_planes_label)
         self._update_zstack_planes_label()
 
-        # Collapse the whole phase's fields when unchecked instead of the
-        # default checkable-QGroupBox behavior (grayed out but still shown,
-        # still taking up vertical space).
-        grp.toggled.connect(lambda checked: _set_layout_widgets_visible(layout, checked))
-        _set_layout_widgets_visible(layout, grp.isChecked())
+        # Collapse the whole phase's fields when unchecked (see _build_recording_group).
+        self.checkbox_zstack.toggled.connect(lambda checked: _set_layout_widgets_visible(layout, checked))
+        _set_layout_widgets_visible(layout, self.checkbox_zstack.isChecked())
 
         return grp
 
