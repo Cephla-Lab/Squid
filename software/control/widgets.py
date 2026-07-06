@@ -17233,6 +17233,26 @@ def _validate_record_zstack_params(
     return None
 
 
+def _set_layout_widgets_visible(layout, visible: bool) -> None:
+    """Recursively show/hide every widget inside *layout*, including nested
+    sub-layouts.
+
+    Used to collapse a checkable QGroupBox's body when unchecked — Qt's own
+    checkable-QGroupBox behavior only disables (grays out) its content, it
+    doesn't hide it, which leaves an unchecked phase's fields visible and
+    still taking up vertical space.
+    """
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        w = item.widget()
+        if w is not None:
+            w.setVisible(visible)
+            continue
+        sub_layout = item.layout()
+        if sub_layout is not None:
+            _set_layout_widgets_visible(sub_layout, visible)
+
+
 class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
 
@@ -17615,7 +17635,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def _build_recording_group(self) -> QGroupBox:
         grp = QGroupBox("Recording phase")
         grp.setCheckable(True)
-        grp.setChecked(False)
+        grp.setChecked(True)
         self.checkbox_recording = grp  # expose as checkbox_recording for callers
 
         vbox = QVBoxLayout(grp)
@@ -17796,6 +17816,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
         self._update_recording_planes_ui()
 
+        # Collapse the whole phase's fields when unchecked instead of the
+        # default checkable-QGroupBox behavior (grayed out but still shown,
+        # still taking up vertical space).
+        grp.toggled.connect(lambda checked: _set_layout_widgets_visible(vbox, checked))
+        _set_layout_widgets_visible(vbox, grp.isChecked())
+
         return grp
 
     def _build_zstack_group(self) -> QGroupBox:
@@ -17891,6 +17917,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_zmax.valueChanged.connect(self._update_zstack_planes_label)
         self.entry_step.valueChanged.connect(self._update_zstack_planes_label)
         self._update_zstack_planes_label()
+
+        # Collapse the whole phase's fields when unchecked instead of the
+        # default checkable-QGroupBox behavior (grayed out but still shown,
+        # still taking up vertical space).
+        grp.toggled.connect(lambda checked: _set_layout_widgets_visible(layout, checked))
+        _set_layout_widgets_visible(layout, grp.isChecked())
 
         return grp
 
