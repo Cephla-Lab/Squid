@@ -17444,10 +17444,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.recording_channel_table.verticalHeader().setVisible(False)
         self.recording_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        # Use a generous fixed height so the single data row and header are fully visible.
-        self.recording_channel_table.setFixedHeight(
-            self.recording_channel_table.horizontalHeader().height() + self.recording_channel_table.rowHeight(0) + 8
-        )
         # Force the 5 columns to fit (Channel truncates via Stretch) instead of
         # showing a horizontal scrollbar. No fixed width: the panel's actual
         # available width varies with which other tab last drove the main
@@ -17507,6 +17503,15 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # including the initial population.
         self._recording_ch_combo.currentIndexChanged.connect(self._on_recording_channel_changed)
         self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
+
+        # Size the table to exactly fit the header + single row, now that the
+        # cell widgets (which are taller than plain text) are in place — doing
+        # this before the widgets were added left a fixed height too tall,
+        # showing empty space below the row.
+        self.recording_channel_table.resizeRowsToContents()
+        self.recording_channel_table.setFixedHeight(
+            self.recording_channel_table.horizontalHeader().height() + self.recording_channel_table.rowHeight(0) + 2
+        )
 
         vbox.addWidget(self.recording_channel_table)
 
