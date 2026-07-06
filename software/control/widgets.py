@@ -17157,19 +17157,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.addWidget(self.lineEdit_experimentID, 1)  # stretch=1 → fills to the right edge
         vbox.addLayout(row2)
 
-        # Row 3: Save/Load full settings (reusable across acquisitions, unlike the
-        # per-run acquisition_channels.yaml audit snapshot).
-        row3 = QHBoxLayout()
-        row3.setSpacing(6)
-        self.btn_saveSettings = QPushButton("Save Settings…")
-        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
-        row3.addWidget(self.btn_saveSettings)
-        self.btn_loadSettings = QPushButton("Load Settings…")
-        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
-        row3.addWidget(self.btn_loadSettings)
-        row3.addStretch(1)
-        vbox.addLayout(row3)
-
         return grp
 
     def _build_wells_fov_group(self) -> QFrame:
@@ -17672,11 +17659,31 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         return grp
 
-    def _build_start_group(self) -> QGroupBox:
-        grp = QGroupBox()
+    def _build_start_group(self) -> QFrame:
+        # Plain QFrame — see _build_output_group.
+        grp = QFrame()
         layout = QVBoxLayout(grp)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
+
+        # Save/Load full settings (reusable across acquisitions, unlike the
+        # per-run acquisition_channels.yaml audit snapshot). Hidden by
+        # default — drag-and-drop of an acquisition YAML onto the widget
+        # covers the same functionality without permanently using UI space.
+        self.settings_buttons_frame = QFrame()
+        settings_row = QHBoxLayout(self.settings_buttons_frame)
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
+        settings_row.addWidget(self.btn_saveSettings)
+        self.btn_loadSettings = QPushButton("Load Settings…")
+        self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
+        settings_row.addWidget(self.btn_loadSettings)
+        settings_row.addStretch(1)
+        self.settings_buttons_frame.setVisible(False)
+        layout.addWidget(self.settings_buttons_frame)
+
         self.btn_startAcquisition = QPushButton("Start Acquisition")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
