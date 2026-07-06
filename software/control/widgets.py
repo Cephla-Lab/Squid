@@ -18311,18 +18311,3 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         for name in [n for n in self._zstack_channel_names if n not in names]:
             self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")
             self._remove_zstack_channel_row(name)
-
-    def emit_selected_channels(self) -> None:
-        """No-op stub: RecordZStackMultiPointWidget has no channel list to broadcast.
-
-        Required so ``onTabChanged`` in gui_hcs can call this on whatever widget
-        is the current record tab without checking the type (same contract as
-        ``display_progress_bar`` below).
-        """
-
-    def display_progress_bar(self, show: bool) -> None:
-        """No-op stub: RecordZStackMultiPointWidget has no progress bar.
-
-        Required so ``toggleAcquisitionStart`` in gui_hcs can call this on
-        whatever widget is the current record tab without checking the type.
-        """
