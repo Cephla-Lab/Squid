@@ -2448,8 +2448,6 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleWellSelector(
             self._tab_uses_well_selector(index) and self.wellSelectionWidget.format != "glass slide"
         )
-        acquisitionWidget = self.recordTabWidget.widget(index)
-        acquisitionWidget.emit_selected_channels()
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -2641,9 +2639,6 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(not acquisition_started, remember_state=False)
         else:
             self.toggleWellSelector(False, remember_state=False)
-
-        # display acquisition progress bar during acquisition
-        self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
 
     def _update_ram_monitor_visibility(self):
         """Update RAM monitor widget visibility based on setting."""
