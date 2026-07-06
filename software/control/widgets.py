@@ -6595,6 +6595,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # emit signals
             self.signal_acquisition_started.emit(True)
             self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            self.emit_selected_channels()
 
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
@@ -8978,6 +8979,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Emit signals to notify other components
         self.signal_acquisition_started.emit(True)
         self.signal_acquisition_shape.emit(nz, delta_z_um)
+        self.emit_selected_channels()
 
     @Slot(bool, int, float)
     def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0) -> None:
@@ -9651,6 +9653,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             # Emit signals
             self.signal_acquisition_started.emit(True)
             self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            self.emit_selected_channels()
 
             # Start acquisition
             self.multipointController.run_acquisition()

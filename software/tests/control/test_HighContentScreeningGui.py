@@ -29,6 +29,71 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
     qtbot.add_widget(without_piezo)
 
 
+def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch):
+    """Regression: onTabChanged used to call emit_selected_channels() on every record
+    tab and toggleAcquisitionStart called display_progress_bar() on the current tab,
+    but RecordingWidget (Simple Recording) has neither method, so selecting the tab
+    raised AttributeError on machines with ENABLE_RECORDING on."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+
+    # gui_hcs star-imports _def, so patch its module-level binding before construction
+    # to get the "Simple Recording" tab added.
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    recording_index = win.recordTabWidget.indexOf(win.recordingControlWidget)
+    assert recording_index >= 0, "Simple Recording tab was not added despite ENABLE_RECORDING"
+
+    # Selecting the tab fires currentChanged -> onTabChanged; must not raise.
+    win.recordTabWidget.setCurrentIndex(recording_index)
+    win.onTabChanged(recording_index)
+
+    # The same widget must also survive an acquisition start/stop notification
+    # (workflow/TCP acquisitions can start while a non-multipoint tab is current).
+    win.toggleAcquisitionStart(True)
+    win.toggleAcquisitionStart(False)
+
+
+def test_acquisition_start_emits_selected_channels(qtbot, monkeypatch):
+    """The napari multichannel viewer is initialized from signal_acquisition_channels.
+    That signal must be emitted when the acquisition starts (alongside
+    signal_acquisition_shape), for both the button path and the TCP path."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    widget = win.wellplateMultiPointWidget
+    emitted = []
+    widget.signal_acquisition_channels.connect(emitted.append)
+
+    # _set_ui_acquisition_running is the shared start path (button + TCP/invokeMethod).
+    widget._set_ui_acquisition_running(nz=1, delta_z_um=1.0)
+    try:
+        assert emitted, "signal_acquisition_channels was not emitted at acquisition start"
+        assert emitted[-1] == widget.channel_sequence.ordered_selected_names()
+    finally:
+        # Unwind the acquisition-running UI state (signal_acquisition_started=True
+        # disabled the other tabs via toggleAcquisitionStart).
+        win.toggleAcquisitionStart(False)
+
+
 def test_image_display_signals_connected_once(qtbot, monkeypatch):
     """Regression: make_connections and makeNapariConnections both used to wire the
     non-Napari image-display signals, causing slots to fire twice per click/scroll."""
