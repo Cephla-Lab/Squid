@@ -17030,6 +17030,13 @@ def _set_layout_widgets_visible(layout, visible: bool) -> None:
             _set_layout_widgets_visible(sub_layout, visible)
 
 
+def _set_header_not_bold(header: QHeaderView) -> None:
+    """Un-bold a QHeaderView's section labels (Qt's default header font is bold)."""
+    font = header.font()
+    font.setBold(False)
+    header.setFont(font)
+
+
 class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """Single-column 'Record + Z-Stack' acquisition tab (Option-A layout).
 
@@ -17442,9 +17449,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        hdr_font = hdr.font()
-        hdr_font.setBold(False)
-        hdr.setFont(hdr_font)
+        _set_header_not_bold(hdr)
         self.recording_channel_table.verticalHeader().setVisible(False)
         self.recording_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         # Force the 5 columns to fit (Channel truncates via Stretch) instead of
@@ -17510,10 +17515,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Size the table to exactly fit the header + single row, now that the
         # cell widgets (which are taller than plain text) are in place — doing
         # this before the widgets were added left a fixed height too tall,
-        # showing empty space below the row.
+        # showing empty space below the row. The padding is the table's own
+        # top+bottom frame border (not a guessed constant), so it stays
+        # correct if the frame style changes.
         self.recording_channel_table.resizeRowsToContents()
         self.recording_channel_table.setFixedHeight(
-            self.recording_channel_table.horizontalHeader().height() + self.recording_channel_table.rowHeight(0) + 2
+            self.recording_channel_table.horizontalHeader().height()
+            + self.recording_channel_table.rowHeight(0)
+            + 2 * self.recording_channel_table.frameWidth()
         )
 
         vbox.addWidget(self.recording_channel_table)
@@ -17633,9 +17642,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        hdr_font = hdr.font()
-        hdr_font.setBold(False)
-        hdr.setFont(hdr_font)
+        _set_header_not_bold(hdr)
         self.zstack_channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.zstack_channel_table.setMinimumHeight(80)
         self.zstack_channel_table.setMaximumHeight(200)
@@ -17963,21 +17970,32 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         Was previously pulling from liveController.currentConfiguration (whatever
         channel happens to be active in the Live tab), which silently switched the
         row's channel selection whenever it differed from the row's own channel.
+
+        Uses _find_channel() rather than _channel_settings() so a lookup miss
+        (e.g. the objective changed elsewhere and this channel no longer
+        exists) leaves the row untouched instead of silently resetting it to
+        _channel_settings()'s hardcoded (50, 0, 50) fallback.
         """
         name = self._recording_ch_combo.currentText()
         if not name:
             return
-        exposure, gain, illum = self._channel_settings(name)
-        self._recording_exp_spin.setValue(exposure)
-        self._recording_gain_spin.setValue(gain)
-        self._recording_illum_spin.setValue(illum)
+        ch = self._find_channel(name)
+        if ch is None:
+            self._log.warning(f"Copy-from-Live: channel {name!r} not found; leaving recording row unchanged")
+            return
+        self._recording_exp_spin.setValue(ch.exposure_time)
+        self._recording_gain_spin.setValue(ch.analog_gain)
+        self._recording_illum_spin.setValue(ch.illumination_intensity)
 
     def _copy_zstack_row_from_live(self, name: str) -> None:
         """Refresh z-stack row *name*'s exposure/gain/illumination from *name*'s
-        own current settings (see _copy_recording_from_live for why this no
-        longer reads liveController.currentConfiguration)."""
-        exposure, gain, illum = self._channel_settings(name)
-        self._set_zstack_row_values(name, exposure, gain, illum)
+        own current settings (see _copy_recording_from_live for why this uses
+        _find_channel() instead of _channel_settings())."""
+        ch = self._find_channel(name)
+        if ch is None:
+            self._log.warning(f"Copy-from-Live for z-stack row {name!r}: channel not found; leaving row unchanged")
+            return
+        self._set_zstack_row_values(name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
 
     def _on_zstack_add_channel_clicked(self) -> None:
         """Add the currently selected channel in the add-channel combo to the z-stack table."""

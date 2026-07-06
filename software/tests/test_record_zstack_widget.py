@@ -357,6 +357,12 @@ def test_copy_from_live_uses_selected_channels_own_settings(qtbot, simulated_wid
 
     w.checkbox_recording.setChecked(True)
     w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
+    # Selecting the channel above already auto-seeds these same values via
+    # _on_recording_channel_changed; overwrite them so the assertions below
+    # can only pass if the button click itself re-applies them.
+    w._recording_exp_spin.setValue(1.0)
+    w._recording_gain_spin.setValue(1.0)
+    w._recording_illum_spin.setValue(1.0)
     w.btn_copy_from_live.click()
 
     # Channel selection must be unchanged.
@@ -389,6 +395,45 @@ def test_copy_zstack_row_from_live_uses_that_channels_own_settings(qtbot, simula
     w._copy_zstack_row_from_live("Fluorescence 488 nm Ex")
 
     assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((33.0, 2.5, 75.0))
+
+
+def test_copy_from_live_leaves_row_unchanged_when_channel_not_found(qtbot, simulated_widget_deps, caplog):
+    """Bug fix: if the recording row's selected channel is no longer present in
+    liveController.get_channels() (e.g. the objective changed elsewhere and the
+    combo wasn't refreshed), the refresh button must leave the row's values
+    untouched and warn, rather than silently resetting them to
+    _channel_settings()'s hardcoded (50, 0, 50) fallback."""
+    import logging
+
+    from control.widgets import RecordZStackMultiPointWidget
+
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
+        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
+    ]
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w.checkbox_recording.setChecked(True)
+    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
+    w._recording_exp_spin.setValue(12.0)
+    w._recording_gain_spin.setValue(3.0)
+    w._recording_illum_spin.setValue(20.0)
+
+    # Simulate the channel disappearing from the current objective's list
+    # without the (stale) combo selection being refreshed.
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        w.btn_copy_from_live.click()
+
+    assert w._recording_exposure() == pytest.approx(12.0)
+    assert w._recording_gain() == pytest.approx(3.0)
+    assert w._recording_illumination() == pytest.approx(20.0)
+    assert any("not found" in rec.message for rec in caplog.records)
 
 
 def test_add_remove_zstack_channel_row_syncs_list_and_table(qtbot, simulated_widget_deps):
