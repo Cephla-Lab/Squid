@@ -2759,10 +2759,15 @@ class LaserAutofocusSettingWidget(QWidget):
         self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
         analog_gain_layout.addWidget(self.analog_gain_spinbox)
 
+        # Restore Full FOV button: undo the laser-AF spot crop so the whole focus-camera
+        # sensor is visible again (useful for re-locating the spot before re-initializing).
+        self.btn_restore_full_fov = QPushButton("Restore Full FOV")
+
         # Add to live group
         live_layout.addWidget(self.btn_live)
         live_layout.addLayout(exposure_layout)
         live_layout.addLayout(analog_gain_layout)
+        live_layout.addWidget(self.btn_restore_full_fov)
         live_group.setLayout(live_layout)
 
         # Non-threshold property group
@@ -2864,6 +2869,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
+        self.btn_restore_full_fov.clicked.connect(self.restore_full_fov)
 
     def _add_spinbox(
         self,
@@ -2925,6 +2931,16 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def update_analog_gain(self, value):
         self.signal_newAnalogGain.emit(value)
+
+    def restore_full_fov(self):
+        """Reset the focus camera ROI to the full sensor FOV (undo the laser-AF spot crop)."""
+        try:
+            camera = self.laserAutofocusController.camera
+            width, height = camera.get_resolution()
+            camera.set_region_of_interest(0, 0, width, height)
+            self._log.info(f"Restored focus camera to full FOV: {width} x {height}")
+        except Exception as e:
+            self._log.error(f"Failed to restore full FOV: {e}")
 
     def update_values(self):
         """Update all widget values from the controller properties"""
