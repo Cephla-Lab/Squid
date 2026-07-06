@@ -17482,70 +17482,86 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         vbox.addWidget(self.recording_channel_table)
 
-        # Grid, not two independent HBoxes: FPS/Duration | Nz (+ dz when Nz > 1)
-        # on row 0, with the Z/Bottom-Z offset on row 1 sharing Nz's columns
-        # (5-6) so it lines up under Nz exactly, regardless of font/platform
-        # metrics, rather than an HBox row starting flush-left. dz is hidden
-        # when Nz == 1; the offset caption switches between "Z offset"
-        # (Nz == 1) and "Bottom Z offset" (Nz > 1).
-        def _vline() -> QFrame:
-            line = QFrame()
-            line.setFrameShape(QFrame.VLine)
-            line.setFrameShadow(QFrame.Sunken)
-            return line
+        # Row 1 (fixed): FPS + Duration.
+        # Nz/dz/offset reflow dynamically: they append to row 1 (after
+        # Duration) whenever at most 2 of them are visible, but move down to
+        # their own row 2 together when all 3 are visible at once (Nz>1 AND
+        # Laser AF on) — that's too many fields for one row. See
+        # _rebuild_recording_rows, called from _update_recording_planes_ui
+        # whenever Nz or Laser AF change.
+        # FPS/Dur always use their own compact widths (fit the actual text,
+        # not shared with anything). Nz/dz normally use their OWN, smaller
+        # compact widths too — they only borrow FPS's/Dur's (wider) widths
+        # when _rebuild_recording_rows puts them on row 2 for alignment;
+        # forcing the wider shared width unconditionally (as an earlier pass
+        # here did) left visible dead space after "Nz:"/"dz:" even in the
+        # common single-row case, where nothing needs to align with them.
+        self._recording_col1_label_w = 30  # fits "FPS:"
+        self._recording_col1_entry_w = 50  # fits FPS's spinbox
+        self._recording_col2_label_w = 28  # fits "Dur:"
+        self._recording_col2_entry_w = 64  # fits Duration's spinbox
+        self._recording_nz_label_w = 24  # fits "Nz:" on its own
+        self._recording_nz_entry_w = 44  # fits Nz's spinbox on its own
+        self._recording_dz_label_w = 22  # fits "dz:" on its own
+        self._recording_dz_entry_w = 78  # fits dz's spinbox+suffix on its own
 
-        recording_grid = QGridLayout()
-        recording_grid.setHorizontalSpacing(4)
-        recording_grid.setVerticalSpacing(2)
+        self.fps_row = QHBoxLayout()
+        self.fps_row.setSpacing(4)
 
-        recording_grid.addWidget(QLabel("FPS:"), 0, 0)
+        label_fps = QLabel("FPS:")
+        label_fps.setFixedWidth(self._recording_col1_label_w)
+        self.fps_row.addWidget(label_fps)
         self.entry_fps = QDoubleSpinBox()
         self.entry_fps.setRange(1, 1000)
         self.entry_fps.setDecimals(0)
         self.entry_fps.setValue(10.0)
         self.entry_fps.setKeyboardTracking(False)
-        self.entry_fps.setMaximumWidth(60)
-        recording_grid.addWidget(self.entry_fps, 0, 1)
+        self.entry_fps.setFixedWidth(self._recording_col1_entry_w)
+        self.fps_row.addWidget(self.entry_fps)
 
-        recording_grid.addWidget(QLabel("Dur:"), 0, 2)
+        label_dur = QLabel("Dur:")
+        label_dur.setFixedWidth(self._recording_col2_label_w)
+        self.fps_row.addWidget(label_dur)
         self.entry_duration = QDoubleSpinBox()
         self.entry_duration.setRange(1, 3600)
         self.entry_duration.setDecimals(0)
         self.entry_duration.setValue(1.0)
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
-        self.entry_duration.setMaximumWidth(75)
-        recording_grid.addWidget(self.entry_duration, 0, 3)
+        self.entry_duration.setFixedWidth(self._recording_col2_entry_w)
+        self.fps_row.addWidget(self.entry_duration)
 
-        recording_grid.addWidget(_vline(), 0, 4)
+        # Fixed prefix length (FPS label/spin, spacing, Dur label/spin) that
+        # _rebuild_recording_rows must never remove.
+        self._fps_row_fixed_count = self.fps_row.count()
+        vbox.addLayout(self.fps_row)
 
-        recording_grid.addWidget(QLabel("Nz:"), 0, 5)
+        self.z_row = QHBoxLayout()
+        self.z_row.setSpacing(4)
+        vbox.addLayout(self.z_row)
+
+        # Movable widgets — not added to either row here; _rebuild_recording_rows
+        # (called once at the end of this method, and again on every Nz/Laser-AF
+        # change) places them AND sets their widths (compact normally, matched
+        # to FPS/Dur only when on row 2).
+        self.label_recording_Nz = QLabel("Nz:")
         self.entry_recording_Nz = QSpinBox()
         self.entry_recording_Nz.setRange(1, 100)
         self.entry_recording_Nz.setValue(1)
         self.entry_recording_Nz.setKeyboardTracking(False)
-        self.entry_recording_Nz.setMaximumWidth(55)
         self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
-        recording_grid.addWidget(self.entry_recording_Nz, 0, 6)
 
         self.label_recording_dz = QLabel("dz:")
-        recording_grid.addWidget(self.label_recording_dz, 0, 7)
         self.entry_recording_dz = QDoubleSpinBox()
         self.entry_recording_dz.setRange(0.05, 100.0)
-        self.entry_recording_dz.setDecimals(2)
+        self.entry_recording_dz.setDecimals(1)
         self.entry_recording_dz.setSingleStep(0.5)
         self.entry_recording_dz.setValue(1.0)
         self.entry_recording_dz.setSuffix(" µm")
         self.entry_recording_dz.setKeyboardTracking(False)
-        self.entry_recording_dz.setMaximumWidth(85)
         self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
-        recording_grid.addWidget(self.entry_recording_dz, 0, 8)
 
-        recording_grid.setColumnStretch(9, 1)
-
-        # Row 1: Z/Bottom-Z offset, placed in Nz's own columns (5-6).
         self.label_recording_bottom_z = QLabel("Z offset:")
-        recording_grid.addWidget(self.label_recording_bottom_z, 1, 5)
         self.entry_recording_bottom_z = QDoubleSpinBox()
         self.entry_recording_bottom_z.setRange(-500.0, 500.0)
         self.entry_recording_bottom_z.setDecimals(1)
@@ -17555,12 +17571,10 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_recording_bottom_z.setKeyboardTracking(False)
         self.entry_recording_bottom_z.setMaximumWidth(85)
         self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
-        recording_grid.addWidget(self.entry_recording_bottom_z, 1, 6)
-
-        vbox.addLayout(recording_grid)
 
         # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the
-        # offset is relative to the AF reference plane), and the offset caption (Nz).
+        # offset is relative to the AF reference plane), the offset caption
+        # (Nz), and the row reflow (both).
         self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
         self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
         self._update_recording_planes_ui()
@@ -17798,8 +17812,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement),
         show the Z-offset field only when Laser AF is enabled (the offset is
         relative to the AF reference plane; without AF the user positions Z
-        directly), and switch the offset caption between single- and
-        multi-plane wording."""
+        directly), switch the offset caption between single- and multi-plane
+        wording, and reflow Nz/dz/offset between row 1 and row 2."""
         multi = self.entry_recording_Nz.value() > 1
         self.label_recording_dz.setVisible(multi)
         self.entry_recording_dz.setVisible(multi)
@@ -17810,6 +17824,68 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_recording_bottom_z.setToolTip(
             "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
         )
+        self._rebuild_recording_rows(multi, use_af)
+
+    def _rebuild_recording_rows(self, multi: bool, use_af: bool) -> None:
+        """Reflow Nz/dz/offset between fps_row (FPS/Duration's row) and their
+        own z_row.
+
+        At most 2 of {Nz, dz, offset} are ever shown together unless both
+        Nz > 1 and Laser AF are on — in that 3-item case they move to z_row
+        as a group instead of overcrowding fps_row. Widgets are detached and
+        re-added (not just hidden) so an inactive row takes no vertical
+        space at all, rather than an empty-but-present row.
+        """
+
+        def _clear(layout: QHBoxLayout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget() is None:  # spacing/stretch item, not a widget
+                    del item
+
+        while self.fps_row.count() > self._fps_row_fixed_count:
+            item = self.fps_row.takeAt(self.fps_row.count() - 1)
+            if item.widget() is None:
+                del item
+        _clear(self.z_row)
+
+        use_second_row = multi and use_af
+        target = self.z_row if use_second_row else self.fps_row
+
+        # Compact widths normally; only widen to match FPS/Dur when Nz/dz
+        # actually sit below them on row 2, so the common single-row case
+        # never carries dead space sized for an alignment it isn't doing.
+        self.label_recording_Nz.setFixedWidth(
+            self._recording_col1_label_w if use_second_row else self._recording_nz_label_w
+        )
+        self.entry_recording_Nz.setFixedWidth(
+            self._recording_col1_entry_w if use_second_row else self._recording_nz_entry_w
+        )
+        self.label_recording_dz.setFixedWidth(
+            self._recording_col2_label_w if use_second_row else self._recording_dz_label_w
+        )
+        self.entry_recording_dz.setFixedWidth(
+            self._recording_col2_entry_w if use_second_row else self._recording_dz_entry_w
+        )
+
+        target.addWidget(self.label_recording_Nz)
+        target.addWidget(self.entry_recording_Nz)
+
+        if multi:
+            target.addWidget(self.label_recording_dz)
+            target.addWidget(self.entry_recording_dz)
+
+        if use_af:
+            target.addWidget(self.label_recording_bottom_z)
+            target.addWidget(self.entry_recording_bottom_z)
+
+        target.addStretch(1)
+        if use_second_row:
+            # fps_row didn't receive the movable widgets in this mode, but it
+            # still needs its own trailing stretch — otherwise Qt has nothing
+            # to absorb the row's leftover width and stretches FPS/Duration's
+            # label-to-spinbox gap apart instead.
+            self.fps_row.addStretch(1)
 
     def _add_zstack_channel_row(
         self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
