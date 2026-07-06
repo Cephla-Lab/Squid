@@ -1157,9 +1157,14 @@ class MultiPointWorker:
             # the per-channel z-offset gate would apply offsets from an unanchored z.
             try:
                 target_um = self.region_laser_af_offsets.get(region_id, 0.0)
-                if target_um:
-                    self._log.info(f"laser AF target for region '{region_id}': {target_um:.2f} µm")
-                af_succeeded = self.laser_auto_focus_controller.move_to_target(target_um)
+                # Anchor closed-loop at the reference (displacement 0), where spot-alignment
+                # verification is valid, then apply the per-region offset as an OPEN-LOOP
+                # relative move. Driving move_to_target() straight to a nonzero displacement
+                # would always fail verification (its crop is fixed at x_reference) and revert.
+                af_succeeded = self.laser_auto_focus_controller.move_to_target(0.0)
+                if af_succeeded and target_um:
+                    self._log.info(f"applying per-region laser AF offset for region '{region_id}': {target_um:+.2f} µm")
+                    self.laser_auto_focus_controller.apply_relative_offset_um(target_um)
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)

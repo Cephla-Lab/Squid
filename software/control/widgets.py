@@ -6477,12 +6477,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
                 self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                self.multipointController.set_region_laser_af_offsets(
-                    self.focusMapWidget.get_offsets_for_acquisition(self.checkbox_withReflectionAutofocus.isChecked())
-                )
             else:
                 self.multipointController.set_focus_map(None)
-                self.multipointController.set_region_laser_af_offsets({})
 
             # Set acquisition parameters
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
@@ -6522,6 +6518,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # emit signals
             self.signal_acquisition_started.emit(True)
             self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+
+            # Push per-region laser-AF offsets only now that all pre-flight checks have passed,
+            # so a disk/RAM abort above cannot strand them on the shared controller for a later run.
+            self.multipointController.set_region_laser_af_offsets(
+                self.focusMapWidget.get_offsets_for_acquisition(self.checkbox_withReflectionAutofocus.isChecked())
+                if self.checkbox_useFocusMap.isChecked()
+                else {}
+            )
 
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
@@ -8833,11 +8837,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 if self.focusMapWidget.fit_surface():
                     # If fit successful, set the surface fitter in controller
                     self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                    self.multipointController.set_region_laser_af_offsets(
-                        self.focusMapWidget.get_offsets_for_acquisition(
-                            self.checkbox_withReflectionAutofocus.isChecked()
-                        )
-                    )
                 else:
                     QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
                     self.btn_startAcquisition.setChecked(False)
@@ -8845,7 +8844,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             else:
                 # If checkbox not checked, set surface fitter to None
                 self.multipointController.set_focus_map(None)
-                self.multipointController.set_region_laser_af_offsets({})
 
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
@@ -8880,6 +8878,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Update UI to show acquisition is running
             self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
+
+            # Push per-region laser-AF offsets only now that all pre-flight checks have passed,
+            # so a disk/RAM abort above cannot strand them on the shared controller for a later run.
+            self.multipointController.set_region_laser_af_offsets(
+                self.focusMapWidget.get_offsets_for_acquisition(self.checkbox_withReflectionAutofocus.isChecked())
+                if self.checkbox_useFocusMap.isChecked()
+                else {}
+            )
 
             # Start acquisition
             self.multipointController.run_acquisition()
@@ -10390,6 +10396,7 @@ class FocusMapWidget(QFrame):
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._allow_updating_focus_points_on_signal = True
+        self._log = squid.logging.get_logger(self.__class__.__name__)
 
         # Store controllers
         self.stage = stage
@@ -10408,6 +10415,10 @@ class FocusMapWidget(QFrame):
         # region_id. Captured at each focus point when the combined mode is enabled.
         self.region_laser_af_offsets = {}
         self.capture_laser_af_offset_enabled = False
+        # The laser-AF reference (x_reference) the current offsets were measured against.
+        # Used to distinguish a genuine re-reference (which invalidates offsets) from the
+        # benign, unchanged re-emit of signal_reference_changed on every config reload.
+        self._offsets_reference_x = None
 
         self.setup_ui()
         self.make_connections()
@@ -10594,6 +10605,13 @@ class FocusMapWidget(QFrame):
                 new_y = y_spin.value()
                 new_z = z_spin.value() / 1000  # Convert μm back to mm for storage
                 self.focus_points[index] = (region_id, new_x, new_y, new_z)
+                # The point moved but the stage isn't there to re-measure, so any captured
+                # laser-AF offset is now stale — drop it (do NOT blind-capture) so it can't
+                # override the edited z at acquisition. Prompt the user to re-capture.
+                if self.region_laser_af_offsets.pop(region_id, None) is not None:
+                    msg = f"Region {region_id}: edited — laser AF offset cleared; re-capture with Update Z"
+                    self.status_label.setText(msg)
+                    self._log.info(msg)
                 self.update_point_list()
                 self.update_focus_point_display()
 
@@ -10721,16 +10739,21 @@ class FocusMapWidget(QFrame):
     def _capture_region_offset(self, region_id):
         """Record the laser-AF displacement at the current z as this region's offset.
 
-        No-op (and clears any stale entry for region_id) unless the combined mode is
-        enabled, a laser-AF controller exists, and a reference is set. Never stores NaN
-        (failed spot detection). Warns — but still stores — when the offset exceeds the
-        laser-AF range, since that region would fail AF during acquisition.
+        Called after a focus point's z is (re)set (Add / Update Z). The region's previous
+        offset is dropped up-front: the point's z just changed, so any prior offset is stale
+        and only a fresh, valid reading may replace it. On any failure (mode off / no
+        controller / no reference / bad reading) the region is left WITHOUT an offset — it
+        falls back to the reference plane at acquisition — and the reason is both shown on the
+        status line and logged (get_offsets_for_acquisition also warns at run start about
+        regions missing an offset). Warns but still stores when the offset exceeds range.
         """
         self.region_laser_af_offsets.pop(region_id, None)
         if not self.capture_laser_af_offset_enabled or self.laserAutofocusController is None:
             return
         if not self.laserAutofocusController.laser_af_properties.has_reference:
-            self.status_label.setText("Laser AF reference not set — per-region offset not captured")
+            msg = f"Laser AF reference not set — offset not captured for region {region_id}"
+            self.status_label.setText(msg)
+            self._log.warning(msg)
             return
         # Suspend the main camera's live stream during the measurement: laser AF toggles the
         # AF laser via the microcontroller and waits for completion, while live keeps queuing
@@ -10748,17 +10771,24 @@ class FocusMapWidget(QFrame):
         # measure_displacement() returns float('nan') on a soft failure; guard with isfinite
         # (matching capture_current_z_offset) so an invalid reading is never stored.
         if offset_um is None or not math.isfinite(offset_um):
-            self.status_label.setText(f"Laser AF spot not detected — offset not captured for {region_id}")
+            msg = f"Laser AF spot not detected — offset not captured for region {region_id}"
+            self.status_label.setText(msg)
+            self._log.warning(msg)
             return
         laser_af_range = self.laserAutofocusController.laser_af_properties.laser_af_range
         if abs(offset_um) > laser_af_range:
-            self.status_label.setText(
+            msg = (
                 f"Warning: region {region_id} offset {offset_um:.1f} µm exceeds laser AF range "
                 f"({laser_af_range:.1f} µm); it may fail AF during acquisition"
             )
+            self.status_label.setText(msg)
+            self._log.warning(msg)
         else:
             self.status_label.setText(f"Region {region_id}: Laser AF offset {offset_um:+.2f} µm")
+            self._log.info(f"Captured laser AF offset for region {region_id}: {offset_um:+.2f} µm")
         self.region_laser_af_offsets[region_id] = offset_um
+        # Remember which reference these offsets were measured against (see _on_laser_af_reference_changed).
+        self._offsets_reference_x = self.laserAutofocusController.laser_af_properties.x_reference
 
     def _on_per_region_offset_toggled(self, checked):
         # Toggling only gates whether NEW captures happen; it deliberately does not clear
@@ -10785,6 +10815,7 @@ class FocusMapWidget(QFrame):
 
     def _clear_region_offsets(self):
         self.region_laser_af_offsets = {}
+        self._offsets_reference_x = None
 
     def _sync_offsets_to_focus_points(self):
         """Drop offsets for regions that no longer have any focus point."""
@@ -10800,16 +10831,41 @@ class FocusMapWidget(QFrame):
         Centralizes the reflection-AF/checkbox gating so both multipoint widgets — and any
         future acquisition entry point — share one source of truth.
         """
-        if reflection_af_active and self.checkbox_perRegionLaserAFOffset.isChecked():
-            return dict(self.region_laser_af_offsets)
-        return {}
+        if not (reflection_af_active and self.checkbox_perRegionLaserAFOffset.isChecked()):
+            return {}
+        offsets = dict(self.region_laser_af_offsets)
+        # Flag scan regions with no captured offset (they fall back to the reference plane),
+        # so a silently-missing well is visible at run start rather than only diagnosable later.
+        try:
+            scan_regions = set(self.scanCoordinates.region_centers.keys())
+        except AttributeError:
+            scan_regions = set()
+        missing = sorted(str(r) for r in scan_regions if r not in offsets)
+        if missing:
+            msg = (
+                f"Laser AF Offset: {len(missing)} region(s) without a captured offset will use "
+                f"the reference plane: {', '.join(missing)}"
+            )
+            self.status_label.setText(msg)
+            self._log.warning(msg)
+        return offsets
 
     def _on_laser_af_reference_changed(self, has_reference):
-        # The reference plane moved; previously-captured offsets are relative to the old
-        # reference and are now meaningless. Clear them so they cannot be applied stale.
-        if self.region_laser_af_offsets:
-            self._clear_region_offsets()
-            self.status_label.setText("Laser AF reference changed — captured per-region offsets cleared")
+        # signal_reference_changed is re-emitted on every config reload (objective/profile
+        # switch) with an UNCHANGED reference, so clear only when the reference actually differs
+        # from the one the current offsets were measured against — otherwise a benign reload
+        # would silently wipe valid offsets.
+        if not self.region_laser_af_offsets:
+            return
+        current_x = None
+        if has_reference and self.laserAutofocusController is not None:
+            current_x = self.laserAutofocusController.laser_af_properties.x_reference
+        if current_x == self._offsets_reference_x:
+            return
+        self._clear_region_offsets()
+        msg = "Laser AF reference changed — captured per-region offsets cleared"
+        self.status_label.setText(msg)
+        self._log.info(msg)
 
     def fit_surface(self):
         try:
@@ -10900,12 +10956,20 @@ class FocusMapWidget(QFrame):
                         z = float(row[z_idx])
                     except (ValueError, IndexError):
                         continue
+                    # Reject non-finite coordinates: float('nan')/'inf' parse fine but blow up
+                    # later in FOV pixel mapping (round(nan)/round(inf)).
+                    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                        continue
                     points.append((region_id, x, y, z))
                     if offset_idx is not None and offset_idx < len(row) and row[offset_idx] != "":
                         try:
-                            offsets[region_id] = float(row[offset_idx])
+                            offset_val = float(row[offset_idx])
                         except ValueError:
-                            pass
+                            offset_val = None
+                        # Skip non-finite offsets — a NaN/inf target would make laser AF fail
+                        # for every FOV in that region.
+                        if offset_val is not None and math.isfinite(offset_val):
+                            offsets[region_id] = offset_val
         return points, offsets
 
     def export_focus_points(self):
@@ -10932,41 +10996,61 @@ class FocusMapWidget(QFrame):
         if not file_path:
             return
 
+        # Whole body guarded so a failure anywhere (parse, region-mismatch dialog, state
+        # assignment, display refresh) surfaces a dialog rather than only logging via the Qt
+        # excepthook and leaving the widget silently half-updated.
         try:
             imported_points, imported_offsets = self._read_focus_points_csv(file_path)
+
+            # If by_region is checked, validate regions
+            if self.by_region_checkbox.isChecked():
+                scan_regions = set(self.scanCoordinates.region_centers.keys())
+                focus_regions = set(region_id for region_id, _, _, _ in imported_points)
+                if not focus_regions == scan_regions:
+                    response = QMessageBox.warning(
+                        self,
+                        "Region Mismatch",
+                        f"The imported focus points have regions: {', '.join(sorted(focus_regions))}\n\n"
+                        f"Current scan has regions: {', '.join(sorted(scan_regions))}\n\n"
+                        "Import anyway (disable 'By Region') or cancel?",
+                        QMessageBox.Ok | QMessageBox.Cancel,
+                        QMessageBox.Cancel,
+                    )
+                    if response == QMessageBox.Cancel:
+                        return
+                    else:
+                        # User chose to continue, uncheck by_region
+                        self.by_region_checkbox.setChecked(False)
+
+            # Imported offsets are relative to the laser-AF reference they were captured
+            # against, which the CSV does not record. Only apply them if a reference is set
+            # now, and flag that they must match it (there is no way to verify automatically).
+            offset_note = ""
+            if imported_offsets:
+                has_reference = (
+                    self.laserAutofocusController is not None
+                    and self.laserAutofocusController.laser_af_properties.has_reference
+                )
+                if has_reference:
+                    self._offsets_reference_x = self.laserAutofocusController.laser_af_properties.x_reference
+                    offset_note = (
+                        f"; {len(imported_offsets)} laser AF offset(s) loaded — verify they match "
+                        f"the current laser AF reference"
+                    )
+                else:
+                    imported_offsets = {}
+                    offset_note = "; laser AF offsets ignored (no reference set)"
+
+            # Clear existing points and add imported ones
+            self.focus_points = imported_points
+            self.region_laser_af_offsets = imported_offsets
+            self.update_point_list()
+            self.update_focus_point_display()
+            self.status_label.setText(f"Imported {len(imported_points)} focus points{offset_note}")
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Format", str(e))
-            return
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import focus points: {str(e)}")
-            return
-
-        # If by_region is checked, validate regions
-        if self.by_region_checkbox.isChecked():
-            scan_regions = set(self.scanCoordinates.region_centers.keys())
-            focus_regions = set(region_id for region_id, _, _, _ in imported_points)
-            if not focus_regions == scan_regions:
-                response = QMessageBox.warning(
-                    self,
-                    "Region Mismatch",
-                    f"The imported focus points have regions: {', '.join(sorted(focus_regions))}\n\n"
-                    f"Current scan has regions: {', '.join(sorted(scan_regions))}\n\n"
-                    "Import anyway (disable 'By Region') or cancel?",
-                    QMessageBox.Ok | QMessageBox.Cancel,
-                    QMessageBox.Cancel,
-                )
-                if response == QMessageBox.Cancel:
-                    return
-                else:
-                    # User chose to continue, uncheck by_region
-                    self.by_region_checkbox.setChecked(False)
-
-        # Clear existing points and add imported ones
-        self.focus_points = imported_points
-        self.region_laser_af_offsets = imported_offsets
-        self.update_point_list()
-        self.update_focus_point_display()
-        self.status_label.setText(f"Imported {len(imported_points)} focus points")
 
     def on_regions_updated(self):
         if not self._allow_updating_focus_points_on_signal:
