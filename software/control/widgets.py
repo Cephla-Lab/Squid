@@ -17424,10 +17424,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_recording.setFont(header_font)
         outer_vbox.addWidget(self.checkbox_recording)
 
+        # No margins here — outer_vbox already applies the frame-level
+        # (4, 2, 4, 2) margin; adding another would double-indent this
+        # content relative to the checkbox header above it.
         vbox = QVBoxLayout()
-        vbox.setContentsMargins(4, 2, 4, 2)
+        vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(4)
         outer_vbox.addLayout(vbox)
+        self._recording_content_vbox = vbox
 
         # Row 0: single-row channel table (Channel | Exp (ms) | Gain | Illum (%) | ↻)
         self.recording_channel_table = QTableWidget(1, 5)
@@ -17564,10 +17568,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_zstack.setFont(header_font)
         outer_vbox.addWidget(self.checkbox_zstack)
 
+        # No margins here — see the matching comment in _build_recording_group.
         layout = QGridLayout()
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         outer_vbox.addLayout(layout)
+        self._zstack_content_layout = layout
 
         # Row 0: Z-min | Z-max | Step | Computed planes on one row
         self.entry_zmin = QDoubleSpinBox()
@@ -18130,6 +18136,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.xy_controls_frame.setVisible(
                 self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells"
             )
+            # checkbox_recording's/checkbox_zstack's toggled signals were blocked
+            # above too, so the collapse-when-unchecked visibility sync in
+            # _build_recording_group/_build_zstack_group didn't fire either.
+            _set_layout_widgets_visible(self._recording_content_vbox, self.checkbox_recording.isChecked())
+            _set_layout_widgets_visible(self._zstack_content_layout, self.checkbox_zstack.isChecked())
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or

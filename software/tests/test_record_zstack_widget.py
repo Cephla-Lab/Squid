@@ -1559,6 +1559,35 @@ def test_apply_yaml_settings_resyncs_xy_controls_frame_visibility(qtbot, simulat
     assert w.xy_controls_frame.isHidden() is True
 
 
+def test_apply_yaml_settings_resyncs_recording_and_zstack_section_visibility(qtbot, simulated_widget_deps):
+    """Code-review finding: like checkbox_time/checkbox_xy, checkbox_recording's
+    and checkbox_zstack's toggled signals are blocked during the load, so the
+    collapse-when-unchecked visibility wiring in _build_recording_group /
+    _build_zstack_group never fires on its own. Loading a YAML that flips both
+    phases from the widget's default state (Recording on, Z-Stack off) must
+    still collapse Recording's content and expand Z-Stack's."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Sanity check on the default state before loading.
+    assert w.checkbox_recording.isChecked() is True
+    assert w.recording_channel_table.isHidden() is False
+    assert w.checkbox_zstack.isChecked() is False
+    assert w.entry_zmin.isHidden() is True
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", recording_enabled=False, zstack_enabled=True)
+
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.checkbox_recording.isChecked() is False
+    assert w.recording_channel_table.isHidden() is True
+    assert w.checkbox_zstack.isChecked() is True
+    assert w.entry_zmin.isHidden() is False
+
+
 def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
