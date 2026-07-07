@@ -834,6 +834,8 @@ class AcquisitionYAMLDropMixin:
     2. Have `self._log`, `self.multipointController`, `self.objectiveStore` attributes
     3. Implement `_get_expected_widget_type()` returning "wellplate" or "flexible"
     4. Implement `_apply_yaml_settings(yaml_data)` to apply settings to the widget
+    5. Optionally define a `signal_channel_settings_restored` Signal, emitted after
+       per-channel settings (exposure/gain/intensity) are restored from the YAML
     """
 
     def _is_valid_yaml_drop(self, file_path: str) -> bool:
@@ -953,12 +955,72 @@ class AcquisitionYAMLDropMixin:
 
         # Apply settings with signal blocking
         self._apply_yaml_settings(yaml_data)
+        self._restore_channel_settings(yaml_data)
         self._log.info(f"Loaded acquisition settings from: {file_path}")
         return True
 
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+    # (setting name, value extractor, validator) for _restore_channel_settings.
+    # Validators mirror the AcquisitionChannel model constraints: values are written
+    # to the profile config with update_channel_setting, which bypasses pydantic
+    # assignment validation — persisting an out-of-range value would make the
+    # profile fail validation on next load.
+    _RESTORABLE_CHANNEL_SETTINGS = (
+        ("ExposureTime", lambda ch: ch.exposure_time_ms, lambda v: v > 0),
+        ("AnalogGain", lambda ch: ch.analog_gain, lambda v: v >= 0),
+        ("IlluminationIntensity", lambda ch: ch.illumination_intensity, lambda v: 0 <= v <= 100),
+    )
+
+    def _restore_channel_settings(self, yaml_data) -> int:
+        """Restore per-channel settings (exposure, gain, intensity) from the YAML.
+
+        Values are persisted to the current profile's objective config — the same
+        path used when editing them in the live control panel. Z-offset is
+        intentionally NOT restored: it is sample-dependent (relative to the laser
+        AF reference), so an old acquisition's offsets don't transfer.
+
+        Returns the number of channels whose settings were restored.
+        """
+        live_controller = self.multipointController.liveController
+        config_repo = live_controller.microscope.config_repo
+        objective = self.objectiveStore.current_objective
+        confocal_mode = live_controller.is_confocal_mode()
+
+        restored = 0
+        for channel in yaml_data.channel_settings:
+            if live_controller.get_channel_by_name(objective, channel.name) is None:
+                self._log.warning(
+                    f"Channel '{channel.name}' from YAML not found in current configuration; settings not restored"
+                )
+                continue
+            applied_any = False
+            for setting, get_value, is_valid in self._RESTORABLE_CHANNEL_SETTINGS:
+                value = get_value(channel)
+                if value is None:
+                    continue
+                if not is_valid(value):
+                    self._log.warning(
+                        f"Skipping out-of-range {setting}={value} for channel '{channel.name}' from YAML"
+                    )
+                    continue
+                if config_repo.update_channel_setting(
+                    objective, channel.name, setting, value, confocal_mode=confocal_mode
+                ):
+                    applied_any = True
+                else:
+                    self._log.warning(f"Failed to restore {setting} for channel '{channel.name}' from YAML")
+            if applied_any:
+                restored += 1
+
+        if restored:
+            self._log.info(f"Restored settings for {restored} channel(s) from YAML")
+            signal = getattr(self, "signal_channel_settings_restored", None)
+            if signal is not None:
+                signal.emit()
+        return restored
 
 
 class _ApplyChannelOffsetMixin:
@@ -4336,6 +4398,24 @@ class LiveControlWidget(QFrame):
         self.update_ui_for_mode(maybe_new_config)
         self._maybe_apply_live_channel_offset(maybe_new_config)
 
+    def refresh_current_mode_settings(self):
+        """Re-read the current channel's settings from config and update the UI.
+
+        Used when channel settings are changed outside this widget (e.g. restored
+        from a dropped acquisition YAML). Unlike select_new_microscope_mode_by_name,
+        this does not apply the live per-channel Z-offset — the channel didn't
+        change, so no stage move is warranted.
+        """
+        if self.currentConfiguration is None:
+            return
+        config = self.liveController.get_channel_by_name(
+            self.objectiveStore.current_objective, self.currentConfiguration.name
+        )
+        if config is None:
+            return
+        self.liveController.set_microscope_mode(config)
+        self.update_ui_for_mode(config)
+
     def update_ui_for_mode(self, config):
         try:
             self.is_switching_mode = True
@@ -5702,6 +5782,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
     signal_acquisition_shape = Signal(int, float)  # Nz, dz
+    signal_channel_settings_restored = Signal()  # channel settings restored from dropped acquisition YAML
 
     def __init__(
         self,
@@ -7165,6 +7246,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
+    signal_channel_settings_restored = Signal()  # channel settings restored from dropped acquisition YAML
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
