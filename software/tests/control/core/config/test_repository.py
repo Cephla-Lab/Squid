@@ -1548,18 +1548,86 @@ class TestChannelMissingFromObjectiveConfig:
         """A channel in neither general nor objective config is still rejected."""
         assert repo_with_new_channel.update_channel_setting("20x", "no such channel", "ExposureTime", 10.0) is False
 
-    def test_sync_general_channels_to_objectives(self, repo_with_new_channel):
-        """Sync seeds missing channels into every objective file without touching existing entries."""
-        repo_with_new_channel.sync_general_channels_to_objectives()
+    @staticmethod
+    def _make_channel(name, exposure=15.0, intensity=33.0):
+        return AcquisitionChannel(
+            name=name,
+            display_color="#FFFFFF",
+            camera_settings=CameraSettings(exposure_time_ms=exposure, gain_mode=2.0),
+            illumination_settings=IlluminationSettings(illumination_channel="561nm", intensity=intensity),
+        )
+
+    def test_save_with_sync_seeds_only_added_channels(self, repo_with_new_channel):
+        """Channels added in this save are seeded into every objective file; channels that
+        were already in general.yaml but absent from an objective file are NOT re-added."""
+        general = repo_with_new_channel.get_general_config()
+        general.channels.append(self._make_channel("561nm - 2"))
+
+        failed = repo_with_new_channel.save_general_config_with_sync("default", general)
+        assert failed == []
 
         repo_with_new_channel.clear_profile_cache()
         for objective in ("20x", "4x"):
             obj = repo_with_new_channel.get_objective_config(objective)
-            ch = obj.get_channel_by_name("561nm - 1")
-            assert ch is not None, f"'561nm - 1' missing from {objective}"
-            assert ch.camera_settings.exposure_time_ms == 30.0
-            assert ch.illumination_settings.intensity == 44.0
+            ch = obj.get_channel_by_name("561nm - 2")
+            assert ch is not None, f"'561nm - 2' missing from {objective}"
+            assert ch.camera_settings.exposure_time_ms == 15.0
+            assert ch.illumination_settings.intensity == 33.0
+            # '561nm - 1' was already in general before this save: its absence from the
+            # objective file is preserved (a user's fallback-to-general is respected).
+            assert obj.get_channel_by_name("561nm - 1") is None
             # Existing entry untouched (keeps objective-specific values)
             ch488 = obj.get_channel_by_name("488nm")
             assert ch488.camera_settings.exposure_time_ms == 50.0
             assert ch488.illumination_settings.intensity == 75.0
+
+    def test_save_with_sync_prunes_removed_channels_and_prevents_resurrection(self, repo_with_new_channel):
+        """Removing a channel prunes its objective entries; re-adding the same name later
+        seeds fresh settings instead of resurrecting the stale ones."""
+        # Materialize '561nm - 1' in 20x.yaml with a distinctive value via the lazy seed path
+        assert repo_with_new_channel.update_channel_setting("20x", "561nm - 1", "ExposureTime", 123.0) is True
+
+        # Remove the channel in the configurator and save
+        general = repo_with_new_channel.get_general_config()
+        general.channels = [ch for ch in general.channels if ch.name != "561nm - 1"]
+        assert repo_with_new_channel.save_general_config_with_sync("default", general) == []
+
+        repo_with_new_channel.clear_profile_cache()
+        assert repo_with_new_channel.get_objective_config("20x").get_channel_by_name("561nm - 1") is None
+
+        # Re-add a channel with the same name but different settings
+        general = repo_with_new_channel.get_general_config()
+        general.channels.append(self._make_channel("561nm - 1", exposure=10.0, intensity=5.0))
+        assert repo_with_new_channel.save_general_config_with_sync("default", general) == []
+
+        repo_with_new_channel.clear_profile_cache()
+        ch = repo_with_new_channel.get_objective_config("20x").get_channel_by_name("561nm - 1")
+        assert ch is not None
+        assert ch.camera_settings.exposure_time_ms == 10.0  # not the stale 123.0
+        assert ch.illumination_settings.intensity == 5.0
+
+    def test_save_with_sync_objective_failure_is_isolated_and_does_not_poison_cache(self, repo_with_new_channel):
+        """A failing objective write is reported, does not block other objectives, and
+        leaves neither the cache nor the disk with the unsaved change."""
+        orig_save_yaml = repo_with_new_channel._save_yaml
+
+        def failing_save_yaml(path, model):
+            if path.name == "20x.yaml":
+                raise PermissionError(f"denied: {path}")
+            return orig_save_yaml(path, model)
+
+        repo_with_new_channel._save_yaml = failing_save_yaml
+
+        general = repo_with_new_channel.get_general_config()
+        general.channels.append(self._make_channel("561nm - 2"))
+        failed = repo_with_new_channel.save_general_config_with_sync("default", general)
+        assert failed == ["20x"]
+
+        # 4x still synced despite the 20x failure
+        assert repo_with_new_channel.get_objective_config("4x").get_channel_by_name("561nm - 2") is not None
+        # Cached 20x config does not contain the never-persisted channel...
+        assert repo_with_new_channel.get_objective_config("20x").get_channel_by_name("561nm - 2") is None
+        # ...and neither does the file on disk
+        repo_with_new_channel._save_yaml = orig_save_yaml
+        repo_with_new_channel.clear_profile_cache()
+        assert repo_with_new_channel.get_objective_config("20x").get_channel_by_name("561nm - 2") is None

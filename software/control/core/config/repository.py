@@ -682,37 +682,60 @@ class ConfigRepository:
             path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
             self._save_yaml(path, config)
 
-    def sync_general_channels_to_objectives(self, profile: Optional[str] = None) -> None:
+    def save_general_config_with_sync(self, profile: str, config: GeneralChannelConfig) -> List[str]:
         """
-        Ensure every channel in general.yaml has an entry in each objective config.
+        Save general.yaml and propagate channel list changes to the objective configs.
 
-        Channels added to general.yaml after the objective files were created (e.g. via
-        the channel configurator) are seeded into each objective file from their general
-        settings, so per-objective edits to them can persist. Existing objective entries
-        are left untouched.
+        Compared to the previous on-disk general.yaml:
+        - Channels newly added to general are seeded into each objective file (from
+          their general settings), so per-objective edits to them can persist.
+        - Objective entries whose channel no longer exists in general are removed,
+          so a later channel reusing the name cannot resurrect stale settings.
+        - Channels present in both are left untouched: an objective entry the user
+          removed to fall back to general defaults is not re-materialized.
+
+        Raises if general.yaml cannot be saved. A failure writing one objective file
+        does not interrupt the sync of the others; the list of objectives that failed
+        to update is returned (empty on full success).
         """
-        profile = profile or self._current_profile
-        if not profile:
-            logger.warning("Cannot sync channels: no profile set")
-            return
+        # Read the previous general config from disk (not the cache — the caller may
+        # have mutated the cached object in place) to diff the channel lists.
+        old_general_path = self.user_profiles_path / profile / "channel_configs" / "general.yaml"
+        old_general = self._load_yaml(old_general_path, GeneralChannelConfig)
+        old_names = {ch.name for ch in old_general.channels} if old_general else set()
 
-        general_config = self.get_general_config(profile)
-        if general_config is None:
-            return
+        self.save_general_config(profile, config)
 
+        new_by_name = {ch.name: ch for ch in config.channels}
+        added_names = [name for name in new_by_name if name not in old_names]
+
+        failed_objectives: List[str] = []
         for objective in self.get_available_objectives(profile):
             obj_config = self.get_objective_config(objective, profile)
             if obj_config is None:
                 continue
-            missing = [ch for ch in general_config.channels if obj_config.get_channel_by_name(ch.name) is None]
-            if not missing:
+            existing_names = {ch.name for ch in obj_config.channels}
+            removed_names = [name for name in existing_names if name not in new_by_name]
+            to_seed = [name for name in added_names if name not in existing_names]
+            if not removed_names and not to_seed:
                 continue
-            obj_config.channels.extend(_objective_channel_from_general(ch) for ch in missing)
-            self.save_objective_config(profile, objective, obj_config)
-            logger.info(
-                f"Added {len(missing)} channel(s) from general.yaml to objective '{objective}': "
-                + ", ".join(ch.name for ch in missing)
-            )
+
+            # Mutate a copy so a failed save cannot leave unsaved changes in the cache.
+            updated = obj_config.model_copy(deep=True)
+            updated.channels = [ch for ch in updated.channels if ch.name in new_by_name]
+            updated.channels.extend(_objective_channel_from_general(new_by_name[name]) for name in to_seed)
+            try:
+                self.save_objective_config(profile, objective, updated)
+            except (OSError, yaml.YAMLError) as e:
+                logger.error(f"Failed to sync channel list to objective '{objective}': {e}")
+                failed_objectives.append(objective)
+                continue
+            if to_seed:
+                logger.info(f"Seeded channel(s) into objective '{objective}': " + ", ".join(to_seed))
+            if removed_names:
+                logger.info(f"Removed channel(s) from objective '{objective}': " + ", ".join(removed_names))
+
+        return failed_objectives
 
     # ═══════════════════════════════════════════════════════════════════════════
     # CHANNEL CONFIG CONVENIENCE METHODS
@@ -812,6 +835,11 @@ class ConfigRepository:
         # Get or create objective config
         obj_config = self.get_objective_config(objective, profile)
         general_config = self.get_general_config(profile)
+
+        if obj_config is not None:
+            # Mutate a copy so a failed save cannot leave unsaved changes in the cache;
+            # save_objective_config re-caches the copy on success.
+            obj_config = obj_config.model_copy(deep=True)
 
         if obj_config is None:
             if general_config is None:
