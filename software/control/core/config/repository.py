@@ -15,12 +15,13 @@ Organization:
 - Cache Management: cache control
 """
 
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
 import yaml
 from pydantic import BaseModel, ValidationError
+
+import squid.logging
 
 from control.models import (
     AcquisitionChannel,
@@ -47,9 +48,34 @@ from control.models.hardware_bindings import (
     FILTER_WHEEL_SOURCE_STANDALONE,
 )
 
-logger = logging.getLogger(__name__)
+logger = squid.logging.get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _objective_channel_from_general(ch: AcquisitionChannel) -> AcquisitionChannel:
+    """Build a per-objective channel entry seeded from a general.yaml channel.
+
+    Objective files only carry per-objective settings; channel identity fields
+    (illumination_channel, filter wheel/position) stay in general.yaml.
+    """
+    return AcquisitionChannel(
+        name=ch.name,
+        display_color=ch.display_color,
+        camera=ch.camera,
+        camera_settings=CameraSettings(
+            exposure_time_ms=ch.camera_settings.exposure_time_ms,
+            gain_mode=ch.camera_settings.gain_mode,
+            pixel_format=ch.camera_settings.pixel_format,
+        ),
+        filter_wheel=None,
+        filter_position=None,
+        z_offset_um=ch.z_offset_um,
+        illumination_settings=IlluminationSettings(
+            illumination_channel=None,
+            intensity=ch.illumination_settings.intensity,
+        ),
+    )
 
 
 class ConfigRepository:
@@ -656,6 +682,38 @@ class ConfigRepository:
             path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
             self._save_yaml(path, config)
 
+    def sync_general_channels_to_objectives(self, profile: Optional[str] = None) -> None:
+        """
+        Ensure every channel in general.yaml has an entry in each objective config.
+
+        Channels added to general.yaml after the objective files were created (e.g. via
+        the channel configurator) are seeded into each objective file from their general
+        settings, so per-objective edits to them can persist. Existing objective entries
+        are left untouched.
+        """
+        profile = profile or self._current_profile
+        if not profile:
+            logger.warning("Cannot sync channels: no profile set")
+            return
+
+        general_config = self.get_general_config(profile)
+        if general_config is None:
+            return
+
+        for objective in self.get_available_objectives(profile):
+            obj_config = self.get_objective_config(objective, profile)
+            if obj_config is None:
+                continue
+            missing = [ch for ch in general_config.channels if obj_config.get_channel_by_name(ch.name) is None]
+            if not missing:
+                continue
+            obj_config.channels.extend(_objective_channel_from_general(ch) for ch in missing)
+            self.save_objective_config(profile, objective, obj_config)
+            logger.info(
+                f"Added {len(missing)} channel(s) from general.yaml to objective '{objective}': "
+                + ", ".join(ch.name for ch in missing)
+            )
+
     # ═══════════════════════════════════════════════════════════════════════════
     # CHANNEL CONFIG CONVENIENCE METHODS
     # Higher-level helpers for common channel config operations
@@ -762,33 +820,21 @@ class ConfigRepository:
             # Create objective config from general config (v1.1 schema)
             obj_config = ObjectiveChannelConfig(
                 version=1.1,
-                channels=[
-                    AcquisitionChannel(
-                        name=ch.name,
-                        display_color=ch.display_color,
-                        camera=ch.camera,
-                        camera_settings=CameraSettings(
-                            exposure_time_ms=ch.camera_settings.exposure_time_ms,
-                            gain_mode=ch.camera_settings.gain_mode,
-                            pixel_format=ch.camera_settings.pixel_format,
-                        ),
-                        filter_wheel=None,  # Objective files don't include filter wheel
-                        filter_position=None,
-                        z_offset_um=ch.z_offset_um,
-                        illumination_settings=IlluminationSettings(
-                            illumination_channel=None,  # From general.yaml
-                            intensity=ch.illumination_settings.intensity,
-                        ),
-                    )
-                    for ch in general_config.channels
-                ],
+                channels=[_objective_channel_from_general(ch) for ch in general_config.channels],
             )
 
         # Find the channel
         acq_channel = obj_config.get_channel_by_name(channel_name)
         if not acq_channel:
-            logger.warning(f"Channel '{channel_name}' not found in objective config")
-            return False
+            # Channel exists in general.yaml but not in this objective config (e.g. it was
+            # added via the channel configurator after the objective file was created).
+            # Seed it from general so the edit persists instead of being dropped.
+            gen_channel = general_config.get_channel_by_name(channel_name) if general_config else None
+            if gen_channel is None:
+                logger.warning(f"Channel '{channel_name}' not found in objective or general config")
+                return False
+            acq_channel = _objective_channel_from_general(gen_channel)
+            obj_config.channels.append(acq_channel)
 
         # Iris settings go to confocal_hardware_settings (applies in both modes)
         if location == "confocal_hw":

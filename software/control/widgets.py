@@ -15935,6 +15935,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         # Save to YAML file
         try:
             self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+            # Seed any newly added channels into the per-objective configs so that
+            # per-objective edits (exposure/gain/intensity) to them can persist.
+            self.config_repo.sync_general_channels_to_objectives(self.config_repo.current_profile)
         except (PermissionError, OSError) as e:
             self._log.error(f"Failed to save channel configuration: {e}")
             QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
