@@ -62,3 +62,42 @@ def test_image_display_signals_connected_once(qtbot, monkeypatch):
 
     assert len(z_calls) == 1, f"signal_z_um_delta wired {len(z_calls)} times, expected 1"
     assert len(click_calls) == 1, f"image_click_coordinates wired {len(click_calls)} times, expected 1"
+
+
+def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch):
+    """The stage may own its own transport (e.g. the PI C-414 serial handle), so cleanup
+    must call stage.close() when it exists — before the microcontroller, mirroring
+    Microscope.close()."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    calls = []
+    # CephlaStage defines no close(); give the instance one so the test observes whether
+    # cleanup releases stage-owned resources when the stage offers a close().
+    gui.stage.close = lambda: calls.append("stage")
+    original_micro_close = gui.microcontroller.close
+
+    def recording_micro_close():
+        calls.append("microcontroller")
+        original_micro_close()
+
+    monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
+
+    # The explicit cleanup below releases the hardware; keep teardown's closeEvent from
+    # running a second full (raising) cleanup pass against closed devices. Plain
+    # assignment (not monkeypatch) so it survives monkeypatch's teardown, which runs
+    # before qtbot closes widgets.
+    gui.closeEvent = lambda event: event.accept()
+
+    gui._cleanup_common(for_restart=True)
+
+    assert calls == ["stage", "microcontroller"]

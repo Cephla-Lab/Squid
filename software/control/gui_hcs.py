@@ -2967,6 +2967,19 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
+        # Release the stage's own transport (e.g. the PI C-414 serial handle) so a restart's
+        # new process can acquire it. CephlaStage/PriorStage define no close() and are
+        # released via their underlying transports (the microcontroller below / Prior serial).
+        stage_close = getattr(self.stage, "close", None)
+        if callable(stage_close):
+            try:
+                stage_close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing stage during {context}")
+                else:
+                    raise
+
         # Close microcontroller last (releases serial port)
         try:
             self.microcontroller.close()

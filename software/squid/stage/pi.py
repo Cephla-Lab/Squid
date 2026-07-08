@@ -327,10 +327,14 @@ class CombinedStage(AbstractStage):
         return self._z.is_referenced()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        if x or y or theta:
-            self._xy.home(x, y, False, theta, blocking)
+        # Z first, and blocking whenever XY homing follows: the V-308 voice coil is not
+        # self-locking, so the objective must be fully retracted before any XY sweep
+        # (the same ordering Microscope.home_xyz enforces across its separate calls).
+        xy_requested = x or y or theta
         if z:
-            self._z.home(False, False, True, False, blocking)
+            self._z.home(False, False, True, False, blocking or xy_requested)
+        if xy_requested:
+            self._xy.home(x, y, False, theta, blocking)
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x or y or theta:

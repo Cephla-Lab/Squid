@@ -371,3 +371,28 @@ def test_c414_clamp_target_graceful_limit():
     assert dev._clamp_target(-2.0) == 1.0  # below lo -> clamped
     dev._range_lo = dev._range_hi = None  # limits unknown -> pass through
     assert dev._clamp_target(999.0) == 999.0
+
+
+def test_combined_stage_homes_z_before_xy(monkeypatch):
+    # A multi-axis home must retract Z before any XY sweep (the V-308 voice coil is not
+    # self-locking), and the Z leg must block even for a non-blocking home so the
+    # objective is clear before XY starts moving.
+    micro = get_test_micro()
+    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    z = _sim_pi_stage()
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+
+    calls = []
+
+    def record(name):
+        def _home(x, y, z, theta, blocking=True):
+            calls.append((name, blocking))
+
+        return _home
+
+    monkeypatch.setattr(xy, "home", record("xy"))
+    monkeypatch.setattr(z, "home", record("z"))
+
+    combined.home(x=True, y=True, z=True, theta=False, blocking=False)
+
+    assert calls == [("z", True), ("xy", False)]
