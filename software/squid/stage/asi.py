@@ -135,3 +135,140 @@ class _SimulatedLS50:
 
     def close(self):
         self._closed = True
+
+
+class ASIZStage(AbstractStage):
+    """Z-only AbstractStage backed by an ASI LS50. X / Y / theta are no-ops.
+
+    With ``invert_z=True`` (the standard wiring) Squid Z is the negation of the controller's
+    native mm: native + is away from the sample, so squid 0 is the retracted end and squid Z
+    increases toward the sample. A pure sign flip -- unlike the PI V-308 there is no absolute
+    positive travel limit to offset against.
+
+    ``home_mm`` (Squid mm) is the retract target home() drives to -- native/squid 0 by
+    convention. None disables home(z) entirely (warn no-op), guaranteeing no motion.
+
+    A lock serialises every backend call so a non-blocking home() cannot interleave serial
+    request/response framing with concurrent get_pos()/move_z().
+    """
+
+    def __init__(
+        self,
+        backend,
+        stage_config: Optional[StageConfig] = None,
+        home_mm: Optional[float] = None,
+        invert_z: bool = False,
+    ):
+        super().__init__(stage_config)
+        self._backend = backend
+        self._lock = threading.RLock()
+        self._closed = False
+        self._busy = False  # set while an async home holds the lock, so get_state needn't block
+
+        self._invert = invert_z
+        # NATIVE home target (the flip is an involution, so it maps squid -> native too).
+        self._home_native_mm = self._flip(home_mm) if home_mm is not None else None
+
+    def _flip(self, mm: float) -> float:
+        # squid_z = -native_z (and vice versa) when inverted; identity otherwise.
+        return -mm if self._invert else mm
+
+    def move_z(self, rel_mm: float, blocking: bool = True):
+        with self._lock:
+            self._backend.move_relative(self._flip(rel_mm), wait=blocking)
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        with self._lock:
+            self._backend.move_to(self._flip(abs_mm), wait=blocking)
+
+    def get_pos(self) -> Pos:
+        with self._lock:
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._flip(self._backend.get_position_mm()), theta_rad=None)
+
+    def get_state(self) -> StageStage:
+        # If an async home holds the lock, report busy without blocking on it.
+        if self._busy:
+            return StageStage(busy=True)
+        with self._lock:
+            return StageStage(busy=self._backend.is_moving())
+
+    def is_referenced(self) -> bool:
+        with self._lock:
+            return self._backend.is_referenced()
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        # Home = retract to the configured target (native 0 by convention). There is no
+        # hardware referencing routine on this stage.
+        if not z:
+            return
+        if self._home_native_mm is None:
+            self._log.warning("ASIZStage home(z=True) is a no-op: no home target configured (ASI_Z_HOME_MM).")
+            return
+        if blocking:
+            self._home_z_locked()
+        else:
+            threading.Thread(target=self._home_z_locked, daemon=True, name="asi-z-home").start()
+
+    def _home_z_locked(self):
+        self._busy = True
+        try:
+            with self._lock:
+                if self._closed:  # close() won the race; do not touch the torn-down handle
+                    return
+                self._backend.move_to(self._home_native_mm, wait=True)
+        finally:
+            self._busy = False
+
+    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        if z:
+            self._log.warning(
+                "ASIZStage.zero(z=True) is a no-op: native 0 is the retract reference, and "
+                "redefining it mid-session would shift the retract target and invalidate the "
+                "travel fence. The controller supports it (LS50Controller.zero_here) if a "
+                "re-zeroing flow is ever needed."
+            )
+
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
+        if z_pos_mm is not None and z_neg_mm is not None:
+            with self._lock:
+                # Map the software Z limits to native; inversion reverses order, so take
+                # min/max after flipping both ends.
+                n1, n2 = self._flip(z_pos_mm), self._flip(z_neg_mm)
+                self._backend.set_travel_limits(min(n1, n2), max(n1, n2))
+        elif z_pos_mm is not None or z_neg_mm is not None:
+            self._log.warning("ASIZStage.set_limits ignored a one-sided Z limit; pass both z_pos_mm and z_neg_mm.")
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._backend.close()
+
+    def z_mm_to_usteps(self, mm: float) -> int:
+        # The 0.1 um protocol grid is the finest addressable step; the GUI's Z step snapping
+        # uses 1 / z_mm_to_usteps(1.0). Rounds to an integer like the stepper conversion.
+        return round(mm / _Z_RESOLUTION_MM)
+
+    def move_x(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_x")
+
+    def move_y(self, rel_mm: float, blocking: bool = True):
+        self._no_xy("move_y")
+
+    def move_x_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_x_to")
+
+    def move_y_to(self, abs_mm: float, blocking: bool = True):
+        self._no_xy("move_y_to")
+
+    def _no_xy(self, name: str):
+        self._log.warning(f"{name} ignored: ASIZStage is a Z-only stage (pair via CombinedStage).")

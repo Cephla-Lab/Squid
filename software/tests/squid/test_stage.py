@@ -441,3 +441,133 @@ def test_ms2000_command_framing_and_error_ack():
     assert conn.written == [b"W Z\r"]
     with pytest.raises(RuntimeError, match="-4"):
         ser.command("M Z=99999999")
+
+
+def _sim_asi_stage(**kwargs):
+    return squid.stage.asi.ASIZStage(_sim_ls50(), stage_config=squid.config.get_stage_config(), **kwargs)
+
+
+def _sim_asi_combined():
+    """Simulated Cephla XY + ASI LS50 Z via the reused pi.CombinedStage; returns (combined, xy, z)."""
+    xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
+    z = _sim_asi_stage(invert_z=True, home_mm=0.0)
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    return combined, xy, z
+
+
+def test_asi_z_passthrough_no_sign():
+    stage = _sim_asi_stage(invert_z=False)
+    stage.move_z_to(1.0)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9
+    stage.move_z(-0.5)
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9
+
+
+def test_asi_z_invert_is_sign_flip():
+    # Native + is away from the sample; inverted squid Z shows the negation, so squid + is
+    # toward the sample and squid 0 == native 0 == the retracted end.
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config(), invert_z=True)
+    stage.move_z_to(1.0)
+    assert abs(sim.get_position_mm() - (-1.0)) < 1e-9  # native went negative (toward sample)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9  # squid reports the positive value
+    stage.move_z(0.5)  # squid + relative move -> native negative
+    assert abs(sim.get_position_mm() - (-1.5)) < 1e-9
+    stage.move_z_to(0.0)
+    assert abs(sim.get_position_mm() - 0.0) < 1e-9  # squid 0 == native 0 (retract)
+
+
+def test_asi_z_zero_is_inert():
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config())
+    stage.move_z_to(1.0)
+    stage.zero(False, False, True, False)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9  # unchanged; zero_here() stays unwired
+    assert sim._zero_count == 0
+
+
+def test_asi_z_home_noop_without_target():
+    # Defensive: with no home target configured, home(z) must not move.
+    stage = _sim_asi_stage(home_mm=None)
+    stage.move_z_to(1.0)
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9
+
+
+def test_asi_z_home_moves_to_target():
+    # Default wiring: home = retract to squid 0 (native 0, the power-on/retracted end).
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(
+        sim, stage_config=squid.config.get_stage_config(), home_mm=0.0, invert_z=True
+    )
+    stage.move_z_to(2.0)
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(stage.get_pos().z_mm - 0.0) < 1e-9
+    assert abs(sim.get_position_mm() - 0.0) < 1e-9
+    # A custom squid-frame target maps through the inversion.
+    stage2 = _sim_asi_stage(home_mm=0.2, invert_z=True)
+    stage2.home(False, False, True, False, blocking=True)
+    assert abs(stage2.get_pos().z_mm - 0.2) < 1e-9
+
+
+def test_asi_z_set_limits_reaches_backend():
+    stage = _sim_asi_stage(invert_z=False)
+    stage.set_limits(z_pos_mm=1.0, z_neg_mm=-1.0)
+    stage.move_z_to(5.0)
+    assert abs(stage.get_pos().z_mm - 1.0) < 1e-9
+
+
+def test_asi_z_set_limits_inverted_orders_fence():
+    # Software [0.05, 6.0] (squid frame) -> native fence [-6.0, -0.05] (min/max after flip).
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config(), invert_z=True)
+    stage.set_limits(z_pos_mm=6.0, z_neg_mm=0.05)
+    assert sim.hardware_limits_mm() == (-6.0, -0.05)
+    stage.move_z_to(10.0)  # over-range squid target clamps at the fence
+    assert abs(stage.get_pos().z_mm - 6.0) < 1e-9
+
+
+def test_asi_z_xy_noop():
+    stage = _sim_asi_stage()
+    stage.move_x(1.0)
+    stage.move_y(1.0)
+    assert stage.get_pos().x_mm == 0.0 and stage.get_pos().y_mm == 0.0
+
+
+def test_asi_z_grid_is_tenth_micron():
+    stage = _sim_asi_stage()
+    assert stage.z_mm_to_usteps(1.0) == 10000
+    assert abs(1.0 / stage.z_mm_to_usteps(1.0) - 1e-4) < 1e-12
+
+
+def test_asi_combined_stage_routes_axes():
+    combined, _, z = _sim_asi_combined()
+    combined.move_z_to(1.0)
+    assert abs(combined.get_pos().z_mm - 1.0) < 1e-9  # Z from the LS50
+    assert combined.get_pos().x_mm == 0.0  # X from cephla
+    combined.zero(False, False, True, False)  # z-zero routes to ASIZStage (inert)
+    assert abs(combined.get_pos().z_mm - 1.0) < 1e-9
+
+
+def test_asi_combined_zaxis_reports_ls50_grid():
+    combined, xy, z = _sim_asi_combined()
+    grid = combined.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+    assert abs(grid) == abs(z.z_mm_to_usteps(1.0))  # 0.1 um grid, not the Cephla stepper grid
+    assert abs(grid) != abs(xy.get_config().Z_AXIS.convert_real_units_to_ustep(1.0))
+
+
+def test_asi_z_close_closes_backend():
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config())
+    stage.close()
+    assert sim._closed is True
+
+
+def test_asi_z_home_after_close_is_noop():
+    # Once closed, home must not touch the torn-down backend (non-blocking-home race guard).
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config(), home_mm=0.0)
+    stage.move_z_to(1.0)
+    stage.close()
+    stage.home(False, False, True, False, blocking=True)
+    assert abs(sim.get_position_mm() - 1.0) < 1e-9  # unmoved after close
