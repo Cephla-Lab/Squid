@@ -375,6 +375,17 @@ void finalize_homing_w()
       tmc4361A_write_encoder(&tmc4361[w], 0);
       if (stage_PID_enabled[w])
         tmc4361A_set_PID(&tmc4361[w], PID_BPG0);
+      // The filter wheel is ROTARY (no travel end-stop) -- the linear-stage
+      // [xmin,xmax] range gate in tmc4361A_moveTo does not apply to it. Homing
+      // leaves xmin = L - C (L = press-latch position, C = release-detect
+      // position); a stale/mis-ordered latch makes xmin exceed the small absolute
+      // post-home offset target, so MOVETO_W is wrongly rejected with
+      // CMD_EXECUTION_ERROR. Reset to full range so valid rotary moves are never
+      // range-rejected. Safe: W xmin/xmax are written only in check_homing_w and
+      // consumed only by the moveTo range check (check_limits acts on X/Y/Z only,
+      // stopping them on a limit-switch event, and never touches W/W2).
+      tmc4361[w].xmin = INT32_MIN;
+      tmc4361[w].xmax = INT32_MAX;
     }
     W_pos = 0;
     is_homing_W = false;
@@ -393,6 +404,9 @@ void finalize_homing_w2()
       tmc4361A_write_encoder(&tmc4361[w2], 0);
       if (stage_PID_enabled[w2])
         tmc4361A_set_PID(&tmc4361[w2], PID_BPG0);
+      // Rotary wheel: no travel end-stop -> full range (see finalize_homing_w).
+      tmc4361[w2].xmin = INT32_MIN;
+      tmc4361[w2].xmax = INT32_MAX;
     }
     W2_pos = 0;
     is_homing_W2 = false;

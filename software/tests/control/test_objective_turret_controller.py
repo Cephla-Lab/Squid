@@ -5,9 +5,18 @@ from __future__ import annotations
 import pytest
 
 import control._def
+import control.objective_turret_controller as otc
 from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_RETRACTED_POS_MM
 from control.objective_turret_controller import (
+    ObjectiveTurret4PosController,
     ObjectiveTurret4PosControllerSimulation,
+    CW_DISABLE,
+    CW_ENABLE,
+    REG_CONTROL_WORD,
+    REG_CURRENT_POSITION,
+    REG_MICROSTEP,
+    REG_STATUS_WORD,
+    REG_TARGET_POSITION,
 )
 
 
@@ -167,3 +176,116 @@ def test_move_between_aliased_objectives_skips_z_retract(monkeypatch):
     assert sim.current_objective == "4x_B"
 
     sim.close()
+
+
+def test_move_to_objective_skips_restore_when_restore_z_false(monkeypatch):
+    # At startup Z was just homed to 0 (below the working floor), so the turret
+    # retracts and rotates but must NOT restore Z; the cached-Z restore handles it.
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=3.5)
+    sim = _make_sim(stage=stage)
+
+    sim.move_to_objective("40x", restore_z=False)
+
+    # Retract happened; the restore back to the captured Z did not.
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
+    assert sim.current_objective == "40x"
+    sim.close()
+
+
+class _FakeModbus:
+    """Minimal ModbusRTUClient stand-in that records register writes.
+
+    Reads return values that drive the controller's wait loops straight to a
+    completed/idle state; writes are recorded so tests can assert the control-word
+    sequence (in particular, that the motor ends de-energized).
+    """
+
+    def __init__(self):
+        self.connected = False
+        self.writes = []  # (address, value) in order
+        self._position = 0
+
+    def connect(self, port=None, baudrate=None):
+        self.connected = True
+
+    def disconnect(self):
+        self.connected = False
+
+    @property
+    def is_connected(self):
+        return self.connected
+
+    def read_register(self, slave_id, address):
+        # Microstep register must be 0..7; 4 -> 16 microsteps.
+        return 4 if address == REG_MICROSTEP else 0
+
+    def read_register_32bit(self, slave_id, address, signed=False):
+        return 0
+
+    def read_input_register(self, slave_id, address):
+        # Status word: neither RUNNING nor FAULT -> wait loops see "idle".
+        return 0
+
+    def read_input_register_32bit(self, slave_id, address, signed=False):
+        # Report the commanded target as the live position so the move-complete
+        # tolerance check passes immediately.
+        return self._position if address == REG_CURRENT_POSITION else 0
+
+    def write_register(self, slave_id, address, value):
+        self.writes.append((address, value))
+
+    def write_register_32bit(self, slave_id, address, value, signed=False):
+        self.writes.append((address, value))
+        if address == REG_TARGET_POSITION:
+            self._position = value
+
+    def control_word_writes(self):
+        return [value for (address, value) in self.writes if address == REG_CONTROL_WORD]
+
+
+def _make_real_controller(monkeypatch):
+    fake = _FakeModbus()
+    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
+    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
+    controller = ObjectiveTurret4PosController(serial_number="SIM", stage=None)
+    return controller, fake
+
+
+def test_init_leaves_motor_deenergized(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_move_to_objective_deenergizes_when_idle(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.writes.clear()
+    controller.move_to_objective("40x")
+    # The motor energizes to rotate but is de-energized once the move completes.
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    assert CW_ENABLE in fake.control_word_writes()  # it did energize to move
+    controller.close()
+
+
+def test_home_deenergizes_when_idle(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.writes.clear()
+    controller.home()
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_deenergize_is_best_effort(monkeypatch):
+    # _deenergize() runs from finally blocks after a move/home, so a failed disable
+    # write must not raise and mask the real timeout/fault that triggered the cleanup.
+    controller, fake = _make_real_controller(monkeypatch)
+
+    def failing_write(slave_id, address, value):
+        if address == REG_CONTROL_WORD:
+            raise IOError("modbus link down")
+        fake.writes.append((address, value))
+
+    monkeypatch.setattr(fake, "write_register", failing_write)
+    controller._deenergize()  # must not raise despite the failing control-word write
+    controller.close()

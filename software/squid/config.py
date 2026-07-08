@@ -201,6 +201,10 @@ class AxisConfig(pydantic.BaseModel):
             / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV))
         )
 
+    def clamp_position(self, value: float) -> float:
+        """Clamp a position (native units) into this axis's [MIN_POSITION, MAX_POSITION] range."""
+        return min(max(value, self.MIN_POSITION), self.MAX_POSITION)
+
 
 class StageConfig(pydantic.BaseModel):
     X_AXIS: AxisConfig

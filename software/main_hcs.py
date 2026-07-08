@@ -435,5 +435,23 @@ if __name__ == "__main__":
     # All hardware cleanup (camera, stage, microcontroller) happens in closeEvent,
     # which completes before os._exit() is called.
     exit_code = app.exec_()
+
+    # If the app is quitting mid-acquisition, request the normal abort and let the worker
+    # write its end breadcrumb so the watchdog reports "aborted" rather than a crash.
+    try:
+        mpc = getattr(win, "multipointController", None)
+        if mpc is not None and mpc.acquisition_in_progress():
+            log.info("Acquisition in progress at shutdown; requesting abort before exit.")
+            mpc.request_abort_aquisition()
+            if getattr(mpc, "thread", None) is not None:
+                mpc.thread.join(timeout=15.0)
+                if mpc.thread.is_alive():
+                    log.warning(
+                        "Acquisition thread still alive 15s after abort request; exiting anyway — "
+                        "the watchdog may report this run as a crash."
+                    )
+    except Exception as e:
+        log.warning(f"Error during shutdown abort handling: {e}")
+
     logging.shutdown()  # Flush log handlers before os._exit() bypasses Python cleanup
     os._exit(exit_code)

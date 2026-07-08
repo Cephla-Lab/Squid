@@ -21,6 +21,9 @@ class _Stub:
         self.do_reflection_af = do_reflection_af
         self.apply_channel_offset = apply_channel_offset
         self.stage = MagicMock()
+        # _move_z_for_offset logs the actual stage z after each move; give get_pos a numeric
+        # z_mm so the log f-string formats cleanly under the mock.
+        self.stage.get_pos.return_value.z_mm = 3.2
         self.piezo = MagicMock()
         self.piezo.range_um = 400.0
         self.z_piezo_um = 100.0

@@ -41,6 +41,7 @@ _SETTINGS_MAP = {
     "send_mosaic_snapshots": ("SEND_MOSAIC_SNAPSHOTS", lambda: True),
     "notify_on_acquisition_start": ("NOTIFY_ON_ACQUISITION_START", lambda: True),
     "notify_on_acquisition_finished": ("NOTIFY_ON_ACQUISITION_FINISHED", lambda: True),
+    "watchdog_enabled": ("WATCHDOG_ENABLED", lambda: True),
 }
 
 
@@ -156,6 +157,14 @@ class SlackSettingsDialog(QDialog):
         self.checkbox_notify_finished.setToolTip("Send a Slack message when an acquisition completes")
         notif_layout.addWidget(self.checkbox_notify_finished)
 
+        self.checkbox_watchdog = QCheckBox("Enable watchdog alerts")
+        self.checkbox_watchdog.setToolTip(
+            "Let the standalone acquisition watchdog process post a Slack alert when a run ends "
+            "prematurely (crash / hang / error / abort). Uses the bot token + channel above and is "
+            "independent of the master toggle; requires the watchdog process to be running."
+        )
+        notif_layout.addWidget(self.checkbox_watchdog)
+
         notif_group.setLayout(notif_layout)
         layout.addWidget(notif_group)
 
@@ -216,6 +225,7 @@ class SlackSettingsDialog(QDialog):
             "send_mosaic_snapshots": self.checkbox_send_mosaic,
             "notify_on_acquisition_start": self.checkbox_notify_start,
             "notify_on_acquisition_finished": self.checkbox_notify_finished,
+            "watchdog_enabled": self.checkbox_watchdog,
         }
         lineedit_map = {
             "bot_token": self.lineedit_bot_token,
@@ -254,6 +264,7 @@ class SlackSettingsDialog(QDialog):
         control._def.SlackNotifications.SEND_MOSAIC_SNAPSHOTS = self.checkbox_send_mosaic.isChecked()
         control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START = self.checkbox_notify_start.isChecked()
         control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_FINISHED = self.checkbox_notify_finished.isChecked()
+        control._def.SlackNotifications.WATCHDOG_ENABLED = self.checkbox_watchdog.isChecked()
 
         # Update notifier if available
         if self._slack_notifier:
@@ -270,6 +281,7 @@ class SlackSettingsDialog(QDialog):
             "send_mosaic_snapshots": self.checkbox_send_mosaic.isChecked(),
             "notify_on_acquisition_start": self.checkbox_notify_start.isChecked(),
             "notify_on_acquisition_finished": self.checkbox_notify_finished.isChecked(),
+            "watchdog_enabled": self.checkbox_watchdog.isChecked(),
         }
 
         try:
