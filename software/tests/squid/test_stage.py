@@ -5,6 +5,7 @@ import squid.stage.cephla
 import squid.stage.prior
 import squid.stage.utils
 import squid.stage.pi
+import squid.stage.asi
 import squid.config
 import squid.abc
 from tests.control.test_microcontroller import get_test_micro
@@ -379,3 +380,64 @@ def test_combined_stage_homes_z_before_xy(monkeypatch):
     combined.home(x=True, y=True, z=True, theta=False, blocking=False)
 
     assert calls == [("z", True), ("xy", False)]
+
+
+# --- ASI LS50 Z stage ---------------------------------------------------------
+
+
+def _sim_ls50():
+    return squid.stage.asi._SimulatedLS50()
+
+
+def test_simulated_ls50_move_and_clamp():
+    sim = _sim_ls50()
+    assert sim.get_position_mm() == 0.0  # power-on zero
+    assert sim.move_to(1.0) == 1.0
+    assert sim.move_relative(-0.25) == 0.75
+    assert sim.is_moving() is False
+    sim.set_travel_limits(-1.0, 1.0)
+    assert sim.move_to(5.0) == 1.0  # clamped to the fence
+    assert sim.move_to(-5.0) == -1.0
+
+
+def test_simulated_ls50_unfenced_passthrough():
+    # Native 0 is just the power-on position; until a fence is set the limits are unknown,
+    # so targets pass through unclamped (mirrors the real backend's clamp cache-miss).
+    sim = _sim_ls50()
+    assert sim.hardware_limits_mm() == (None, None)
+    assert sim.move_to(123.0) == 123.0
+
+
+def test_ls50_zero_here_redefines_frame():
+    # H Z=0 capability exists on the backend but is deliberately NOT wired to zero().
+    sim = _sim_ls50()
+    sim.move_to(1.0)
+    sim.zero_here()
+    assert sim.get_position_mm() == 0.0
+    assert sim._zero_count == 1
+
+
+class _FakeSerialConn:
+    """Scripted pyserial-like object: records writes, pops queued replies."""
+
+    def __init__(self, replies=()):
+        self.written = []
+        self.replies = list(replies)
+
+    def write(self, data):
+        self.written.append(data)
+
+    def read_until(self, expected=b"\n"):
+        return self.replies.pop(0) if self.replies else b""
+
+    def close(self):
+        pass
+
+
+def test_ms2000_command_framing_and_error_ack():
+    conn = _FakeSerialConn(replies=[b":A 0\r\n", b":N-4\r\n"])
+    ser = squid.stage.asi.MS2000Serial(conn)
+    assert ser.command("W Z") == ":A 0"
+    assert conn.written == [b"W Z\r"]
+    with pytest.raises(RuntimeError, match="-4"):
+        ser.command("M Z=99999999")
