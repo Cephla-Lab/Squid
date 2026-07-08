@@ -1133,7 +1133,10 @@ ASI_Z_INVERT = True
 # set_limits from StageConfig.Z_AXIS at microscope init. 0 leaves controller limits untouched.
 ASI_Z_TRAVEL_MM = 0.0
 # Squid-frame retract target home() drives Z to; 0.0 = native 0, the retracted end. Power the
-# controller on with the stage retracted (or re-establish the frame) so this holds.
+# controller on with the stage retracted (or re-establish the frame) so this holds. NOTE the
+# power-on-retracted convention is load-bearing beyond home(): the shared retract flows
+# (loading/shutdown/safety-position) drive Z to OBJECTIVE_RETRACTED_POS_MM in this same squid
+# frame and assume it is near-retracted.
 ASI_Z_HOME_MM = 0.0
 # Retract Z to ASI_Z_HOME_MM once at bring-up. MOVES the stage. Default off: no uncommanded
 # motion until the machine's frame convention is verified.
@@ -1148,7 +1151,7 @@ def uses_external_z_stage() -> bool:
     are defined, so a derived constant would capture the pre-override defaults. Policy sites use
     this instead of OR-ing vendor flags.
     """
-    return bool(USE_PI_FOCUS_STAGE) or bool(USE_ASI_Z_STAGE)
+    return bool(USE_PI_FOCUS_STAGE or USE_ASI_Z_STAGE)
 
 
 def _validate_external_z_stage_flags(use_pi: bool, use_asi: bool) -> None:

@@ -32,10 +32,7 @@ from squid.config import StageConfig
 
 _log = squid.logging.get_logger(__name__)
 
-STEPS_PER_MM = 10000  # ASI native unit = 0.1 um
-# The protocol grid is the finest addressable step; the GUI's ustep-based Z step snapping uses
-# this via z_mm_to_usteps (0.1 um is sub-slice for any real Z stack).
-_Z_RESOLUTION_MM = 1e-4
+STEPS_PER_MM = 10000  # ASI native unit = 0.1 um; also the finest addressable step (z_mm_to_usteps grid)
 _DEFAULT_MOVE_TIMEOUT_S = 30.0
 _STATUS_POLL_PERIOD_S = 0.05
 
@@ -91,16 +88,12 @@ class _SimulatedLS50:
         self._hi_mm: Optional[float] = None
         self._closed = False
         self._zero_count = 0
-        self._halt_count = 0
 
     def connect_serial(self, *args, **kwargs):
         pass
 
     def initialize(self):
         pass
-
-    def is_referenced(self) -> bool:
-        return True  # nothing to reference; position is always valid in the power-on frame
 
     def hardware_limits_mm(self) -> Tuple[Optional[float], Optional[float]]:
         return (self._lo_mm, self._hi_mm)
@@ -130,9 +123,6 @@ class _SimulatedLS50:
         self._pos_mm = 0.0
         self._zero_count += 1
 
-    def stop(self):
-        self._halt_count += 1
-
     def close(self):
         self._closed = True
 
@@ -158,9 +148,6 @@ class LS50Controller:
     def initialize(self) -> None:
         # Comms sanity only: prove the controller answers. NO motion, NO parameter writes.
         self.get_position_mm()
-
-    def is_referenced(self) -> bool:
-        return True  # nothing to reference; position is always valid in the power-on frame
 
     def hardware_limits_mm(self) -> Tuple[Optional[float], Optional[float]]:
         return (self._range_lo, self._range_hi)
@@ -267,8 +254,7 @@ class ASIZStage(AbstractStage):
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
 
         self._invert = invert_z
-        # NATIVE home target (the flip is an involution, so it maps squid -> native too).
-        self._home_native_mm = self._flip(home_mm) if home_mm is not None else None
+        self._home_mm = home_mm  # Squid-frame retract target; None = home(z) disabled
 
     def _flip(self, mm: float) -> float:
         # squid_z = -native_z (and vice versa) when inverted; identity otherwise.
@@ -294,15 +280,14 @@ class ASIZStage(AbstractStage):
             return StageStage(busy=self._backend.is_moving())
 
     def is_referenced(self) -> bool:
-        with self._lock:
-            return self._backend.is_referenced()
+        return True  # no referencing concept; the power-on frame is always valid
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # Home = retract to the configured target (native 0 by convention). There is no
         # hardware referencing routine on this stage.
         if not z:
             return
-        if self._home_native_mm is None:
+        if self._home_mm is None:
             self._log.warning("ASIZStage home(z=True) is a no-op: no home target configured (ASI_Z_HOME_MM).")
             return
         if blocking:
@@ -316,7 +301,7 @@ class ASIZStage(AbstractStage):
             with self._lock:
                 if self._closed:  # close() won the race; do not touch the torn-down handle
                     return
-                self._backend.move_to(self._home_native_mm, wait=True)
+                self._backend.move_to(self._flip(self._home_mm), wait=True)
         finally:
             self._busy = False
 
@@ -357,7 +342,7 @@ class ASIZStage(AbstractStage):
     def z_mm_to_usteps(self, mm: float) -> int:
         # The 0.1 um protocol grid is the finest addressable step; the GUI's Z step snapping
         # uses 1 / z_mm_to_usteps(1.0). Rounds to an integer like the stepper conversion.
-        return round(mm / _Z_RESOLUTION_MM)
+        return round(mm * STEPS_PER_MM)
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._no_xy("move_x")
@@ -394,11 +379,7 @@ def connect_asi_z_stage(
     targets; the real fence arrives via set_limits from StageConfig.Z_AXIS at microscope init.
     """
     if simulated:
-        backend = _SimulatedLS50()
-        backend.initialize()
-        if z_travel_mm:
-            backend.set_travel_limits(-z_travel_mm, z_travel_mm)
-        stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
+        backend, port = _SimulatedLS50(), None
     else:
         # Resolve the port BEFORE opening anything, so a missing controller never leaks a handle.
         if serial_port:
@@ -409,23 +390,22 @@ def connect_asi_z_stage(
             port = squid.stage.utils.resolve_serial_port_by_sn(
                 serialnum,
                 missing_hint=(
-                    "Verify the LS50 controller is powered and enumerates as a USB serial "
-                    "device (lsusb / dmesg)."
+                    "Verify the LS50 controller is powered and enumerates as a USB serial " "device (lsusb / dmesg)."
                 ),
             )
         else:
             raise RuntimeError("Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.")
-
         backend = LS50Controller()
-        try:
-            backend.connect_serial(port, baudrate=baudrate)
-            backend.initialize()
-            if z_travel_mm:
-                backend.set_travel_limits(-z_travel_mm, z_travel_mm)
-        except Exception:
-            backend.close()  # release the serial handle on any connect/init failure
-            raise
-        stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
+
+    try:
+        backend.connect_serial(port, baudrate=baudrate)
+        backend.initialize()
+        if z_travel_mm:
+            backend.set_travel_limits(-z_travel_mm, z_travel_mm)
+    except Exception:
+        backend.close()  # release the serial handle on any connect/init failure
+        raise
+    stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
 
     if home_on_startup:
         if home_mm is None:

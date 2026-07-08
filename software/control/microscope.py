@@ -72,6 +72,15 @@ else:
     NL5 = None
 
 
+def _config_sn_to_str(sn) -> Optional[str]:
+    """Normalise a config serial number to a string, or None when unset.
+
+    The config reader may coerce an all-digit serial to int; treat only "" / None as
+    "unset" so a numeric serial of 0 is not lost.
+    """
+    return str(sn) if sn not in (None, "") else None
+
+
 def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
     """Determine if a component should be simulated.
 
@@ -333,22 +342,15 @@ class Microscope:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
-        if control._def.USE_PI_FOCUS_STAGE and control._def.USE_ASI_Z_STAGE:
-            # Also validated at machine-config load; this guard catches programmatic/test configs
-            # that would otherwise silently nest one CombinedStage inside the other.
-            raise ValueError(
-                "USE_PI_FOCUS_STAGE and USE_ASI_Z_STAGE are mutually exclusive; "
-                "the microscope has exactly one external Z focus stage."
-            )
+        # Also validated at machine-config load; re-checking here catches programmatic/test
+        # configs that would otherwise silently nest one CombinedStage inside the other.
+        control._def._validate_external_z_stage_flags(control._def.USE_PI_FOCUS_STAGE, control._def.USE_ASI_Z_STAGE)
+        z_stage = None
         if control._def.USE_PI_FOCUS_STAGE:
             pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
-            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
-            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
-            pi_sn = control._def.PI_FOCUS_STAGE_SN
-            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
             z_stage = squid.stage.pi.connect_pi_focus_stage(
                 simulated=pi_simulated,
-                serialnum=pi_sn,
+                serialnum=_config_sn_to_str(control._def.PI_FOCUS_STAGE_SN),
                 serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
                 baudrate=control._def.PI_FOCUS_BAUDRATE,
                 axis=control._def.PI_FOCUS_AXIS,
@@ -360,26 +362,22 @@ class Microscope:
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
                 stage_config=stage_config,
             )
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
         elif control._def.USE_ASI_Z_STAGE:
             asi_simulated = _should_simulate(simulated, control._def.SIMULATE_ASI_Z_STAGE)
-            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
-            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
-            asi_sn = control._def.ASI_Z_STAGE_SN
-            asi_sn = str(asi_sn) if asi_sn not in (None, "") else None
             z_stage = squid.stage.asi.connect_asi_z_stage(
                 simulated=asi_simulated,
-                serialnum=asi_sn,
+                serialnum=_config_sn_to_str(control._def.ASI_Z_STAGE_SN),
                 serial_port=control._def.ASI_Z_SERIAL_PORT or None,
                 baudrate=control._def.ASI_Z_BAUDRATE,
-                # The LS50's retract position is native/squid 0 by definition (NOT
-                # OBJECTIVE_RETRACTED_POS_MM, which is an absolute-referenced-frame value).
+                # Separately configurable (not OBJECTIVE_RETRACTED_POS_MM): with no absolute
+                # reference, home retracts to the power-on end, native/squid 0 by convention.
                 home_mm=float(control._def.ASI_Z_HOME_MM),
                 invert_z=control._def.ASI_Z_INVERT,
                 home_on_startup=control._def.ASI_Z_HOME_ON_STARTUP and not skip_init,
                 z_travel_mm=control._def.ASI_Z_TRAVEL_MM,
                 stage_config=stage_config,
             )
+        if z_stage is not None:
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(

@@ -278,7 +278,7 @@ class PIFocusStage(AbstractStage):
 
 
 class CombinedStage(AbstractStage):
-    """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
+    """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (an external Z-only focus stage, e.g. the V-308 or the ASI LS50)."""
 
     def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
         super().__init__(stage_config or xy_stage.get_config())
@@ -329,7 +329,7 @@ class CombinedStage(AbstractStage):
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         xy_requested = x or y or theta
         if z:
-            # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
+            # Z must finish retracting before any XY sweep (e.g. the V-308 voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
             self._xy.home(x, y, False, theta, blocking)
@@ -362,8 +362,8 @@ class CombinedStage(AbstractStage):
         self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
 
     # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage, so
-    # the wrapper must expose them. X/Y come from the wrapped XY stage; Z comes from the V-308
-    # (continuous), not the XY stepper grid.
+    # the wrapper must expose them. X/Y come from the wrapped XY stage; Z comes from the external
+    # Z stage's own grid, not the XY stepper grid.
     def x_mm_to_usteps(self, mm: float):
         return self._xy.x_mm_to_usteps(mm)
 
@@ -374,7 +374,7 @@ class CombinedStage(AbstractStage):
         return self._z.z_mm_to_usteps(mm)
 
     def close(self):
-        self._z.close()  # the V-308 backend's FTDI handle; Cephla/Prior XY close() is a no-op
+        self._z.close()  # the external Z stage's serial handle; Cephla/Prior XY close() is a no-op
         self._xy.close()
 
 

@@ -62,10 +62,10 @@ def _sim_pi_stage():
     return squid.stage.pi.PIFocusStage(_make_referenced_sim(), stage_config=squid.config.get_stage_config())
 
 
-def _sim_combined_stage():
-    """Simulated Cephla XY + PI Z composite; returns (combined, xy, z)."""
+def _sim_combined_stage(z_stage=None):
+    """Simulated Cephla XY + Z-only composite (PI Z by default); returns (combined, xy, z)."""
     xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
-    z = _sim_pi_stage()
+    z = z_stage if z_stage is not None else _sim_pi_stage()
     combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
     return combined, xy, z
 
@@ -444,16 +444,20 @@ def test_ms2000_command_framing_and_error_ack():
         ser.command("M Z=99999999")
 
 
+def _ls50_ctrl(conn):
+    """Real LS50Controller + MS2000Serial over a scripted connection."""
+    ctrl = squid.stage.asi.LS50Controller()
+    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    return ctrl
+
+
 def _sim_asi_stage(**kwargs):
     return squid.stage.asi.ASIZStage(_sim_ls50(), stage_config=squid.config.get_stage_config(), **kwargs)
 
 
 def _sim_asi_combined():
     """Simulated Cephla XY + ASI LS50 Z via the reused pi.CombinedStage; returns (combined, xy, z)."""
-    xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
-    z = _sim_asi_stage(invert_z=True, home_mm=0.0)
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
-    return combined, xy, z
+    return _sim_combined_stage(z_stage=_sim_asi_stage(invert_z=True, home_mm=0.0))
 
 
 def test_asi_z_passthrough_no_sign():
@@ -498,9 +502,7 @@ def test_asi_z_home_noop_without_target():
 def test_asi_z_home_moves_to_target():
     # Default wiring: home = retract to squid 0 (native 0, the power-on/retracted end).
     sim = _sim_ls50()
-    stage = squid.stage.asi.ASIZStage(
-        sim, stage_config=squid.config.get_stage_config(), home_mm=0.0, invert_z=True
-    )
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config(), home_mm=0.0, invert_z=True)
     stage.move_z_to(2.0)
     stage.home(False, False, True, False, blocking=True)
     assert abs(stage.get_pos().z_mm - 0.0) < 1e-9
@@ -538,7 +540,6 @@ def test_asi_z_xy_noop():
 def test_asi_z_grid_is_tenth_micron():
     stage = _sim_asi_stage()
     assert stage.z_mm_to_usteps(1.0) == 10000
-    assert abs(1.0 / stage.z_mm_to_usteps(1.0) - 1e-4) < 1e-12
 
 
 def test_asi_combined_stage_routes_axes():
@@ -577,8 +578,7 @@ def test_asi_z_home_after_close_is_noop():
 def test_ls50_controller_framing_and_units():
     # Real LS50Controller + MS2000Serial over a scripted connection: 0.1 um units on M/W.
     conn = _FakeSerialConn(replies=[b":A\r\n", b":A -12345\r\n"])
-    ctrl = squid.stage.asi.LS50Controller()
-    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    ctrl = _ls50_ctrl(conn)
     assert ctrl.move_to(0.1234, wait=False) == 0.1234
     assert conn.written == [b"M Z=1234\r"]
     assert abs(ctrl.get_position_mm() - (-1.2345)) < 1e-9  # ':A -12345' -> -1.2345 mm
@@ -587,15 +587,13 @@ def test_ls50_controller_framing_and_units():
 def test_ls50_wait_idle_polls_status():
     # wait=True polls '/' until N; a stage that never idles raises RuntimeError on timeout.
     conn = _FakeSerialConn(replies=[b":A\r\n", b"B\r\n", b"B\r\n", b"N\r\n", b":A 5000\r\n"])
-    ctrl = squid.stage.asi.LS50Controller()
-    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    ctrl = _ls50_ctrl(conn)
     assert abs(ctrl.move_to(0.5, wait=True) - 0.5) < 1e-9
     assert conn.written[0] == b"M Z=5000\r"
     assert conn.written.count(b"/\r") == 3
 
     stuck = _FakeSerialConn(replies=[b":A\r\n"], default=b"B\r\n")
-    ctrl2 = squid.stage.asi.LS50Controller()
-    ctrl2._serial = squid.stage.asi.MS2000Serial(stuck)
+    ctrl2 = _ls50_ctrl(stuck)
     with pytest.raises(RuntimeError, match="idle"):
         ctrl2.move_to(0.5, wait=True, timeout=0.12)
 
@@ -603,8 +601,7 @@ def test_ls50_wait_idle_polls_status():
 def test_ls50_stop_tolerates_halt_ack():
     # HALT ('\\') acks with ':N-21' on the MS-2000; stop() must not raise on it.
     conn = _FakeSerialConn(replies=[b":N-21\r\n"])
-    ctrl = squid.stage.asi.LS50Controller()
-    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    ctrl = _ls50_ctrl(conn)
     ctrl.stop()
     assert conn.written == [b"\\\r"]
 
