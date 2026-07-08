@@ -420,15 +420,16 @@ def test_ls50_zero_here_redefines_frame():
 class _FakeSerialConn:
     """Scripted pyserial-like object: records writes, pops queued replies."""
 
-    def __init__(self, replies=()):
+    def __init__(self, replies=(), default=b""):
         self.written = []
         self.replies = list(replies)
+        self.default = default
 
     def write(self, data):
         self.written.append(data)
 
     def read_until(self, expected=b"\n"):
-        return self.replies.pop(0) if self.replies else b""
+        return self.replies.pop(0) if self.replies else self.default
 
     def close(self):
         pass
@@ -571,3 +572,97 @@ def test_asi_z_home_after_close_is_noop():
     stage.close()
     stage.home(False, False, True, False, blocking=True)
     assert abs(sim.get_position_mm() - 1.0) < 1e-9  # unmoved after close
+
+
+def test_ls50_controller_framing_and_units():
+    # Real LS50Controller + MS2000Serial over a scripted connection: 0.1 um units on M/W.
+    conn = _FakeSerialConn(replies=[b":A\r\n", b":A -12345\r\n"])
+    ctrl = squid.stage.asi.LS50Controller()
+    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    assert ctrl.move_to(0.1234, wait=False) == 0.1234
+    assert conn.written == [b"M Z=1234\r"]
+    assert abs(ctrl.get_position_mm() - (-1.2345)) < 1e-9  # ':A -12345' -> -1.2345 mm
+
+
+def test_ls50_wait_idle_polls_status():
+    # wait=True polls '/' until N; a stage that never idles raises RuntimeError on timeout.
+    conn = _FakeSerialConn(replies=[b":A\r\n", b"B\r\n", b"B\r\n", b"N\r\n", b":A 5000\r\n"])
+    ctrl = squid.stage.asi.LS50Controller()
+    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    assert abs(ctrl.move_to(0.5, wait=True) - 0.5) < 1e-9
+    assert conn.written[0] == b"M Z=5000\r"
+    assert conn.written.count(b"/\r") == 3
+
+    stuck = _FakeSerialConn(replies=[b":A\r\n"], default=b"B\r\n")
+    ctrl2 = squid.stage.asi.LS50Controller()
+    ctrl2._serial = squid.stage.asi.MS2000Serial(stuck)
+    with pytest.raises(RuntimeError, match="idle"):
+        ctrl2.move_to(0.5, wait=True, timeout=0.12)
+
+
+def test_ls50_stop_tolerates_halt_ack():
+    # HALT ('\\') acks with ':N-21' on the MS-2000; stop() must not raise on it.
+    conn = _FakeSerialConn(replies=[b":N-21\r\n"])
+    ctrl = squid.stage.asi.LS50Controller()
+    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    ctrl.stop()
+    assert conn.written == [b"\\\r"]
+
+
+def test_asi_builder_simulated_returns_working_stage():
+    stage = squid.stage.asi.connect_asi_z_stage(
+        simulated=True, invert_z=True, stage_config=squid.config.get_stage_config()
+    )
+    assert isinstance(stage, squid.stage.asi.ASIZStage)
+    stage.move_z_to(0.5)
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9
+
+
+def test_asi_builder_default_causes_no_motion():
+    # Bring-up must not move: no homing/reference/zero happens in the factory by default.
+    stage = squid.stage.asi.connect_asi_z_stage(simulated=True, stage_config=squid.config.get_stage_config())
+    assert abs(stage.get_pos().z_mm - 0.0) < 1e-9  # still at power-on zero
+
+
+def test_asi_builder_home_on_startup_opt_in():
+    stage = squid.stage.asi.connect_asi_z_stage(
+        simulated=True, home_mm=0.5, home_on_startup=True, stage_config=squid.config.get_stage_config()
+    )
+    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9  # retracted to the home target at bring-up
+    # home_on_startup without a target: warn + no motion, no exception.
+    stage2 = squid.stage.asi.connect_asi_z_stage(
+        simulated=True, home_mm=None, home_on_startup=True, stage_config=squid.config.get_stage_config()
+    )
+    assert abs(stage2.get_pos().z_mm - 0.0) < 1e-9
+
+
+def test_asi_builder_travel_fence():
+    stage = squid.stage.asi.connect_asi_z_stage(
+        simulated=True, z_travel_mm=50.0, stage_config=squid.config.get_stage_config()
+    )
+    assert stage._backend.hardware_limits_mm() == (-50.0, 50.0)
+    stage.move_z_to(200.0)
+    assert abs(stage.get_pos().z_mm - 50.0) < 1e-9
+
+
+def test_connect_asi_requires_port():
+    with pytest.raises(RuntimeError, match="ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT"):
+        squid.stage.asi.connect_asi_z_stage(simulated=False)
+
+
+def test_resolve_serial_port_by_sn_shared(monkeypatch):
+    import serial.tools.list_ports
+
+    class _P:
+        def __init__(self, dev, sn):
+            self.device, self.serial_number = dev, sn
+
+    monkeypatch.setattr(
+        serial.tools.list_ports, "comports", lambda: [_P("/dev/ttyUSB2", 12345), _P("/dev/ttyUSB3", "abc")]
+    )
+    # String-normalized compare: an int-coerced config serial still matches.
+    assert squid.stage.utils.resolve_serial_port_by_sn("12345") == "/dev/ttyUSB2"
+    assert squid.stage.utils.resolve_serial_port_by_sn(12345) == "/dev/ttyUSB2"
+    monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
+    with pytest.raises(RuntimeError, match="check the LS50 controller"):
+        squid.stage.utils.resolve_serial_port_by_sn("12345", missing_hint="check the LS50 controller")

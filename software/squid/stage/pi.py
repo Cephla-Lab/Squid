@@ -599,23 +599,17 @@ class C414FocusStage:
 
 
 def _resolve_port_by_sn(serialnum) -> str:
-    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path.
+    """Resolve the C-414's FTDI serial number (e.g. '1UETR6I!') to a serial device path."""
+    import squid.stage.utils  # lazy: avoids import-order coupling with control._def
 
-    Compares as strings: the config reader may coerce an all-digit serial to int, so we
-    normalise both sides. (A leading-zero numeric serial loses its zero at config-read time
-    and cannot be recovered here -- keep such serials quoted, or use PI_FOCUS_SERIAL_PORT.)
-    """
-    import serial.tools.list_ports
-
-    target = str(serialnum)
-    matches = [p.device for p in serial.tools.list_ports.comports() if str(p.serial_number) == target]
-    if not matches:
-        raise RuntimeError(
-            f"No serial port with serial_number={serialnum!r}. On Linux the C-414's custom-VID "
-            f"FTDI needs the ftdi_sio bind rule (98-pi-c414-bind.rules) installed so /dev/ttyUSB* "
-            f"appears; verify it is present and the controller is powered."
-        )
-    return matches[0]
+    return squid.stage.utils.resolve_serial_port_by_sn(
+        serialnum,
+        missing_hint=(
+            "On Linux the C-414's custom-VID FTDI needs the ftdi_sio bind rule "
+            "(98-pi-c414-bind.rules) installed so /dev/ttyUSB* appears; verify it is present "
+            "and the controller is powered."
+        ),
+    )
 
 
 def connect_pi_focus_stage(

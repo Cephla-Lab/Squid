@@ -137,6 +137,107 @@ class _SimulatedLS50:
         self._closed = True
 
 
+class LS50Controller:
+    """ASI LS50 Z linear stage on an MS-2000-family controller (CR text protocol, 1/10 um units).
+
+    Native 0 is the power-on position (the retracted end by convention); native negative is
+    toward the sample. There is no referencing routine, and bring-up performs no motion and
+    writes no controller parameters.
+    """
+
+    def __init__(self):
+        self._serial: Optional[MS2000Serial] = None
+        # Cached fence [lo, hi] in native mm so moves can clamp without a query each move;
+        # None until set_travel_limits is called (limits are unknown at power-on).
+        self._range_lo: Optional[float] = None
+        self._range_hi: Optional[float] = None
+
+    def connect_serial(self, comport: str, baudrate: int = 115200) -> None:
+        self._serial = MS2000Serial.open(comport, baudrate=baudrate)
+
+    def initialize(self) -> None:
+        # Comms sanity only: prove the controller answers. NO motion, NO parameter writes.
+        self.get_position_mm()
+
+    def is_referenced(self) -> bool:
+        return True  # nothing to reference; position is always valid in the power-on frame
+
+    def hardware_limits_mm(self) -> Tuple[Optional[float], Optional[float]]:
+        return (self._range_lo, self._range_hi)
+
+    def set_travel_limits(self, min_mm: float, max_mm: float) -> None:
+        # SL (lower) / SU (upper) take mm, unlike M/R/W which take tenths of microns.
+        self._serial.command(f"SL Z={float(min_mm):.4f}")
+        self._serial.command(f"SU Z={float(max_mm):.4f}")
+        self._range_lo, self._range_hi = float(min_mm), float(max_mm)
+
+    def get_position_mm(self) -> float:
+        reply = self._serial.command("W Z")  # ':A -12345' or bare '-12345', in 0.1 um
+        match = re.search(r"-?\d+(?:\.\d+)?", reply.replace(":A", "", 1))
+        if not match:
+            raise RuntimeError(f"Could not parse LS50 position from reply {reply!r}")
+        return float(match.group(0)) / STEPS_PER_MM
+
+    def is_moving(self) -> bool:
+        return "B" in self._serial.command("/").upper()
+
+    def _clamp_target(self, z_mm: float) -> float:
+        """Clamp an absolute native target to the fence; pass through while unfenced."""
+        lo, hi = self._range_lo, self._range_hi
+        if lo is None:
+            return z_mm
+        clamped = min(max(z_mm, lo), hi)
+        if abs(clamped - z_mm) > 1e-9:
+            _log.warning(
+                "LS50 Z target %.5f mm is outside the travel fence [%.5f, %.5f]; clamped to %.5f mm.",
+                z_mm,
+                lo,
+                hi,
+                clamped,
+            )
+        return clamped
+
+    def move_to(self, z_mm: float, wait: bool = True, timeout: float = _DEFAULT_MOVE_TIMEOUT_S) -> float:
+        target = self._clamp_target(float(z_mm))
+        self._serial.command(f"M Z={round(target * STEPS_PER_MM)}")
+        if wait:
+            self._wait_idle(timeout)
+            return self.get_position_mm()
+        return target
+
+    def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = _DEFAULT_MOVE_TIMEOUT_S) -> float:
+        # Resolve to an absolute target (M) rather than sending R Z=, so a jog past the fence
+        # clamps instead of erroring or overdriving.
+        return self.move_to(self.get_position_mm() + float(dz_mm), wait=wait, timeout=timeout)
+
+    def _wait_idle(self, timeout_s: float) -> None:
+        # '/' polling is the only settle signal (there is no on-target query in this command set).
+        deadline = time.monotonic() + timeout_s
+        while self.is_moving():
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"LS50 did not reach idle within {timeout_s:.1f}s")
+            time.sleep(_STATUS_POLL_PERIOD_S)
+
+    def zero_here(self) -> None:
+        # Redefine the current position as native 0. Deliberately NOT wired to
+        # AbstractStage.zero() -- see ASIZStage.zero().
+        self._serial.command("H Z=0")
+
+    def stop(self) -> None:
+        # HALT; the MS-2000 acks it with ':N-21', which is expected, not an error.
+        self._serial.command("\\", check_error=False)
+
+    def close(self) -> None:
+        if self._serial:
+            self._serial.close()
+
+    def __enter__(self) -> "LS50Controller":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
 class ASIZStage(AbstractStage):
     """Z-only AbstractStage backed by an ASI LS50. X / Y / theta are no-ops.
 
@@ -272,3 +373,63 @@ class ASIZStage(AbstractStage):
 
     def _no_xy(self, name: str):
         self._log.warning(f"{name} ignored: ASIZStage is a Z-only stage (pair via CombinedStage).")
+
+
+def connect_asi_z_stage(
+    simulated: bool = False,
+    serialnum: Optional[str] = None,
+    serial_port: Optional[str] = None,
+    baudrate: int = 115200,
+    home_mm: Optional[float] = None,
+    invert_z: bool = False,
+    home_on_startup: bool = False,
+    z_travel_mm: float = 0.0,
+    stage_config: Optional[StageConfig] = None,
+) -> ASIZStage:
+    """Open the LS50 controller over serial (or a simulated backend) and wrap it as an ASIZStage.
+
+    Bring-up performs NO motion unless home_on_startup=True (which requires home_mm and does one
+    blocking retract). z_travel_mm > 0 sets a coarse sanity fence of native [-travel, +travel]
+    around the power-on zero -- it can never exclude a reachable position, but stops absurd
+    targets; the real fence arrives via set_limits from StageConfig.Z_AXIS at microscope init.
+    """
+    if simulated:
+        backend = _SimulatedLS50()
+        backend.initialize()
+        if z_travel_mm:
+            backend.set_travel_limits(-z_travel_mm, z_travel_mm)
+        stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
+    else:
+        # Resolve the port BEFORE opening anything, so a missing controller never leaks a handle.
+        if serial_port:
+            port = serial_port
+        elif serialnum:
+            import squid.stage.utils
+
+            port = squid.stage.utils.resolve_serial_port_by_sn(
+                serialnum,
+                missing_hint=(
+                    "Verify the LS50 controller is powered and enumerates as a USB serial "
+                    "device (lsusb / dmesg)."
+                ),
+            )
+        else:
+            raise RuntimeError("Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.")
+
+        backend = LS50Controller()
+        try:
+            backend.connect_serial(port, baudrate=baudrate)
+            backend.initialize()
+            if z_travel_mm:
+                backend.set_travel_limits(-z_travel_mm, z_travel_mm)
+        except Exception:
+            backend.close()  # release the serial handle on any connect/init failure
+            raise
+        stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
+
+    if home_on_startup:
+        if home_mm is None:
+            _log.warning("ASI_Z_HOME_ON_STARTUP is set but no home target is configured; skipping the retract.")
+        else:
+            stage.home(False, False, True, False, blocking=True)
+    return stage
