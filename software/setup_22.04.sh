@@ -80,11 +80,8 @@ cd "$SQUID_SOFTWARE_ROOT"
 sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
 
 # PI C-414 focus stage (USE_PI_FOCUS_STAGE): bind the custom-VID FTDI to ftdi_sio so
-# /dev/ttyUSB* appears, lower the latency timer, and grant the seated user access
-# (dialout group + uaccess ACL). Reload + trigger so it applies now.
-sudo cp "$PI_UDEV_RULE_DIR/70-pi-c414-serial.rules" "$PI_UDEV_RULE_DIR/98-pi-c414-bind.rules" /etc/udev/rules.d
-# Remove the pre-rename rule file: it sorts after 70- and would re-apply MODE="0666".
-sudo rm -f /etc/udev/rules.d/99-pi-ftdi-latency.rules
+# /dev/ttyUSB* appears, and lower the latency timer. Reload + trigger so it applies now.
+sudo cp "$PI_UDEV_RULE_DIR/98-pi-c414-bind.rules" "$PI_UDEV_RULE_DIR/99-pi-ftdi-latency.rules" /etc/udev/rules.d
 # Trigger with --action=add: the bind rule matches ACTION=="add", so a plain `udevadm
 # trigger` (which defaults to action=change) would NOT bind an already-connected C-414.
 sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=usb --subsystem-match=usb-serial --subsystem-match=tty
