@@ -1116,6 +1116,49 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
+# ASI LS50 Z-only linear stage on its own MS-2000-family controller, used as the main Z (wraps
+# the configured XY stage via CombinedStage). CR-terminated text protocol, 1/10 um native units.
+USE_ASI_Z_STAGE = False
+SIMULATE_ASI_Z_STAGE = False
+ASI_Z_STAGE_SN = ""  # USB serial number -> resolved to a port
+ASI_Z_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM7)
+ASI_Z_BAUDRATE = 115200
+# The LS50 has no absolute reference: native 0 is the power-on position (the retracted end by
+# convention) and native POSITIVE is away from the sample. True (the standard wiring) shows the
+# negation (squid_z = -native_z), so squid 0 = retracted and squid Z+ is toward the sample.
+ASI_Z_INVERT = True
+# Coarse sanity fence: >0 sets controller soft limits (SL/SU) and a software clamp to
+# [-travel, +travel] native mm around the power-on zero. +/- full travel (50 for the LS50) can
+# never exclude a reachable position but stops absurd targets; the real fence arrives via
+# set_limits from StageConfig.Z_AXIS at microscope init. 0 leaves controller limits untouched.
+ASI_Z_TRAVEL_MM = 0.0
+# Squid-frame retract target home() drives Z to; 0.0 = native 0, the retracted end. Power the
+# controller on with the stage retracted (or re-establish the frame) so this holds.
+ASI_Z_HOME_MM = 0.0
+# Retract Z to ASI_Z_HOME_MM once at bring-up. MOVES the stage. Default off: no uncommanded
+# motion until the machine's frame convention is verified.
+ASI_Z_HOME_ON_STARTUP = False
+
+
+def uses_external_z_stage() -> bool:
+    """True when an external Z-only focus stage (PI V-308 or ASI LS50) provides the Z axis and
+    the XY stage is wrapped in a CombinedStage.
+
+    Must stay a function: the machine-config loader below overrides the flag globals AFTER they
+    are defined, so a derived constant would capture the pre-override defaults. Policy sites use
+    this instead of OR-ing vendor flags.
+    """
+    return bool(USE_PI_FOCUS_STAGE) or bool(USE_ASI_Z_STAGE)
+
+
+def _validate_external_z_stage_flags(use_pi: bool, use_asi: bool) -> None:
+    if use_pi and use_asi:
+        raise ValueError(
+            "USE_PI_FOCUS_STAGE and USE_ASI_Z_STAGE are mutually exclusive "
+            "(the microscope has exactly one external Z focus stage; set only one in the machine config)"
+        )
+
+
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
@@ -1359,6 +1402,7 @@ if config_files:
         populate_class_from_dict(myclass, pop_items)
 
     _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+    _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1373,6 +1417,7 @@ else:
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
         _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+        _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

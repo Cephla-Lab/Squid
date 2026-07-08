@@ -666,3 +666,63 @@ def test_resolve_serial_port_by_sn_shared(monkeypatch):
     monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
     with pytest.raises(RuntimeError, match="check the LS50 controller"):
         squid.stage.utils.resolve_serial_port_by_sn("12345", missing_hint="check the LS50 controller")
+
+
+def test_uses_external_z_stage_predicate(monkeypatch):
+    import control._def
+
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False, raising=False)
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", False, raising=False)
+    assert control._def.uses_external_z_stage() is False
+    # Must read the globals at CALL time (the machine-ini loader overrides them after
+    # definition, and tests monkeypatch them), not capture them at definition time.
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
+    assert control._def.uses_external_z_stage() is True
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", False, raising=False)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
+    assert control._def.uses_external_z_stage() is True
+
+
+def test_microscope_wraps_asi_z_when_enabled(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    scope.stage.move_z_to(0.3)
+    assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9
+    scope.close()  # exercises Microscope.close() -> CombinedStage.close() -> ASIZStage.close()
+
+
+def test_microscope_rejects_pi_and_asi_together(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+
+
+def test_asi_home_xyz_retracts_z_before_xy(monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
+
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)  # ASI Z wrapped, not stepper Z
+    scope.stage.move_z_to(2.0)
+    scope.home_xyz()
+    # The external-Z branch retracts to the home target (squid 0 = native 0, the retracted
+    # end) instead of running the stepper Z-homing path.
+    assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6
+    scope.close()

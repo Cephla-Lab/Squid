@@ -85,6 +85,8 @@ else:
     import squid.stage.cephla
 if USE_PI_FOCUS_STAGE:
     import squid.stage.pi
+if USE_ASI_Z_STAGE:
+    import squid.stage.asi
 from control.piezo import PiezoStage
 
 if USE_XERYON:
@@ -774,10 +776,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-                if USE_PI_FOCUS_STAGE:
-                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # The PI driver clamps every move to the configured Z limits, so a stale
-                    # cached Z cannot command an out-of-range move.
+                if uses_external_z_stage():
+                    # External Z focus stage: no Z_HOME_SAFETY_POINT floor; restore the cached
+                    # absolute Z directly. The drivers clamp every move to the configured Z
+                    # limits, so a stale cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
                 elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
                     self.stage.move_z_to(cached_pos.z_mm)

@@ -28,6 +28,7 @@ import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
+import squid.stage.asi
 import squid.stage.cephla
 import squid.stage.pi
 import squid.stage.utils
@@ -332,6 +333,13 @@ class Microscope:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
+        if control._def.USE_PI_FOCUS_STAGE and control._def.USE_ASI_Z_STAGE:
+            # Also validated at machine-config load; this guard catches programmatic/test configs
+            # that would otherwise silently nest one CombinedStage inside the other.
+            raise ValueError(
+                "USE_PI_FOCUS_STAGE and USE_ASI_Z_STAGE are mutually exclusive; "
+                "the microscope has exactly one external Z focus stage."
+            )
         if control._def.USE_PI_FOCUS_STAGE:
             pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
             # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
@@ -350,6 +358,26 @@ class Microscope:
                 invert_z=control._def.PI_FOCUS_INVERT_Z,
                 home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                stage_config=stage_config,
+            )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+        elif control._def.USE_ASI_Z_STAGE:
+            asi_simulated = _should_simulate(simulated, control._def.SIMULATE_ASI_Z_STAGE)
+            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
+            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
+            asi_sn = control._def.ASI_Z_STAGE_SN
+            asi_sn = str(asi_sn) if asi_sn not in (None, "") else None
+            z_stage = squid.stage.asi.connect_asi_z_stage(
+                simulated=asi_simulated,
+                serialnum=asi_sn,
+                serial_port=control._def.ASI_Z_SERIAL_PORT or None,
+                baudrate=control._def.ASI_Z_BAUDRATE,
+                # The LS50's retract position is native/squid 0 by definition (NOT
+                # OBJECTIVE_RETRACTED_POS_MM, which is an absolute-referenced-frame value).
+                home_mm=float(control._def.ASI_Z_HOME_MM),
+                invert_z=control._def.ASI_Z_INVERT,
+                home_on_startup=control._def.ASI_Z_HOME_ON_STARTUP and not skip_init,
+                z_travel_mm=control._def.ASI_Z_TRAVEL_MM,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -893,21 +921,20 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
-        retracts it to the objective-clear end before moving XY, then performs a coordinated
-        X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
-        homing X, moving X clear, then homing Y.
+        Homes Z first if enabled, then (for an external Z focus stage) retracts Z to the
+        objective-clear end before moving XY, then performs a coordinated X/Y homing sequence
+        that avoids the plate clamp actuation post by moving Y first, homing X, moving X clear,
+        then homing Y.
         """
-        if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
+        if control._def.HOMING_ENABLED_Z and not control._def.uses_external_z_stage():
             self.stage.home(x=False, y=False, z=True, theta=False)
 
-        # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
-        # is clear: home(z) references-if-needed and drives Z to the retracted position
-        # (the positive travel limit when PI_FOCUS_HOME_TO_POSITIVE_LIMIT is set, e.g. an upright
-        # system; otherwise OBJECTIVE_RETRACTED_POS_MM). Gated on the PI stage so Cephla/Prior
-        # behaviour is unchanged.
-        if control._def.USE_PI_FOCUS_STAGE:
-            self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
+        # Before sweeping XY, make sure the objective is clear: for an external Z focus stage
+        # home(z) drives Z to its retracted position (referencing first if the driver needs it --
+        # the V-308 voice coil has no self-locking, and the LS50 retracts to its native 0).
+        # Gated on the external stage so Cephla/Prior behaviour is unchanged.
+        if control._def.uses_external_z_stage():
+            self._log.info("Homing Z (external focus stage) to the retracted position before XY homing.")
             self.stage.home(x=False, y=False, z=True, theta=False)
 
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
