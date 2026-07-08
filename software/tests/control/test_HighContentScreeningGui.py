@@ -1,3 +1,5 @@
+import pytest
+
 import control._def
 
 import control.gui_hcs
@@ -6,11 +8,10 @@ from qtpy.QtWidgets import QMessageBox
 import control.microscope
 
 
-def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
-    # This just tests to make sure we can successfully create a simulated hcs gui with or without
-    # the piezo objective.
+@pytest.fixture
+def confirm_exit_yes(monkeypatch):
+    """Auto-accept the 'Confirm Exit' dialog GUI shutdown shows, or teardown hangs forever."""
 
-    # We need to close the dialog shown on GUI shut down or it will hang forever.
     def confirm_exit(parent, title, text, *args, **kwargs):
         if title == "Confirm Exit":
             return QMessageBox.Yes
@@ -18,6 +19,10 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "question", confirm_exit)
 
+
+def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
+    # This just tests to make sure we can successfully create a simulated hcs gui with or without
+    # the piezo objective.
     control._def.HAS_OBJECTIVE_PIEZO = True
     scope_with = control.microscope.Microscope.build_from_global_config(True)
     with_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_with, is_simulation=True)
@@ -29,16 +34,9 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
     qtbot.add_widget(without_piezo)
 
 
-def test_image_display_signals_connected_once(qtbot, monkeypatch):
+def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: make_connections and makeNapariConnections both used to wire the
     non-Napari image-display signals, causing slots to fire twice per click/scroll."""
-
-    def confirm_exit(parent, title, text, *args, **kwargs):
-        if title == "Confirm Exit":
-            return QMessageBox.Yes
-        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
-
-    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
 
     # Patch slots at the class level *before* construction so signal-slot bindings
     # made inside __init__ resolve to these counters.
@@ -64,25 +62,15 @@ def test_image_display_signals_connected_once(qtbot, monkeypatch):
     assert len(click_calls) == 1, f"image_click_coordinates wired {len(click_calls)} times, expected 1"
 
 
-def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch):
+def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm_exit_yes):
     """The stage may own its own transport (e.g. the PI C-414 serial handle), so cleanup
-    must call stage.close() when it exists — before the microcontroller, mirroring
-    Microscope.close()."""
-
-    def confirm_exit(parent, title, text, *args, **kwargs):
-        if title == "Confirm Exit":
-            return QMessageBox.Yes
-        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
-
-    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
-
+    must call stage.close() — before the microcontroller, mirroring Microscope.close()."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
     qtbot.add_widget(gui)
 
     calls = []
-    # CephlaStage defines no close(); give the instance one so the test observes whether
-    # cleanup releases stage-owned resources when the stage offers a close().
+    # Shadow the inherited no-op close() so the test can observe the call.
     gui.stage.close = lambda: calls.append("stage")
     original_micro_close = gui.microcontroller.close
 
@@ -92,10 +80,9 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch):
 
     monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
 
-    # The explicit cleanup below releases the hardware; keep teardown's closeEvent from
-    # running a second full (raising) cleanup pass against closed devices. Plain
-    # assignment (not monkeypatch) so it survives monkeypatch's teardown, which runs
-    # before qtbot closes widgets.
+    # Keep teardown's closeEvent from re-running cleanup against closed devices. Instance
+    # attr, not monkeypatch: it must outlive monkeypatch teardown, which runs before qtbot
+    # closes widgets.
     gui.closeEvent = lambda event: event.accept()
 
     gui._cleanup_common(for_restart=True)

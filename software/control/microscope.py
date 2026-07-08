@@ -1042,14 +1042,10 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
 
-        # Release the stage's own resources (e.g. the PI C-414 serial handle). CephlaStage/
-        # PriorStage define no close() and are released via their underlying transports.
-        stage_close = getattr(self.stage, "close", None)
-        if callable(stage_close):
-            try:
-                stage_close()
-            except Exception as e:
-                self._log.warning(f"Error closing stage: {e}")
+        try:
+            self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle
+        except Exception as e:
+            self._log.warning(f"Error closing stage: {e}")
 
         if self.low_level_drivers.microcontroller:
             try:

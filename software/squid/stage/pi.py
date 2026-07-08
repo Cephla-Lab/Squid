@@ -327,11 +327,9 @@ class CombinedStage(AbstractStage):
         return self._z.is_referenced()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        # Z first, and blocking whenever XY homing follows: the V-308 voice coil is not
-        # self-locking, so the objective must be fully retracted before any XY sweep
-        # (the same ordering Microscope.home_xyz enforces across its separate calls).
         xy_requested = x or y or theta
         if z:
+            # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
             self._xy.home(x, y, False, theta, blocking)
@@ -376,12 +374,8 @@ class CombinedStage(AbstractStage):
         return self._z.z_mm_to_usteps(mm)
 
     def close(self):
-        # Close the V-308 backend (its FTDI handle); the XY stage's resources are released
-        # elsewhere (Cephla via microcontroller.close()), so only close it if it offers close().
-        for stage in (self._z, self._xy):
-            close = getattr(stage, "close", None)
-            if callable(close):
-                close()
+        self._z.close()  # the V-308 backend's FTDI handle; Cephla/Prior XY close() is a no-op
+        self._xy.close()
 
 
 class C414FocusStage:

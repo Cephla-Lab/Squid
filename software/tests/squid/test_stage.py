@@ -61,6 +61,14 @@ def _sim_pi_stage():
     return squid.stage.pi.PIFocusStage(_make_referenced_sim(), stage_config=squid.config.get_stage_config())
 
 
+def _sim_combined_stage():
+    """Simulated Cephla XY + PI Z composite; returns (combined, xy, z)."""
+    xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
+    z = _sim_pi_stage()
+    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    return combined, xy, z
+
+
 def test_pi_focus_z_passthrough_no_sign():
     stage = _sim_pi_stage()
     stage.move_z_to(1.0)
@@ -111,10 +119,7 @@ def test_pi_focus_xy_noop():
 
 
 def test_combined_stage_routes_axes():
-    micro = get_test_micro()
-    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
-    z = _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined, _, _ = _sim_combined_stage()
     combined.move_z_to(1.0)
     assert abs(combined.get_pos().z_mm - 1.0) < 1e-9  # Z from V-308
     assert combined.get_pos().x_mm == 0.0  # X from cephla
@@ -193,27 +198,20 @@ def test_pi_focus_home_after_close_is_noop():
 
 
 def test_combined_stage_inits_scanning_position_attr():
-    micro = get_test_micro()
-    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
-    combined = squid.stage.pi.CombinedStage(
-        xy_stage=xy, z_stage=_sim_pi_stage(), stage_config=squid.config.get_stage_config()
-    )
+    combined, _, _ = _sim_combined_stage()
     # squid.stage.utils loading/scanning flow reads this; CephlaStage sets it, so CombinedStage must too.
     assert combined._scanning_position_z_mm is None
 
 
 def test_combined_stage_delegates_usteps_and_close():
-    micro = get_test_micro()
-    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
-    z = _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined, xy, z = _sim_combined_stage()
     # NavigationWidget.set_deltaX/Y/Z call these; must not AttributeError.
     assert combined.x_mm_to_usteps(1.0) == xy.x_mm_to_usteps(1.0)  # X/Y from the XY stage
     assert combined.y_mm_to_usteps(1.0) == xy.y_mm_to_usteps(1.0)
     # Z grid comes from the V-308 (continuous), not the coarse Cephla stepper grid.
     assert combined.z_mm_to_usteps(1.0) == z.z_mm_to_usteps(1.0)
     assert abs(combined.z_mm_to_usteps(1.0)) > abs(xy.z_mm_to_usteps(1.0))
-    combined.close()  # closes the V-308 backend; the Cephla XY stage has no close()
+    combined.close()  # closes the V-308 backend; Cephla XY close() is the AbstractStage no-op
     assert z._c414._closed is True
 
 
@@ -264,10 +262,7 @@ def test_pi_focus_z_grid_is_10nm():
 
 
 def test_combined_stage_zaxis_reports_v308_grid():
-    micro = get_test_micro()
-    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
-    z = _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined, xy, z = _sim_combined_stage()
     # AutoFocus / multipoint snap Z steps via get_config().Z_AXIS; it must reflect the V-308's
     # 10 nm grid, not the coarse Cephla stepper grid (this is the path [5] that z_mm_to_usteps missed).
     grid = combined.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
@@ -374,24 +369,12 @@ def test_c414_clamp_target_graceful_limit():
 
 
 def test_combined_stage_homes_z_before_xy(monkeypatch):
-    # A multi-axis home must retract Z before any XY sweep (the V-308 voice coil is not
-    # self-locking), and the Z leg must block even for a non-blocking home so the
-    # objective is clear before XY starts moving.
-    micro = get_test_micro()
-    xy = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
-    z = _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    # Z homes first and its leg blocks even for blocking=False (see CombinedStage.home).
+    combined, xy, z = _sim_combined_stage()
 
     calls = []
-
-    def record(name):
-        def _home(x, y, z, theta, blocking=True):
-            calls.append((name, blocking))
-
-        return _home
-
-    monkeypatch.setattr(xy, "home", record("xy"))
-    monkeypatch.setattr(z, "home", record("z"))
+    monkeypatch.setattr(xy, "home", lambda x, y, z, theta, blocking=True: calls.append(("xy", blocking)))
+    monkeypatch.setattr(z, "home", lambda x, y, z, theta, blocking=True: calls.append(("z", blocking)))
 
     combined.home(x=True, y=True, z=True, theta=False, blocking=False)
 

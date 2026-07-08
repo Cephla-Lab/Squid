@@ -776,9 +776,8 @@ class HighContentScreeningGui(QMainWindow):
 
                 if USE_PI_FOCUS_STAGE:
                     # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # No guard needed here: the PI driver clamps every move to the Z range set from
-                    # StageConfig.Z_AXIS MIN/MAX (Microscope._prepare_for_use -> stage.set_limits,
-                    # which runs before this), so a stale cached Z cannot command an out-of-range move.
+                    # The PI driver clamps every move to the configured Z limits, so a stale
+                    # cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
                 elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
                     self.stage.move_z_to(cached_pos.z_mm)
@@ -2967,18 +2966,15 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
-        # Release the stage's own transport (e.g. the PI C-414 serial handle) so a restart's
-        # new process can acquire it. CephlaStage/PriorStage define no close() and are
-        # released via their underlying transports (the microcontroller below / Prior serial).
-        stage_close = getattr(self.stage, "close", None)
-        if callable(stage_close):
-            try:
-                stage_close()
-            except Exception:
-                if for_restart:
-                    self.log.exception(f"Error closing stage during {context}")
-                else:
-                    raise
+        # Release stage-owned transports (e.g. the PI C-414 serial handle) so a restart's
+        # new process can acquire them.
+        try:
+            self.stage.close()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error closing stage during {context}")
+            else:
+                raise
 
         # Close microcontroller last (releases serial port)
         try:
