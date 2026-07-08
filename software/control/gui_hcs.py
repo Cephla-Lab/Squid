@@ -776,6 +776,9 @@ class HighContentScreeningGui(QMainWindow):
 
                 if USE_PI_FOCUS_STAGE:
                     # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
+                    # No guard needed here: the PI driver clamps every move to the Z range set from
+                    # StageConfig.Z_AXIS MIN/MAX (Microscope._prepare_for_use -> stage.set_limits,
+                    # which runs before this), so a stale cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
                 elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
                     self.stage.move_z_to(cached_pos.z_mm)
