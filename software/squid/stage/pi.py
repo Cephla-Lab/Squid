@@ -298,6 +298,11 @@ class CombinedStage(AbstractStage):
             )
             self._config = self._config.model_copy(update={"Z_AXIS": fine_z})
 
+    @property
+    def z_stage(self) -> AbstractStage:
+        """The wrapped Z-only stage (public: addons sharing its transport walk through here)."""
+        return self._z
+
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._xy.move_x(rel_mm, blocking)
 

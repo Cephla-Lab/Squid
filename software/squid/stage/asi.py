@@ -147,6 +147,11 @@ class LS50Controller:
         self._range_lo: Optional[float] = None
         self._range_hi: Optional[float] = None
 
+    @property
+    def serial(self) -> Optional[MS2000Serial]:
+        """The MS-2000 transport (public: shared with same-controller addons, e.g. the turret)."""
+        return self._serial
+
     def connect_serial(self, comport: str, baudrate: int = 115200) -> None:
         self._serial = MS2000Serial.open(comport, baudrate=baudrate)
 
@@ -279,6 +284,11 @@ class ASIZStage(AbstractStage):
         self._invert = invert_z
         self._home_mm = home_mm  # Squid-frame retract target; None = home(z) disabled
 
+    @property
+    def ms2000_serial(self) -> Optional[MS2000Serial]:
+        # getattr: _SimulatedLS50 has no `serial` property -> None (simulation-aware).
+        return getattr(self._backend, "serial", None)
+
     def _flip(self, mm: float) -> float:
         # squid_z = -native_z (and vice versa) when inverted; identity otherwise.
         return -mm if self._invert else mm
@@ -381,6 +391,20 @@ class ASIZStage(AbstractStage):
 
     def _no_xy(self, name: str):
         self._log.warning(f"{name} ignored: ASIZStage is a Z-only stage (pair via CombinedStage).")
+
+
+def find_shared_ms2000(stage) -> Optional[MS2000Serial]:
+    """Return the MS2000Serial of an ASI Z stage embedded in ``stage``, else None.
+
+    Accepts an ASIZStage directly or a composite exposing a ``z_stage`` property (duck-typed
+    to avoid an import cycle with squid.stage.pi). Returns None for simulated backends and
+    non-ASI stages. Ownership stays with the Z stage: callers must NOT close the returned
+    transport -- it is released by stage.close().
+    """
+    for candidate in (stage, getattr(stage, "z_stage", None)):
+        if isinstance(candidate, ASIZStage):
+            return candidate.ms2000_serial
+    return None
 
 
 def connect_asi_z_stage(

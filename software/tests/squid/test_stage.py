@@ -753,3 +753,21 @@ def test_ls50_initialize_retries_once():
     ctrl = _ls50_ctrl(conn)
     ctrl.initialize()  # first W Z gets dead air, retry parses
     assert conn.written == [b"W Z\r", b"W Z\r"]
+
+
+def test_find_shared_ms2000_walks_combined_stage():
+    # The turret (same MS-2000 controller) reuses the Z stage's transport; the accessor
+    # must return the exact MS2000Serial instance through CombinedStage or a bare ASIZStage.
+    conn = _FakeSerialConn(replies=[b":A 0\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    z = squid.stage.asi.ASIZStage(ctrl, stage_config=squid.config.get_stage_config())
+    assert squid.stage.asi.find_shared_ms2000(z) is ctrl.serial
+    combined, _, _ = _sim_combined_stage(z_stage=z)
+    assert squid.stage.asi.find_shared_ms2000(combined) is ctrl.serial
+
+
+def test_find_shared_ms2000_none_for_simulated_and_foreign():
+    assert squid.stage.asi.find_shared_ms2000(_sim_asi_stage()) is None  # _SimulatedLS50 backend
+    combined, _, _ = _sim_combined_stage()  # PI Z, not ASI
+    assert squid.stage.asi.find_shared_ms2000(combined) is None
+    assert squid.stage.asi.find_shared_ms2000(None) is None
