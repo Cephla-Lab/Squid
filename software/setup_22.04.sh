@@ -61,7 +61,7 @@ python3 -m pip install --upgrade pip
 # install libraries
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv fastapi
+pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv fastapi uvicorn sse-starlette httpx
 
 # install camera drivers
 cd "$DAHENG_CAMERA_DRIVER_ROOT"
