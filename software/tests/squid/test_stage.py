@@ -753,3 +753,39 @@ def test_ls50_initialize_retries_once():
     ctrl = _ls50_ctrl(conn)
     ctrl.initialize()  # first W Z gets dead air, retry parses
     assert conn.written == [b"W Z\r", b"W Z\r"]
+
+
+def test_asi_z_pollers_safe_after_close():
+    # GUI position/status pollers can fire after shutdown closes the port; they must get
+    # the last-known position and idle status back, not a serial error.
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config())
+    stage.move_z_to(1.25)
+    stage.close()
+
+    def _boom():
+        raise RuntimeError("port is closed")
+
+    sim.get_position_mm = _boom
+    sim.is_moving = _boom
+    assert abs(stage.get_pos().z_mm - 1.25) < 1e-9  # cached, no backend I/O
+    assert stage.get_state().busy is False
+    stage.move_z_to(2.0)  # warn no-op, must not raise
+    stage.move_z(0.5)
+
+
+def test_pi_focus_pollers_safe_after_close():
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
+    stage.move_z_to(1.25)
+    stage.close()
+
+    def _boom():
+        raise RuntimeError("connection closed")
+
+    sim.get_position_mm = _boom
+    sim.is_moving = _boom
+    assert abs(stage.get_pos().z_mm - 1.25) < 1e-9
+    assert stage.get_state().busy is False
+    stage.move_z_to(2.0)
+    stage.move_z(0.5)

@@ -278,6 +278,7 @@ class ASIZStage(AbstractStage):
 
         self._invert = invert_z
         self._home_mm = home_mm  # Squid-frame retract target; None = home(z) disabled
+        self._last_z_mm = 0.0  # last Squid-frame Z, served to pollers after close()
 
     def _flip(self, mm: float) -> float:
         # squid_z = -native_z (and vice versa) when inverted; identity otherwise.
@@ -285,22 +286,32 @@ class ASIZStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
-            self._backend.move_relative(self._flip(rel_mm), wait=blocking)
+            if self._closed:
+                self._log.warning("move_z ignored: the ASI Z stage is closed.")
+                return
+            self._last_z_mm = self._flip(self._backend.move_relative(self._flip(rel_mm), wait=blocking))
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
-            self._backend.move_to(self._flip(abs_mm), wait=blocking)
+            if self._closed:
+                self._log.warning("move_z_to ignored: the ASI Z stage is closed.")
+                return
+            self._last_z_mm = self._flip(self._backend.move_to(self._flip(abs_mm), wait=blocking))
 
     def get_pos(self) -> Pos:
+        # GUI pollers can fire after shutdown closes the port; serve the last-known Z then
+        # instead of touching the dead serial handle.
         with self._lock:
-            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._flip(self._backend.get_position_mm()), theta_rad=None)
+            if not self._closed:
+                self._last_z_mm = self._flip(self._backend.get_position_mm())
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._last_z_mm, theta_rad=None)
 
     def get_state(self) -> StageStage:
         # If an async home holds the lock, report busy without blocking on it.
         if self._busy:
             return StageStage(busy=True)
         with self._lock:
-            return StageStage(busy=self._backend.is_moving())
+            return StageStage(busy=False if self._closed else self._backend.is_moving())
 
     def is_referenced(self) -> bool:
         return True  # no referencing concept; the power-on frame is always valid
