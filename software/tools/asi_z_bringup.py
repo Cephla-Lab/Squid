@@ -95,7 +95,7 @@ def read_only_checks(backend):
     report_position(backend, "Position")
     log.info(f"Busy: {backend.is_moving()}  (expect False on an idle stage)")
     if isinstance(backend, LS50Controller):
-        with_serial: MS2000Serial = backend._serial
+        with_serial: MS2000Serial = backend.serial
         for cmd in ("BU", "N"):  # build info / who
             try:
                 log.info(f"{cmd!r} -> {with_serial.command(cmd)!r}")
@@ -139,6 +139,34 @@ def fence_test(backend, fence_mm: float):
     report_position(backend, "Back at start")
 
 
+def turret_probe(serial, axis: str):
+    """Read-only: raw 'W <axis>' and '/' replies, verbatim (answers the W-T-semantics question)."""
+    log.info(f"--- Turret probe (axis {axis!r}) ---")
+    for cmd in (f"W {axis}", "/"):
+        reply = serial.command(cmd, check_error=False)
+        log.info(f"{cmd!r} -> {reply!r}")
+
+
+def turret_move_test(serial, axis: str, slot: int):
+    """Rotate to a slot, logging '/' busy transitions with timestamps, then read back."""
+    log.info(f"--- Turret move test: slot {slot} ---")
+    log.info(f"'M {axis}={slot}' -> {serial.command(f'M {axis}={slot}', check_error=False)!r}")
+    t0 = time.monotonic()
+    last = None
+    deadline = t0 + 30.0
+    while time.monotonic() < deadline:
+        busy = "B" in serial.command("/").upper()
+        if busy != last:
+            log.info(f"t={time.monotonic() - t0:6.2f}s busy={busy}")
+            last = busy
+        if last is False:
+            break
+        time.sleep(0.05)
+    log.info(f"readback 'W {axis}' -> {serial.command(f'W {axis}', check_error=False)!r}")
+    log.info(f"same-slot repeat 'M {axis}={slot}' -> {serial.command(f'M {axis}={slot}', check_error=False)!r}")
+    log.info("If busy never went True, '/' may not cover turret rotation (note for the driver).")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sn", help="Controller USB serial number (resolved to a port)")
@@ -150,6 +178,9 @@ def main():
     parser.add_argument("--jog-mm", type=float, default=0.5, help="Jog distance in native mm (default 0.5, away)")
     parser.add_argument("--fence-mm", type=float, default=0.0, help="Also test the +/- soft-limit fence (0 = skip)")
     parser.add_argument("--scan-bauds", action="store_true", help="Try each ASI baud rate and report which answers")
+    parser.add_argument("--turret", action="store_true", help="Probe the objective turret axis (read-only)")
+    parser.add_argument("--turret-axis", default="T", help="Turret axis letter (default T)")
+    parser.add_argument("--turret-slot", type=int, help="Rotate to this slot (1..6); requires --allow-motion")
     args = parser.parse_args()
 
     if args.scan_bauds:
@@ -167,6 +198,8 @@ def main():
     backend = connect(args)
     try:
         read_only_checks(backend)
+        if args.turret and isinstance(backend, LS50Controller):
+            turret_probe(backend.serial, args.turret_axis)
 
         if not args.allow_motion:
             log.info("Read-only run complete. Re-run with --allow-motion for the jog test.")
@@ -181,6 +214,8 @@ def main():
         jog_test(backend, args.jog_mm)
         if args.fence_mm > 0:
             fence_test(backend, args.fence_mm)
+        if args.turret and args.turret_slot and isinstance(backend, LS50Controller):
+            turret_move_test(backend.serial, args.turret_axis, args.turret_slot)
 
         log.info("--- Done. Next steps for the machine ini ---")
         log.info("[GENERAL]: use_asi_z_stage = True, asi_z_stage_sn = <SN>, asi_z_travel_mm = 50")
