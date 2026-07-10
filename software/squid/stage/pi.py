@@ -164,6 +164,7 @@ class PIFocusStage(AbstractStage):
         # travel limit (furthest from the sample); set_limits() narrows it to the fenced upper end.
         self._home_to_pos_limit = home_to_positive_limit
         self._home_native_mm = native_hi if home_to_positive_limit else home_mm
+        self._last_z_mm = self._to_squid(0.0)  # last Squid-frame Z, served to pollers after close()
 
     def _to_native(self, squid_mm: float) -> float:
         return (self._offset_mm - squid_mm) if self._invert else squid_mm
@@ -173,23 +174,35 @@ class PIFocusStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            if self._closed:
+                self._log.warning("move_z ignored: the PI focus stage is closed.")
+                return
             # A relative move flips sign under inversion (squid+ = native-), no offset.
-            self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+            self._last_z_mm = self._to_squid(
+                self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+            )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
-            self._c414.move_to(self._to_native(abs_mm), wait=blocking)
+            if self._closed:
+                self._log.warning("move_z_to ignored: the PI focus stage is closed.")
+                return
+            self._last_z_mm = self._to_squid(self._c414.move_to(self._to_native(abs_mm), wait=blocking))
 
     def get_pos(self) -> Pos:
+        # GUI pollers can fire after shutdown closes the connection; serve the last-known Z
+        # then instead of touching the dead handle.
         with self._lock:
-            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._to_squid(self._c414.get_position_mm()), theta_rad=None)
+            if not self._closed:
+                self._last_z_mm = self._to_squid(self._c414.get_position_mm())
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._last_z_mm, theta_rad=None)
 
     def get_state(self) -> StageStage:
         # If an async home holds the lock, report busy without blocking on it.
         if self._busy:
             return StageStage(busy=True)
         with self._lock:
-            return StageStage(busy=self._c414.is_moving())
+            return StageStage(busy=False if self._closed else self._c414.is_moving())
 
     def is_referenced(self) -> bool:
         with self._lock:
