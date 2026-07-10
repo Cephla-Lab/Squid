@@ -2917,7 +2917,9 @@ class HighContentScreeningGui(QMainWindow):
         # Turret close: always release the serial port so the new process (on restart)
         # can acquire it, and so the motor is de-energized on full shutdown. Independent
         # of Z-retract success — the close path must run even if Z retract failed.
-        if USE_OBJECTIVE_TURRET and self.objective_changer:
+        # ASI turret: close() releases the serial only when the turret opened it; a
+        # connection shared with the Z stage is closed by self.stage.close() below.
+        if (USE_OBJECTIVE_TURRET or USE_ASI_OBJECTIVE_TURRET) and self.objective_changer:
             try:
                 self.objective_changer.close()
             except Exception:
