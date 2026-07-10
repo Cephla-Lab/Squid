@@ -53,7 +53,9 @@ class MS2000Serial:
     def open(cls, port: str, baudrate: int = 115200, timeout_s: float = 0.5) -> "MS2000Serial":
         import serial  # lazy: real-hardware path only
 
-        return cls(serial.Serial(port, baudrate=baudrate, timeout=timeout_s))
+        conn = serial.Serial(port, baudrate=baudrate, timeout=timeout_s)
+        conn.reset_input_buffer()  # drop any boot banner / stale bytes so the first reply parses
+        return cls(conn)
 
     def command(self, cmd: str, check_error: bool = True) -> str:
         """Send one command and return the stripped reply line.
@@ -135,7 +137,10 @@ class LS50Controller:
     writes no controller parameters.
     """
 
-    def __init__(self):
+    def __init__(self, axis: str = "Z"):
+        # Single-axis MS-2000 builds may label their lone axis X (or other) -- configurable
+        # via ASI_Z_AXIS_LETTER.
+        self._axis = axis
         self._serial: Optional[MS2000Serial] = None
         # Cached fence [lo, hi] in native mm so moves can clamp without a query each move;
         # None until set_travel_limits is called (limits are unknown at power-on).
@@ -147,19 +152,28 @@ class LS50Controller:
 
     def initialize(self) -> None:
         # Comms sanity only: prove the controller answers. NO motion, NO parameter writes.
-        self.get_position_mm()
+        try:
+            self.get_position_mm()
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"LS50 controller did not answer a position query ({e}). Check the baud rate "
+                f"(ASI controllers often ship at 9600; Squid defaults to 115200 -- set "
+                f"ASI_Z_BAUDRATE in the machine config), that the resolved port really is the "
+                f"ASI controller, and that it is powered. "
+                f"`python3 tools/asi_z_bringup.py --sn <SN> --scan-bauds` can diagnose this."
+            ) from e
 
     def hardware_limits_mm(self) -> Tuple[Optional[float], Optional[float]]:
         return (self._range_lo, self._range_hi)
 
     def set_travel_limits(self, min_mm: float, max_mm: float) -> None:
         # SL (lower) / SU (upper) take mm, unlike M/R/W which take tenths of microns.
-        self._serial.command(f"SL Z={float(min_mm):.4f}")
-        self._serial.command(f"SU Z={float(max_mm):.4f}")
+        self._serial.command(f"SL {self._axis}={float(min_mm):.4f}")
+        self._serial.command(f"SU {self._axis}={float(max_mm):.4f}")
         self._range_lo, self._range_hi = float(min_mm), float(max_mm)
 
     def get_position_mm(self) -> float:
-        reply = self._serial.command("W Z")  # ':A -12345' or bare '-12345', in 0.1 um
+        reply = self._serial.command(f"W {self._axis}")  # ':A -12345' or bare '-12345', in 0.1 um
         match = re.search(r"-?\d+(?:\.\d+)?", reply.replace(":A", "", 1))
         if not match:
             raise RuntimeError(f"Could not parse LS50 position from reply {reply!r}")
@@ -186,7 +200,7 @@ class LS50Controller:
 
     def move_to(self, z_mm: float, wait: bool = True, timeout: float = _DEFAULT_MOVE_TIMEOUT_S) -> float:
         target = self._clamp_target(float(z_mm))
-        self._serial.command(f"M Z={round(target * STEPS_PER_MM)}")
+        self._serial.command(f"M {self._axis}={round(target * STEPS_PER_MM)}")
         if wait:
             self._wait_idle(timeout)
             return self.get_position_mm()
@@ -208,7 +222,7 @@ class LS50Controller:
     def zero_here(self) -> None:
         # Redefine the current position as native 0. Deliberately NOT wired to
         # AbstractStage.zero() -- see ASIZStage.zero().
-        self._serial.command("H Z=0")
+        self._serial.command(f"H {self._axis}=0")
 
     def stop(self) -> None:
         # HALT; the MS-2000 acks it with ':N-21', which is expected, not an error.
@@ -365,6 +379,7 @@ def connect_asi_z_stage(
     serialnum: Optional[str] = None,
     serial_port: Optional[str] = None,
     baudrate: int = 115200,
+    axis: str = "Z",
     home_mm: Optional[float] = None,
     invert_z: bool = False,
     home_on_startup: bool = False,
@@ -395,7 +410,7 @@ def connect_asi_z_stage(
             )
         else:
             raise RuntimeError("Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.")
-        backend = LS50Controller()
+        backend = LS50Controller(axis=axis)
 
     try:
         backend.connect_serial(port, baudrate=baudrate)

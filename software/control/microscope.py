@@ -369,6 +369,7 @@ class Microscope:
                 serialnum=_config_sn_to_str(control._def.ASI_Z_STAGE_SN),
                 serial_port=control._def.ASI_Z_SERIAL_PORT or None,
                 baudrate=control._def.ASI_Z_BAUDRATE,
+                axis=str(control._def.ASI_Z_AXIS_LETTER),
                 # Separately configurable (not OBJECTIVE_RETRACTED_POS_MM): with no absolute
                 # reference, home retracts to the power-on end, native/squid 0 by convention.
                 home_mm=float(control._def.ASI_Z_HOME_MM),

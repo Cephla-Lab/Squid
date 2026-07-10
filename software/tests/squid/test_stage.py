@@ -723,3 +723,24 @@ def test_asi_home_xyz_retracts_z_before_xy(monkeypatch):
     # end) instead of running the stepper Z-homing path.
     assert abs(scope.stage.get_pos().z_mm - 0.0) < 1e-6
     scope.close()
+
+
+def test_ls50_initialize_failure_mentions_baud():
+    # A dead-air first query (wrong baud/port, unpowered controller) must fail with
+    # actionable bring-up guidance, not a bare parse error.
+    ctrl = _ls50_ctrl(_FakeSerialConn(replies=[b""]))
+    with pytest.raises(RuntimeError, match="baud"):
+        ctrl.initialize()
+
+
+def test_ls50_axis_letter_configurable():
+    # Single-axis MS-2000 builds may label their lone axis X (or other); every command
+    # must use the configured letter.
+    conn = _FakeSerialConn(replies=[b":A\r\n", b":A -100\r\n", b"N\r\n"])
+    ctrl = squid.stage.asi.LS50Controller(axis="X")
+    ctrl._serial = squid.stage.asi.MS2000Serial(conn)
+    ctrl.move_to(0.5, wait=False)
+    assert conn.written == [b"M X=5000\r"]
+    assert abs(ctrl.get_position_mm() - (-0.01)) < 1e-9  # W X parsed
+    assert ctrl.is_moving() is False
+    assert conn.written[1:] == [b"W X\r", b"/\r"]

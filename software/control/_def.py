@@ -1123,6 +1123,9 @@ SIMULATE_ASI_Z_STAGE = False
 ASI_Z_STAGE_SN = ""  # USB serial number -> resolved to a port
 ASI_Z_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM7)
 ASI_Z_BAUDRATE = 115200
+# Axis letter of the LS50 on its controller. Single-axis MS-2000 builds sometimes label
+# their lone axis X; the driver uses this letter in every command (M/R/W/SL/SU/H).
+ASI_Z_AXIS_LETTER = "Z"
 # The LS50 has no absolute reference: native 0 is the power-on position (the retracted end by
 # convention) and native POSITIVE is away from the sample. True (the standard wiring) shows the
 # negation (squid_z = -native_z), so squid 0 = retracted and squid Z+ is toward the sample.

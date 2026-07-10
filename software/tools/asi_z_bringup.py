@@ -36,6 +36,27 @@ def report_position(backend, label: str) -> float:
     return native
 
 
+ASI_BAUD_RATES = (115200, 9600, 19200, 28800)  # rates the MS-2000 family supports
+
+
+def scan_bauds(port: str):
+    """Try each ASI baud rate on the port until the controller answers a position query."""
+    for baud in ASI_BAUD_RATES:
+        backend = LS50Controller()
+        try:
+            backend.connect_serial(port, baudrate=baud)
+            native = backend.get_position_mm()
+            log.info(f"{baud} baud: ANSWERED (native position {native:+.4f} mm)")
+            log.info(f"-> set asi_z_baudrate = {baud} in the machine ini (Squid default is 115200).")
+            return baud
+        except Exception as e:
+            log.info(f"{baud} baud: no valid reply ({e})")
+        finally:
+            backend.close()
+    log.error("No baud rate answered. Check the port is the ASI controller and that it is powered.")
+    return None
+
+
 def connect(args):
     if args.simulate:
         log.info("SIMULATED backend (no hardware).")
@@ -62,8 +83,8 @@ def connect(args):
         log.error("Pass --sn <USB serial number>, --port </dev/ttyUSB*>, or --simulate.")
         sys.exit(1)
 
-    log.info(f"Connecting to {port} at {args.baud} baud ...")
-    backend = LS50Controller()
+    log.info(f"Connecting to {port} at {args.baud} baud (axis {args.axis!r}) ...")
+    backend = LS50Controller(axis=args.axis)
     backend.connect_serial(port, baudrate=args.baud)
     backend.initialize()  # one W Z round-trip; no motion
     return backend
@@ -123,11 +144,25 @@ def main():
     parser.add_argument("--sn", help="Controller USB serial number (resolved to a port)")
     parser.add_argument("--port", help="Explicit serial port (overrides --sn)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default 115200)")
+    parser.add_argument("--axis", default="Z", help="Axis letter on the controller (default Z)")
     parser.add_argument("--simulate", action="store_true", help="Use the simulated backend (no hardware)")
     parser.add_argument("--allow-motion", action="store_true", help="Enable the jog / fence tests (MOVES the stage)")
     parser.add_argument("--jog-mm", type=float, default=0.5, help="Jog distance in native mm (default 0.5, away)")
     parser.add_argument("--fence-mm", type=float, default=0.0, help="Also test the +/- soft-limit fence (0 = skip)")
+    parser.add_argument("--scan-bauds", action="store_true", help="Try each ASI baud rate and report which answers")
     args = parser.parse_args()
+
+    if args.scan_bauds:
+        if args.port:
+            port = args.port
+        elif args.sn:
+            import squid.stage.utils
+
+            port = squid.stage.utils.resolve_serial_port_by_sn(args.sn)
+        else:
+            log.error("--scan-bauds needs --sn or --port.")
+            sys.exit(1)
+        sys.exit(0 if scan_bauds(port) else 1)
 
     backend = connect(args)
     try:
