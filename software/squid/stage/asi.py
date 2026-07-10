@@ -4,7 +4,7 @@ Squid stage support for the ASI LS50 Z-only linear stage on its own MS-2000-fami
 Provides (1) ``MS2000Serial``, the CR-terminated ASI command transport; (2) ``LS50Controller``,
 the single-axis driver; (3) ``_SimulatedLS50``, a pure-Python stand-in for hardware-free / CI
 use; and (4) ``ASIZStage``, the Z-only ``squid.abc.AbstractStage`` adapter (pair with an XY
-stage via ``squid.stage.pi.CombinedStage``).
+stage via ``squid.stage.composite.CombinedStage``).
 
 Frame and units: the controller's native unit is 1/10 um (10000 per mm). Native 0 is the
 power-on position, which by convention is the RETRACTED end; native positive is away from the
@@ -396,14 +396,16 @@ class ASIZStage(AbstractStage):
 def find_shared_ms2000(stage) -> Optional[MS2000Serial]:
     """Return the MS2000Serial of an ASI Z stage embedded in ``stage``, else None.
 
-    Accepts an ASIZStage directly or a composite exposing a ``z_stage`` property (duck-typed
-    to avoid an import cycle with squid.stage.pi). Returns None for simulated backends and
-    non-ASI stages. Ownership stays with the Z stage: callers must NOT close the returned
-    transport -- it is released by stage.close().
+    Accepts an ASIZStage directly or a CombinedStage wrapping one. Returns None for
+    simulated backends and non-ASI stages. Ownership stays with the Z stage: callers must
+    NOT close the returned transport -- it is released by stage.close().
     """
-    for candidate in (stage, getattr(stage, "z_stage", None)):
-        if isinstance(candidate, ASIZStage):
-            return candidate.ms2000_serial
+    from squid.stage.composite import CombinedStage  # here to keep module import light
+
+    if isinstance(stage, CombinedStage):
+        stage = stage.z_stage
+    if isinstance(stage, ASIZStage):
+        return stage.ms2000_serial
     return None
 
 

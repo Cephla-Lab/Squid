@@ -5,6 +5,7 @@ import squid.stage.cephla
 import squid.stage.prior
 import squid.stage.utils
 import squid.stage.pi
+import squid.stage.composite
 import squid.stage.asi
 import squid.config
 import squid.abc
@@ -66,7 +67,7 @@ def _sim_combined_stage(z_stage=None):
     """Simulated Cephla XY + Z-only composite (PI Z by default); returns (combined, xy, z)."""
     xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
     z = z_stage if z_stage is not None else _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined = squid.stage.composite.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
     return combined, xy, z
 
 
@@ -167,7 +168,7 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)
     # skip_init leaves the V-308 unreferenced (reference=...and not skip_init); reference before moving.
     scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_z_to(0.3)
@@ -687,7 +688,7 @@ def test_microscope_wraps_asi_z_when_enabled(monkeypatch):
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)
     scope.stage.move_z_to(0.3)
     assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9
     scope.close()  # exercises Microscope.close() -> CombinedStage.close() -> ASIZStage.close()
@@ -716,7 +717,7 @@ def test_asi_home_xyz_retracts_z_before_xy(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)  # ASI Z wrapped, not stepper Z
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)  # ASI Z wrapped, not stepper Z
     scope.stage.move_z_to(2.0)
     scope.home_xyz()
     # The external-Z branch retracts to the home target (squid 0 = native 0, the retracted

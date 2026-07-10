@@ -30,6 +30,7 @@ import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.asi
 import squid.stage.cephla
+import squid.stage.composite
 import squid.stage.pi
 import squid.stage.utils
 
@@ -407,7 +408,7 @@ class Microscope:
                 stage_config=stage_config,
             )
         if z_stage is not None:
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+            stage = squid.stage.composite.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
