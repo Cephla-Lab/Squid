@@ -152,7 +152,16 @@ class LS50Controller:
 
     def initialize(self) -> None:
         # Comms sanity only: prove the controller answers. NO motion, NO parameter writes.
+        # One retry after a settle+flush: a marginal RS-232 link or a just-opened adapter can
+        # drop/garble the very first exchange without being actually broken.
         try:
+            try:
+                self.get_position_mm()
+                return
+            except RuntimeError:
+                time.sleep(0.2)
+                with suppress(Exception):
+                    self._serial._serial.reset_input_buffer()
             self.get_position_mm()
         except RuntimeError as e:
             raise RuntimeError(
@@ -411,6 +420,7 @@ def connect_asi_z_stage(
         else:
             raise RuntimeError("Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.")
         backend = LS50Controller(axis=axis)
+        _log.info(f"Connecting to the ASI Z stage on {port} at {baudrate} baud (axis {axis!r}).")
 
     try:
         backend.connect_serial(port, baudrate=baudrate)

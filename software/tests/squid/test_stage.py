@@ -744,3 +744,12 @@ def test_ls50_axis_letter_configurable():
     assert abs(ctrl.get_position_mm() - (-0.01)) < 1e-9  # W X parsed
     assert ctrl.is_moving() is False
     assert conn.written[1:] == [b"W X\r", b"/\r"]
+
+
+def test_ls50_initialize_retries_once():
+    # A single lost/garbled first reply (marginal RS-232, adapter settling) must not
+    # fail bring-up: initialize flushes and retries once before raising.
+    conn = _FakeSerialConn(replies=[b"", b":A 250\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    ctrl.initialize()  # first W Z gets dead air, retry parses
+    assert conn.written == [b"W Z\r", b"W Z\r"]
