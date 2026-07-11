@@ -860,12 +860,23 @@ def test_asi_builder_finds_zero_on_startup():
 
 
 def test_ls50_clear_travel_limits_serial():
-    # Startup must overwrite stale controller-side SL/SU from previous sessions.
+    # Startup must wipe stale controller-side SL/SU: on the MS-2000 they PERSIST across
+    # power cycles (manual: "automatically remembered ... through a power cycle"). Uses
+    # the restore-defaults dash form ('SL Z-').
     conn = _FakeSerialConn(replies=[b":A\r\n", b":A\r\n"])
     ctrl = _ls50_ctrl(conn)
     ctrl._range_lo, ctrl._range_hi = -6.0, -0.5  # stale software cache too
     ctrl.clear_travel_limits()
-    assert conn.written == [b"SL Z=-1000\r", b"SU Z=1000\r"]
+    assert conn.written == [b"SL Z-\r", b"SU Z-\r"]
+    assert ctrl.hardware_limits_mm() == (None, None)
+
+
+def test_ls50_clear_travel_limits_falls_back_on_old_firmware():
+    # Firmware without the dash form (pre-~2013) error-acks it; fall back to a wide window.
+    conn = _FakeSerialConn(replies=[b":N-1\r\n", b":A\r\n", b":N-1\r\n", b":A\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    ctrl.clear_travel_limits()
+    assert conn.written == [b"SL Z-\r", b"SL Z=-1000\r", b"SU Z-\r", b"SU Z=1000\r"]
     assert ctrl.hardware_limits_mm() == (None, None)
 
 
