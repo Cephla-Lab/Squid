@@ -34,6 +34,8 @@ _log = squid.logging.get_logger(__name__)
 
 STEPS_PER_MM = 10000  # ASI native unit = 0.1 um; also the finest addressable step (z_mm_to_usteps grid)
 _DEFAULT_MOVE_TIMEOUT_S = 30.0
+# Full-travel drive into the limit switch; sized for the slowest plausible traverse speed.
+_FIND_ZERO_TIMEOUT_S = 60.0
 _STATUS_POLL_PERIOD_S = 0.05
 
 
@@ -135,7 +137,7 @@ class _SimulatedLS50:
         self._pos_mm = 0.0
         self._zero_count += 1
 
-    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = 60.0):
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = _FIND_ZERO_TIMEOUT_S):
         # Drive past full travel toward the away end; the (simulated) limit switch stops
         # the stage; define native 0 there.
         self.move_relative(abs(float(overdrive_mm)), wait=True)
@@ -204,17 +206,19 @@ class LS50Controller:
         power cycle" (SETLOW manual), so a fence left by ANY previous session persists and
         silently clamps moves -- including the find-zero overdrive -- until overwritten.
         Uses the restore-defaults dash form ("SL Z-"), which also sidesteps the manual's
-        direction-dependent sign semantics for numeric limits; firmware too old for the
-        dash form (pre-~2013) error-acks it and gets a wide numeric window instead.
+        direction-dependent sign semantics for numeric limits. No numeric fallback: only
+        the controller knows its own defaults, so firmware without the dash form
+        (pre-~2013) fails loudly instead of getting an invented window.
         """
-        for dash, numeric in (
-            (f"SL {self._axis}-", f"SL {self._axis}=-1000"),
-            (f"SU {self._axis}-", f"SU {self._axis}=1000"),
-        ):
+        for cmd in (f"SL {self._axis}-", f"SU {self._axis}-"):
             try:
-                self._serial.command(dash)
-            except RuntimeError:
-                self._serial.command(numeric)
+                self._serial.command(cmd)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"The controller rejected the restore-defaults limit command {cmd!r} "
+                    f"({e}). This firmware may predate the dash form (~2013); clear the "
+                    f"SL/SU limits manually (e.g. with ASI's tools) or update the firmware."
+                ) from e
         self._range_lo = self._range_hi = None
 
     def get_position_mm(self) -> float:
@@ -268,7 +272,7 @@ class LS50Controller:
         # Redefine the current position as native 0 (shifts the whole frame).
         self._serial.command(f"H {self._axis}=0")
 
-    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = 60.0) -> None:
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = _FIND_ZERO_TIMEOUT_S) -> None:
         """Establish the frame: drive PAST full travel toward the away-from-sample end
         (native +; the limit switch stops the stage safely), then define native 0 there.
 
@@ -487,6 +491,11 @@ def connect_asi_z_stage(
         backend = LS50Controller(axis=axis)
         _log.info(f"Connecting to the ASI Z stage on {port} at {baudrate} baud (axis {axis!r}).")
 
+    if find_zero_on_startup and not z_travel_mm:
+        # The overdrive distance is derived from the stage's physical travel; only the
+        # user knows that, so there is no default to invent.
+        raise ValueError("find_zero_on_startup requires the physical travel (ASI_Z_TRAVEL_MM) to be set.")
+
     try:
         backend.connect_serial(port, baudrate=baudrate)
         backend.initialize()
@@ -496,8 +505,9 @@ def connect_asi_z_stage(
         if find_zero_on_startup:
             # Anchor the frame: drive to the away-from-sample limit switch and define
             # native 0 there, so squid 0 is the true retracted end, never a random
-            # power-on position. Motion is in the safe (away) direction only.
-            backend.zero_at_away_limit(overdrive_mm=(z_travel_mm or 50.0) * 1.2)
+            # power-on position. Motion is in the safe (away) direction only. The 1.2
+            # margin guarantees reaching the switch from any position within travel.
+            backend.zero_at_away_limit(overdrive_mm=z_travel_mm * 1.2)
         if z_travel_mm:
             backend.set_travel_limits(-z_travel_mm, z_travel_mm)
     except Exception:
