@@ -779,7 +779,7 @@ class MultiPointController:
                         region_fov_coords[i] = (x, y, z)
                         self.scanCoordinates.update_fov_z_level(region_id, i, z)
 
-            elif self.gen_focus_map and not self.do_reflection_af:
+            elif self.gen_focus_map:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
@@ -836,7 +836,23 @@ class MultiPointController:
 
                     # Generate and enable the AF map
                     self.autofocusController.gen_focus_map(coord1, coord2, coord3)
-                    self.autofocusController.set_focus_map_use(True)
+                    if self.do_reflection_af:
+                        # Laser-AF run: contrast focus-map interpolation never executes in the
+                        # worker's laser branch. Bake the generated plane into the coordinates
+                        # instead (same mechanism as self.focus_map above), so each FOV is
+                        # pre-positioned within laser-AF capture range on a tilted plate.
+                        from control.utils import interpolate_plane
+
+                        pts = [tuple(p) for p in self.autofocusController.focus_map_coords[:3]]
+                        for region_id in scan_position_information.scan_region_names:
+                            region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
+                            for i, coords in enumerate(region_fov_coords):
+                                x, y = coords[:2]
+                                z = interpolate_plane(pts[0], pts[1], pts[2], (x, y))
+                                region_fov_coords[i] = (x, y, z)
+                                self.scanCoordinates.update_fov_z_level(region_id, i, z)
+                    else:
+                        self.autofocusController.set_focus_map_use(True)
 
                     # Return to center position
                     self.stage.move_x_to(x_center)

@@ -1505,7 +1505,9 @@ class SquidCoreService:
             )
         sc.sort_coordinates()
 
-    def _reset_z_range_and_focus_map(self, z0: float, nz: int, delta_z_um: float) -> None:
+    def _reset_z_range_and_focus_map(
+        self, z0: float, nz: int, delta_z_um: float, keep_gen_focus_map: bool = False
+    ) -> None:
         """Set z_range from the resolved baseline z0 and clear focus-map state.
 
         Mirrors the GUI's pre-run path (widgets.py toggle_acquisition ~6472-6487): the
@@ -1523,11 +1525,36 @@ class SquidCoreService:
         set_focus_map(None) before starting; the API exposes no focus-map option, so
         we clear focus_map/gen_focus_map/use_manual_focus_map outright to prevent a
         stale focus map from a GUI session from bleeding into an API acquisition.
+
+        keep_gen_focus_map preserves an already-set gen_focus_map flag (set by the
+        z_plan `generate: true` path just before controller configuration); every
+        other caller keeps today's clear-everything behavior.
         """
         self._mpc.set_z_range(z0, z0 + delta_z_um / 1000.0 * (nz - 1))
         self._mpc.set_focus_map(None)
-        self._mpc.gen_focus_map = False
+        if not keep_gen_focus_map:
+            self._mpc.gen_focus_map = False
         self._mpc.use_manual_focus_map = False
+
+    def _apply_z_plan_points(self, points):
+        """Bake plane z into every configured FOV (pre-AF positioning for tilted plates).
+
+        Mirrors the controller's focus_map coordinate-baking loop
+        (multi_point_controller.py:770-780): the worker then physically moves to each
+        FOV's z before autofocus runs, so laser AF starts within capture range.
+        """
+        from control.utils import interpolate_plane
+
+        p1, p2, p3 = (tuple(p) for p in points)
+        sc = self._scan_coordinates
+        for region_id, coords in sc.region_fov_coordinates.items():
+            for i, c in enumerate(coords):
+                x, y = c[0], c[1]
+                z = interpolate_plane(p1, p2, p3, (x, y))
+                coords[i] = (x, y, z)
+            if region_id in sc.region_centers:
+                cx, cy = sc.region_centers[region_id][0], sc.region_centers[region_id][1]
+                sc.region_centers[region_id][2] = interpolate_plane(p1, p2, p3, (cx, cy))
 
     def _configure_controller(self, yaml_data, z0: float) -> None:
         self._mpc.set_NX(1)
@@ -1543,7 +1570,10 @@ class SquidCoreService:
         # TOP shifts (the API path previously left this at the controller default).
         self._mpc.z_stacking_config = yaml_data.z_stacking_config
         self._mpc.set_selected_configurations(yaml_data.channel_names)
-        self._reset_z_range_and_focus_map(z0, yaml_data.nz, yaml_data.delta_z_um)
+        # Preserve a gen_focus_map flag set by the z_plan `generate: true` path (wired
+        # in start_acquisition just before this call); all other paths clear it.
+        keep_gen_focus_map = bool(yaml_data.z_plan and yaml_data.z_plan["generate"])
+        self._reset_z_range_and_focus_map(z0, yaml_data.nz, yaml_data.delta_z_um, keep_gen_focus_map=keep_gen_focus_map)
 
     def _configure_grid_controller(self, grid, z0: float) -> None:
         import control._def
@@ -1640,6 +1670,15 @@ class SquidCoreService:
                         yaml_data.well_z_offsets_um, list(self._scan_coordinates.region_centers.keys())
                     )
                 )
+                # z_plan tilted-plate pre-AF positioning: `points` bakes the plane z into
+                # every FOV now (works with any AF mode); `generate` defers to the
+                # controller's 3-corner contrast-AF plane generation (flag survives the
+                # focus-map reset inside _configure_controller via keep_gen_focus_map).
+                if yaml_data.z_plan:
+                    if yaml_data.z_plan["points"]:
+                        self._apply_z_plan_points(yaml_data.z_plan["points"])
+                    else:  # generate: true
+                        self._mpc.set_gen_focus_map_flag(True)
                 self._configure_controller(yaml_data, z0)
                 channel_count = len(yaml_data.channel_names)
                 nz, nt = yaml_data.nz, yaml_data.nt
