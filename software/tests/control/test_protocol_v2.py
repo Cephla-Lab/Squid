@@ -103,8 +103,8 @@ def parse_frames_header(path: Path):
     # kCamelCase sizing constants: static const ... kMaxFrame = 512;
     for m in re.finditer(r"\b(k[A-Za-z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*;", text):
         consts[m.group(1)] = int(m.group(2), 0)
-    # Resource bits: RES_X = uint32_t(1) << N;
-    for m in re.finditer(r"\b(RES_[A-Z0-9_]+)\s*=\s*uint32_t\(1\)\s*<<\s*(\d+)", text):
+    # Resource bits: RES_X = uint64_t(1) << N; (u32 pre-2026-07-11)
+    for m in re.finditer(r"\b(RES_[A-Z0-9_]+)\s*=\s*uint(?:32|64)_t\(1\)\s*<<\s*(\d+)", text):
         consts[m.group(1)] = 1 << int(m.group(2))
     # Layout sizes from static_assert(sizeof(TYPE) == N, ...).
     sizes = {}
@@ -176,9 +176,10 @@ def test_frames_py_constants_match_header():
 
 def test_resource_bit_helpers():
     assert frames.res_axis(0) == 1
-    assert frames.res_axis(7) == 0x80
-    assert frames.res_dac(0) == 0x100
-    assert frames.RES_ILLUM_TTL == (1 << 16)
+    assert frames.res_axis(15) == (1 << 15)
+    assert frames.res_dac(0) == (1 << 16)
+    assert frames.res_dac(15) == (1 << 31)
+    assert frames.RES_ILLUM_TTL == (1 << 32)
 
 
 # --- C<->Python golden vectors round-trip byte-identically ----------------

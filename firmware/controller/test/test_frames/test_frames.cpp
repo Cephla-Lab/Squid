@@ -66,20 +66,21 @@ void test_system_command_codes_unique_and_in_block(void) {
 // --- Resource-bit helpers -------------------------------------------------
 
 void test_resource_bit_helpers(void) {
-    TEST_ASSERT_EQUAL_HEX32(0x00000001u, res_axis(0));
-    TEST_ASSERT_EQUAL_HEX32(0x00000080u, res_axis(7));
-    TEST_ASSERT_EQUAL_HEX32(0x00000100u, res_dac(0));
-    TEST_ASSERT_EQUAL_HEX32(0x00008000u, res_dac(7));
-    TEST_ASSERT_EQUAL_HEX32(0x00010000u, RES_ILLUM_TTL);
-    TEST_ASSERT_EQUAL_HEX32(0x00020000u, RES_LED_MATRIX);
-    TEST_ASSERT_EQUAL_HEX32(0x00040000u, RES_CAM_TRIGGERS);
-    TEST_ASSERT_EQUAL_HEX32(0x00080000u, RES_GPIO);
-    TEST_ASSERT_EQUAL_HEX32(0x00100000u, RES_SEQUENCER);
-    TEST_ASSERT_EQUAL_HEX32(0x00200000u, RES_SYS_CONFIG);
+    // u64 claim mask: axes 0..15, DACs 16..31, named 32+ (design doc §15 R2).
+    TEST_ASSERT_EQUAL_HEX64(0x0000000000000001ull, res_axis(0));
+    TEST_ASSERT_EQUAL_HEX64(0x0000000000008000ull, res_axis(15));
+    TEST_ASSERT_EQUAL_HEX64(0x0000000000010000ull, res_dac(0));
+    TEST_ASSERT_EQUAL_HEX64(0x0000000080000000ull, res_dac(15));
+    TEST_ASSERT_EQUAL_HEX64(0x0000000100000000ull, RES_ILLUM_TTL);
+    TEST_ASSERT_EQUAL_HEX64(0x0000000200000000ull, RES_LED_MATRIX);
+    TEST_ASSERT_EQUAL_HEX64(0x0000000400000000ull, RES_CAM_TRIGGERS);
+    TEST_ASSERT_EQUAL_HEX64(0x0000000800000000ull, RES_GPIO);
+    TEST_ASSERT_EQUAL_HEX64(0x0000001000000000ull, RES_SEQUENCER);
+    TEST_ASSERT_EQUAL_HEX64(0x0000002000000000ull, RES_SYS_CONFIG);
 
     // Distinct axes do not overlap; DAC bank sits above the axis bank.
-    TEST_ASSERT_EQUAL_HEX32(0u, res_axis(0) & res_axis(1));
-    TEST_ASSERT_EQUAL_HEX32(0u, res_axis(7) & res_dac(0));
+    TEST_ASSERT_EQUAL_HEX64(0ull, res_axis(0) & res_axis(1));
+    TEST_ASSERT_EQUAL_HEX64(0ull, res_axis(15) & res_dac(0));
 }
 
 int main(int, char**) {

@@ -39,7 +39,7 @@ struct SlotInfo {
     uint8_t cmd_type;
     uint8_t state;     // SlotState
     uint8_t progress;  // 0..100
-    uint32_t claims;
+    uint64_t claims;
 };
 
 class SlotManager {
@@ -53,7 +53,7 @@ public:
     // resource id and *out_holder_cmd_id the cmd_id holding it. On
     // CompletedDuplicate, *out_ring_status/*out_ring_error carry the recorded
     // outcome. Any out pointer may be null. Never re-runs a duplicate.
-    AcceptResult try_accept(uint8_t cmd_id, uint8_t cmd_type, uint32_t claims, bool retry,
+    AcceptResult try_accept(uint8_t cmd_id, uint8_t cmd_type, uint64_t claims, bool retry,
                             uint8_t* out_conflict_res, uint8_t* out_holder_cmd_id,
                             uint8_t* out_ring_status, uint8_t* out_ring_error);
 
@@ -70,7 +70,7 @@ public:
     // Newest recorded outcome for cmd_id in the ring, or false if not present.
     bool ring_lookup(uint8_t cmd_id, uint8_t* out_status, uint8_t* out_error) const;
 
-    uint32_t inflight_claims_union() const;
+    uint64_t inflight_claims_union() const;
 
     // Monotonic completion counter (mod 256); the wire ring_head_seq. The host
     // watches this to detect new completions; the newest ring entry is at

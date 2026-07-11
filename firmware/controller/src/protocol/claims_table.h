@@ -24,8 +24,8 @@ namespace protocol {
 
 struct ClaimsRow {
     uint8_t cmd_type;
-    uint32_t static_claims;
-    uint32_t (*computed)(const uint8_t* payload, size_t len);  // null => static_claims
+    uint64_t static_claims;
+    uint64_t (*computed)(const uint8_t* payload, size_t len);  // null => static_claims
 };
 
 // The production claims table. Returns the row array; if `out_count` is

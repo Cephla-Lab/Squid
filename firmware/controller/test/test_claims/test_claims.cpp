@@ -14,16 +14,16 @@ void setUp(void) {}
 void tearDown(void) {}
 
 // A computed hook that ignores static_claims and returns a fixed mask.
-static uint32_t computed_axes_2_3(const uint8_t* payload, size_t len) {
+static uint64_t computed_axes_2_3(const uint8_t* payload, size_t len) {
     (void)payload;
     (void)len;
     return res_axis(2) | res_axis(3);
 }
 
 // A computed hook that echoes the payload length (proves args are passed).
-static uint32_t computed_echo_len(const uint8_t* payload, size_t len) {
+static uint64_t computed_echo_len(const uint8_t* payload, size_t len) {
     (void)payload;
-    return (uint32_t)len;
+    return (uint64_t)len;
 }
 
 // --- Static lookup against the production table ---------------------------
@@ -47,8 +47,8 @@ void test_conflict_reports_lowest_resource_plus_one(void) {
     TEST_ASSERT_EQUAL_UINT8(1, claims_conflict(res_axis(0), res_axis(0)));
     // vs in-flight {axis1}: compatible.
     TEST_ASSERT_EQUAL_UINT8(0, claims_conflict(res_axis(0), res_axis(1)));
-    // A higher resource: ILLUM_TTL is bit 16 -> reported as 17.
-    TEST_ASSERT_EQUAL_UINT8(17, claims_conflict(RES_ILLUM_TTL, RES_ILLUM_TTL | res_axis(5)));
+    // A higher resource: ILLUM_TTL is bit 32 (u64 mask) -> reported as 33.
+    TEST_ASSERT_EQUAL_UINT8(33, claims_conflict(RES_ILLUM_TTL, RES_ILLUM_TTL | res_axis(5)));
     // Lowest set bit wins when several overlap.
     TEST_ASSERT_EQUAL_UINT8(
         1, claims_conflict(res_axis(0) | res_axis(3), res_axis(0) | res_axis(3)));

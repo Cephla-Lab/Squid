@@ -50,8 +50,8 @@ const SlotInfo* SlotManager::find(uint8_t cmd_id) const {
     return (i >= 0) ? &slots_[i] : nullptr;
 }
 
-uint32_t SlotManager::inflight_claims_union() const {
-    uint32_t u = 0;
+uint64_t SlotManager::inflight_claims_union() const {
+    uint64_t u = 0;
     for (size_t i = 0; i < kNumSlots; ++i) {
         if (slots_[i].state != SLOT_EMPTY) {
             u |= slots_[i].claims;
@@ -74,7 +74,7 @@ bool SlotManager::ring_lookup(uint8_t cmd_id, uint8_t* out_status, uint8_t* out_
     return false;
 }
 
-AcceptResult SlotManager::try_accept(uint8_t cmd_id, uint8_t cmd_type, uint32_t claims, bool retry,
+AcceptResult SlotManager::try_accept(uint8_t cmd_id, uint8_t cmd_type, uint64_t claims, bool retry,
                                      uint8_t* out_conflict_res, uint8_t* out_holder_cmd_id,
                                      uint8_t* out_ring_status, uint8_t* out_ring_error) {
     // 1. Already in flight? Never double-accept (dedup, retry or not).
@@ -102,7 +102,7 @@ AcceptResult SlotManager::try_accept(uint8_t cmd_id, uint8_t cmd_type, uint32_t 
             *out_holder_cmd_id = 0;
             for (size_t i = 0; i < kNumSlots; ++i) {
                 if (slots_[i].state != SLOT_EMPTY &&
-                    (slots_[i].claims & (uint32_t(1) << res))) {
+                    (slots_[i].claims & (uint64_t(1) << res))) {
                     *out_holder_cmd_id = slots_[i].cmd_id;
                     break;
                 }

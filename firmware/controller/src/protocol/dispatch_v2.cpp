@@ -105,7 +105,7 @@ size_t Dispatcher::build_response(const uint8_t* req, size_t req_len, uint8_t* o
     } else {
         // Slotted async command routed through the SlotManager.
         const bool retry = (flags & FLAG_RETRY) != 0;
-        const uint32_t claims = claims_for(cmd_type, payload, plen);
+        const uint64_t claims = claims_for(cmd_type, payload, plen);
         uint8_t conflict_res = 0, holder = 0, ring_status = 0, ring_error = 0;
         AcceptResult ar = slots_.try_accept(cmd_id, cmd_type, claims, retry, &conflict_res,
                                             &holder, &ring_status, &ring_error);

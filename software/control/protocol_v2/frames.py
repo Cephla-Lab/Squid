@@ -50,13 +50,13 @@ ERR_SYSTEM_IN_ERROR = 0x17
 ERR_PACKET_CRC = 0x60
 ERR_PACKET_LENGTH = 0x61
 
-# --- Resource bits --------------------------------------------------------
-RES_ILLUM_TTL = 1 << 16
-RES_LED_MATRIX = 1 << 17
-RES_CAM_TRIGGERS = 1 << 18
-RES_GPIO = 1 << 19
-RES_SEQUENCER = 1 << 20
-RES_SYS_CONFIG = 1 << 21
+# --- Resource bits (u64 claim mask: axes 0..15, DACs 16..31, named 32+) ----
+RES_ILLUM_TTL = 1 << 32
+RES_LED_MATRIX = 1 << 33
+RES_CAM_TRIGGERS = 1 << 34
+RES_GPIO = 1 << 35
+RES_SEQUENCER = 1 << 36
+RES_SYS_CONFIG = 1 << 37
 
 
 def res_axis(n: int) -> int:
@@ -64,7 +64,7 @@ def res_axis(n: int) -> int:
 
 
 def res_dac(n: int) -> int:
-    return 1 << (8 + n)
+    return 1 << (16 + n)
 
 
 # --- Packed struct formats (little-endian, no padding) --------------------

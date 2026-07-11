@@ -17,16 +17,16 @@
 namespace protocol {
 
 // Resource mask an incoming command claims, from the production table.
-uint32_t claims_for(uint8_t cmd_type, const uint8_t* payload, size_t len);
+uint64_t claims_for(uint8_t cmd_type, const uint8_t* payload, size_t len);
 
 // Same lookup against an explicit table (tests and Phase D supply their own).
-uint32_t claims_for_in(const ClaimsRow* table, size_t count, uint8_t cmd_type,
+uint64_t claims_for_in(const ClaimsRow* table, size_t count, uint8_t cmd_type,
                        const uint8_t* payload, size_t len);
 
 // 0 if `wanted` and `inflight_union` share no resources; otherwise the
 // lowest-set conflicting resource bit index + 1 (so 0 unambiguously means
 // "no conflict", and the caller recovers the resource id by subtracting 1).
-uint8_t claims_conflict(uint32_t wanted, uint32_t inflight_union);
+uint8_t claims_conflict(uint64_t wanted, uint64_t inflight_union);
 
 }  // namespace protocol
 

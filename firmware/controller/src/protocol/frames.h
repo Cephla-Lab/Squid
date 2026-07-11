@@ -88,14 +88,17 @@ enum ErrorCode : uint8_t {
 
 // --- Resource bits (u32 claim mask, design section 4.5) -------------------
 
-constexpr uint32_t res_axis(uint8_t n) { return uint32_t(1) << n; }         // n in 0..7
-constexpr uint32_t res_dac(uint8_t n) { return uint32_t(1) << (8 + n); }    // n in 0..7
-static const uint32_t RES_ILLUM_TTL = uint32_t(1) << 16;
-static const uint32_t RES_LED_MATRIX = uint32_t(1) << 17;
-static const uint32_t RES_CAM_TRIGGERS = uint32_t(1) << 18;
-static const uint32_t RES_GPIO = uint32_t(1) << 19;
-static const uint32_t RES_SEQUENCER = uint32_t(1) << 20;
-static const uint32_t RES_SYS_CONFIG = uint32_t(1) << 21;
+// Claim mask is u64 (design doc §15 R2): axes 0..15, DACs 16..31, named 32+.
+// Widened from u32 so new PCBs (e.g. 16 DACs) need no re-layout; the mask is
+// internal (never on the wire), so this does not touch the response contract.
+constexpr uint64_t res_axis(uint8_t n) { return uint64_t(1) << n; }          // n in 0..15
+constexpr uint64_t res_dac(uint8_t n) { return uint64_t(1) << (16 + n); }    // n in 0..15
+static const uint64_t RES_ILLUM_TTL = uint64_t(1) << 32;
+static const uint64_t RES_LED_MATRIX = uint64_t(1) << 33;
+static const uint64_t RES_CAM_TRIGGERS = uint64_t(1) << 34;
+static const uint64_t RES_GPIO = uint64_t(1) << 35;
+static const uint64_t RES_SEQUENCER = uint64_t(1) << 36;
+static const uint64_t RES_SYS_CONFIG = uint64_t(1) << 37;
 
 // --- Packed wire structs --------------------------------------------------
 
