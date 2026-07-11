@@ -1304,6 +1304,7 @@ class SquidCoreService:
         if effective_wells:
             fmt = sample_format_override or raw.get("sample", {}).get("wellplate_format", "96 well plate")
             settings = control._def.get_wellplate_settings(fmt)
+            self._current_wellplate_settings = settings  # consumed by _add_random_region
             pattern = yaml_data.fov_pattern
             for name in parse_well_names(effective_wells):
                 x, y = well_center_mm(name, settings)
@@ -1393,9 +1394,43 @@ class SquidCoreService:
         sc.region_fov_coordinates[name] = [coords[i] for i in sorted(keep)]
 
     def _add_random_region(self, sc, pattern, name, x, y, z0, yaml_data):
-        # Replaced by Task 4; unreachable from coverage/centered_grid paths and the
-        # loader requires wells for per-well patterns, so no yaml can trigger this yet.
-        raise NotImplementedError("random fov_pattern is not implemented yet (Task 4)")
+        """Sample n_fovs points uniformly inside the well's usable circle.
+
+        Per-well RNG: sha256(f"{seed}:{well}") so runs are reproducible for a given
+        seed but differ well-to-well (hash() is process-salted; never use it).
+        seed None -> os.urandom-backed nondeterministic sampling.
+        """
+        import hashlib
+        import random as _random
+
+        fov_mm = sc.objectiveStore.get_pixel_size_factor() * sc.camera.get_fov_size_mm()
+        fmt_settings = self._current_wellplate_settings  # set by _configure_regions, see below
+        usable_radius = fmt_settings["well_size_mm"] / 2.0 - fov_mm / 2.0
+        if usable_radius <= 0:
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_OUT_OF_RANGE,
+                    f"random fov_pattern: FOV ({fov_mm:.3f} mm) does not fit in a "
+                    f"{fmt_settings['well_size_mm']} mm well",
+                    detail={"well": name},
+                )
+            )
+        seed = pattern["seed"]
+        if seed is None:
+            rng = _random.Random()
+        else:
+            digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
+            rng = _random.Random(int.from_bytes(digest[:8], "big"))
+        coords = []
+        while len(coords) < pattern["n_fovs"]:
+            px = rng.uniform(-usable_radius, usable_radius)
+            py = rng.uniform(-usable_radius, usable_radius)
+            if px * px + py * py <= usable_radius * usable_radius:
+                coords.append((x + px, y + py, z0))
+        sc.region_centers[name] = [x, y, z0]
+        sc.region_shapes[name] = "Square"  # keep region dicts key-consistent (sort/clear paths)
+        sc.region_fov_coordinates[name] = coords
 
     def _configure_grid_regions(self, grid, z0: float) -> None:
         import control._def

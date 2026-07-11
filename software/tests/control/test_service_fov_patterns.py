@@ -112,3 +112,29 @@ def test_grid_subset_forces_unidirectional_and_restores(service, sim_scope, tmp_
         assert service._scan_coordinates.fov_pattern == "S-Pattern"  # restored
     finally:
         sc.fov_pattern = original
+
+
+def test_random_seeded_reproducible_and_per_well_different(service, sim_scope, tmp_path):
+    pattern = {"type": "random", "n_fovs": 5, "seed": 42}
+    sc1 = _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"fov_pattern": pattern}), tmp_path)
+    a1_first = list(sc1.region_fov_coordinates["A1"])
+    a2_first = list(sc1.region_fov_coordinates["A2"])
+    assert len(a1_first) == 5 and len(a2_first) == 5
+    assert a1_first != a2_first  # independent per well
+    # reproducible: reconfigure, same coordinates
+    sc2 = _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"fov_pattern": pattern}), tmp_path)
+    assert list(sc2.region_fov_coordinates["A1"]) == a1_first
+
+
+def test_random_within_well_bounds(service, sim_scope, tmp_path):
+    import control._def
+
+    pattern = {"type": "random", "n_fovs": 8, "seed": 1}
+    sc = _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"fov_pattern": pattern}), tmp_path)
+    settings = control._def.get_wellplate_settings("96 well plate")
+    from squid_service.wells import well_center_mm
+
+    cx, cy = well_center_mm("A1", settings)
+    radius = settings["well_size_mm"] / 2.0
+    for x, y, *_ in sc.region_fov_coordinates["A1"]:
+        assert ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 <= radius + 1e-9
