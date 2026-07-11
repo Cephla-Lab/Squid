@@ -88,6 +88,7 @@ class _SimulatedLS50:
         self._pos_mm = 0.0  # power-on zero
         self._lo_mm: Optional[float] = None
         self._hi_mm: Optional[float] = None
+        self._hard_hi_mm: Optional[float] = None  # physical away-limit stop (set by frame tests)
         self._closed = False
         self._zero_count = 0
 
@@ -103,6 +104,9 @@ class _SimulatedLS50:
     def set_travel_limits(self, min_mm: float, max_mm: float):
         self._lo_mm, self._hi_mm = float(min_mm), float(max_mm)
 
+    def clear_travel_limits(self):
+        self._lo_mm = self._hi_mm = None
+
     def get_position_mm(self) -> float:
         return self._pos_mm
 
@@ -113,6 +117,8 @@ class _SimulatedLS50:
         target = float(z_mm)
         if self._lo_mm is not None:
             target = min(max(target, self._lo_mm), self._hi_mm)
+        if self._hard_hi_mm is not None:
+            target = min(target, self._hard_hi_mm)  # the limit switch stops the stage
         self._pos_mm = target
         return self._pos_mm
 
@@ -120,10 +126,20 @@ class _SimulatedLS50:
         return self.move_to(self._pos_mm + float(dz_mm), wait=wait)
 
     def zero_here(self):
-        # 'H Z=0' capability: redefine the current position as native 0. Deliberately NOT
-        # wired to AbstractStage.zero() -- see ASIZStage.zero().
+        # 'H Z=0': redefine the current position as native 0 (shifts the whole frame).
+        if self._hard_hi_mm is not None:
+            self._hard_hi_mm -= self._pos_mm
+        if self._lo_mm is not None:
+            self._lo_mm -= self._pos_mm
+            self._hi_mm -= self._pos_mm
         self._pos_mm = 0.0
         self._zero_count += 1
+
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = 60.0):
+        # Drive past full travel toward the away end; the (simulated) limit switch stops
+        # the stage; define native 0 there.
+        self.move_relative(abs(float(overdrive_mm)), wait=True)
+        self.zero_here()
 
     def close(self):
         self._closed = True
@@ -181,6 +197,17 @@ class LS50Controller:
         self._serial.command(f"SU {self._axis}={float(max_mm):.4f}")
         self._range_lo, self._range_hi = float(min_mm), float(max_mm)
 
+    def clear_travel_limits(self) -> None:
+        """Overwrite any controller-side SL/SU left by a previous session with a wide window.
+
+        Stale soft limits persist in the controller across software restarts (and across
+        power cycles if they were ever saved); they would silently clamp moves -- including
+        the find-zero overdrive -- so startup clears them before anything else.
+        """
+        self._serial.command(f"SL {self._axis}=-1000")
+        self._serial.command(f"SU {self._axis}=1000")
+        self._range_lo = self._range_hi = None
+
     def get_position_mm(self) -> float:
         reply = self._serial.command(f"W {self._axis}")  # ':A -12345' or bare '-12345', in 0.1 um
         match = re.search(r"-?\d+(?:\.\d+)?", reply.replace(":A", "", 1))
@@ -229,9 +256,18 @@ class LS50Controller:
             time.sleep(_STATUS_POLL_PERIOD_S)
 
     def zero_here(self) -> None:
-        # Redefine the current position as native 0. Deliberately NOT wired to
-        # AbstractStage.zero() -- see ASIZStage.zero().
+        # Redefine the current position as native 0 (shifts the whole frame).
         self._serial.command(f"H {self._axis}=0")
+
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = 60.0) -> None:
+        """Establish the frame: drive PAST full travel toward the away-from-sample end
+        (native +; the limit switch stops the stage safely), then define native 0 there.
+
+        Call AFTER clear_travel_limits and BEFORE set_travel_limits -- stale limits would
+        clamp the overdrive, and the fresh fence must be expressed in the new frame.
+        """
+        self.move_relative(abs(float(overdrive_mm)), wait=True, timeout=timeout)
+        self.zero_here()
 
     def stop(self) -> None:
         # HALT; the MS-2000 acks it with ':N-21', which is expected, not an error.
@@ -410,6 +446,7 @@ def connect_asi_z_stage(
     home_mm: Optional[float] = None,
     invert_z: bool = False,
     apply_software_limits: bool = True,
+    find_zero_on_startup: bool = False,
     home_on_startup: bool = False,
     z_travel_mm: float = 0.0,
     stage_config: Optional[StageConfig] = None,
@@ -444,6 +481,14 @@ def connect_asi_z_stage(
     try:
         backend.connect_serial(port, baudrate=baudrate)
         backend.initialize()
+        # Always clear first: stale controller-side SL/SU from a previous session would
+        # silently clamp everything, including the find-zero overdrive below.
+        backend.clear_travel_limits()
+        if find_zero_on_startup:
+            # Anchor the frame: drive to the away-from-sample limit switch and define
+            # native 0 there, so squid 0 is the true retracted end, never a random
+            # power-on position. Motion is in the safe (away) direction only.
+            backend.zero_at_away_limit(overdrive_mm=(z_travel_mm or 50.0) * 1.2)
         if z_travel_mm:
             backend.set_travel_limits(-z_travel_mm, z_travel_mm)
     except Exception:
