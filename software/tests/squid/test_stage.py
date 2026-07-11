@@ -820,3 +820,58 @@ def test_asi_z_software_limits_can_be_disabled():
     assert sim.hardware_limits_mm() == (None, None)  # backend untouched
     stage.move_z_to(-3.0)  # outside the ignored fence: passes through
     assert abs(stage.get_pos().z_mm - (-3.0)) < 1e-9
+
+
+def test_ls50_zero_at_away_limit():
+    # Startup find-zero: drive past full travel toward the away end (native +; the limit
+    # switch stops the stage), then define native 0 there ('H Z=0').
+    sim = _sim_ls50()
+    sim._pos_mm = -12.3  # powered on mid-travel (frame is power-on-relative)
+    sim._hard_hi_mm = 7.7  # physical away-limit in the power-on frame
+    sim.zero_at_away_limit(overdrive_mm=60.0)
+    assert abs(sim.get_position_mm() - 0.0) < 1e-9  # zero defined at the away end
+    assert abs(sim._hard_hi_mm - 0.0) < 1e-9  # ...which IS the physical stop now
+
+
+def test_ls50_zero_at_away_limit_serial_sequence():
+    # Overdrive move (resolved to absolute), settle, then H Z=0.
+    conn = _FakeSerialConn(replies=[b":A 0\r\n", b":A\r\n", b"B\r\n", b"N\r\n", b":A 500000\r\n", b":A\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    ctrl.zero_at_away_limit(overdrive_mm=60.0)
+    assert conn.written[0] == b"W Z\r"  # current position for the relative resolve
+    assert conn.written[1] == b"M Z=600000\r"  # +60 mm in 0.1 um units, unfenced passthrough
+    assert conn.written[-1] == b"H Z=0\r"  # zero defined at the stop
+
+
+def test_asi_builder_finds_zero_on_startup():
+    stage = squid.stage.asi.connect_asi_z_stage(
+        simulated=True,
+        invert_z=True,
+        z_travel_mm=50.0,
+        find_zero_on_startup=True,
+        stage_config=squid.config.get_stage_config(),
+    )
+    backend = stage._backend
+    assert abs(backend.get_position_mm() - 0.0) < 1e-9  # at the away end, zeroed
+    assert backend._zero_count == 1
+    # The travel fence must be applied AFTER zeroing, in the new frame.
+    assert backend.hardware_limits_mm() == (-50.0, 50.0)
+    assert abs(stage.get_pos().z_mm - 0.0) < 1e-9  # squid frame: 0 = retracted
+
+
+def test_ls50_clear_travel_limits_serial():
+    # Startup must overwrite stale controller-side SL/SU from previous sessions.
+    conn = _FakeSerialConn(replies=[b":A\r\n", b":A\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    ctrl._range_lo, ctrl._range_hi = -6.0, -0.5  # stale software cache too
+    ctrl.clear_travel_limits()
+    assert conn.written == [b"SL Z=-1000\r", b"SU Z=1000\r"]
+    assert ctrl.hardware_limits_mm() == (None, None)
+
+
+def test_asi_builder_default_skips_find_zero():
+    # Library-level default is no surprise motion; the config flag opts startup zeroing in.
+    stage = squid.stage.asi.connect_asi_z_stage(
+        simulated=True, z_travel_mm=50.0, stage_config=squid.config.get_stage_config()
+    )
+    assert stage._backend._zero_count == 0

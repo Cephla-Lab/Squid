@@ -1144,6 +1144,14 @@ ASI_Z_HOME_MM = 0.0
 # Retract Z to ASI_Z_HOME_MM once at bring-up. MOVES the stage. Default off: no uncommanded
 # motion until the machine's frame convention is verified.
 ASI_Z_HOME_ON_STARTUP = False
+# Establish the Z frame at startup: drive to the away-from-sample limit switch (native +,
+# the safe direction) and define native 0 there ('H Z=0'), so squid 0 is ALWAYS the true
+# farthest-from-sample position, never a random power-on point. MOVES the stage at startup.
+# The rest of the config (ASI_Z_HOME_MM=0, retract flows) assumes this frame; with it
+# established, ASI_Z_APPLY_SOFTWARE_LIMITS becomes meaningful again if wanted. Stale
+# controller-side soft limits are always cleared first (unconditional).
+ASI_Z_FIND_ZERO_ON_STARTUP = True
+
 # Apply StageConfig.Z_AXIS MIN/MAX as a software fence on the LS50. Default off: the frame
 # is power-on-relative (native 0 = wherever the controller woke up), so fixed squid-frame
 # limits fence arbitrary positions unless the power-on-retracted convention is guaranteed.
