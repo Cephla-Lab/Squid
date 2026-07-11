@@ -139,6 +139,19 @@ def fence_test(backend, fence_mm: float):
     report_position(backend, "Back at start")
 
 
+def find_zero_test(backend, travel_mm: float):
+    """Clear stale limits, drive to the away limit, zero there -- the startup routine, observable."""
+    log.info("--- Find-zero test ---")
+    report_position(backend, "Before")
+    backend.clear_travel_limits()
+    log.info("Stale controller soft limits cleared (SL/SU wide).")
+    log.info("Driving PAST full travel toward the AWAY-from-sample end; the limit switch stops it ...")
+    t0 = time.monotonic()
+    backend.zero_at_away_limit(overdrive_mm=travel_mm * 1.2)
+    log.info(f"Reached the away limit and zeroed in {time.monotonic() - t0:.1f} s.")
+    report_position(backend, "After (should be native 0)")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sn", help="Controller USB serial number (resolved to a port)")
@@ -150,6 +163,12 @@ def main():
     parser.add_argument("--jog-mm", type=float, default=0.5, help="Jog distance in native mm (default 0.5, away)")
     parser.add_argument("--fence-mm", type=float, default=0.0, help="Also test the +/- soft-limit fence (0 = skip)")
     parser.add_argument("--scan-bauds", action="store_true", help="Try each ASI baud rate and report which answers")
+    parser.add_argument(
+        "--find-zero",
+        action="store_true",
+        help="Startup frame routine: clear limits, drive to the away limit, zero there (needs --allow-motion)",
+    )
+    parser.add_argument("--travel-mm", type=float, default=50.0, help="Physical travel for the overdrive (default 50)")
     args = parser.parse_args()
 
     if args.scan_bauds:
@@ -178,6 +197,8 @@ def main():
                 log.info("Aborted before motion.")
                 return
 
+        if args.find_zero:
+            find_zero_test(backend, args.travel_mm)
         jog_test(backend, args.jog_mm)
         if args.fence_mm > 0:
             fence_test(backend, args.fence_mm)
