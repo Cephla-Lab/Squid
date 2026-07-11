@@ -1111,6 +1111,42 @@ class SquidCoreService:
                     )
                 )
 
+        def check_well_z_offsets():
+            offsets = ctx["yaml_data"].well_z_offsets_um
+            if not offsets:
+                return
+            # Offsets are displacements from the laser-AF reference plane, so laser AF must run.
+            # Read the effective flag the same way the z_reference check does (yaml base with
+            # request overrides applied); here "reflection" is the laser-AF flag.
+            laser_af, _contrast = self._effective_af_flags(req, ctx["yaml_data"].laser_af, ctx["yaml_data"].contrast_af)
+            if not laser_af:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.INVALID_PARAM,
+                        F.INVALID_PARAM_BAD_VALUE,
+                        "well_z_offsets_um requires autofocus.laser_af "
+                        "(offsets are relative to the laser-AF reference plane)",
+                        component="well_z_offsets_um",
+                    )
+                )
+            # Range-check every entry (including "default") against the laser-AF search range,
+            # when a laser-AF controller with properties is attached (may be absent in sim).
+            controller = getattr(self._mpc, "laserAutoFocusController", None)
+            af_range = getattr(getattr(controller, "laser_af_properties", None), "laser_af_range", None)
+            if af_range:
+                for well, um in offsets.items():
+                    if abs(um) > af_range:
+                        raise F.FaultError(
+                            F.make_fault(
+                                F.FaultCategory.INVALID_PARAM,
+                                F.INVALID_PARAM_OUT_OF_RANGE,
+                                f"well_z_offsets_um[{well!r}] = {um:+.1f} um exceeds "
+                                f"laser AF range +/-{af_range} um",
+                                component="well_z_offsets_um",
+                                detail={"well": well, "offset_um": um, "laser_af_range_um": af_range},
+                            )
+                        )
+
         checks = [
             ("yaml", check_yaml),
             ("widget_type", check_widget_type),
@@ -1123,6 +1159,7 @@ class SquidCoreService:
                 "z_reference",
                 self._z_reference_check(req, lambda: (ctx["yaml_data"].laser_af, ctx["yaml_data"].contrast_af)),
             ),
+            ("well_z_offsets", check_well_z_offsets),
             ("output_path", self._output_path_check(req, ctx)),
         ]
         return checks, ctx
@@ -1289,6 +1326,23 @@ class SquidCoreService:
             return zref.z_mm
         # "current" and "autofocus" both baseline on the current stage z.
         return self._microscope.stage.get_pos().z_mm
+
+    def _resolve_well_z_offsets(self, well_z_offsets_um, well_names):
+        """Map each configured well to its laser-AF target offset (µm from the reference plane).
+
+        Precedence per well: its listed value, else the "default" value if present. Zero and
+        absent offsets are omitted so the pushed dict only carries wells that actually deviate
+        (an empty dict means every FOV targets the reference plane -- current behavior).
+        """
+        if not well_z_offsets_um:
+            return {}
+        default = well_z_offsets_um.get("default")
+        out = {}
+        for name in well_names:
+            value = well_z_offsets_um.get(name, default)
+            if value:
+                out[name] = float(value)
+        return out
 
     # -- controller configuration --
 
@@ -1578,6 +1632,14 @@ class SquidCoreService:
             else:
                 yaml_data, raw = ctx["yaml_data"], ctx["raw"]
                 self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format, z0)
+                # Resolve per-well laser-AF offsets against the regions just configured and push
+                # them into the controller (consumed-and-cleared by run_acquisition, so no leak
+                # to later runs). Empty dict => every FOV targets the reference plane.
+                self._mpc.set_region_laser_af_offsets(
+                    self._resolve_well_z_offsets(
+                        yaml_data.well_z_offsets_um, list(self._scan_coordinates.region_centers.keys())
+                    )
+                )
                 self._configure_controller(yaml_data, z0)
                 channel_count = len(yaml_data.channel_names)
                 nz, nt = yaml_data.nz, yaml_data.nt
