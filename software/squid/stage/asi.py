@@ -274,6 +274,7 @@ class ASIZStage(AbstractStage):
         stage_config: Optional[StageConfig] = None,
         home_mm: Optional[float] = None,
         invert_z: bool = False,
+        apply_software_limits: bool = True,
     ):
         super().__init__(stage_config)
         self._backend = backend
@@ -282,6 +283,7 @@ class ASIZStage(AbstractStage):
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
 
         self._invert = invert_z
+        self._apply_software_limits = apply_software_limits
         self._home_mm = home_mm  # Squid-frame retract target; None = home(z) disabled
         self._last_z_mm = 0.0  # last Squid-frame Z, served to pollers after close()
 
@@ -370,6 +372,11 @@ class ASIZStage(AbstractStage):
         theta_neg_rad: Optional[float] = None,
     ):
         if z_pos_mm is not None and z_neg_mm is not None:
+            if not self._apply_software_limits:
+                # The frame is power-on-relative: fixed squid-frame limits fence arbitrary
+                # positions unless the retract-at-power-on convention is guaranteed.
+                self._log.info("Ignoring software Z limits (ASI_Z_APPLY_SOFTWARE_LIMITS is off).")
+                return
             with self._lock:
                 # Map the software Z limits to native; inversion reverses order, so take
                 # min/max after flipping both ends.
@@ -428,6 +435,7 @@ def connect_asi_z_stage(
     axis: str = "Z",
     home_mm: Optional[float] = None,
     invert_z: bool = False,
+    apply_software_limits: bool = True,
     home_on_startup: bool = False,
     z_travel_mm: float = 0.0,
     stage_config: Optional[StageConfig] = None,
@@ -467,7 +475,13 @@ def connect_asi_z_stage(
     except Exception:
         backend.close()  # release the serial handle on any connect/init failure
         raise
-    stage = ASIZStage(backend, stage_config=stage_config, home_mm=home_mm, invert_z=invert_z)
+    stage = ASIZStage(
+        backend,
+        stage_config=stage_config,
+        home_mm=home_mm,
+        invert_z=invert_z,
+        apply_software_limits=apply_software_limits,
+    )
 
     if home_on_startup:
         if home_mm is None:

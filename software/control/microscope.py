@@ -403,6 +403,7 @@ class Microscope:
                 # reference, home retracts to the power-on end, native/squid 0 by convention.
                 home_mm=float(control._def.ASI_Z_HOME_MM),
                 invert_z=control._def.ASI_Z_INVERT,
+                apply_software_limits=control._def.ASI_Z_APPLY_SOFTWARE_LIMITS,
                 home_on_startup=control._def.ASI_Z_HOME_ON_STARTUP and not skip_init,
                 z_travel_mm=control._def.ASI_Z_TRAVEL_MM,
                 stage_config=stage_config,
