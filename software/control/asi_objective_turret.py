@@ -12,22 +12,22 @@ The turret has NO homing: ``home()`` never moves; it only refreshes the tracked 
 startup flow's ``move_to_objective(DEFAULT_OBJECTIVE)`` establishes a known slot at boot.
 """
 
-import re
-import threading
-import time
 from contextlib import suppress
 from typing import Dict, Optional
 
 import squid.abc
 import squid.logging
-from control.objective_turret_controller import _resolve_position  # same KeyError message the GUI dialog shows
-from squid.stage.asi import MS2000Serial
+from control.objective_turret_controller import (  # shared changer helpers (same KeyError the GUI dialog shows)
+    _resolve_position,
+    restore_z_if_captured,
+    retract_z_if_possible,
+)
+from squid.stage.asi import MS2000Serial, parse_ms2000_number
 
 _log = squid.logging.get_logger(__name__)
 
 TURRET_SLOT_COUNT = 6
 DEFAULT_MOVE_TIMEOUT_S = 30.0
-_STATUS_POLL_PERIOD_S = 0.05
 
 
 def _validate_positions(positions: Optional[dict]) -> Dict[str, int]:
@@ -73,20 +73,17 @@ class ASIObjectiveTurret:
             self._owns_serial = False
             _log.info("ASI turret reusing the Z stage's MS-2000 connection.")
         else:
-            if serial_port:
-                port = serial_port
-            elif serial_number:
-                import squid.stage.utils
+            import squid.stage.utils
 
-                port = squid.stage.utils.resolve_serial_port_by_sn(
-                    serial_number,
-                    missing_hint="Verify the MS-2000 controller is powered and enumerates as a USB serial device.",
-                )
-            else:
-                raise RuntimeError(
+            port = squid.stage.utils.resolve_port(
+                serial_port,
+                serial_number,
+                missing_hint="Verify the MS-2000 controller is powered and enumerates as a USB serial device.",
+                unset_message=(
                     "Set ASI_OBJECTIVE_TURRET_SN/ASI_OBJECTIVE_TURRET_SERIAL_PORT (or the ASI_Z_* "
                     "equivalents) to locate the MS-2000 controller."
-                )
+                ),
+            )
             _log.info(f"ASI turret opening its own MS-2000 connection on {port} at {baudrate} baud.")
             self._serial = MS2000Serial.open(port, baudrate=baudrate)
             self._owns_serial = True
@@ -175,25 +172,17 @@ class ASIObjectiveTurret:
         unsupported on this controller build, and we fall back to tracking the last
         commanded slot.
         """
-        reply = self._serial.command(f"W {self._axis}", check_error=False)
+        reply = self._serial.command_with_settle_retry(f"W {self._axis}", check_error=False)
         if require_reply and not reply:
-            # Our own connection: this probe doubles as the comms sanity check (mirrors
-            # LS50Controller.initialize -- settle, flush, one retry).
-            time.sleep(0.2)
-            with suppress(Exception):
-                self._serial._serial.reset_input_buffer()
-            reply = self._serial.command(f"W {self._axis}", check_error=False)
-            if not reply:
-                raise RuntimeError(
-                    f"MS-2000 did not answer 'W {self._axis}'. Check the baud rate (ASI RS-232 "
-                    f"DIP default is 9600), the port, and that the controller is powered."
-                )
+            # Our own connection: this probe doubles as the comms sanity check.
+            raise RuntimeError(
+                f"MS-2000 did not answer 'W {self._axis}'. Check the baud rate (ASI RS-232 "
+                f"DIP default is 9600), the port, and that the controller is powered."
+            )
         _log.info(f"ASI turret 'W {self._axis}' reply: {reply!r}")
-        match = re.search(r"-?\d+", reply.replace(":A", "", 1)) if reply else None
-        if match:
-            slot = int(match.group(0))
-            if 1 <= slot <= TURRET_SLOT_COUNT:
-                return slot
+        value = parse_ms2000_number(reply)
+        if value is not None and value == int(value) and 1 <= int(value) <= TURRET_SLOT_COUNT:
+            return int(value)
         return None
 
     def _rotate_to_slot(self, slot: int, timeout_s: float) -> None:
@@ -212,25 +201,13 @@ class ASIObjectiveTurret:
     def _wait_idle(self, timeout_s: float) -> None:
         # '/' is controller-global: a concurrently moving Z also reads busy. Acceptable --
         # objective changes and Z scans are not concurrent flows.
-        deadline = time.monotonic() + timeout_s
-        while "B" in self._serial.command("/").upper():
-            if time.monotonic() > deadline:
-                raise RuntimeError(f"ASI turret did not reach idle within {timeout_s:.1f}s")
-            time.sleep(_STATUS_POLL_PERIOD_S)
+        self._serial.wait_idle(timeout_s, "ASI turret")
 
     def _retract_z_if_possible(self) -> Optional[float]:
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        restore_z_if_captured(self._stage, captured_z)
 
 
 class ASIObjectiveTurretSimulation:
@@ -295,15 +272,7 @@ class ASIObjectiveTurretSimulation:
             raise RuntimeError("ASI turret (simulated) is closed")
 
     def _retract_z_if_possible(self) -> Optional[float]:
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        restore_z_if_captured(self._stage, captured_z)

@@ -52,12 +52,6 @@ if control._def.USE_OBJECTIVE_TURRET:
 else:
     ObjectiveTurret4PosController = None
 
-if control._def.USE_ASI_OBJECTIVE_TURRET:
-    from control.asi_objective_turret import ASIObjectiveTurret, ASIObjectiveTurretSimulation
-else:
-    ASIObjectiveTurret = None
-    ASIObjectiveTurretSimulation = None
-
 
 class ObjectiveChangerProtocol(Protocol):
     """Methods shared by both Xeryon and turret controllers. Controller-specific
@@ -182,6 +176,10 @@ class MicroscopeAddons:
                 else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
             )
         elif control._def.USE_ASI_OBJECTIVE_TURRET:
+            # Imported here (not at module level behind the flag) so tests can exercise this
+            # path by monkeypatching the flag alone.
+            from control.asi_objective_turret import ASIObjectiveTurret, ASIObjectiveTurretSimulation
+
             if objective_changer_simulated:
                 objective_changer = ASIObjectiveTurretSimulation(
                     positions=control._def.ASI_OBJECTIVE_TURRET_POSITIONS,

@@ -36,6 +36,11 @@ class ObjectiveChanger2PosController:
         self.axisX.setDPOS(0)
         self.current_position = 0
 
+    def close(self):
+        # ObjectiveChangerProtocol promises close(); the Xeryon library holds no OS handle
+        # that needs explicit release (cleanup zeroes the axis via moveToZero instead).
+        pass
+
     def moveToPosition1(self, move_z=True):
         self.axisX.setDPOS(self.position1)
         if self.stage is not None and self.current_position == 2 and self.retracted:
@@ -91,6 +96,9 @@ class ObjectiveChanger2PosController_Simulation:
         self.position2_offset = XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM
 
     def home(self):
+        pass
+
+    def close(self):
         pass
 
     def moveToPosition1(self, move_z=True):

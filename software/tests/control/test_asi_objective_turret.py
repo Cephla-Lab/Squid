@@ -3,47 +3,9 @@ import pytest
 import control._def
 import control.asi_objective_turret as aot
 from squid.stage.asi import MS2000Serial
+from tests.tools import FakeSerialConn as _FakeSerialConn, FakeZStage as FakeStage
 
 POSITIONS = {"2x": 1, "4x": 2, "10x": 3, "20x": 4, "40x": 5, "60x": 6}
-
-
-class _FakeSerialConn:
-    """Scripted pyserial-like object: records writes, pops queued replies, tracks close."""
-
-    def __init__(self, replies=(), default=b""):
-        self.written = []
-        self.replies = list(replies)
-        self.default = default
-        self.closed = False
-
-    def write(self, data):
-        self.written.append(data)
-
-    def read_until(self, expected=b"\n"):
-        return self.replies.pop(0) if self.replies else self.default
-
-    def close(self):
-        self.closed = True
-
-
-class FakeStage:
-    """Records move_z_to calls and reports a preset Z position."""
-
-    def __init__(self, z_mm: float = 3.5):
-        self._z_mm = z_mm
-        self.z_moves: list[float] = []
-
-    def move_z_to(self, abs_mm: float, blocking: bool = True):
-        self.z_moves.append(abs_mm)
-        self._z_mm = abs_mm
-
-    def get_pos(self):
-        class _Pos:
-            pass
-
-        p = _Pos()
-        p.z_mm = self._z_mm
-        return p
 
 
 def _shared_turret(replies, stage=None, positions=POSITIONS, **kwargs):
@@ -250,7 +212,6 @@ def test_turret_without_port_or_sn_raises():
 
 def _build_asi_scope(monkeypatch, skip_init):
     import control.microscope
-    from control.asi_objective_turret import ASIObjectiveTurret, ASIObjectiveTurretSimulation
 
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
@@ -259,9 +220,6 @@ def _build_asi_scope(monkeypatch, skip_init):
     monkeypatch.setattr(control._def, "ASI_Z_TRAVEL_MM", 50.0, raising=False)
     monkeypatch.setattr(control._def, "USE_ASI_OBJECTIVE_TURRET", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_OBJECTIVE_CHANGER", True, raising=False)
-    # The conditional import left these None (flag was off at import time).
-    monkeypatch.setattr(control.microscope, "ASIObjectiveTurret", ASIObjectiveTurret, raising=False)
-    monkeypatch.setattr(control.microscope, "ASIObjectiveTurretSimulation", ASIObjectiveTurretSimulation, raising=False)
     return control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=skip_init)
 
 

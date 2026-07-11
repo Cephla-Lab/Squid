@@ -440,7 +440,7 @@ def _sim_asi_stage(**kwargs):
 
 
 def _sim_asi_combined():
-    """Simulated Cephla XY + ASI LS50 Z via the reused pi.CombinedStage; returns (combined, xy, z)."""
+    """Simulated Cephla XY + ASI LS50 Z via squid.stage.composite.CombinedStage; returns (combined, xy, z)."""
     return _sim_combined_stage(z_stage=_sim_asi_stage(invert_z=True, home_mm=0.0))
 
 

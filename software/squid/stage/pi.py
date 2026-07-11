@@ -4,7 +4,7 @@ Squid stage support for the PI V-308 voice-coil focus drive on a C-414 controlle
 Provides (1) ``C414FocusStage``, a GCS-2.0 driver over a serial (FTDI VCP) link via
 pipython's pure-Python PISerial gateway (no proprietary PI GCS DLL required), with
 ``pipython`` imported lazily so this module imports fine without it; (2) ``_SimulatedC414``,
-a pure-Python stand-in for hardware-free / CI use; and (3) two ``squid.abc.AbstractStage``
+a pure-Python stand-in for hardware-free / CI use; and (3) the ``squid.abc.AbstractStage``
 adapter ``PIFocusStage`` (Z-only; pair with an XY stage via ``squid.stage.composite.CombinedStage``).
 
 Z is pure pass-through mm: the controller's native absolute mm is Squid's Z mm, with no sign
@@ -21,7 +21,6 @@ from typing import Optional, Tuple
 import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
-from squid.stage.composite import CombinedStage  # re-export: CombinedStage lived here until it went multi-vendor
 
 _log = squid.logging.get_logger(__name__)
 
