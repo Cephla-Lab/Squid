@@ -73,3 +73,38 @@ def test_offsets_resolved_with_default(service, sim_scope, tmp_path):
 def test_offsets_default_zero_omitted(service, sim_scope, tmp_path):
     resolved = service._resolve_well_z_offsets({"A1": 3.0}, ["A1", "A2"])
     assert resolved == {"A1": 3.0}
+
+
+def test_offsets_explicit_zero_omitted(service):
+    # An explicit 0.0 for a listed well is omitted (that well simply targets the
+    # reference plane), while a genuinely deviating well is kept.
+    assert service._resolve_well_z_offsets({"A1": 0.0, "A2": 3.0}, ["A1", "A2"]) == {"A2": 3.0}
+    # A zero "default" is likewise omitted for the wells that fall back to it (A2 here).
+    assert service._resolve_well_z_offsets({"A1": 3.0, "default": 0}, ["A1", "A2"]) == {"A1": 3.0}
+
+
+def _laser_af_range(service):
+    """The sim laser-AF search range read the same way check_well_z_offsets reads it."""
+    controller = getattr(service._mpc, "laserAutoFocusController", None)
+    return getattr(getattr(controller, "laser_af_properties", None), "laser_af_range", None)
+
+
+@pytest.mark.parametrize("key", ["A1", "default"])
+def test_offsets_out_of_range_fails(service, sim_scope, tmp_path, key):
+    # Pin that an offset larger than the laser-AF range is a preflight fault, for both a
+    # per-well key and the authorized-deviation "default" key (both are range-checked).
+    af_range = _laser_af_range(service)
+    if not af_range:
+        pytest.skip("sim laser AF controller exposes no laser_af_range")
+    req = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope, {key: af_range * 2}, laser_af=True),
+        overrides={"output_path": str(tmp_path)},
+    )
+    result = service.preflight(req)
+    assert result["ok"] is False
+    # The failing check names the field and reports the range violation (OUT_OF_RANGE fault).
+    assert any(
+        "well_z_offsets_um" in (c.get("message") or "") and "range" in (c.get("message") or "").lower()
+        for c in result["checks"]
+        if not c["ok"]
+    )
