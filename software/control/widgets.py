@@ -9280,8 +9280,29 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
                 self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
 
-            # Load well regions if present and update XY checkbox state
-            if yaml_data.wellplate_regions:
+            # Load well selection: v2 wells-by-name first, then legacy regions
+            if yaml_data.wells:
+                from squid_service.wells import parse_well_names
+
+                pattern = yaml_data.fov_pattern or {"type": "coverage"}
+                if pattern["type"] != "coverage":
+                    QMessageBox.warning(
+                        self,
+                        "Pattern Not Supported in GUI",
+                        f"This acquisition uses fov_pattern '{pattern['type']}', which the GUI "
+                        "cannot represent yet. Run it via the API/method registry instead.",
+                    )
+                    return
+                if pattern.get("scan_size_mm"):
+                    self.entry_scan_size.setValue(pattern["scan_size_mm"])
+                self.entry_overlap.setValue(pattern.get("overlap_percent", yaml_data.overlap_percent))
+                if pattern.get("shape"):
+                    index = self.combobox_shape.findText(pattern["shape"])
+                    if index >= 0:
+                        self.combobox_shape.setCurrentIndex(index)
+                self._load_well_regions([{"name": n} for n in parse_well_names(yaml_data.wells)])
+                self.checkbox_xy.setChecked(True)
+            elif yaml_data.wellplate_regions:
                 self._load_well_regions(yaml_data.wellplate_regions)
                 self.checkbox_xy.setChecked(True)
             else:
