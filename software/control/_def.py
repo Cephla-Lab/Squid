@@ -1144,6 +1144,11 @@ ASI_Z_HOME_MM = 0.0
 # Retract Z to ASI_Z_HOME_MM once at bring-up. MOVES the stage. Default off: no uncommanded
 # motion until the machine's frame convention is verified.
 ASI_Z_HOME_ON_STARTUP = False
+# Apply StageConfig.Z_AXIS MIN/MAX as a software fence on the LS50. Default off: the frame
+# is power-on-relative (native 0 = wherever the controller woke up), so fixed squid-frame
+# limits fence arbitrary positions unless the power-on-retracted convention is guaranteed.
+# The coarse ASI_Z_TRAVEL_MM fence (physical-travel-sized, frame-independent) still applies.
+ASI_Z_APPLY_SOFTWARE_LIMITS = False
 
 
 def uses_external_z_stage() -> bool:

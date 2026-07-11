@@ -789,3 +789,15 @@ def test_pi_focus_pollers_safe_after_close():
     assert stage.get_state().busy is False
     stage.move_z_to(2.0)
     stage.move_z(0.5)
+
+
+def test_asi_z_software_limits_can_be_disabled():
+    # The LS50 frame is power-on-relative, so fixed squid-frame limits fence arbitrary
+    # positions; apply_software_limits=False makes set_limits a no-op (the coarse
+    # ASI_Z_TRAVEL_MM fence still applies at connect).
+    sim = _sim_ls50()
+    stage = squid.stage.asi.ASIZStage(sim, stage_config=squid.config.get_stage_config(), apply_software_limits=False)
+    stage.set_limits(z_pos_mm=6.0, z_neg_mm=0.5)
+    assert sim.hardware_limits_mm() == (None, None)  # backend untouched
+    stage.move_z_to(-3.0)  # outside the ignored fence: passes through
+    assert abs(stage.get_pos().z_mm - (-3.0)) < 1e-9
