@@ -1304,18 +1304,10 @@ class SquidCoreService:
         if effective_wells:
             fmt = sample_format_override or raw.get("sample", {}).get("wellplate_format", "96 well plate")
             settings = control._def.get_wellplate_settings(fmt)
+            pattern = yaml_data.fov_pattern
             for name in parse_well_names(effective_wells):
                 x, y = well_center_mm(name, settings)
-                sc.add_region(
-                    well_id=name,
-                    center_x=x,
-                    center_y=y,
-                    scan_size_mm=scan_size,
-                    overlap_percent=yaml_data.overlap_percent,
-                    shape=shape,
-                )
-                if name in sc.region_centers:
-                    sc.region_centers[name][2] = z0
+                self._add_pattern_region(sc, pattern, name, x, y, z0, yaml_data)
         else:
             for region in yaml_data.wellplate_regions:
                 name = region.get("name", "region")
@@ -1331,6 +1323,47 @@ class SquidCoreService:
                 if name in sc.region_centers:
                     sc.region_centers[name][2] = center[2] if len(center) > 2 else z0
         sc.sort_coordinates()
+
+    def _add_pattern_region(self, sc, pattern, name, x, y, z0, yaml_data):
+        """Add one well's FOVs per the fov_pattern (None/coverage -> legacy add_region)."""
+        if pattern is None or pattern["type"] == "coverage":
+            scan_size = (pattern or {}).get("scan_size_mm") or yaml_data.scan_size_mm or 2.0
+            shape = (pattern or {}).get("shape") or yaml_data.scan_shape or "Square"
+            overlap = (pattern or {}).get("overlap_percent", yaml_data.overlap_percent)
+            sc.add_region(
+                well_id=name,
+                center_x=x,
+                center_y=y,
+                scan_size_mm=scan_size,
+                overlap_percent=overlap,
+                shape=shape,
+            )
+        elif pattern["type"] == "centered_grid":
+            sc.add_flexible_region(
+                region_id=name,
+                center_x=x,
+                center_y=y,
+                center_z=z0,
+                Nx=pattern["nx"],
+                Ny=pattern["ny"],
+                overlap_percent=pattern["overlap_percent"],
+            )
+        elif pattern["type"] == "grid_subset":
+            self._add_grid_subset_region(sc, pattern, name, x, y, z0)  # Task 3
+        elif pattern["type"] == "random":
+            self._add_random_region(sc, pattern, name, x, y, z0, yaml_data)  # Task 4
+        if name in sc.region_centers:
+            sc.region_centers[name][2] = z0
+
+    def _add_grid_subset_region(self, sc, pattern, name, x, y, z0):
+        # Replaced by Task 3; unreachable from coverage/centered_grid paths and the
+        # loader requires wells for per-well patterns, so no yaml can trigger this yet.
+        raise NotImplementedError("grid_subset fov_pattern is not implemented yet (Task 3)")
+
+    def _add_random_region(self, sc, pattern, name, x, y, z0, yaml_data):
+        # Replaced by Task 4; unreachable from coverage/centered_grid paths and the
+        # loader requires wells for per-well patterns, so no yaml can trigger this yet.
+        raise NotImplementedError("random fov_pattern is not implemented yet (Task 4)")
 
     def _configure_grid_regions(self, grid, z0: float) -> None:
         import control._def
