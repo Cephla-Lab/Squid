@@ -370,14 +370,13 @@ class Microscope:
                 serial_port=control._def.ASI_Z_SERIAL_PORT or None,
                 baudrate=control._def.ASI_Z_BAUDRATE,
                 axis=str(control._def.ASI_Z_AXIS_LETTER),
-                # Separately configurable (not OBJECTIVE_RETRACTED_POS_MM): with no absolute
-                # reference, home retracts to the power-on end, native/squid 0 by convention.
+                # home retracts to squid 0, the find-zero-anchored away end (not
+                # OBJECTIVE_RETRACTED_POS_MM, which is a small offset above it).
                 home_mm=float(control._def.ASI_Z_HOME_MM),
                 invert_z=control._def.ASI_Z_INVERT,
                 apply_software_limits=control._def.ASI_Z_APPLY_SOFTWARE_LIMITS,
                 # Skip on in-place restart: the frame is already established, no surprise motion.
                 find_zero_on_startup=control._def.ASI_Z_FIND_ZERO_ON_STARTUP and not skip_init,
-                home_on_startup=control._def.ASI_Z_HOME_ON_STARTUP and not skip_init,
                 z_travel_mm=control._def.ASI_Z_TRAVEL_MM,
                 stage_config=stage_config,
             )

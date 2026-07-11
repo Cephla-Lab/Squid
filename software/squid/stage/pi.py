@@ -663,14 +663,20 @@ def connect_pi_focus_stage(
             home_to_positive_limit=home_to_positive_limit,
         )
 
+    import squid.stage.utils
+
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
     # leaks an open handle.
-    if serial_port:
-        port = serial_port
-    elif serialnum:
-        port = _resolve_port_by_sn(serialnum)
-    else:
-        raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
+    port = squid.stage.utils.resolve_port(
+        serial_port,
+        serialnum,
+        missing_hint=(
+            "On Linux the C-414's custom-VID FTDI needs the ftdi_sio bind rule "
+            "(98-pi-c414-bind.rules) installed so /dev/ttyUSB* appears; verify it is present "
+            "and the controller is powered."
+        ),
+        unset_message="Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.",
+    )
 
     backend = C414FocusStage(axis=axis)
     try:

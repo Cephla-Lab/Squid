@@ -1126,36 +1126,29 @@ ASI_Z_BAUDRATE = 115200
 # Axis letter of the LS50 on its controller. Single-axis MS-2000 builds sometimes label
 # their lone axis X; the driver uses this letter in every command (M/R/W/SL/SU/H).
 ASI_Z_AXIS_LETTER = "Z"
-# The LS50 has no absolute reference: native 0 is the power-on position (the retracted end by
-# convention) and native POSITIVE is away from the sample. True (the standard wiring) shows the
-# negation (squid_z = -native_z), so squid 0 = retracted and squid Z+ is toward the sample.
+# Native POSITIVE is away from the sample. True (the standard wiring) shows the negation
+# (squid_z = -native_z), so squid 0 is the away end and squid Z+ is toward the sample.
 ASI_Z_INVERT = True
-# Coarse sanity fence: >0 sets controller soft limits (SL/SU) and a software clamp to
-# [-travel, +travel] native mm around the power-on zero. +/- full travel (50 for the LS50) can
-# never exclude a reachable position but stops absurd targets; the real fence arrives via
-# set_limits from StageConfig.Z_AXIS at microscope init. 0 leaves controller limits untouched.
+# Physical travel of the stage (LS-50 = 50). REQUIRED when find-zero is on: it sets the
+# overdrive distance. Also sets a coarse sanity fence of native [-travel, +travel] (controller
+# SL/SU + software clamp) -- full travel can never exclude a reachable position but stops
+# absurd targets. 0 leaves the controller limits untouched (and is invalid with find-zero).
 ASI_Z_TRAVEL_MM = 0.0
-# Squid-frame retract target home() drives Z to; 0.0 = native 0, the retracted end. Power the
-# controller on with the stage retracted (or re-establish the frame) so this holds. NOTE the
-# power-on-retracted convention is load-bearing beyond home(): the shared retract flows
-# (loading/shutdown/safety-position) drive Z to OBJECTIVE_RETRACTED_POS_MM in this same squid
-# frame and assume it is near-retracted.
+# Squid-frame retract target home() drives Z to; 0.0 = native 0, the away end that find-zero
+# anchors at the limit switch. The shared retract flows (loading/shutdown/safety-position)
+# drive Z to OBJECTIVE_RETRACTED_POS_MM in this same frame.
 ASI_Z_HOME_MM = 0.0
-# Retract Z to ASI_Z_HOME_MM once at bring-up. MOVES the stage. Default off: no uncommanded
-# motion until the machine's frame convention is verified.
-ASI_Z_HOME_ON_STARTUP = False
 # Establish the Z frame at startup: drive to the away-from-sample limit switch (native +,
 # the safe direction) and define native 0 there ('H Z=0'), so squid 0 is ALWAYS the true
-# farthest-from-sample position, never a random power-on point. MOVES the stage at startup.
-# The rest of the config (ASI_Z_HOME_MM=0, retract flows) assumes this frame; with it
-# established, ASI_Z_APPLY_SOFTWARE_LIMITS becomes meaningful again if wanted. Stale
-# controller-side soft limits are always cleared first (unconditional).
+# farthest-from-sample position, never a random power-on point. MOVES the stage at startup
+# (away only; up to ~90 s for full travel at the MFC-2000's 0.6 mm/s). Stale controller-side
+# soft limits are always cleared first (unconditional; they persist across power cycles).
 ASI_Z_FIND_ZERO_ON_STARTUP = True
 
-# Apply StageConfig.Z_AXIS MIN/MAX as a software fence on the LS50. Default off: the frame
-# is power-on-relative (native 0 = wherever the controller woke up), so fixed squid-frame
-# limits fence arbitrary positions unless the power-on-retracted convention is guaranteed.
-# The coarse ASI_Z_TRAVEL_MM fence (physical-travel-sized, frame-independent) still applies.
+# Apply StageConfig.Z_AXIS MIN/MAX as a software fence on the LS50. Off by operator choice on
+# the reference machine (full manual range wanted); with find-zero anchoring the frame, turning
+# this on gives a meaningful anti-collision fence at Z_AXIS MAX_POSITION. The coarse
+# ASI_Z_TRAVEL_MM fence applies regardless.
 ASI_Z_APPLY_SOFTWARE_LIMITS = False
 
 
@@ -1175,6 +1168,15 @@ def _validate_external_z_stage_flags(use_pi: bool, use_asi: bool) -> None:
         raise ValueError(
             "USE_PI_FOCUS_STAGE and USE_ASI_Z_STAGE are mutually exclusive "
             "(the microscope has exactly one external Z focus stage; set only one in the machine config)"
+        )
+
+
+def _validate_asi_z_flags(use_asi: bool, find_zero: bool, travel_mm: float) -> None:
+    # Fail at config load, next to the other flag validators, rather than mid-bring-up.
+    if use_asi and find_zero and not travel_mm:
+        raise ValueError(
+            "USE_ASI_Z_STAGE with ASI_Z_FIND_ZERO_ON_STARTUP requires ASI_Z_TRAVEL_MM: "
+            "the physical travel sets the find-zero overdrive distance (LS-50 = 50)"
         )
 
 
@@ -1422,6 +1424,7 @@ if config_files:
 
     _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
     _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
+    _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1437,6 +1440,7 @@ else:
         exec(open(config_files[0]).read())
         _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
         _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
+        _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

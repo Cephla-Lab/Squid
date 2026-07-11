@@ -183,3 +183,13 @@ def resolve_serial_port_by_sn(serialnum, missing_hint: str = "") -> str:
             message = f"{message} {missing_hint}"
         raise RuntimeError(message)
     return matches[0]
+
+
+def resolve_port(serial_port, serial_number, missing_hint: str = "", unset_message: str = "") -> str:
+    """The standard port-selection ladder: explicit port wins, else resolve by serial number,
+    else raise ``unset_message`` (which should name the config flags to set)."""
+    if serial_port:
+        return serial_port
+    if serial_number:
+        return resolve_serial_port_by_sn(serial_number, missing_hint=missing_hint)
+    raise RuntimeError(unset_message or "No serial port or serial number configured.")
