@@ -103,21 +103,36 @@ def _save_acquisition_yaml(
 
     # Add widget-specific scan section
     if widget_type == "wellplate":
-        yaml_dict["wellplate_scan"] = {
-            "scan_size_mm": scan_size_mm,
-            "overlap_percent": overlap_percent,
-            "regions": [
-                {
-                    "name": name,
-                    "center_mm": _serialize_for_yaml(center),
-                    "shape": region_shapes.get(name) if region_shapes else None,
-                }
-                for name, center in zip(
-                    params.scan_position_information.scan_region_names,
-                    params.scan_position_information.scan_region_coords_mm,
-                )
-            ],
-        }
+        region_names = params.scan_position_information.scan_region_names
+        if params.xy_mode == "Select Wells":
+            # Schema v2: names + coverage pattern; X/Y are re-derived from the plate
+            # definition at load time (see acquisition_yaml_loader.parse_acquisition_yaml).
+            yaml_dict["wellplate_scan"] = {
+                "wells": list(region_names),
+                "fov_pattern": {
+                    "type": "coverage",
+                    "scan_size_mm": scan_size_mm,
+                    "overlap_percent": overlap_percent,
+                    "shape": (region_shapes or {}).get(region_names[0]) if region_names else "Square",
+                },
+            }
+        else:
+            # Manual / Current Position / Load Coordinates: inherently coordinate-based.
+            yaml_dict["wellplate_scan"] = {
+                "scan_size_mm": scan_size_mm,
+                "overlap_percent": overlap_percent,
+                "regions": [
+                    {
+                        "name": name,
+                        "center_mm": _serialize_for_yaml(center),
+                        "shape": region_shapes.get(name) if region_shapes else None,
+                    }
+                    for name, center in zip(
+                        region_names,
+                        params.scan_position_information.scan_region_coords_mm,
+                    )
+                ],
+            }
     else:  # flexible
         yaml_dict["flexible_scan"] = {
             "nx": params.NX,
