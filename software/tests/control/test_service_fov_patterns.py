@@ -83,3 +83,32 @@ def test_centered_grid_counts_and_rowmajor_order(service, sim_scope, tmp_path):
 def test_coverage_unchanged(service, sim_scope, tmp_path):
     sc = _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"scan_size_mm": 0.5}), tmp_path)
     assert set(sc.region_fov_coordinates.keys()) == {"A1", "A2"}
+
+
+def test_grid_subset_filters_rowmajor_tiles(service, sim_scope, tmp_path):
+    pattern = {"type": "grid_subset", "nx": 3, "ny": 2, "tiles": [[0, 0], [1, 2]]}
+    sc = _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"fov_pattern": pattern}), tmp_path)
+    for well in ("A1", "A2"):
+        assert len(sc.region_fov_coordinates[well]) == 2
+    # tile [0,0] is the grid's min-x/min-y corner; [1,2] is max-x of row 1
+    a1 = sc.region_fov_coordinates["A1"]
+    assert a1[0][0] < a1[1][0] and a1[0][1] < a1[1][1]
+    # identical relative geometry across wells
+    a2 = sc.region_fov_coordinates["A2"]
+    rel1 = [(round(x - a1[0][0], 6), round(y - a1[0][1], 6)) for x, y, *_ in a1]
+    rel2 = [(round(x - a2[0][0], 6), round(y - a2[0][1], 6)) for x, y, *_ in a2]
+    assert rel1 == rel2
+
+
+def test_grid_subset_forces_unidirectional_and_restores(service, sim_scope, tmp_path):
+    sc = service._scan_coordinates
+    original = sc.fov_pattern
+    sc.fov_pattern = "S-Pattern"
+    try:
+        pattern = {"type": "grid_subset", "nx": 2, "ny": 2, "tiles": [[1, 0]]}
+        _preflight_and_configure(service, _write_yaml(tmp_path, sim_scope, {"fov_pattern": pattern}), tmp_path)
+        a1 = service._scan_coordinates.region_fov_coordinates["A1"]
+        assert len(a1) == 1
+        assert service._scan_coordinates.fov_pattern == "S-Pattern"  # restored
+    finally:
+        sc.fov_pattern = original

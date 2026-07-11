@@ -1356,9 +1356,41 @@ class SquidCoreService:
             sc.region_centers[name][2] = z0
 
     def _add_grid_subset_region(self, sc, pattern, name, x, y, z0):
-        # Replaced by Task 3; unreachable from coverage/centered_grid paths and the
-        # loader requires wells for per-well patterns, so no yaml can trigger this yet.
-        raise NotImplementedError("grid_subset fov_pattern is not implemented yet (Task 3)")
+        """Generate the full nx x ny centered grid row-major, then keep only `tiles`.
+
+        Flat index convention i = row*nx + col matches the plate-view mosaic
+        (widgets_mosaic.py) and requires Unidirectional generation: S-Pattern
+        reverses odd rows, so force it and restore afterwards.
+        """
+        saved_pattern = sc.fov_pattern
+        sc.fov_pattern = "Unidirectional"
+        try:
+            sc.add_flexible_region(
+                region_id=name,
+                center_x=x,
+                center_y=y,
+                center_z=z0,
+                Nx=pattern["nx"],
+                Ny=pattern["ny"],
+                overlap_percent=pattern["overlap_percent"],
+            )
+        finally:
+            sc.fov_pattern = saved_pattern
+        coords = sc.region_fov_coordinates.get(name, [])
+        expected = pattern["nx"] * pattern["ny"]
+        if len(coords) != expected:
+            # stage-limit clipping dropped tiles; flat indices would be wrong
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_OUT_OF_RANGE,
+                    f"grid_subset for well {name}: grid clipped by stage limits "
+                    f"({len(coords)}/{expected} FOVs reachable); move the region or shrink the grid",
+                    detail={"well": name},
+                )
+            )
+        keep = [row * pattern["nx"] + col for row, col in pattern["tiles"]]
+        sc.region_fov_coordinates[name] = [coords[i] for i in sorted(keep)]
 
     def _add_random_region(self, sc, pattern, name, x, y, z0, yaml_data):
         # Replaced by Task 4; unreachable from coverage/centered_grid paths and the
