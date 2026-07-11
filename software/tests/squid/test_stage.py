@@ -871,13 +871,25 @@ def test_ls50_clear_travel_limits_serial():
     assert ctrl.hardware_limits_mm() == (None, None)
 
 
-def test_ls50_clear_travel_limits_falls_back_on_old_firmware():
-    # Firmware without the dash form (pre-~2013) error-acks it; fall back to a wide window.
-    conn = _FakeSerialConn(replies=[b":N-1\r\n", b":A\r\n", b":N-1\r\n", b":A\r\n"])
+def test_ls50_clear_travel_limits_old_firmware_raises_actionably():
+    # Firmware without the dash form (pre-~2013) error-acks it; fail loudly with guidance
+    # rather than inventing a numeric window.
+    conn = _FakeSerialConn(replies=[b":N-1\r\n"])
     ctrl = _ls50_ctrl(conn)
-    ctrl.clear_travel_limits()
-    assert conn.written == [b"SL Z-\r", b"SL Z=-1000\r", b"SU Z-\r", b"SU Z=1000\r"]
-    assert ctrl.hardware_limits_mm() == (None, None)
+    with pytest.raises(RuntimeError, match="restore-defaults"):
+        ctrl.clear_travel_limits()
+
+
+def test_asi_builder_find_zero_requires_travel():
+    # The find-zero overdrive is derived from the configured physical travel; there is no
+    # invented default to fall back on.
+    with pytest.raises(ValueError, match="ASI_Z_TRAVEL_MM"):
+        squid.stage.asi.connect_asi_z_stage(
+            simulated=True,
+            find_zero_on_startup=True,
+            z_travel_mm=0.0,
+            stage_config=squid.config.get_stage_config(),
+        )
 
 
 def test_asi_builder_default_skips_find_zero():

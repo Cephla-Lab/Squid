@@ -200,7 +200,7 @@ def main():
         action="store_true",
         help="Startup frame routine: clear limits, drive to the away limit, zero there (needs --allow-motion)",
     )
-    parser.add_argument("--travel-mm", type=float, default=50.0, help="Physical travel for the overdrive (default 50)")
+    parser.add_argument("--travel-mm", type=float, help="Physical travel in mm (required for --find-zero; LS-50 = 50)")
     args = parser.parse_args()
 
     if args.scan_bauds:
@@ -232,6 +232,9 @@ def main():
                 return
 
         if args.find_zero:
+            if not args.travel_mm:
+                log.error("--find-zero needs --travel-mm (the stage's physical travel; LS-50 = 50).")
+                sys.exit(1)
             find_zero_test(backend, args.travel_mm)
         jog_test(backend, args.jog_mm)
         if args.fence_mm > 0:
