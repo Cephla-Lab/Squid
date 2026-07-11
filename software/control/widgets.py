@@ -951,8 +951,14 @@ class AcquisitionYAMLDropMixin:
             dialog.exec_()
             return False
 
-        # Apply settings with signal blocking
-        self._apply_yaml_settings(yaml_data)
+        # Apply settings with signal blocking. An override may abort the load by
+        # returning False (e.g. unsupported settings for the GUI); propagate that as
+        # a failure so callers cannot act on a false success. Overrides that return
+        # None keep today's behavior (treated as success).
+        result = self._apply_yaml_settings(yaml_data)
+        if result is False:
+            self._log.warning("YAML load aborted by widget (unsupported settings for GUI)")
+            return False
         self._log.info(f"Loaded acquisition settings from: {file_path}")
         return True
 
@@ -9292,7 +9298,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                         f"This acquisition uses fov_pattern '{pattern['type']}', which the GUI "
                         "cannot represent yet. Run it via the API/method registry instead.",
                     )
-                    return
+                    return False
                 if pattern.get("scan_size_mm"):
                     self.entry_scan_size.setValue(pattern["scan_size_mm"])
                 self.entry_overlap.setValue(pattern.get("overlap_percent", yaml_data.overlap_percent))

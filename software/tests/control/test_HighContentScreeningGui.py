@@ -145,3 +145,67 @@ def test_wellplate_widget_rejects_noncoverage_pattern(qtbot, monkeypatch):
     assert "centered_grid" in warnings[0][1]
     # Load aborted before selecting wells
     assert len(widget.well_selection_widget.selectedItems()) == 0
+
+
+def test_load_acquisition_yaml_noncoverage_returns_false(qtbot, monkeypatch, tmp_path):
+    """Full-path regression: a non-coverage v2 yaml aborts inside _apply_yaml_settings,
+    and _load_acquisition_yaml must propagate that abort as False so workflow-runner
+    callers do not act on a false success."""
+    warnings = []
+
+    def capture_warning(parent, title, text, *args, **kwargs):
+        warnings.append((title, text))
+        return QMessageBox.Ok
+
+    monkeypatch.setattr(QMessageBox, "warning", capture_warning)
+
+    win = _build_hcs_gui(qtbot, monkeypatch)
+    widget = win.wellplateMultiPointWidget
+
+    yaml_path = tmp_path / "noncoverage.yaml"
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: wellplate\n"
+        "wellplate_scan:\n"
+        '  wells: "A1"\n'
+        "  fov_pattern:\n"
+        "    type: centered_grid\n"
+        "    nx: 3\n"
+        "    ny: 3\n"
+        "    overlap_percent: 10.0\n"
+    )
+
+    assert widget._load_acquisition_yaml(str(yaml_path)) is False
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Pattern Not Supported in GUI"
+
+
+def test_load_acquisition_yaml_coverage_returns_true(qtbot, monkeypatch, tmp_path):
+    """Full-path regression: a wells+coverage v2 yaml loads successfully via the full
+    _load_acquisition_yaml path and returns True."""
+
+    def fail_on_warning(parent, title, text, *args, **kwargs):
+        raise RuntimeError(f"Unexpected QMessageBox.warning: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "warning", fail_on_warning)
+
+    win = _build_hcs_gui(qtbot, monkeypatch)
+    widget = win.wellplateMultiPointWidget
+
+    yaml_path = tmp_path / "coverage.yaml"
+    yaml_path.write_text(
+        "acquisition:\n"
+        "  widget_type: wellplate\n"
+        "wellplate_scan:\n"
+        '  wells: "A1:A2"\n'
+        "  overlap_percent: 10.0\n"
+        "  fov_pattern:\n"
+        "    type: coverage\n"
+        "    scan_size_mm: 2.5\n"
+        "    overlap_percent: 15.0\n"
+        "    shape: Circle\n"
+    )
+
+    assert widget._load_acquisition_yaml(str(yaml_path)) is True
+    assert widget.checkbox_xy.isChecked()
+    assert len(widget.well_selection_widget.selectedItems()) == 2
