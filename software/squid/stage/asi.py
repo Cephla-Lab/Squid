@@ -34,8 +34,10 @@ _log = squid.logging.get_logger(__name__)
 
 STEPS_PER_MM = 10000  # ASI native unit = 0.1 um; also the finest addressable step (z_mm_to_usteps grid)
 _DEFAULT_MOVE_TIMEOUT_S = 30.0
-# Full-travel drive into the limit switch; sized for the slowest plausible traverse speed.
-_FIND_ZERO_TIMEOUT_S = 60.0
+# MFC-2000 datasheet maximum Z velocity (0.6 mm/s). The find-zero timeout budgets a full
+# overdrive at this speed times a 2x margin, so drives tuned slower than spec still finish.
+_MFC2000_MAX_VELOCITY_MM_S = 0.6
+_FIND_ZERO_TIME_MARGIN = 2.0
 _STATUS_POLL_PERIOD_S = 0.05
 
 
@@ -137,7 +139,7 @@ class _SimulatedLS50:
         self._pos_mm = 0.0
         self._zero_count += 1
 
-    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = _FIND_ZERO_TIMEOUT_S):
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: Optional[float] = None):
         # Drive past full travel toward the away end; the (simulated) limit switch stops
         # the stage; define native 0 there.
         self.move_relative(abs(float(overdrive_mm)), wait=True)
@@ -277,14 +279,19 @@ class LS50Controller:
         # Redefine the current position as native 0 (shifts the whole frame).
         self._serial.command(f"H {self._axis}=0")
 
-    def zero_at_away_limit(self, overdrive_mm: float, timeout: float = _FIND_ZERO_TIMEOUT_S) -> None:
+    def zero_at_away_limit(self, overdrive_mm: float, timeout: Optional[float] = None) -> None:
         """Establish the frame: drive PAST full travel toward the away-from-sample end
         (native +; the limit switch stops the stage safely), then define native 0 there.
 
         Call AFTER clear_travel_limits and BEFORE set_travel_limits -- stale limits would
         clamp the overdrive, and the fresh fence must be expressed in the new frame.
+        The default timeout is derived from the overdrive distance at the MFC-2000's
+        datasheet velocity (a full 50 mm traverse takes ~80 s at 0.6 mm/s).
         """
-        self.move_relative(abs(float(overdrive_mm)), wait=True, timeout=timeout)
+        distance = abs(float(overdrive_mm))
+        if timeout is None:
+            timeout = distance / _MFC2000_MAX_VELOCITY_MM_S * _FIND_ZERO_TIME_MARGIN
+        self.move_relative(distance, wait=True, timeout=timeout)
         self.zero_here()
 
     def stop(self) -> None:
