@@ -1,17 +1,19 @@
 """
-Squid stage support for the ASI LS50 Z-only linear stage on its own MS-2000-family controller.
+Squid stage support for the ASI LS50 Z-only linear stage on its own MS-2000-family controller
+(an MFC-2000 on the reference machine).
 
 Provides (1) ``MS2000Serial``, the CR-terminated ASI command transport; (2) ``LS50Controller``,
 the single-axis driver; (3) ``_SimulatedLS50``, a pure-Python stand-in for hardware-free / CI
 use; and (4) ``ASIZStage``, the Z-only ``squid.abc.AbstractStage`` adapter (pair with an XY
 stage via ``squid.stage.composite.CombinedStage``).
 
-Frame and units: the controller's native unit is 1/10 um (10000 per mm). Native 0 is the
-power-on position, which by convention is the RETRACTED end; native positive is away from the
-sample and the value goes negative as the stage approaches the sample. There is no absolute
-reference or homing routine -- "home" simply retracts to native 0. Squid Z is the negation
-(``squid_z = -native_z`` with the default ``invert_z=True`` wiring), so squid 0 is retracted
-and squid Z increases toward the sample, matching the Cephla convention.
+Frame and units: the controller's native unit is 1/10 um (10000 per mm). Native positive is
+away from the sample; the value goes negative as the stage approaches the sample. With
+find-zero on (ASI_Z_FIND_ZERO_ON_STARTUP, the default), startup anchors native 0 at the
+away-from-sample limit switch, so 0 is a repeatable physical reference; with find-zero off,
+native 0 is just the arbitrary power-on position. Squid Z is the negation (``squid_z =
+-native_z`` with the default ``invert_z=True`` wiring), so squid 0 is the away end and squid Z
+increases toward the sample, matching the Cephla convention.
 
 NOTE: branch ``dragonfly-andor`` adds an XYZ ``ASIStage`` at this same path. When merging that
 branch, keep both: port ``ASIStage`` onto ``MS2000Serial`` below (its ``_send_command`` /
@@ -39,6 +41,8 @@ _DEFAULT_MOVE_TIMEOUT_S = 30.0
 _MFC2000_MAX_VELOCITY_MM_S = 0.6
 _FIND_ZERO_TIME_MARGIN = 2.0
 _STATUS_POLL_PERIOD_S = 0.05
+# Settle before retrying a dead-air first exchange (marginal RS-232 links, adapter wake-up).
+_FIRST_CONTACT_SETTLE_S = 0.2
 
 
 class MS2000Serial:
@@ -46,7 +50,10 @@ class MS2000Serial:
 
     Takes any pyserial-like object (write / read_until / close) so tests can inject a scripted
     fake; ``open()`` constructs the real ``serial.Serial``. This class is the shared ASI command
-    core -- the dragonfly-andor ``ASIStage`` (XYZ) should adopt it when that branch merges.
+    core for everything on one controller (the Z axis, the objective turret, and eventually the
+    dragonfly-andor ``ASIStage``): per-command locking makes interleaved clients frame-safe, and
+    controller-global concerns (the '/' busy byte, first-contact retries, buffer hygiene) live
+    here rather than in each axis client.
     """
 
     def __init__(self, serial_conn):
@@ -74,18 +81,54 @@ class MS2000Serial:
             raise RuntimeError(f"MS-2000 error ack {reply!r} for command {cmd!r}")
         return reply
 
+    def command_with_settle_retry(self, cmd: str, check_error: bool = True) -> str:
+        """command(), retried once after a settle + flush when the reply is dead air.
+
+        A marginal RS-232 link or a just-opened adapter can drop the first exchange without
+        being broken. Returns the (possibly still empty) reply; callers decide how to fail.
+        """
+        reply = self.command(cmd, check_error=check_error)
+        if not reply:
+            time.sleep(_FIRST_CONTACT_SETTLE_S)
+            self.reset_input_buffer()
+            reply = self.command(cmd, check_error=check_error)
+        return reply
+
+    def reset_input_buffer(self) -> None:
+        """Drop any unread bytes (line noise, stale replies) so the next reply pairs cleanly."""
+        with suppress(Exception):
+            self._serial.reset_input_buffer()
+
+    def is_busy(self) -> bool:
+        """Controller-GLOBAL busy byte ('/' -> B/N): busy while ANY axis on the box moves."""
+        return "B" in self.command("/").upper()
+
+    def wait_idle(self, timeout_s: float, what: str) -> None:
+        """Poll the global busy byte until idle; RuntimeError naming ``what`` on timeout."""
+        deadline = time.monotonic() + timeout_s
+        while self.is_busy():
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"{what} did not reach idle within {timeout_s:.1f}s")
+            time.sleep(_STATUS_POLL_PERIOD_S)
+
     def close(self):
         with suppress(Exception):
             self._serial.close()
+
+
+def parse_ms2000_number(reply: str) -> Optional[float]:
+    """First number in an MS-2000 reply after stripping the ':A' ack prefix, else None."""
+    match = re.search(r"-?\d+(?:\.\d+)?", reply.replace(":A", "", 1)) if reply else None
+    return float(match.group(0)) if match else None
 
 
 class _SimulatedLS50:
     """In-memory stand-in for LS50Controller: instant moves, no serial.
 
     Mirrors the real backend's contract: until a fence is set the travel limits are unknown
-    (native 0 is just the power-on position) and targets pass through unclamped; a fence set
-    via set_travel_limits clamps. There is no referencing concept -- the power-on frame is
-    always "valid".
+    and targets pass through unclamped; a fence set via set_travel_limits clamps; an optional
+    ``_hard_hi_mm`` models the physical away-limit switch for find-zero tests. There is no
+    referencing concept.
     """
 
     def __init__(self):
@@ -130,12 +173,11 @@ class _SimulatedLS50:
         return self.move_to(self._pos_mm + float(dz_mm), wait=wait)
 
     def zero_here(self):
-        # 'H Z=0': redefine the current position as native 0 (shifts the whole frame).
+        # 'H Z=0': redefine the current position as native 0 (shifts the whole frame). The
+        # production flow clears limits before zeroing and re-fences after, so only the
+        # physical stop needs shifting here.
         if self._hard_hi_mm is not None:
             self._hard_hi_mm -= self._pos_mm
-        if self._lo_mm is not None:
-            self._lo_mm -= self._pos_mm
-            self._hi_mm -= self._pos_mm
         self._pos_mm = 0.0
         self._zero_count += 1
 
@@ -152,9 +194,9 @@ class _SimulatedLS50:
 class LS50Controller:
     """ASI LS50 Z linear stage on an MS-2000-family controller (CR text protocol, 1/10 um units).
 
-    Native 0 is the power-on position (the retracted end by convention); native negative is
-    toward the sample. There is no referencing routine, and bring-up performs no motion and
-    writes no controller parameters.
+    Native positive is away from the sample. Mechanisms only -- the bring-up sequence (clear
+    stale limits, find-zero at the away limit switch, fence) is policy owned by
+    ``connect_asi_z_stage``; ``initialize()`` itself is a motionless comms check.
     """
 
     def __init__(self, axis: str = "Z"):
@@ -177,25 +219,15 @@ class LS50Controller:
 
     def initialize(self) -> None:
         # Comms sanity only: prove the controller answers. NO motion, NO parameter writes.
-        # One retry after a settle+flush: a marginal RS-232 link or a just-opened adapter can
-        # drop/garble the very first exchange without being actually broken.
-        try:
-            try:
-                self.get_position_mm()
-                return
-            except RuntimeError:
-                time.sleep(0.2)
-                with suppress(Exception):
-                    self._serial._serial.reset_input_buffer()
-            self.get_position_mm()
-        except RuntimeError as e:
+        reply = self._serial.command_with_settle_retry(f"W {self._axis}")
+        if parse_ms2000_number(reply) is None:
             raise RuntimeError(
-                f"LS50 controller did not answer a position query ({e}). Check the baud rate "
-                f"(ASI controllers often ship at 9600; Squid defaults to 115200 -- set "
+                f"LS50 controller did not answer a position query (reply {reply!r}). Check the "
+                f"baud rate (ASI controllers often ship at 9600; Squid defaults to 115200 -- set "
                 f"ASI_Z_BAUDRATE in the machine config), that the resolved port really is the "
                 f"ASI controller, and that it is powered. "
                 f"`python3 tools/asi_z_bringup.py --sn <SN> --scan-bauds` can diagnose this."
-            ) from e
+            )
 
     def hardware_limits_mm(self) -> Tuple[Optional[float], Optional[float]]:
         return (self._range_lo, self._range_hi)
@@ -230,13 +262,13 @@ class LS50Controller:
 
     def get_position_mm(self) -> float:
         reply = self._serial.command(f"W {self._axis}")  # ':A -12345' or bare '-12345', in 0.1 um
-        match = re.search(r"-?\d+(?:\.\d+)?", reply.replace(":A", "", 1))
-        if not match:
+        value = parse_ms2000_number(reply)
+        if value is None:
             raise RuntimeError(f"Could not parse LS50 position from reply {reply!r}")
-        return float(match.group(0)) / STEPS_PER_MM
+        return value / STEPS_PER_MM
 
     def is_moving(self) -> bool:
-        return "B" in self._serial.command("/").upper()
+        return self._serial.is_busy()
 
     def _clamp_target(self, z_mm: float) -> float:
         """Clamp an absolute native target to the fence; pass through while unfenced."""
@@ -258,7 +290,7 @@ class LS50Controller:
         target = self._clamp_target(float(z_mm))
         self._serial.command(f"M {self._axis}={round(target * STEPS_PER_MM)}")
         if wait:
-            self._wait_idle(timeout)
+            self._serial.wait_idle(timeout, f"LS50 axis {self._axis}")
             return self.get_position_mm()
         return target
 
@@ -266,14 +298,6 @@ class LS50Controller:
         # Resolve to an absolute target (M) rather than sending R Z=, so a jog past the fence
         # clamps instead of erroring or overdriving.
         return self.move_to(self.get_position_mm() + float(dz_mm), wait=wait, timeout=timeout)
-
-    def _wait_idle(self, timeout_s: float) -> None:
-        # '/' polling is the only settle signal (there is no on-target query in this command set).
-        deadline = time.monotonic() + timeout_s
-        while self.is_moving():
-            if time.monotonic() > deadline:
-                raise RuntimeError(f"LS50 did not reach idle within {timeout_s:.1f}s")
-            time.sleep(_STATUS_POLL_PERIOD_S)
 
     def zero_here(self) -> None:
         # Redefine the current position as native 0 (shifts the whole frame).
@@ -313,9 +337,9 @@ class ASIZStage(AbstractStage):
     """Z-only AbstractStage backed by an ASI LS50. X / Y / theta are no-ops.
 
     With ``invert_z=True`` (the standard wiring) Squid Z is the negation of the controller's
-    native mm: native + is away from the sample, so squid 0 is the retracted end and squid Z
-    increases toward the sample. A pure sign flip -- unlike the PI V-308 there is no absolute
-    positive travel limit to offset against.
+    native mm: native + is away from the sample, so squid 0 is the away end (anchored at the
+    limit switch when find-zero runs) and squid Z increases toward the sample. A pure sign
+    flip -- unlike the PI V-308 there is no positive travel limit to offset against.
 
     ``home_mm`` (Squid mm) is the retract target home() drives to -- native/squid 0 by
     convention. None disables home(z) entirely (warn no-op), guaranteeing no motion.
@@ -382,7 +406,7 @@ class ASIZStage(AbstractStage):
             return StageStage(busy=False if self._closed else self._backend.is_moving())
 
     def is_referenced(self) -> bool:
-        return True  # no referencing concept; the power-on frame is always valid
+        return True  # no referencing concept; the frame is anchored by find-zero (or power-on)
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # Home = retract to the configured target (native 0 by convention). There is no
@@ -408,13 +432,10 @@ class ASIZStage(AbstractStage):
             self._busy = False
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        # Re-zeroing mid-session would shift the retract target and invalidate the fence;
+        # LS50Controller.zero_here exists if a deliberate re-zeroing flow is ever wanted.
         if z:
-            self._log.warning(
-                "ASIZStage.zero(z=True) is a no-op: native 0 is the retract reference, and "
-                "redefining it mid-session would shift the retract target and invalidate the "
-                "travel fence. The controller supports it (LS50Controller.zero_here) if a "
-                "re-zeroing flow is ever needed."
-            )
+            self._log.warning("ASIZStage.zero(z=True) is a no-op: native 0 is the frame reference.")
 
     def set_limits(
         self,
@@ -429,8 +450,8 @@ class ASIZStage(AbstractStage):
     ):
         if z_pos_mm is not None and z_neg_mm is not None:
             if not self._apply_software_limits:
-                # The frame is power-on-relative: fixed squid-frame limits fence arbitrary
-                # positions unless the retract-at-power-on convention is guaranteed.
+                # Disabled by config (ASI_Z_APPLY_SOFTWARE_LIMITS); the coarse travel fence
+                # from connect time still bounds absurd targets.
                 self._log.info("Ignoring software Z limits (ASI_Z_APPLY_SOFTWARE_LIMITS is off).")
                 return
             with self._lock:
@@ -493,41 +514,38 @@ def connect_asi_z_stage(
     invert_z: bool = False,
     apply_software_limits: bool = True,
     find_zero_on_startup: bool = False,
-    home_on_startup: bool = False,
     z_travel_mm: float = 0.0,
     stage_config: Optional[StageConfig] = None,
 ) -> ASIZStage:
     """Open the LS50 controller over serial (or a simulated backend) and wrap it as an ASIZStage.
 
-    Bring-up performs NO motion unless home_on_startup=True (which requires home_mm and does one
-    blocking retract). z_travel_mm > 0 sets a coarse sanity fence of native [-travel, +travel]
-    around the power-on zero -- it can never exclude a reachable position, but stops absurd
-    targets; the real fence arrives via set_limits from StageConfig.Z_AXIS at microscope init.
+    Bring-up sequence: comms check, then ALWAYS clear stale controller-side limits (they
+    persist across power cycles and would clamp everything), then -- with find_zero_on_startup
+    -- drive to the away-from-sample limit switch and define native 0 there (the only bring-up
+    motion, in the safe direction, requiring z_travel_mm for the overdrive distance), then
+    apply the coarse +/- z_travel_mm sanity fence in the (new) frame. StageConfig.Z_AXIS
+    limits arrive later via set_limits and are honored only when apply_software_limits is set.
     """
+    if find_zero_on_startup and not z_travel_mm:
+        # The overdrive distance is derived from the stage's physical travel; only the
+        # user knows that, so there is no default to invent. (Also validated at machine-
+        # config load; this backstop covers programmatic use.)
+        raise ValueError("find_zero_on_startup requires the physical travel (ASI_Z_TRAVEL_MM) to be set.")
+
     if simulated:
         backend, port = _SimulatedLS50(), None
     else:
-        # Resolve the port BEFORE opening anything, so a missing controller never leaks a handle.
-        if serial_port:
-            port = serial_port
-        elif serialnum:
-            import squid.stage.utils
+        import squid.stage.utils
 
-            port = squid.stage.utils.resolve_serial_port_by_sn(
-                serialnum,
-                missing_hint=(
-                    "Verify the LS50 controller is powered and enumerates as a USB serial " "device (lsusb / dmesg)."
-                ),
-            )
-        else:
-            raise RuntimeError("Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.")
+        # Resolve the port BEFORE opening anything, so a missing controller never leaks a handle.
+        port = squid.stage.utils.resolve_port(
+            serial_port,
+            serialnum,
+            missing_hint="Verify the LS50 controller is powered and enumerates as a USB serial device (lsusb / dmesg).",
+            unset_message="Set ASI_Z_STAGE_SN or ASI_Z_SERIAL_PORT to locate the LS50 controller.",
+        )
         backend = LS50Controller(axis=axis)
         _log.info(f"Connecting to the ASI Z stage on {port} at {baudrate} baud (axis {axis!r}).")
-
-    if find_zero_on_startup and not z_travel_mm:
-        # The overdrive distance is derived from the stage's physical travel; only the
-        # user knows that, so there is no default to invent.
-        raise ValueError("find_zero_on_startup requires the physical travel (ASI_Z_TRAVEL_MM) to be set.")
 
     try:
         backend.connect_serial(port, baudrate=baudrate)
@@ -546,17 +564,10 @@ def connect_asi_z_stage(
     except Exception:
         backend.close()  # release the serial handle on any connect/init failure
         raise
-    stage = ASIZStage(
+    return ASIZStage(
         backend,
         stage_config=stage_config,
         home_mm=home_mm,
         invert_z=invert_z,
         apply_software_limits=apply_software_limits,
     )
-
-    if home_on_startup:
-        if home_mm is None:
-            _log.warning("ASI_Z_HOME_ON_STARTUP is set but no home target is configured; skipping the retract.")
-        else:
-            stage.home(False, False, True, False, blocking=True)
-    return stage

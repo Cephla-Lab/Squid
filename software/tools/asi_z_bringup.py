@@ -6,9 +6,10 @@ a small jog AWAY from the sample and back, plus an optional soft-limit fence che
 
 Read-only by default: without --allow-motion the stage never moves.
 
-Frame reminder: native 0 is the power-on position (power on with the stage retracted!),
-native POSITIVE is away from the sample. Squid displays the negation (asi_z_invert = True),
-so squid + is toward the sample.
+Frame reminder: native 0 is wherever last zeroed -- the power-on position until --find-zero
+(or the GUI's startup find-zero) anchors it at the away-from-sample limit switch. Native
+POSITIVE is away from the sample; Squid displays the negation (asi_z_invert = True), so
+squid + is toward the sample.
 
 Usage:
     python3 tools/asi_z_bringup.py --sn <USB serial number>            # read-only checks

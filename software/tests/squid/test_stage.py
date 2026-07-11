@@ -10,6 +10,7 @@ import squid.stage.asi
 import squid.config
 import squid.abc
 from tests.control.test_microcontroller import get_test_micro
+from tests.tools import FakeSerialConn as _FakeSerialConn
 
 
 def test_create_simulated_stages():
@@ -418,24 +419,6 @@ def test_ls50_zero_here_redefines_frame():
     assert sim._zero_count == 1
 
 
-class _FakeSerialConn:
-    """Scripted pyserial-like object: records writes, pops queued replies."""
-
-    def __init__(self, replies=(), default=b""):
-        self.written = []
-        self.replies = list(replies)
-        self.default = default
-
-    def write(self, data):
-        self.written.append(data)
-
-    def read_until(self, expected=b"\n"):
-        return self.replies.pop(0) if self.replies else self.default
-
-    def close(self):
-        pass
-
-
 def test_ms2000_command_framing_and_error_ack():
     conn = _FakeSerialConn(replies=[b":A 0\r\n", b":N-4\r\n"])
     ser = squid.stage.asi.MS2000Serial(conn)
@@ -620,18 +603,6 @@ def test_asi_builder_default_causes_no_motion():
     # Bring-up must not move: no homing/reference/zero happens in the factory by default.
     stage = squid.stage.asi.connect_asi_z_stage(simulated=True, stage_config=squid.config.get_stage_config())
     assert abs(stage.get_pos().z_mm - 0.0) < 1e-9  # still at power-on zero
-
-
-def test_asi_builder_home_on_startup_opt_in():
-    stage = squid.stage.asi.connect_asi_z_stage(
-        simulated=True, home_mm=0.5, home_on_startup=True, stage_config=squid.config.get_stage_config()
-    )
-    assert abs(stage.get_pos().z_mm - 0.5) < 1e-9  # retracted to the home target at bring-up
-    # home_on_startup without a target: warn + no motion, no exception.
-    stage2 = squid.stage.asi.connect_asi_z_stage(
-        simulated=True, home_mm=None, home_on_startup=True, stage_config=squid.config.get_stage_config()
-    )
-    assert abs(stage2.get_pos().z_mm - 0.0) < 1e-9
 
 
 def test_asi_builder_travel_fence():
