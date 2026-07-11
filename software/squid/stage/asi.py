@@ -198,14 +198,23 @@ class LS50Controller:
         self._range_lo, self._range_hi = float(min_mm), float(max_mm)
 
     def clear_travel_limits(self) -> None:
-        """Overwrite any controller-side SL/SU left by a previous session with a wide window.
+        """Restore the controller's factory-default travel limits, wiping stale SL/SU.
 
-        Stale soft limits persist in the controller across software restarts (and across
-        power cycles if they were ever saved); they would silently clamp moves -- including
-        the find-zero overdrive -- so startup clears them before anything else.
+        On the MS-2000, SL/SU limits are "automatically remembered and recalled through a
+        power cycle" (SETLOW manual), so a fence left by ANY previous session persists and
+        silently clamps moves -- including the find-zero overdrive -- until overwritten.
+        Uses the restore-defaults dash form ("SL Z-"), which also sidesteps the manual's
+        direction-dependent sign semantics for numeric limits; firmware too old for the
+        dash form (pre-~2013) error-acks it and gets a wide numeric window instead.
         """
-        self._serial.command(f"SL {self._axis}=-1000")
-        self._serial.command(f"SU {self._axis}=1000")
+        for dash, numeric in (
+            (f"SL {self._axis}-", f"SL {self._axis}=-1000"),
+            (f"SU {self._axis}-", f"SU {self._axis}=1000"),
+        ):
+            try:
+                self._serial.command(dash)
+            except RuntimeError:
+                self._serial.command(numeric)
         self._range_lo = self._range_hi = None
 
     def get_position_mm(self) -> float:
