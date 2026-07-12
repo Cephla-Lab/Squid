@@ -309,8 +309,8 @@ Every type except `coverage` is a per-well pattern and requires `wellplate_scan.
 reference plane (an optional `default` key applies to unlisted wells). Requires `laser_af`; each entry is
 range-checked against the laser-AF search range at preflight (`INVALID_PARAM`, component `well_z_offsets_um`,
 if `|offset| >` the range). Consumed via the per-region AF offset hook (`set_region_laser_af_offsets`),
-cleared after the run. This is a **TYPE-1** correction — it shifts *where autofocus focuses*, not the coarse
-stage Z.
+consumed-and-cleared at run start (one-shot; re-provide per run — never leaks to a later acquisition). This is
+a **TYPE-1** correction — it shifts *where autofocus focuses*, not the coarse stage Z.
 
 **`z_plan`** — pre-AF stage positioning for tilted plates: `{"type": "focus_map", ...}` with **exactly one**
 of `generate: true` (measure a 3-corner focus-map plane at run start) or `points` (exactly three
