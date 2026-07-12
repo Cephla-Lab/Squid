@@ -126,6 +126,52 @@ def test_random_seeded_reproducible_and_per_well_different(service, sim_scope, t
     assert list(sc2.region_fov_coordinates["A1"]) == a1_first
 
 
+def test_api_centered_grid_run_saves_v2_record(service, sim_scope, tmp_path):
+    import yaml as _yaml
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from squid_service.models import AcquisitionRequest
+
+    out = tmp_path / "out"
+    req = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope, {"fov_pattern": {"type": "centered_grid", "nx": 2, "ny": 2}}),
+        overrides={"output_path": str(out)},
+    )
+    assert service.preflight(req)["ok"] is True
+    handle = service.start_acquisition(req)
+    assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+    saved = list(out.rglob("acquisition.yaml"))
+    assert saved, "acquisition.yaml record not written"
+    data = parse_acquisition_yaml(str(saved[0]))
+    assert data.wells is not None  # not the legacy regions form
+    assert data.wellplate_regions is None
+    assert data.fov_pattern is not None and data.fov_pattern["type"] == "centered_grid"
+    assert data.fov_pattern["nx"] == 2 and data.fov_pattern["ny"] == 2
+
+
+def test_api_legacy_regions_run_saves_regions_form(service, sim_scope, tmp_path):
+    """An API run of a legacy regions[].center_mm method (no wells) must still save the
+    coordinate-based `regions` form — proving the service's xy_mode="Manual" branch and
+    that the writer is byte-unchanged for legacy runs."""
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from squid_service.models import AcquisitionRequest
+
+    regions = [{"name": "R1", "center_mm": [14.3, 11.36, 0.5], "shape": "Square"}]
+    out = tmp_path / "out"
+    req = AcquisitionRequest(
+        yaml_path=_write_yaml(tmp_path, sim_scope, {"wells": None, "scan_size_mm": 0.5, "regions": regions}),
+        overrides={"output_path": str(out)},
+    )
+    assert service.preflight(req)["ok"] is True
+    handle = service.start_acquisition(req)
+    assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+    saved = list(out.rglob("acquisition.yaml"))
+    assert saved, "acquisition.yaml record not written"
+    data = parse_acquisition_yaml(str(saved[0]))
+    assert data.wells is None  # legacy regions form preserved (xy_mode="Manual" branch)
+    assert data.wellplate_regions is not None
+    assert data.fov_pattern is None
+
+
 def test_random_within_well_bounds(service, sim_scope, tmp_path):
     import control._def
 

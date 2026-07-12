@@ -1655,6 +1655,12 @@ class SquidCoreService:
                 grid = req.grid
                 self._configure_grid_regions(grid, z0)
                 self._configure_grid_controller(grid, z0)
+                # A grid request is a wells-driven centered grid — round-trip it as v2 so the
+                # saved record faithfully carries the wells + pattern.
+                self._mpc.set_xy_mode("Select Wells")
+                self._mpc.set_fov_pattern(
+                    {"type": "centered_grid", "nx": grid.nx, "ny": grid.ny, "overlap_percent": grid.overlap_percent}
+                )
                 channel_count = len(grid.channels)
                 nz, nt = 1, 1
                 source = "grid"
@@ -1662,6 +1668,17 @@ class SquidCoreService:
             else:
                 yaml_data, raw = ctx["yaml_data"], ctx["raw"]
                 self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format, z0)
+                # Set xy_mode deterministically so the writer's v2-vs-legacy discriminator is
+                # correct on every entry point (never inherited stale). A wells-driven run
+                # (override or yaml) round-trips as v2 with the real fov_pattern; a legacy
+                # regions[].center_mm run keeps the coordinate-based regions form.
+                effective_wells = req.overrides.wells or yaml_data.wells
+                if effective_wells:
+                    self._mpc.set_xy_mode("Select Wells")
+                    self._mpc.set_fov_pattern(yaml_data.fov_pattern)
+                else:
+                    self._mpc.set_xy_mode("Manual")  # legacy regions -> writer keeps regions form
+                    self._mpc.set_fov_pattern(None)
                 # Resolve per-well laser-AF offsets against the regions just configured and push
                 # them into the controller (consumed-and-cleared by run_acquisition, so no leak
                 # to later runs). Empty dict => every FOV targets the reference plane.

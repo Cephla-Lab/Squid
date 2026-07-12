@@ -109,7 +109,8 @@ def _save_acquisition_yaml(
             # definition at load time (see acquisition_yaml_loader.parse_acquisition_yaml).
             yaml_dict["wellplate_scan"] = {
                 "wells": list(region_names),
-                "fov_pattern": {
+                "fov_pattern": params.fov_pattern
+                or {
                     "type": "coverage",
                     "scan_size_mm": scan_size_mm,
                     "overlap_percent": overlap_percent,
@@ -243,6 +244,7 @@ class MultiPointController:
 
         self.focus_map = None
         self.region_laser_af_offsets = {}
+        self.fov_pattern = None
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -436,6 +438,11 @@ class MultiPointController:
         # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
         # every FOV targets the reference (displacement 0), i.e. current behavior.
         self.region_laser_af_offsets = dict(offsets or {})
+
+    def set_fov_pattern(self, pattern):
+        # Normalized fov_pattern dict (Task-1 loader shape) or None for coverage-from-scan-size.
+        # Consumed-and-cleared by run_acquisition so it never leaks to a later run.
+        self.fov_pattern = pattern
 
     def set_base_path(self, path):
         self.base_path = path
@@ -703,6 +710,10 @@ class MultiPointController:
         # widget, TCP control server).
         run_region_laser_af_offsets = self.region_laser_af_offsets
         self.region_laser_af_offsets = {}
+        # Consume-and-clear the fov_pattern for THIS run so a stale pattern from an API run
+        # can never leak into a later GUI run (which never sets it).
+        run_fov_pattern = self.fov_pattern
+        self.fov_pattern = None
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
@@ -899,6 +910,7 @@ class MultiPointController:
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
                 region_laser_af_offsets=run_region_laser_af_offsets,
+                fov_pattern=run_fov_pattern,
             )
 
             # Gather objective and camera info for YAML
@@ -1004,7 +1016,10 @@ class MultiPointController:
                     self._memory_monitor = None
 
     def build_params(
-        self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
+        self,
+        scan_position_information: ScanPositionInformation,
+        region_laser_af_offsets: Optional[dict] = None,
+        fov_pattern: Optional[dict] = None,
     ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
@@ -1046,6 +1061,7 @@ class MultiPointController:
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
             region_laser_af_offsets=region_laser_af_offsets if region_laser_af_offsets is not None else {},
+            fov_pattern=fov_pattern,
         )
 
     def _on_acquisition_completed(self):
