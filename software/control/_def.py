@@ -830,8 +830,9 @@ ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
 # Throttled live preview during Record + Z-Stack acquisitions: frames/s shown in
-# the live display during the recording phase (z-stack planes always display,
-# like multipoint). 0 disables the preview for both phases.
+# the live display during the recording phase. When preview is enabled, z-stack
+# planes display unthrottled (like multipoint). 0 disables the preview for both
+# phases.
 RECORD_ZSTACK_DISPLAY_FPS = 3
 
 RESUME_LIVE_AFTER_ACQUISITION = True

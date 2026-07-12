@@ -336,7 +336,7 @@ class StreamingCapture:
     met or ``abort_fn`` returns True.
 
     The ``_on_frame`` callback runs on the hot camera thread — it must stay cheap
-    (route + enqueue only, no blocking I/O).
+    (route + enqueue + a throttled non-blocking preview tap; no blocking I/O).
 
     Args:
         frame_source: Any object with ``start(on_frame)`` / ``stop()`` interface.
@@ -378,7 +378,7 @@ class StreamingCapture:
         self._last_display_ts = float("-inf")
 
     def _on_frame(self, camera_frame) -> None:
-        """Hot-thread callback: route + enqueue only.  Must not block."""
+        """Hot-thread callback: route + enqueue + throttled preview tap.  Must not block."""
         if self._done.is_set():
             return
         if self._abort_fn():
