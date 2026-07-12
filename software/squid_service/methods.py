@@ -124,6 +124,7 @@ class MethodRegistry:
                 "objective": data.objective_name,
                 "wellplate_format": raw.get("sample", {}).get("wellplate_format"),
                 "wells": data.wells,
+                "pattern": (data.fov_pattern or {}).get("type", "coverage"),
                 "nz": data.nz,
                 "nt": data.nt,
                 "estimated_duration_s": None,  # best-effort placeholder, documented

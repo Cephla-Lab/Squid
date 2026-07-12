@@ -38,10 +38,28 @@ def test_save_list_get_roundtrip(tmp_path):
     assert summary["nz"] == 1
     assert summary["nt"] == 1
     assert summary["wellplate_format"] == "96 well plate"
+    # No fov_pattern -> legacy coverage behavior.
+    assert summary["pattern"] == "coverage"
 
     got = reg.get("scan_a")
     assert got["name"] == "scan_a"
     assert got["config"]["acquisition"]["widget_type"] == "wellplate"
+
+
+def test_list_summary_reports_fov_pattern(tmp_path):
+    reg = MethodRegistry(tmp_path)
+    config = _valid_config()
+    # A per-well pattern requires wells-by-name (not explicit regions).
+    config["wellplate_scan"] = {
+        "overlap_percent": 10,
+        "wells": "A1:B2",
+        "fov_pattern": {"type": "centered_grid", "nx": 2, "ny": 2},
+    }
+    reg.save("grid_method", config, overwrite=False)
+
+    summary = reg.list()[0]
+    assert summary["pattern"] == "centered_grid"
+    assert summary["wells"] == "A1:B2"
 
 
 def test_save_existing_without_overwrite_faults(tmp_path):
