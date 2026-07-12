@@ -1309,7 +1309,7 @@ OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 
-# 6-position ASI objective turret on an MS-2000-family controller ('M T=<slot>' with a RAW
+# 6-position ASI objective turret on an MS-2000-family controller ('M F=<slot>' with a RAW
 # slot index 1..6 -- not scaled like linear-axis units). Typically the SAME controller as the
 # ASI LS50 Z stage (USE_ASI_Z_STAGE): when both are enabled the turret reuses the Z stage's
 # serial connection and the SN/port/baud below are ignored. They apply only when the turret
