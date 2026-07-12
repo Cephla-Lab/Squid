@@ -15950,9 +15950,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             if reply != QMessageBox.Yes:
                 return
 
-        # Save to YAML file
+        # Save to YAML file, seeding added channels into (and pruning removed channels
+        # from) the per-objective configs so per-objective edits to them can persist.
         try:
-            self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+            failed_objectives = self.config_repo.save_general_config_with_sync(
+                self.config_repo.current_profile, self.general_config
+            )
         except (PermissionError, OSError) as e:
             self._log.error(f"Failed to save channel configuration: {e}")
             QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
@@ -15961,6 +15964,16 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             self._log.error(f"Unexpected error saving channel configuration: {e}")
             QMessageBox.critical(self, "Save Failed", f"Failed to save configuration:\n{e}")
             return
+
+        if failed_objectives:
+            # general.yaml was saved; only some per-objective files could not be updated.
+            QMessageBox.warning(
+                self,
+                "Partial Save",
+                "The channel list was saved, but the settings files for these objectives "
+                f"could not be updated: {', '.join(failed_objectives)}.\n"
+                "Settings for added/removed channels may be stale for those objectives.",
+            )
 
         self.signal_channels_updated.emit()
         self.accept()

@@ -324,6 +324,14 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
         raise SquidTimeout(error_message)
 
+    def close(self):
+        """Release any transport the stage owns (e.g. a serial handle).
+
+        Default no-op: CephlaStage/PriorStage are released via their underlying
+        transports. Stages that own a connection (e.g. the PI C-414) override this.
+        """
+        pass
+
 
 class CameraAcquisitionMode(enum.Enum):
     SOFTWARE_TRIGGER = "Software Trigger"

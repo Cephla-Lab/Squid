@@ -84,6 +84,8 @@ if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
     import squid.stage.cephla
+if USE_PI_FOCUS_STAGE:
+    import squid.stage.pi
 from control.piezo import PiezoStage
 
 if USE_XERYON:
@@ -821,7 +823,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-                if (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
+                if USE_PI_FOCUS_STAGE:
+                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
+                    # The PI driver clamps every move to the configured Z limits, so a stale
+                    # cached Z cannot command an out-of-range move.
+                    self.stage.move_z_to(cached_pos.z_mm)
+                elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
                     self.stage.move_z_to(cached_pos.z_mm)
                 else:
                     self.log.info(f"Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
@@ -3079,6 +3086,16 @@ class HighContentScreeningGui(QMainWindow):
         except Exception:
             if for_restart:
                 self.log.exception(f"Error closing display windows during {context}")
+            else:
+                raise
+
+        # Release stage-owned transports (e.g. the PI C-414 serial handle) so a restart's
+        # new process can acquire them.
+        try:
+            self.stage.close()
+        except Exception:
+            if for_restart:
+                self.log.exception(f"Error closing stage during {context}")
             else:
                 raise
 
