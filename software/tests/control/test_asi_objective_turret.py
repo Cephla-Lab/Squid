@@ -9,7 +9,7 @@ POSITIONS = {"2x": 1, "4x": 2, "10x": 3, "20x": 4, "40x": 5, "60x": 6}
 
 
 def _shared_turret(replies, stage=None, positions=POSITIONS, **kwargs):
-    """Turret on a shared (not owned) scripted transport; first reply feeds the ctor W T probe."""
+    """Turret on a shared (not owned) scripted transport; first reply feeds the ctor W F probe."""
     conn = _FakeSerialConn(replies=replies)
     turret = aot.ASIObjectiveTurret(shared_serial=MS2000Serial(conn), positions=positions, stage=stage, **kwargs)
     return turret, conn
@@ -119,11 +119,11 @@ def test_invalid_slot_positions_raise():
 
 
 def test_move_frames_raw_slot_command():
-    # Slot index is sent RAW ('M T=3'), not scaled by the 0.1 um unit factor.
+    # Slot index is sent RAW ('M F=3'), not scaled by the 0.1 um unit factor.
     turret, conn = _shared_turret([b":A 1\r\n", b":A\r\n", b"N\r\n", b":A 3\r\n"])
-    assert turret.current_slot == 1  # seeded from the ctor W T probe
+    assert turret.current_slot == 1  # seeded from the ctor W F probe
     turret.move_to_objective("10x")
-    assert conn.written == [b"W T\r", b"M T=3\r", b"/\r", b"W T\r"]
+    assert conn.written == [b"W F\r", b"M F=3\r", b"/\r", b"W F\r"]
     assert turret.current_objective == "10x"
     assert turret.current_slot == 3
 
@@ -145,10 +145,10 @@ def test_move_timeout_raises_and_still_restores_z(monkeypatch):
 
 
 def test_probe_seed_short_circuits_move():
-    # Ctor W T said slot 4; moving to the slot-4 objective must not rotate.
+    # Ctor W F said slot 4; moving to the slot-4 objective must not rotate.
     turret, conn = _shared_turret([b":A 4\r\n"])
     turret.move_to_objective("20x")
-    assert conn.written == [b"W T\r"]  # no M command
+    assert conn.written == [b"W F\r"]  # no M command
     assert turret.current_objective == "20x"
 
 
@@ -156,7 +156,7 @@ def test_probe_garbage_means_unknown_slot():
     turret, conn = _shared_turret([b":N-1\r\n", b":A\r\n", b"N\r\n"])
     assert turret.current_slot is None
     turret.move_to_objective("2x")  # unknown never short-circuits: rotation commanded
-    assert b"M T=1\r" in conn.written
+    assert b"M F=1\r" in conn.written
 
 
 def test_unknown_objective_keyerror_real():
@@ -192,7 +192,7 @@ def test_owned_ctor_probe_failure_closes_serial(monkeypatch):
 def test_home_is_motionless_real():
     turret, conn = _shared_turret([b":A 2\r\n", b":A 2\r\n"])
     turret.home()
-    assert all(not w.startswith(b"M ") for w in conn.written)  # W T probes only, no motion
+    assert all(not w.startswith(b"M ") for w in conn.written)  # W F probes only, no motion
     assert turret.current_slot == 2
 
 

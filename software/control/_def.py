@@ -1320,7 +1320,8 @@ OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # establishes a known slot at every boot.
 USE_ASI_OBJECTIVE_TURRET = False
 # Axis letter of the turret on the controller ('M <letter>=<slot>' / 'W <letter>').
-ASI_OBJECTIVE_TURRET_AXIS_LETTER = "T"
+# F on the MFC-2000 (hardware-confirmed).
+ASI_OBJECTIVE_TURRET_AXIS_LETTER = "F"
 # Objective name -> turret slot (1..6). Keys must match objectives.csv names. Override per machine .ini
 # (JSON with double-quoted keys, e.g. asi_objective_turret_positions = {"4x": 1, "20x": 2}).
 ASI_OBJECTIVE_TURRET_POSITIONS = {"2x": 1, "4x": 2, "10x": 3, "20x": 4, "40x": 5, "60x": 6}

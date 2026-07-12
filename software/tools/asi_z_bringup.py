@@ -193,7 +193,7 @@ def main():
     parser.add_argument("--fence-mm", type=float, default=0.0, help="Also test the +/- soft-limit fence (0 = skip)")
     parser.add_argument("--scan-bauds", action="store_true", help="Try each ASI baud rate and report which answers")
     parser.add_argument("--turret", action="store_true", help="Probe the objective turret axis (read-only)")
-    parser.add_argument("--turret-axis", default="T", help="Turret axis letter (default T)")
+    parser.add_argument("--turret-axis", default="F", help="Turret axis letter (default F, per the MFC-2000)")
     parser.add_argument("--turret-slot", type=int, help="Rotate to this slot (1..6); requires --allow-motion")
 
     parser.add_argument(

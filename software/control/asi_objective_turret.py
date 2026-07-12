@@ -1,8 +1,8 @@
 """6-position ASI objective turret on an MS-2000-family controller.
 
 Shares the controller -- and, when USE_ASI_Z_STAGE is enabled, the serial connection -- with
-the LS50 Z stage (squid.stage.asi). Command set: ``M T=<slot>`` rotates to a RAW slot index
-1..6 (NOT scaled by the 0.1 um unit factor used for linear axes); ``W T`` presumably reads
+the LS50 Z stage (squid.stage.asi). Command set: ``M F=<slot>`` rotates to a RAW slot index
+1..6 (NOT scaled by the 0.1 um unit factor used for linear axes); ``W F`` presumably reads
 the slot back (UNVERIFIED on hardware -- treated as best-effort, degrading to software
 tracking of the last commanded slot); ``/`` is the controller-GLOBAL busy byte, shared with
 the Z axis. ``MS2000Serial``'s internal lock keeps turret and Z commands frame-safe when
@@ -35,7 +35,7 @@ def _validate_positions(positions: Optional[dict]) -> Dict[str, int]:
         from control._def import ASI_OBJECTIVE_TURRET_POSITIONS
 
         positions = ASI_OBJECTIVE_TURRET_POSITIONS
-    # Fail fast: a bad slot value would otherwise go straight to the hardware as 'M T=<junk>'.
+    # Fail fast: a bad slot value would otherwise go straight to the hardware as 'M F=<junk>'.
     for name, slot in positions.items():
         if not isinstance(slot, int) or not 1 <= slot <= TURRET_SLOT_COUNT:
             raise ValueError(
@@ -45,7 +45,7 @@ def _validate_positions(positions: Optional[dict]) -> Dict[str, int]:
 
 
 class ASIObjectiveTurret:
-    """ObjectiveChangerProtocol implementation for the MS-2000 turret (T) axis.
+    """ObjectiveChangerProtocol implementation for the MS-2000 turret axis (F on the MFC-2000).
 
     Pass ``shared_serial`` (the Z stage's transport, via squid.stage.asi.find_shared_ms2000)
     when the LS50 Z stage runs on the same controller -- the turret then never closes it.
@@ -58,7 +58,7 @@ class ASIObjectiveTurret:
         serial_number: Optional[str] = None,
         serial_port: Optional[str] = None,
         baudrate: int = 115200,
-        axis: str = "T",
+        axis: str = "F",
         positions: Optional[Dict[str, int]] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
     ):
@@ -166,9 +166,9 @@ class ASIObjectiveTurret:
             raise RuntimeError("ASI turret is closed")
 
     def _probe_slot(self, require_reply: bool = False) -> Optional[int]:
-        """Best-effort 'W T' read. Returns the slot only for a plausible 1..N integer reply.
+        """Best-effort 'W F' read. Returns the slot only for a plausible 1..N integer reply.
 
-        check_error=False: an ':N-...' ack still proves comms -- it just means 'W T' is
+        check_error=False: an ':N-...' ack still proves comms -- it just means 'W F' is
         unsupported on this controller build, and we fall back to tracking the last
         commanded slot.
         """
@@ -217,7 +217,7 @@ class ASIObjectiveTurretSimulation:
         self,
         positions: Optional[Dict[str, int]] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
-        axis: str = "T",
+        axis: str = "F",
     ):
         self._positions = _validate_positions(positions)
         self._axis = axis
