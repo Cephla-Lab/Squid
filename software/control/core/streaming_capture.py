@@ -344,12 +344,25 @@ class StreamingCapture:
         stop_condition: ``CountStop`` (or compatible) — ``met(emitted)`` returns bool.
         writer: Object with ``start()``, ``enqueue(frame,t,c,z)``, ``finalize()``, ``abort()``.
         abort_fn: Zero-argument callable; returns True to abort early.
+        display_fn: Optional callable receiving a frame (np.ndarray) for live
+            preview, throttled to display_fps.  Failures are logged once and
+            disable the preview for this capture; they never affect recording.
+        display_fps: Preview rate in frames/s.  <= 0 disables the preview tap.
         timeout: Optional seconds to wait for completion.  If the source does not
             trigger the done event within this time ``run()`` still stops and
             finalizes (returns frames emitted so far).  None means wait forever.
     """
 
-    def __init__(self, frame_source, router, stop_condition, writer, abort_fn: Callable[[], bool]):
+    def __init__(
+        self,
+        frame_source,
+        router,
+        stop_condition,
+        writer,
+        abort_fn: Callable[[], bool],
+        display_fn: Optional[Callable] = None,
+        display_fps: float = 0.0,
+    ):
         self._source = frame_source
         self._router = router
         self._stop = stop_condition
@@ -358,6 +371,11 @@ class StreamingCapture:
         self._emitted = 0
         self._done = threading.Event()
         self._aborted = False
+        # Throttled live-preview tap (plain callable — no Qt in this module).
+        # display_fps <= 0 disables the tap entirely.
+        self._display_fn = display_fn if (display_fn is not None and display_fps > 0) else None
+        self._display_interval = (1.0 / display_fps) if display_fps > 0 else float("inf")
+        self._last_display_ts = float("-inf")
 
     def _on_frame(self, camera_frame) -> None:
         """Hot-thread callback: route + enqueue only.  Must not block."""
@@ -375,6 +393,7 @@ class StreamingCapture:
         if self._stop.met(self._emitted):
             self._done.set()
             return
+        self._maybe_display(camera_frame)
         idx = self._router.route(camera_frame.timestamp)
         if idx is not None:
             expected = self._stop.expected() if hasattr(self._stop, "expected") else None
@@ -387,6 +406,20 @@ class StreamingCapture:
             self._emitted += 1
             if self._stop.met(self._emitted):
                 self._done.set()
+
+    def _maybe_display(self, camera_frame) -> None:
+        """Throttled preview tap.  Must never harm the recording: any exception
+        is logged once and disables the preview for the rest of this capture."""
+        if self._display_fn is None:
+            return
+        if camera_frame.timestamp - self._last_display_ts < self._display_interval:
+            return
+        try:
+            self._display_fn(camera_frame.frame)
+            self._last_display_ts = camera_frame.timestamp
+        except Exception:
+            _log.exception("live-preview display_fn failed; disabling preview for this capture")
+            self._display_fn = None
 
     def run(self, timeout: Optional[float] = None) -> int:
         """Start capture, block until done (or timeout), and return emitted count."""
