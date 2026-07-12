@@ -110,3 +110,26 @@ def test_z_plan_points_exactly_three(tmp_path):
                 },
             )
         )
+
+
+def test_z_plan_colinear_points_rejected(tmp_path):
+    # All three points share y=0 -> colinear in XY -> cannot define a plane.
+    # Must raise a clean loader ValueError (surfaced as INVALID_PARAM at preflight)
+    # rather than letting interpolate_plane raise deep inside start_acquisition.
+    with pytest.raises(ValueError, match="colinear"):
+        parse_acquisition_yaml(
+            _write(
+                tmp_path,
+                {"scan_size_mm": 0.5, "z_plan": {"type": "focus_map", "points": [[0, 0, 1], [1, 0, 2], [2, 0, 3]]}},
+            )
+        )
+
+
+def test_z_plan_non_colinear_plane_parses(tmp_path):
+    data = parse_acquisition_yaml(
+        _write(
+            tmp_path,
+            {"scan_size_mm": 0.5, "z_plan": {"type": "focus_map", "points": [[0, 0, 1.0], [10, 0, 1.1], [0, 10, 1.2]]}},
+        )
+    )
+    assert data.z_plan["points"] == [[0.0, 0.0, 1.0], [10.0, 0.0, 1.1], [0.0, 10.0, 1.2]]

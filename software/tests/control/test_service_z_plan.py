@@ -3,6 +3,8 @@ import yaml
 
 import control.microscope
 import tests.control.test_stubs as ts
+from squid_service.faults import FaultCategory, FaultError
+from squid_service.models import AcquisitionRequest
 from squid_service.service import SquidCoreService
 
 
@@ -63,6 +65,43 @@ def test_z_plan_points_bakes_plane_into_coordinates(service, sim_scope, tmp_path
     assert a3[2] > a1[2]
     expected_a1_z = 1.0 + (a1[0] / 100.0) * 1.0
     assert a1[2] == pytest.approx(expected_a1_z, abs=1e-6)
+
+
+def test_preflight_rejects_colinear_z_plan_points(service, sim_scope, tmp_path):
+    """B1: a z_plan whose 3 points are colinear in XY must fail cleanly at preflight
+    (INVALID_PARAM on the ``yaml`` check), NOT escape interpolate_plane's raw ValueError
+    to a HARDWARE_FAULT 500 during start_acquisition after preflight already passed."""
+    objective = sim_scope.objective_store.current_objective
+    channel = sim_scope.live_controller.get_channels(objective)[0].name
+    config = {
+        "acquisition": {"widget_type": "wellplate"},
+        "sample": {"wellplate_format": "96 well plate"},
+        "z_stack": {"nz": 1, "delta_z_mm": 0.001},
+        "channels": [{"name": channel}],
+        "autofocus": {"contrast_af": False, "laser_af": False},
+        "wellplate_scan": {
+            "wells": "A1,A3",
+            "scan_size_mm": 0.5,
+            "overlap_percent": 10,
+            # All y=0 -> colinear in XY -> cannot define a plane.
+            "z_plan": {"type": "focus_map", "points": [[0.0, 0.0, 1.0], [1.0, 0.0, 2.0], [2.0, 0.0, 3.0]]},
+        },
+    }
+    p = tmp_path / "acq_colinear.yaml"
+    p.write_text(yaml.safe_dump(config))
+    req = AcquisitionRequest(yaml_path=str(p), overrides={"output_path": str(tmp_path)})
+
+    # preflight must not raise and must report ok=False on the yaml check.
+    result = service.preflight(req)
+    assert result["ok"] is False
+    yaml_check = next(c for c in result["checks"] if c["name"] == "yaml")
+    assert yaml_check["ok"] is False
+    assert "colinear" in yaml_check["message"].lower()
+
+    # And the underlying fault is INVALID_PARAM (not HARDWARE_FAULT / a 500).
+    with pytest.raises(FaultError) as ei:
+        service._load_yaml_or_fault(str(p))
+    assert ei.value.fault.category == FaultCategory.INVALID_PARAM
 
 
 def test_gen_focus_map_flag_survives_reset_when_requested(service, sim_scope, tmp_path):

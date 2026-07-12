@@ -105,3 +105,48 @@ def test_gen_focus_map_with_reflection_af_bakes_plane_into_fovs(sim_scope, monke
 
     # (3) The run completed, not aborted.
     assert mpc.abort_acqusition_requested is False
+
+
+def test_gen_focus_map_no_bounds_still_signals_finished(sim_scope, monkeypatch):
+    """B2: gen_focus_map + reflection AF that hits the `if not bounds: return` early
+    return must STILL emit signal_acquisition_finished. The worker never starts on that
+    path, so without the emit the service's job stays ACQUIRING forever and the GUI stays
+    disabled. get_scan_bounds() is forced to None to drive the early return deterministically.
+    """
+    control._def.MERGE_CHANNELS = False
+    control._def.SUPPORT_LASER_AUTOFOCUS = True
+
+    finished = threading.Event()
+    callbacks = dataclasses.replace(
+        NoOpCallbacks,
+        signal_acquisition_finished=lambda *a, **kw: finished.set(),
+    )
+    mpc = ts.get_test_multi_point_controller(sim_scope, callbacks=callbacks)
+
+    cfg = sim_scope.stage.get_config()
+    center_x = cfg.X_AXIS.MIN_POSITION + 1.0
+    center_y = cfg.Y_AXIS.MIN_POSITION + 1.0
+    center_z = (cfg.Z_AXIS.MAX_POSITION - cfg.Z_AXIS.MIN_POSITION) / 2.0
+    mpc.scanCoordinates.clear_regions()
+    mpc.scanCoordinates.add_flexible_region("A1", center_x, center_y, center_z, 2, 2, 0)
+
+    channel_names = [c.name for c in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)]
+    mpc.set_selected_configurations(channel_names[0:1])
+
+    mpc.set_reflection_af_flag(True)
+    mpc.set_gen_focus_map_flag(True)
+
+    # Store a laser-AF reference so validate_acquisition_settings passes and we actually
+    # reach the gen_focus_map branch (not the earlier validate-failure return).
+    sim_scope.addons.camera_focus.send_trigger()
+    ref_image = sim_scope.addons.camera_focus.read_frame()
+    assert ref_image is not None
+    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(ref_image)
+
+    # Force the `if not bounds: return` early return in the gen_focus_map branch.
+    monkeypatch.setattr(mpc.scanCoordinates, "get_scan_bounds", lambda: None)
+
+    mpc.run_acquisition()
+
+    # The finished signal fires synchronously on the early-return path (worker never starts).
+    assert finished.wait(30), "acquisition-finished signal never fired on the no-bounds early return (run would hang)"

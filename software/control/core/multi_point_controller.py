@@ -798,6 +798,11 @@ class MultiPointController:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
+                    # No scannable regions: the worker never starts, so emit finished here
+                    # (same as the validate_acquisition_settings early return above) to
+                    # re-enable the GUI and let the service mark the job finished. Without
+                    # this the run hangs in ACQUIRING forever.
+                    self.callbacks.signal_acquisition_finished()
                     return
                 x_min, x_max = bounds["x"]
                 y_min, y_max = bounds["y"]
@@ -875,6 +880,11 @@ class MultiPointController:
 
                 except ValueError:
                     self._log.exception("Invalid coordinates for autofocus plane, aborting.")
+                    # The plane could not be generated; the worker never starts. Emit finished
+                    # so the GUI re-enables and the service marks the job finished/failed
+                    # (job.started_at is None -> reported as a validation failure) rather than
+                    # leaving it stuck in ACQUIRING.
+                    self.callbacks.signal_acquisition_finished()
                     return
 
             def finish_fn():

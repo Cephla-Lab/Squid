@@ -156,6 +156,13 @@ def _validate_z_plan(raw: Optional[dict]) -> Optional[dict]:
             if not all(math.isfinite(v) for v in (fx, fy, fz)):
                 raise ValueError(f"z_plan: non-finite point {p!r}")
             norm_points.append([fx, fy, fz])
+        # The 3 points must span a plane: reject XY-colinear sets here (a clean
+        # loader ValueError -> INVALID_PARAM at preflight) instead of letting
+        # interpolate_plane raise deep inside start_acquisition (a misleading 500).
+        (x1, y1, _), (x2, y2, _), (x3, y3, _) = norm_points
+        det = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+        if abs(det) < 1e-9:
+            raise ValueError("z_plan: the 3 points are colinear in XY and cannot define a plane")
     return {"type": "focus_map", "generate": generate, "points": norm_points}
 
 
