@@ -284,8 +284,39 @@ curl -X POST http://127.0.0.1:8060/v1/acquisitions -d '{"method": "daily_scan"}'
 ```
 
 `GET /v1/methods` returns a summary per method including `estimated_duration_s`, which is **always `null`
-in this version** — it is a documented placeholder for a future duration estimator, not a bug. Deleting a
+in this version** — it is a documented placeholder for a future duration estimator, not a bug. The summary
+also reports `pattern` (the `fov_pattern` type, or `"coverage"` when none is set) and `wells`. Deleting a
 method while an acquisition is in progress is rejected with a `PROTOCOL_WRONG_STATE` fault.
+
+### Method schema v2
+
+A wellplate method's `wellplate_scan` accepts three optional schema-v2 fields. All are validated when the
+method is parsed (`POST`/`PUT /v1/methods`) and again at acquisition preflight; `fov_pattern.type` and `wells`
+are surfaced in the `GET /v1/methods` summary.
+
+**`fov_pattern`** — per-well FOV layout, a mapping with a `type` key. One of:
+
+| Type | Keys | Meaning |
+|------|------|---------|
+| `coverage` | `scan_size_mm`, `overlap_percent`, `shape` | Default when omitted: flat tiling that covers a `scan_size_mm` area. |
+| `centered_grid` | `nx`, `ny`, `overlap_percent` | An `nx`×`ny` tile grid centered on each well. |
+| `grid_subset` | `nx`, `ny`, `tiles`, `overlap_percent` | A chosen subset of an `nx`×`ny` grid; `tiles` is a non-empty list of `[row, col]` (0-indexed, in-range, no duplicates). |
+| `random` | `n_fovs`, `seed` | `n_fovs` randomly placed FOVs; `seed` (optional int) makes the layout reproducible. |
+
+Every type except `coverage` is a per-well pattern and requires `wellplate_scan.wells`.
+
+**`well_z_offsets_um`** — per-well laser-AF **target** offsets, a mapping of well name → µm from the AF
+reference plane (an optional `default` key applies to unlisted wells). Requires `laser_af`; each entry is
+range-checked against the laser-AF search range at preflight (`INVALID_PARAM`, component `well_z_offsets_um`,
+if `|offset| >` the range). Consumed via the per-region AF offset hook (`set_region_laser_af_offsets`),
+consumed-and-cleared at run start (one-shot; re-provide per run — never leaks to a later acquisition). This is
+a **TYPE-1** correction — it shifts *where autofocus focuses*, not the coarse stage Z.
+
+**`z_plan`** — pre-AF stage positioning for tilted plates: `{"type": "focus_map", ...}` with **exactly one**
+of `generate: true` (measure a 3-corner focus-map plane at run start) or `points` (exactly three
+`[x_mm, y_mm, z_mm]` entries defining a plane, which is baked into every FOV's coarse Z). This is a **TYPE-2**
+correction — it sets the coarse stage Z *before* autofocus runs, distinct from the `well_z_offsets_um` AF
+target offsets, and the two may be combined.
 
 ## Polling guidance (URS API-POLL-005)
 

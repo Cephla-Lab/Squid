@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
 from control.core.job_processing import CaptureInfo
@@ -63,6 +63,16 @@ class AcquisitionParameters:
 
     # XY mode for determining scan type
     xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
+
+    # Per-region laser-AF target offsets (µm from the global laser-AF reference plane),
+    # keyed by region_id. Empty unless the focus-map + laser-AF combined mode is active,
+    # in which case each FOV in a region targets that region's offset instead of 0.
+    region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
+
+    # Schema v2: the FOV pattern that generated this run's regions, carried to the
+    # acquisition-record writer so an API/service run round-trips faithfully. None =>
+    # coverage-from-scan-size (the GUI Select-Wells default).
+    fov_pattern: Optional[dict] = None
 
 
 @dataclass

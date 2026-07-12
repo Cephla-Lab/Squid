@@ -2,6 +2,7 @@
 Utilities for parsing and validating acquisition YAML files.
 """
 
+import math
 import yaml
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -47,12 +48,122 @@ class AcquisitionYAMLData:
     # ("A1:B3" or "A1,B2,C3"); None when the method uses explicit regions instead.
     wells: Optional[str] = None
 
+    # Schema v2 (wellplate): per-well FOV pattern. None = legacy coverage behavior
+    # driven by flat scan_size_mm/overlap_percent. When present, always normalized
+    # to a dict with a "type" key; see _normalize_fov_pattern for per-type keys.
+    fov_pattern: Optional[Dict] = None
+    # Schema v2: per-well laser-AF target offsets (µm from the AF reference plane).
+    # Optional "default" key applies to wells not listed. Requires laser_af.
+    well_z_offsets_um: Optional[Dict[str, float]] = None
+    # Schema v2: pre-AF Z plan for tilted plates: {"type": "focus_map",
+    # "generate": bool, "points": [[x,y,z]*3] | None} (generate XOR points).
+    z_plan: Optional[Dict] = None
+
     # Flexible-specific
     nx: int = 1
     ny: int = 1
     delta_x_mm: float = 0.9
     delta_y_mm: float = 0.9
     flexible_positions: Optional[List[Dict]] = None  # [{name, center_mm}, ...]
+
+
+_FOV_PATTERN_TYPES = ("coverage", "centered_grid", "grid_subset", "random")
+
+
+def _normalize_fov_pattern(raw: Optional[dict], overlap_default: float) -> Optional[dict]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or "type" not in raw:
+        raise ValueError("fov_pattern must be a mapping with a 'type' key")
+    ptype = raw["type"]
+    if ptype not in _FOV_PATTERN_TYPES:
+        raise ValueError(f"fov_pattern type {ptype!r} not one of {_FOV_PATTERN_TYPES}")
+    if ptype == "coverage":
+        return {
+            "type": "coverage",
+            "scan_size_mm": raw.get("scan_size_mm"),
+            "overlap_percent": float(raw.get("overlap_percent", overlap_default)),
+            "shape": raw.get("shape", "Square"),
+        }
+    if ptype in ("centered_grid", "grid_subset"):
+        nx, ny = raw.get("nx"), raw.get("ny")
+        if not (isinstance(nx, int) and isinstance(ny, int) and nx >= 1 and ny >= 1):
+            raise ValueError(f"fov_pattern {ptype}: nx and ny must be integers >= 1")
+        out = {"type": ptype, "nx": nx, "ny": ny, "overlap_percent": float(raw.get("overlap_percent", overlap_default))}
+        if ptype == "grid_subset":
+            tiles = raw.get("tiles")
+            if not isinstance(tiles, list) or not tiles:
+                raise ValueError("fov_pattern grid_subset: 'tiles' must be a non-empty list of [row, col]")
+            norm_tiles = []
+            for t in tiles:
+                if not (isinstance(t, (list, tuple)) and len(t) == 2):
+                    raise ValueError(f"fov_pattern grid_subset: bad tile entry {t!r} (expected [row, col])")
+                row, col = int(t[0]), int(t[1])
+                if not (0 <= row < ny and 0 <= col < nx):
+                    raise ValueError(
+                        f"fov_pattern grid_subset: tile [{row}, {col}] outside {ny}x{nx} grid (rows 0..{ny-1}, cols 0..{nx-1})"
+                    )
+                norm_tiles.append([row, col])
+            if len({tuple(t) for t in norm_tiles}) != len(norm_tiles):
+                raise ValueError("fov_pattern grid_subset: duplicate tiles")
+            out["tiles"] = norm_tiles
+        return out
+    # random
+    n_fovs = raw.get("n_fovs")
+    if not (isinstance(n_fovs, int) and n_fovs >= 1):
+        raise ValueError("fov_pattern random: n_fovs must be an integer >= 1")
+    seed = raw.get("seed")
+    if seed is not None and not isinstance(seed, int):
+        raise ValueError("fov_pattern random: seed must be an integer")
+    return {"type": "random", "n_fovs": n_fovs, "seed": seed}
+
+
+def _validate_well_z_offsets(raw: Optional[dict]) -> Optional[Dict[str, float]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("well_z_offsets_um must be a non-empty mapping of well name -> µm")
+    out = {}
+    for name, value in raw.items():
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"well_z_offsets_um[{name!r}]: not a number: {value!r}")
+        if not math.isfinite(f):
+            raise ValueError(f"well_z_offsets_um[{name!r}]: must be finite, got {value!r}")
+        out[str(name)] = f
+    return out
+
+
+def _validate_z_plan(raw: Optional[dict]) -> Optional[dict]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get("type") != "focus_map":
+        raise ValueError("z_plan: only {'type': 'focus_map', ...} is supported")
+    generate = bool(raw.get("generate", False))
+    points = raw.get("points")
+    if generate == bool(points):
+        raise ValueError("z_plan: specify exactly one of 'generate: true' or 'points'")
+    norm_points = None
+    if points is not None:
+        if not (isinstance(points, list) and len(points) == 3):
+            raise ValueError("z_plan: 'points' must be exactly 3 [x_mm, y_mm, z_mm] entries (a plane)")
+        norm_points = []
+        for p in points:
+            if not (isinstance(p, (list, tuple)) and len(p) == 3):
+                raise ValueError(f"z_plan: bad point {p!r} (expected [x_mm, y_mm, z_mm])")
+            fx, fy, fz = (float(v) for v in p)
+            if not all(math.isfinite(v) for v in (fx, fy, fz)):
+                raise ValueError(f"z_plan: non-finite point {p!r}")
+            norm_points.append([fx, fy, fz])
+        # The 3 points must span a plane: reject XY-colinear sets here (a clean
+        # loader ValueError -> INVALID_PARAM at preflight) instead of letting
+        # interpolate_plane raise deep inside start_acquisition (a misleading 500).
+        (x1, y1, _), (x2, y2, _), (x3, y3, _) = norm_points
+        det = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+        if abs(det) < 1e-9:
+            raise ValueError("z_plan: the 3 points are colinear in XY and cannot define a plane")
+    return {"type": "focus_map", "generate": generate, "points": norm_points}
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
@@ -127,6 +238,12 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     if wells and wellplate_regions:
         raise ValueError("wellplate_scan: specify either 'wells' or 'regions', not both")
 
+    fov_pattern = _normalize_fov_pattern(wellplate_scan.get("fov_pattern"), overlap)
+    if fov_pattern and fov_pattern["type"] != "coverage" and not wells:
+        raise ValueError(f"fov_pattern {fov_pattern['type']!r} requires wellplate_scan 'wells' (per-well patterns)")
+    well_z_offsets_um = _validate_well_z_offsets(wellplate_scan.get("well_z_offsets_um"))
+    z_plan = _validate_z_plan(wellplate_scan.get("z_plan"))
+
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -154,6 +271,9 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         scan_shape=scan_shape,
         wellplate_regions=wellplate_regions,
         wells=wells,
+        fov_pattern=fov_pattern,
+        well_z_offsets_um=well_z_offsets_um,
+        z_plan=z_plan,
         # Flexible-specific
         nx=flexible_scan.get("nx", 1),
         ny=flexible_scan.get("ny", 1),

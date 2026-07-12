@@ -103,21 +103,37 @@ def _save_acquisition_yaml(
 
     # Add widget-specific scan section
     if widget_type == "wellplate":
-        yaml_dict["wellplate_scan"] = {
-            "scan_size_mm": scan_size_mm,
-            "overlap_percent": overlap_percent,
-            "regions": [
-                {
-                    "name": name,
-                    "center_mm": _serialize_for_yaml(center),
-                    "shape": region_shapes.get(name) if region_shapes else None,
-                }
-                for name, center in zip(
-                    params.scan_position_information.scan_region_names,
-                    params.scan_position_information.scan_region_coords_mm,
-                )
-            ],
-        }
+        region_names = params.scan_position_information.scan_region_names
+        if params.xy_mode == "Select Wells":
+            # Schema v2: names + coverage pattern; X/Y are re-derived from the plate
+            # definition at load time (see acquisition_yaml_loader.parse_acquisition_yaml).
+            yaml_dict["wellplate_scan"] = {
+                "wells": list(region_names),
+                "fov_pattern": params.fov_pattern
+                or {
+                    "type": "coverage",
+                    "scan_size_mm": scan_size_mm,
+                    "overlap_percent": overlap_percent,
+                    "shape": (region_shapes or {}).get(region_names[0]) if region_names else "Square",
+                },
+            }
+        else:
+            # Manual / Current Position / Load Coordinates: inherently coordinate-based.
+            yaml_dict["wellplate_scan"] = {
+                "scan_size_mm": scan_size_mm,
+                "overlap_percent": overlap_percent,
+                "regions": [
+                    {
+                        "name": name,
+                        "center_mm": _serialize_for_yaml(center),
+                        "shape": region_shapes.get(name) if region_shapes else None,
+                    }
+                    for name, center in zip(
+                        region_names,
+                        params.scan_position_information.scan_region_coords_mm,
+                    )
+                ],
+            }
     else:  # flexible
         yaml_dict["flexible_scan"] = {
             "nx": params.NX,
@@ -227,6 +243,8 @@ class MultiPointController:
         self.overlap_percent = 10.0  # FOV overlap percentage
 
         self.focus_map = None
+        self.region_laser_af_offsets = {}
+        self.fov_pattern = None
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -415,6 +433,16 @@ class MultiPointController:
 
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
+
+    def set_region_laser_af_offsets(self, offsets):
+        # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
+        # every FOV targets the reference (displacement 0), i.e. current behavior.
+        self.region_laser_af_offsets = dict(offsets or {})
+
+    def set_fov_pattern(self, pattern):
+        # Normalized fov_pattern dict (Task-1 loader shape) or None for coverage-from-scan-size.
+        # Consumed-and-cleared by run_acquisition so it never leaks to a later run.
+        self.fov_pattern = pattern
 
     def set_base_path(self, path):
         self.base_path = path
@@ -675,6 +703,17 @@ class MultiPointController:
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
     def run_acquisition(self, acquire_current_fov=False):
+        # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
+        # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
+        # never reached run_acquisition (e.g. aborted on the disk/RAM dialog) — then cannot leak
+        # them into a later acquisition from an entry point that never sets them (fluidics
+        # widget, TCP control server).
+        run_region_laser_af_offsets = self.region_laser_af_offsets
+        self.region_laser_af_offsets = {}
+        # Consume-and-clear the fov_pattern for THIS run so a stale pattern from an API run
+        # can never leak into a later GUI run (which never sets it).
+        run_fov_pattern = self.fov_pattern
+        self.fov_pattern = None
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
@@ -766,10 +805,15 @@ class MultiPointController:
                         region_fov_coords[i] = (x, y, z)
                         self.scanCoordinates.update_fov_z_level(region_id, i, z)
 
-            elif self.gen_focus_map and not self.do_reflection_af:
+            elif self.gen_focus_map:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
+                    # No scannable regions: the worker never starts, so emit finished here
+                    # (same as the validate_acquisition_settings early return above) to
+                    # re-enable the GUI and let the service mark the job finished. Without
+                    # this the run hangs in ACQUIRING forever.
+                    self.callbacks.signal_acquisition_finished()
                     return
                 x_min, x_max = bounds["x"]
                 y_min, y_max = bounds["y"]
@@ -823,7 +867,23 @@ class MultiPointController:
 
                     # Generate and enable the AF map
                     self.autofocusController.gen_focus_map(coord1, coord2, coord3)
-                    self.autofocusController.set_focus_map_use(True)
+                    if self.do_reflection_af:
+                        # Laser-AF run: contrast focus-map interpolation never executes in the
+                        # worker's laser branch. Bake the generated plane into the coordinates
+                        # instead (same mechanism as self.focus_map above), so each FOV is
+                        # pre-positioned within laser-AF capture range on a tilted plate.
+                        from control.utils import interpolate_plane
+
+                        pts = [tuple(p) for p in self.autofocusController.focus_map_coords[:3]]
+                        for region_id in scan_position_information.scan_region_names:
+                            region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
+                            for i, coords in enumerate(region_fov_coords):
+                                x, y = coords[:2]
+                                z = interpolate_plane(pts[0], pts[1], pts[2], (x, y))
+                                region_fov_coords[i] = (x, y, z)
+                                self.scanCoordinates.update_fov_z_level(region_id, i, z)
+                    else:
+                        self.autofocusController.set_focus_map_use(True)
 
                     # Return to center position
                     self.stage.move_x_to(x_center)
@@ -831,6 +891,11 @@ class MultiPointController:
 
                 except ValueError:
                     self._log.exception("Invalid coordinates for autofocus plane, aborting.")
+                    # The plane could not be generated; the worker never starts. Emit finished
+                    # so the GUI re-enables and the service marks the job finished/failed
+                    # (job.started_at is None -> reported as a validation failure) rather than
+                    # leaving it stuck in ACQUIRING.
+                    self.callbacks.signal_acquisition_finished()
                     return
 
             def finish_fn():
@@ -842,7 +907,11 @@ class MultiPointController:
 
             updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
-            acquisition_params = self.build_params(scan_position_information=scan_position_information)
+            acquisition_params = self.build_params(
+                scan_position_information=scan_position_information,
+                region_laser_af_offsets=run_region_laser_af_offsets,
+                fov_pattern=run_fov_pattern,
+            )
 
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
@@ -946,7 +1015,12 @@ class MultiPointController:
                     self._memory_monitor.stop()
                     self._memory_monitor = None
 
-    def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
+    def build_params(
+        self,
+        scan_position_information: ScanPositionInformation,
+        region_laser_af_offsets: Optional[dict] = None,
+        fov_pattern: Optional[dict] = None,
+    ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
         plate_num_cols = 12
@@ -986,6 +1060,8 @@ class MultiPointController:
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
+            region_laser_af_offsets=region_laser_af_offsets if region_laser_af_offsets is not None else {},
+            fov_pattern=fov_pattern,
         )
 
     def _on_acquisition_completed(self):

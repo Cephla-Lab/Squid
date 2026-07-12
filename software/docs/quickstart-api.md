@@ -86,8 +86,11 @@ curl -X POST http://127.0.0.1:8060/v1/methods \
       "channels": [{"name": "BF LED matrix full"}, {"name": "Fluorescence 488 nm Ex"}],
       "autofocus": {"contrast_af": false, "laser_af": true},
       "wellplate_scan": {
-        "scan_size_mm": 1.5, "overlap_percent": 10,
-        "wells": "A1:B3"
+        "overlap_percent": 10,
+        "wells": "A1:B3",
+        "fov_pattern": {"type": "centered_grid", "nx": 3, "ny": 3},
+        "well_z_offsets_um": {"A1": 0, "default": -5},
+        "z_plan": {"type": "focus_map", "generate": true}
       }
     }
   }'
@@ -97,6 +100,13 @@ curl -X POST http://127.0.0.1:8060/v1/acquisitions \
   -d '{"method": "spheroid_4ch_20x",
        "overrides": {"wells": "A1:D6", "output_path": "/data/exp42"}}'
 ```
+
+The three schema-v2 fields above are optional (all `wellplate_scan`):
+- `fov_pattern` sets the per-well FOV layout — here a 3×3 grid centered on each well (types: `coverage`, `centered_grid`, `grid_subset`, `random`; all but `coverage` require `wells`).
+- `well_z_offsets_um` shifts the laser-AF focus target per well in µm from the AF reference plane (needs `laser_af: true`; a `default` key covers unlisted wells).
+- `z_plan` positions the stage in Z before AF for tilted plates — `generate: true` measures a focus map at run start, or give three `points` (`[x_mm, y_mm, z_mm]`) defining a plane.
+
+See the [Method schema v2](core-service-api.md#method-schema-v2) reference for the full field spec.
 
 Name wells with `wellplate_scan.wells` (`"A1:B3"` range or `"A1,A2,B1"` list) — X/Y are
 derived from the plate definition, so no coordinates are stored in the method. **Z is not

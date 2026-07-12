@@ -1111,6 +1111,42 @@ class SquidCoreService:
                     )
                 )
 
+        def check_well_z_offsets():
+            offsets = ctx["yaml_data"].well_z_offsets_um
+            if not offsets:
+                return
+            # Offsets are displacements from the laser-AF reference plane, so laser AF must run.
+            # Read the effective flag the same way the z_reference check does (yaml base with
+            # request overrides applied); here "reflection" is the laser-AF flag.
+            laser_af, _contrast = self._effective_af_flags(req, ctx["yaml_data"].laser_af, ctx["yaml_data"].contrast_af)
+            if not laser_af:
+                raise F.FaultError(
+                    F.make_fault(
+                        F.FaultCategory.INVALID_PARAM,
+                        F.INVALID_PARAM_BAD_VALUE,
+                        "well_z_offsets_um requires autofocus.laser_af "
+                        "(offsets are relative to the laser-AF reference plane)",
+                        component="well_z_offsets_um",
+                    )
+                )
+            # Range-check every entry (including "default") against the laser-AF search range,
+            # when a laser-AF controller with properties is attached (may be absent in sim).
+            controller = getattr(self._mpc, "laserAutoFocusController", None)
+            af_range = getattr(getattr(controller, "laser_af_properties", None), "laser_af_range", None)
+            if af_range:
+                for well, um in offsets.items():
+                    if abs(um) > af_range:
+                        raise F.FaultError(
+                            F.make_fault(
+                                F.FaultCategory.INVALID_PARAM,
+                                F.INVALID_PARAM_OUT_OF_RANGE,
+                                f"well_z_offsets_um[{well!r}] = {um:+.1f} um exceeds "
+                                f"laser AF range +/-{af_range} um",
+                                component="well_z_offsets_um",
+                                detail={"well": well, "offset_um": um, "laser_af_range_um": af_range},
+                            )
+                        )
+
         checks = [
             ("yaml", check_yaml),
             ("widget_type", check_widget_type),
@@ -1123,6 +1159,7 @@ class SquidCoreService:
                 "z_reference",
                 self._z_reference_check(req, lambda: (ctx["yaml_data"].laser_af, ctx["yaml_data"].contrast_af)),
             ),
+            ("well_z_offsets", check_well_z_offsets),
             ("output_path", self._output_path_check(req, ctx)),
         ]
         return checks, ctx
@@ -1290,6 +1327,23 @@ class SquidCoreService:
         # "current" and "autofocus" both baseline on the current stage z.
         return self._microscope.stage.get_pos().z_mm
 
+    def _resolve_well_z_offsets(self, well_z_offsets_um, well_names):
+        """Map each configured well to its laser-AF target offset (µm from the reference plane).
+
+        Precedence per well: its listed value, else the "default" value if present. Zero and
+        absent offsets are omitted so the pushed dict only carries wells that actually deviate
+        (an empty dict means every FOV targets the reference plane -- current behavior).
+        """
+        if not well_z_offsets_um:
+            return {}
+        default = well_z_offsets_um.get("default")
+        out = {}
+        for name in well_names:
+            value = well_z_offsets_um.get(name, default)
+            if value:
+                out[name] = float(value)
+        return out
+
     # -- controller configuration --
 
     def _configure_regions(self, yaml_data, raw: dict, wells_override, sample_format_override, z0: float) -> None:
@@ -1304,18 +1358,11 @@ class SquidCoreService:
         if effective_wells:
             fmt = sample_format_override or raw.get("sample", {}).get("wellplate_format", "96 well plate")
             settings = control._def.get_wellplate_settings(fmt)
+            self._current_wellplate_settings = settings  # consumed by _add_random_region
+            pattern = yaml_data.fov_pattern
             for name in parse_well_names(effective_wells):
                 x, y = well_center_mm(name, settings)
-                sc.add_region(
-                    well_id=name,
-                    center_x=x,
-                    center_y=y,
-                    scan_size_mm=scan_size,
-                    overlap_percent=yaml_data.overlap_percent,
-                    shape=shape,
-                )
-                if name in sc.region_centers:
-                    sc.region_centers[name][2] = z0
+                self._add_pattern_region(sc, pattern, name, x, y, z0, yaml_data)
         else:
             for region in yaml_data.wellplate_regions:
                 name = region.get("name", "region")
@@ -1331,6 +1378,113 @@ class SquidCoreService:
                 if name in sc.region_centers:
                     sc.region_centers[name][2] = center[2] if len(center) > 2 else z0
         sc.sort_coordinates()
+
+    def _add_pattern_region(self, sc, pattern, name, x, y, z0, yaml_data):
+        """Add one well's FOVs per the fov_pattern (None/coverage -> legacy add_region)."""
+        if pattern is None or pattern["type"] == "coverage":
+            scan_size = (pattern or {}).get("scan_size_mm") or yaml_data.scan_size_mm or 2.0
+            shape = (pattern or {}).get("shape") or yaml_data.scan_shape or "Square"
+            overlap = (pattern or {}).get("overlap_percent", yaml_data.overlap_percent)
+            sc.add_region(
+                well_id=name,
+                center_x=x,
+                center_y=y,
+                scan_size_mm=scan_size,
+                overlap_percent=overlap,
+                shape=shape,
+            )
+        elif pattern["type"] == "centered_grid":
+            sc.add_flexible_region(
+                region_id=name,
+                center_x=x,
+                center_y=y,
+                center_z=z0,
+                Nx=pattern["nx"],
+                Ny=pattern["ny"],
+                overlap_percent=pattern["overlap_percent"],
+            )
+        elif pattern["type"] == "grid_subset":
+            self._add_grid_subset_region(sc, pattern, name, x, y, z0)  # Task 3
+        elif pattern["type"] == "random":
+            self._add_random_region(sc, pattern, name, x, y, z0, yaml_data)  # Task 4
+        if name in sc.region_centers:
+            sc.region_centers[name][2] = z0
+
+    def _add_grid_subset_region(self, sc, pattern, name, x, y, z0):
+        """Generate the full nx x ny centered grid row-major, then keep only `tiles`.
+
+        Flat index convention i = row*nx + col matches the plate-view mosaic
+        (widgets_mosaic.py) and requires Unidirectional generation: S-Pattern
+        reverses odd rows, so force it and restore afterwards.
+        """
+        saved_pattern = sc.fov_pattern
+        sc.fov_pattern = "Unidirectional"
+        try:
+            sc.add_flexible_region(
+                region_id=name,
+                center_x=x,
+                center_y=y,
+                center_z=z0,
+                Nx=pattern["nx"],
+                Ny=pattern["ny"],
+                overlap_percent=pattern["overlap_percent"],
+            )
+        finally:
+            sc.fov_pattern = saved_pattern
+        coords = sc.region_fov_coordinates.get(name, [])
+        expected = pattern["nx"] * pattern["ny"]
+        if len(coords) != expected:
+            # stage-limit clipping dropped tiles; flat indices would be wrong
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_OUT_OF_RANGE,
+                    f"grid_subset for well {name}: grid clipped by stage limits "
+                    f"({len(coords)}/{expected} FOVs reachable); move the region or shrink the grid",
+                    detail={"well": name},
+                )
+            )
+        keep = [row * pattern["nx"] + col for row, col in pattern["tiles"]]
+        sc.region_fov_coordinates[name] = [coords[i] for i in sorted(keep)]
+
+    def _add_random_region(self, sc, pattern, name, x, y, z0, yaml_data):
+        """Sample n_fovs points uniformly inside the well's usable circle.
+
+        Per-well RNG: sha256(f"{seed}:{well}") so runs are reproducible for a given
+        seed but differ well-to-well (hash() is process-salted; never use it).
+        seed None -> os.urandom-backed nondeterministic sampling.
+        """
+        import hashlib
+        import random as _random
+
+        fov_mm = sc.objectiveStore.get_pixel_size_factor() * sc.camera.get_fov_size_mm()
+        fmt_settings = self._current_wellplate_settings  # set by _configure_regions, see below
+        usable_radius = fmt_settings["well_size_mm"] / 2.0 - fov_mm / 2.0
+        if usable_radius <= 0:
+            raise F.FaultError(
+                F.make_fault(
+                    F.FaultCategory.INVALID_PARAM,
+                    F.INVALID_PARAM_OUT_OF_RANGE,
+                    f"random fov_pattern: FOV ({fov_mm:.3f} mm) does not fit in a "
+                    f"{fmt_settings['well_size_mm']} mm well",
+                    detail={"well": name},
+                )
+            )
+        seed = pattern["seed"]
+        if seed is None:
+            rng = _random.Random()
+        else:
+            digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
+            rng = _random.Random(int.from_bytes(digest[:8], "big"))
+        coords = []
+        while len(coords) < pattern["n_fovs"]:
+            px = rng.uniform(-usable_radius, usable_radius)
+            py = rng.uniform(-usable_radius, usable_radius)
+            if px * px + py * py <= usable_radius * usable_radius:
+                coords.append((x + px, y + py, z0))
+        sc.region_centers[name] = [x, y, z0]
+        sc.region_shapes[name] = "Square"  # keep region dicts key-consistent (sort/clear paths)
+        sc.region_fov_coordinates[name] = coords
 
     def _configure_grid_regions(self, grid, z0: float) -> None:
         import control._def
@@ -1351,7 +1505,9 @@ class SquidCoreService:
             )
         sc.sort_coordinates()
 
-    def _reset_z_range_and_focus_map(self, z0: float, nz: int, delta_z_um: float) -> None:
+    def _reset_z_range_and_focus_map(
+        self, z0: float, nz: int, delta_z_um: float, keep_gen_focus_map: bool = False
+    ) -> None:
         """Set z_range from the resolved baseline z0 and clear focus-map state.
 
         Mirrors the GUI's pre-run path (widgets.py toggle_acquisition ~6472-6487): the
@@ -1369,11 +1525,36 @@ class SquidCoreService:
         set_focus_map(None) before starting; the API exposes no focus-map option, so
         we clear focus_map/gen_focus_map/use_manual_focus_map outright to prevent a
         stale focus map from a GUI session from bleeding into an API acquisition.
+
+        keep_gen_focus_map preserves an already-set gen_focus_map flag (set by the
+        z_plan `generate: true` path just before controller configuration); every
+        other caller keeps today's clear-everything behavior.
         """
         self._mpc.set_z_range(z0, z0 + delta_z_um / 1000.0 * (nz - 1))
         self._mpc.set_focus_map(None)
-        self._mpc.gen_focus_map = False
+        if not keep_gen_focus_map:
+            self._mpc.gen_focus_map = False
         self._mpc.use_manual_focus_map = False
+
+    def _apply_z_plan_points(self, points):
+        """Bake plane z into every configured FOV (pre-AF positioning for tilted plates).
+
+        Mirrors the controller's focus_map coordinate-baking loop
+        (multi_point_controller.py:770-780): the worker then physically moves to each
+        FOV's z before autofocus runs, so laser AF starts within capture range.
+        """
+        from control.utils import interpolate_plane
+
+        p1, p2, p3 = (tuple(p) for p in points)
+        sc = self._scan_coordinates
+        for region_id, coords in sc.region_fov_coordinates.items():
+            for i, c in enumerate(coords):
+                x, y = c[0], c[1]
+                z = interpolate_plane(p1, p2, p3, (x, y))
+                coords[i] = (x, y, z)
+            if region_id in sc.region_centers:
+                cx, cy = sc.region_centers[region_id][0], sc.region_centers[region_id][1]
+                sc.region_centers[region_id][2] = interpolate_plane(p1, p2, p3, (cx, cy))
 
     def _configure_controller(self, yaml_data, z0: float) -> None:
         self._mpc.set_NX(1)
@@ -1389,7 +1570,10 @@ class SquidCoreService:
         # TOP shifts (the API path previously left this at the controller default).
         self._mpc.z_stacking_config = yaml_data.z_stacking_config
         self._mpc.set_selected_configurations(yaml_data.channel_names)
-        self._reset_z_range_and_focus_map(z0, yaml_data.nz, yaml_data.delta_z_um)
+        # Preserve a gen_focus_map flag set by the z_plan `generate: true` path (wired
+        # in start_acquisition just before this call); all other paths clear it.
+        keep_gen_focus_map = bool(yaml_data.z_plan and yaml_data.z_plan["generate"])
+        self._reset_z_range_and_focus_map(z0, yaml_data.nz, yaml_data.delta_z_um, keep_gen_focus_map=keep_gen_focus_map)
 
     def _configure_grid_controller(self, grid, z0: float) -> None:
         import control._def
@@ -1471,6 +1655,12 @@ class SquidCoreService:
                 grid = req.grid
                 self._configure_grid_regions(grid, z0)
                 self._configure_grid_controller(grid, z0)
+                # A grid request is a wells-driven centered grid — round-trip it as v2 so the
+                # saved record faithfully carries the wells + pattern.
+                self._mpc.set_xy_mode("Select Wells")
+                self._mpc.set_fov_pattern(
+                    {"type": "centered_grid", "nx": grid.nx, "ny": grid.ny, "overlap_percent": grid.overlap_percent}
+                )
                 channel_count = len(grid.channels)
                 nz, nt = 1, 1
                 source = "grid"
@@ -1478,6 +1668,34 @@ class SquidCoreService:
             else:
                 yaml_data, raw = ctx["yaml_data"], ctx["raw"]
                 self._configure_regions(yaml_data, raw, req.overrides.wells, req.overrides.sample_format, z0)
+                # Set xy_mode deterministically so the writer's v2-vs-legacy discriminator is
+                # correct on every entry point (never inherited stale). A wells-driven run
+                # (override or yaml) round-trips as v2 with the real fov_pattern; a legacy
+                # regions[].center_mm run keeps the coordinate-based regions form.
+                effective_wells = req.overrides.wells or yaml_data.wells
+                if effective_wells:
+                    self._mpc.set_xy_mode("Select Wells")
+                    self._mpc.set_fov_pattern(yaml_data.fov_pattern)
+                else:
+                    self._mpc.set_xy_mode("Manual")  # legacy regions -> writer keeps regions form
+                    self._mpc.set_fov_pattern(None)
+                # Resolve per-well laser-AF offsets against the regions just configured and push
+                # them into the controller (consumed-and-cleared by run_acquisition, so no leak
+                # to later runs). Empty dict => every FOV targets the reference plane.
+                self._mpc.set_region_laser_af_offsets(
+                    self._resolve_well_z_offsets(
+                        yaml_data.well_z_offsets_um, list(self._scan_coordinates.region_centers.keys())
+                    )
+                )
+                # z_plan tilted-plate pre-AF positioning: `points` bakes the plane z into
+                # every FOV now (works with any AF mode); `generate` defers to the
+                # controller's 3-corner contrast-AF plane generation (flag survives the
+                # focus-map reset inside _configure_controller via keep_gen_focus_map).
+                if yaml_data.z_plan:
+                    if yaml_data.z_plan["points"]:
+                        self._apply_z_plan_points(yaml_data.z_plan["points"])
+                    else:  # generate: true
+                        self._mpc.set_gen_focus_map_flag(True)
                 self._configure_controller(yaml_data, z0)
                 channel_count = len(yaml_data.channel_names)
                 nz, nt = yaml_data.nz, yaml_data.nt
