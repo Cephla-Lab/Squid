@@ -169,6 +169,8 @@ class RecordZStackController:
         objective_store,
         scan_coordinates,
         callbacks,
+        display_frame_fn=None,
+        display_fps: float = 0.0,
     ):
         self._microscope = microscope
         self._live_controller = live_controller
@@ -176,6 +178,8 @@ class RecordZStackController:
         self._objective_store = objective_store
         self._scan_coordinates = scan_coordinates
         self._callbacks = callbacks
+        self._display_frame_fn = display_frame_fn
+        self._display_fps = display_fps
 
         self._abort_event: Event = Event()
         self._worker = None
@@ -315,6 +319,8 @@ class RecordZStackController:
                 scan_region_fov_coords=scan_region_fov_coords,
                 prewarmed_job_runner=prewarmed_runner if control._def.Acquisition.USE_MULTIPROCESSING else None,
                 prewarmed_bp_values=prewarmed_bp_values if control._def.Acquisition.USE_MULTIPROCESSING else None,
+                display_frame_fn=self._display_frame_fn,
+                display_fps=self._display_fps,
             )
         except Exception:
             # Clean up the pre-warmed runner if worker construction failed.

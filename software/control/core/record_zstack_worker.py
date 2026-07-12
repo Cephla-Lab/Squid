@@ -78,6 +78,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         scan_region_fov_coords: Dict[object, List[Tuple]],
         prewarmed_job_runner: Optional[JobRunner] = None,
         prewarmed_bp_values: Optional[BackpressureValues] = None,
+        display_frame_fn: Optional[Callable] = None,
+        display_fps: float = 0.0,
     ):
         super().__init__(
             scope=scope,
@@ -88,6 +90,9 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
 
         self.params = params
+        # Plain-callable live-preview tap (Qt-free; supplied by the GUI wrapper).
+        self._display_frame_fn = display_frame_fn
+        self._display_fps = display_fps
         self.laser_af = laser_auto_focus_controller
         self.objectiveStore = objective_store
         self._scan: Dict[object, List[Tuple]] = scan_region_fov_coords or {}
@@ -407,6 +412,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
             CountStop(T),
             writer,
             abort_fn=self.abort_requested_fn,
+            display_fn=self._display_frame_fn,
+            display_fps=self._display_fps,
         )
         # Generous timeout: enough to gather T frames even at a slow effective rate.
         timeout = self.params.duration_s * 3 + 5
