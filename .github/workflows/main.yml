@@ -57,5 +57,11 @@ jobs:
           sudo apt install libxkbcommon-x11-0 xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
           /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
       - name: Run the tests
-        run: python3 -m pytest
+        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py
+        working-directory: ./software
+      - name: Run the GUI test in its own process
+        # The full-application GUI test leaves Qt/thread state behind that
+        # deterministically segfaults later Qt tests (e.g. test_channel_sequence)
+        # when run in the same pytest process, so it gets its own invocation.
+        run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
