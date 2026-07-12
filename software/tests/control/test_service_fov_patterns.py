@@ -148,6 +148,43 @@ def test_api_centered_grid_run_saves_v2_record(service, sim_scope, tmp_path):
     assert data.fov_pattern["nx"] == 2 and data.fov_pattern["ny"] == 2
 
 
+def test_api_grid_branch_run_saves_v2_centered_grid(service, sim_scope, tmp_path):
+    """A service inline-`grid` request must round-trip its dict construction end-to-end as a
+    v2 `centered_grid` record. Unlike the yaml/method branch, the grid branch builds the
+    `fov_pattern` dict itself (service.py: set_xy_mode("Select Wells") +
+    set_fov_pattern({"type": "centered_grid", nx, ny, overlap_percent})), so this exercises
+    that inline construction rather than a loader-normalized dict."""
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from squid_service.models import AcquisitionRequest, GridSpec
+
+    objective = sim_scope.objective_store.current_objective
+    channel = sim_scope.live_controller.get_channels(objective)[0].name
+    out = tmp_path / "out"
+    req = AcquisitionRequest(
+        grid=GridSpec(
+            wells="A1:A2",
+            channels=[channel],
+            nx=2,
+            ny=3,
+            overlap_percent=15,
+            wellplate_format="96 well plate",
+        ),
+        overrides={"output_path": str(out)},
+    )
+    assert service.preflight(req)["ok"] is True
+    handle = service.start_acquisition(req)
+    assert service.jobs.wait(handle["job_id"], timeout_s=120.0)
+    saved = list(out.rglob("acquisition.yaml"))
+    assert saved, "acquisition.yaml record not written"
+    data = parse_acquisition_yaml(str(saved[0]))
+    assert data.wells is not None  # not the legacy regions form
+    assert data.wellplate_regions is None
+    assert data.fov_pattern is not None and data.fov_pattern["type"] == "centered_grid"
+    assert data.fov_pattern["nx"] == 2
+    assert data.fov_pattern["ny"] == 3
+    assert data.fov_pattern["overlap_percent"] == 15
+
+
 def test_api_legacy_regions_run_saves_regions_form(service, sim_scope, tmp_path):
     """An API run of a legacy regions[].center_mm method (no wells) must still save the
     coordinate-based `regions` form — proving the service's xy_mode="Manual" branch and
