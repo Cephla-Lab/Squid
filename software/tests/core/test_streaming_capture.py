@@ -795,3 +795,68 @@ def test_frame_source_skips_reconfig_when_already_configured():
     src2.start(lambda f: None)
     src2.stop()
     assert cam2.mode_calls == 1 and cam2.rate_calls == 1  # default behavior unchanged
+
+
+# ---------------------------------------------------------------------------
+# Task 2: throttled live-preview display tap
+# ---------------------------------------------------------------------------
+
+
+def test_display_fn_throttled_and_first_frame_shown():
+    # 20 frames at 20 fps (0.05 s apart), preview at 5 fps (0.2 s interval):
+    # displays at t=100.00, 100.20, 100.40, 100.60, 100.80 -> exactly 5 calls.
+    frames = [_FakeFrame(100.0 + i * 0.05, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _ListWriter()
+    shown = []
+    cap = StreamingCapture(
+        _FakeSource(frames),
+        RecordingRouter(fps=20.0),
+        CountStop(20),
+        w,
+        abort_fn=lambda: False,
+        display_fn=shown.append,
+        display_fps=5.0,
+    )
+    emitted = cap.run()
+    assert emitted == 20
+    assert len(shown) == 5
+
+
+def test_display_fn_error_disables_preview_but_recording_completes():
+    frames = [_FakeFrame(100.0 + i * 0.05, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _ListWriter()
+    calls = []
+
+    def bad_display(frame):
+        calls.append(1)
+        raise RuntimeError("display broke")
+
+    cap = StreamingCapture(
+        _FakeSource(frames),
+        RecordingRouter(fps=20.0),
+        CountStop(20),
+        w,
+        abort_fn=lambda: False,
+        display_fn=bad_display,
+        display_fps=1000.0,  # would fire every frame if not disabled
+    )
+    emitted = cap.run()
+    assert emitted == 20  # recording unaffected
+    assert len(calls) == 1  # disabled after the first raise
+    assert w.finalized  # store still sealed normally
+
+
+def test_display_fps_zero_means_no_preview():
+    frames = [_FakeFrame(100.0 + i * 0.05, np.zeros((4, 4), np.uint16)) for i in range(5)]
+    shown = []
+    cap = StreamingCapture(
+        _FakeSource(frames),
+        RecordingRouter(fps=20.0),
+        CountStop(5),
+        _ListWriter(),
+        abort_fn=lambda: False,
+        display_fn=shown.append,
+        display_fps=0.0,
+    )
+    assert cap.run() == 5
+    assert shown == []
