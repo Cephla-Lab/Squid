@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-22.04
     env:
         DISPLAY: ":99.0"
+        # Force qtpy/pytest-qt onto PyQt5 (installed via apt in setup_22.04.sh).
+        # Under PySide6 the GUI test fails with a QObject double-init error;
+        # root cause unresolved — see the PR that added this pin.
+        QT_API: pyqt5
+        PYTEST_QT_API: pyqt5
     steps:
       # Our workflows were running out of memory.  We don't need most of the pre-installed machinery in the
       # github ubuntu image, so remove it using this helper action.
@@ -52,6 +57,5 @@ jobs:
           sudo apt install libxkbcommon-x11-0 xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
           /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
       - name: Run the tests
-        # test_HighContentScreeningGui.py: PySide6 QObject double-init bug (separate issue)
-        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py
+        run: python3 -m pytest
         working-directory: ./software
