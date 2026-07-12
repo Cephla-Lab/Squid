@@ -54,7 +54,6 @@ class LaserAutofocusController(QObject):
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
-        self.debug_image = None  # for characterization mode - only stores image on successful detection
 
         # Load configurations if available
         self.load_cached_configuration()
@@ -336,8 +335,6 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
-        # Reset debug image so characterization mode only saves successful detections
-        self.debug_image = None
 
         def finish_with(um: float) -> float:
             self.signal_displacement_um.emit(um)
@@ -475,15 +472,8 @@ class LaserAutofocusController(QObject):
         else:
             original_z_um = self.stage.get_pos().z_mm * 1000
 
-        # Debug timestamp for characterization mode
-        debug_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") if self.characterization_mode else None
-
         current_displacement_um = self.measure_displacement()
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
-
-        # Debug: save image after measurement (only if detection was successful)
-        if self.characterization_mode and self.debug_image is not None:
-            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_1_measurement.bmp", self.debug_image)
 
         if math.isnan(current_displacement_um):
             self._log.error("Cannot move to target: failed to measure current displacement")
@@ -502,11 +492,6 @@ class LaserAutofocusController(QObject):
 
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
-
-        # Debug: save image used for cross-correlation verification (only if detection was successful)
-        if self.characterization_mode and self.debug_image is not None:
-            cv2.imwrite(f"/tmp/laser_af_{debug_timestamp}_2_cc_verify.bmp", self.debug_image)
-
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
@@ -646,9 +631,8 @@ class LaserAutofocusController(QObject):
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
         failure_return_value = False, float("nan")
-        # Reset image so CC verify saves its own image, not the measurement image
+        # Reset image so CC verification uses its own frame, not the earlier measurement image
         self.image = None
-        self.debug_image = None
 
         # Get current spot image
         try:
@@ -727,7 +711,9 @@ class LaserAutofocusController(QObject):
 
             # Current crop (centered on reference position)
             axes[1].imshow(current_norm, cmap="gray")
-            axes[1].set_title(f"Current Crop @ Reference\n(detected x={current_peak_x:.1f}, crop x={self.laser_af_properties.x_reference:.1f})")
+            axes[1].set_title(
+                f"Current Crop @ Reference\n(detected x={current_peak_x:.1f}, crop x={self.laser_af_properties.x_reference:.1f})"
+            )
             axes[1].axis("off")
 
             # Difference image
@@ -796,8 +782,7 @@ class LaserAutofocusController(QObject):
                     self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
-                original_image = image.copy()  # Keep copy for debugging
-                self.image = original_image  # Always store latest frame for error debugging
+                self.image = image.copy()  # Always store latest frame for error debugging
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
@@ -855,9 +840,6 @@ class LaserAutofocusController(QObject):
                         f"{self.laser_af_properties.displacement_success_window_pixels:.0f} pixels), skipping it."
                     )
                     continue
-
-                # Store debug_image only after successful detection (for characterization mode)
-                self.debug_image = original_image
 
                 tmp_x += x
                 tmp_y += y
