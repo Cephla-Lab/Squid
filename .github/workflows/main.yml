@@ -52,22 +52,23 @@ jobs:
           sudo apt install libxkbcommon-x11-0 xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
           /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
       - name: Run the tests
+        # SQUID_PYTEST_HARD_EXIT: the suite intermittently segfaults during
+        # interpreter shutdown AFTER all tests pass (Qt destructor order vs
+        # Python GC — the same crash main_hcs.py avoids with os._exit(); seen
+        # on master in 3 of the 15 runs before 2026-07-13). The conftest hook
+        # hard-exits with pytest's real status once the session is complete,
+        # so real test failures still fail the step.
         run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
+        env:
+          SQUID_PYTEST_HARD_EXIT: "1"
       - name: Run the GUI test in its own process
         # Own invocation: the full-application GUI test leaves Qt/thread state
         # behind that deterministically segfaults later Qt tests (e.g.
         # test_channel_sequence) when run in the same pytest process.
         # Step-scoped pyqt5 pin: without it, pytest-qt picks PySide6 for qtbot
-        # while the app code (qtpy) uses PyQt5, and the mixed bindings fail with
-        # a QObject double-init error. The pin stays off the main run because a
-        # job-wide pin made the otherwise-green suite segfault at interpreter
-        # shutdown (PyQt5 destructor-order-vs-GC, cf. the os._exit() note in
-        # main_hcs.py).
-        # SQUID_PYTEST_HARD_EXIT: under PyQt5 this process segfaults during
-        # interpreter shutdown AFTER all tests pass (Qt destructor order vs
-        # Python GC — the same crash main_hcs.py avoids with os._exit()), so
-        # the conftest hard-exits with pytest's real status instead.
+        # while the app code (qtpy) uses PyQt5, and the mixed bindings fail
+        # with a QObject double-init error.
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
         env:
