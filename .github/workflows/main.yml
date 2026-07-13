@@ -11,11 +11,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
         DISPLAY: ":99.0"
-        # Force qtpy/pytest-qt onto PyQt5 (installed via apt in setup_22.04.sh).
-        # Under PySide6 the GUI test fails with a QObject double-init error;
-        # root cause unresolved — see the PR that added this pin.
-        QT_API: pyqt5
-        PYTEST_QT_API: pyqt5
     steps:
       # Our workflows were running out of memory.  We don't need most of the pre-installed machinery in the
       # github ubuntu image, so remove it using this helper action.
@@ -60,8 +55,17 @@ jobs:
         run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
       - name: Run the GUI test in its own process
-        # The full-application GUI test leaves Qt/thread state behind that
-        # deterministically segfaults later Qt tests (e.g. test_channel_sequence)
-        # when run in the same pytest process, so it gets its own invocation.
+        # Own invocation: the full-application GUI test leaves Qt/thread state
+        # behind that deterministically segfaults later Qt tests (e.g.
+        # test_channel_sequence) when run in the same pytest process.
+        # Step-scoped pyqt5 pin: without it, pytest-qt picks PySide6 for qtbot
+        # while the app code (qtpy) uses PyQt5, and the mixed bindings fail with
+        # a QObject double-init error. The pin stays off the main run because a
+        # job-wide pin made the otherwise-green suite segfault at interpreter
+        # shutdown (PyQt5 destructor-order-vs-GC, cf. the os._exit() note in
+        # main_hcs.py).
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
+        env:
+          QT_API: pyqt5
+          PYTEST_QT_API: pyqt5
