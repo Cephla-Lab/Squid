@@ -64,8 +64,13 @@ jobs:
         # job-wide pin made the otherwise-green suite segfault at interpreter
         # shutdown (PyQt5 destructor-order-vs-GC, cf. the os._exit() note in
         # main_hcs.py).
+        # SQUID_PYTEST_HARD_EXIT: under PyQt5 this process segfaults during
+        # interpreter shutdown AFTER all tests pass (Qt destructor order vs
+        # Python GC — the same crash main_hcs.py avoids with os._exit()), so
+        # the conftest hard-exits with pytest's real status instead.
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
         env:
           QT_API: pyqt5
           PYTEST_QT_API: pyqt5
+          SQUID_PYTEST_HARD_EXIT: "1"

@@ -6,6 +6,8 @@ preventing background threads from causing segfaults in subsequent tests.
 """
 
 import logging
+import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +16,25 @@ import control.microcontroller
 from control.firmware_sim_serial import FirmwareSimSerial
 
 logger = logging.getLogger(__name__)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    session.config._squid_exitstatus = int(exitstatus)
+
+
+def pytest_unconfigure(config):
+    """Optionally skip interpreter teardown after the test session.
+
+    Under PyQt5 on Linux, a pytest process that constructed the full HCS GUI
+    segfaults during interpreter shutdown (Qt C++ destructor order conflicts
+    with Python GC) even though every test passed. main_hcs.py sidesteps the
+    same crash with os._exit(); SQUID_PYTEST_HARD_EXIT=1 lets CI's isolated
+    GUI-test invocation do likewise, preserving pytest's exit status.
+    """
+    if os.environ.get("SQUID_PYTEST_HARD_EXIT") == "1":
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(getattr(config, "_squid_exitstatus", 0))
 
 
 def _make_tracking_init(original_init, instances_list):
