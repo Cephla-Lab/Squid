@@ -80,6 +80,20 @@ def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults,
         tp0 = timepoint_dir(harness.experiment_dir, 0)
         images = list_image_files(tp0)
         assert len(images) == 12, f"expected 12 image files in {tp0}, found {len(images)}: {images}"
+
+        # Guard the premise, not just the outcome: the deadlock path is only
+        # exercised while total acquisition bytes far exceed the byte limit.
+        # If the simulated frame ever shrinks, fail loudly instead of going
+        # green without testing anything. (Uncompressed TIFF size ~= frame
+        # bytes, so on-disk size is a faithful proxy.)
+        total_bytes = sum(p.stat().st_size for p in images)
+        limit_bytes = byte_limit_mib * 1024 * 1024
+        assert total_bytes > 5 * limit_bytes, (
+            f"acquisition totalled {total_bytes / 1024 / 1024:.1f} MiB, not >5x the "
+            f"{byte_limit_mib:.1f} MiB byte limit — the simulated frame size changed and "
+            "this test no longer exercises the backpressure deadlock path; re-derive "
+            "_IMAGE_SIZE_MIB and the limit"
+        )
         assert harness.tracker.image_count == 12, f"tracker saw {harness.tracker.image_count} images, expected 12"
 
         # Root acquisition-complete marker.

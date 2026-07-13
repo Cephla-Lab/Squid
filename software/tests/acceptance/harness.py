@@ -117,10 +117,11 @@ class AcquisitionHarness:
 def make_harness() -> AcquisitionHarness:
     """Build a fresh simulated microscope wired to a MultiPointController.
 
-    Callers own cleanup: call harness.close() (use the `harness` fixture or
-    try/finally) so JobRunner subprocesses and semaphores are released.
+    Callers own cleanup: call harness.close() in a try/finally so JobRunner
+    subprocesses and semaphores are released. Combine with the
+    `acquisition_defaults` fixture, which pins MERGE_CHANNELS and the file
+    saving option with automatic restore.
     """
-    control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tracker = AcquisitionTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tracker.get_callbacks())
