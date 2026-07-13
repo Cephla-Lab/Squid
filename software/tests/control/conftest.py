@@ -34,7 +34,9 @@ def pytest_unconfigure(config):
     if os.environ.get("SQUID_PYTEST_HARD_EXIT") == "1":
         sys.stdout.flush()
         sys.stderr.flush()
-        os._exit(getattr(config, "_squid_exitstatus", 0))
+        # Default 1, not 0: if pytest_sessionfinish never ran (e.g. a
+        # sessionstart failure), an unrecorded status must fail the step.
+        os._exit(getattr(config, "_squid_exitstatus", 1))
 
 
 def _make_tracking_init(original_init, instances_list):
