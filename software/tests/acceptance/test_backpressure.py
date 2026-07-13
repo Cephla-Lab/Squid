@@ -36,10 +36,6 @@ from tests.acceptance.harness import (
 
 pytestmark = pytest.mark.acceptance
 
-# Empirically measured simulated-camera frame: 4168 x 4168 uint16 = 34,744,448
-# bytes = 33.135 MiB (backpressure accounts in binary MiB, 1 MiB = 1024*1024).
-_IMAGE_SIZE_MIB = 33.135
-
 
 def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults, caplog):
     """A z-stack whose total bytes far exceed the byte limit still completes.
@@ -51,15 +47,23 @@ def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults,
     """
     monkeypatch = acquisition_defaults
 
-    # Byte limit ~1.5 frames: the second dispatched frame already exceeds it, so
-    # throttling must engage well before the region's 12 frames are all in flight.
-    byte_limit_mib = 1.5 * _IMAGE_SIZE_MIB  # ~49.7 MiB
-    monkeypatch.setattr(control._def, "ACQUISITION_MAX_PENDING_MB", byte_limit_mib)
-    monkeypatch.setattr(control._def, "ACQUISITION_MAX_PENDING_JOBS", 3)
-    monkeypatch.setattr(control._def, "ACQUISITION_THROTTLING_ENABLED", True)
-
     harness = make_harness()
     try:
+        # Frame size is machine-config dependent (CI's pristine INI crops to a
+        # quarter of the local default), so measure it instead of hardcoding:
+        # snap one frame from the simulated camera and size the limit off it.
+        harness.scope.camera.send_trigger()
+        frame = harness.scope.camera.read_frame()
+        assert frame is not None, "simulated camera returned no frame"
+        image_size_mib = frame.nbytes / (1024 * 1024)
+
+        # Byte limit ~1.5 frames: the second dispatched frame already exceeds
+        # it, so throttling must engage well before the region's 12 frames are
+        # all in flight (12 frames = ~8x the limit).
+        byte_limit_mib = 1.5 * image_size_mib
+        monkeypatch.setattr(control._def, "ACQUISITION_MAX_PENDING_MB", byte_limit_mib)
+        monkeypatch.setattr(control._def, "ACQUISITION_MAX_PENDING_JOBS", 3)
+        monkeypatch.setattr(control._def, "ACQUISITION_THROTTLING_ENABLED", True)
         harness.new_experiment(tmp_path / "backpressure", "zstack_tight_limit")
         harness.add_fov_grid("region0", nx=2, ny=2)  # 4 FOVs
         harness.select_channels(1)  # 1 channel
@@ -70,8 +74,8 @@ def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults,
         harness.mpc.set_af_flag(False)
         harness.mpc.set_reflection_af_flag(False)
 
-        # 12 frames * 33.135 MiB = ~397.6 MiB pending if none released,
-        # ~8x the ~49.7 MiB byte limit -- the historical deadlock trigger.
+        # 12 frames = ~8x the ~1.5-frame byte limit if none were released --
+        # the historical deadlock trigger.
         with caplog.at_level(logging.INFO):
             # Deadlock (regression) manifests as this timeout.
             harness.run_and_wait(timeout_s=300)
@@ -90,9 +94,9 @@ def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults,
         limit_bytes = byte_limit_mib * 1024 * 1024
         assert total_bytes > 5 * limit_bytes, (
             f"acquisition totalled {total_bytes / 1024 / 1024:.1f} MiB, not >5x the "
-            f"{byte_limit_mib:.1f} MiB byte limit — the simulated frame size changed and "
-            "this test no longer exercises the backpressure deadlock path; re-derive "
-            "_IMAGE_SIZE_MIB and the limit"
+            f"{byte_limit_mib:.1f} MiB byte limit — saved images are much smaller than "
+            "the snapped frame this test sized the limit from, so the backpressure "
+            "deadlock path is no longer being exercised"
         )
         assert harness.tracker.image_count == 12, f"tracker saw {harness.tracker.image_count} images, expected 12"
 
@@ -107,7 +111,7 @@ def test_zstack_completes_under_tight_byte_limit(tmp_path, acquisition_defaults,
             "backpressure throttling engaged during acquisition: %s (byte limit=%.1f MiB, image=%.3f MiB)",
             throttled,
             byte_limit_mib,
-            _IMAGE_SIZE_MIB,
+            image_size_mib,
         )
     finally:
         harness.close()
