@@ -1468,11 +1468,17 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.signal_performance_mode_changed.connect(self.flexibleMultiPointWidget.set_performance_mode)
+            self.flexibleMultiPointWidget.signal_channel_settings_restored.connect(
+                self.liveControlWidget.refresh_current_mode_settings
+            )
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
+            self.wellplateMultiPointWidget.signal_channel_settings_restored.connect(
+                self.liveControlWidget.refresh_current_mode_settings
+            )
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
