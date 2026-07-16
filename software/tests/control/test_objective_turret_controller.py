@@ -243,6 +243,9 @@ class _FakeModbus:
     def control_word_writes(self):
         return [value for (address, value) in self.writes if address == REG_CONTROL_WORD]
 
+    def target_position_writes(self):
+        return [value for (address, value) in self.writes if address == REG_TARGET_POSITION]
+
 
 def _make_real_controller(monkeypatch, **controller_kwargs):
     fake = _FakeModbus()
@@ -250,10 +253,6 @@ def _make_real_controller(monkeypatch, **controller_kwargs):
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
     controller = ObjectiveTurret4PosController(serial_number="SIM", stage=None, **controller_kwargs)
     return controller, fake
-
-
-def _target_position_writes(fake):
-    return [value for (address, value) in fake.writes if address == REG_TARGET_POSITION]
 
 
 def test_init_leaves_motor_deenergized(monkeypatch):
@@ -295,41 +294,17 @@ def test_deenergize_is_best_effort(monkeypatch):
     controller.close()
 
 
-def test_move_targets_have_no_offset_by_default(monkeypatch):
-    # Default (offset 0): slot N targets the bare (N-1)*pulses_per_position.
-    controller, fake = _make_real_controller(monkeypatch)
-    pp = controller.pulses_per_position
-    for name, index in OBJECTIVE_TURRET_POSITIONS.items():
-        fake.writes.clear()
-        controller.move_to_objective(name)
-        assert _target_position_writes(fake)[-1] == (index - 1) * pp
-    controller.close()
-
-
-def test_move_targets_include_offset(monkeypatch):
-    # A configured offset is added to every slot target.
-    offset = 37
+@pytest.mark.parametrize("offset", [0, 37, -30], ids=["default", "positive", "negative"])
+def test_move_targets_apply_offset(monkeypatch, offset):
+    # Every slot N targets (N-1)*pulses_per_position + offset. offset=0 proves default
+    # behavior is unchanged; the negative case drives slot 1 to a negative absolute
+    # target, exercising the signed 32-bit write and the tolerance check.
     controller, fake = _make_real_controller(monkeypatch, offset_pulses=offset)
     pp = controller.pulses_per_position
     for name, index in OBJECTIVE_TURRET_POSITIONS.items():
         fake.writes.clear()
         controller.move_to_objective(name)
-        assert _target_position_writes(fake)[-1] == (index - 1) * pp + offset
-    controller.close()
-
-
-def test_move_targets_handle_negative_offset(monkeypatch):
-    # The offset may be negative (limit switch on the far side of slot 1); the
-    # signed 32-bit write and the tolerance check must handle a negative target.
-    offset = -30
-    controller, fake = _make_real_controller(monkeypatch, offset_pulses=offset)
-    pp = controller.pulses_per_position
-    fake.writes.clear()
-    controller.move_to_objective("4x")  # slot 1 -> negative absolute target
-    assert _target_position_writes(fake)[-1] == offset
-    fake.writes.clear()
-    controller.move_to_objective("40x")  # slot 4
-    assert _target_position_writes(fake)[-1] == 3 * pp + offset
+        assert fake.target_position_writes()[-1] == (index - 1) * pp + offset
     controller.close()
 
 
@@ -340,7 +315,7 @@ def test_offset_falls_back_to_def_when_not_passed(monkeypatch):
     pp = controller.pulses_per_position
     fake.writes.clear()
     controller.move_to_objective("40x")  # slot index 4
-    assert _target_position_writes(fake)[-1] == 3 * pp + 25
+    assert fake.target_position_writes()[-1] == 3 * pp + 25
     controller.close()
 
 
