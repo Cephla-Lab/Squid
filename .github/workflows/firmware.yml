@@ -35,6 +35,10 @@ jobs:
         run: pio run -e teensyLC
         working-directory: ./firmware/joystick
 
+      - name: Build octoaxes firmware (Teensy 4.1)
+        run: pio run -e teensy41
+        working-directory: ./firmware/octoaxes
+
       - name: Run unit tests
         run: pio test -e native
         working-directory: ./firmware/controller
