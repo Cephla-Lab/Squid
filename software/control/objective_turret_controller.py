@@ -291,6 +291,15 @@ class ObjectiveTurret4PosController:
             self._microstep = 2**microstep_raw
             self._pulses_per_position = int(MOTOR_STEPS_PER_REV * self._microstep * GEAR_RATIO / POSITIONS_PER_REV)
 
+            # A real slot-1 misalignment is always smaller than the 90-degree slot spacing;
+            # a larger value means the slot mapping itself is wrong, not that slot 1 is off.
+            # Bounding it also keeps every target inside the signed 32-bit register (no wrap).
+            if abs(self._offset_pulses) > self._pulses_per_position:
+                raise ValueError(
+                    f"OBJECTIVE_TURRET_OFFSET_PULSES={self._offset_pulses} exceeds one slot "
+                    f"(±{self._pulses_per_position} pulses ≈ 90°); check the machine .ini"
+                )
+
             changed = [self._calibrate_motion_params(), self._calibrate_homing_config()]
             if any(changed):
                 self._save_to_eeprom()

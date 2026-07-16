@@ -354,6 +354,16 @@ def test_non_int_offset_raises(monkeypatch, bad_offset):
         ObjectiveTurret4PosController(serial_number="SIM", stage=None, offset_pulses=bad_offset)
 
 
+def test_out_of_range_offset_raises(monkeypatch):
+    # An offset beyond one slot (the 90-degree spacing) is a misconfiguration and must be
+    # rejected. With the fake's microstep 4 -> 16 microsteps, pulses/position = 2200, so
+    # 5000 is over one slot (but under a full rev) — it must still be rejected.
+    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
+    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
+    with pytest.raises(ValueError):
+        ObjectiveTurret4PosController(serial_number="SIM", stage=None, offset_pulses=5_000)
+
+
 def test_sim_accepts_offset_kwarg():
     # The simulation twin must accept the same kwarg (built from the same turret_kwargs).
     sim = ObjectiveTurret4PosControllerSimulation(
