@@ -487,10 +487,21 @@ class LiveController(QObject):
             self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
         self.trigger_mode = mode
 
-    def set_trigger_fps(self, fps):
-        if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+    def trigger_fps_is_active(self) -> bool:
+        """Whether the trigger-fps setting actually paces acquisition.
+
+        In CONTINUOUS mode the camera free-runs at its own internal rate and the
+        host trigger timer is unused, so the fps setting is inert. Software mode
+        (and hardware mode driven by the internal timer) pace acquisition via the
+        fps timer. This is the single source of truth for that condition — both
+        set_trigger_fps and the live widgets' fps-control enabled-state use it.
+        """
+        return (self.trigger_mode == TriggerMode.SOFTWARE) or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-        ):
+        )
+
+    def set_trigger_fps(self, fps):
+        if self.trigger_fps_is_active():
             self._set_trigger_fps(fps)
 
     # set microscope mode
