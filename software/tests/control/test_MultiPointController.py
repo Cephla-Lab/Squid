@@ -302,9 +302,17 @@ def test_multi_point_with_laser_af():
     assert laser_af_ref_image is not None
     mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
 
+    # The simulated focus camera image has no detectable laser spot, so every reflection AF
+    # attempt runs the z spot search before the acquisition can continue. Pin the search
+    # parameters (instead of inheriting the machine's cached laser AF config) to keep the
+    # search short and the test runtime deterministic.
+    mpc.laserAutoFocusController.laser_af_properties = mpc.laserAutoFocusController.laser_af_properties.model_copy(
+        update={"laser_af_range": 20, "laser_af_averaging_n": 1}
+    )
+
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
