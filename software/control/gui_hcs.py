@@ -16,6 +16,15 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
+# On a Linux Wayland session, override napari's _wayland_fix, which forces
+# QT_QPA_PLATFORM=xcb + PYOPENGL_PLATFORM=glx on Nvidia. On recent hardware that
+# is backwards (XWayland renders the napari GL surface black; GLX context
+# tracking fails with "no valid context"). Native Wayland + EGL works; napari
+# uses setdefault(), so presetting both before import neutralizes its fix.
+# No-op on X11/macOS/Windows; respects an explicit override.
+if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 import re
 import time
 from enum import Enum, auto
@@ -2364,10 +2373,51 @@ class HighContentScreeningGui(QMainWindow):
             tabWidget.updateGeometry()
             self.updateGeometry()
 
+    def _kick_wayland_surface_once(self):
+        """Force one window configure event the first time a napari canvas shows.
+
+        On a native Wayland session, the top-level surface stops receiving frame
+        callbacks while the first napari (vispy/OpenGL) canvas is being realized,
+        so the whole UI only repaints after the user manually moves the window.
+        Generating a configure event once restarts the frame callbacks. No-op on
+        X11/macOS/Windows and after the first kick.
+        """
+        if getattr(self, "_wayland_surface_kicked", False):
+            return
+        app = QApplication.instance()
+        if app is None or app.platformName() != "wayland":
+            self._wayland_surface_kicked = True
+            return
+        self._wayland_surface_kicked = True
+        # Defer so the kick lands after the canvas is realized and the stall has
+        # begun, otherwise the configure event fires too early to help.
+        QTimer.singleShot(250, self._do_wayland_surface_kick)
+
+    def _do_wayland_surface_kick(self):
+        if self.isFullScreen():
+            # A fullscreen Wayland window ignores resize requests; toggling the
+            # window state is what produces the configure event we need. Qt keeps
+            # the pre-fullscreen geometry across the toggle, so don't touch it.
+            self.showNormal()
+            QTimer.singleShot(0, self.showFullScreen)
+        elif self.isMaximized():
+            # Same for a maximized window. Do NOT setGeometry() to the maximized
+            # size to hide the restore flash — that overwrites the window's stored
+            # restore geometry, after which the maximize/restore toggle no longer
+            # changes anything and the window is stuck at full size. Qt already
+            # preserves the real restore geometry across showNormal/showMaximized.
+            self.showNormal()
+            QTimer.singleShot(0, self.showMaximized)
+        else:
+            geo = self.geometry()
+            self.resize(geo.width() + 1, geo.height())
+            QTimer.singleShot(0, lambda: self.resize(geo.width(), geo.height()))
+
     def onDisplayTabChanged(self, index):
         current_widget = self.imageDisplayTabs.widget(index)
         if hasattr(current_widget, "viewer"):
             current_widget.activate()
+            self._kick_wayland_surface_once()
 
         # Stop focus camera live if not on laser focus tab
         if SUPPORT_LASER_AUTOFOCUS:
