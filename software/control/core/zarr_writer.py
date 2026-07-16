@@ -73,6 +73,9 @@ class ZarrAcquisitionConfig:
     compression: ZarrCompression = ZarrCompression.FAST
     is_hcs: bool = True  # Default to HCS (5D); non-HCS uses 6D with FOV dimension
     plate_name: str = "plate"
+    # Optional extra keys merged into the "_squid" attributes at metadata-write
+    # time (e.g. per-plane recording metadata: plane_index, plane_z_offset_um).
+    extra_squid_attrs: Optional[Dict[str, object]] = None
 
     @property
     def ndim(self) -> int:
@@ -620,6 +623,9 @@ class ZarrWriter:
                 "acquisition_complete": False,
             },
         }
+
+        if config.extra_squid_attrs:
+            zattrs["_squid"].update(config.extra_squid_attrs)
 
         # Write metadata to zarr.json attributes (strict Zarr v3 compliance)
         # For HCS, output_path is the array path ({fov}/0), but OME-NGFF metadata

@@ -70,7 +70,9 @@ class RecordZStackYAMLData:
     recording_channel: Optional[Dict] = None
     fps: float = 10.0
     duration_s: float = 1.0
-    recording_z_offset_um: float = 0.0
+    recording_bottom_z_offset_um: float = 0.0
+    recording_nz: int = 1
+    recording_dz_um: float = 1.0
 
     zstack_enabled: bool = False
     zstack_channels: List[Dict] = field(default_factory=list)
@@ -110,7 +112,9 @@ def _parse_record_zstack_yaml_data(data: dict, acq: dict) -> RecordZStackYAMLDat
         recording_channel=recording.get("channel"),
         fps=recording.get("fps", 10.0),
         duration_s=recording.get("duration_s", 1.0),
-        recording_z_offset_um=recording.get("z_offset_um", 0.0),
+        recording_bottom_z_offset_um=recording.get("bottom_z_offset_um", 0.0),
+        recording_nz=recording.get("nz", 1),
+        recording_dz_um=recording.get("dz_um", 1.0),
         zstack_enabled=z_stack.get("enabled", False),
         zstack_channels=z_stack.get("channels", []),
         z_min_um=z_stack.get("z_min_um", -3.0),

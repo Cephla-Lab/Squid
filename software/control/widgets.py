@@ -16992,6 +16992,8 @@ def _validate_record_zstack_params(
     zstack_channel_names: List[str],
     use_laser_af: bool,
     laser_af_has_reference: bool,
+    recording_nz: int = 1,
+    recording_dz_um: float = 1.0,
 ) -> Optional[str]:
     """Return an error string describing the first validation failure, or None if valid."""
     if not base_path:
@@ -17011,6 +17013,10 @@ def _validate_record_zstack_params(
             return f"Recording: fps×duration yields 0 frames (fps={fps}, duration={duration_s}s). Increase one or both."
         if not recording_channel_name:
             return "A channel must be chosen for the Recording phase."
+        if recording_nz < 1:
+            return "Recording Nz must be at least 1."
+        if recording_nz > 1 and recording_dz_um <= 0:
+            return "Recording dz must be > 0 when Nz > 1."
     if zstack_enabled:
         if z_max <= z_min:
             return "Z-Stack: z_max must be greater than z_min."
@@ -17540,41 +17546,102 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         vbox.addWidget(self.recording_channel_table)
 
-        # Row 1: FPS | Duration | Z-offset
-        fps_row = QHBoxLayout()
-        fps_row.setSpacing(4)
+        # Row 1 (fixed): FPS + Duration.
+        # Nz/dz/offset reflow dynamically: they append to row 1 (after
+        # Duration) whenever at most 2 of them are visible, but move down to
+        # their own row 2 together when all 3 are visible at once (Nz>1 AND
+        # Laser AF on) — that's too many fields for one row. See
+        # _rebuild_recording_rows, called from _update_recording_planes_ui
+        # whenever Nz or Laser AF change.
+        # FPS/Dur always use their own compact widths (fit the actual text,
+        # not shared with anything). Nz/dz normally use their OWN, smaller
+        # compact widths too — they only borrow FPS's/Dur's (wider) widths
+        # when _rebuild_recording_rows puts them on row 2 for alignment;
+        # forcing the wider shared width unconditionally (as an earlier pass
+        # here did) left visible dead space after "Nz:"/"dz:" even in the
+        # common single-row case, where nothing needs to align with them.
+        self._recording_col1_label_w = 30  # fits "FPS:"
+        self._recording_col1_entry_w = 50  # fits FPS's spinbox
+        self._recording_col2_label_w = 28  # fits "Dur:"
+        self._recording_col2_entry_w = 64  # fits Duration's spinbox
+        self._recording_nz_label_w = 24  # fits "Nz:" on its own
+        self._recording_nz_entry_w = 44  # fits Nz's spinbox on its own
+        self._recording_dz_label_w = 22  # fits "dz:" on its own
+        self._recording_dz_entry_w = 78  # fits dz's spinbox+suffix on its own
 
-        fps_row.addWidget(QLabel("FPS:"))
+        self.fps_row = QHBoxLayout()
+        self.fps_row.setSpacing(4)
+
+        label_fps = QLabel("FPS:")
+        label_fps.setFixedWidth(self._recording_col1_label_w)
+        self.fps_row.addWidget(label_fps)
         self.entry_fps = QDoubleSpinBox()
-        self.entry_fps.setRange(0.1, 1000)
+        self.entry_fps.setRange(1, 1000)
+        self.entry_fps.setDecimals(0)
         self.entry_fps.setValue(10.0)
-        self.entry_fps.setSuffix(" fps")
         self.entry_fps.setKeyboardTracking(False)
-        self.entry_fps.setMaximumWidth(78)
-        fps_row.addWidget(self.entry_fps)
+        self.entry_fps.setFixedWidth(self._recording_col1_entry_w)
+        self.fps_row.addWidget(self.entry_fps)
 
-        fps_row.addSpacing(4)
-        fps_row.addWidget(QLabel("Dur:"))
+        label_dur = QLabel("Dur:")
+        label_dur.setFixedWidth(self._recording_col2_label_w)
+        self.fps_row.addWidget(label_dur)
         self.entry_duration = QDoubleSpinBox()
-        self.entry_duration.setRange(0.01, 3600)
+        self.entry_duration.setRange(1, 3600)
+        self.entry_duration.setDecimals(0)
         self.entry_duration.setValue(1.0)
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
-        self.entry_duration.setMaximumWidth(65)
-        fps_row.addWidget(self.entry_duration)
+        self.entry_duration.setFixedWidth(self._recording_col2_entry_w)
+        self.fps_row.addWidget(self.entry_duration)
 
-        fps_row.addSpacing(4)
-        fps_row.addWidget(QLabel("Z-offset:"))
-        self.entry_recording_z_offset = QDoubleSpinBox()
-        self.entry_recording_z_offset.setRange(-1000, 1000)
-        self.entry_recording_z_offset.setValue(0.0)
-        self.entry_recording_z_offset.setSuffix(" μm")
-        self.entry_recording_z_offset.setKeyboardTracking(False)
-        self.entry_recording_z_offset.setMaximumWidth(70)
-        fps_row.addWidget(self.entry_recording_z_offset)
+        # Fixed prefix length (FPS label/spin, spacing, Dur label/spin) that
+        # _rebuild_recording_rows must never remove.
+        self._fps_row_fixed_count = self.fps_row.count()
+        vbox.addLayout(self.fps_row)
 
-        fps_row.addStretch(1)
-        vbox.addLayout(fps_row)
+        self.z_row = QHBoxLayout()
+        self.z_row.setSpacing(4)
+        vbox.addLayout(self.z_row)
+
+        # Movable widgets — not added to either row here; _rebuild_recording_rows
+        # (called once at the end of this method, and again on every Nz/Laser-AF
+        # change) places them AND sets their widths (compact normally, matched
+        # to FPS/Dur only when on row 2).
+        self.label_recording_Nz = QLabel("Nz:")
+        self.entry_recording_Nz = QSpinBox()
+        self.entry_recording_Nz.setRange(1, 100)
+        self.entry_recording_Nz.setValue(1)
+        self.entry_recording_Nz.setKeyboardTracking(False)
+        self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
+
+        self.label_recording_dz = QLabel("dz:")
+        self.entry_recording_dz = QDoubleSpinBox()
+        self.entry_recording_dz.setRange(0.05, 100.0)
+        self.entry_recording_dz.setDecimals(1)
+        self.entry_recording_dz.setSingleStep(0.5)
+        self.entry_recording_dz.setValue(1.0)
+        self.entry_recording_dz.setSuffix(" µm")
+        self.entry_recording_dz.setKeyboardTracking(False)
+        self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
+
+        self.label_recording_bottom_z = QLabel("Z offset:")
+        self.entry_recording_bottom_z = QDoubleSpinBox()
+        self.entry_recording_bottom_z.setRange(-500.0, 500.0)
+        self.entry_recording_bottom_z.setDecimals(1)
+        self.entry_recording_bottom_z.setSingleStep(0.5)
+        self.entry_recording_bottom_z.setValue(0.0)
+        self.entry_recording_bottom_z.setSuffix(" µm")
+        self.entry_recording_bottom_z.setKeyboardTracking(False)
+        self.entry_recording_bottom_z.setMaximumWidth(85)
+        self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
+
+        # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the
+        # offset is relative to the AF reference plane), the offset caption
+        # (Nz), and the row reflow (both).
+        self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
+        self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
+        self._update_recording_planes_ui()
 
         # Collapse the whole phase's fields when unchecked (Qt's checkable
         # QGroupBox only grays them out; a plain QCheckBox has no built-in
@@ -17847,6 +17914,85 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         except Exception:
             self.label_zstack_planes.setText("-- planes")
 
+    def _update_recording_planes_ui(self) -> None:
+        """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement),
+        show the Z-offset field only when Laser AF is enabled (the offset is
+        relative to the AF reference plane; without AF the user positions Z
+        directly), switch the offset caption between single- and multi-plane
+        wording, and reflow Nz/dz/offset between row 1 and row 2."""
+        multi = self.entry_recording_Nz.value() > 1
+        self.label_recording_dz.setVisible(multi)
+        self.entry_recording_dz.setVisible(multi)
+        use_af = self.checkbox_laser_af.isChecked()
+        self.label_recording_bottom_z.setVisible(use_af)
+        self.entry_recording_bottom_z.setVisible(use_af)
+        self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
+        self.entry_recording_bottom_z.setToolTip(
+            "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
+        )
+        self._rebuild_recording_rows(multi, use_af)
+
+    def _rebuild_recording_rows(self, multi: bool, use_af: bool) -> None:
+        """Reflow Nz/dz/offset between fps_row (FPS/Duration's row) and their
+        own z_row.
+
+        At most 2 of {Nz, dz, offset} are ever shown together unless both
+        Nz > 1 and Laser AF are on — in that 3-item case they move to z_row
+        as a group instead of overcrowding fps_row. Widgets are detached and
+        re-added (not just hidden) so an inactive row takes no vertical
+        space at all, rather than an empty-but-present row.
+        """
+
+        def _clear(layout: QHBoxLayout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget() is None:  # spacing/stretch item, not a widget
+                    del item
+
+        while self.fps_row.count() > self._fps_row_fixed_count:
+            item = self.fps_row.takeAt(self.fps_row.count() - 1)
+            if item.widget() is None:
+                del item
+        _clear(self.z_row)
+
+        use_second_row = multi and use_af
+        target = self.z_row if use_second_row else self.fps_row
+
+        # Compact widths normally; only widen to match FPS/Dur when Nz/dz
+        # actually sit below them on row 2, so the common single-row case
+        # never carries dead space sized for an alignment it isn't doing.
+        self.label_recording_Nz.setFixedWidth(
+            self._recording_col1_label_w if use_second_row else self._recording_nz_label_w
+        )
+        self.entry_recording_Nz.setFixedWidth(
+            self._recording_col1_entry_w if use_second_row else self._recording_nz_entry_w
+        )
+        self.label_recording_dz.setFixedWidth(
+            self._recording_col2_label_w if use_second_row else self._recording_dz_label_w
+        )
+        self.entry_recording_dz.setFixedWidth(
+            self._recording_col2_entry_w if use_second_row else self._recording_dz_entry_w
+        )
+
+        target.addWidget(self.label_recording_Nz)
+        target.addWidget(self.entry_recording_Nz)
+
+        if multi:
+            target.addWidget(self.label_recording_dz)
+            target.addWidget(self.entry_recording_dz)
+
+        if use_af:
+            target.addWidget(self.label_recording_bottom_z)
+            target.addWidget(self.entry_recording_bottom_z)
+
+        target.addStretch(1)
+        if use_second_row:
+            # fps_row didn't receive the movable widgets in this mode, but it
+            # still needs its own trailing stretch — otherwise Qt has nothing
+            # to absorb the row's leftover width and stretches FPS/Duration's
+            # label-to-spinbox gap apart instead.
+            self.fps_row.addStretch(1)
+
     def _add_zstack_channel_row(
         self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
     ) -> None:
@@ -18095,7 +18241,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self._recording_illum_spin,
             self.entry_fps,
             self.entry_duration,
-            self.entry_recording_z_offset,
+            self.entry_recording_Nz,
+            self.entry_recording_bottom_z,
+            self.entry_recording_dz,
             self.checkbox_zstack,
             self.entry_zmin,
             self.entry_zmax,
@@ -18130,7 +18278,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
             self.entry_fps.setValue(yaml_data.fps)
             self.entry_duration.setValue(yaml_data.duration_s)
-            self.entry_recording_z_offset.setValue(yaml_data.recording_z_offset_um)
+            self.entry_recording_Nz.setValue(yaml_data.recording_nz)
+            self.entry_recording_dz.setValue(yaml_data.recording_dz_um)
+            self.entry_recording_bottom_z.setValue(yaml_data.recording_bottom_z_offset_um)
 
             self.checkbox_zstack.setChecked(yaml_data.zstack_enabled)
             for name in list(self._zstack_channel_names):
@@ -18185,6 +18335,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # in its stale "inactive" styling even after the checkbox/frame
             # visibility above are updated to reflect the loaded YAML.
             self._update_tab_styles()
+            # entry_recording_Nz's valueChanged and checkbox_laser_af's toggled
+            # signals were both blocked above too, so the normal
+            # _update_recording_planes_ui-driven dz/bottom-Z visibility refresh
+            # didn't fire. Unlike _on_time_toggled, _update_recording_planes_ui
+            # has no stored-state side effects, so it's safe to call directly.
+            self._update_recording_planes_ui()
             self._update_zstack_planes_label()
             self._update_scan_regions()
 
@@ -18225,6 +18381,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             zstack_channel_names=list(self._zstack_channel_names),
             use_laser_af=self.checkbox_laser_af.isChecked(),
             laser_af_has_reference=self._laser_af_has_reference(),
+            recording_nz=self.entry_recording_Nz.value(),
+            recording_dz_um=self.entry_recording_dz.value(),
         )
 
     def build_parameters(self):
@@ -18288,7 +18446,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             recording_channel=recording_channel,
             fps=self.entry_fps.value(),
             duration_s=self.entry_duration.value(),
-            recording_z_offset_um=self.entry_recording_z_offset.value(),
+            # The Z-offset field is hidden without Laser AF (no AF reference
+            # plane to offset from) — a hidden value must not silently apply.
+            recording_bottom_z_offset_um=(
+                self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
+            ),
+            recording_Nz=self.entry_recording_Nz.value(),
+            recording_dz_um=self.entry_recording_dz.value(),
             zstack_enabled=self.checkbox_zstack.isChecked(),
             zstack_channels=zstack_channels,
             z_min_um=self.entry_zmin.value(),
@@ -18304,6 +18468,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         On start (pressed=True):
           - validate(); show QMessageBox.warning and un-check button on failure.
+          - if Recording is enabled, show a QMessageBox.question confirming the
+            plane-count/Z-range/per-FOV-duration summary; un-check button and
+            abort if the user answers No.
           - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
           - call recordZStackController.run_acquisition(self.build_parameters()).
 
@@ -18330,6 +18497,30 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.btn_startAcquisition.setChecked(False)
                 QMessageBox.warning(self, "Invalid Parameters", error)
                 return
+
+            # One last look at the recording plane summary before starting.
+            # bottom must use the same effective-value logic as build_parameters()
+            # (the field is hidden and stale when Laser AF is off, so a hidden
+            # value must not silently apply -- see the comment there).
+            if self.checkbox_recording.isChecked():
+                nz = self.entry_recording_Nz.value()
+                bottom = self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
+                per_fov_s = nz * self.entry_duration.value()
+                if nz > 1:
+                    top = bottom + (nz - 1) * self.entry_recording_dz.value()
+                    summary = f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
+                else:
+                    summary = f"1 plane @ {bottom:+.1f} µm — {per_fov_s:.1f} s/FOV"
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Recording",
+                    f"Recording: {summary}\n\nStart acquisition?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply != QMessageBox.Yes:
+                    self.btn_startAcquisition.setChecked(False)
+                    return
 
             # Refresh the per-well FOV grid before building parameters so the
             # scan regions reflect the current overlap/shape/region-size settings.
