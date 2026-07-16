@@ -453,5 +453,15 @@ if __name__ == "__main__":
     except Exception as e:
         log.warning(f"Error during shutdown abort handling: {e}")
 
+    # os._exit() below skips multiprocessing's atexit hook, so daemon JobRunner
+    # children still alive (e.g. their non-blocking shutdown threads lost the
+    # race) would be orphaned and leak their queue/event semaphores.
+    try:
+        from control.core.job_processing import shutdown_all_job_runners
+
+        shutdown_all_job_runners(timeout_s=5.0)
+    except Exception as e:
+        log.warning(f"Error shutting down job runners: {e}")
+
     logging.shutdown()  # Flush log handlers before os._exit() bypasses Python cleanup
     os._exit(exit_code)

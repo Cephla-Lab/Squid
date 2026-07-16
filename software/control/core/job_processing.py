@@ -2,6 +2,7 @@ import abc
 import multiprocessing
 import queue
 import os
+import threading
 import time
 import json
 from datetime import datetime
@@ -925,6 +926,7 @@ class JobRunner(multiprocessing.Process):
         self._output_queue = None
         self._shutdown_event = None
         self._pending_count = None
+        self._ready_event = None
 
     def run(self):
         import logging
@@ -1034,3 +1036,38 @@ class JobRunner(multiprocessing.Process):
         log_memory("WORKER_SHUTDOWN", include_children=False)
         stop_worker_monitoring()
         self._log.info("Shutdown request received, exiting run.")
+
+
+def shutdown_all_job_runners(timeout_s: float = 5.0) -> None:
+    """Best-effort teardown of any still-alive JobRunner subprocesses.
+
+    Called before the application exits. main_hcs.py exits via os._exit(), which
+    skips multiprocessing's atexit cleanup, so daemon JobRunner children that the
+    per-acquisition (non-blocking) shutdown threads have not finished with would
+    otherwise survive as orphans and leak their queue/event semaphores.
+    """
+    runners = [p for p in multiprocessing.active_children() if isinstance(p, JobRunner)]
+    if not runners:
+        return
+    log = squid.logging.get_logger("shutdown_all_job_runners")
+    log.info(f"Shutting down {len(runners)} job runner subprocess(es) before exit...")
+
+    def safe_shutdown(runner):
+        try:
+            runner.shutdown(timeout_s=max(1.0, timeout_s - 1.0))
+        except Exception as e:
+            # A concurrent per-acquisition shutdown thread may already be tearing
+            # this runner down; termination below still guarantees the process dies.
+            log.debug(f"Job runner shutdown raced or failed: {e}")
+
+    threads = [threading.Thread(target=safe_shutdown, args=(r,), daemon=True) for r in runners]
+    for t in threads:
+        t.start()
+    deadline = time.time() + timeout_s
+    for t in threads:
+        t.join(timeout=max(0.1, deadline - time.time()))
+    for runner in runners:
+        if runner.is_alive():
+            log.warning(f"Job runner {runner.pid} still alive after {timeout_s}s; terminating.")
+            runner.terminate()
+            runner.join(timeout=1.0)
