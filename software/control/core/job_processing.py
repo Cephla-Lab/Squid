@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Callable, ClassVar, Dict, Generic, List, Optional, Sequence, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -859,8 +859,18 @@ class JobRunner(multiprocessing.Process):
         return self._output_queue
 
     def has_pending(self):
-        with self._pending_count.get_lock():
-            return self._pending_count.value > 0
+        return self.pending_count() > 0
+
+    def pending_count(self) -> int:
+        """Number of dispatched jobs the subprocess has not completed yet.
+
+        Returns 0 after shutdown() has released the shared counter.
+        """
+        pending_count = self._pending_count
+        if pending_count is None:
+            return 0
+        with pending_count.get_lock():
+            return pending_count.value
 
     def wait_ready(self, timeout_s: float = 5.0) -> bool:
         """Wait for the subprocess to signal it's ready to process jobs.
@@ -1034,3 +1044,96 @@ class JobRunner(multiprocessing.Process):
         log_memory("WORKER_SHUTDOWN", include_children=False)
         stop_worker_monitoring()
         self._log.info("Shutdown request received, exiting run.")
+
+
+@dataclass
+class DrainResult:
+    """Outcome of drain_runners(): which pending jobs had to be abandoned, and why."""
+
+    # job class name -> number of pending jobs abandoned for that runner
+    abandoned: Dict[str, int] = field(default_factory=dict)
+    # job class names whose runner subprocess was found dead
+    dead: List[str] = field(default_factory=list)
+
+    @property
+    def total_abandoned(self) -> int:
+        return sum(self.abandoned.values())
+
+
+def find_dead_runners(
+    runners: Sequence[Tuple[type, Optional[JobRunner]]],
+) -> List[Tuple[type, JobRunner]]:
+    """Return runners that have pending jobs but whose subprocess is no longer alive.
+
+    Pending jobs on a dead runner can never complete: the pending/backpressure
+    counters are only decremented by the subprocess, so a dead runner presents as a
+    permanently-full job queue to the acquisition loop.
+    """
+    return [
+        (job_class, runner)
+        for job_class, runner in runners
+        if runner is not None and runner.pending_count() > 0 and not runner.is_alive()
+    ]
+
+
+def drain_runners(
+    runners: Sequence[Tuple[type, Optional[JobRunner]]],
+    stall_timeout_s: float = 10.0,
+    poll_fn: Optional[Callable[[], None]] = None,
+    poll_interval_s: float = 0.1,
+) -> DrainResult:
+    """Wait for all pending jobs on the given runners to complete.
+
+    The deadline is progress-based: every completed job resets the stall clock, so a
+    full-but-steadily-draining queue gets as long as it needs. Pending jobs are
+    abandoned only when nothing completes for stall_timeout_s (the stalled runner is
+    killed so later shutdown cannot hang on it), or immediately when a runner
+    subprocess has died.
+
+    Args:
+        runners: (job_class, runner) pairs; None runners are skipped.
+        stall_timeout_s: max time with zero completed jobs before giving up.
+        poll_fn: optional callback invoked every poll iteration (e.g. to drain
+            result queues while waiting).
+        poll_interval_s: sleep between polls.
+    """
+    result = DrainResult()
+    waiting = [(job_class, runner) for job_class, runner in runners if runner is not None]
+    stall_deadline = time.monotonic() + stall_timeout_s
+    last_total = None
+
+    while True:
+        if poll_fn is not None:
+            poll_fn()
+
+        still_waiting = []
+        total = 0
+        for job_class, runner in waiting:
+            pending = runner.pending_count()
+            if pending == 0:
+                continue
+            if not runner.is_alive():
+                # Nothing can complete these jobs anymore - abandon immediately.
+                result.abandoned[job_class.__name__] = pending
+                result.dead.append(job_class.__name__)
+                continue
+            still_waiting.append((job_class, runner))
+            total += pending
+        waiting = still_waiting
+
+        if total == 0:
+            return result
+
+        if last_total is None or total < last_total:
+            # Progress since the last look: reset the stall clock.
+            stall_deadline = time.monotonic() + stall_timeout_s
+            last_total = total
+        elif time.monotonic() > stall_deadline:
+            for job_class, runner in waiting:
+                pending = runner.pending_count()
+                if pending > 0:
+                    result.abandoned[job_class.__name__] = pending
+                    runner.kill()
+            return result
+
+        time.sleep(poll_interval_s)

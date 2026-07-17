@@ -45,6 +45,8 @@ from control.core.job_processing import (
     JobImage,
     JobRunner,
     JobResult,
+    drain_runners,
+    find_dead_runners,
 )
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
@@ -438,6 +440,24 @@ class MultiPointWorker:
         self._abort_cause = "error"
         self.request_abort_fn()
 
+    def _abort_if_job_runners_dead(self) -> bool:
+        """Abort the acquisition if any job runner subprocess died with jobs pending.
+
+        A dead runner can never complete its jobs or release backpressure capacity:
+        the acquisition would otherwise crawl at one throttle timeout per frame while
+        losing every image dispatched to that runner. Returns True if aborted.
+        """
+        dead = find_dead_runners(self._job_runners)
+        if not dead:
+            return False
+        names = ", ".join(job_class.__name__ for job_class, _ in dead)
+        self._log.error(
+            f"Job runner subprocess died with jobs pending ({names}); those jobs can never "
+            f"complete. Aborting acquisition."
+        )
+        self._abort_due_to_error()
+        return True
+
     def _run_state_beat(self) -> None:
         self._run_state.beat(
             {
@@ -652,7 +672,7 @@ class MultiPointWorker:
         self._ready_for_next_trigger.set()
         self._image_callback_idle.set()
 
-    def _finish_jobs(self, timeout_s=10):
+    def _finish_jobs(self, stall_timeout_s=10):
         # Drain and summarize all currently available job results before waiting for completion
         self._summarize_runner_outputs(drain_all=True)
 
@@ -661,34 +681,28 @@ class MultiPointWorker:
         ]
 
         self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
-        timeout_time = time.time() + timeout_s
 
-        def timed_out():
-            return time.time() > timeout_time
-
-        def time_left():
-            return max(timeout_time - time.time(), 0)
-
-        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
-        while not timed_out():
-            any_pending = False
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    any_pending = True
-                    break
-            if not any_pending:
-                break
-            # Process any available results while waiting
-            self._summarize_runner_outputs(drain_all=True)
-            time.sleep(0.1)
-        else:
-            # Timed out - kill any runners that still have pending jobs
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    self._log.error(
-                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
-                    )
-                    job_runner.kill()
+        # Progress-based drain: a full-but-steadily-draining queue gets as long as it
+        # needs (under backpressure saturation the pending count equals the job limit
+        # by construction, so any fixed deadline would abandon the acquisition tail).
+        # Jobs are abandoned only when nothing completes for stall_timeout_s or the
+        # runner subprocess died.
+        drain_result = drain_runners(
+            active_runners,
+            stall_timeout_s=stall_timeout_s,
+            poll_fn=lambda: self._summarize_runner_outputs(drain_all=True),
+        )
+        for job_class_name, abandoned_count in drain_result.abandoned.items():
+            cause = (
+                "its runner subprocess died"
+                if job_class_name in drain_result.dead
+                else f"no jobs completed for {stall_timeout_s} [s]"
+            )
+            self._log.error(
+                f"Abandoned {abandoned_count} pending {job_class_name} job(s) because {cause}. "
+                f"Data for these jobs is lost!"
+            )
+        self._acquisition_error_count += drain_result.total_abandoned
 
         # Drain results before shutdown
         self._summarize_runner_outputs(drain_all=True)
@@ -708,9 +722,11 @@ class MultiPointWorker:
                 log.error(f"Error shutting down job runner in background: {e}")
 
         self._log.info("Shutting down job runners (non-blocking)...")
-        remaining_time = time_left()
+        # Runners are idle after a clean drain (and already killed if they stalled or
+        # died), so a short join timeout before terminate() suffices.
+        shutdown_timeout_s = 2.0
         for job_class, job_runner in active_runners:
-            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
+            t = threading.Thread(target=shutdown_runner, args=(job_runner, shutdown_timeout_s), daemon=True)
             t.start()
 
         # Final drain of all output queues (should be empty, but check anyway)
@@ -1471,12 +1487,18 @@ class MultiPointWorker:
         # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
         # This is when we know the previous image's jobs have been dispatched (and counters incremented)
         if self._backpressure.should_throttle():
+            # A dead runner subprocess can never release capacity - detect it up front
+            # instead of burning the full throttle timeout on every frame.
+            if self._abort_if_job_runners_dead():
+                return
             with self._timing.get_timer("backpressure.wait_for_capacity"):
                 got_capacity = self._backpressure.wait_for_capacity()
-                if not got_capacity:
-                    self._log.error(
-                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
-                    )
+            if not got_capacity:
+                if self._abort_if_job_runners_dead():
+                    return
+                self._log.error(
+                    f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                )
 
         with self._timing.get_timer("get_ready_for_trigger re-check"):
             # This should be a noop - we have the frame already.  Still, check!
