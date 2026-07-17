@@ -17553,6 +17553,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_fps.setMaximumWidth(78)
         fps_row.addWidget(self.entry_fps)
 
+        # On cameras that can't command a frame rate (e.g. Hamamatsu free-runs at its
+        # exposure/readout-limited max in continuous mode), fps is not settable: present
+        # the achievable rate read-only and keep it in sync with the (editable) exposure.
+        self._fps_is_settable = self.liveController.camera.can_set_frame_rate()
+        if not self._fps_is_settable:
+            self.entry_fps.setReadOnly(True)
+            self.entry_fps.setButtonSymbols(QAbstractSpinBox.NoButtons)
+            self.entry_fps.setPrefix("≈ ")
+            self.entry_fps.setToolTip(
+                "This camera runs at its exposure/readout-limited maximum in continuous "
+                "mode; frame rate is not settable — adjust exposure to change it."
+            )
+            self._recording_exp_spin.valueChanged.connect(self._update_estimated_fps)
+            self._update_estimated_fps()
+
         fps_row.addSpacing(4)
         fps_row.addWidget(QLabel("Dur:"))
         self.entry_duration = QDoubleSpinBox()
@@ -17786,6 +17801,20 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._recording_exp_spin.setValue(exposure)
         self._recording_gain_spin.setValue(gain)
         self._recording_illum_spin.setValue(illum)
+
+    def _update_estimated_fps(self) -> None:
+        """Refresh the read-only fps display from the camera's achievable free-run rate at
+        the current recording exposure (only for cameras where fps is not settable).
+
+        Fires on any recording-exposure change (manual edit, channel reseed, copy-from-live)
+        since those all go through _recording_exp_spin.setValue.
+        """
+        try:
+            fps = self.liveController.camera.estimate_frame_rate(self._recording_exp_spin.value())
+        except Exception:
+            return  # a transient camera-read failure isn't fatal; keep the previous display
+        if fps and fps > 0:
+            self.entry_fps.setValue(fps)
 
     # ---------------------------------------------------------------------- recording table accessors
 
@@ -18154,6 +18183,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         finally:
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            # The recording exposure was set with signals blocked, so the read-only "≈ X fps"
+            # display (cameras that can't set fps) wasn't recomputed — refresh it from the
+            # freshly-loaded exposure rather than leaving the saved yaml_data.fps showing.
+            if not self._fps_is_settable:
+                self._update_estimated_fps()
             # checkbox_time's toggled signal was blocked above, so the normal
             # _on_time_toggled-driven visibility refresh didn't fire. Set the
             # frame's visibility directly rather than calling _on_time_toggled

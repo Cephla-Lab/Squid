@@ -386,6 +386,37 @@ def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_ch
     return scope, live_controller, channels, worker, aborted
 
 
+def test_record_not_settable_camera_sizes_recording_to_achievable_max(tmp_path, monkeypatch):
+    """When the camera can't command a frame rate (e.g. Hamamatsu free-runs at its
+    exposure/readout-limited max), the recording dataset is sized to the achievable rate
+    the camera reports, not to the requested params.fps."""
+    pytest.importorskip("tensorstore")
+    import tensorstore as tstore
+    from control.core.record_zstack_worker import frame_count
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+
+    # params.fps is 10 fps; report the camera as not-settable with a DIFFERENT achievable max.
+    ACHIEVABLE = 25.0
+    monkeypatch.setattr(scope.camera, "can_set_frame_rate", lambda: False)
+    monkeypatch.setattr(scope.camera, "set_frame_rate", lambda fps: ACHIEVABLE)
+
+    worker.run()
+    assert not aborted["v"]
+
+    expected_T = max(1, frame_count(ACHIEVABLE, worker.params.duration_s))
+    requested_T = max(1, frame_count(worker.params.fps, worker.params.duration_s))
+    assert expected_T != requested_T  # sanity: the two rates size the dataset differently
+
+    rec = sorted((Path(str(tmp_path)) / worker.params.experiment_id / "recording").rglob("*.ome.zarr"))
+    assert rec, "no recording dataset produced"
+    for path in rec:
+        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path)}}).result()
+        assert ds.shape[0] == expected_T, f"recording T {ds.shape[0]} != achievable-sized {expected_T}"
+
+
 def test_record_only_restores_trigger_mode(tmp_path):
     """F8: a record-only run must not leave the camera in SOFTWARE_TRIGGER when
     the LiveController was in CONTINUOUS (or HARDWARE) before the acquisition."""

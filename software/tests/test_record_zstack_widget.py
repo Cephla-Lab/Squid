@@ -1678,7 +1678,12 @@ def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps)
 def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
-    camera = object()
+    class _CameraSentinel:
+        # A real camera always exposes can_set_frame_rate(); the widget queries it at build.
+        def can_set_frame_rate(self):
+            return True
+
+    camera = _CameraSentinel()
     simulated_widget_deps["liveController"].camera = camera
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
     qtbot.addWidget(w)
@@ -1898,3 +1903,37 @@ def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_de
         assert ch2.exposure_time == pytest.approx(ch1.exposure_time)
         assert ch2.analog_gain == pytest.approx(ch1.analog_gain)
         assert ch2.illumination_intensity == pytest.approx(ch1.illumination_intensity)
+
+
+def test_fps_control_readonly_and_shows_estimate_when_camera_cannot_set_rate(qtbot, simulated_widget_deps):
+    """On a camera that can't command a frame rate (e.g. Hamamatsu), the recording fps field
+    is read-only and displays the camera's achievable rate, recomputed from the (editable)
+    recording exposure."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    ctrl = simulated_widget_deps["liveController"]
+    ctrl.camera.can_set_frame_rate.return_value = False
+    # overlap model: fps = 1000 / max(readout=20 ms, exposure)
+    ctrl.camera.estimate_frame_rate.side_effect = lambda exp_ms: 1000.0 / max(20.0, exp_ms)
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert w.entry_fps.isReadOnly()
+    w._recording_exp_spin.setValue(5.0)  # readout(20) > exposure(5) -> 1000/20 = 50 fps
+    assert w.entry_fps.value() == pytest.approx(50.0, abs=0.5)
+    w._recording_exp_spin.setValue(40.0)  # exposure(40) > readout(20) -> 1000/40 = 25 fps
+    assert w.entry_fps.value() == pytest.approx(25.0, abs=0.5)
+
+
+def test_fps_control_editable_when_camera_can_set_rate(qtbot, simulated_widget_deps):
+    """Cameras that can command a rate (ToupTek, simulated) keep the editable fps field."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    ctrl = simulated_widget_deps["liveController"]
+    ctrl.camera.can_set_frame_rate.return_value = True
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    assert not w.entry_fps.isReadOnly()
