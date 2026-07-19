@@ -17094,7 +17094,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Track z-stack channel names added via _add_zstack_channel_row()
         self._zstack_channel_names: List[str] = []
 
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._add_components()
 
     # ---------------------------------------------------------------------- build UI
