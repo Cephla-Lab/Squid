@@ -17131,6 +17131,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.addWidget(self._build_start_group())
         layout.addStretch(1)
 
+        # Gray out Start Acquisition when neither phase is enabled, instead of
+        # only catching it via validate()'s error dialog after the click.
+        self.checkbox_recording.toggled.connect(lambda _checked: self._update_start_button_enabled())
+        self.checkbox_zstack.toggled.connect(lambda _checked: self._update_start_button_enabled())
+        self._update_start_button_enabled()
+
         scroll.setWidget(inner)
         outer_layout.addWidget(scroll)
 
@@ -17729,6 +17735,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         return grp
 
+    def _update_start_button_enabled(self) -> None:
+        """Gray out Start Acquisition when neither phase is enabled — mirrors
+        validate()'s "At least one phase (Recording or Z-Stack) must be
+        enabled" check, so this common case doesn't need a click + error dialog."""
+        self.btn_startAcquisition.setEnabled(self.checkbox_recording.isChecked() or self.checkbox_zstack.isChecked())
+
     # ---------------------------------------------------------------------- helpers
 
     def _populate_channel_combo(self, combo: QComboBox, names: Optional[List[str]] = None) -> None:
@@ -18177,6 +18189,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # _build_recording_group/_build_zstack_group didn't fire either.
             _set_layout_widgets_visible(self._recording_content_vbox, self.checkbox_recording.isChecked())
             _set_layout_widgets_visible(self._zstack_content_layout, self.checkbox_zstack.isChecked())
+            self._update_start_button_enabled()
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or

@@ -1667,6 +1667,54 @@ def test_apply_yaml_settings_resyncs_recording_and_zstack_section_visibility(qtb
     assert w.entry_zmin.isHidden() is False
 
 
+def test_start_button_disabled_when_neither_phase_enabled(qtbot, simulated_widget_deps):
+    """Start Acquisition must be grayed out (instead of only erroring on click)
+    when neither Recording nor Z-Stack is enabled."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    # Recording is checked by default, so the button starts enabled.
+    assert w.checkbox_recording.isChecked() is True
+    assert w.btn_startAcquisition.isEnabled() is True
+
+    w.checkbox_recording.setChecked(False)
+    assert w.checkbox_zstack.isChecked() is False
+    assert w.btn_startAcquisition.isEnabled() is False
+
+    w.checkbox_zstack.setChecked(True)
+    assert w.btn_startAcquisition.isEnabled() is True
+
+    # Both enabled must also stay enabled.
+    w.checkbox_recording.setChecked(True)
+    assert w.btn_startAcquisition.isEnabled() is True
+
+    # Back down to neither.
+    w.checkbox_recording.setChecked(False)
+    w.checkbox_zstack.setChecked(False)
+    assert w.btn_startAcquisition.isEnabled() is False
+
+
+def test_apply_yaml_settings_resyncs_start_button_enabled(qtbot, simulated_widget_deps):
+    """checkbox_recording's/checkbox_zstack's toggled signals are blocked during
+    YAML load (see test_apply_yaml_settings_resyncs_recording_and_zstack_section_visibility),
+    so the Start Acquisition enabled-state resync needs the same explicit fix-up."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    assert w.btn_startAcquisition.isEnabled() is True
+
+    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", recording_enabled=False, zstack_enabled=False)
+    w._apply_yaml_settings(yaml_data)
+
+    assert w.checkbox_recording.isChecked() is False
+    assert w.checkbox_zstack.isChecked() is False
+    assert w.btn_startAcquisition.isEnabled() is False
+
+
 def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
