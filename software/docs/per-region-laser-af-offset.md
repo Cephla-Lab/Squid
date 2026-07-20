@@ -44,10 +44,10 @@ reference plane.
   against the old reference and are no longer valid. Re-record them after changing the
   reference.
 - **Changing focus points keeps offsets in sync**: removing a region's point drops its
-  offset; regenerating the focus grid clears them.
-- **Save / reuse**: Export the focus points to CSV — the file includes an `Offset_um`
-  column. Importing restores both the points and their offsets. Older CSV files without
-  that column still import (with no offsets).
+  offset; regenerating the focus grid or importing focus points from CSV clears them.
+- **Offsets are not saved**: the focus-points CSV export contains only the points.
+  Offsets live in the current session — re-record them after importing points or
+  restarting the software.
 - **Per-channel Z-offsets still apply** on top of the per-region offset, exactly as before.
 - The offset value is the laser-AF displacement (µm) from the reference plane at the focus
   point, so focus tracks the reference as the sample drifts — even across time-lapse

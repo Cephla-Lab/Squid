@@ -10922,20 +10922,16 @@ class FocusMapWidget(QFrame):
     def _write_focus_points_csv(self, file_path):
         with open(file_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Region_ID", "X_mm", "Y_mm", "Z_um", "Offset_um"])
+            writer.writerow(["Region_ID", "X_mm", "Y_mm", "Z_um"])
             for region_id, x, y, z in self.focus_points:
-                offset = self.region_laser_af_offsets.get(region_id, "")
-                writer.writerow([region_id, x, y, z, offset])
+                writer.writerow([region_id, x, y, z])
 
     def _read_focus_points_csv(self, file_path):
-        """Parse a focus-points CSV. Returns (points, offsets).
+        """Parse a focus-points CSV into a list of (region_id, x, y, z) points.
 
-        points: list of (region_id, x, y, z). offsets: {region_id: float} for rows that
-        carry a non-empty Offset_um (column optional, for back-compat). Raises ValueError
-        if any required column is missing.
+        Unknown columns are ignored. Raises ValueError if any required column is missing.
         """
         points = []
-        offsets = {}
         with open(file_path, "r", newline="") as csvfile:
             reader = csv.reader(csvfile)
             header = next(reader)
@@ -10946,7 +10942,6 @@ class FocusMapWidget(QFrame):
             x_idx = header.index("X_mm")
             y_idx = header.index("Y_mm")
             z_idx = header.index("Z_um")
-            offset_idx = header.index("Offset_um") if "Offset_um" in header else None
             for row in reader:
                 if len(row) >= 4:
                     try:
@@ -10961,16 +10956,7 @@ class FocusMapWidget(QFrame):
                     if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
                         continue
                     points.append((region_id, x, y, z))
-                    if offset_idx is not None and offset_idx < len(row) and row[offset_idx] != "":
-                        try:
-                            offset_val = float(row[offset_idx])
-                        except ValueError:
-                            offset_val = None
-                        # Skip non-finite offsets — a NaN/inf target would make laser AF fail
-                        # for every FOV in that region.
-                        if offset_val is not None and math.isfinite(offset_val):
-                            offsets[region_id] = offset_val
-        return points, offsets
+        return points
 
     def export_focus_points(self):
         """Export focus points to a CSV file"""
@@ -10991,7 +10977,7 @@ class FocusMapWidget(QFrame):
             QMessageBox.critical(self, "Export Error", f"Failed to export focus points: {str(e)}")
 
     def import_focus_points(self):
-        """Import focus points (and optional per-region offsets) from a CSV file"""
+        """Import focus points from a CSV file"""
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Focus Points", "", "CSV Files (*.csv);;All Files (*)")
         if not file_path:
             return
@@ -11000,7 +10986,7 @@ class FocusMapWidget(QFrame):
         # assignment, display refresh) surfaces a dialog rather than only logging via the Qt
         # excepthook and leaving the widget silently half-updated.
         try:
-            imported_points, imported_offsets = self._read_focus_points_csv(file_path)
+            imported_points = self._read_focus_points_csv(file_path)
 
             # If by_region is checked, validate regions
             if self.by_region_checkbox.isChecked():
@@ -11022,31 +11008,13 @@ class FocusMapWidget(QFrame):
                         # User chose to continue, uncheck by_region
                         self.by_region_checkbox.setChecked(False)
 
-            # Imported offsets are relative to the laser-AF reference they were captured
-            # against, which the CSV does not record. Only apply them if a reference is set
-            # now, and flag that they must match it (there is no way to verify automatically).
-            offset_note = ""
-            if imported_offsets:
-                has_reference = (
-                    self.laserAutofocusController is not None
-                    and self.laserAutofocusController.laser_af_properties.has_reference
-                )
-                if has_reference:
-                    self._offsets_reference_x = self.laserAutofocusController.laser_af_properties.x_reference
-                    offset_note = (
-                        f"; {len(imported_offsets)} laser AF offset(s) loaded — verify they match "
-                        f"the current laser AF reference"
-                    )
-                else:
-                    imported_offsets = {}
-                    offset_note = "; laser AF offsets ignored (no reference set)"
-
-            # Clear existing points and add imported ones
+            # Replace existing points with the imported ones. Captured laser-AF offsets
+            # belong to the replaced points, so they are dropped (re-capture per region).
             self.focus_points = imported_points
-            self.region_laser_af_offsets = imported_offsets
+            self._clear_region_offsets()
             self.update_point_list()
             self.update_focus_point_display()
-            self.status_label.setText(f"Imported {len(imported_points)} focus points{offset_note}")
+            self.status_label.setText(f"Imported {len(imported_points)} focus points")
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Format", str(e))
         except Exception as e:

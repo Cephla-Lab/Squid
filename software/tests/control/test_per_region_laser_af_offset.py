@@ -286,30 +286,35 @@ def test_reference_change_no_status_when_nothing_to_clear():
     w.status_label.setText.assert_not_called()
 
 
-def test_csv_roundtrip_includes_offsets(tmp_path):
+def test_csv_roundtrip_points_only(tmp_path):
+    # Offsets are session-only state: export writes just the focus points, never the offsets.
     src = _FMStub(
         focus_points=[("A1", 1.0, 2.0, 0.5), ("B2", 3.0, 4.0, 0.6)],
-        offsets={"A1": 7.0},  # B2 intentionally has no offset
+        offsets={"A1": 7.0},
     )
     src._write_focus_points_csv = FocusMapWidget._write_focus_points_csv.__get__(src)
     path = str(tmp_path / "fp.csv")
     src._write_focus_points_csv(path)
 
+    with open(path) as f:
+        header = f.readline().strip()
+    assert header == "Region_ID,X_mm,Y_mm,Z_um"
+
     dst = _FMStub()
     dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
-    points, offsets = dst._read_focus_points_csv(path)
+    points = dst._read_focus_points_csv(path)
     assert points == [("A1", 1.0, 2.0, 0.5), ("B2", 3.0, 4.0, 0.6)]
-    assert offsets == {"A1": 7.0}
 
 
-def test_csv_read_back_compat_without_offset_column(tmp_path):
-    path = tmp_path / "legacy.csv"
-    path.write_text("Region_ID,X_mm,Y_mm,Z_um\nA1,1.0,2.0,0.5\n")
+def test_csv_read_ignores_extra_columns(tmp_path):
+    # Files exported by builds that wrote an Offset_um column still import fine;
+    # the extra column is ignored.
+    path = tmp_path / "with_offsets.csv"
+    path.write_text("Region_ID,X_mm,Y_mm,Z_um,Offset_um\nA1,1.0,2.0,0.5,7.0\n")
     dst = _FMStub()
     dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
-    points, offsets = dst._read_focus_points_csv(str(path))
+    points = dst._read_focus_points_csv(str(path))
     assert points == [("A1", 1.0, 2.0, 0.5)]
-    assert offsets == {}
 
 
 def test_csv_read_rejects_missing_required_columns(tmp_path):
@@ -322,20 +327,18 @@ def test_csv_read_rejects_missing_required_columns(tmp_path):
         dst._read_focus_points_csv(str(path))
 
 
-def test_csv_read_skips_nonfinite_offsets_and_coords(tmp_path):
+def test_csv_read_skips_nonfinite_coords(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text(
-        "Region_ID,X_mm,Y_mm,Z_um,Offset_um\n"
-        "A1,1.0,2.0,0.5,3.0\n"  # good
-        "B2,1.0,2.0,0.5,nan\n"  # good coords, NaN offset -> point kept, offset rejected
-        "C3,nan,2.0,0.5,4.0\n"  # NaN coordinate -> whole row dropped
-        "D4,1.0,2.0,0.5,inf\n"  # inf offset -> point kept, offset rejected
+        "Region_ID,X_mm,Y_mm,Z_um\n"
+        "A1,1.0,2.0,0.5\n"  # good
+        "C3,nan,2.0,0.5\n"  # NaN coordinate -> whole row dropped
+        "D4,1.0,inf,0.5\n"  # inf coordinate -> whole row dropped
     )
     dst = _FMStub()
     dst._read_focus_points_csv = FocusMapWidget._read_focus_points_csv.__get__(dst)
-    points, offsets = dst._read_focus_points_csv(str(path))
-    assert [p[0] for p in points] == ["A1", "B2", "D4"]  # C3 dropped (non-finite coord)
-    assert offsets == {"A1": 3.0}  # NaN/inf offsets rejected
+    points = dst._read_focus_points_csv(str(path))
+    assert [p[0] for p in points] == ["A1"]
 
 
 # ---------------------------------------------------------------------------
