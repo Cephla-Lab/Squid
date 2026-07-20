@@ -17105,7 +17105,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        # QScrollArea's viewport and its content widget both auto-fill an
+        # opaque palette-Window background by default, which under Fusion is
+        # a visibly darker gray than the tab pane behind it — the other
+        # multipoint tabs don't use a QScrollArea, so they show the pane's
+        # own (lighter) background instead. Disabling auto-fill lets that
+        # pane background show through instead (a QSS "background:
+        # transparent" rule was tried first, but under Fusion it cascades
+        # into child widgets — buttons/combos/checkboxes lose their chrome
+        # and render as solid black boxes).
+        scroll.viewport().setAutoFillBackground(False)
         inner = QWidget()
+        inner.setAutoFillBackground(False)
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
