@@ -1119,7 +1119,6 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # ASI LS50 Z-only linear stage on its own MS-2000-family controller, used as the main Z (wraps
 # the configured XY stage via CombinedStage). CR-terminated text protocol, 1/10 um native units.
 USE_ASI_Z_STAGE = False
-SIMULATE_ASI_Z_STAGE = False
 ASI_Z_STAGE_SN = ""  # USB serial number -> resolved to a port
 ASI_Z_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM7)
 ASI_Z_BAUDRATE = 115200

@@ -657,7 +657,6 @@ def test_microscope_wraps_asi_z_when_enabled(monkeypatch):
     import control.microscope
 
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
-    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert isinstance(scope.stage, squid.stage.composite.CombinedStage)
     scope.stage.move_z_to(0.3)
@@ -672,7 +671,6 @@ def test_microscope_rejects_pi_and_asi_together(monkeypatch):
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
-    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     with pytest.raises(ValueError, match="mutually exclusive"):
         control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
 
@@ -682,7 +680,6 @@ def test_asi_home_xyz_retracts_z_before_xy(monkeypatch):
     import control.microscope
 
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
-    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False, raising=False)
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)

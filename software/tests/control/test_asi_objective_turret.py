@@ -214,7 +214,6 @@ def _build_asi_scope(monkeypatch, skip_init):
     import control.microscope
 
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
-    monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     # find-zero (default on) derives its overdrive from the physical travel; a configured
     # machine always sets this.
     monkeypatch.setattr(control._def, "ASI_Z_TRAVEL_MM", 50.0, raising=False)

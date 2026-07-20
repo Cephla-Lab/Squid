@@ -390,9 +390,8 @@ class Microscope:
                 stage_config=stage_config,
             )
         elif control._def.USE_ASI_Z_STAGE:
-            asi_simulated = _should_simulate(simulated, control._def.SIMULATE_ASI_Z_STAGE)
             z_stage = squid.stage.asi.connect_asi_z_stage(
-                simulated=asi_simulated,
+                simulated=simulated,
                 serialnum=_config_sn_to_str(control._def.ASI_Z_STAGE_SN),
                 serial_port=control._def.ASI_Z_SERIAL_PORT or None,
                 baudrate=control._def.ASI_Z_BAUDRATE,
