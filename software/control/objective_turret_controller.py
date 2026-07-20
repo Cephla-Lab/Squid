@@ -22,6 +22,9 @@ GEAR_RATIO = 132 / 48
 MOTOR_STEPS_PER_REV = 200
 POSITIONS_PER_REV = 4  # 90 degrees per objective
 POSITION_TOLERANCE_PULSES = 50
+# Upper bound for backlash compensation, in turret degrees. Real gear backlash is a
+# small fraction of a degree; anything larger indicates a misconfigured .ini.
+BACKLASH_MAX_DEG = 1.0
 
 # NiMotion Modbus register map
 REG_SAVE_PARAMS = 0x0008
@@ -120,6 +123,42 @@ _HOMING_PARAMS = [
 ]
 
 
+def _normalize_calibration(calibrated_pulses: Optional[dict]) -> dict:
+    """Validate a slot->absolute-pulses calibration map and normalize its keys to int.
+
+    Comes from per-machine .ini parsing, where JSON object keys are strings and
+    values may be arbitrary; reject anything that is not slot 1..POSITIONS_PER_REV
+    mapped to an integer pulse count so misconfiguration fails fast at init.
+    """
+    if not calibrated_pulses:
+        return {}
+    normalized = {}
+    for key, value in calibrated_pulses.items():
+        try:
+            slot = int(key)
+        except (TypeError, ValueError):
+            raise ValueError(f"OBJECTIVE_TURRET_CALIBRATED_PULSES key {key!r} is not a slot index") from None
+        if not 1 <= slot <= POSITIONS_PER_REV:
+            raise ValueError(f"OBJECTIVE_TURRET_CALIBRATED_PULSES slot {slot} out of range 1..{POSITIONS_PER_REV}")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"OBJECTIVE_TURRET_CALIBRATED_PULSES[{slot}] must be an integer number of pulses, got {value!r}"
+            )
+        normalized[slot] = value
+    return normalized
+
+
+def _validate_backlash_deg(backlash_deg) -> float:
+    if isinstance(backlash_deg, bool) or not isinstance(backlash_deg, (int, float)):
+        raise ValueError(f"OBJECTIVE_TURRET_BACKLASH_DEG must be a number of degrees, got {backlash_deg!r}")
+    deg = float(backlash_deg)
+    if not 0.0 <= deg <= BACKLASH_MAX_DEG:
+        raise ValueError(
+            f"OBJECTIVE_TURRET_BACKLASH_DEG={deg} out of range 0..{BACKLASH_MAX_DEG} degrees; check the machine .ini"
+        )
+    return deg
+
+
 def _resolve_position(objective_name: str, positions: dict) -> int:
     try:
         return positions[objective_name]
@@ -163,14 +202,17 @@ class ObjectiveTurret4PosControllerSimulation:
         timeout: float = 0.5,
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
-        offset_pulses: Optional[int] = None,  # accepted for constructor parity with the real controller
+        # Accepted for constructor parity with the real controller; the simulation
+        # tracks objectives by name and never computes pulses, so all three are unused.
+        offset_pulses: Optional[int] = None,
+        calibrated_pulses: Optional[dict] = None,
+        backlash_deg: Optional[float] = None,
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
         self._is_open = True
         self._current_objective: Optional[str] = None
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
-        # offset_pulses is unused here: the simulation tracks objectives by name and never computes pulses.
         self._stage = stage
         logger.info("Simulated turret opened (sn=%s)", serial_number)
 
@@ -259,8 +301,15 @@ class ObjectiveTurret4PosController:
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
         offset_pulses: Optional[int] = None,
+        calibrated_pulses: Optional[dict] = None,
+        backlash_deg: Optional[float] = None,
     ) -> None:
-        from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_TURRET_OFFSET_PULSES
+        from control._def import (
+            OBJECTIVE_TURRET_POSITIONS,
+            OBJECTIVE_TURRET_OFFSET_PULSES,
+            OBJECTIVE_TURRET_CALIBRATED_PULSES,
+            OBJECTIVE_TURRET_BACKLASH_DEG,
+        )
 
         self._slave_id = slave_id
         self._positions = dict(positions) if positions is not None else dict(OBJECTIVE_TURRET_POSITIONS)
@@ -270,6 +319,12 @@ class ObjectiveTurret4PosController:
         if isinstance(offset, bool) or not isinstance(offset, int):
             raise ValueError(f"OBJECTIVE_TURRET_OFFSET_PULSES must be an integer number of pulses, got {offset!r}")
         self._offset_pulses = offset
+        self._calibrated_pulses = _normalize_calibration(
+            calibrated_pulses if calibrated_pulses is not None else OBJECTIVE_TURRET_CALIBRATED_PULSES
+        )
+        self._backlash_deg = _validate_backlash_deg(
+            backlash_deg if backlash_deg is not None else OBJECTIVE_TURRET_BACKLASH_DEG
+        )
         self._stage = stage
         self._current_objective: Optional[str] = None
         self._is_open = False
@@ -299,6 +354,21 @@ class ObjectiveTurret4PosController:
                     f"OBJECTIVE_TURRET_OFFSET_PULSES={self._offset_pulses} exceeds one slot "
                     f"(±{self._pulses_per_position} pulses ≈ 90°); check the machine .ini"
                 )
+
+            # A calibrated slot target that deviates from its theoretical position by more
+            # than one slot means the calibration was measured at a different microstep or
+            # against the wrong slot — same rationale as the offset bound above.
+            for slot, pulses in self._calibrated_pulses.items():
+                theoretical = (slot - 1) * self._pulses_per_position
+                if abs(pulses - theoretical) > self._pulses_per_position:
+                    raise ValueError(
+                        f"OBJECTIVE_TURRET_CALIBRATED_PULSES[{slot}]={pulses} deviates from the "
+                        f"theoretical {theoretical} by more than one slot "
+                        f"(±{self._pulses_per_position} pulses ≈ 90°); check the machine .ini"
+                    )
+
+            # Backlash compensation in motor pulses (one turret revolution = POSITIONS_PER_REV slots).
+            self._backlash_pulses = round(self._backlash_deg / 360.0 * POSITIONS_PER_REV * self._pulses_per_position)
 
             changed = [self._calibrate_motion_params(), self._calibrate_homing_config()]
             if any(changed):
@@ -405,26 +475,33 @@ class ObjectiveTurret4PosController:
         if not self._is_open:
             raise RuntimeError("Turret controller is closed")
 
+    def _target_pulses(self, position_index: int) -> int:
+        """Absolute pulse target for a slot: the per-machine calibrated value when
+        present, else the theoretical slot position shifted by the global offset."""
+        calibrated = self._calibrated_pulses.get(position_index)
+        if calibrated is not None:
+            return calibrated
+        return (position_index - 1) * self._pulses_per_position + self._offset_pulses
+
     def _rotate_to(self, objective_name: str, timeout_s: float) -> None:
         position_index = _resolve_position(objective_name, self._positions)
-        target_pulses = (position_index - 1) * self._pulses_per_position + self._offset_pulses
+        target_pulses = self._target_pulses(position_index)
 
         logger.info(
-            "Rotating to %s: start=%d, target=%d",
+            "Rotating to %s: start=%d, target=%d, backlash_comp=%d",
             objective_name,
             self.current_position_pulses,
             target_pulses,
+            self._backlash_pulses,
         )
 
-        self._write_control(CW_DISABLE)
-        self._write_holding(REG_RUN_MODE, MODE_POSITION)
-        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, target_pulses, signed=True)
-        self._write_control(CW_STARTUP)
-        self._write_control(CW_ENABLE)
-        self._write_control(CW_RUN_ABSOLUTE)
-        self._write_control(CW_TRIGGER_ABSOLUTE)
         try:
-            self._wait_for_position(target_pulses, timeout_s)
+            # Backlash compensation: overshoot below the target first, then approach it
+            # from below, so the final approach direction is the same for every slot
+            # change and gear backlash cancels out. comp=0 moves directly.
+            if self._backlash_pulses > 0:
+                self._run_absolute_move(target_pulses - self._backlash_pulses, timeout_s)
+            self._run_absolute_move(target_pulses, timeout_s)
         finally:
             self._deenergize()
         logger.info(
@@ -433,6 +510,16 @@ class ObjectiveTurret4PosController:
             target_pulses,
             self.current_position_pulses,
         )
+
+    def _run_absolute_move(self, target_pulses: int, timeout_s: float) -> None:
+        self._write_control(CW_DISABLE)
+        self._write_holding(REG_RUN_MODE, MODE_POSITION)
+        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, target_pulses, signed=True)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_ABSOLUTE)
+        self._write_control(CW_TRIGGER_ABSOLUTE)
+        self._wait_for_position(target_pulses, timeout_s)
 
     def _retract_z_if_possible(self) -> Optional[float]:
         from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM

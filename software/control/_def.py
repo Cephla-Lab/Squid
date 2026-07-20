@@ -1249,6 +1249,18 @@ OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # does not sit exactly at slot 1. 0 on all normal units; set per machine (may be
 # negative).
 OBJECTIVE_TURRET_OFFSET_PULSES = 0
+# Per-slot calibrated absolute pulse targets: slot index (1..4) -> pulses from the
+# homing zero, measured by jogging each slot into alignment (e.g. with the
+# SingleMotor tool). Slots absent from the dict fall back to the theoretical
+# (slot-1)*pulses_per_position + OBJECTIVE_TURRET_OFFSET_PULSES; a listed slot uses
+# its calibrated value verbatim (the global offset is not added). Empty on all
+# normal units; set per machine in the .ini, e.g. {"1": -12, "3": 6640}.
+OBJECTIVE_TURRET_CALIBRATED_PULSES = {}
+# Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
+# slot change first overshoots below the target by this angle and then approaches
+# it from below, so the final approach direction is always the same and gear
+# backlash cancels out.
+OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
