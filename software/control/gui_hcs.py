@@ -2915,9 +2915,9 @@ class HighContentScreeningGui(QMainWindow):
                         raise
 
         # Changer close: every ObjectiveChangerProtocol implementation provides close()
-        # (release serial ports for a restarted process, de-energize motors; no-op for
-        # Xeryon). Runs independent of Z-retract success. The ASI turret only closes a
-        # serial it opened itself; one shared with the Z stage is closed by stage.close().
+        # (release serial ports for a restarted process, de-energize motors). Runs
+        # independent of Z-retract success. The ASI turret only closes a serial it
+        # opened itself; one shared with the Z stage is closed by stage.close().
         if self.objective_changer:
             try:
                 self.objective_changer.close()

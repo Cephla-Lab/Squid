@@ -10,11 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
-
-_log = squid.logging.get_logger(__name__)
 
 
 class CombinedStage(AbstractStage):

@@ -6,7 +6,10 @@ import serial
 from control.Xeryon import Xeryon, Stage
 from control._def import *  # to remove once we create ObjectiveChangerConfig
 import squid.abc
+import squid.logging
 from typing import Optional
+
+_log = squid.logging.get_logger(__name__)
 
 
 class ObjectiveChanger2PosController:
@@ -37,9 +40,13 @@ class ObjectiveChanger2PosController:
         self.current_position = 0
 
     def close(self):
-        # ObjectiveChangerProtocol promises close(); the Xeryon library holds no OS handle
-        # that needs explicit release (cleanup zeroes the axis via moveToZero instead).
-        pass
+        # Xeryon.stop() sends STOP to the axis and shuts down the reader thread, which
+        # closes the serial port — required so a restarted process (spawned while this
+        # one is still alive) can re-acquire the device. Best-effort during teardown.
+        try:
+            self.controller.stop()
+        except Exception:
+            _log.exception("Error stopping the Xeryon controller during close()")
 
     def moveToPosition1(self, move_z=True):
         self.axisX.setDPOS(self.position1)
