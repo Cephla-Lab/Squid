@@ -113,6 +113,64 @@ def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_y
     assert len(click_calls) == 1, f"image_click_coordinates wired {len(click_calls)} times, expected 1"
 
 
+def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
+    """Switching to the Record + Z-Stack tab must not hide the well selector dock.
+
+    The tab's own validation requires selected wells, so onTabChanged has to
+    treat it like Wellplate Multipoint when deciding well-selector visibility.
+    Also exercises the tab switch end-to-end, which duck-calls
+    emit_selected_channels() on the widget.
+    """
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+    # The tab is gated by ENABLE_RECORDING; force it on regardless of the local INI.
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    tabw = win.recordTabWidget
+    labels = [tabw.tabText(i) for i in range(tabw.count())]
+    assert "Record + Z-Stack" in labels
+
+    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+
+    assert not win.dock_wellSelection.isHidden(), "well selector dock must stay available on the Record + Z-Stack tab"
+
+
+def test_record_zstack_acquisition_finish_keeps_well_selector(qtbot, monkeypatch):
+    """R6: toggleAcquisitionStart(False) after a Record + Z-Stack acquisition
+    must not hide the well selector dock (only the wellplate branch kept it)."""
+
+    def confirm_exit(parent, title, text, *args, **kwargs):
+        if title == "Confirm Exit":
+            return QMessageBox.Yes
+        raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    tabw = win.recordTabWidget
+    labels = [tabw.tabText(i) for i in range(tabw.count())]
+    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+    assert not win.dock_wellSelection.isHidden()
+
+    win.toggleAcquisitionStart(True)  # acquisition starts: selector hides
+    assert win.dock_wellSelection.isHidden()
+    win.toggleAcquisitionStart(False)  # acquisition ends: selector must return
+    assert not win.dock_wellSelection.isHidden(), "well selector not restored after Record+Z-Stack acquisition"
+
+
 def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm_exit_yes):
     """The stage may own its own transport (e.g. the PI C-414 serial handle), so cleanup
     must call stage.close() — before the microcontroller, mirroring Microscope.close()."""

@@ -20,6 +20,7 @@ from control._def import *
 
 import threading
 import control.toupcam as toupcam
+import control.toupcam_exceptions
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
@@ -48,6 +49,21 @@ def get_sn_by_model(camera_model: ToupcamCameraModel):
         if dev.displayname == camera_model.value:
             return dev.id
     return None  # return None if no device with the specified model_name is connected
+
+
+def clamp_precise_framerate_tenths(fps: float, min_tenths: int, max_tenths: int) -> int:
+    """Clamp fps (in frames per second) to the allowed range in tenths.
+
+    Args:
+        fps: Desired frame rate in frames per second
+        min_tenths: Minimum allowed value in tenths (0.1 fps units)
+        max_tenths: Maximum allowed value in tenths (0.1 fps units)
+
+    Returns:
+        Clamped value in tenths of fps
+    """
+    tenths = int(round(fps * 10.0))
+    return max(min_tenths, min(max_tenths, tenths))
 
 
 class ToupcamCamera(AbstractCamera):
@@ -555,6 +571,53 @@ class ToupcamCamera(AbstractCamera):
     def get_exposure_limits(self) -> Tuple[float, float]:
         (min_exposure, max_exposure, default_exposure) = self._camera.get_ExpTimeRange()
         return min_exposure / 1000.0, max_exposure / 1000.0  # us -> ms
+
+    def _continuous_max_framerate(self) -> float:
+        """Highest frame rate the sensor can sustain in CONTINUOUS (free-run) mode, in fps.
+
+        In continuous mode the exposure pipelines with sensor readout, so the frame period
+        is max(readout, exposure).  This deliberately does NOT use get_total_frame_time()
+        (== readout + trigger_delay + exposure), which is the *sequential* software/hardware-
+        trigger period and under-reports the free-run rate by ~2x.  strobe_time_us is the
+        pure, exposure-independent readout period.  The triggered-mode timing getters
+        (get_strobe_time/get_total_frame_time/_calculate_strobe_info) are left untouched.
+        """
+        readout_ms = self._strobe_info.strobe_time_us / 1000.0
+        frame_ms = max(readout_ms, self.get_exposure_time())
+        return 1000.0 / frame_ms
+
+    def set_frame_rate(self, fps: float) -> float:
+        """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
+
+        _calculate_strobe_info (~:128-140) drives PRECISE_FRAMERATE to MAX on mode
+        switch; set_frame_rate must be called **after** entering CONTINUOUS to take
+        effect, and recording restores nothing (next acquisition resets exposure → MAX again).
+
+        Args:
+            fps: Desired frame rate in frames per second. If None or <= 0, returns
+                 the camera's achievable continuous maximum without changing settings.
+
+        Returns:
+            The achievable frame rate in fps.  When the PRECISE_FRAMERATE option can be
+            read/set, that is the clamped requested rate; otherwise (the option is
+            unavailable on this model) it is the sensor's readout/exposure-limited
+            continuous maximum (see _continuous_max_framerate).
+        """
+        if fps is None or fps <= 0:
+            return self._continuous_max_framerate()
+        try:
+            max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
+        except toupcam.HRESULTException as ex:
+            self._log.warning(f"precise-framerate range read failed: {control.toupcam_exceptions.explain(ex)}")
+            return self._continuous_max_framerate()
+        tenths = clamp_precise_framerate_tenths(fps, min_tenths, max_tenths)
+        try:
+            self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, tenths)
+        except toupcam.HRESULTException as ex:
+            self._log.warning(f"set precise-framerate failed: {control.toupcam_exceptions.explain(ex)}")
+            return self._continuous_max_framerate()
+        return tenths / 10.0
 
     @staticmethod
     def _user_gain_to_toupcam(user_gain):
