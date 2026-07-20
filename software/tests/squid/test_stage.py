@@ -5,6 +5,7 @@ import squid.stage.cephla
 import squid.stage.prior
 import squid.stage.utils
 import squid.stage.pi
+import squid.stage.composite
 import squid.stage.asi
 import squid.config
 import squid.abc
@@ -67,7 +68,7 @@ def _sim_combined_stage(z_stage=None):
     """Simulated Cephla XY + Z-only composite (PI Z by default); returns (combined, xy, z)."""
     xy = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
     z = z_stage if z_stage is not None else _sim_pi_stage()
-    combined = squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
+    combined = squid.stage.composite.CombinedStage(xy_stage=xy, z_stage=z, stage_config=squid.config.get_stage_config())
     return combined, xy, z
 
 
@@ -168,7 +169,7 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)
     # skip_init leaves the V-308 unreferenced (reference=...and not skip_init); reference before moving.
     scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_z_to(0.3)
@@ -439,7 +440,7 @@ def _sim_asi_stage(**kwargs):
 
 
 def _sim_asi_combined():
-    """Simulated Cephla XY + ASI LS50 Z via the reused pi.CombinedStage; returns (combined, xy, z)."""
+    """Simulated Cephla XY + ASI LS50 Z via squid.stage.composite.CombinedStage; returns (combined, xy, z)."""
     return _sim_combined_stage(z_stage=_sim_asi_stage(invert_z=True, home_mm=0.0))
 
 
@@ -658,7 +659,7 @@ def test_microscope_wraps_asi_z_when_enabled(monkeypatch):
     monkeypatch.setattr(control._def, "USE_ASI_Z_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_ASI_Z_STAGE", True, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)
     scope.stage.move_z_to(0.3)
     assert abs(scope.stage.get_pos().z_mm - 0.3) < 1e-9
     scope.close()  # exercises Microscope.close() -> CombinedStage.close() -> ASIZStage.close()
@@ -687,7 +688,7 @@ def test_asi_home_xyz_retracts_z_before_xy(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False, raising=False)
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
-    assert isinstance(scope.stage, squid.stage.pi.CombinedStage)  # ASI Z wrapped, not stepper Z
+    assert isinstance(scope.stage, squid.stage.composite.CombinedStage)  # ASI Z wrapped, not stepper Z
     scope.stage.move_z_to(2.0)
     scope.home_xyz()
     # The external-Z branch retracts to the home target (squid 0 = native 0, the retracted
@@ -724,6 +725,24 @@ def test_ls50_initialize_retries_once():
     ctrl = _ls50_ctrl(conn)
     ctrl.initialize()  # first W Z gets dead air, retry parses
     assert conn.written == [b"W Z\r", b"W Z\r"]
+
+
+def test_find_shared_ms2000_walks_combined_stage():
+    # The turret (same MS-2000 controller) reuses the Z stage's transport; the accessor
+    # must return the exact MS2000Serial instance through CombinedStage or a bare ASIZStage.
+    conn = _FakeSerialConn(replies=[b":A 0\r\n"])
+    ctrl = _ls50_ctrl(conn)
+    z = squid.stage.asi.ASIZStage(ctrl, stage_config=squid.config.get_stage_config())
+    assert squid.stage.asi.find_shared_ms2000(z) is ctrl.serial
+    combined, _, _ = _sim_combined_stage(z_stage=z)
+    assert squid.stage.asi.find_shared_ms2000(combined) is ctrl.serial
+
+
+def test_find_shared_ms2000_none_for_simulated_and_foreign():
+    assert squid.stage.asi.find_shared_ms2000(_sim_asi_stage()) is None  # _SimulatedLS50 backend
+    combined, _, _ = _sim_combined_stage()  # PI Z, not ASI
+    assert squid.stage.asi.find_shared_ms2000(combined) is None
+    assert squid.stage.asi.find_shared_ms2000(None) is None
 
 
 def test_asi_z_pollers_safe_after_close():

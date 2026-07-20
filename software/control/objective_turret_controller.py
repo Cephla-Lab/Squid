@@ -118,6 +118,24 @@ _HOMING_PARAMS = [
 ]
 
 
+def retract_z_if_possible(stage) -> "Optional[float]":
+    """Shared objective-changer Z safety: if a stage with Z homing is usable, capture the
+    current Z and retract to OBJECTIVE_RETRACTED_POS_MM. Returns the captured Z, else None."""
+    from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
+
+    if stage is None or not HOMING_ENABLED_Z:
+        return None
+    z_mm = stage.get_pos().z_mm
+    stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+    return z_mm
+
+
+def restore_z_if_captured(stage, captured_z) -> None:
+    if captured_z is None or stage is None:
+        return
+    stage.move_z_to(captured_z)
+
+
 def _resolve_position(objective_name: str, positions: dict) -> int:
     try:
         return positions[objective_name]
@@ -228,19 +246,10 @@ class ObjectiveTurret4PosControllerSimulation:
             raise RuntimeError("Turret controller is closed")
 
     def _retract_z_if_possible(self) -> Optional[float]:
-        """If stage + Z homing are usable, capture Z and move to safe retract. Return captured z, else None."""
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        restore_z_if_captured(self._stage, captured_z)
 
 
 class ObjectiveTurret4PosController:
@@ -415,18 +424,10 @@ class ObjectiveTurret4PosController:
         )
 
     def _retract_z_if_possible(self) -> Optional[float]:
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        restore_z_if_captured(self._stage, captured_z)
 
     def _calibrate_one(
         self,

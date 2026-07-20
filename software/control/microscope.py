@@ -30,6 +30,7 @@ import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.asi
 import squid.stage.cephla
+import squid.stage.composite
 import squid.stage.pi
 import squid.stage.utils
 
@@ -174,6 +175,32 @@ class MicroscopeAddons:
                 if not objective_changer_simulated
                 else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
             )
+        elif control._def.USE_ASI_OBJECTIVE_TURRET:
+            # Imported here (not at module level behind the flag) so tests can exercise this
+            # path by monkeypatching the flag alone.
+            from control.asi_objective_turret import ASIObjectiveTurret, ASIObjectiveTurretSimulation
+
+            if objective_changer_simulated:
+                objective_changer = ASIObjectiveTurretSimulation(
+                    positions=control._def.ASI_OBJECTIVE_TURRET_POSITIONS,
+                    stage=stage,
+                    axis=str(control._def.ASI_OBJECTIVE_TURRET_AXIS_LETTER),
+                )
+            else:
+                # Same MS-2000 controller as the LS50 Z stage when both are enabled: reuse its
+                # serial (the Z stage owns/closes it). None => turret-without-Z (or simulated
+                # Z): open our own connection, defaulting SN/port/baud to the ASI_Z_* values.
+                objective_changer = ASIObjectiveTurret(
+                    shared_serial=squid.stage.asi.find_shared_ms2000(stage),
+                    serial_number=_config_sn_to_str(control._def.ASI_OBJECTIVE_TURRET_SN)
+                    or _config_sn_to_str(control._def.ASI_Z_STAGE_SN),
+                    serial_port=(control._def.ASI_OBJECTIVE_TURRET_SERIAL_PORT or control._def.ASI_Z_SERIAL_PORT)
+                    or None,
+                    baudrate=int(control._def.ASI_OBJECTIVE_TURRET_BAUDRATE or control._def.ASI_Z_BAUDRATE),
+                    axis=str(control._def.ASI_OBJECTIVE_TURRET_AXIS_LETTER),
+                    positions=control._def.ASI_OBJECTIVE_TURRET_POSITIONS,
+                    stage=stage,
+                )
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
@@ -381,7 +408,7 @@ class Microscope:
                 stage_config=stage_config,
             )
         if z_stage is not None:
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+            stage = squid.stage.composite.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
@@ -591,7 +618,8 @@ class Microscope:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
-            # powered), so a re-home would just be wasted motion.
+            # powered), so a re-home would just be wasted motion. The ASI turret has no
+            # homing at all: its home() only refreshes the tracked slot, never moves.
             if control._def.USE_XERYON or not skip_init:
                 self.addons.objective_changer.home()
             if control._def.USE_XERYON:

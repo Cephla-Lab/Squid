@@ -1309,11 +1309,32 @@ OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 
+# 6-position ASI objective turret on an MS-2000-family controller ('M F=<slot>' with a RAW
+# slot index 1..6 -- not scaled like linear-axis units). Typically the SAME controller as the
+# ASI LS50 Z stage (USE_ASI_Z_STAGE): when both are enabled the turret reuses the Z stage's
+# serial connection and the SN/port/baud below are ignored. They apply only when the turret
+# runs WITHOUT the ASI Z stage; empty/0 means "reuse the ASI_Z_* value" -- resolved at
+# construction time in microscope.py, NOT here, because the machine-config loader overrides
+# these globals after definition (same reasoning as uses_external_z_stage()).
+# The turret has NO homing: home() never moves; startup's move_to_objective(DEFAULT_OBJECTIVE)
+# establishes a known slot at every boot.
+USE_ASI_OBJECTIVE_TURRET = False
+# Axis letter of the turret on the controller ('M <letter>=<slot>' / 'W <letter>').
+# F on the MFC-2000 (hardware-confirmed).
+ASI_OBJECTIVE_TURRET_AXIS_LETTER = "F"
+# Objective name -> turret slot (1..6). Keys must match objectives.csv names. Override per machine .ini
+# (JSON with double-quoted keys, e.g. asi_objective_turret_positions = {"4x": 1, "20x": 2}).
+ASI_OBJECTIVE_TURRET_POSITIONS = {"2x": 1, "4x": 2, "10x": 3, "20x": 4, "40x": 5, "60x": 6}
+ASI_OBJECTIVE_TURRET_SN = ""  # "" = reuse ASI_Z_STAGE_SN (turret-without-Z-stage only)
+ASI_OBJECTIVE_TURRET_SERIAL_PORT = ""  # "" = reuse ASI_Z_SERIAL_PORT
+ASI_OBJECTIVE_TURRET_BAUDRATE = 0  # 0 = reuse ASI_Z_BAUDRATE
 
-def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
-    if use_xeryon and use_turret:
+
+def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool, use_asi_turret: bool = False) -> None:
+    if int(bool(use_xeryon)) + int(bool(use_turret)) + int(bool(use_asi_turret)) > 1:
         raise ValueError(
-            "USE_XERYON and USE_OBJECTIVE_TURRET are mutually exclusive " "(set only one to True in the machine .ini)"
+            "USE_XERYON, USE_OBJECTIVE_TURRET and USE_ASI_OBJECTIVE_TURRET are mutually exclusive "
+            "(set at most one to True in the machine .ini)"
         )
 
 
@@ -1422,7 +1443,7 @@ if config_files:
         myclass = locals()[classkey]
         populate_class_from_dict(myclass, pop_items)
 
-    _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+    _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET, USE_ASI_OBJECTIVE_TURRET)
     _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
     _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
 
@@ -1438,7 +1459,7 @@ else:
             sys.exit(1)
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
-        _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+        _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET, USE_ASI_OBJECTIVE_TURRET)
         _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
         _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
     else:

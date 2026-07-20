@@ -5,7 +5,7 @@ Squid stage support for the ASI LS50 Z-only linear stage on its own MS-2000-fami
 Provides (1) ``MS2000Serial``, the CR-terminated ASI command transport; (2) ``LS50Controller``,
 the single-axis driver; (3) ``_SimulatedLS50``, a pure-Python stand-in for hardware-free / CI
 use; and (4) ``ASIZStage``, the Z-only ``squid.abc.AbstractStage`` adapter (pair with an XY
-stage via ``squid.stage.pi.CombinedStage``).
+stage via ``squid.stage.composite.CombinedStage``).
 
 Frame and units: the controller's native unit is 1/10 um (10000 per mm). Native positive is
 away from the sample; the value goes negative as the stage approaches the sample. With
@@ -209,6 +209,11 @@ class LS50Controller:
         self._range_lo: Optional[float] = None
         self._range_hi: Optional[float] = None
 
+    @property
+    def serial(self) -> Optional[MS2000Serial]:
+        """The MS-2000 transport (public: shared with same-controller addons, e.g. the turret)."""
+        return self._serial
+
     def connect_serial(self, comport: str, baudrate: int = 115200) -> None:
         self._serial = MS2000Serial.open(comport, baudrate=baudrate)
 
@@ -362,6 +367,11 @@ class ASIZStage(AbstractStage):
         self._home_mm = home_mm  # Squid-frame retract target; None = home(z) disabled
         self._last_z_mm = 0.0  # last Squid-frame Z, served to pollers after close()
 
+    @property
+    def ms2000_serial(self) -> Optional[MS2000Serial]:
+        # getattr: _SimulatedLS50 has no `serial` property -> None (simulation-aware).
+        return getattr(self._backend, "serial", None)
+
     def _flip(self, mm: float) -> float:
         # squid_z = -native_z (and vice versa) when inverted; identity otherwise.
         return -mm if self._invert else mm
@@ -476,6 +486,22 @@ class ASIZStage(AbstractStage):
 
     def _no_xy(self, name: str):
         self._log.warning(f"{name} ignored: ASIZStage is a Z-only stage (pair via CombinedStage).")
+
+
+def find_shared_ms2000(stage) -> Optional[MS2000Serial]:
+    """Return the MS2000Serial of an ASI Z stage embedded in ``stage``, else None.
+
+    Accepts an ASIZStage directly or a CombinedStage wrapping one. Returns None for
+    simulated backends and non-ASI stages. Ownership stays with the Z stage: callers must
+    NOT close the returned transport -- it is released by stage.close().
+    """
+    from squid.stage.composite import CombinedStage  # here to keep module import light
+
+    if isinstance(stage, CombinedStage):
+        stage = stage.z_stage
+    if isinstance(stage, ASIZStage):
+        return stage.ms2000_serial
+    return None
 
 
 def connect_asi_z_stage(

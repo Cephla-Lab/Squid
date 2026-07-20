@@ -6,6 +6,7 @@ import pytest
 
 import control._def
 import control.objective_turret_controller as otc
+from tests.tools import FakeZStage as FakeStage
 from control._def import OBJECTIVE_TURRET_POSITIONS, OBJECTIVE_RETRACTED_POS_MM
 from control.objective_turret_controller import (
     ObjectiveTurret4PosController,
@@ -18,26 +19,6 @@ from control.objective_turret_controller import (
     REG_STATUS_WORD,
     REG_TARGET_POSITION,
 )
-
-
-class FakeStage:
-    """Records move_z_to calls and reports a preset Z position."""
-
-    def __init__(self, z_mm: float = 3.5):
-        self._z_mm = z_mm
-        self.z_moves: list[float] = []
-
-    def move_z_to(self, abs_mm: float, blocking: bool = True):
-        self.z_moves.append(abs_mm)
-        self._z_mm = abs_mm
-
-    def get_pos(self):
-        class _Pos:
-            pass
-
-        p = _Pos()
-        p.z_mm = self._z_mm
-        return p
 
 
 def _make_sim(stage=None):
