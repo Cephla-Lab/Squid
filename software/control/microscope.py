@@ -28,7 +28,9 @@ import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
+import squid.stage.asi
 import squid.stage.cephla
+import squid.stage.composite
 import squid.stage.pi
 import squid.stage.utils
 
@@ -69,6 +71,15 @@ if control._def.ENABLE_NL5:
     import control.NL5 as NL5
 else:
     NL5 = None
+
+
+def _config_sn_to_str(sn) -> Optional[str]:
+    """Normalise a config serial number to a string, or None when unset.
+
+    The config reader may coerce an all-digit serial to int; treat only "" / None as
+    "unset" so a numeric serial of 0 is not lost.
+    """
+    return str(sn) if sn not in (None, "") else None
 
 
 def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
@@ -165,6 +176,32 @@ class MicroscopeAddons:
                 if not objective_changer_simulated
                 else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
             )
+        elif control._def.USE_ASI_OBJECTIVE_TURRET:
+            # Imported here (not at module level behind the flag) so tests can exercise this
+            # path by monkeypatching the flag alone.
+            from control.asi_objective_turret import ASIObjectiveTurret, ASIObjectiveTurretSimulation
+
+            if objective_changer_simulated:
+                objective_changer = ASIObjectiveTurretSimulation(
+                    positions=control._def.ASI_OBJECTIVE_TURRET_POSITIONS,
+                    stage=stage,
+                    axis=str(control._def.ASI_OBJECTIVE_TURRET_AXIS_LETTER),
+                )
+            else:
+                # Same MS-2000 controller as the LS50 Z stage when both are enabled: reuse its
+                # serial (the Z stage owns/closes it). None => turret-without-Z (or simulated
+                # Z): open our own connection, defaulting SN/port/baud to the ASI_Z_* values.
+                objective_changer = ASIObjectiveTurret(
+                    shared_serial=squid.stage.asi.find_shared_ms2000(stage),
+                    serial_number=_config_sn_to_str(control._def.ASI_OBJECTIVE_TURRET_SN)
+                    or _config_sn_to_str(control._def.ASI_Z_STAGE_SN),
+                    serial_port=(control._def.ASI_OBJECTIVE_TURRET_SERIAL_PORT or control._def.ASI_Z_SERIAL_PORT)
+                    or None,
+                    baudrate=int(control._def.ASI_OBJECTIVE_TURRET_BAUDRATE or control._def.ASI_Z_BAUDRATE),
+                    axis=str(control._def.ASI_OBJECTIVE_TURRET_AXIS_LETTER),
+                    positions=control._def.ASI_OBJECTIVE_TURRET_POSITIONS,
+                    stage=stage,
+                )
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
@@ -333,15 +370,15 @@ class Microscope:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
+        # Also validated at machine-config load; re-checking here catches programmatic/test
+        # configs that would otherwise silently nest one CombinedStage inside the other.
+        control._def._validate_external_z_stage_flags(control._def.USE_PI_FOCUS_STAGE, control._def.USE_ASI_Z_STAGE)
+        z_stage = None
         if control._def.USE_PI_FOCUS_STAGE:
             pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
-            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
-            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
-            pi_sn = control._def.PI_FOCUS_STAGE_SN
-            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
             z_stage = squid.stage.pi.connect_pi_focus_stage(
                 simulated=pi_simulated,
-                serialnum=pi_sn,
+                serialnum=_config_sn_to_str(control._def.PI_FOCUS_STAGE_SN),
                 serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
                 baudrate=control._def.PI_FOCUS_BAUDRATE,
                 axis=control._def.PI_FOCUS_AXIS,
@@ -353,7 +390,25 @@ class Microscope:
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
                 stage_config=stage_config,
             )
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+        elif control._def.USE_ASI_Z_STAGE:
+            z_stage = squid.stage.asi.connect_asi_z_stage(
+                simulated=simulated,
+                serialnum=_config_sn_to_str(control._def.ASI_Z_STAGE_SN),
+                serial_port=control._def.ASI_Z_SERIAL_PORT or None,
+                baudrate=control._def.ASI_Z_BAUDRATE,
+                axis=str(control._def.ASI_Z_AXIS_LETTER),
+                # home retracts to squid 0, the find-zero-anchored away end (not
+                # OBJECTIVE_RETRACTED_POS_MM, which is a small offset above it).
+                home_mm=float(control._def.ASI_Z_HOME_MM),
+                invert_z=control._def.ASI_Z_INVERT,
+                apply_software_limits=control._def.ASI_Z_APPLY_SOFTWARE_LIMITS,
+                # Skip on in-place restart: the frame is already established, no surprise motion.
+                find_zero_on_startup=control._def.ASI_Z_FIND_ZERO_ON_STARTUP and not skip_init,
+                z_travel_mm=control._def.ASI_Z_TRAVEL_MM,
+                stage_config=stage_config,
+            )
+        if z_stage is not None:
+            stage = squid.stage.composite.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
@@ -563,7 +618,8 @@ class Microscope:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
-            # powered), so a re-home would just be wasted motion.
+            # powered), so a re-home would just be wasted motion. The ASI turret has no
+            # homing at all: its home() only refreshes the tracked slot, never moves.
             if control._def.USE_XERYON or not skip_init:
                 self.addons.objective_changer.home()
             if control._def.USE_XERYON:
@@ -894,21 +950,20 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
-        retracts it to the objective-clear end before moving XY, then performs a coordinated
-        X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
-        homing X, moving X clear, then homing Y.
+        Homes Z first if enabled, then (for an external Z focus stage) retracts Z to the
+        objective-clear end before moving XY, then performs a coordinated X/Y homing sequence
+        that avoids the plate clamp actuation post by moving Y first, homing X, moving X clear,
+        then homing Y.
         """
-        if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
+        if control._def.HOMING_ENABLED_Z and not control._def.uses_external_z_stage():
             self.stage.home(x=False, y=False, z=True, theta=False)
 
-        # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
-        # is clear: home(z) references-if-needed and drives Z to the retracted position
-        # (the positive travel limit when PI_FOCUS_HOME_TO_POSITIVE_LIMIT is set, e.g. an upright
-        # system; otherwise OBJECTIVE_RETRACTED_POS_MM). Gated on the PI stage so Cephla/Prior
-        # behaviour is unchanged.
-        if control._def.USE_PI_FOCUS_STAGE:
-            self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
+        # Before sweeping XY, make sure the objective is clear: for an external Z focus stage
+        # home(z) drives Z to its retracted position (referencing first if the driver needs it --
+        # the V-308 voice coil has no self-locking, and the LS50 retracts to its native 0).
+        # Gated on the external stage so Cephla/Prior behaviour is unchanged.
+        if control._def.uses_external_z_stage():
+            self._log.info("Homing Z (external focus stage) to the retracted position before XY homing.")
             self.stage.home(x=False, y=False, z=True, theta=False)
 
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:

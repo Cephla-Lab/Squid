@@ -60,3 +60,43 @@ def get_test_piezo_stage(microcontroller: Microcontroller):
     }
 
     return PiezoStage(microcontroller=microcontroller, config=test_piezo_config)
+
+
+class FakeSerialConn:
+    """Scripted pyserial-like object for MS2000Serial tests: records writes, pops queued
+    replies (falling back to ``default``), tracks close()."""
+
+    def __init__(self, replies=(), default=b""):
+        self.written = []
+        self.replies = list(replies)
+        self.default = default
+        self.closed = False
+
+    def write(self, data):
+        self.written.append(data)
+
+    def read_until(self, expected=b"\n"):
+        return self.replies.pop(0) if self.replies else self.default
+
+    def close(self):
+        self.closed = True
+
+
+class FakeZStage:
+    """Records move_z_to calls and reports a preset Z position (objective-changer tests)."""
+
+    def __init__(self, z_mm: float = 3.5):
+        self._z_mm = z_mm
+        self.z_moves: list = []
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        self.z_moves.append(abs_mm)
+        self._z_mm = abs_mm
+
+    def get_pos(self):
+        class _Pos:
+            pass
+
+        p = _Pos()
+        p.z_mm = self._z_mm
+        return p

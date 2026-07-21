@@ -774,10 +774,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-                if USE_PI_FOCUS_STAGE:
-                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # The PI driver clamps every move to the configured Z limits, so a stale
-                    # cached Z cannot command an out-of-range move.
+                if uses_external_z_stage():
+                    # External Z focus stage: no Z_HOME_SAFETY_POINT floor; restore the cached
+                    # absolute Z directly. The drivers clamp every move to the configured Z
+                    # limits, so a stale cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
                 elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
                     self.stage.move_z_to(cached_pos.z_mm)
@@ -2919,10 +2919,11 @@ class HighContentScreeningGui(QMainWindow):
                     else:
                         raise
 
-        # Turret close: always release the serial port so the new process (on restart)
-        # can acquire it, and so the motor is de-energized on full shutdown. Independent
-        # of Z-retract success — the close path must run even if Z retract failed.
-        if USE_OBJECTIVE_TURRET and self.objective_changer:
+        # Changer close: every ObjectiveChangerProtocol implementation provides close()
+        # (release serial ports for a restarted process, de-energize motors). Runs
+        # independent of Z-retract success. The ASI turret only closes a serial it
+        # opened itself; one shared with the Z stage is closed by stage.close().
+        if self.objective_changer:
             try:
                 self.objective_changer.close()
             except Exception:
