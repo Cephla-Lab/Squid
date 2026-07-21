@@ -334,10 +334,20 @@ class ToupcamCamera(AbstractCamera):
             self._trigger_sent = False
 
             # get the image from the camera
+            #
+            # Snapshot the buffer reference once. _update_internal_settings() (on the
+            # acquisition thread, via set_exposure_time() on every channel switch)
+            # reassigns self._internal_read_buffer to a fresh zero-filled bytes()
+            # WITHOUT holding _raw_frame_callback_lock. If we read the attribute twice
+            # (PullImageV2 fill below, then np.frombuffer later), a reassignment landing
+            # between the two reads would make np.frombuffer view the new all-zero buffer
+            # while PullImageV2 filled the old one, producing an all-zero frame. Binding
+            # it to a local guarantees fill and read use the same buffer object.
+            read_buffer = self._internal_read_buffer
             pull_start_ns = time.perf_counter_ns()
             try:
                 self._camera.PullImageV2(
-                    self._internal_read_buffer, self._get_pixel_size_in_bytes() * 8, None
+                    read_buffer, self._get_pixel_size_in_bytes() * 8, None
                 )  # the second camera is number of bits per pixel - ignored in RAW mode
             except toupcam.HRESULTException as ex:
                 # TODO(imo): Propagate error in some way and handle
@@ -355,9 +365,9 @@ class ToupcamCamera(AbstractCamera):
 
             (x_offset, y_offset, width, height) = self.get_region_of_interest()
             if self._get_pixel_size_in_bytes() == 1:
-                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint8")
+                raw_image = np.frombuffer(read_buffer, dtype="uint8")
             elif self._get_pixel_size_in_bytes() == 2:
-                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint16")
+                raw_image = np.frombuffer(read_buffer, dtype="uint16")
             current_raw_image = raw_image.reshape(height, width)
 
             process_start_ns = time.perf_counter_ns()
