@@ -22,21 +22,19 @@ def check_image_from_disk(image_path: str):
     # Try different detection modes
     modes = [SpotDetectionMode.SINGLE, SpotDetectionMode.DUAL_LEFT, SpotDetectionMode.DUAL_RIGHT]
 
-    # Test parameters to try
+    # Test parameters to try (connected components parameters)
     param_sets = [
         {
-            "y_window": 96,
-            "x_window": 20,
-            "min_peak_width": 10,
-            "min_peak_distance": 10,
-            "min_peak_prominence": 0.25,
+            "threshold": 8,
+            "min_area": 5,
+            "max_area": 5000,
+            "row_tolerance": 50,
         },
         {
-            "y_window": 96,
-            "x_window": 20,
-            "min_peak_width": 5,
-            "min_peak_distance": 20,
-            "min_peak_prominence": 0.25,
+            "threshold": 15,
+            "min_area": 10,
+            "max_area": 3000,
+            "row_tolerance": 75,
         },
     ]
 
