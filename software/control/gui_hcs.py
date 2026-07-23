@@ -15,7 +15,7 @@ from control.core.scan_coordinates import (
     ClearedScanCoordinates,
 )
 
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 import re
 import time
 from enum import Enum, auto
@@ -3118,9 +3118,6 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(False)
 
     def onWellplateChanged(self, format_):
-        if isinstance(format_, QVariant):
-            format_ = format_.value()
-
         # TODO(imo): Not sure why glass slide is so special here?  It seems like it's just a "1 well plate".
         if format_ == "glass slide":
             self.toggleWellSelector(False)

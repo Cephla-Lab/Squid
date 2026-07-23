@@ -69,7 +69,7 @@ from squid.config import CameraPixelFormat
 from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 
 # qt libraries
 import qtpy

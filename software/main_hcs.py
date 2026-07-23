@@ -12,6 +12,7 @@ from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
 QT_API, QT_API_SOURCE = select_qt_api(sys.argv)
 
 # qt libraries
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
@@ -67,6 +68,14 @@ if __name__ == "__main__":
         "configuration ini, else pyqt5)",
     )
     args = parser.parse_args()
+
+    # This GUI embeds several napari viewers (Live, Multichannel, Mosaic), each
+    # backed by its own vispy/OpenGL canvas, in a single process. Multiple vispy
+    # canvases must share one OpenGL context or vispy misroutes GLIR draw commands
+    # between them and rendering fails with "Cannot SIZE object N because it does
+    # not exist" (the mosaic image never appears). This attribute MUST be set
+    # before the QApplication is constructed. See napari's multiple-viewer example.
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
     # Construct QApplication first so the single-instance check can show a
     # QMessageBox before any other startup side effects (logging, migration).
