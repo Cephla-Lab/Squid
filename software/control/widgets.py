@@ -52,7 +52,7 @@ from squid.stage.utils import move_to_loading_position, move_to_scanning_positio
 from squid.config import CameraPixelFormat
 
 # set QT_API environment variable
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 
 # qt libraries
 import qtpy
@@ -4682,7 +4682,7 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        self.dropdown_modeSelection.textActivated.connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.btn_snap.clicked.connect(self.snap)

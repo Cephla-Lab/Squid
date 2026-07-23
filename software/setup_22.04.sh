@@ -37,8 +37,11 @@ sudo apt update
 
 # install packages
 sudo apt install python3-pip -y
-sudo apt install python3-pyqtgraph python3-pyqt5 -y
-sudo apt install python3-pyqt5.qtsvg
+# NOTE: do NOT install apt's python3-pyqtgraph / python3-pyqt5 here. python3-pyqtgraph
+# pulls in python3-pyqt5 as a dependency, and having BOTH PyQt5 and PyQt6 present in the
+# same environment causes conflicting Qt libraries that break napari's OpenGL rendering
+# (blank/failed canvases, "Cannot SIZE object N because it does not exist"). We install
+# pyqtgraph and PyQt6 via pip below so exactly one Qt binding is present.
 
 sudo apt-get install git -y
 ## clone the repo if we don't already have it.
@@ -54,15 +57,20 @@ fi
 cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
-# Ubuntu 22.04 ships pip 22.0.2, whose resolver can't handle the
-# napari==0.5.4 dependency graph on current PyPI (hits ResolutionTooDeep
-# after hours of backtracking). Upgrade pip before installing libraries.
+# Ubuntu 22.04 ships an old pip; upgrade it before resolving the dependency graph.
 python3 -m pip install --upgrade pip
 
-# install libraries
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
+# Qt binding: napari 0.7 requires PyQt6. Exactly ONE Qt binding may be installed —
+# PyQt5 and PyQt6 in the same environment conflict and break napari/vispy OpenGL
+# rendering. Remove any pre-existing PyQt5 (e.g. pulled in by an apt package) first.
+sudo apt remove -y python3-pyqt5 python3-pyqt5.qtsvg 2>/dev/null || true
+pip3 uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
+pip3 install PyQt6 PyQt6-Qt6 PyQt6-sip
+
+# install libraries. napari 0.7 requires numpy>=2, so no "numpy<2" pin here.
+pip3 install pyqtgraph qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+pip3 install "napari>=0.7,<0.8" scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
