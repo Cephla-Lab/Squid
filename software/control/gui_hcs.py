@@ -15,7 +15,7 @@ from control.core.scan_coordinates import (
     ClearedScanCoordinates,
 )
 
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 import re
 import time
 from enum import Enum, auto
@@ -1426,8 +1426,7 @@ class HighContentScreeningGui(QMainWindow):
         We want our main window to fit on the primary screen, so grab the users primary screen and return
         something slightly smaller than that.
         """
-        desktop_info = QDesktopWidget()
-        primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
+        primary_screen_size = QApplication.primaryScreen().size()
 
         height_min = int(0.9 * primary_screen_size.height())
         width_min = int(0.96 * primary_screen_size.width())
@@ -2386,9 +2385,6 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(False)
 
     def onWellplateChanged(self, format_):
-        if isinstance(format_, QVariant):
-            format_ = format_.value()
-
         # TODO(imo): Not sure why glass slide is so special here?  It seems like it's just a "1 well plate".
         if format_ == "glass slide":
             self.toggleWellSelector(False)
