@@ -385,8 +385,18 @@ class DefaultCamera(AbstractCamera):
 
         total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
 
-        # If the last frame we got was from <exposure time ago, use it.
-        if self._current_frame and time.time() - self._current_frame.timestamp <= total_exposure_time_ms / 1000.0:
+        # Only reuse the cached frame if it was captured AFTER the most recent trigger and is
+        # still fresh. The trigger-timestamp guard prevents returning a pre-trigger frame in
+        # software/hardware trigger mode -- e.g. the laser-AF measure -> piezo move -> verify
+        # loop, where a stale pre-move frame would fail the cross-correlation check and revert
+        # a correct focus move. In continuous mode no per-read trigger is sent, so
+        # _last_trigger_timestamp stays old and every streamed frame passes this guard, keeping
+        # the previous fast-path behavior.
+        if (
+            self._current_frame
+            and self._current_frame.timestamp >= self._last_trigger_timestamp
+            and time.time() - self._current_frame.timestamp <= total_exposure_time_ms / 1000.0
+        ):
             return self._current_frame
 
         # The camera api isn't really fast, so it is easy to time out waiting for a frame and its processing.  So
