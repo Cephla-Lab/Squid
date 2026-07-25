@@ -974,9 +974,13 @@ class _ApplyChannelOffsetMixin:
     )
 
     def _create_apply_channel_offset_checkbox(self):
-        """Build the (default-checked) per-channel Z-offset checkbox and wire its toggle."""
+        """Build the (default-unchecked) per-channel Z-offset checkbox and wire its toggle.
+
+        Defaults OFF so the offset is applied only when the user opts in; the controller's
+        instance flag defaults to False to match (see MultiPointController.__init__).
+        """
         self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
-        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setChecked(False)
         self.checkbox_applyChannelOffset.setToolTip(self._APPLY_CHANNEL_OFFSET_TOOLTIP)
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
 
