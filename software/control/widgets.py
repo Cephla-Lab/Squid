@@ -974,11 +974,20 @@ class _ApplyChannelOffsetMixin:
     )
 
     def _create_apply_channel_offset_checkbox(self):
-        """Build the (default-checked) per-channel Z-offset checkbox and wire its toggle."""
+        """Build the (default-unchecked) per-channel Z-offset checkbox and wire its toggle.
+
+        Defaults OFF so the offset is applied only when the user opts in. The controller
+        flag is then seeded from the checkbox's initial state, so the runtime flag always
+        reflects the visible checkbox instead of relying on the two classes' hardcoded
+        defaults happening to match.
+        """
         self.checkbox_applyChannelOffset = QCheckBox("Per-channel Z-offset")
-        self.checkbox_applyChannelOffset.setChecked(True)
+        self.checkbox_applyChannelOffset.setChecked(False)
         self.checkbox_applyChannelOffset.setToolTip(self._APPLY_CHANNEL_OFFSET_TOOLTIP)
         self.checkbox_applyChannelOffset.toggled.connect(self._on_apply_channel_offset_changed)
+        # Seed the controller from the checkbox so its flag matches the visible state
+        # (multipointController is assigned before this runs in every host widget).
+        self._on_apply_channel_offset_changed(self.checkbox_applyChannelOffset.isChecked())
 
     def _update_apply_channel_offset_enable_state(self, laser_af_on: bool):
         # Visibility follows laser AF (the offset is meaningless without an AF reference

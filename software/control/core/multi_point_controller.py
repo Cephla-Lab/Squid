@@ -213,7 +213,13 @@ class MultiPointController:
 
         self.do_autofocus = False
         self.do_reflection_af = False
-        self.apply_channel_offset = True
+        # GUI-facing default: OFF, so the per-channel Z-offset applies only when the user
+        # opts in (the GUI checkbox seeds this flag on construction). build_params() copies
+        # this flag into AcquisitionParameters.apply_channel_offset at acquisition time, so
+        # the two are coupled at runtime; only the dataclass *default* stays True, as the
+        # direct-constructor contract for TCP/MCP callers that build AcquisitionParameters
+        # without going through this controller.
+        self.apply_channel_offset = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
