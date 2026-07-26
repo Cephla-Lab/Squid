@@ -385,7 +385,7 @@ class DefaultCamera(AbstractCamera):
 
         total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
 
-        # Only reuse the cached frame if it was captured AFTER the most recent trigger and is
+        # Only reuse the cached frame if it was captured at or after the most recent trigger and is
         # still fresh. The trigger-timestamp guard prevents returning a pre-trigger frame in
         # software/hardware trigger mode -- e.g. the laser-AF measure -> piezo move -> verify
         # loop, where a stale pre-move frame would fail the cross-correlation check and revert
