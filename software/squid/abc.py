@@ -735,8 +735,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def read_camera_frame(self) -> Optional[CameraFrame]:
         """
-        This calls read_frame, but also fills in all the information such that you get a CameraFrame.  The
-        frame in the CameraFrame will have had _process_raw_frame called on it already.
+        Returns the latest frame as a full CameraFrame (read_frame delegates to this and returns
+        just the image data).  The frame in the CameraFrame will have had _process_raw_frame
+        called on it already.
+
+        In SOFTWARE/HARDWARE trigger modes, the returned frame must have been captured at or after
+        the most recent send_trigger() - implementations must never return a pre-trigger frame
+        (e.g. from a cached-frame fast path), since trigger->read callers rely on seeing the
+        post-trigger state.
 
         Might return None if getting a frame timed out, or another error occurred.
         """
