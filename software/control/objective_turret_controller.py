@@ -28,25 +28,35 @@ BACKLASH_MAX_DEG = 1.0
 
 # NiMotion Modbus register map
 REG_SAVE_PARAMS = 0x0008
-REG_DI_FUNCTION = 0x002C
+REG_CURRENT_DECEL = 0x0015  # x10mA (firmware currently drops writes; see _INIT_PARAMS)
+REG_CURRENT_IDLE = 0x0016  # x10mA; writable only while disabled
+REG_CURRENT_ACCEL = 0x0017  # x10mA
+REG_CURRENT_RUN = 0x0018  # x10mA
+REG_CURRENT_OVERLOAD = 0x0019  # x100mA — unit differs from 0x15..0x18!
 REG_MICROSTEP = 0x001A
-REG_LOW_SPEED_OPT = 0x001F  # holding-register view; same address as status word on input side
-REG_STATUS_WORD = 0x001F
+REG_STATUS_WORD = 0x001F  # input-register side; holding side at this address is unrelated
 REG_CURRENT_POSITION = 0x0021
+REG_DI_FUNCTION = 0x002C
 REG_RUN_MODE = 0x0039
+REG_SET_ZERO = 0x0047
 REG_CONTROL_WORD = 0x0051
+REG_DIRECTION = 0x0052  # 0=reverse, 1=forward; also sets the sign of relative moves
 REG_TARGET_POSITION = 0x0053
+REG_TARGET_SPEED = 0x0055
 REG_MAX_SPEED = 0x005B
 REG_MIN_SPEED = 0x005D
 REG_ACCEL = 0x005F
 REG_DECEL = 0x0061
-REG_HOMING_OFFSET = 0x0069
-REG_HOMING_METHOD = 0x006B
-REG_HOMING_SEARCH_SPEED = 0x006C
-REG_HOMING_ZERO_SPEED = 0x006E
-REG_ZERO_RETURN = 0x0072
 REG_CLEAR_ERROR_STORAGE = 0x0073
-REG_SET_ZERO = 0x0047
+
+# Batch status snapshot (FC 0x04 input registers 0x17..0x26, same block SingleMotor
+# polls): value offsets within the 16-register read.
+STATUS_BLOCK_START = 0x0017
+STATUS_BLOCK_COUNT = 16
+_OFS_DI = 1  # 0x18: raw DI level, bit0 = DI1
+_OFS_STATUS_WORD = 8  # 0x1F
+_OFS_POSITION = 10  # 0x21..0x22, INT32
+_OFS_ALARM = 15  # 0x26
 
 # Control word values
 CW_DISABLE = 0x0000
@@ -54,6 +64,8 @@ CW_STARTUP = 0x0006
 CW_ENABLE = 0x0007
 CW_RUN_ABSOLUTE = 0x000F
 CW_TRIGGER_ABSOLUTE = 0x001F
+CW_RUN_RELATIVE = 0x004F
+CW_TRIGGER_RELATIVE = 0x005F
 CW_CLEAR_FAULT = 0x0080
 
 # Magic values
@@ -63,63 +75,75 @@ SET_ZERO_MAGIC = 0x535A
 
 # Run modes
 MODE_POSITION = 1
-MODE_HOMING = 3
+MODE_SPEED = 2
 
 # Status word bits
 STATUS_BIT_FAULT = 1 << 3
 STATUS_BIT_RUNNING = 1 << 12
 
-# Motion parameter defaults (auto-calibrated on first connect).
-# 200/200 accel/decel avoids step loss under the turret's inertial load (sharper
-# ramps skip steps mid-move).
-EXPECTED_ACCEL = 200
-EXPECTED_DECEL = 200
-EXPECTED_MAX_SPEED = 250
-# NiMotion ramps cruise → min_speed at end of position moves, then continues at
-# min_speed for final-approach pulses. Default 16 step/s makes that segment audibly
-# slow; 150 keeps it brief while leaving decel range.
-EXPECTED_MIN_SPEED = 150
-# 0x001F low-speed optimization. Manual says 0 = disabled; empirically a no-op on
-# this firmware (motion is identical at 0 or 1). Set to 0 for documented-disabled.
-DRIVE_PARAM = 0
+# Factory parameter set, ported from SingleMotor MotorService.INIT_PARAMS
+# (2026-07-24 acceptance values, max speed revised 2026-07-25). Speed registers are
+# in Step/s (full steps); pulses/s = Step/s x microstep.
+MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
+EXPECTED_ACCEL = 1000  # Step/s^2 (hardware limit ~2000; >=3000 is rejected)
+EXPECTED_DECEL = 1000
+EXPECTED_MIN_SPEED = 16  # manual default start/stop speed
+EXPECTED_MAX_SPEED = 200  # x16 microstep = 3200 pulses/s ~= 131 deg/s at the turret
+# Currents: with 2 objectives loaded the factory 0.51 A run current loses steps;
+# 0.85 A and up does not. Driver firmware caps 0x16..0x18 at 95 (=0.95 A).
+EXPECTED_CURRENT_OVERLOAD = 13  # x100mA = 1.3 A
+EXPECTED_CURRENT_IDLE = 60  # x10mA = 0.6 A
+EXPECTED_CURRENT_ACCEL = 95  # x10mA = 0.95 A
+EXPECTED_CURRENT_RUN = 95  # x10mA = 0.95 A
+EXPECTED_CURRENT_DECEL = 95  # x10mA = 0.95 A (see volatile note in _INIT_PARAMS)
+# DI1 is permanently "origin switch" (3). The homing sensor must NEVER be configured
+# as a limit switch: the turret is a disc with no travel limits, and a limit-mapped
+# sensor faults FF0E whenever a normal move passes it (the pre-2026-07-24 scheme).
+DI1_FUNCTION_ORIGIN_SWITCH = 3
 
-# Homing defaults (auto-calibrated on first connect). counter=0 is established at
-# the limit switch by the SET_ZERO in home(); HOMING_ORIGIN_OFFSET=0 keeps the
-# NiMotion's own homing-offset register out of the picture (SET_ZERO cancels it
-# anyway). On units where slot 1 does not sit exactly at the switch, the
-# correction is applied in software instead — see OBJECTIVE_TURRET_OFFSET_PULSES.
-HOMING_METHOD = 17
-HOMING_ORIGIN_OFFSET = 0
-HOMING_SEARCH_SPEED = 1000
-HOMING_ZERO_SPEED = 200
-HOMING_ZERO_RETURN = 1
-DI1_FUNCTION_NEG_LIMIT = 1
+# Software homing (ported from SingleMotor HomeSearch, 2026-07-24): sweep toward the
+# sensor in velocity mode while polling the DI level, decel-stop on trigger, back off
+# until the switch releases, then fine-step back to the trigger edge and SET_ZERO
+# there. The driver's built-in homing modes are no longer used — the sensed window is
+# only ~50 pulses wide and the sweep speed/poll period pair below guarantees the
+# window cannot be crossed between two polls (62.5 ms crossing >= 2 poll periods).
+HOMING_SWEEP_SPEED = 50  # Step/s, velocity-mode sweep toward the sensor
+HOMING_POLL_S = 0.025  # DI poll period during the sweep
+HOMING_STOP_SETTLE_S = 0.4  # settle after the sweep decel-stop
+HOMING_BACKOFF_STEP = 150  # pulses per backoff jog (release the switch)
+HOMING_FINE_STEP = 5  # pulses per fine-search jog; sets home repeatability (+/-5)
+HOMING_MAX_TRAVEL = 10000  # pulses; > one turret revolution (8800 at microstep 16)
+HOMING_FINE_TRAVEL_LIMIT = 400  # backoff 150 + window 50 + margin; bounds a bad trigger
+HOMING_JOG_SPEED = 60  # Step/s; max speed is temporarily lowered to this for jogs
+HOMING_SETTLE_MARGIN_S = 0.3  # fixed margin on top of the per-jog travel-time estimate
 
 # Polling
 POLL_INTERVAL_S = 0.05
-# At accel=200/max_speed=250, slot 1 → slot 4 (~6600 pulses) takes ~25s. 30s
-# matches SingleMotor's UI timeout (_MOVING_TIMEOUT_MS in turret_panel.py).
+# At accel=1000/max_speed=200, a worst-case 3-slot move stays well inside 30s.
 DEFAULT_MOVE_TIMEOUT_S = 30.0
-DEFAULT_HOME_TIMEOUT_S = 30.0
+# Software homing worst case: sweep up to one revolution at 800 pulses/s plus tens of
+# ~0.3s fine/backoff jogs. Matches SingleMotor's 120s watchdog.
+DEFAULT_HOME_TIMEOUT_S = 120.0
 
 # Settle time after a control-word transition before the next write.
 CONTROL_WORD_SETTLE_S = 0.1
 
-# Calibration tables: (register, expected value, label, kwargs-for-_calibrate_one).
-_MOTION_PARAMS = [
+# Init calibration table: (register, expected value, label, kwargs-for-_calibrate_one).
+# Order matters: min_speed must be written before max_speed (the firmware rejects a
+# max-speed write below the current min speed). "volatile": the write never sticks
+# (firmware bug: 0x15 echoes OK but reads back 0), so it must not trigger an EEPROM
+# save on every connect.
+_INIT_PARAMS = [
     (REG_ACCEL, EXPECTED_ACCEL, "accel", {"is_32bit": True}),
     (REG_DECEL, EXPECTED_DECEL, "decel", {"is_32bit": True}),
-    (REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", {"is_32bit": True}),
     (REG_MIN_SPEED, EXPECTED_MIN_SPEED, "min_speed", {"is_32bit": True}),
-    (REG_LOW_SPEED_OPT, DRIVE_PARAM, "drive_param", {}),
-]
-_HOMING_PARAMS = [
-    (REG_HOMING_METHOD, HOMING_METHOD, "homing_method", {}),
-    (REG_HOMING_OFFSET, HOMING_ORIGIN_OFFSET, "homing_offset", {"is_32bit": True, "signed": True}),
-    (REG_HOMING_SEARCH_SPEED, HOMING_SEARCH_SPEED, "homing_search_speed", {"is_32bit": True}),
-    (REG_HOMING_ZERO_SPEED, HOMING_ZERO_SPEED, "homing_zero_speed", {"is_32bit": True}),
-    (REG_ZERO_RETURN, HOMING_ZERO_RETURN, "zero_return", {}),
-    (REG_DI_FUNCTION, DI1_FUNCTION_NEG_LIMIT, "DI1_function", {"is_32bit": True, "mask": 0xF}),
+    (REG_MAX_SPEED, EXPECTED_MAX_SPEED, "max_speed", {"is_32bit": True}),
+    (REG_CURRENT_OVERLOAD, EXPECTED_CURRENT_OVERLOAD, "overload_current", {}),
+    (REG_CURRENT_IDLE, EXPECTED_CURRENT_IDLE, "idle_current", {}),
+    (REG_CURRENT_ACCEL, EXPECTED_CURRENT_ACCEL, "accel_current", {}),
+    (REG_CURRENT_RUN, EXPECTED_CURRENT_RUN, "run_current", {}),
+    (REG_CURRENT_DECEL, EXPECTED_CURRENT_DECEL, "decel_current", {"volatile": True}),
+    (REG_DI_FUNCTION, DI1_FUNCTION_ORIGIN_SWITCH, "DI1_function", {"is_32bit": True, "mask": 0xF}),
 ]
 
 
@@ -343,6 +367,18 @@ class ObjectiveTurret4PosController:
             microstep_raw = self._modbus.read_register(self._slave_id, REG_MICROSTEP)
             if not 0 <= microstep_raw <= 7:
                 raise ValueError(f"Invalid microstep register value {microstep_raw} (expected 0..7)")
+            if microstep_raw != MICROSTEP_REG_VALUE:
+                # Factory config fixes microstep at 16; per-machine calibrated pulses
+                # and the homing sweep math assume it. The register only takes effect
+                # after a power cycle, so fail fast instead of running this session on
+                # a mismatched scale.
+                self._modbus.write_register(self._slave_id, REG_MICROSTEP, MICROSTEP_REG_VALUE)
+                self._save_to_eeprom()
+                raise RuntimeError(
+                    f"Turret microstep register was {microstep_raw} (2^{microstep_raw} microsteps); "
+                    f"wrote factory value {MICROSTEP_REG_VALUE} (16 microsteps) and saved to EEPROM. "
+                    "Power-cycle the turret and restart."
+                )
             self._microstep = 2**microstep_raw
             self._pulses_per_position = int(MOTOR_STEPS_PER_REV * self._microstep * GEAR_RATIO / POSITIONS_PER_REV)
 
@@ -370,16 +406,20 @@ class ObjectiveTurret4PosController:
             # Backlash compensation in motor pulses (one turret revolution = POSITIONS_PER_REV slots).
             self._backlash_pulses = round(self._backlash_deg / 360.0 * POSITIONS_PER_REV * self._pulses_per_position)
 
-            changed = [self._calibrate_motion_params(), self._calibrate_homing_config()]
-            if any(changed):
+            changed = self._calibrate_init_params()
+            if changed:
                 self._save_to_eeprom()
+            # RAM-only runtime parameter, written AFTER the EEPROM save so it is not
+            # persisted (the save command snapshots current RAM; the manual forbids
+            # persisting the direction register, which moves rewrite dynamically).
+            self._calibrate_one(REG_DIRECTION, 1, "direction")
 
             logger.info(
                 "Turret controller ready: port=%s microstep=%d pulses/position=%d calibrated=%s",
                 port,
                 self._microstep,
                 self._pulses_per_position,
-                any(changed),
+                changed,
             )
 
             # Leave the motor de-energized; home()/move_to_objective() energize on demand.
@@ -390,25 +430,46 @@ class ObjectiveTurret4PosController:
             raise
 
     def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        """Software homing, ported from SingleMotor HomeSearch.start_homing.
+
+        sweep -> backoff -> fine-search, then SET_ZERO at the sensor's trigger edge
+        and clamp at home with holding torque. The driver's built-in homing modes
+        are not used. Repeatability is +/-HOMING_FINE_STEP pulses (hardware-measured
+        0-pulse deviation between runs).
+        """
         self._require_open()
+        deadline = time.monotonic() + timeout_s
+        # Parameter writes require the disabled state.
         self._write_control(CW_DISABLE)
-        self._write_holding(REG_RUN_MODE, MODE_HOMING)
-        self._write_control(CW_STARTUP)
-        self._write_control(CW_ENABLE)
-        self._write_control(CW_RUN_ABSOLUTE)
-        self._write_control(CW_TRIGGER_ABSOLUTE)
+        # Zero the counter at the start so the sweep travel bound is relative to it.
+        self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
+        # Temporarily lower max speed for backoff/fine jog precision; restore after.
+        orig_max_speed = self._modbus.read_register_32bit(self._slave_id, REG_MAX_SPEED)
+        if orig_max_speed != HOMING_JOG_SPEED:
+            self._modbus.write_register_32bit(self._slave_id, REG_MAX_SPEED, HOMING_JOG_SPEED)
         try:
-            self._wait_until_idle(timeout_s)
-            # Reset counter to 0 at the post-homing position so absolute slot targets
-            # land at the correct physical angle.
-            pre = self.current_position_pulses
+            di1, _, _, alarm = self._read_status_snapshot()
+            self._check_alarm(alarm)
+            if not di1:  # already inside the sensor window -> skip straight to backoff
+                self._sweep_to_sensor(deadline)
+            self._backoff_off_sensor(deadline)
+            self._fine_search_to_edge(deadline)
+            # At the trigger edge: establish the home reference.
             self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
             time.sleep(0.05)
-            post = self.current_position_pulses
         finally:
+            # Stop before restoring parameters (writes are rejected while enabled).
+            # Best-effort so cleanup never masks the fault/timeout that got us here.
             self._deenergize()
+            if orig_max_speed != HOMING_JOG_SPEED:
+                try:
+                    self._modbus.write_register_32bit(self._slave_id, REG_MAX_SPEED, orig_max_speed)
+                except Exception as exc:
+                    logger.warning("Failed to restore max speed after homing: %s", exc)
+        # Success: hold the turret at home with torque until the next move.
+        self._hold_position_clamp()
         self._current_objective = None
-        logger.info("Homed: pre_set_zero=%d, post_set_zero=%d", pre, post)
+        logger.info("Homed at sensor edge (repeatability +/-%d pulses)", HOMING_FINE_STEP)
 
     def enable(self) -> None:
         """Run the disable -> startup -> enable state-machine cycle."""
@@ -521,6 +582,106 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_TRIGGER_ABSOLUTE)
         self._wait_for_position(target_pulses, timeout_s)
 
+    # --- software homing internals ---
+
+    def _read_status_snapshot(self) -> tuple:
+        """One batched input-register read -> (di1_triggered, status_word, position, alarm).
+
+        A single FC 0x04 frame keeps the sweep poll period tight and the DI/position
+        values consistent with each other (same block SingleMotor polls)."""
+        vals = self._modbus.read_input_registers(self._slave_id, STATUS_BLOCK_START, STATUS_BLOCK_COUNT)
+        di1 = bool(vals[_OFS_DI] & 1)
+        position = (vals[_OFS_POSITION] << 16) | vals[_OFS_POSITION + 1]
+        if position >= 0x80000000:
+            position -= 0x100000000
+        return di1, vals[_OFS_STATUS_WORD], position, vals[_OFS_ALARM]
+
+    @staticmethod
+    def _check_alarm(alarm: int) -> None:
+        # Fail fast: an alarm (undervoltage etc.) interrupts motion, so waiting for
+        # the timeout would only hide the cause.
+        if alarm != 0:
+            raise RuntimeError(f"Drive alarm 0x{alarm:04X} during homing")
+
+    @staticmethod
+    def _check_deadline(deadline: float, phase: str) -> None:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Homing timed out during {phase}")
+
+    def _sweep_to_sensor(self, deadline: float) -> None:
+        """Velocity-mode sweep toward the sensor, polling the DI level; decel-stop on
+        trigger. The sweep-speed/poll-period pairing guarantees the ~50-pulse sensor
+        window cannot be skipped between two polls."""
+        self._write_control(CW_DISABLE)
+        self._write_holding(REG_RUN_MODE, MODE_SPEED)
+        self._write_holding(REG_DIRECTION, 0)  # negative, toward the sensor
+        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_SPEED, HOMING_SWEEP_SPEED)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_ABSOLUTE)
+        try:
+            while True:
+                self._check_deadline(deadline, "sweep")
+                di1, _, position, alarm = self._read_status_snapshot()
+                self._check_alarm(alarm)
+                if di1:
+                    return
+                if abs(position) > HOMING_MAX_TRAVEL:
+                    raise RuntimeError("Homing sweep found no sensor within one revolution (direction/wiring?)")
+                time.sleep(HOMING_POLL_S)
+        finally:
+            self._write_control(CW_ENABLE)  # decelerate-stop
+            time.sleep(HOMING_STOP_SETTLE_S)
+
+    def _jog(self, pulses: int) -> None:
+        """Relative move: direction from REG_DIRECTION, REG_TARGET_POSITION takes the
+        positive magnitude only (a negative value is rejected as invalid). Settle is
+        time-based because short jogs do not reliably assert the RUNNING bit."""
+        self._write_control(CW_DISABLE)
+        self._write_holding(REG_RUN_MODE, MODE_POSITION)
+        self._write_holding(REG_DIRECTION, 1 if pulses >= 0 else 0)
+        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, abs(pulses))
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_RELATIVE)
+        self._write_control(CW_TRIGGER_RELATIVE)
+        jog_pps = HOMING_JOG_SPEED * self._microstep
+        time.sleep(abs(pulses) / jog_pps * 1.3 + HOMING_SETTLE_MARGIN_S)
+
+    def _backoff_off_sensor(self, deadline: float) -> None:
+        """Back away (positive direction) until the switch releases."""
+        while True:
+            self._check_deadline(deadline, "backoff")
+            di1, _, _, alarm = self._read_status_snapshot()
+            self._check_alarm(alarm)
+            if not di1:
+                return
+            self._jog(+HOMING_BACKOFF_STEP)
+
+    def _fine_search_to_edge(self, deadline: float) -> None:
+        """Approach the sensor again in HOMING_FINE_STEP jogs until it triggers; that
+        quantized edge is the home reference."""
+        travel = 0
+        while True:
+            self._check_deadline(deadline, "fine search")
+            self._jog(-HOMING_FINE_STEP)
+            travel += HOMING_FINE_STEP
+            di1, _, _, alarm = self._read_status_snapshot()
+            self._check_alarm(alarm)
+            if di1:
+                return
+            if travel > HOMING_FINE_TRAVEL_LIMIT:
+                raise RuntimeError("Homing fine search overran the sensor window (trigger signal wiring?)")
+
+    def _hold_position_clamp(self) -> None:
+        """Re-enable to OPERATION_ENABLED in position mode without a trigger bit: no
+        motion results, but only 0x0F applies holding current — this clamps the
+        turret at home against external disturbance."""
+        self._write_holding(REG_RUN_MODE, MODE_POSITION)
+        self._write_control(CW_STARTUP)
+        self._write_control(CW_ENABLE)
+        self._write_control(CW_RUN_ABSOLUTE)
+
     def _retract_z_if_possible(self) -> Optional[float]:
         from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
 
@@ -562,11 +723,17 @@ class ObjectiveTurret4PosController:
         logger.info("%s @ 0x%04X: %s -> %s (wrote)", label, addr, current_str, desired_str)
         return True
 
-    def _calibrate_motion_params(self) -> bool:
-        return any([self._calibrate_one(*a, **kw) for *a, kw in _MOTION_PARAMS])
-
-    def _calibrate_homing_config(self) -> bool:
-        return any([self._calibrate_one(*a, **kw) for *a, kw in _HOMING_PARAMS])
+    def _calibrate_init_params(self) -> bool:
+        """Bring every factory parameter in line with _INIT_PARAMS; return whether a
+        persistent write happened (volatile entries are rewritten each connect but
+        must not trigger an EEPROM save every time)."""
+        changed = False
+        for addr, expected, label, kwargs in _INIT_PARAMS:
+            kwargs = dict(kwargs)
+            volatile = kwargs.pop("volatile", False)
+            wrote = self._calibrate_one(addr, expected, label, **kwargs)
+            changed = changed or (wrote and not volatile)
+        return changed
 
     def _save_to_eeprom(self) -> None:
         self._write_holding(REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC)
@@ -597,17 +764,6 @@ class ObjectiveTurret4PosController:
     def _check_fault(status_word: int) -> None:
         if status_word & STATUS_BIT_FAULT:
             raise RuntimeError(f"Motor reported fault (status word=0x{status_word:04X})")
-
-    def _wait_until_idle(self, timeout_s: float) -> None:
-        deadline = time.monotonic() + timeout_s
-        time.sleep(POLL_INTERVAL_S)
-        while time.monotonic() < deadline:
-            status = self._read_status_word()
-            self._check_fault(status)
-            if not (status & STATUS_BIT_RUNNING):
-                return
-            time.sleep(POLL_INTERVAL_S)
-        raise TimeoutError(f"Motion did not finish within {timeout_s:.1f}s")
 
     def _wait_for_position(self, target_pulses: int, timeout_s: float) -> None:
         # No leading sleep: seen_running prevents stall detection before the motor asserts RUNNING.
