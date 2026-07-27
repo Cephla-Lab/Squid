@@ -1,14 +1,15 @@
 """Shared acquisition setup helpers.
 
-Free functions used by MultiPointController (and future controllers such as
-RecordZStackController) to set up experiment directories without duplicating
-logic across controller classes.
+Helpers used by MultiPointController and RecordZStackController to set up
+experiment directories and the pre-warmed job-runner subprocess without
+duplicating logic across controller classes.
 """
 
 import os
 from datetime import datetime
 from typing import Optional, Tuple
 
+import control._def
 from control import utils
 
 
@@ -57,3 +58,71 @@ def create_experiment_dir(base_path: str, experiment_id: str) -> Tuple[str, str]
     dir_path = os.path.join(base_path, resolved_id)
     utils.ensure_directory_exists(dir_path)
     return resolved_id, dir_path
+
+
+class PrewarmedJobRunnerSlot:
+    """Owns one pre-warmed JobRunner subprocess kept ready for the next acquisition.
+
+    Shared by MultiPointController and RecordZStackController so the
+    warm-up / consume / re-warm / shutdown lifecycle — and its invariants (the
+    runner must stay paired with the backpressure values it was created from;
+    a consumed slot immediately re-warms for the next run) — lives in one place.
+
+    Known limitation: pre-warming for the NEXT acquisition starts when ``take()``
+    is called (i.e. when the CURRENT acquisition begins). If another acquisition
+    starts before warm-up finishes (~1.2 s), the worker will wait for the
+    subprocess. This only affects rapid-fire manual clicking; real workloads
+    (full plate scans, time-lapse with intervals >2 s) are unaffected.
+    """
+
+    def __init__(self, logger):
+        self._log = logger
+        self._runner = None
+        self._bp_values = None
+
+    def start(self) -> None:
+        """Start a JobRunner subprocess warming up in the background."""
+        from control.core.backpressure import create_backpressure_values
+        from control.core.job_processing import JobRunner
+
+        self._log.info("Pre-warming job runner subprocess...")
+        # Shared backpressure values pair the runner with the worker's
+        # BackpressureController for consistent cross-process tracking.
+        self._bp_values = create_backpressure_values()
+        self._runner = JobRunner(
+            bp_pending_jobs=self._bp_values[0],
+            bp_pending_bytes=self._bp_values[1],
+            bp_capacity_event=self._bp_values[2],
+        )
+        self._runner.start()
+
+    def take(self):
+        """Consume the pre-warmed runner and start warming a fresh one.
+
+        Returns ``(runner, bp_values)``; both are None when multiprocessing is
+        off or the slot was already consumed. Use them together or not at all —
+        a runner without its matching values would track different counters
+        than the BackpressureController built from them.
+        """
+        runner, bp_values = self._runner, self._bp_values
+        self._runner = None
+        self._bp_values = None
+        if control._def.Acquisition.USE_MULTIPROCESSING:
+            self.start()
+        return runner, bp_values
+
+    def shutdown_runner(self, runner, timeout_s: float = 1.0, context: str = "") -> None:
+        """Shut down *runner* (previously returned by ``take()``), tolerating errors."""
+        if runner is not None:
+            try:
+                runner.shutdown(timeout_s=timeout_s)
+            except Exception as e:
+                self._log.error(f"Error shutting down pre-warmed runner {context}: {e}")
+
+    def close(self, timeout_s: float = 1.0) -> None:
+        """Shut down the currently held pre-warmed runner (application shutdown)."""
+        if self._runner is not None:
+            self._log.info("Shutting down pre-warmed job runner...")
+        self.shutdown_runner(self._runner, timeout_s=timeout_s, context="during close")
+        self._runner = None
+        self._bp_values = None
