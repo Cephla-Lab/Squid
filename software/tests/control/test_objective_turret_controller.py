@@ -12,11 +12,32 @@ from control.objective_turret_controller import (
     ObjectiveTurret4PosControllerSimulation,
     CW_DISABLE,
     CW_ENABLE,
+    CW_STARTUP,
+    CW_RUN_ABSOLUTE,
+    DI1_FUNCTION_ORIGIN_SWITCH,
+    EXPECTED_CURRENT_OVERLOAD,
+    EXPECTED_CURRENT_RUN,
+    EXPECTED_MAX_SPEED,
+    EXPECTED_MIN_SPEED,
+    HOMING_SWEEP_SPEED,
+    MICROSTEP_REG_VALUE,
+    MODE_SPEED,
     REG_CONTROL_WORD,
+    REG_CURRENT_OVERLOAD,
     REG_CURRENT_POSITION,
+    REG_CURRENT_RUN,
+    REG_DIRECTION,
+    REG_DI_FUNCTION,
+    REG_MAX_SPEED,
     REG_MICROSTEP,
-    REG_STATUS_WORD,
+    REG_MIN_SPEED,
+    REG_RUN_MODE,
+    REG_SAVE_PARAMS,
+    REG_SET_ZERO,
     REG_TARGET_POSITION,
+    REG_TARGET_SPEED,
+    SAVE_PARAMS_MAGIC,
+    SET_ZERO_MAGIC,
 )
 
 
@@ -205,6 +226,10 @@ class _FakeModbus:
         self.connected = False
         self.writes = []  # (address, value) in order
         self._position = 0
+        self.microstep_raw = MICROSTEP_REG_VALUE  # register value 4 -> 16 microsteps
+        # DI1 levels consumed one per status-snapshot read; the last value repeats.
+        self.di_script = []
+        self._di = 0
 
     def connect(self, port=None, baudrate=None):
         self.connected = True
@@ -217,8 +242,7 @@ class _FakeModbus:
         return self.connected
 
     def read_register(self, slave_id, address):
-        # Microstep register must be 0..7; 4 -> 16 microsteps.
-        return 4 if address == REG_MICROSTEP else 0
+        return self.microstep_raw if address == REG_MICROSTEP else 0
 
     def read_register_32bit(self, slave_id, address, signed=False):
         return 0
@@ -231,6 +255,18 @@ class _FakeModbus:
         # Report the commanded target as the live position so the move-complete
         # tolerance check passes immediately.
         return self._position if address == REG_CURRENT_POSITION else 0
+
+    def read_input_registers(self, slave_id, address, count):
+        # Status snapshot for software homing: everything idle/zero except the DI
+        # level (offset 1) driven by di_script, and the position (offsets 10..11).
+        if self.di_script:
+            self._di = self.di_script.pop(0)
+        vals = [0] * count
+        vals[1] = self._di
+        pos = self._position & 0xFFFFFFFF
+        vals[10] = (pos >> 16) & 0xFFFF
+        vals[11] = pos & 0xFFFF
+        return vals
 
     def write_register(self, slave_id, address, value):
         self.writes.append((address, value))
@@ -271,12 +307,82 @@ def test_move_to_objective_deenergizes_when_idle(monkeypatch):
     controller.close()
 
 
-def test_home_deenergizes_when_idle(monkeypatch):
+def _fast_homing(monkeypatch):
+    """Zero out the real-time settle/poll sleeps so homing tests run instantly."""
+    monkeypatch.setattr(otc, "HOMING_SETTLE_MARGIN_S", 0.0)
+    monkeypatch.setattr(otc, "HOMING_STOP_SETTLE_S", 0.0)
+    monkeypatch.setattr(otc, "HOMING_POLL_S", 0.0)
+
+
+def test_home_zeroes_at_edge_and_clamps(monkeypatch):
     controller, fake = _make_real_controller(monkeypatch)
+    _fast_homing(monkeypatch)
     fake.writes.clear()
+    # Snapshot sequence: already in the window (1) -> backoff sees released after one
+    # jog (1, 0) -> first fine jog lands on the trigger edge (1).
+    fake.di_script = [1, 1, 0, 1]
     controller.home()
+    # SET_ZERO twice: once at start (travel bound) and once at the trigger edge.
+    assert [v for (a, v) in fake.writes if a == REG_SET_ZERO] == [SET_ZERO_MAGIC, SET_ZERO_MAGIC]
+    # Ends clamped at home (position-mode 0x06/0x07/0x0F, no trigger), not de-energized.
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    assert controller.current_objective is None
+    controller.close()
+
+
+def test_home_sweeps_in_velocity_mode_when_off_sensor(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    # Off the window (0) -> sweep polls miss then hit (0, 1) -> backoff already
+    # released (0) -> fine jog hits the edge (1).
+    fake.di_script = [0, 0, 1, 0, 1]
+    controller.home()
+    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
+    assert (REG_DIRECTION, 0) in fake.writes  # sweep runs negative, toward the sensor
+    assert (REG_TARGET_SPEED, HOMING_SWEEP_SPEED) in fake.writes
+    controller.close()
+
+
+def test_home_timeout_leaves_motor_deenergized(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    _fast_homing(monkeypatch)
+    fake.di_script = [0]  # sensor never triggers; fake position never exceeds travel
+    with pytest.raises(TimeoutError):
+        controller.home(timeout_s=0.2)
+    # Failure cleanup: stopped and de-energized, NOT left clamped.
     assert fake.control_word_writes()[-1] == CW_DISABLE
     controller.close()
+
+
+def test_init_calibrates_factory_params(monkeypatch):
+    # Fake reads return 0 for every parameter, so init must write the full factory
+    # set (SingleMotor 2026-07-24/25 acceptance values) and persist it.
+    controller, fake = _make_real_controller(monkeypatch)
+    writes = fake.writes
+    # min_speed must be written before max_speed: the firmware rejects a max-speed
+    # write below the current min speed.
+    assert writes.index((REG_MIN_SPEED, EXPECTED_MIN_SPEED)) < writes.index((REG_MAX_SPEED, EXPECTED_MAX_SPEED))
+    assert (REG_CURRENT_RUN, EXPECTED_CURRENT_RUN) in writes
+    assert (REG_CURRENT_OVERLOAD, EXPECTED_CURRENT_OVERLOAD) in writes
+    # DI1 must be "origin switch" — a limit-mapped homing sensor faults FF0E.
+    assert (REG_DI_FUNCTION, DI1_FUNCTION_ORIGIN_SWITCH) in writes
+    # Direction is RAM-only: written after the EEPROM save so it is not persisted.
+    assert writes.index((REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC)) < writes.index((REG_DIRECTION, 1))
+    controller.close()
+
+
+def test_init_microstep_mismatch_writes_factory_value_and_raises(monkeypatch):
+    # A wrong microstep invalidates calibrated pulses and the homing math, and the
+    # register only takes effect after a power cycle: write it, save, fail fast.
+    fake = _FakeModbus()
+    fake.microstep_raw = 7
+    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
+    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
+    with pytest.raises(RuntimeError, match="[Pp]ower-cycle"):
+        ObjectiveTurret4PosController(serial_number="SIM", stage=None)
+    assert (REG_MICROSTEP, MICROSTEP_REG_VALUE) in fake.writes
+    assert (REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC) in fake.writes
 
 
 def test_deenergize_is_best_effort(monkeypatch):

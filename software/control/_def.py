@@ -1254,7 +1254,10 @@ OBJECTIVE_TURRET_OFFSET_PULSES = 0
 # SingleMotor tool). Slots absent from the dict fall back to the theoretical
 # (slot-1)*pulses_per_position + OBJECTIVE_TURRET_OFFSET_PULSES; a listed slot uses
 # its calibrated value verbatim (the global offset is not added). Empty on all
-# normal units; set per machine in the .ini, e.g. {"1": -12, "3": 6640}.
+# normal units; set per machine in the .ini, e.g. {"1": -12, "3": 4415}.
+# NOTE: software homing (2026-07) zeroes at the sensor's fine-search trigger edge,
+# which sits slightly differently from the old driver-homing zero — re-measure
+# calibrated slots after upgrading a machine that had values from the old scheme.
 OBJECTIVE_TURRET_CALIBRATED_PULSES = {}
 # Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
 # slot change first overshoots below the target by this angle and then approaches
