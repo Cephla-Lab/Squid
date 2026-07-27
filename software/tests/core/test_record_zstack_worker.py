@@ -39,14 +39,18 @@ def test_zstack_plane_count_validation():
 def _build_simulated_microscope(crop_w: int, crop_h: int):
     """Build a simulated microscope and shrink the camera frame for a fast test.
 
-    The simulated camera reports its resolution from crop_width/crop_height, so
-    mutating the (loaded) config shrinks every captured/recorded frame.
+    The simulated camera reports its resolution as crop_width/crop_height
+    divided by binning, so pin binning to 1x1 — some machine configs default
+    the camera model to 2x2 binning, which would silently halve every frame —
+    and mutate the (loaded) config so each captured/recorded frame is exactly
+    (crop_h, crop_w).
     """
     import control.microscope
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     scope.camera._config.crop_width = crop_w
     scope.camera._config.crop_height = crop_h
+    scope.camera.set_binning(1, 1)
     return scope
 
 
@@ -171,7 +175,7 @@ def test_record_zstack_worker_smoke(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_record_zstack_controller_smoke(tmp_path):
+def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
     pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
     import control._def
     import tests.control.test_stubs as ts
@@ -182,6 +186,15 @@ def test_record_zstack_controller_smoke(tmp_path):
         frame_count,
     )
     from control.core.scan_coordinates import ScanCoordinates
+
+    # Run SaveZarrJob in-process: this test runs after the worker smoke has
+    # already done in-process tensorstore I/O (its RecordingWriter), and a
+    # JobRunner forked from a tensorstore-initialized parent inherits its
+    # global state without its worker threads — the child then deadlocks
+    # inside ts.open() and the test wedges for minutes in bounded waits.
+    # The forked-subprocess path is exercised by the worker smoke above,
+    # whose fork happens before any in-process tensorstore use.
+    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
 

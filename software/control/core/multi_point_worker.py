@@ -161,6 +161,10 @@ class MultiPointWorkerBase:
         # need these attributes to exist; placeholders keep them self-contained.
         self._backpressure: Optional[BackpressureController] = None
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # Kept for the in-process job fallback: JobRunner.dispatch() injects
+        # zarr_writer_info into each job, so when multiprocessing is off the
+        # frame callback must inject it itself before job.run().
+        self._zarr_writer_info: Optional[ZarrWriterInfo] = None
         self._abort_on_failed_job = True
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
 
