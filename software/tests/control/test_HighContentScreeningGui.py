@@ -113,34 +113,6 @@ def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_y
     assert len(click_calls) == 1, f"image_click_coordinates wired {len(click_calls)} times, expected 1"
 
 
-def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm_exit_yes):
-    """The stage may own its own transport (e.g. the PI C-414 serial handle), so cleanup
-    must call stage.close() — before the microcontroller, mirroring Microscope.close()."""
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
-    qtbot.add_widget(gui)
-
-    calls = []
-    # Shadow the inherited no-op close() so the test can observe the call.
-    gui.stage.close = lambda: calls.append("stage")
-    original_micro_close = gui.microcontroller.close
-
-    def recording_micro_close():
-        calls.append("microcontroller")
-        original_micro_close()
-
-    monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
-
-    # Keep teardown's closeEvent from re-running cleanup against closed devices. Instance
-    # attr, not monkeypatch: it must outlive monkeypatch teardown, which runs before qtbot
-    # closes widgets.
-    gui.closeEvent = lambda event: event.accept()
-
-    gui._cleanup_common(for_restart=True)
-
-    assert calls == ["stage", "microcontroller"]
-
-
 def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
     """Switching to the Record + Z-Stack tab must not hide the well selector dock.
 
@@ -197,3 +169,31 @@ def test_record_zstack_acquisition_finish_keeps_well_selector(qtbot, monkeypatch
     assert win.dock_wellSelection.isHidden()
     win.toggleAcquisitionStart(False)  # acquisition ends: selector must return
     assert not win.dock_wellSelection.isHidden(), "well selector not restored after Record+Z-Stack acquisition"
+
+
+def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm_exit_yes):
+    """The stage may own its own transport (e.g. the PI C-414 serial handle), so cleanup
+    must call stage.close() — before the microcontroller, mirroring Microscope.close()."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    calls = []
+    # Shadow the inherited no-op close() so the test can observe the call.
+    gui.stage.close = lambda: calls.append("stage")
+    original_micro_close = gui.microcontroller.close
+
+    def recording_micro_close():
+        calls.append("microcontroller")
+        original_micro_close()
+
+    monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
+
+    # Keep teardown's closeEvent from re-running cleanup against closed devices. Instance
+    # attr, not monkeypatch: it must outlive monkeypatch teardown, which runs before qtbot
+    # closes widgets.
+    gui.closeEvent = lambda event: event.accept()
+
+    gui._cleanup_common(for_restart=True)
+
+    assert calls == ["stage", "microcontroller"]

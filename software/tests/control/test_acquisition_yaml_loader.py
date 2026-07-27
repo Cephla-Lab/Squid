@@ -294,7 +294,9 @@ recording:
     name: BF LED matrix full
   fps: 15.0
   duration_s: 2.0
-  z_offset_um: 1.5
+  bottom_z_offset_um: 1.5
+  nz: 3
+  dz_um: 0.8
 z_stack:
   enabled: true
   channels:
@@ -326,7 +328,9 @@ wellplate_scan:
         assert result.recording_channel == {"name": "BF LED matrix full"}
         assert result.fps == 15.0
         assert result.duration_s == 2.0
-        assert result.recording_z_offset_um == 1.5
+        assert result.recording_bottom_z_offset_um == 1.5
+        assert result.recording_nz == 3
+        assert result.recording_dz_um == 0.8
         assert result.zstack_enabled is True
         assert result.zstack_channels == [{"name": "Fluorescence 488 nm Ex"}]
         assert result.z_min_um == -2.0
