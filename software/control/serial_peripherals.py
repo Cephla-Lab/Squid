@@ -342,6 +342,14 @@ class XLight:
             raise ValueError(
                 f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}"
             )
+        # Skip the serial write and the wheel settle sleep when the wheel is already at the
+        # requested position. This is called on every channel switch during multipoint
+        # acquisitions, so re-sending an unchanged position would otherwise cost
+        # sleep_time_for_wheel (250 ms by default) per channel. The cached position is only
+        # assigned after a command has been sent, so the first call always reaches the hardware.
+        cached_position = getattr(self, "emission_wheel_pos", None)
+        if not extraction and cached_position is not None and str(cached_position) == str(position):
+            return self.emission_wheel_pos
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -356,6 +364,13 @@ class XLight:
             self.serial_connection.write("B" + position_to_write + "\r")
             time.sleep(self.sleep_time_for_wheel)
             self.emission_wheel_pos = position
+
+        if extraction:
+            # An extraction move ("m" suffix) leaves the wheel in a special state, so force the
+            # next plain set_emission_filter at this position to reach the hardware.
+            result = self.emission_wheel_pos
+            self.emission_wheel_pos = None
+            return result
 
         return self.emission_wheel_pos
 
