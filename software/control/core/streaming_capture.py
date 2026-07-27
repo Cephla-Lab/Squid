@@ -358,6 +358,9 @@ class StreamingCapture:
         self._emitted = 0
         self._done = threading.Event()
         self._aborted = False
+        # Expected total frame count is fixed for the capture's lifetime, so
+        # resolve it once here instead of re-probing on every hot-path frame.
+        self._expected: Optional[int] = stop_condition.expected() if hasattr(stop_condition, "expected") else None
 
     def _on_frame(self, camera_frame) -> None:
         """Hot-thread callback: route + enqueue only.  Must not block."""
@@ -377,8 +380,7 @@ class StreamingCapture:
             return
         idx = self._router.route(camera_frame.timestamp)
         if idx is not None:
-            expected = self._stop.expected() if hasattr(self._stop, "expected") else None
-            if expected is not None and idx[0] >= expected:
+            if self._expected is not None and idx[0] >= self._expected:
                 # The router's slot ran past the dataset (a delivery stall
                 # pushed the timeline beyond T): nothing left to record into.
                 self._done.set()
@@ -417,7 +419,7 @@ class StreamingCapture:
             # source.stop() above quiesces the camera delivery thread, so reading
             # self._emitted here is safe without a lock: no callback thread mutates
             # it after this point (and CPython int load/store is atomic anyway).
-            expected = self._stop.expected() if hasattr(self._stop, "expected") else None
+            expected = self._expected
             if self._aborted:
                 # Aborted mid-capture: seal the recording as incomplete, not complete.
                 self._writer.abort()

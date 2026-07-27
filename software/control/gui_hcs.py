@@ -1,4 +1,5 @@
 # set QT_API environment variable
+import dataclasses
 import os
 import subprocess
 import sys
@@ -46,7 +47,7 @@ from control.laser_engine_widget import LaserEngineWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
-from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_controller import MultiPointController, NoOpCallbacks
 from control.core.mosaic_utils import parse_well_id
 from control.core.record_zstack_controller import RecordZStackController
 from control.core.multi_point_utils import (
@@ -619,19 +620,12 @@ class QtRecordZStackController(RecordZStackController, QObject):
         objective_store,
         scan_coordinates,
     ):
-        # Build a MultiPointControllerFunctions callbacks object whose
-        # signal_acquisition_finished emits our Qt signal.  All other
-        # callbacks are no-ops because RecordZStackWorker only ever calls
-        # signal_acquisition_finished.
-        callbacks = MultiPointControllerFunctions(
-            signal_acquisition_start=lambda *a, **kw: None,
-            signal_acquisition_finished=self._on_acquisition_finished,
-            signal_new_image=lambda *a, **kw: None,
-            signal_current_configuration=lambda *a, **kw: None,
-            signal_current_fov=lambda *a, **kw: None,
-            signal_overall_progress=lambda *a, **kw: None,
-            signal_region_progress=lambda *a, **kw: None,
-        )
+        # Map signal_acquisition_finished onto our Qt signal; everything else
+        # stays a no-op.  Note the worker's inherited capture machinery also
+        # invokes signal_current_configuration / signal_new_image — this mode
+        # has no live-display routing yet, so those emissions are deliberately
+        # dropped here.
+        callbacks = dataclasses.replace(NoOpCallbacks, signal_acquisition_finished=self._on_acquisition_finished)
         RecordZStackController.__init__(
             self,
             microscope=microscope,
@@ -2455,7 +2449,9 @@ class HighContentScreeningGui(QMainWindow):
         if is_record_zstack_acquisition:
             # Regions were cleared above; rebuild the FOV grid for the current
             # well selection so the navigation viewer shows scan coverage.
-            self.recordZStackWidget._update_scan_regions()
+            # (Public entry point: it no-ops unless this tab is current, which
+            # it is here — the tab switch is what brought us into this branch.)
+            self.recordZStackWidget.on_well_selection_changed()
 
         self.toggleWellSelector(
             self._tab_uses_well_selector(index) and self.wellSelectionWidget.format != "glass slide"

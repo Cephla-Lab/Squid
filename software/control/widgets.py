@@ -834,18 +834,19 @@ _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
 
 
 def _parse_well_name(well_name: str):
-    """Parse well name like 'C4' to (row, col) indices. Returns (None, None) if unparseable."""
-    match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
-    if not match:
-        return None, None
+    """Parse well name like 'C4' to (row, col) indices. Returns (None, None) if unparseable.
 
-    row_str, col_str = match.groups()
-    row = 0
-    for char in row_str:
-        row = row * 26 + (ord(char) - ord("A") + 1)
-    row -= 1
-    col = int(col_str) - 1
-    return row, col
+    The strict letters-then-digits regex rejects malformed names outright; the
+    row/column arithmetic is delegated to the canonical parse_well_id.
+    """
+    if not re.match(r"^[A-Za-z]+\d+$", well_name):
+        return None, None
+    from control.core.mosaic_utils import parse_well_id
+
+    try:
+        return parse_well_id(well_name)
+    except ValueError:  # e.g. column 0 ("A0")
+        return None, None
 
 
 def _load_well_regions(well_selection_widget, regions) -> None:
@@ -17174,65 +17175,6 @@ class WarningErrorWidget(QWidget):
         return msg
 
 
-# ---------------------------------------------------------------------------
-# Pure validation helper — factored out so tests can call it without a real
-# QWidget (Qt display is optional; a QApplication is still needed for the
-# widget itself, but not for the rules below).
-# ---------------------------------------------------------------------------
-
-
-def _validate_record_zstack_params(
-    *,
-    base_path: str,
-    selected_well_count: int,
-    recording_enabled: bool,
-    fps: float,
-    duration_s: float,
-    recording_channel_name: Optional[str],
-    zstack_enabled: bool,
-    z_min: float,
-    z_max: float,
-    step: float,
-    zstack_channel_names: List[str],
-    use_laser_af: bool,
-    laser_af_has_reference: bool,
-    recording_nz: int = 1,
-    recording_dz_um: float = 1.0,
-) -> Optional[str]:
-    """Return an error string describing the first validation failure, or None if valid."""
-    if not base_path:
-        return "Base path must be set before starting acquisition."
-    if selected_well_count < 1:
-        return "At least one well must be selected."
-    if not recording_enabled and not zstack_enabled:
-        return "At least one phase (Recording or Z-Stack) must be enabled."
-    if recording_enabled:
-        if fps <= 0:
-            return "Recording FPS must be greater than 0."
-        if duration_s <= 0:
-            return "Recording duration must be greater than 0."
-        from control.core.record_zstack_controller import frame_count as _frame_count
-
-        if _frame_count(fps, duration_s) < 1:
-            return f"Recording: fps×duration yields 0 frames (fps={fps}, duration={duration_s}s). Increase one or both."
-        if not recording_channel_name:
-            return "A channel must be chosen for the Recording phase."
-        if recording_nz < 1:
-            return "Recording Nz must be at least 1."
-        if recording_nz > 1 and recording_dz_um <= 0:
-            return "Recording dz must be > 0 when Nz > 1."
-    if zstack_enabled:
-        if z_max <= z_min:
-            return "Z-Stack: z_max must be greater than z_min."
-        if step <= 0:
-            return "Z-Stack: step must be greater than 0."
-        if not zstack_channel_names:
-            return "Z-Stack: at least one channel must be selected."
-    if use_laser_af and not laser_af_has_reference:
-        return "Laser AF is enabled but no reference position has been captured."
-    return None
-
-
 def _set_layout_widgets_visible(layout, visible: bool) -> None:
     """Recursively show/hide every widget inside *layout*, including nested
     sub-layouts.
@@ -17301,10 +17243,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.tab_widget: Optional[QTabWidget] = tab_widget
         self.laser_autofocus_controller = laser_autofocus_controller
 
-        # Track z-stack channel names added via _add_zstack_channel_row()
-        self._zstack_channel_names: List[str] = []
-
         self._add_components()
+
+    @property
+    def _zstack_channel_names(self) -> List[str]:
+        """Channel names currently in the Z-Stack table (column 0), in row order.
+
+        Derived from the table itself so there is a single source of truth —
+        add/remove row operations only touch the table.
+        """
+        table = self.zstack_channel_table
+        items = (table.item(row, 0) for row in range(table.rowCount()))
+        return [item.text() for item in items if item is not None]
 
     # ---------------------------------------------------------------------- build UI
 
@@ -18083,28 +18033,26 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     # ---------------------------------------------------------------------- recording table accessors
 
     def _recording_channel_name(self) -> Optional[str]:
-        """Return the selected channel name from the recording table row, or None if empty."""
-        combo = self.recording_channel_table.cellWidget(0, 0)
-        if combo is None or combo.count() == 0:
+        """Return the selected channel name from the recording row, or None if empty."""
+        if self._recording_ch_combo.count() == 0:
             return None
-        return combo.currentText() or None
+        return self._recording_ch_combo.currentText() or None
 
     def _recording_exposure(self) -> float:
-        spin = self.recording_channel_table.cellWidget(0, 1)
-        return spin.value() if spin is not None else 50.0
+        return self._recording_exp_spin.value()
 
     def _recording_gain(self) -> float:
-        spin = self.recording_channel_table.cellWidget(0, 2)
-        return spin.value() if spin is not None else 0.0
+        return self._recording_gain_spin.value()
 
     def _recording_illumination(self) -> float:
-        spin = self.recording_channel_table.cellWidget(0, 3)
-        return spin.value() if spin is not None else 50.0
+        return self._recording_illum_spin.value()
 
     def _browse_saving_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Saving Directory", self.lineEdit_savingDir.text())
         if path:
             self.lineEdit_savingDir.setText(path)
+            # Remember across restarts, like the other multipoint widgets' set_saving_dir.
+            save_last_used_saving_path(path)
 
     def _on_save_settings_clicked(self) -> None:
         """Save full current settings to a user-chosen YAML file (no acquisition run required)."""
@@ -18222,7 +18170,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def _add_zstack_channel_row(
         self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
     ) -> None:
-        """Add a channel row to the Z-Stack channel table (also updates internal list).
+        """Add a channel row to the Z-Stack channel table.
 
         Each row contains: channel name (read-only) | exposure spinbox | gain spinbox |
         illumination spinbox | ⟳ Live button + ✕ remove button.
@@ -18230,7 +18178,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """
         if name in self._zstack_channel_names:
             return
-        self._zstack_channel_names.append(name)
         row = self.zstack_channel_table.rowCount()
         self.zstack_channel_table.insertRow(row)
 
@@ -18291,19 +18238,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.zstack_channel_table.setCellWidget(row, 4, btn_container)
 
     def _remove_zstack_channel_row(self, name: str) -> None:
-        """Remove the row for *name* from the table and internal list.
-
-        No-op if *name* is not present.
-        """
-        if name not in self._zstack_channel_names:
-            return
+        """Remove the row for *name* from the table. No-op if *name* is not present."""
         # Find the row by scanning col-0 items
         for row in range(self.zstack_channel_table.rowCount()):
             item = self.zstack_channel_table.item(row, 0)
             if item is not None and item.text() == name:
                 self.zstack_channel_table.removeRow(row)
                 break
-        self._zstack_channel_names.remove(name)
 
     def _set_zstack_row_values(self, name: str, exposure: float, gain: float, illumination: float) -> None:
         """Set inline editor values for the z-stack row identified by *name*.
@@ -18583,18 +18524,20 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def validate(self) -> Optional[str]:
         """Return an error string if the current widget state is invalid, or None.
 
-        Delegates to the pure helper _validate_record_zstack_params so the
-        rules can be tested independently of Qt.
+        Delegates to the pure helper validate_record_zstack_params (in
+        record_zstack_controller) so the rules can be tested without Qt.
 
         Current Position mode doesn't use well selection at all (it acquires
         at the live stage position), so it's treated as always having its one
         implicit "well" satisfied.
         """
+        from control.core.record_zstack_controller import validate_record_zstack_params
+
         if self.combobox_xy_mode.currentText() == "Current Position":
             selected_well_count = 1
         else:
             selected_well_count = self._get_selected_well_count()
-        return _validate_record_zstack_params(
+        return validate_record_zstack_params(
             base_path=self.lineEdit_savingDir.text().strip(),
             selected_well_count=selected_well_count,
             recording_enabled=self.checkbox_recording.isChecked(),
@@ -18730,14 +18673,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # (the field is hidden and stale when Laser AF is off, so a hidden
             # value must not silently apply -- see the comment there).
             if self.checkbox_recording.isChecked():
+                from control.core.record_zstack_controller import recording_plane_offsets_um
+
                 nz = self.entry_recording_Nz.value()
                 bottom = self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
                 per_fov_s = nz * self.entry_duration.value()
+                # Derive the summary from the same helper the worker records with,
+                # so the confirmed range can never diverge from the planes visited.
+                offsets = recording_plane_offsets_um(bottom, nz, self.entry_recording_dz.value())
                 if nz > 1:
-                    top = bottom + (nz - 1) * self.entry_recording_dz.value()
-                    summary = f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
+                    summary = (
+                        f"{nz} planes: {offsets[0]:+.1f} … {offsets[-1]:+.1f} µm rel. reference"
+                        f" — {per_fov_s:.1f} s/FOV"
+                    )
                 else:
-                    summary = f"1 plane @ {bottom:+.1f} µm — {per_fov_s:.1f} s/FOV"
+                    summary = f"1 plane @ {offsets[0]:+.1f} µm — {per_fov_s:.1f} s/FOV"
                 reply = QMessageBox.question(
                     self,
                     "Confirm Recording",

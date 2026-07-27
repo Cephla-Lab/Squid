@@ -164,6 +164,82 @@ class MultiPointWorkerBase:
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()
 
+    def _create_backpressure(self, prewarmed_bp_values: Optional[BackpressureValues] = None) -> BackpressureController:
+        """Build the acquisition BackpressureController from the global throttling knobs.
+
+        When pre-warmed backpressure values are supplied they are reused, so the
+        controller tracks the same cross-process counters as the pre-warmed
+        JobRunner it is paired with.
+        """
+        bp_kwargs = {
+            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
+            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
+            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
+            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
+        }
+        if prewarmed_bp_values is not None:
+            bp_kwargs["bp_values"] = prewarmed_bp_values
+        return BackpressureController(**bp_kwargs)
+
+    def _channel_zarr_metadata(self, configs) -> Tuple[List[str], List[str], List[Optional[int]]]:
+        """Names, display colors, and illumination wavelengths for zarr channel metadata."""
+        illumination_config = self.microscope.config_repo.get_illumination_config()
+        names = [cfg.name for cfg in configs]
+        colors = [cfg.display_color for cfg in configs]
+        wavelengths = [
+            cfg.get_illumination_wavelength(illumination_config) if illumination_config else None for cfg in configs
+        ]
+        return names, colors, wavelengths
+
+    def _adopt_or_create_job_runner(
+        self,
+        prewarmed_job_runner: Optional[JobRunner],
+        prewarmed_bp_values: Optional[BackpressureValues],
+        zarr_writer_info: Optional[ZarrWriterInfo],
+        cleanup_stale_ome_files: bool,
+        job_name: str,
+    ) -> JobRunner:
+        """Adopt the pre-warmed JobRunner when it is ready, else create and start a fresh one.
+
+        IMPORTANT: the pre-warmed runner is adopted only when BOTH it AND its
+        backpressure values were supplied — a runner without matching values would
+        track different counters than the BackpressureController built from them
+        (see _create_backpressure). A supplied runner that is not ready (possibly
+        hung during warmup) is shut down to avoid a resource leak before a fresh
+        runner is created.
+        """
+        if prewarmed_job_runner is not None and prewarmed_bp_values is not None:
+            if prewarmed_job_runner.is_ready():
+                self._log.info(f"Using pre-warmed job runner for {job_name} jobs")
+                # Configure it with the current acquisition settings.
+                prewarmed_job_runner.set_acquisition_info(self.acquisition_info)
+                if zarr_writer_info:
+                    prewarmed_job_runner.set_zarr_writer_info(zarr_writer_info)
+                return prewarmed_job_runner
+            self._log.warning(
+                f"Pre-warmed job runner not ready (possibly hung during warmup), "
+                f"shutting it down and creating new one for {job_name}"
+            )
+            try:
+                prewarmed_job_runner.shutdown(timeout_s=1.0)
+            except Exception as e:
+                self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
+        self._log.info(f"Creating job runner for {job_name} jobs")
+        job_runner = JobRunner(
+            self.acquisition_info,
+            cleanup_stale_ome_files=cleanup_stale_ome_files,
+            # Share the current log file with the subprocess worker.
+            log_file_path=squid.logging.get_current_log_file_path(),
+            # Pass backpressure shared values for cross-process tracking.
+            bp_pending_jobs=self._backpressure.pending_jobs_value,
+            bp_pending_bytes=self._backpressure.pending_bytes_value,
+            bp_capacity_event=self._backpressure.capacity_event,
+            zarr_writer_info=zarr_writer_info,
+        )
+        # Subprocess starts warming up in background - don't block here.
+        job_runner.start()
+        return job_runner
+
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
 
@@ -665,23 +741,12 @@ class MultiPointWorker(MultiPointWorkerBase):
         # Initialize backpressure controller for throttling acquisition when queue fills up.
         # If pre-warmed values are provided, use them for consistent tracking with the
         # pre-warmed job runner. Otherwise, BackpressureController creates its own values.
-        bp_kwargs = {
-            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
-            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
-            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
-            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
-        }
-        if prewarmed_bp_values is not None:
-            bp_kwargs["bp_values"] = prewarmed_bp_values
-        self._backpressure = BackpressureController(**bp_kwargs)
+        self._backpressure = self._create_backpressure(prewarmed_bp_values)
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
-
-        # Get the current log file path to share with subprocess workers
-        log_file_path = squid.logging.get_current_log_file_path()
 
         # Build ZarrWriterInfo if using ZARR_V3 format
         # Output structure depends on acquisition type and settings:
@@ -701,15 +766,9 @@ class MultiPointWorker(MultiPointWorkerBase):
                 region_fov_counts[str(region_id)] = len(coords)
 
             # Extract channel metadata for zarr output
-            channel_names = [cfg.name for cfg in self.selected_configurations]
-            channel_colors = [cfg.display_color for cfg in self.selected_configurations]
-
-            # Get wavelengths from illumination config
-            channel_wavelengths = []
-            illumination_config = self.microscope.config_repo.get_illumination_config()
-            for cfg in self.selected_configurations:
-                wavelength = cfg.get_illumination_wavelength(illumination_config) if illumination_config else None
-                channel_wavelengths.append(wavelength)
+            channel_names, channel_colors, channel_wavelengths = self._channel_zarr_metadata(
+                self.selected_configurations
+            )
 
             zarr_writer_info = ZarrWriterInfo(
                 base_path=self.experiment_path,
@@ -734,54 +793,19 @@ class MultiPointWorker(MultiPointWorkerBase):
                 mode_str = "per-FOV 5D (OME-NGFF compliant)"
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
 
-        # Use pre-warmed job runner if available, otherwise create new ones.
-        # IMPORTANT: Only use pre-warmed runner if BOTH runner AND backpressure values
-        # are available. Using a runner without matching backpressure values would cause
-        # the BackpressureController to track different counters than the JobRunner.
-        can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
-        used_prewarmed = False
-        for job_class in job_classes:
+        # Use the pre-warmed job runner if available (first job class only),
+        # otherwise create new ones; see _adopt_or_create_job_runner for the
+        # pairing/readiness rules.
+        for i, job_class in enumerate(job_classes):
             job_runner = None
             if Acquisition.USE_MULTIPROCESSING:
-                # Try to use pre-warmed runner for the first job class
-                if can_use_prewarmed and not used_prewarmed:
-                    if prewarmed_job_runner.is_ready():
-                        self._log.info(f"Using pre-warmed job runner for {job_class.__name__} jobs")
-                        job_runner = prewarmed_job_runner
-                        # Configure it with current acquisition settings
-                        job_runner.set_acquisition_info(self.acquisition_info)
-                        if zarr_writer_info:
-                            job_runner.set_zarr_writer_info(zarr_writer_info)
-                        used_prewarmed = True
-                    else:
-                        self._log.warning(
-                            f"Pre-warmed job runner not ready (possibly hung during warmup), "
-                            f"shutting it down and creating new one for {job_class.__name__}"
-                        )
-                        # Shutdown the hung pre-warmed runner to avoid resource leak
-                        try:
-                            prewarmed_job_runner.shutdown(timeout_s=1.0)
-                        except Exception as e:
-                            self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
-                        # Don't try to use pre-warmed runner again for subsequent job classes
-                        can_use_prewarmed = False
-
-                if job_runner is None:
-                    self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-                    job_runner = control.core.job_processing.JobRunner(
-                        self.acquisition_info,
-                        cleanup_stale_ome_files=use_ome_tiff,
-                        log_file_path=log_file_path,
-                        # Pass backpressure shared values for cross-process tracking
-                        bp_pending_jobs=self._backpressure.pending_jobs_value,
-                        bp_pending_bytes=self._backpressure.pending_bytes_value,
-                        bp_capacity_event=self._backpressure.capacity_event,
-                        # Pass zarr writer info for ZARR_V3 format
-                        zarr_writer_info=zarr_writer_info,
-                    )
-                    job_runner.start()
-                    # Subprocess starts warming up in background - don't block here
-
+                job_runner = self._adopt_or_create_job_runner(
+                    prewarmed_job_runner if i == 0 else None,
+                    prewarmed_bp_values if i == 0 else None,
+                    zarr_writer_info,
+                    cleanup_stale_ome_files=use_ome_tiff,
+                    job_name=job_class.__name__,
+                )
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup

@@ -22,7 +22,6 @@ from typing import Callable, Dict, List, Optional, Tuple, Type
 import numpy as np
 
 import squid.logging
-import control._def
 from control._def import (
     Acquisition,
     SCAN_STABILIZATION_TIME_MS_X,
@@ -136,6 +135,9 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         # Probing captures a frame, so it happens in run() after live view stops.
         self._frame_shape: Optional[Tuple[int, int, np.dtype]] = None
+        # Achievable recording fps, probed once on the first FOV (the recording
+        # exposure is fixed, so the camera's clamp can't change between FOVs).
+        self._effective_fps: Optional[float] = None
         # Set at the top of run(); _wait_for_dt paces timepoint STARTS from it.
         self._acq_start_time: Optional[float] = None
 
@@ -148,27 +150,10 @@ class RecordZStackWorker(MultiPointWorkerBase):
 
     # ------------------------------------------------------------------ setup
     def _setup_zstack_job_runner(self, prewarmed_job_runner, prewarmed_bp_values) -> None:
-        bp_kwargs = {
-            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
-            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
-            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
-            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
-        }
-        if prewarmed_bp_values is not None:
-            bp_kwargs["bp_values"] = prewarmed_bp_values
-        self._backpressure = BackpressureController(**bp_kwargs)
+        self._backpressure = self._create_backpressure(prewarmed_bp_values)
 
         # Channel metadata for zarr output.
-        channel_names = [c.name for c in self.zstack_channels]
-        channel_colors = [c.display_color for c in self.zstack_channels]
-        channel_wavelengths: List[Optional[int]] = []
-        illumination_config = self.microscope.config_repo.get_illumination_config()
-        for c in self.zstack_channels:
-            try:
-                w = c.get_illumination_wavelength(illumination_config) if illumination_config else None
-            except Exception:
-                w = None
-            channel_wavelengths.append(w)
+        channel_names, channel_colors, channel_wavelengths = self._channel_zarr_metadata(self.zstack_channels)
 
         # FOV counts per region (non-HCS per-FOV 5D output -> count only used for 6D).
         region_fov_counts = {str(region_id): len(coords) for region_id, coords in self._scan.items()}
@@ -189,34 +174,15 @@ class RecordZStackWorker(MultiPointWorkerBase):
             channel_wavelengths=channel_wavelengths,
         )
 
-        log_file_path = squid.logging.get_current_log_file_path()
-        can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
-
         job_runner: Optional[JobRunner] = None
         if Acquisition.USE_MULTIPROCESSING:
-            if can_use_prewarmed and prewarmed_job_runner.is_ready():
-                log.info("Using pre-warmed job runner for SaveZarrJob jobs")
-                job_runner = prewarmed_job_runner
-                job_runner.set_acquisition_info(self.acquisition_info)
-                job_runner.set_zarr_writer_info(zarr_writer_info)
-            else:
-                if can_use_prewarmed:
-                    log.warning("Pre-warmed job runner not ready; shutting it down and creating a new one")
-                    try:
-                        prewarmed_job_runner.shutdown(timeout_s=1.0)
-                    except Exception as e:
-                        log.error(f"Error shutting down hung pre-warmed runner: {e}")
-                log.info("Creating job runner for SaveZarrJob jobs")
-                job_runner = JobRunner(
-                    self.acquisition_info,
-                    cleanup_stale_ome_files=False,
-                    log_file_path=log_file_path,
-                    bp_pending_jobs=self._backpressure.pending_jobs_value,
-                    bp_pending_bytes=self._backpressure.pending_bytes_value,
-                    bp_capacity_event=self._backpressure.capacity_event,
-                    zarr_writer_info=zarr_writer_info,
-                )
-                job_runner.start()
+            job_runner = self._adopt_or_create_job_runner(
+                prewarmed_job_runner,
+                prewarmed_bp_values,
+                zarr_writer_info,
+                cleanup_stale_ome_files=False,
+                job_name=SaveZarrJob.__name__,
+            )
 
         self._job_runners = [(SaveZarrJob, job_runner)]
 
@@ -369,29 +335,30 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # limit, PRECISE_FRAMERATE max) can never fill fps*duration frames within
         # duration seconds — the run would stall to the timeout and leave the
         # trailing planes blank.  The mode switch happens first because toupcam
-        # resets its frame-rate strategy on mode change.  This is established
-        # once per FOV (not per plane): every plane records at the same fps.
+        # resets its frame-rate strategy on mode change.  The probe runs once per
+        # acquisition (the recording exposure is fixed, so the achievable rate
+        # can't change between FOVs); later FOVs just re-assert the cached rate
+        # after their own mode switch.  Every plane records at the same fps.
         self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-        effective_fps = self.params.fps
-        try:
-            achievable_fps = self.camera.set_frame_rate(self.params.fps)
-            if achievable_fps and 0 < achievable_fps < self.params.fps:
-                log.warning(
-                    f"camera cannot deliver {self.params.fps:g} fps "
-                    f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"
-                )
-                effective_fps = achievable_fps
-        except Exception:
-            log.exception("set_frame_rate probe failed; assuming the requested fps")
-        if effective_fps != self.params.fps:
-            # The probe requested the original fps; align the camera hint with
-            # the clamped rate every plane will actually pace/size against.
-            # Each plane's ContinuousFrameSource is already_configured=True and
-            # will not repeat this call.
+        if self._effective_fps is None:
+            effective_fps = self.params.fps
             try:
-                self.camera.set_frame_rate(effective_fps)
+                achievable_fps = self.camera.set_frame_rate(self.params.fps)
+                if achievable_fps and 0 < achievable_fps < self.params.fps:
+                    log.warning(
+                        f"camera cannot deliver {self.params.fps:g} fps "
+                        f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"
+                    )
+                    effective_fps = achievable_fps
             except Exception:
-                log.exception("failed to re-apply clamped frame rate")
+                log.exception("set_frame_rate probe failed; assuming the requested fps")
+            self._effective_fps = effective_fps
+        else:
+            try:
+                self.camera.set_frame_rate(self._effective_fps)
+            except Exception:
+                log.exception("failed to re-apply cached frame rate")
+        effective_fps = self._effective_fps
         T = max(1, frame_count(effective_fps, self.params.duration_s))
 
         offsets = recording_plane_offsets_um(
@@ -432,9 +399,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
             except Exception:
                 log.exception("Failed to restore software-trigger acquisition mode after recording")
-            self.stage.move_z_to(z_ref)
-            self.wait_till_operation_is_completed()
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self.move_to_z_level(z_ref)
         return total_emitted
 
     def _record_one_plane(
@@ -520,31 +485,33 @@ class RecordZStackWorker(MultiPointWorkerBase):
         Each plane/channel goes through ``acquire_camera_image`` -> ``_image_callback``
         -> ``SaveZarrJob`` dispatch.  Restores Z to ``z_ref`` at the end.
         """
-        self.time_point = t_idx
         offsets = self._zstack_offsets
 
         # The inherited capture path (acquire_camera_image) branches on
         # liveController.trigger_mode, so the LiveController and the camera must agree
         # on software-trigger mode.  set_trigger_mode(SOFTWARE) sets both the camera
-        # acquisition mode and the microcontroller trigger mode.  No per-FOV restore:
-        # run()'s finally restores the user's trigger mode once at the end of the
-        # acquisition — restoring per FOV would flip-flop the camera and MCU 2x per
-        # FOV for no benefit.  Manage the streaming lifecycle locally so it never
+        # acquisition mode and the microcontroller trigger mode.  Skipped once the
+        # mode is already SOFTWARE (every FOV after the first): the camera side is
+        # re-asserted by record()'s finally, and re-sending the MCU command per FOV
+        # would be a pure no-op round trip.  No per-FOV restore either: run()'s
+        # finally restores the user's trigger mode once at the end of the
+        # acquisition.  Manage the streaming lifecycle locally so it never
         # interferes with the recording phase's CONTINUOUS streaming.
-        try:
-            self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
-        except Exception:
-            log.exception("Failed to set software-trigger mode for z-stack")
-            # Fall back to setting the camera directly so capture can still proceed.
+        if getattr(self.liveController, "trigger_mode", None) != TriggerMode.SOFTWARE:
             try:
-                self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-                # Keep the LiveController's view of the mode in sync with the
-                # camera: the inherited acquire_camera_image branches on
-                # liveController.trigger_mode to gate illumination, so a stale
-                # mode here would capture the entire z-stack dark.
-                self.liveController.trigger_mode = TriggerMode.SOFTWARE
+                self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
             except Exception:
-                log.exception("Failed to set camera software-trigger mode for z-stack")
+                log.exception("Failed to set software-trigger mode for z-stack")
+                # Fall back to setting the camera directly so capture can still proceed.
+                try:
+                    self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                    # Keep the LiveController's view of the mode in sync with the
+                    # camera: the inherited acquire_camera_image branches on
+                    # liveController.trigger_mode to gate illumination, so a stale
+                    # mode here would capture the entire z-stack dark.
+                    self.liveController.trigger_mode = TriggerMode.SOFTWARE
+                except Exception:
+                    log.exception("Failed to set camera software-trigger mode for z-stack")
         self.camera.start_streaming()
         cb_id = self.camera.add_frame_callback(self._image_callback)
         # Make sure the trigger gate starts open.
@@ -581,9 +548,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.camera.stop_streaming()
             except Exception:
                 log.exception("Failed to stop streaming after z-stack")
-            self.stage.move_z_to(z_ref)
-            self.wait_till_operation_is_completed()
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self.move_to_z_level(z_ref)
 
     # --------------------------------------------------------------- helpers
     def _move_xy(self, coord) -> None:
@@ -600,11 +565,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _move_z_to_offset(self, z_ref: float, offset_um: float) -> None:
-        """Move to ``z_ref + offset_um`` (offset in µm, z_ref in mm) via the stage."""
-        target_mm = z_ref + offset_um / 1000.0
-        self.stage.move_z_to(target_mm)
-        self.wait_till_operation_is_completed()
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        """Move to ``z_ref + offset_um`` (offset in µm, z_ref in mm) via the stage.
+
+        Delegates to the inherited ``move_to_z_level`` (blocking stage move +
+        Z stabilization sleep, same as MultiPointWorker's scan loop).
+        """
+        self.move_to_z_level(z_ref + offset_um / 1000.0)
 
     def _probe_frame_shape(self) -> Tuple[int, int, np.dtype]:
         """Return (Y, X, dtype) for the recording dataset from one real processed frame.
@@ -682,23 +648,23 @@ class RecordZStackWorker(MultiPointWorkerBase):
         """
         if t_idx == 0 or self.params.dt_s <= 0:
             return "run"
-        start = self._acq_start_time if self._acq_start_time is not None else time.monotonic()
-        if time.monotonic() > start + t_idx * self.params.dt_s:
+        # run() sets _acq_start_time before the timepoint loop, so pacing is
+        # always anchored to the acquisition start.
+        deadline = self._acq_start_time + t_idx * self.params.dt_s
+        if time.monotonic() > deadline:
             log.warning(
                 f"skipping time point {t_idx}: per-timepoint work exceeded dt={self.params.dt_s:g}s "
                 f"(grid-preserving skip, mirrors MultiPointWorker)"
             )
             return "skip"
-        return "run" if self._wait_for_dt(t_idx) else "abort"
+        return "run" if self._wait_for_dt(deadline) else "abort"
 
-    def _wait_for_dt(self, t_idx: int) -> bool:
-        """Sleep until time point ``t_idx``'s scheduled start (abort-aware).
+    def _wait_for_dt(self, deadline: float) -> bool:
+        """Sleep until *deadline* (a time.monotonic() timestamp), abort-aware.
 
         Uses time.monotonic() so an NTP clock step mid-acquisition cannot skew
         or collapse the remaining intervals.  Returns False on abort.
         """
-        start = self._acq_start_time if self._acq_start_time is not None else time.monotonic()
-        deadline = start + t_idx * self.params.dt_s
         while time.monotonic() < deadline:
             if self.abort_requested_fn():
                 return False

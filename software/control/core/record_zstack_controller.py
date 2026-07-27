@@ -9,6 +9,7 @@ import yaml
 
 import squid.logging
 import control._def
+from control.core.acquisition_setup import compute_pixel_size_um, PrewarmedJobRunnerSlot
 from control.models.acquisition_config import AcquisitionChannel
 from control.utils import serialize_for_yaml as _serialize_for_yaml
 
@@ -17,6 +18,61 @@ log = squid.logging.get_logger("RecordZStackController")
 
 def frame_count(fps: float, duration_s: float) -> int:
     return int(round(fps * duration_s))
+
+
+def validate_record_zstack_params(
+    *,
+    base_path: str,
+    selected_well_count: int,
+    recording_enabled: bool,
+    fps: float,
+    duration_s: float,
+    recording_channel_name: Optional[str],
+    zstack_enabled: bool,
+    z_min: float,
+    z_max: float,
+    step: float,
+    zstack_channel_names: List[str],
+    use_laser_af: bool,
+    laser_af_has_reference: bool,
+    recording_nz: int = 1,
+    recording_dz_um: float = 1.0,
+) -> Optional[str]:
+    """Return an error string describing the first validation failure, or None if valid.
+
+    Pure business rules for a record/z-stack acquisition, kept beside the
+    parameter dataclass and geometry helpers they validate (the widget's
+    ``validate()`` delegates here; no Qt required).
+    """
+    if not base_path:
+        return "Base path must be set before starting acquisition."
+    if selected_well_count < 1:
+        return "At least one well must be selected."
+    if not recording_enabled and not zstack_enabled:
+        return "At least one phase (Recording or Z-Stack) must be enabled."
+    if recording_enabled:
+        if fps <= 0:
+            return "Recording FPS must be greater than 0."
+        if duration_s <= 0:
+            return "Recording duration must be greater than 0."
+        if frame_count(fps, duration_s) < 1:
+            return f"Recording: fps×duration yields 0 frames (fps={fps}, duration={duration_s}s). Increase one or both."
+        if not recording_channel_name:
+            return "A channel must be chosen for the Recording phase."
+        if recording_nz < 1:
+            return "Recording Nz must be at least 1."
+        if recording_nz > 1 and recording_dz_um <= 0:
+            return "Recording dz must be > 0 when Nz > 1."
+    if zstack_enabled:
+        if z_max <= z_min:
+            return "Z-Stack: z_max must be greater than z_min."
+        if step <= 0:
+            return "Z-Stack: step must be greater than 0."
+        if not zstack_channel_names:
+            return "Z-Stack: at least one channel must be selected."
+    if use_laser_af and not laser_af_has_reference:
+        return "Laser AF is enabled but no reference position has been captured."
+    return None
 
 
 def zstack_plane_count(z_min_um: float, z_max_um: float, step_um: float) -> int:
@@ -54,14 +110,10 @@ def _build_objective_info(objective_store, camera) -> dict:
     objective_dict = getattr(objective_store, "objectives_dict", {}).get(current_objective, {})
 
     camera_binning = None
-    pixel_size_um = None
     if camera is not None and hasattr(camera, "get_binning"):
         camera_binning = list(camera.get_binning())
-    if camera is not None and hasattr(camera, "get_pixel_size_binned_um"):
-        try:
-            pixel_size_um = objective_store.get_pixel_size_factor() * camera.get_pixel_size_binned_um()
-        except Exception:
-            pixel_size_um = None
+    # compute_pixel_size_um tolerates camera=None (returns None on any failure).
+    pixel_size_um = compute_pixel_size_um(objective_store, camera)
 
     return {
         "name": current_objective,
@@ -201,45 +253,9 @@ class RecordZStackController:
 
         # Pre-warm a job runner subprocess at init so it is ready when the user
         # clicks "Start Acquisition" (mirrors MultiPointController.__init__).
-        self._prewarmed_job_runner = None
-        self._prewarmed_bp_values = None
+        self._prewarm = PrewarmedJobRunnerSlot(log)
         if control._def.Acquisition.USE_MULTIPROCESSING:
-            self._start_prewarmed_job_runner()
-
-    # ---------------------------------------------------------------------- pre-warm
-
-    def _start_prewarmed_job_runner(self) -> None:
-        from control.core.job_processing import JobRunner
-        from control.core.backpressure import create_backpressure_values
-
-        log.info("Pre-warming job runner subprocess for RecordZStack...")
-        self._prewarmed_bp_values = create_backpressure_values()
-        self._prewarmed_job_runner = JobRunner(
-            bp_pending_jobs=self._prewarmed_bp_values[0],
-            bp_pending_bytes=self._prewarmed_bp_values[1],
-            bp_capacity_event=self._prewarmed_bp_values[2],
-        )
-        self._prewarmed_job_runner.start()
-
-    def _get_prewarmed_job_runner(self):
-        """Consume the pre-warmed runner (start a fresh one for next time).
-
-        Returns (runner, bp_values) or (None, None) when multiprocessing is off.
-        """
-        runner = self._prewarmed_job_runner
-        bp_values = self._prewarmed_bp_values
-        self._prewarmed_job_runner = None
-        self._prewarmed_bp_values = None
-        if control._def.Acquisition.USE_MULTIPROCESSING:
-            self._start_prewarmed_job_runner()
-        return runner, bp_values
-
-    def _cleanup_prewarmed_runner(self, runner, timeout_s: float = 1.0, context: str = "") -> None:
-        if runner is not None:
-            try:
-                runner.shutdown(timeout_s=timeout_s)
-            except Exception as e:
-                log.error(f"Error shutting down pre-warmed runner {context}: {e}")
+            self._prewarm.start()
 
     # ---------------------------------------------------------------------- acquisition
 
@@ -315,10 +331,13 @@ class RecordZStackController:
         # (toggle_acquisition checks acquisition_in_progress() before calling here).
         self._abort_event.clear()
 
-        # Consume the pre-warmed runner; only pass it to the worker when
-        # USE_MULTIPROCESSING is True (otherwise it's None and passing it would
-        # create a resource leak if the worker ignores non-multiprocessing paths).
-        prewarmed_runner, prewarmed_bp_values = self._get_prewarmed_job_runner()
+        # Consume the pre-warmed runner only when the z-stack phase will actually
+        # dispatch jobs (the worker only builds a job runner for the z-stack
+        # phase): consuming it for a recording-only run would orphan the runner
+        # and immediately spawn a replacement subprocess for nothing.
+        prewarmed_runner, prewarmed_bp_values = (None, None)
+        if params.zstack_enabled and params.zstack_channels:
+            prewarmed_runner, prewarmed_bp_values = self._prewarm.take()
 
         try:
             self._worker = RecordZStackWorker(
@@ -331,12 +350,12 @@ class RecordZStackController:
                 abort_requested_fn=lambda: self._abort_event.is_set(),
                 request_abort_fn=self.request_abort,
                 scan_region_fov_coords=scan_region_fov_coords,
-                prewarmed_job_runner=prewarmed_runner if control._def.Acquisition.USE_MULTIPROCESSING else None,
-                prewarmed_bp_values=prewarmed_bp_values if control._def.Acquisition.USE_MULTIPROCESSING else None,
+                prewarmed_job_runner=prewarmed_runner,
+                prewarmed_bp_values=prewarmed_bp_values,
             )
         except Exception:
             # Clean up the pre-warmed runner if worker construction failed.
-            self._cleanup_prewarmed_runner(prewarmed_runner, context="after worker creation failure")
+            self._prewarm.shutdown_runner(prewarmed_runner, context="after worker creation failure")
             raise
 
         self._thread = Thread(target=self._worker.run, name="RecordZStack-acquisition", daemon=True)
@@ -351,15 +370,7 @@ class RecordZStackController:
 
     def close(self, timeout_s: float = 5.0) -> None:
         """Abort any running acquisition and shut down the pre-warmed job runner."""
-        if self._prewarmed_job_runner is not None:
-            log.info("Shutting down pre-warmed job runner for RecordZStackController...")
-        self._cleanup_prewarmed_runner(
-            self._prewarmed_job_runner,
-            timeout_s=1.0,
-            context="during close",
-        )
-        self._prewarmed_job_runner = None
-        self._prewarmed_bp_values = None
+        self._prewarm.close(timeout_s=1.0)
 
         if self.acquisition_in_progress():
             self._abort_event.set()
