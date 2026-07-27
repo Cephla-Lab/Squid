@@ -795,3 +795,36 @@ def test_frame_source_skips_reconfig_when_already_configured():
     src2.start(lambda f: None)
     src2.stop()
     assert cam2.mode_calls == 1 and cam2.rate_calls == 1  # default behavior unchanged
+
+
+def test_zarr_config_extra_squid_attrs_written(tmp_path):
+    """Per-plane recording metadata rides in _squid via extra_squid_attrs."""
+    import json
+    import pytest as _pytest
+
+    _pytest.importorskip("tensorstore")
+    from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+    cfg = ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "plane.ome.zarr"),
+        shape=(2, 1, 1, 4, 4),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+        extra_squid_attrs={"plane_index": 2, "plane_z_offset_um": 6.0, "n_planes": 3},
+    )
+    w = ZarrWriter(cfg)
+    w.initialize()
+    w.write_frame(np.zeros((4, 4), np.uint16), t=0, c=0, z=0)
+    w.finalize()
+
+    meta = json.load(open(tmp_path / "plane.ome.zarr" / "zarr.json"))
+    squid_attrs = meta["attributes"]["_squid"]
+    assert squid_attrs["plane_index"] == 2
+    assert squid_attrs["plane_z_offset_um"] == 6.0
+    assert squid_attrs["n_planes"] == 3
