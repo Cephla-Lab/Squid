@@ -173,6 +173,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             channel_colors=channel_colors,
             channel_wavelengths=channel_wavelengths,
         )
+        self._zarr_writer_info = zarr_writer_info
 
         job_runner: Optional[JobRunner] = None
         if Acquisition.USE_MULTIPROCESSING:
