@@ -440,7 +440,7 @@ class ZarrWriterInfo:
 
         Returns:
             Tuple of (rows, cols, wells) where:
-            - rows: sorted unique row letters (e.g., ["A", "B", "C"])
+            - rows: unique row letters in plate order (e.g., ["A", "B", "C"])
             - cols: sorted unique column numbers (e.g., [1, 2, 3])
             - wells: list of (row, col) tuples for all wells
         """
@@ -454,7 +454,9 @@ class ZarrWriterInfo:
             cols_set.add(int(col_num))
             wells.append((row_letter, int(col_num)))
 
-        rows = sorted(rows_set)
+        # Sort by row index, not lexicographically: on a 1536-well plate "AA" is row 26
+        # and belongs after "Z", but sorts before "B" as a string.
+        rows = sorted(rows_set, key=utils.row_to_index)
         cols = sorted(cols_set)
         return rows, cols, wells
 
