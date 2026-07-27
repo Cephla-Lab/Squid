@@ -144,6 +144,10 @@ class MultiPointWorkerBase:
         # need these attributes to exist; placeholders keep them self-contained.
         self._backpressure: Optional[BackpressureController] = None
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # Kept for the in-process job fallback: JobRunner.dispatch() injects
+        # zarr_writer_info into each job, so when multiprocessing is off the
+        # frame callback must inject it itself before job.run().
+        self._zarr_writer_info: Optional[ZarrWriterInfo] = None
         self._abort_on_failed_job = True
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
 
@@ -482,6 +486,15 @@ class MultiPointWorkerBase:
                                 return
                         else:
                             try:
+                                # In-process fallback (multiprocessing off): JobRunner.dispatch()
+                                # normally injects zarr_writer_info, so inject it here ourselves —
+                                # SaveZarrJob.run() refuses to run without it.
+                                if (
+                                    self._zarr_writer_info is not None
+                                    and hasattr(job, "zarr_writer_info")
+                                    and job.zarr_writer_info is None
+                                ):
+                                    job.zarr_writer_info = self._zarr_writer_info
                                 # NOTE(imo): We don't have any way of people using results, so for now just
                                 # grab and ignore it.
                                 result = job.run()
@@ -792,6 +805,8 @@ class MultiPointWorker(MultiPointWorkerBase):
             else:
                 mode_str = "per-FOV 5D (OME-NGFF compliant)"
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
+
+        self._zarr_writer_info = zarr_writer_info
 
         # Use the pre-warmed job runner if available (first job class only),
         # otherwise create new ones; see _adopt_or_create_job_runner for the
