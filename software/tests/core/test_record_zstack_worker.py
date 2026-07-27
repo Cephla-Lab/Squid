@@ -548,7 +548,7 @@ def test_wait_for_dt_paces_from_acquisition_start(tmp_path):
     worker._acq_start_time = _time.monotonic() - 100.0  # the work already overran the interval
 
     t0 = _time.monotonic()
-    ok = worker._wait_for_dt(1)
+    ok = worker._wait_for_dt(worker._acq_start_time + 1 * worker.params.dt_s)
     took = _time.monotonic() - t0
 
     assert ok

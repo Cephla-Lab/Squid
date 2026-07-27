@@ -3,7 +3,7 @@
 Covers: widget skeleton, validation, inline editors, Copy-from-Live, computed labels.
 
 Two test layers:
-1. Pure validation helper (_validate_record_zstack_params) — no Qt needed.
+1. Pure validation helper (validate_record_zstack_params) — no Qt needed.
 2. Full widget instantiation using qtbot (pytest-qt manages QApplication).
 
 The validation rules are extracted into a pure helper so they can be tested
@@ -11,9 +11,10 @@ without any Qt machinery. The widget tests verify that the widget reads its
 fields correctly and delegates to the same rules.
 
 NOTE on testability (as required by the task brief):
-The validation logic was factored into _validate_record_zstack_params() in
-widgets.py so that all constraint rules can be exercised without instantiating
-QWidget.  Creating a QApplication manually via PyQt5.QtWidgets.QApplication
+The validation logic lives in validate_record_zstack_params() in
+record_zstack_controller.py so that all constraint rules can be exercised
+without instantiating QWidget (the widget's validate() delegates to it).
+Creating a QApplication manually via PyQt5.QtWidgets.QApplication
 aborts because pytest-qt (loaded by napari's conftest) creates a PyQt6
 QApplication before the test body runs.  Using qtbot solves this — it is
 available in the test suite and is the pattern used by all other widget tests
@@ -27,7 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from qtpy.QtWidgets import QMessageBox
 
-from control.widgets import _validate_record_zstack_params
+from control.core.record_zstack_controller import validate_record_zstack_params as _validate_record_zstack_params
 
 
 # ---------------------------------------------------------------------------
@@ -2227,7 +2228,7 @@ def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatc
     None`` would still pass even if those kwargs were silently dropped from
     the call.  Intercept the helper instead and assert the actual kwargs it
     receives."""
-    import control.widgets as widgets_mod
+    import control.core.record_zstack_controller as rzc_mod
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**simulated_widget_deps)
@@ -2238,14 +2239,16 @@ def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatc
     w.entry_recording_Nz.setValue(3)
     w.entry_recording_dz.setValue(4.0)
 
-    real_validate = widgets_mod._validate_record_zstack_params
+    # validate() imports the helper from record_zstack_controller at call time,
+    # so patch it there.
+    real_validate = rzc_mod.validate_record_zstack_params
     captured = {}
 
     def spy(**kwargs):
         captured.update(kwargs)
         return real_validate(**kwargs)
 
-    monkeypatch.setattr(widgets_mod, "_validate_record_zstack_params", spy)
+    monkeypatch.setattr(rzc_mod, "validate_record_zstack_params", spy)
 
     result = w.validate()
 

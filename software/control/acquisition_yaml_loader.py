@@ -198,11 +198,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         return _parse_record_zstack_yaml_data(data, acq)
 
     # Parse camera binning
-    binning = obj.get("camera_binning")
-    if binning and isinstance(binning, list) and len(binning) == 2:
-        camera_binning = tuple(binning)
-    else:
-        camera_binning = None
+    camera_binning = _parse_camera_binning(obj)
 
     # Determine overlap_percent from the appropriate section
     if wellplate_scan:
