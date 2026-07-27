@@ -15950,9 +15950,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             if reply != QMessageBox.Yes:
                 return
 
-        # Save to YAML file
+        # Save to YAML file, seeding added channels into (and pruning removed channels
+        # from) the per-objective configs so per-objective edits to them can persist.
         try:
-            self.config_repo.save_general_config(self.config_repo.current_profile, self.general_config)
+            failed_objectives = self.config_repo.save_general_config_with_sync(
+                self.config_repo.current_profile, self.general_config
+            )
         except (PermissionError, OSError) as e:
             self._log.error(f"Failed to save channel configuration: {e}")
             QMessageBox.critical(self, "Save Failed", f"Cannot write configuration file:\n{e}")
@@ -15961,6 +15964,16 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             self._log.error(f"Unexpected error saving channel configuration: {e}")
             QMessageBox.critical(self, "Save Failed", f"Failed to save configuration:\n{e}")
             return
+
+        if failed_objectives:
+            # general.yaml was saved; only some per-objective files could not be updated.
+            QMessageBox.warning(
+                self,
+                "Partial Save",
+                "The channel list was saved, but the settings files for these objectives "
+                f"could not be updated: {', '.join(failed_objectives)}.\n"
+                "Settings for added/removed channels may be stale for those objectives.",
+            )
 
         self.signal_channels_updated.emit()
         self.accept()
@@ -17087,7 +17100,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Track z-stack channel names added via _add_zstack_channel_row()
         self._zstack_channel_names: List[str] = []
 
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._add_components()
 
     # ---------------------------------------------------------------------- build UI
@@ -17099,7 +17111,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        # QScrollArea's viewport and its content widget both auto-fill an
+        # opaque palette-Window background by default, which under Fusion is
+        # a visibly darker gray than the tab pane behind it — the other
+        # multipoint tabs don't use a QScrollArea, so they show the pane's
+        # own (lighter) background instead. Disabling auto-fill lets that
+        # pane background show through instead (a QSS "background:
+        # transparent" rule was tried first, but under Fusion it cascades
+        # into child widgets — buttons/combos/checkboxes lose their chrome
+        # and render as solid black boxes).
+        scroll.viewport().setAutoFillBackground(False)
         inner = QWidget()
+        inner.setAutoFillBackground(False)
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
@@ -17123,6 +17146,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.addWidget(_section_divider())
         layout.addWidget(self._build_start_group())
         layout.addStretch(1)
+
+        # Gray out Start Acquisition when neither phase is enabled, instead of
+        # only catching it via validate()'s error dialog after the click.
+        self.checkbox_recording.toggled.connect(lambda _checked: self._update_start_button_enabled())
+        self.checkbox_zstack.toggled.connect(lambda _checked: self._update_start_button_enabled())
+        self._update_start_button_enabled()
 
         scroll.setWidget(inner)
         outer_layout.addWidget(scroll)
@@ -17783,6 +17812,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         return grp
 
+    def _update_start_button_enabled(self) -> None:
+        """Gray out Start Acquisition when neither phase is enabled — mirrors
+        validate()'s "At least one phase (Recording or Z-Stack) must be
+        enabled" check, so this common case doesn't need a click + error dialog."""
+        self.btn_startAcquisition.setEnabled(self.checkbox_recording.isChecked() or self.checkbox_zstack.isChecked())
+
     # ---------------------------------------------------------------------- helpers
 
     def _populate_channel_combo(self, combo: QComboBox, names: Optional[List[str]] = None) -> None:
@@ -18314,6 +18349,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # _build_recording_group/_build_zstack_group didn't fire either.
             _set_layout_widgets_visible(self._recording_content_vbox, self.checkbox_recording.isChecked())
             _set_layout_widgets_visible(self._zstack_content_layout, self.checkbox_zstack.isChecked())
+            self._update_start_button_enabled()
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or
