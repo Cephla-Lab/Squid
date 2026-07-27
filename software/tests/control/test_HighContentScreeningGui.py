@@ -197,3 +197,53 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_record_zstack_preview_signal(qtbot, monkeypatch, confirm_exit_yes):
+    """Both preview paths funnel into QtRecordZStackController.image_to_display:
+    the z-stack signal_new_image callback and the recording display callable."""
+    from types import SimpleNamespace
+    import numpy as np
+
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+    monkeypatch.setattr(control._def, "RECORD_ZSTACK_DISPLAY_FPS", 3)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    ctrl = win.recordZStackController
+    assert ctrl is not None
+
+    frames = []
+    ctrl.image_to_display.connect(frames.append)
+
+    # Z-stack path: the per-plane callback emits the frame array.
+    fake = SimpleNamespace(frame=np.zeros((4, 4), np.uint16))
+    ctrl._callbacks.signal_new_image(fake, None)
+    assert len(frames) == 1
+
+    # Recording path: the plain callable handed to the worker emits too.
+    assert ctrl._display_frame_fn is not None
+    assert ctrl._display_fps == 3
+    ctrl._display_frame_fn(np.ones((4, 4), np.uint16))
+    assert len(frames) == 2
+
+
+def test_record_zstack_preview_disabled_at_zero_fps(qtbot, monkeypatch, confirm_exit_yes):
+    from types import SimpleNamespace
+    import numpy as np
+
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+    monkeypatch.setattr(control._def, "RECORD_ZSTACK_DISPLAY_FPS", 0)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    ctrl = win.recordZStackController
+    frames = []
+    ctrl.image_to_display.connect(frames.append)
+    ctrl._callbacks.signal_new_image(SimpleNamespace(frame=np.zeros((4, 4), np.uint16)), None)
+    assert frames == []  # z-stack handler stays a no-op at 0 fps
+    assert ctrl._display_frame_fn is None  # recording tap absent

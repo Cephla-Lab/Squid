@@ -605,11 +605,13 @@ class QtRecordZStackController(RecordZStackController, QObject):
     """Qt-aware wrapper for RecordZStackController.
 
     Emits ``acquisition_finished`` as a thread-safe Qt signal so the widget
-    can reset its Start button via a queued connection, regardless of which
-    thread the worker runs on.
+    can reset its Start button via a queued connection, and ``image_to_display``
+    for the throttled acquisition live preview (both phases), regardless of
+    which thread the worker runs on.
     """
 
     acquisition_finished = Signal()
+    image_to_display = Signal(np.ndarray)
 
     def __init__(
         self,
@@ -619,14 +621,21 @@ class QtRecordZStackController(RecordZStackController, QObject):
         objective_store,
         scan_coordinates,
     ):
-        # Build a MultiPointControllerFunctions callbacks object whose
-        # signal_acquisition_finished emits our Qt signal.  All other
-        # callbacks are no-ops because RecordZStackWorker only ever calls
+        import control._def
+
+        display_fps = float(getattr(control._def, "RECORD_ZSTACK_DISPLAY_FPS", 0))
+        preview_on = display_fps > 0
+
+        # signal_new_image carries the z-stack phase's per-plane frames (the
+        # inherited MultiPointWorkerBase capture path invokes it); the recording
+        # phase uses the plain display_frame_fn instead. Both funnel into
+        # image_to_display. All other callbacks are no-ops because
+        # RecordZStackWorker only ever calls signal_new_image and
         # signal_acquisition_finished.
         callbacks = MultiPointControllerFunctions(
             signal_acquisition_start=lambda *a, **kw: None,
             signal_acquisition_finished=self._on_acquisition_finished,
-            signal_new_image=lambda *a, **kw: None,
+            signal_new_image=self._on_new_image if preview_on else (lambda *a, **kw: None),
             signal_current_configuration=lambda *a, **kw: None,
             signal_current_fov=lambda *a, **kw: None,
             signal_overall_progress=lambda *a, **kw: None,
@@ -640,11 +649,21 @@ class QtRecordZStackController(RecordZStackController, QObject):
             objective_store=objective_store,
             scan_coordinates=scan_coordinates,
             callbacks=callbacks,
+            display_frame_fn=self._emit_display_frame if preview_on else None,
+            display_fps=display_fps,
         )
         QObject.__init__(self)
 
     def _on_acquisition_finished(self):
         self.acquisition_finished.emit()
+
+    def _on_new_image(self, frame, info) -> None:
+        """Z-stack per-plane preview (signature: CameraFrame, CaptureInfo)."""
+        self.image_to_display.emit(frame.frame)
+
+    def _emit_display_frame(self, image) -> None:
+        """Recording-phase preview: plain ndarray from StreamingCapture's tap."""
+        self.image_to_display.emit(image)
 
 
 class HighContentScreeningGui(QMainWindow):
@@ -1626,6 +1645,10 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.image_to_display.connect(
                 lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
             )
+            if self.recordZStackController is not None:
+                self.recordZStackController.image_to_display.connect(
+                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
+                )
             self.napariLiveWidget.signal_coordinates_clicked.connect(self.move_from_click_image)
             self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
 
@@ -1638,6 +1661,8 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
+            if self.recordZStackController is not None:
+                self.recordZStackController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
             self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
             self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
@@ -1808,6 +1833,13 @@ class HighContentScreeningGui(QMainWindow):
                 (self.napariLiveWidget.signal_coordinates_clicked, self.move_from_click_image),
                 (self.liveControlWidget.signal_live_configuration, self.napariLiveWidget.set_live_configuration),
             ]
+            if self.recordZStackController is not None:
+                self.napari_connections["napariLiveWidget"].append(
+                    (
+                        self.recordZStackController.image_to_display,
+                        lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
+                    )
+                )
 
             if USE_NAPARI_FOR_LIVE_CONTROL:
                 self.napari_connections["napariLiveWidget"].extend(
