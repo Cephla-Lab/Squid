@@ -2460,8 +2460,6 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleWellSelector(
             self._tab_uses_well_selector(index) and self.wellSelectionWidget.format != "glass slide"
         )
-        acquisitionWidget = self.recordTabWidget.widget(index)
-        acquisitionWidget.emit_selected_channels()
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()

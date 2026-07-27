@@ -103,6 +103,7 @@ class MultiPointWorkerBase:
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
+        self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
 
         # Optional SlackNotifier — subclasses set the real one if present.
         self._slack_notifier = None
@@ -330,6 +331,24 @@ class MultiPointWorkerBase:
         except Exception as e:
             self._log.error(f"Error closing backpressure controller: {e}")
 
+    def _abort_due_to_error(self) -> None:
+        """Abort the run due to an internal error (vs a user abort).
+
+        The worker only ever aborts itself on error conditions; user aborts arrive
+        via the external abort flag. Tagging the cause here lets
+        MultiPointWorker._compute_end_reason classify the end as "error" instead
+        of "user_abort".
+        """
+        self._abort_cause = "error"
+        self.request_abort_fn()
+
+    def _run_state_beat(self) -> None:
+        """Watchdog heartbeat — no-op in the base; MultiPointWorker overrides it.
+
+        Base capture mechanics call this per image so any subclass with a run
+        state writer gets beats without re-implementing the callback.
+        """
+
     def _image_callback(self, camera_frame: CameraFrame):
         try:
             if self._ready_for_next_trigger.is_set():
@@ -347,18 +366,19 @@ class MultiPointWorkerBase:
                 self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     return
 
                 image = camera_frame.frame
                 if not camera_frame or image is None:
                     self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     return
 
                 # Increment image counter for Slack notification stats
                 self._timepoint_image_count += 1
                 self.image_count += 1
+                self._run_state_beat()
 
                 with self._timing.get_timer("job creation and dispatch"):
                     # Wait for subprocess to be ready before first dispatch
@@ -382,7 +402,7 @@ class MultiPointWorkerBase:
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
                                 self._log.error("Failed to dispatch multiprocessing job!")
-                                self.request_abort_fn()
+                                self._abort_due_to_error()
                                 return
                         else:
                             try:
@@ -391,7 +411,7 @@ class MultiPointWorkerBase:
                                 result = job.run()
                             except Exception:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.request_abort_fn()
+                                self._abort_due_to_error()
                                 return
 
                 height, width = image.shape[:2]
@@ -431,7 +451,7 @@ class MultiPointWorkerBase:
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
                 self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-                self.request_abort_fn()
+                self._abort_due_to_error()
                 return
 
         # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
@@ -491,7 +511,7 @@ class MultiPointWorkerBase:
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
                 if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
                     self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
-                    self.request_abort_fn()
+                    self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
 
@@ -544,6 +564,7 @@ class MultiPointWorker(MultiPointWorkerBase):
         self.fluidics = scope.addons.fluidics
         self.use_fluidics = acquisition_parameters.use_fluidics
 
+        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -831,16 +852,6 @@ class MultiPointWorker(MultiPointWorkerBase):
             next(iter(grid_sizes)),
         )
         return True
-
-    def _abort_due_to_error(self) -> None:
-        """Abort the run due to an internal error (vs a user abort).
-
-        The worker only ever aborts itself on error conditions; user aborts arrive
-        via the external abort flag. Tagging the cause here lets _compute_end_reason
-        classify the end as "error" instead of "user_abort".
-        """
-        self._abort_cause = "error"
-        self.request_abort_fn()
 
     def _run_state_beat(self) -> None:
         self._run_state.beat(

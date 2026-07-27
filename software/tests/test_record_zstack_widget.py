@@ -1659,7 +1659,9 @@ def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps
         },
         fps=25.0,
         duration_s=3.0,
-        recording_z_offset_um=2.0,
+        recording_bottom_z_offset_um=2.0,
+        recording_nz=3,
+        recording_dz_um=1.5,
         zstack_enabled=True,
         zstack_channels=[
             {
@@ -1687,7 +1689,9 @@ def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps
     assert w._recording_illumination() == pytest.approx(60.0)
     assert w.entry_fps.value() == pytest.approx(25.0)
     assert w.entry_duration.value() == pytest.approx(3.0)
-    assert w.entry_recording_z_offset.value() == pytest.approx(2.0)
+    assert w.entry_recording_bottom_z.value() == pytest.approx(2.0)
+    assert w.entry_recording_Nz.value() == 3
+    assert w.entry_recording_dz.value() == pytest.approx(1.5)
     assert w.checkbox_zstack.isChecked() is True
     assert w._zstack_channel_names == ["Fluorescence 488 nm Ex"]
     assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((80.0, 0.5, 40.0))

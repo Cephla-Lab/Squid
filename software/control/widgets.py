@@ -18467,7 +18467,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self._recording_illum_spin,
             self.entry_fps,
             self.entry_duration,
-            self.entry_recording_z_offset,
+            self.entry_recording_Nz,
+            self.entry_recording_bottom_z,
+            self.entry_recording_dz,
             self.checkbox_zstack,
             self.entry_zmin,
             self.entry_zmax,
@@ -18502,7 +18504,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
             self.entry_fps.setValue(yaml_data.fps)
             self.entry_duration.setValue(yaml_data.duration_s)
-            self.entry_recording_z_offset.setValue(yaml_data.recording_z_offset_um)
+            self.entry_recording_Nz.setValue(yaml_data.recording_nz)
+            self.entry_recording_dz.setValue(yaml_data.recording_dz_um)
+            self.entry_recording_bottom_z.setValue(yaml_data.recording_bottom_z_offset_um)
 
             self.checkbox_zstack.setChecked(yaml_data.zstack_enabled)
             for name in list(self._zstack_channel_names):
@@ -18558,6 +18562,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # in its stale "inactive" styling even after the checkbox/frame
             # visibility above are updated to reflect the loaded YAML.
             self._update_tab_styles()
+            # entry_recording_Nz's valueChanged and checkbox_laser_af's toggled
+            # signals were both blocked above too, so the normal
+            # _update_recording_planes_ui-driven dz/bottom-Z visibility refresh
+            # didn't fire. Unlike _on_time_toggled, _update_recording_planes_ui
+            # has no stored-state side effects, so it's safe to call directly.
+            self._update_recording_planes_ui()
             self._update_zstack_planes_label()
             self._update_scan_regions()
 
