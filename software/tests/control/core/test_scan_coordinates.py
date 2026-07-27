@@ -1,4 +1,5 @@
 import tests.control.gui_test_stubs as gts
+import control.utils
 import squid.stage
 from control.core.scan_coordinates import (
     ScanCoordinates,
@@ -102,3 +103,55 @@ def test_sort_coordinates_manual_regions_preserve_drawing_order():
     keys = list(sc.region_centers.keys())
     # Manual regions first (drawing order), then wells (S-Pattern: row B reversed)
     assert keys == ["manual0", "manual1", "A1", "A2", "B2", "B1"]
+
+
+def _make_scan_coordinates(pattern, region_names):
+    """Build a ScanCoordinates with the given acquisition pattern and region names.
+
+    Region positions are irrelevant to sorting, so they are all zeroed.
+    """
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+    sc.acquisition_pattern = pattern
+    sc.region_centers = {name: [0.0, 0.0] for name in region_names}
+    sc.region_fov_coordinates = {name: [(0.0, 0.0, 0.0)] for name in region_names}
+    return sc
+
+
+def test_row_to_index_roundtrips_multi_letter_rows():
+    """Row labels are bijective base-26, so AA is row 26 - not a duplicate of A."""
+    for index in range(32):  # A..AF, the rows of a 1536-well plate
+        assert control.utils.row_to_index(ScanCoordinates._index_to_row(index)) == index
+
+    assert control.utils.row_to_index("A") == 0
+    assert control.utils.row_to_index("Z") == 25
+    assert control.utils.row_to_index("AA") == 26
+    assert control.utils.row_to_index("AF") == 31
+
+
+def test_sort_coordinates_orders_multi_letter_rows_after_single_letter():
+    """1536-well rows AA..AF must come after Z, not interleave with A..F."""
+    sc = _make_scan_coordinates("Unidirectional", ["AB1", "B1", "AA2", "A1", "Z1", "AA1", "A2"])
+
+    sc.sort_coordinates()
+
+    assert list(sc.region_centers.keys()) == ["A1", "A2", "B1", "Z1", "AA1", "AA2", "AB1"]
+
+
+def test_sort_coordinates_s_pattern_treats_multi_letter_rows_as_distinct_rows():
+    """Serpentine grouping must key on the whole row label, not its first character."""
+    sc = _make_scan_coordinates("S-Pattern", ["A1", "A2", "AA1", "AA2", "AB1", "AB2"])
+
+    sc.sort_coordinates()
+
+    # Three separate rows (A, AA, AB), so only the middle one is reversed.
+    assert list(sc.region_centers.keys()) == ["A1", "A2", "AA2", "AA1", "AB1", "AB2"]
+
+
+def test_sort_coordinates_keeps_non_well_region_names():
+    """Region names that aren't well IDs sort last instead of raising."""
+    sc = _make_scan_coordinates("S-Pattern", ["B1", "current", "A1", "my region"])
+
+    sc.sort_coordinates()
+
+    assert list(sc.region_centers.keys()) == ["A1", "B1", "current", "my region"]
