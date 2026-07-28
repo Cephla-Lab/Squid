@@ -19,9 +19,11 @@ from control.objective_turret_controller import (
     EXPECTED_CURRENT_RUN,
     EXPECTED_MAX_SPEED,
     EXPECTED_MIN_SPEED,
+    HOMING_FINE_ACCEL,
     HOMING_SWEEP_SPEED,
     MICROSTEP_REG_VALUE,
     MODE_SPEED,
+    REG_ACCEL,
     REG_CONTROL_WORD,
     REG_CURRENT_OVERLOAD,
     REG_CURRENT_POSITION,
@@ -341,6 +343,19 @@ def test_home_sweeps_in_velocity_mode_when_off_sensor(monkeypatch):
     assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
     assert (REG_DIRECTION, 0) in fake.writes  # sweep runs negative, toward the sensor
     assert (REG_TARGET_SPEED, HOMING_SWEEP_SPEED) in fake.writes
+    controller.close()
+
+
+def test_home_lowers_accel_for_fine_search_and_restores(monkeypatch):
+    # The fine search runs at HOMING_FINE_ACCEL to soften the microstep approach to
+    # the trigger edge; the original acceleration (fake reads 0) is restored after.
+    controller, fake = _make_real_controller(monkeypatch)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    fake.di_script = [1, 1, 0, 1]
+    controller.home()
+    accel_writes = [v for (a, v) in fake.writes if a == REG_ACCEL]
+    assert accel_writes == [HOMING_FINE_ACCEL, 0]
     controller.close()
 
 

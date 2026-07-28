@@ -28,7 +28,7 @@ BACKLASH_MAX_DEG = 1.0
 
 # NiMotion Modbus register map
 REG_SAVE_PARAMS = 0x0008
-REG_CURRENT_DECEL = 0x0015  # x10mA (firmware currently drops writes; see _INIT_PARAMS)
+REG_CURRENT_DECEL = 0x0015  # unused: the SDM42 drive has no decel current (writes silently dropped, reads 0)
 REG_CURRENT_IDLE = 0x0016  # x10mA; writable only while disabled
 REG_CURRENT_ACCEL = 0x0017  # x10mA
 REG_CURRENT_RUN = 0x0018  # x10mA
@@ -88,40 +88,48 @@ MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after powe
 EXPECTED_ACCEL = 1000  # Step/s^2 (hardware limit ~2000; >=3000 is rejected)
 EXPECTED_DECEL = 1000
 EXPECTED_MIN_SPEED = 16  # manual default start/stop speed
-EXPECTED_MAX_SPEED = 200  # x16 microstep = 3200 pulses/s ~= 131 deg/s at the turret
+# 200 -> 150 (2026-07-28): the 0.95 A driver current cap leaves no margin at speed
+# 200 and the loaded turret was observed losing steps; 150 x16 = 2400 pulses/s
+# ~= 98 deg/s at the turret.
+EXPECTED_MAX_SPEED = 150
 # Currents: with 2 objectives loaded the factory 0.51 A run current loses steps;
 # 0.85 A and up does not. Driver firmware caps 0x16..0x18 at 95 (=0.95 A).
 EXPECTED_CURRENT_OVERLOAD = 13  # x100mA = 1.3 A
-EXPECTED_CURRENT_IDLE = 60  # x10mA = 0.6 A
+EXPECTED_CURRENT_IDLE = 21  # displayed 0.69 A (manager-specified conversion, 2026-07-27; not a literal x10mA)
 EXPECTED_CURRENT_ACCEL = 95  # x10mA = 0.95 A
 EXPECTED_CURRENT_RUN = 95  # x10mA = 0.95 A
-EXPECTED_CURRENT_DECEL = 95  # x10mA = 0.95 A (see volatile note in _INIT_PARAMS)
+# Decel current (0x15) is deliberately NOT calibrated: the SDM42 drive has no such
+# parameter — the firmware silently drops writes and always reads back 0.
 # DI1 is permanently "origin switch" (3). The homing sensor must NEVER be configured
 # as a limit switch: the turret is a disc with no travel limits, and a limit-mapped
 # sensor faults FF0E whenever a normal move passes it (the pre-2026-07-24 scheme).
 DI1_FUNCTION_ORIGIN_SWITCH = 3
 
-# Software homing (ported from SingleMotor HomeSearch, 2026-07-24): sweep toward the
-# sensor in velocity mode while polling the DI level, decel-stop on trigger, back off
-# until the switch releases, then fine-step back to the trigger edge and SET_ZERO
-# there. The driver's built-in homing modes are no longer used — the sensed window is
-# only ~50 pulses wide and the sweep speed/poll period pair below guarantees the
-# window cannot be crossed between two polls (62.5 ms crossing >= 2 poll periods).
-HOMING_SWEEP_SPEED = 50  # Step/s, velocity-mode sweep toward the sensor
-HOMING_POLL_S = 0.025  # DI poll period during the sweep
+# Software homing (ported from SingleMotor HomeSearch, 2026-07-24, params revised
+# 2026-07-28): sweep toward the sensor in velocity mode while polling the DI level,
+# decel-stop on trigger, back off until the switch releases, then fine-step back to
+# the trigger edge and SET_ZERO there. The driver's built-in homing modes are no
+# longer used — the sensed window is only ~50 pulses wide and the sweep speed/poll
+# period pair below guarantees the window cannot be crossed between two polls
+# (52 ms crossing >= 2.6 poll periods). Worst-case overshoot past the trigger edge is
+# stop distance 29 + detection lag 20 = 49 pulses < HOMING_BACKOFF_STEP, so a single
+# backoff jog clears the window (the backoff loop is only a fallback).
+HOMING_SWEEP_SPEED = 60  # Step/s, velocity-mode sweep toward the sensor (x16 = 960 pulses/s)
+HOMING_POLL_S = 0.02  # DI poll period during the sweep
 HOMING_STOP_SETTLE_S = 0.4  # settle after the sweep decel-stop
-HOMING_BACKOFF_STEP = 150  # pulses per backoff jog (release the switch)
-HOMING_FINE_STEP = 5  # pulses per fine-search jog; sets home repeatability (+/-5)
+HOMING_BACKOFF_STEP = 60  # pulses per backoff jog (release the switch)
+HOMING_FINE_STEP = 2  # pulses per fine-search jog; sets home repeatability (+/-2)
 HOMING_MAX_TRAVEL = 10000  # pulses; > one turret revolution (8800 at microstep 16)
-HOMING_FINE_TRAVEL_LIMIT = 400  # backoff 150 + window 50 + margin; bounds a bad trigger
+HOMING_FINE_TRAVEL_LIMIT = 200  # backoff 60 + window 50 + margin; bounds a bad trigger
 HOMING_JOG_SPEED = 60  # Step/s; max speed is temporarily lowered to this for jogs
+HOMING_FINE_ACCEL = 50  # Step/s^2; accel is temporarily lowered for the fine search
 HOMING_SETTLE_MARGIN_S = 0.3  # fixed margin on top of the per-jog travel-time estimate
 
 # Polling
 POLL_INTERVAL_S = 0.05
-# At accel=1000/max_speed=200, a worst-case 3-slot move stays well inside 30s.
+# At accel=1000/max_speed=150, a worst-case 3-slot move stays well inside 30s.
 DEFAULT_MOVE_TIMEOUT_S = 30.0
-# Software homing worst case: sweep up to one revolution at 800 pulses/s plus tens of
+# Software homing worst case: sweep up to one revolution at 960 pulses/s plus tens of
 # ~0.3s fine/backoff jogs. Matches SingleMotor's 120s watchdog.
 DEFAULT_HOME_TIMEOUT_S = 120.0
 
@@ -130,9 +138,7 @@ CONTROL_WORD_SETTLE_S = 0.1
 
 # Init calibration table: (register, expected value, label, kwargs-for-_calibrate_one).
 # Order matters: min_speed must be written before max_speed (the firmware rejects a
-# max-speed write below the current min speed). "volatile": the write never sticks
-# (firmware bug: 0x15 echoes OK but reads back 0), so it must not trigger an EEPROM
-# save on every connect.
+# max-speed write below the current min speed).
 _INIT_PARAMS = [
     (REG_ACCEL, EXPECTED_ACCEL, "accel", {"is_32bit": True}),
     (REG_DECEL, EXPECTED_DECEL, "decel", {"is_32bit": True}),
@@ -142,7 +148,6 @@ _INIT_PARAMS = [
     (REG_CURRENT_IDLE, EXPECTED_CURRENT_IDLE, "idle_current", {}),
     (REG_CURRENT_ACCEL, EXPECTED_CURRENT_ACCEL, "accel_current", {}),
     (REG_CURRENT_RUN, EXPECTED_CURRENT_RUN, "run_current", {}),
-    (REG_CURRENT_DECEL, EXPECTED_CURRENT_DECEL, "decel_current", {"volatile": True}),
     (REG_DI_FUNCTION, DI1_FUNCTION_ORIGIN_SWITCH, "DI1_function", {"is_32bit": True, "mask": 0xF}),
 ]
 
@@ -445,6 +450,8 @@ class ObjectiveTurret4PosController:
         self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
         # Temporarily lower max speed for backoff/fine jog precision; restore after.
         orig_max_speed = self._modbus.read_register_32bit(self._slave_id, REG_MAX_SPEED)
+        orig_accel = self._modbus.read_register_32bit(self._slave_id, REG_ACCEL)
+        accel_lowered = False
         if orig_max_speed != HOMING_JOG_SPEED:
             self._modbus.write_register_32bit(self._slave_id, REG_MAX_SPEED, HOMING_JOG_SPEED)
         try:
@@ -453,6 +460,12 @@ class ObjectiveTurret4PosController:
             if not di1:  # already inside the sensor window -> skip straight to backoff
                 self._sweep_to_sensor(deadline)
             self._backoff_off_sensor(deadline)
+            # Fine search only: lower the acceleration to soften the microstep approach
+            # to the trigger edge (SingleMotor 2026-07-28); restored in the finally.
+            if orig_accel != HOMING_FINE_ACCEL:
+                self._write_control(CW_DISABLE)  # parameter writes require the disabled state
+                self._modbus.write_register_32bit(self._slave_id, REG_ACCEL, HOMING_FINE_ACCEL)
+                accel_lowered = True
             self._fine_search_to_edge(deadline)
             # At the trigger edge: establish the home reference.
             self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
@@ -466,6 +479,11 @@ class ObjectiveTurret4PosController:
                     self._modbus.write_register_32bit(self._slave_id, REG_MAX_SPEED, orig_max_speed)
                 except Exception as exc:
                     logger.warning("Failed to restore max speed after homing: %s", exc)
+            if accel_lowered:
+                try:
+                    self._modbus.write_register_32bit(self._slave_id, REG_ACCEL, orig_accel)
+                except Exception as exc:
+                    logger.warning("Failed to restore acceleration after homing: %s", exc)
         # Success: hold the turret at home with torque until the next move.
         self._hold_position_clamp()
         self._current_objective = None
@@ -725,14 +743,10 @@ class ObjectiveTurret4PosController:
 
     def _calibrate_init_params(self) -> bool:
         """Bring every factory parameter in line with _INIT_PARAMS; return whether a
-        persistent write happened (volatile entries are rewritten each connect but
-        must not trigger an EEPROM save every time)."""
+        write happened (i.e. whether the set should be persisted to EEPROM)."""
         changed = False
         for addr, expected, label, kwargs in _INIT_PARAMS:
-            kwargs = dict(kwargs)
-            volatile = kwargs.pop("volatile", False)
-            wrote = self._calibrate_one(addr, expected, label, **kwargs)
-            changed = changed or (wrote and not volatile)
+            changed = self._calibrate_one(addr, expected, label, **kwargs) or changed
         return changed
 
     def _save_to_eeprom(self) -> None:
