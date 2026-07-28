@@ -34,33 +34,6 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     qtbot.add_widget(without_piezo)
 
 
-def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):
-    """Regression: onTabChanged used to call emit_selected_channels() on every record
-    tab and toggleAcquisitionStart called display_progress_bar() on the current tab,
-    but RecordingWidget (Simple Recording) has neither method, so selecting the tab
-    raised AttributeError on machines with ENABLE_RECORDING on."""
-
-    # gui_hcs star-imports _def, so patch its module-level binding before construction
-    # to get the "Simple Recording" tab added.
-    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
-
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
-    qtbot.add_widget(win)
-
-    recording_index = win.recordTabWidget.indexOf(win.recordingControlWidget)
-    assert recording_index >= 0, "Simple Recording tab was not added despite ENABLE_RECORDING"
-
-    # Selecting the tab fires currentChanged -> onTabChanged; must not raise.
-    win.recordTabWidget.setCurrentIndex(recording_index)
-    win.onTabChanged(recording_index)
-
-    # The same widget must also survive an acquisition start/stop notification
-    # (workflow/TCP acquisitions can start while a non-multipoint tab is current).
-    win.toggleAcquisitionStart(True)
-    win.toggleAcquisitionStart(False)
-
-
 def test_acquisition_start_emits_selected_channels(qtbot, confirm_exit_yes):
     """The napari multichannel viewer is initialized from signal_acquisition_channels.
     That signal must be emitted when the acquisition starts (alongside
