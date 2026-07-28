@@ -725,7 +725,6 @@ class HighContentScreeningGui(QMainWindow):
         self.recordZStackWidget: Optional[widgets.RecordZStackMultiPointWidget] = None
         self.streamHandler: core.QtStreamHandler = None
         self.autofocusController: AutoFocusController = None
-        self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
         self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
@@ -764,7 +763,6 @@ class HighContentScreeningGui(QMainWindow):
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
         self.laserEngineWidget: Optional[QWidget] = None
         self.versaLaseWidget: Optional[VersaLaseWidget] = None
-        self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
         self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
@@ -1105,11 +1103,6 @@ class HighContentScreeningGui(QMainWindow):
                 and self.multipointController.acquisition_in_progress(),
             )
 
-        self.recordingControlWidget = widgets.RecordingWidget(
-            self.streamHandler,
-            self.imageSaver,
-            channel_provider=lambda: self.liveController.currentConfiguration,
-        )
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
@@ -1392,7 +1385,6 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
-            self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
             self.recordTabWidget.addTab(self.recordZStackWidget, "Record + Z-Stack")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
@@ -1603,7 +1595,6 @@ class HighContentScreeningGui(QMainWindow):
 
     def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
-        self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
         self.liveController.signal_warning.connect(self._on_live_controller_warning)
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
@@ -3380,7 +3371,6 @@ class HighContentScreeningGui(QMainWindow):
 
         # Close image display resources
         try:
-            self.imageSaver.close()
             self.imageDisplay.close()
         except Exception:
             if for_restart:
