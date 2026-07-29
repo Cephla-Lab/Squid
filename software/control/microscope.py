@@ -1046,7 +1046,12 @@ class Microscope:
 
         Attempts to cleanly shut down all hardware components. Errors during
         shutdown are logged but do not prevent other components from being closed.
+        Calling close() more than once is a no-op.
         """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+
         try:
             self.stop_live()
         except Exception as e:
