@@ -1,4 +1,5 @@
 # set QT_API environment variable
+import dataclasses
 import os
 import subprocess
 import sys
@@ -46,8 +47,9 @@ from control.laser_engine_widget import LaserEngineWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
-from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_controller import MultiPointController, NoOpCallbacks
 from control.core.mosaic_utils import parse_well_id
+from control.core.record_zstack_controller import RecordZStackController
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
@@ -600,6 +602,45 @@ class QtMultiPointController(MultiPointController, QObject):
         return len(scan_info.scan_region_names) > 0
 
 
+class QtRecordZStackController(RecordZStackController, QObject):
+    """Qt-aware wrapper for RecordZStackController.
+
+    Emits ``acquisition_finished`` as a thread-safe Qt signal so the widget
+    can reset its Start button via a queued connection, regardless of which
+    thread the worker runs on.
+    """
+
+    acquisition_finished = Signal()
+
+    def __init__(
+        self,
+        microscope,
+        live_controller,
+        laser_autofocus_controller,
+        objective_store,
+        scan_coordinates,
+    ):
+        # Map signal_acquisition_finished onto our Qt signal; everything else
+        # stays a no-op.  Note the worker's inherited capture machinery also
+        # invokes signal_current_configuration / signal_new_image — this mode
+        # has no live-display routing yet, so those emissions are deliberately
+        # dropped here.
+        callbacks = dataclasses.replace(NoOpCallbacks, signal_acquisition_finished=self._on_acquisition_finished)
+        RecordZStackController.__init__(
+            self,
+            microscope=microscope,
+            live_controller=live_controller,
+            laser_autofocus_controller=laser_autofocus_controller,
+            objective_store=objective_store,
+            scan_coordinates=scan_coordinates,
+            callbacks=callbacks,
+        )
+        QObject.__init__(self)
+
+    def _on_acquisition_finished(self):
+        self.acquisition_finished.emit()
+
+
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
@@ -678,9 +719,10 @@ class HighContentScreeningGui(QMainWindow):
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.multipointController: QtMultiPointController = None
+        self.recordZStackController: Optional[QtRecordZStackController] = None
+        self.recordZStackWidget: Optional[widgets.RecordZStackMultiPointWidget] = None
         self.streamHandler: core.QtStreamHandler = None
         self.autofocusController: AutoFocusController = None
-        self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
         self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
@@ -714,7 +756,6 @@ class HighContentScreeningGui(QMainWindow):
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
         self.laserEngineWidget: Optional[LaserEngineWidget] = None
-        self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
         self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
@@ -891,6 +932,14 @@ class HighContentScreeningGui(QMainWindow):
             laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
         )
+        if ENABLE_RECORDING:
+            self.recordZStackController = QtRecordZStackController(
+                self.microscope,
+                self.liveController,
+                self.laserAutofocusController,
+                self.objectiveStore,
+                self.scanCoordinates,
+            )
 
     def setup_hardware(self):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
@@ -967,11 +1016,6 @@ class HighContentScreeningGui(QMainWindow):
         if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
 
-        self.recordingControlWidget = widgets.RecordingWidget(
-            self.streamHandler,
-            self.imageSaver,
-            channel_provider=lambda: self.liveController.currentConfiguration,
-        )
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
@@ -1088,6 +1132,20 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
+
+        if ENABLE_RECORDING:
+            self.recordZStackWidget = widgets.RecordZStackMultiPointWidget(
+                self.stage,
+                self.navigationViewer,
+                self.recordZStackController,
+                self.liveController,
+                self.objectiveStore,
+                self.scanCoordinates,
+                well_selection_widget=self.wellSelectionWidget,
+                tab_widget=self.recordTabWidget,
+                laser_autofocus_controller=self.laserAutofocusController,
+            )
+            self.recordZStackController.acquisition_finished.connect(self.recordZStackWidget.acquisition_is_finished)
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
@@ -1281,7 +1339,7 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
-            self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
+            self.recordTabWidget.addTab(self.recordZStackWidget, "Record + Z-Stack")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 
@@ -1467,7 +1525,6 @@ class HighContentScreeningGui(QMainWindow):
 
     def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
-        self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
         self.liveController.signal_warning.connect(self._on_live_controller_warning)
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
@@ -1486,6 +1543,9 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
             self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
+
+        if ENABLE_RECORDING:
+            self.recordZStackWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1587,6 +1647,16 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(
                 self.wellplateMultiPointWidget.handle_objective_change
             )
+        if ENABLE_RECORDING and self.recordZStackWidget is not None:
+            # Channel sets are per-objective AND per-profile: repopulate the tab's
+            # channel combos so stale names don't fall back to a no-illumination
+            # bare channel (dark acquisition).
+            self.objectivesWidget.signal_objective_changed.connect(self.recordZStackWidget.refresh_channel_list)
+            self.profileWidget.signal_profile_changed.connect(self.recordZStackWidget.refresh_channel_list)
+            # Well clicks rebuild this tab's FOV grid (wellplate's handler
+            # early-returns when its own tab is not current, so without this the
+            # selector gives no coverage feedback on the Record + Z-Stack tab).
+            self.wellSelectionWidget.signal_wellSelected.connect(self.recordZStackWidget.on_well_selection_changed)
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
@@ -2332,6 +2402,8 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.refresh_channel_list()
         if self.multiPointWithFluidicsWidget:
             self.multiPointWithFluidicsWidget.refresh_channel_list()
+        if self.recordZStackWidget is not None:
+            self.recordZStackWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
@@ -2342,6 +2414,13 @@ class HighContentScreeningGui(QMainWindow):
         is_wellplate_acquisition = (
             (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
             if ENABLE_WELLPLATE_MULTIPOINT
+            else False
+        )
+        # Record + Z-Stack selects wells like Wellplate Multipoint, so it needs the
+        # well selector too (its validation rejects acquisitions with no wells).
+        is_record_zstack_acquisition = (
+            (index == self.recordTabWidget.indexOf(self.recordZStackWidget))
+            if self.recordZStackWidget is not None
             else False
         )
         self.scanCoordinates.clear_regions()
@@ -2358,7 +2437,16 @@ class HighContentScreeningGui(QMainWindow):
             # trigger flexible regions update
             self.flexibleMultiPointWidget.update_fov_positions()
 
-        self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
+        if is_record_zstack_acquisition:
+            # Regions were cleared above; rebuild the FOV grid for the current
+            # well selection so the navigation viewer shows scan coverage.
+            # (Public entry point: it no-ops unless this tab is current, which
+            # it is here — the tab switch is what brought us into this branch.)
+            self.recordZStackWidget.on_well_selection_changed()
+
+        self.toggleWellSelector(
+            self._tab_uses_well_selector(index) and self.wellSelectionWidget.format != "glass slide"
+        )
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -2479,6 +2567,23 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
+    def _tab_uses_well_selector(self, index) -> bool:
+        """True if the record tab at ``index`` drives acquisitions from the well
+        selector (Wellplate Multipoint and Record + Z-Stack): both onTabChanged
+        and toggleAcquisitionStart must agree on this, or the selector is hidden
+        and never restored after an acquisition on one of these tabs."""
+        is_wellplate = (
+            (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
+            if ENABLE_WELLPLATE_MULTIPOINT
+            else False
+        )
+        is_record_zstack = (
+            (index == self.recordTabWidget.indexOf(self.recordZStackWidget))
+            if self.recordZStackWidget is not None
+            else False
+        )
+        return is_wellplate or is_record_zstack
+
     def toggleWellSelector(self, show, remember_state=True):
         if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
             self.dock_wellSelection.setVisible(True)
@@ -2525,16 +2630,14 @@ class HighContentScreeningGui(QMainWindow):
         if acquisition_started:
             self.liveControlWidget.toggle_autolevel(not acquisition_started)
 
-        # hide well selector during acquisition
-        is_wellplate_acquisition = (
-            (current_index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
-            if ENABLE_WELLPLATE_MULTIPOINT
-            else False
-        )
-        if is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide":
+        # hide well selector during acquisition; restore it afterwards on tabs
+        # that drive acquisitions from it.  remember_state=False everywhere:
+        # acquisition start/stop is transient and must not overwrite the user's
+        # remembered visibility preference.
+        if self._tab_uses_well_selector(current_index) and self.wellSelectionWidget.format != "glass slide":
             self.toggleWellSelector(not acquisition_started, remember_state=False)
         else:
-            self.toggleWellSelector(False)
+            self.toggleWellSelector(False, remember_state=False)
 
     def _update_ram_monitor_visibility(self):
         """Update RAM monitor widget visibility based on setting."""
@@ -2822,6 +2925,18 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing multipoint controller during {context}")
 
+        # Clean up record+z-stack controller: aborts any running acquisition and
+        # shuts down its JobRunner subprocess so Zarr writers finalize instead of
+        # being killed mid-write (corrupted store).
+        if getattr(self, "recordZStackController", None) is not None:
+            try:
+                # 30s: the worker's unwind can legitimately take this long on a
+                # slow disk (RecordingWriter finalize budget + job drain + stage
+                # restores); a 5s join let teardown race the still-running worker.
+                self.recordZStackController.close(timeout_s=30.0)
+            except Exception:
+                self.log.exception(f"Error closing record z-stack controller during {context}")
+
         # Clean up NDViewer
         if self.ndviewerTab is not None:
             try:
@@ -2958,7 +3073,6 @@ class HighContentScreeningGui(QMainWindow):
 
         # Close image display resources
         try:
-            self.imageSaver.close()
             self.imageDisplay.close()
         except Exception:
             if for_restart:

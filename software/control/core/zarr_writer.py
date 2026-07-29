@@ -73,6 +73,9 @@ class ZarrAcquisitionConfig:
     compression: ZarrCompression = ZarrCompression.FAST
     is_hcs: bool = True  # Default to HCS (5D); non-HCS uses 6D with FOV dimension
     plate_name: str = "plate"
+    # Optional extra keys merged into the "_squid" attributes at metadata-write
+    # time (e.g. per-plane recording metadata: plane_index, plane_z_offset_um).
+    extra_squid_attrs: Optional[Dict[str, object]] = None
 
     @property
     def ndim(self) -> int:
@@ -363,7 +366,11 @@ class ZarrWriter:
         """Get or create the event loop (only used for init/finalize)."""
         if self._loop is None or self._loop.is_closed():
             try:
-                self._loop = asyncio.get_event_loop()
+                candidate = asyncio.get_event_loop()
+                if candidate.is_closed():
+                    # The thread's current loop is closed; create a fresh one.
+                    raise RuntimeError("current event loop is closed")
+                self._loop = candidate
                 self._owns_loop = False  # Using existing loop
             except RuntimeError:
                 self._loop = asyncio.new_event_loop()
@@ -617,6 +624,9 @@ class ZarrWriter:
             },
         }
 
+        if config.extra_squid_attrs:
+            zattrs["_squid"].update(config.extra_squid_attrs)
+
         # Write metadata to zarr.json attributes (strict Zarr v3 compliance)
         # For HCS, output_path is the array path ({fov}/0), but OME-NGFF metadata
         # should be at the parent group level ({fov}/zarr.json), not the array level.
@@ -775,13 +785,21 @@ class ZarrWriter:
         self._cleanup_event_loop()
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
-    def abort(self) -> None:
-        """Abort and clean up (blocking).
+    def abort(self, mark_aborted: bool = True, extra_attrs: Optional[Dict[str, object]] = None) -> None:
+        """Seal the store as incomplete and clean up (blocking).
+
+        Args:
+            mark_aborted: stamp ``aborted: True`` (a user/programmatic abort).
+                Pass False for non-abort incomplete seals (write errors,
+                dropped frames, under-delivery) so tooling can distinguish
+                "user pressed Stop" from "finished with missing planes".
+            extra_attrs: extra keys merged into ``_squid`` (e.g. error/drop
+                counts) alongside ``acquisition_complete: False``.
 
         Uses try-finally to ensure cleanup always happens, even if an
         unexpected exception occurs during abort.
         """
-        log.warning("Aborting Zarr writer...")
+        log.warning("Aborting Zarr writer..." if mark_aborted else "Sealing Zarr writer as incomplete...")
 
         try:
             # Clear pending futures (don't wait for them)
@@ -796,7 +814,10 @@ class ZarrWriter:
                     attrs = zarr_json.get("attributes", {})
                     if "_squid" in attrs:
                         attrs["_squid"]["acquisition_complete"] = False
-                        attrs["_squid"]["aborted"] = True
+                        if mark_aborted:
+                            attrs["_squid"]["aborted"] = True
+                        if extra_attrs:
+                            attrs["_squid"].update(extra_attrs)
                         zarr_json["attributes"] = attrs
                     with open(zarr_json_path, "w") as f:
                         json.dump(zarr_json, f, indent=2)
