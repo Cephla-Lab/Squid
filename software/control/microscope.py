@@ -443,6 +443,7 @@ class Microscope:
         skip_init: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._closed = False
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
@@ -1046,7 +1047,12 @@ class Microscope:
 
         Attempts to cleanly shut down all hardware components. Errors during
         shutdown are logged but do not prevent other components from being closed.
+        Calling close() more than once is a no-op.
         """
+        if self._closed:
+            return
+        self._closed = True
+
         try:
             self.stop_live()
         except Exception as e:
