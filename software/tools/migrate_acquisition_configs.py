@@ -412,15 +412,11 @@ def convert_laser_af_json_to_yaml(json_path: Path) -> Optional[LaserAFConfig]:
         "laser_af_range": data.get("laser_af_range", 100.0),
         "laser_af_averaging_n": data.get("laser_af_averaging_n", 3),
         "spot_detection_mode": data.get("spot_detection_mode", "dual_right"),
-        "displacement_success_window_um": data.get("displacement_success_window_um", 1.0),
         "spot_crop_size": data.get("spot_crop_size", 100),
         "correlation_threshold": data.get("correlation_threshold", 0.9),
-        "y_window": data.get("y_window", 96),
-        "x_window": data.get("x_window", 20),
-        "min_peak_width": data.get("min_peak_width", 10.0),
-        "min_peak_distance": data.get("min_peak_distance", 10.0),
-        "min_peak_prominence": data.get("min_peak_prominence", 0.25),
-        "spot_spacing": data.get("spot_spacing", 100.0),
+        # Legacy line-profile detection fields (y_window, x_window, min_peak_*, spot_spacing,
+        # displacement_success_window_um) are dropped: connected-components detection replaced
+        # them and its parameters (cc_*, displacement_success_window_pixels) use _def defaults.
         "filter_sigma": data.get("filter_sigma"),
         "focus_camera_exposure_time_ms": data.get("focus_camera_exposure_time_ms", 0.2),
         "focus_camera_analog_gain": data.get("focus_camera_analog_gain", 0.0),
