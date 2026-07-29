@@ -70,10 +70,14 @@ def cleanup_leaked_hardware(tmp_path, monkeypatch):
     3. Any Microcontrollers created standalone (skipped if a Microscope
        already closed them).
     """
-    # Safety net: this fixture tears down after test-scoped monkeypatches are
-    # undone, so a leaked acquisition finishing during cleanup would otherwise
-    # write its watchdog breadcrumb to the real user state dir.
-    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog-cleanup"))
+    # Safety net for teardown-time breadcrumb writes: a leaked acquisition
+    # finishing during the cleanup below must not write to the real user state
+    # dir. Ordering: monkeypatches set up after this fixture (e.g. the autouse
+    # _watchdog_state_to_tmp in tests/control/conftest.py, or a test's own)
+    # are already undone when this teardown runs, restoring the value set
+    # here; our own monkeypatch reverts only after this fixture finishes.
+    cleanup_state_dir = str(tmp_path / "watchdog-cleanup")
+    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", cleanup_state_dir)
 
     microscopes = []
     controllers = []
@@ -93,6 +97,10 @@ def cleanup_leaked_hardware(tmp_path, monkeypatch):
         _make_tracking_init(control.microcontroller.Microcontroller.__init__, microcontrollers),
     ):
         yield
+
+    # Re-apply in case the test body changed the env var with a raw
+    # os.environ write, which nothing has undone at this point.
+    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", cleanup_state_dir)
 
     for controller in reversed(controllers):
         try:
