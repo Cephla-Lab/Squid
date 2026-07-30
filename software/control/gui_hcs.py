@@ -1020,11 +1020,13 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
             if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
+                self.imageDisplayWindow = core.ImageDisplayWindow(
+                    self.liveController, self.contrastManager, enable_crosshair=True
+                )
                 self.imageDisplayWindow.show_ROI_selector()
             else:
                 self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True, enable_crosshair=True
                 )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.unifiedMosaicWidget = None
@@ -1175,11 +1177,13 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
         else:
             if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
+                self.imageDisplayWindow = core.ImageDisplayWindow(
+                    self.liveController, self.contrastManager, enable_crosshair=True
+                )
                 self.imageDisplayWindow.show_ROI_selector()
             else:
                 self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True, enable_crosshair=True
                 )
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
