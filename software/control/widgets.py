@@ -117,19 +117,8 @@ def check_time_lapse_pacing_with_dialog(
     if estimated_s <= dt:
         return True
 
-    requested_total_min = (dt * (Nt - 1) + estimated_s) / 60.0
-    actual_total_min = (estimated_s * Nt) / 60.0
     logger.warning(f"Time point estimate ({estimated_s:.1f} s) exceeds dt ({dt:.1f} s) for a {Nt} time point run.")
-    message = (
-        f"Each time point is estimated to take about {estimated_s:.0f} s, which is longer than the "
-        f"requested interval of {dt:.0f} s.\n\n"
-        f"All {Nt} time points will still be acquired - none are skipped - but they will run back to "
-        f"back, so the effective interval will be about {estimated_s:.0f} s and the run will take "
-        f"roughly {actual_total_min:.0f} min instead of {requested_total_min:.0f} min.\n\n"
-        f"This is a rough estimate from exposure times, FOV count, Z levels and autofocus settings; "
-        f"actual timing may differ.\n\n"
-        f"Start the acquisition anyway?"
-    )
+    message = f"Estimated loop interval exceeds {dt:.0f} s. Est: {estimated_s:.0f} s. Proceed?"
     reply = QMessageBox.question(
         parent,
         "Time Point Longer Than Interval",
