@@ -594,3 +594,121 @@ def test_sim_accepts_calibration_and_backlash_kwargs():
     sim.move_to_objective("20x")
     assert sim.current_objective == "20x"
     sim.close()
+
+
+# --- direction inversion (opposite-phase motor models) ---
+
+
+def test_inverted_move_writes_negated_target(monkeypatch):
+    # Slot targets stay logical; only the register write is negated. The move still
+    # completes because the position readback is flipped back symmetrically.
+    # Explicit offset/calibration keep the theoretical targets independent of any
+    # machine .ini values loaded into _def.
+    controller, fake = _make_real_controller(
+        monkeypatch, direction_inverted=True, offset_pulses=0, calibrated_pulses={}
+    )
+    pp = controller.pulses_per_position
+    fake.writes.clear()
+    controller.move_to_objective("20x")  # slot 3 -> logical target 2*pp
+    assert fake.target_position_writes() == [-2 * pp]
+    controller.close()
+
+
+def test_inverted_backlash_order_preserved_logically(monkeypatch):
+    # Undershoot-then-target stays expressed in logical coordinates; both writes
+    # come out negated but the logical approach-from-below order is unchanged.
+    controller, fake = _make_real_controller(
+        monkeypatch, backlash_deg=0.5, direction_inverted=True, offset_pulses=0, calibrated_pulses={}
+    )
+    pp = controller.pulses_per_position
+    comp = round(0.5 / 360 * 4 * pp)
+    fake.writes.clear()
+    controller.move_to_objective("10x")  # slot 2 -> logical target 1*pp
+    assert fake.target_position_writes() == [-(pp - comp), -pp]
+    controller.close()
+
+
+def test_inverted_position_readback_returns_logical(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
+    fake._position = -1234  # physical counter
+    assert controller.current_position_pulses == 1234
+    controller.close()
+
+
+def test_inverted_home_flips_sweep_and_fine_jog_direction_bits(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    # Off the window (0) -> sweep polls miss then hit (0, 1) -> backoff already
+    # released (0) -> fine jog hits the edge (1).
+    fake.di_script = [0, 0, 1, 0, 1]
+    controller.home()
+    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
+    # Sweep is logical-negative -> physical bit 1; fine jog -2 -> physical bit 1.
+    assert [v for (a, v) in fake.writes if a == REG_DIRECTION] == [1, 1]
+    controller.close()
+
+
+def test_inverted_backoff_jog_flips_direction_keeps_magnitude(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    # In the window (1) -> one backoff jog releases (1, 0) -> fine jog hits (1).
+    fake.di_script = [1, 1, 0, 1]
+    controller.home()
+    # Backoff +60 -> physical bit 0; fine -2 -> physical bit 1. The relative-move
+    # register still only ever receives the positive magnitude.
+    assert [v for (a, v) in fake.writes if a == REG_DIRECTION] == [0, 1]
+    assert (otc.REG_TARGET_POSITION, otc.HOMING_BACKOFF_STEP) in fake.writes
+    controller.close()
+
+
+def test_inverted_init_expects_direction_zero(monkeypatch):
+    # The fake reads 0 from the direction register; inverted expects 0, so init must
+    # NOT issue the non-inverted corrective write of 1.
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
+    assert (REG_DIRECTION, 1) not in fake.writes
+    controller.close()
+
+
+def test_direction_inverted_falls_back_to_def_when_not_passed(monkeypatch):
+    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DIRECTION_INVERTED", True)
+    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0, calibrated_pulses={})
+    fake.writes.clear()
+    controller.move_to_objective("40x")  # slot 4 -> logical target 3*pp
+    assert fake.target_position_writes() == [-3 * controller.pulses_per_position]
+    controller.close()
+
+
+@pytest.mark.parametrize("bad_inverted", [1, "true", 0.0], ids=["int", "str", "float"])
+def test_non_bool_direction_inverted_raises(monkeypatch, bad_inverted):
+    # .ini parsing can yield an int/str; only a real boolean is accepted.
+    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
+    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
+    with pytest.raises(ValueError):
+        ObjectiveTurret4PosController(serial_number="SIM", stage=None, direction_inverted=bad_inverted)
+
+
+def test_default_not_inverted_keeps_current_behavior(monkeypatch):
+    # Regression guard: with the default (False), targets, direction writes and
+    # position readback are exactly the pre-inversion behavior.
+    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0, calibrated_pulses={})
+    assert (REG_DIRECTION, 1) in fake.writes  # init still calibrates direction to 1
+    pp = controller.pulses_per_position
+    fake.writes.clear()
+    controller.move_to_objective("20x")
+    assert fake.target_position_writes() == [2 * pp]
+    assert controller.current_position_pulses == fake._position
+    controller.close()
+
+
+def test_sim_accepts_direction_inverted_kwarg():
+    sim = ObjectiveTurret4PosControllerSimulation(
+        serial_number="SIM-001",
+        positions=OBJECTIVE_TURRET_POSITIONS,
+        direction_inverted=True,
+    )
+    assert sim.is_open
+    sim.move_to_objective("10x")
+    assert sim.current_objective == "10x"
+    sim.close()
