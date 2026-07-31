@@ -1116,6 +1116,69 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
+# ASI LS50 Z-only linear stage on its own MS-2000-family controller, used as the main Z (wraps
+# the configured XY stage via CombinedStage). CR-terminated text protocol, 1/10 um native units.
+USE_ASI_Z_STAGE = False
+ASI_Z_STAGE_SN = ""  # USB serial number -> resolved to a port
+ASI_Z_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM7)
+ASI_Z_BAUDRATE = 115200
+# Axis letter of the LS50 on its controller. Single-axis MS-2000 builds sometimes label
+# their lone axis X; the driver uses this letter in every command (M/R/W/SL/SU/H).
+ASI_Z_AXIS_LETTER = "Z"
+# Native POSITIVE is away from the sample. True (the standard wiring) shows the negation
+# (squid_z = -native_z), so squid 0 is the away end and squid Z+ is toward the sample.
+ASI_Z_INVERT = True
+# Physical travel of the stage (LS-50 = 50). REQUIRED when find-zero is on: it sets the
+# overdrive distance. Also sets a coarse sanity fence of native [-travel, +travel] (controller
+# SL/SU + software clamp) -- full travel can never exclude a reachable position but stops
+# absurd targets. 0 leaves the controller limits untouched (and is invalid with find-zero).
+ASI_Z_TRAVEL_MM = 0.0
+# Squid-frame retract target home() drives Z to; 0.0 = native 0, the away end that find-zero
+# anchors at the limit switch. The shared retract flows (loading/shutdown/safety-position)
+# drive Z to OBJECTIVE_RETRACTED_POS_MM in this same frame.
+ASI_Z_HOME_MM = 0.0
+# Establish the Z frame at startup: drive to the away-from-sample limit switch (native +,
+# the safe direction) and define native 0 there ('H Z=0'), so squid 0 is ALWAYS the true
+# farthest-from-sample position, never a random power-on point. MOVES the stage at startup
+# (away only; up to ~90 s for full travel at the MFC-2000's 0.6 mm/s). Stale controller-side
+# soft limits are always cleared first (unconditional; they persist across power cycles).
+ASI_Z_FIND_ZERO_ON_STARTUP = True
+
+# Apply StageConfig.Z_AXIS MIN/MAX as a software fence on the LS50. Off by operator choice on
+# the reference machine (full manual range wanted); with find-zero anchoring the frame, turning
+# this on gives a meaningful anti-collision fence at Z_AXIS MAX_POSITION. The coarse
+# ASI_Z_TRAVEL_MM fence applies regardless.
+ASI_Z_APPLY_SOFTWARE_LIMITS = False
+
+
+def uses_external_z_stage() -> bool:
+    """True when an external Z-only focus stage (PI V-308 or ASI LS50) provides the Z axis and
+    the XY stage is wrapped in a CombinedStage.
+
+    Must stay a function: the machine-config loader below overrides the flag globals AFTER they
+    are defined, so a derived constant would capture the pre-override defaults. Policy sites use
+    this instead of OR-ing vendor flags.
+    """
+    return bool(USE_PI_FOCUS_STAGE or USE_ASI_Z_STAGE)
+
+
+def _validate_external_z_stage_flags(use_pi: bool, use_asi: bool) -> None:
+    if use_pi and use_asi:
+        raise ValueError(
+            "USE_PI_FOCUS_STAGE and USE_ASI_Z_STAGE are mutually exclusive "
+            "(the microscope has exactly one external Z focus stage; set only one in the machine config)"
+        )
+
+
+def _validate_asi_z_flags(use_asi: bool, find_zero: bool, travel_mm: float) -> None:
+    # Fail at config load, next to the other flag validators, rather than mid-bring-up.
+    if use_asi and find_zero and not travel_mm:
+        raise ValueError(
+            "USE_ASI_Z_STAGE with ASI_Z_FIND_ZERO_ON_STARTUP requires ASI_Z_TRAVEL_MM: "
+            "the physical travel sets the find-zero overdrive distance (LS-50 = 50)"
+        )
+
+
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
@@ -1250,11 +1313,32 @@ OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # negative).
 OBJECTIVE_TURRET_OFFSET_PULSES = 0
 
+# 6-position ASI objective turret on an MS-2000-family controller ('M F=<slot>' with a RAW
+# slot index 1..6 -- not scaled like linear-axis units). Typically the SAME controller as the
+# ASI LS50 Z stage (USE_ASI_Z_STAGE): when both are enabled the turret reuses the Z stage's
+# serial connection and the SN/port/baud below are ignored. They apply only when the turret
+# runs WITHOUT the ASI Z stage; empty/0 means "reuse the ASI_Z_* value" -- resolved at
+# construction time in microscope.py, NOT here, because the machine-config loader overrides
+# these globals after definition (same reasoning as uses_external_z_stage()).
+# The turret has NO homing: home() never moves; startup's move_to_objective(DEFAULT_OBJECTIVE)
+# establishes a known slot at every boot.
+USE_ASI_OBJECTIVE_TURRET = False
+# Axis letter of the turret on the controller ('M <letter>=<slot>' / 'W <letter>').
+# F on the MFC-2000 (hardware-confirmed).
+ASI_OBJECTIVE_TURRET_AXIS_LETTER = "F"
+# Objective name -> turret slot (1..6). Keys must match objectives.csv names. Override per machine .ini
+# (JSON with double-quoted keys, e.g. asi_objective_turret_positions = {"4x": 1, "20x": 2}).
+ASI_OBJECTIVE_TURRET_POSITIONS = {"2x": 1, "4x": 2, "10x": 3, "20x": 4, "40x": 5, "60x": 6}
+ASI_OBJECTIVE_TURRET_SN = ""  # "" = reuse ASI_Z_STAGE_SN (turret-without-Z-stage only)
+ASI_OBJECTIVE_TURRET_SERIAL_PORT = ""  # "" = reuse ASI_Z_SERIAL_PORT
+ASI_OBJECTIVE_TURRET_BAUDRATE = 0  # 0 = reuse ASI_Z_BAUDRATE
 
-def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
-    if use_xeryon and use_turret:
+
+def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool, use_asi_turret: bool = False) -> None:
+    if int(bool(use_xeryon)) + int(bool(use_turret)) + int(bool(use_asi_turret)) > 1:
         raise ValueError(
-            "USE_XERYON and USE_OBJECTIVE_TURRET are mutually exclusive " "(set only one to True in the machine .ini)"
+            "USE_XERYON, USE_OBJECTIVE_TURRET and USE_ASI_OBJECTIVE_TURRET are mutually exclusive "
+            "(set at most one to True in the machine .ini)"
         )
 
 
@@ -1363,7 +1447,9 @@ if config_files:
         myclass = locals()[classkey]
         populate_class_from_dict(myclass, pop_items)
 
-    _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+    _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET, USE_ASI_OBJECTIVE_TURRET)
+    _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
+    _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1377,7 +1463,9 @@ else:
             sys.exit(1)
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
-        _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+        _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET, USE_ASI_OBJECTIVE_TURRET)
+        _validate_external_z_stage_flags(USE_PI_FOCUS_STAGE, USE_ASI_Z_STAGE)
+        _validate_asi_z_flags(USE_ASI_Z_STAGE, ASI_Z_FIND_ZERO_ON_STARTUP, ASI_Z_TRAVEL_MM)
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

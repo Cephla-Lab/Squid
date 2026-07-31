@@ -4,8 +4,8 @@ Squid stage support for the PI V-308 voice-coil focus drive on a C-414 controlle
 Provides (1) ``C414FocusStage``, a GCS-2.0 driver over a serial (FTDI VCP) link via
 pipython's pure-Python PISerial gateway (no proprietary PI GCS DLL required), with
 ``pipython`` imported lazily so this module imports fine without it; (2) ``_SimulatedC414``,
-a pure-Python stand-in for hardware-free / CI use; and (3) two ``squid.abc.AbstractStage``
-adapters -- ``PIFocusStage`` (Z-only) and ``CombinedStage`` (XY delegate + V-308 Z).
+a pure-Python stand-in for hardware-free / CI use; and (3) the ``squid.abc.AbstractStage``
+adapter ``PIFocusStage`` (Z-only; pair with an XY stage via ``squid.stage.composite.CombinedStage``).
 
 Z is pure pass-through mm: the controller's native absolute mm is Squid's Z mm, with no sign
 flip or offset and no use of ``Z_AXIS.MOVEMENT_SIGN`` (that is a Cephla-stepper calibration).
@@ -163,6 +163,7 @@ class PIFocusStage(AbstractStage):
         # travel limit (furthest from the sample); set_limits() narrows it to the fenced upper end.
         self._home_to_pos_limit = home_to_positive_limit
         self._home_native_mm = native_hi if home_to_positive_limit else home_mm
+        self._last_z_mm = self._to_squid(0.0)  # last Squid-frame Z, served to pollers after close()
 
     def _to_native(self, squid_mm: float) -> float:
         return (self._offset_mm - squid_mm) if self._invert else squid_mm
@@ -172,23 +173,35 @@ class PIFocusStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            if self._closed:
+                self._log.warning("move_z ignored: the PI focus stage is closed.")
+                return
             # A relative move flips sign under inversion (squid+ = native-), no offset.
-            self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+            self._last_z_mm = self._to_squid(
+                self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+            )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
-            self._c414.move_to(self._to_native(abs_mm), wait=blocking)
+            if self._closed:
+                self._log.warning("move_z_to ignored: the PI focus stage is closed.")
+                return
+            self._last_z_mm = self._to_squid(self._c414.move_to(self._to_native(abs_mm), wait=blocking))
 
     def get_pos(self) -> Pos:
+        # GUI pollers can fire after shutdown closes the connection; serve the last-known Z
+        # then instead of touching the dead handle.
         with self._lock:
-            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._to_squid(self._c414.get_position_mm()), theta_rad=None)
+            if not self._closed:
+                self._last_z_mm = self._to_squid(self._c414.get_position_mm())
+            return Pos(x_mm=0.0, y_mm=0.0, z_mm=self._last_z_mm, theta_rad=None)
 
     def get_state(self) -> StageStage:
         # If an async home holds the lock, report busy without blocking on it.
         if self._busy:
             return StageStage(busy=True)
         with self._lock:
-            return StageStage(busy=self._c414.is_moving())
+            return StageStage(busy=False if self._closed else self._c414.is_moving())
 
     def is_referenced(self) -> bool:
         with self._lock:
@@ -275,107 +288,6 @@ class PIFocusStage(AbstractStage):
 
     def _no_xy(self, name: str):
         self._log.warning(f"{name} ignored: PIFocusStage is a Z-only focus drive (pair via CombinedStage).")
-
-
-class CombinedStage(AbstractStage):
-    """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
-
-    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
-        super().__init__(stage_config or xy_stage.get_config())
-        self._xy = xy_stage
-        self._z = z_stage
-        self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
-
-        # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
-        # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
-        # (continuous ~10 nm) grid instead of the wrapped XY stepper grid, so Z-stack/autofocus
-        # steps are not snapped to the coarse stepper microstep grid. Only the resolution fields
-        # are overridden; range/speed/sign are preserved.
-        z_usteps_per_mm = abs(self._z.z_mm_to_usteps(1.0)) if hasattr(self._z, "z_mm_to_usteps") else 0.0
-        if z_usteps_per_mm:
-            fine_z = self._config.Z_AXIS.model_copy(
-                update={"SCREW_PITCH": 1.0, "MICROSTEPS_PER_STEP": 1, "FULL_STEPS_PER_REV": float(z_usteps_per_mm)}
-            )
-            self._config = self._config.model_copy(update={"Z_AXIS": fine_z})
-
-    def move_x(self, rel_mm: float, blocking: bool = True):
-        self._xy.move_x(rel_mm, blocking)
-
-    def move_y(self, rel_mm: float, blocking: bool = True):
-        self._xy.move_y(rel_mm, blocking)
-
-    def move_z(self, rel_mm: float, blocking: bool = True):
-        self._z.move_z(rel_mm, blocking)
-
-    def move_x_to(self, abs_mm: float, blocking: bool = True):
-        self._xy.move_x_to(abs_mm, blocking)
-
-    def move_y_to(self, abs_mm: float, blocking: bool = True):
-        self._xy.move_y_to(abs_mm, blocking)
-
-    def move_z_to(self, abs_mm: float, blocking: bool = True):
-        self._z.move_z_to(abs_mm, blocking)
-
-    def get_pos(self) -> Pos:
-        xy, z = self._xy.get_pos(), self._z.get_pos()
-        return Pos(x_mm=xy.x_mm, y_mm=xy.y_mm, z_mm=z.z_mm, theta_rad=xy.theta_rad)
-
-    def get_state(self) -> StageStage:
-        return StageStage(busy=self._xy.get_state().busy or self._z.get_state().busy)
-
-    def is_referenced(self) -> bool:
-        return self._z.is_referenced()
-
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        xy_requested = x or y or theta
-        if z:
-            # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
-            self._z.home(False, False, True, False, blocking or xy_requested)
-        if xy_requested:
-            self._xy.home(x, y, False, theta, blocking)
-
-    def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        if x or y or theta:
-            self._xy.zero(x, y, False, theta, blocking)
-        if z:
-            self._z.zero(False, False, True, False, blocking)
-
-    def set_limits(
-        self,
-        x_pos_mm: Optional[float] = None,
-        x_neg_mm: Optional[float] = None,
-        y_pos_mm: Optional[float] = None,
-        y_neg_mm: Optional[float] = None,
-        z_pos_mm: Optional[float] = None,
-        z_neg_mm: Optional[float] = None,
-        theta_pos_rad: Optional[float] = None,
-        theta_neg_rad: Optional[float] = None,
-    ):
-        self._xy.set_limits(
-            x_pos_mm=x_pos_mm,
-            x_neg_mm=x_neg_mm,
-            y_pos_mm=y_pos_mm,
-            y_neg_mm=y_neg_mm,
-            theta_pos_rad=theta_pos_rad,
-            theta_neg_rad=theta_neg_rad,
-        )
-        self._z.set_limits(z_pos_mm=z_pos_mm, z_neg_mm=z_neg_mm)
-
-    # The GUI (NavigationWidget.set_deltaX/Y/Z) calls these stepper-style helpers on the stage, so
-    # the wrapper must expose them. X/Y come from the wrapped XY stage; Z comes from the V-308
-    # (continuous), not the XY stepper grid.
-    def x_mm_to_usteps(self, mm: float):
-        return self._xy.x_mm_to_usteps(mm)
-
-    def y_mm_to_usteps(self, mm: float):
-        return self._xy.y_mm_to_usteps(mm)
-
-    def z_mm_to_usteps(self, mm: float):
-        return self._z.z_mm_to_usteps(mm)
-
-    def close(self):
-        self._z.close()  # the V-308 backend's FTDI handle; Cephla/Prior XY close() is a no-op
-        self._xy.close()
 
 
 class C414FocusStage:
@@ -599,23 +511,17 @@ class C414FocusStage:
 
 
 def _resolve_port_by_sn(serialnum) -> str:
-    """Resolve an FTDI/USB serial number (e.g. '1UETR6I!') to a serial device path.
+    """Resolve the C-414's FTDI serial number (e.g. '1UETR6I!') to a serial device path."""
+    import squid.stage.utils  # lazy: avoids import-order coupling with control._def
 
-    Compares as strings: the config reader may coerce an all-digit serial to int, so we
-    normalise both sides. (A leading-zero numeric serial loses its zero at config-read time
-    and cannot be recovered here -- keep such serials quoted, or use PI_FOCUS_SERIAL_PORT.)
-    """
-    import serial.tools.list_ports
-
-    target = str(serialnum)
-    matches = [p.device for p in serial.tools.list_ports.comports() if str(p.serial_number) == target]
-    if not matches:
-        raise RuntimeError(
-            f"No serial port with serial_number={serialnum!r}. On Linux the C-414's custom-VID "
-            f"FTDI needs the ftdi_sio bind rule (98-pi-c414-bind.rules) installed so /dev/ttyUSB* "
-            f"appears; verify it is present and the controller is powered."
-        )
-    return matches[0]
+    return squid.stage.utils.resolve_serial_port_by_sn(
+        serialnum,
+        missing_hint=(
+            "On Linux the C-414's custom-VID FTDI needs the ftdi_sio bind rule "
+            "(98-pi-c414-bind.rules) installed so /dev/ttyUSB* appears; verify it is present "
+            "and the controller is powered."
+        ),
+    )
 
 
 def connect_pi_focus_stage(
@@ -656,14 +562,20 @@ def connect_pi_focus_stage(
             home_to_positive_limit=home_to_positive_limit,
         )
 
+    import squid.stage.utils
+
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
     # leaks an open handle.
-    if serial_port:
-        port = serial_port
-    elif serialnum:
-        port = _resolve_port_by_sn(serialnum)
-    else:
-        raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
+    port = squid.stage.utils.resolve_port(
+        serial_port,
+        serialnum,
+        missing_hint=(
+            "On Linux the C-414's custom-VID FTDI needs the ftdi_sio bind rule "
+            "(98-pi-c414-bind.rules) installed so /dev/ttyUSB* appears; verify it is present "
+            "and the controller is powered."
+        ),
+        unset_message="Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.",
+    )
 
     backend = C414FocusStage(axis=axis)
     try:
