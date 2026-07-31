@@ -1010,6 +1010,13 @@ MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 SAVE_DOWNSAMPLED_OVERVIEW = True
 SAVE_DOWNSAMPLED_WELL_IMAGES = True
 
+# SquidXplorer handoff. SquidXplorer lives in its own repository and its own venv
+# (it needs a newer Python than the acquisition software runs on), so it can only
+# be launched out of process. Point this at that venv's interpreter, e.g.
+#   C:\\path\\to\\SquidXplorer\\.venv\\Scripts\\python.exe
+# Left empty, the launcher falls back to a `squidmip-view` executable on PATH.
+SQUIDXPLORER_PYTHON = ""
+
 # Plate view zoom limits
 # MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
 # in the smallest dimension. 500 pixels allows inspecting cellular-level details.
@@ -1508,6 +1515,9 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 LIVE_VIEW_Z_STEP_UM = _general_config.getfloat("GENERAL", "live_view_z_step_um")
             if _general_config.has_option("GENERAL", "live_view_z_step_fast_um"):
                 LIVE_VIEW_Z_STEP_FAST_UM = _general_config.getfloat("GENERAL", "live_view_z_step_fast_um")
+            if _general_config.has_option("GENERAL", "squidxplorer_python"):
+                SQUIDXPLORER_PYTHON = _general_config.get("GENERAL", "squidxplorer_python").strip()
+                log.info(f"Loaded SQUIDXPLORER_PYTHON={SQUIDXPLORER_PYTHON} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 
