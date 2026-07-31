@@ -5,11 +5,68 @@ from serial.tools import list_ports
 import time
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
+
+# The star import above snapshots values at import time, so anything the user
+# can change at runtime (Preferences) must be read as control._def.NAME.
+import control._def
 from squid.abc import LightSource
 
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
+
+
+def _is_warmup_response(response):
+    """True for a device saying 'not yet, still warming up'.
+
+    The LDI answers 'ERR=System in Warmup State'; the wording is matched loosely
+    so a firmware revision that rephrases it slightly still gets waited out
+    rather than killing startup.
+    """
+    lowered = response.lower()
+    return "warmup" in lowered or "warm up" in lowered or "warming" in lowered
+
+
+class SerialDeviceError(RuntimeError):
+    pass
+
+
+class SerialPortNotFoundError(SerialDeviceError):
+    """The device never showed up as a serial port - almost always powered off.
+
+    Raised at construction so the failure names the device, instead of
+    surfacing much later as `AttributeError: 'NoneType' object has no attribute
+    'write'` from inside whichever driver method happened to talk first.
+    """
+
+    def __init__(self, device_label, SN=None, VID=None, PID=None):
+        self.device_label = device_label
+        self.SN = SN
+        if SN is not None:
+            which = f"SN={SN!r}"
+        elif VID is not None or PID is not None:
+            which = f"VID={VID!r} PID={PID!r}"
+        else:
+            which = "the configured port"
+        super().__init__(
+            f"{device_label}: no serial port found for {which}. " "The device is probably powered off or unplugged."
+        )
+
+
+class SerialDeviceTimeout(SerialDeviceError):
+    """A device kept answering, but never with what we were waiting for."""
+
+    def __init__(self, device_label, command, expected_response, last_response, timeout_s):
+        self.device_label = device_label
+        self.last_response = last_response
+        super().__init__(
+            f"{device_label}: {command!r} still returning {last_response!r} "
+            f"instead of {expected_response!r} after {timeout_s:.1f}s"
+        )
+
+
+class SerialDeviceAborted(SerialDeviceError):
+    """The user aborted while we were waiting on this device."""
 
 
 class SerialDevice:
@@ -19,7 +76,19 @@ class SerialDevice:
     or serial number.
     """
 
-    def __init__(self, port=None, VID=None, PID=None, SN=None, baudrate=9600, read_timeout=0.1, **kwargs):
+    def __init__(
+        self,
+        port=None,
+        VID=None,
+        PID=None,
+        SN=None,
+        baudrate=9600,
+        read_timeout=0.1,
+        *,
+        device_label="serial device",
+        require_port=True,
+        **kwargs,
+    ):
         # Initialize the serial connection
         self.port = port
         self.VID = VID
@@ -29,9 +98,24 @@ class SerialDevice:
         self.baudrate = baudrate
         self.read_timeout = read_timeout
         self.serial_kwargs = kwargs
+        self.device_label = device_label
+        self.require_port = require_port
 
         self.serial = None
 
+        self._find_port(SN, VID, PID)
+
+        if self.port is None:
+            if require_port:
+                raise SerialPortNotFoundError(device_label, SN=SN, VID=VID, PID=PID)
+            return
+
+        self.serial = serial.Serial(self.port, baudrate=baudrate, timeout=read_timeout, **kwargs)
+
+    def _find_port(self, SN, VID, PID):
+        """Resolve self.port by USB enumeration. SN wins over VID/PID."""
+        if self.port is not None:
+            return
         if VID is not None and PID is not None:
             for d in list_ports.comports():
                 if d.vid == VID and d.pid == PID:
@@ -43,10 +127,12 @@ class SerialDevice:
                     self.port = d.device
                     break
 
-        if self.port is not None:
-            self.serial = serial.Serial(self.port, baudrate=baudrate, timeout=read_timeout, **kwargs)
+    def _require_serial(self):
+        """Fail with the device's name rather than an AttributeError on None."""
+        if self.serial is None:
+            raise SerialPortNotFoundError(self.device_label, SN=self.SN, VID=self.VID, PID=self.PID)
 
-    def open_ser(self, SN=None, VID=None, PID=None, baudrate=None, read_timeout=None, **kwargs):
+    def open_ser(self, SN=None, VID=None, PID=None, baudrate=None, read_timeout=None, require_port=None, **kwargs):
         if self.serial is not None and not self.serial.is_open:
             self.serial.open()
 
@@ -65,23 +151,19 @@ class SerialDevice:
         if read_timeout is None:
             read_timeout = self.read_timeout
 
+        if require_port is None:
+            require_port = self.require_port
+
         for k in self.serial_kwargs.keys():
             if k not in kwargs:
                 kwargs[k] = self.serial_kwargs[k]
 
         if self.serial is None:
-            if VID is not None and PID is not None:
-                for d in list_ports.comports():
-                    if d.vid == VID and d.pid == PID:
-                        self.port = d.device
-                        break
-            if SN is not None:
-                for d in list_ports.comports():
-                    if d.serial_number == SN:
-                        self.port = d.device
-                        break
+            self._find_port(SN, VID, PID)
             if self.port is not None:
                 self.serial = serial.Serial(self.port, **kwargs)
+            elif require_port:
+                raise SerialPortNotFoundError(self.device_label, SN=SN, VID=VID, PID=PID)
 
     def write_and_check(
         self,
@@ -92,11 +174,42 @@ class SerialDevice:
         attempt_delay=1,
         check_prefix=True,
         print_response=False,
+        *,
+        timeout_s=None,
+        retry_if=None,
+        cancel_fn=None,
+        on_retry=None,
+        sleep_fn=None,
     ):
-        # Write a command and check the response
-        for attempt in range(max_attempts):
+        """Write a command and check the response.
+
+        With none of the keyword-only arguments set this behaves exactly as it
+        always has: `max_attempts` tries, `attempt_delay` between them, then
+        `SerialDeviceError`.
+
+        `timeout_s` turns on a deadline for *transient* replies - those matching
+        `retry_if`, e.g. a laser engine answering 'ERR=System in Warmup State'.
+        Those keep retrying until the deadline instead of burning one of the
+        few attempts, which is what used to kill startup about five seconds
+        after the light source was powered on. Any other wrong reply still
+        fails fast against `max_attempts`, so a genuinely misbehaving device
+        does not cost the full timeout.
+
+        `sleep_fn` lets the caller keep a UI painted while this blocks.
+        """
+        self._require_serial()
+        sleep = sleep_fn if sleep_fn is not None else time.sleep
+        started = time.monotonic()
+        deadline = None if timeout_s is None else started + timeout_s
+        attempts_used = 0
+        last_response = ""
+
+        while True:
+            if cancel_fn is not None and cancel_fn():
+                raise SerialDeviceAborted(f"{self.device_label}: aborted while waiting for {expected_response!r}")
+
             self.serial.write(command.encode())
-            time.sleep(read_delay)  # Wait for the command to be sent/executed
+            sleep(read_delay)  # Wait for the command to be sent/executed
 
             response = self.serial.readline().decode().strip()
             if print_response:
@@ -120,13 +233,25 @@ class SerialDevice:
 
             # Log mismatch for debugging (response didn't match exactly or by prefix)
             if response:
+                last_response = response
                 log.warning(f"Serial response mismatch: got '{response}', expected '{expected_response}'")
 
-            time.sleep(attempt_delay)  # Wait before retrying
+            transient = bool(deadline is not None and retry_if is not None and response and retry_if(response))
+            if transient:
+                if on_retry is not None:
+                    on_retry(response, time.monotonic() - started)
+            else:
+                attempts_used += 1
 
-        raise SerialDeviceError("Max attempts reached without receiving expected response.")
+            sleep(attempt_delay)  # Wait before retrying
+
+            if not transient and attempts_used >= max_attempts:
+                raise SerialDeviceError("Max attempts reached without receiving expected response.")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise SerialDeviceTimeout(self.device_label, command, expected_response, last_response, timeout_s)
 
     def write_and_read(self, command, read_delay=0.1, max_attempts=3, attempt_delay=1):
+        self._require_serial()
         for attempt in range(max_attempts):
             self.serial.write(command.encode())
             time.sleep(read_delay)  # Wait for the command to be sent
@@ -139,15 +264,15 @@ class SerialDevice:
         raise SerialDeviceError("Max attempts reached without receiving response.")
 
     def write(self, command):
+        self._require_serial()
         self.serial.write(command.encode())
 
     def close(self):
-        # Close the serial connection
-        self.serial.close()
-
-
-class SerialDeviceError(RuntimeError):
-    pass
+        # Close the serial connection. Guarded because a device that was never
+        # found leaves self.serial as None, and teardown must not blow up on
+        # exactly the failure it is cleaning up after.
+        if self.serial is not None:
+            self.serial.close()
 
 
 class XLight_Simulation:
@@ -278,6 +403,7 @@ class XLight:
     def _open_serial(self, SN, baudrate):
         """Open serial connection with specified baud rate."""
         self.serial_connection = SerialDevice(
+            device_label="Spinning disk (X-Light/Cicero)",
             SN=SN,
             baudrate=baudrate,
             bytesize=serial.EIGHTBITS,
@@ -482,6 +608,7 @@ class Dragonfly:
     def __init__(self, SN: str):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(
+            device_label="Spinning disk (Dragonfly)",
             SN=SN,
             baudrate=115200,
             bytesize=serial.EIGHTBITS,
@@ -885,6 +1012,7 @@ class LDI(LightSource):
         """
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(
+            device_label="LDI laser engine",
             SN=SN,
             baudrate=9600,
             bytesize=serial.EIGHTBITS,
@@ -920,8 +1048,24 @@ class LDI(LightSource):
         }
         self.active_channel = None
 
-    def initialize(self):
-        self.serial_connection.write_and_check("run!\r", "ok")
+    def initialize(self, *, timeout_s=None, cancel_fn=None, on_retry=None, sleep_fn=None):
+        """Put the engine into RUN state, waiting out a warm-up if needed.
+
+        A freshly powered LDI answers 'ERR=System in Warmup State' for up to a
+        minute or so. Treating that as fatal after five attempts is what used
+        to kill startup when the software was launched right after power-on.
+        """
+        if timeout_s is None:
+            timeout_s = control._def.STARTUP_DEVICE_TIMEOUT_S
+        self.serial_connection.write_and_check(
+            "run!\r",
+            "ok",
+            timeout_s=timeout_s,
+            retry_if=_is_warmup_response,
+            cancel_fn=cancel_fn,
+            on_retry=on_retry,
+            sleep_fn=sleep_fn,
+        )
 
     def set_shutter_control_mode(self, mode):
         if mode == ShutterControlMode.TTL:
@@ -1018,7 +1162,8 @@ class LDI_Simulation(LightSource):
         }
         self.active_channel = None
 
-    def initialize(self):
+    def initialize(self, **_):
+        # Accepts the real LDI's keyword arguments so the two are interchangeable.
         pass
 
     def set_shutter_control_mode(self, mode):
@@ -1071,6 +1216,7 @@ class SciMicroscopyLEDArray:
         Provide serial number
         """
         self.serial_connection = SerialDevice(
+            device_label="SciMicroscopy LED array",
             SN=SN,
             baudrate=115200,
             bytesize=serial.EIGHTBITS,
@@ -1224,6 +1370,7 @@ class CellX:
 
     def __init__(self, SN="", initial_modulation=CELLX_MODULATION):
         self.serial_connection = SerialDevice(
+            device_label="CellX laser combiner",
             SN=SN,
             baudrate=115200,
             bytesize=serial.EIGHTBITS,
@@ -1280,7 +1427,11 @@ class CellX_Simulation:
     """Wrapper for communicating with LDI over serial"""
 
     def __init__(self, SN=""):
+        # require_port=False: this is the simulated class, so there is usually
+        # no CellX plugged in at all and a missing port must stay harmless.
         self.serial_connection = SerialDevice(
+            device_label="CellX laser combiner (simulated)",
+            require_port=False,
             SN=SN,
             baudrate=115200,
             bytesize=serial.EIGHTBITS,
