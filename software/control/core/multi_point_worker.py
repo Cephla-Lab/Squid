@@ -158,6 +158,11 @@ class MultiPointWorker:
         )
 
         self.time_point = 0
+        # Time-lapse pacing diagnostics.  We never skip a time point: when a round runs past
+        # its dt interval we start the next one immediately and record the overrun here.
+        self._late_time_points = 0
+        self._max_lateness_s = 0.0
+        self._total_lateness_s = 0.0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
@@ -463,7 +468,9 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
-            sleep_time = min(self.dt / 20.0, 0.5)
+            # Poll often enough to stay abort-responsive and keep the watchdog heartbeat alive,
+            # but never faster than 50 ms -- a tiny dt would otherwise busy-spin the wait loop.
+            sleep_time = min(max(self.dt / 20.0, 0.05), 0.5)
 
             # Send Slack acquisition start notification
             if self._slack_notifier is not None:
@@ -491,6 +498,7 @@ class MultiPointWorker:
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
                 self._run_state_beat()
+                time_point_start = time.time()
 
                 # Gate on laser engine readiness for the channels this acquisition will fire.
                 # Re-checked every timepoint so dt-induced sleep gaps are handled.
@@ -503,26 +511,43 @@ class MultiPointWorker:
                     self.run_single_time_point()
 
                 self.time_point = self.time_point + 1
-                if self.dt == 0:  # continous acquisition
-                    pass
-                else:  # timed acquisition
 
-                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
-                        self._log.info("skip time point " + str(self.time_point + 1))
-                        self.time_point = self.time_point + 1
+                if self.dt == 0:  # continous acquisition - start the next round immediately
+                    continue
 
-                    # check if it has reached Nt
-                    if self.time_point == self.Nt:
-                        break  # no waiting after taking the last time point
+                # Timed acquisition.  dt is a START-TO-START period.  We never skip a time point:
+                # if a round overran dt we start the next one immediately and the run just
+                # stretches out.  Dropping requested time points silently was the old behaviour
+                # and it cost whole acquisitions whenever a round was slower than dt.
+                next_start = self.timestamp_acquisition_started + self.time_point * self.dt
+                lateness_s = time.time() - next_start
+                if lateness_s > 0:
+                    round_s = time.time() - time_point_start
+                    self._late_time_points += 1
+                    self._total_lateness_s += lateness_s
+                    self._max_lateness_s = max(self._max_lateness_s, lateness_s)
+                    tail = (
+                        f"Starting time point {self.time_point + 1}/{self.Nt} immediately; no time points are skipped."
+                        if self.time_point < self.Nt
+                        else "This was the last time point."
+                    )
+                    self._log.warning(
+                        f"Time point {self.time_point}/{self.Nt} overran its {self.dt:g} [s] interval by "
+                        f"{lateness_s:.1f} [s] (the round took {round_s:.1f} [s]). {tail}"
+                    )
 
-                    # wait until it's time to do the next acquisition
-                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                        if self.abort_requested_fn():
-                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
-                            break
-                        self._run_state_beat()
-                        self._sleep(sleep_time)
+                # check if it has reached Nt
+                if self.time_point >= self.Nt:
+                    break  # no waiting after taking the last time point
+
+                # Wait until it's time to do the next acquisition.  If we are already late this
+                # loop is a no-op and the next round starts right away.
+                while time.time() < next_start:
+                    if self.abort_requested_fn():
+                        self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                        break
+                    self._run_state_beat()
+                    self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
@@ -551,11 +576,19 @@ class MultiPointWorker:
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
             total_duration = time.time() - self.timestamp_acquisition_started
+            if self._late_time_points:
+                self._log.warning(
+                    f"{self._late_time_points} of {self.time_point} acquired time point(s) ran past the "
+                    f"{self.dt:g} [s] interval (worst overrun {self._max_lateness_s:.1f} [s], "
+                    f"total {self._total_lateness_s:.1f} [s]).  No time points were skipped."
+                )
             self._run_state.end(
                 reason,
                 {
                     "total_images": self.image_count,
                     "total_timepoints": self.time_point,
+                    "late_timepoints": self._late_time_points,
+                    "max_lateness_seconds": round(self._max_lateness_s, 3),
                     "total_duration_seconds": total_duration,
                     "errors_encountered": self._acquisition_error_count,
                 },
@@ -571,6 +604,7 @@ class MultiPointWorker:
                         errors_encountered=self._acquisition_error_count,
                         experiment_id=self.experiment_ID or "unknown",
                         reason=reason,
+                        late_timepoints=self._late_time_points,
                     )
                     self.callbacks.signal_slack_acquisition_finished(stats)
                 except Exception as e:

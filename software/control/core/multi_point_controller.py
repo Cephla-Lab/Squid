@@ -560,6 +560,67 @@ class MultiPointController:
             # this "not configured" and want it to be a ValueError.
             raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
 
+    # Rough per-operation costs used by get_estimated_time_point_duration_s().  Calibrated
+    # against a real 4-FOV / 10-z / 1-channel / 500 ms / laser-AF run that took 31.5 [s].
+    _EST_XY_MOVE_OVERHEAD_S = 0.22  # blocking stage.move_x_to + move_y_to, beyond the stabilization sleeps
+    _EST_FRAME_OVERHEAD_S = 0.115  # per frame, beyond the exposure (config switch, trigger, dispatch)
+    _EST_LASER_AF_S = 1.0  # per FOV, laser reflection AF
+    _EST_CONTRAST_AF_S = 3.0  # per AF event, contrast-based AF (very rough)
+    _EST_TIME_POINT_OVERHEAD_S = 0.5  # folder creation, coordinates.csv, .done file
+
+    def get_estimated_time_point_duration_s(self) -> float:
+        """
+        Return a ROUGH estimate, in seconds, of how long ONE time point of the currently
+        configured acquisition will take.
+
+        This is a coarse, open-loop model built from exposure times, FOV count, Z levels,
+        channel count and autofocus settings plus a handful of empirically calibrated
+        per-operation constants.  It does NOT model stage travel distance, disk or queue
+        backpressure, filter wheel moves, fluidics, laser engine warmup, or AF retries.
+        Treat +/- 30% as normal.  It exists only to warn the operator pre-flight when a time
+        point plainly cannot fit inside the requested dt interval.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        try:
+            n_fovs = sum(
+                len(region_coords)
+                for (_region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+            )
+            n_channels = len(self.selected_configurations)
+            if n_fovs <= 0 or n_channels <= 0:
+                raise ValueError("Cannot estimate time point duration with no FOVs or no channels selected.")
+
+            # Every channel costs its own exposure plus a fixed per-frame overhead.
+            exposure_s = sum(float(config.exposure_time) / 1000.0 for config in self.selected_configurations)
+            per_z_level_s = exposure_s + n_channels * self._EST_FRAME_OVERHEAD_S
+
+            if self.use_piezo:
+                z_step_s = control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000.0
+            else:
+                z_step_s = control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000.0
+
+            xy_move_s = (
+                control._def.SCAN_STABILIZATION_TIME_MS_X + control._def.SCAN_STABILIZATION_TIME_MS_Y
+            ) / 1000.0 + self._EST_XY_MOVE_OVERHEAD_S
+
+            # Laser AF runs at every FOV.  Contrast AF only runs when the z-stack shape allows
+            # it, and then only once every NUMBER_OF_FOVS_PER_AF FOVs -- see
+            # MultiPointWorker.perform_autofocus.
+            if self.do_reflection_af:
+                af_per_fov_s = self._EST_LASER_AF_S
+            elif self.do_autofocus and (self.NZ == 1 or self.z_stacking_config == "FROM CENTER"):
+                af_per_fov_s = self._EST_CONTRAST_AF_S / max(1, control._def.Acquisition.NUMBER_OF_FOVS_PER_AF)
+            else:
+                af_per_fov_s = 0.0
+
+            per_fov_s = xy_move_s + af_per_fov_s + self.NZ * (z_step_s + per_z_level_s)
+            return n_fovs * per_fov_s + self._EST_TIME_POINT_OVERHEAD_S
+        except AttributeError:
+            # We don't init all fields in __init__, so it's easy to get attribute errors.  We
+            # consider this "not configured" and want it to be a ValueError.
+            raise ValueError("Not properly configured for an acquisition, cannot estimate time point duration.")
+
     def _temporary_get_an_image_hack(self) -> Tuple[np.array, bool]:
         was_streaming = self.camera.get_is_streaming()
         callbacks_were_enabled = self.camera.get_callbacks_enabled()
