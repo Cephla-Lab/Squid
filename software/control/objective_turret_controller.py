@@ -232,10 +232,11 @@ class ObjectiveTurret4PosControllerSimulation:
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
         # Accepted for constructor parity with the real controller; the simulation
-        # tracks objectives by name and never computes pulses, so all three are unused.
+        # tracks objectives by name and never computes pulses, so all four are unused.
         offset_pulses: Optional[int] = None,
         calibrated_pulses: Optional[dict] = None,
         backlash_deg: Optional[float] = None,
+        direction_inverted: Optional[bool] = None,
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
@@ -332,12 +333,14 @@ class ObjectiveTurret4PosController:
         offset_pulses: Optional[int] = None,
         calibrated_pulses: Optional[dict] = None,
         backlash_deg: Optional[float] = None,
+        direction_inverted: Optional[bool] = None,
     ) -> None:
         from control._def import (
             OBJECTIVE_TURRET_POSITIONS,
             OBJECTIVE_TURRET_OFFSET_PULSES,
             OBJECTIVE_TURRET_CALIBRATED_PULSES,
             OBJECTIVE_TURRET_BACKLASH_DEG,
+            OBJECTIVE_TURRET_DIRECTION_INVERTED,
         )
 
         self._slave_id = slave_id
@@ -354,6 +357,14 @@ class ObjectiveTurret4PosController:
         self._backlash_deg = _validate_backlash_deg(
             backlash_deg if backlash_deg is not None else OBJECTIVE_TURRET_BACKLASH_DEG
         )
+        # Direction inversion for motor models wired with the opposite phase order.
+        # Applied only at the register boundary (move targets, jog signs, sweep
+        # direction bit, position readbacks); everything above works in logical
+        # coordinates, so calibration/backlash/homing logic is inversion-agnostic.
+        inverted = direction_inverted if direction_inverted is not None else OBJECTIVE_TURRET_DIRECTION_INVERTED
+        if not isinstance(inverted, bool):
+            raise ValueError(f"OBJECTIVE_TURRET_DIRECTION_INVERTED must be a boolean, got {inverted!r}")
+        self._direction_inverted = inverted
         self._stage = stage
         self._current_objective: Optional[str] = None
         self._is_open = False
@@ -417,7 +428,7 @@ class ObjectiveTurret4PosController:
             # RAM-only runtime parameter, written AFTER the EEPROM save so it is not
             # persisted (the save command snapshots current RAM; the manual forbids
             # persisting the direction register, which moves rewrite dynamically).
-            self._calibrate_one(REG_DIRECTION, 1, "direction")
+            self._calibrate_one(REG_DIRECTION, self._physical_direction(1), "direction")
 
             logger.info(
                 "Turret controller ready: port=%s microstep=%d pulses/position=%d calibrated=%s",
@@ -538,7 +549,8 @@ class ObjectiveTurret4PosController:
 
     @property
     def current_position_pulses(self) -> int:
-        return self._modbus.read_input_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
+        raw = self._modbus.read_input_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
+        return -raw if self._direction_inverted else raw
 
     @property
     def current_objective(self) -> Optional[str]:
@@ -553,6 +565,10 @@ class ObjectiveTurret4PosController:
     def _require_open(self) -> None:
         if not self._is_open:
             raise RuntimeError("Turret controller is closed")
+
+    def _physical_direction(self, logical_direction: int) -> int:
+        """Map a logical direction bit (1=positive) to the physical register value."""
+        return logical_direction ^ 1 if self._direction_inverted else logical_direction
 
     def _target_pulses(self, position_index: int) -> int:
         """Absolute pulse target for a slot: the per-machine calibrated value when
@@ -593,7 +609,10 @@ class ObjectiveTurret4PosController:
     def _run_absolute_move(self, target_pulses: int, timeout_s: float) -> None:
         self._write_control(CW_DISABLE)
         self._write_holding(REG_RUN_MODE, MODE_POSITION)
-        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, target_pulses, signed=True)
+        # The register takes physical coordinates; the wait below compares logical
+        # target against the logical position readback, so it stays un-negated.
+        physical_target = -target_pulses if self._direction_inverted else target_pulses
+        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, physical_target, signed=True)
         self._write_control(CW_STARTUP)
         self._write_control(CW_ENABLE)
         self._write_control(CW_RUN_ABSOLUTE)
@@ -612,6 +631,8 @@ class ObjectiveTurret4PosController:
         position = (vals[_OFS_POSITION] << 16) | vals[_OFS_POSITION + 1]
         if position >= 0x80000000:
             position -= 0x100000000
+        if self._direction_inverted:
+            position = -position
         return di1, vals[_OFS_STATUS_WORD], position, vals[_OFS_ALARM]
 
     @staticmethod
@@ -632,7 +653,7 @@ class ObjectiveTurret4PosController:
         window cannot be skipped between two polls."""
         self._write_control(CW_DISABLE)
         self._write_holding(REG_RUN_MODE, MODE_SPEED)
-        self._write_holding(REG_DIRECTION, 0)  # negative, toward the sensor
+        self._write_holding(REG_DIRECTION, self._physical_direction(0))  # logical negative, toward the sensor
         self._modbus.write_register_32bit(self._slave_id, REG_TARGET_SPEED, HOMING_SWEEP_SPEED)
         self._write_control(CW_STARTUP)
         self._write_control(CW_ENABLE)
@@ -654,7 +675,10 @@ class ObjectiveTurret4PosController:
     def _jog(self, pulses: int) -> None:
         """Relative move: direction from REG_DIRECTION, REG_TARGET_POSITION takes the
         positive magnitude only (a negative value is rejected as invalid). Settle is
-        time-based because short jogs do not reliably assert the RUNNING bit."""
+        time-based because short jogs do not reliably assert the RUNNING bit.
+        `pulses` is logical; inversion negates it before the direction/magnitude split."""
+        if self._direction_inverted:
+            pulses = -pulses
         self._write_control(CW_DISABLE)
         self._write_holding(REG_RUN_MODE, MODE_POSITION)
         self._write_holding(REG_DIRECTION, 1 if pulses >= 0 else 0)

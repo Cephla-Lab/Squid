@@ -1264,6 +1264,15 @@ OBJECTIVE_TURRET_CALIBRATED_PULSES = {}
 # it from below, so the final approach direction is always the same and gear
 # backlash cancels out.
 OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
+# Set True for turret motor models wired with the opposite phase order (same
+# commands spin the other way). The controller then negates move targets, jog
+# signs and the homing-sweep direction bit, and flips position readbacks, so
+# slot mapping, calibration and backlash logic keep working in the same logical
+# coordinate system — OBJECTIVE_TURRET_CALIBRATED_PULSES values are always
+# logical-coordinate pulses. After toggling on an existing machine, re-home and
+# re-measure the calibrated slots: the physical zero moves with the sweep
+# direction.
+OBJECTIVE_TURRET_DIRECTION_INVERTED = False
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
