@@ -192,6 +192,16 @@ _QUIET_CALLBACKS = MultiPointControllerFunctions(
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class TimePointEstimate:
+    """How long one time point will take, and whether that came from hardware or a model."""
+
+    seconds: float
+    measured: bool
+    per_fov_s: float
+    n_fovs: int
+
+
 @dataclasses.dataclass
 class TimingProbeResult:
     """Outcome of a no-illumination timing probe.  See run_timing_probe()."""
@@ -286,6 +296,14 @@ class MultiPointController:
         self.base_path = None
         self.skip_saving = False
         self.dry_run = False
+
+        # Measured per-FOV duration from run_timing_probe(), with the configuration
+        # fingerprint it was measured against.  In memory only and deliberately not cached to
+        # disk: a per-FOV duration describes this machine right now, and one reloaded from a
+        # previous session would look authoritative while being silently wrong.
+        self._measured_per_fov_s: Optional[float] = None
+        self._measured_key: Optional[tuple] = None
+        self._measured_context: dict = {}
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -623,7 +641,95 @@ class MultiPointController:
     _EST_CONTRAST_AF_S = 3.0  # per AF event, contrast-based AF (very rough)
     _EST_TIME_POINT_OVERHEAD_S = 0.5  # folder creation, coordinates.csv, .done file
 
+    def get_timing_measure_key(self) -> tuple:
+        """Everything that changes the PER-FOV cost of an acquisition.
+
+        A measurement whose key no longer matches the current configuration is silently
+        discarded, so the operator can never be shown a stale number as if it were fresh.
+
+        NOTE: the FOV count is deliberately absent.  per_fov_s scales out of the time point
+        model, so adding wells does not invalidate a measurement -- and that is exactly the
+        edit where a good estimate matters most.  It is recorded as context instead.
+        """
+        try:
+            binning = tuple(self.camera.get_binning())
+        except Exception:
+            binning = None
+        return (
+            self.objectiveStore.current_objective,
+            tuple(
+                (config.name, float(config.exposure_time), getattr(config, "emission_filter_position", None))
+                for config in self.selected_configurations
+            ),
+            int(self.NZ),
+            round(float(self.deltaZ), 6),
+            self.z_stacking_config,
+            bool(self.use_piezo),
+            bool(self.do_autofocus),
+            bool(self.do_reflection_af),
+            bool(self.skip_saving),
+            # Move duration depends on how far the stage travels, so geometry is part of the key.
+            round(float(self.deltaX), 6),
+            round(float(self.deltaY), 6),
+            round(float(self.overlap_percent), 3),
+            round(float(self.scan_size_mm), 4),
+            binning,
+            self.base_path,  # a different target volume writes at a different speed
+            control._def.FILE_SAVING_OPTION,
+            bool(control._def.MERGE_CHANNELS),
+        )
+
+    def set_measured_per_fov_s(self, per_fov_s: float, context: Optional[dict] = None) -> None:
+        """Record a measured per-FOV duration, fingerprinted against the current settings.
+
+        Must be called while the controller still holds the user's real configuration --
+        run_timing_probe() restores everything it overrode before reporting back, precisely
+        so the key computed here matches the acquisition the operator is about to start.
+        """
+        self._measured_per_fov_s = float(per_fov_s)
+        self._measured_key = self.get_timing_measure_key()
+        self._measured_context = dict(context or {})
+        self._log.info(f"Measured per-FOV duration: {per_fov_s:.2f} [s]")
+
+    def clear_measured_per_fov_s(self) -> None:
+        self._measured_per_fov_s = None
+        self._measured_key = None
+        self._measured_context = {}
+
+    def get_time_point_estimate(self) -> TimePointEstimate:
+        """How long ONE time point will take, measured if we have a fresh measurement.
+
+        Falls back to the open-loop model (see the _EST_* constants) when no timing probe
+        has been run, or when the configuration has changed since one was.
+        """
+        model_seconds = self._modelled_time_point_duration_s()
+        n_fovs = self._planned_fov_count()
+
+        measured = self._measured_per_fov_s is not None and self._measured_key == self.get_timing_measure_key()
+        if measured:
+            per_fov_s = self._measured_per_fov_s
+            seconds = n_fovs * per_fov_s + self._EST_TIME_POINT_OVERHEAD_S
+        else:
+            per_fov_s = (model_seconds - self._EST_TIME_POINT_OVERHEAD_S) / n_fovs
+            seconds = model_seconds
+        return TimePointEstimate(seconds=seconds, measured=measured, per_fov_s=per_fov_s, n_fovs=n_fovs)
+
+    def _planned_fov_count(self) -> int:
+        return sum(
+            len(region_coords) for (_region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+        )
+
     def get_estimated_time_point_duration_s(self) -> float:
+        """Seconds for one time point -- measured when available, modelled otherwise.
+
+        Kept as the simple scalar accessor; see get_time_point_estimate() when you need to
+        know whether the number was measured on hardware or merely modelled.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        return self.get_time_point_estimate().seconds
+
+    def _modelled_time_point_duration_s(self) -> float:
         """
         Return a ROUGH estimate, in seconds, of how long ONE time point of the currently
         configured acquisition will take.
@@ -632,8 +738,8 @@ class MultiPointController:
         channel count and autofocus settings plus a handful of empirically calibrated
         per-operation constants.  It does NOT model stage travel distance, disk or queue
         backpressure, filter wheel moves, fluidics, laser engine warmup, or AF retries.
-        Treat +/- 30% as normal.  It exists only to warn the operator pre-flight when a time
-        point plainly cannot fit inside the requested dt interval.
+        Treat +/- 30% as normal.  run_timing_probe() measures the same quantity on real
+        hardware and is far more accurate; this is the fallback when it has not been run.
 
         Raises a ValueError if the class is not configured for a valid acquisition.
         """

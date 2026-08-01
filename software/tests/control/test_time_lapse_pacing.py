@@ -295,6 +295,94 @@ def test_timing_probe_refusals():
     scope.close()
 
 
+def test_measurement_feeds_the_estimate():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    modelled = mpc.get_time_point_estimate()
+    assert modelled.measured is False
+    assert modelled.n_fovs == len(mpc._flatten_planned_fovs())
+
+    mpc.set_measured_per_fov_s(7.0)
+    measured = mpc.get_time_point_estimate()
+
+    assert measured.measured is True
+    assert measured.per_fov_s == 7.0
+    assert measured.seconds == pytest.approx(measured.n_fovs * 7.0 + mpc._EST_TIME_POINT_OVERHEAD_S)
+    # The scalar accessor follows the measurement too.
+    assert mpc.get_estimated_time_point_duration_s() == pytest.approx(measured.seconds)
+    scope.close()
+
+
+def test_measurement_is_discarded_when_the_per_fov_cost_changes():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    for mutate in (
+        lambda: mpc.set_NZ(mpc.NZ + 1),
+        lambda: mpc.set_deltaZ(mpc.deltaZ * 1000 + 1),
+        lambda: mpc.set_reflection_af_flag(not mpc.do_reflection_af),
+        lambda: mpc.set_overlap_percent(mpc.overlap_percent + 5),
+        lambda: mpc.set_skip_saving(not mpc.skip_saving),
+        lambda: mpc.set_base_path(tempfile.mkdtemp(prefix="probe_other_")),
+    ):
+        mpc.set_measured_per_fov_s(7.0)
+        assert mpc.get_time_point_estimate().measured is True
+        mutate()
+        assert mpc.get_time_point_estimate().measured is False, f"stale measurement survived {mutate}"
+
+    # Changing an exposure time must also invalidate it.
+    mpc.set_measured_per_fov_s(7.0)
+    assert mpc.get_time_point_estimate().measured is True
+    mpc.selected_configurations[0].exposure_time = mpc.selected_configurations[0].exposure_time + 10
+    assert mpc.get_time_point_estimate().measured is False
+    scope.close()
+
+
+def test_measurement_survives_adding_fovs():
+    """per_fov_s scales out of the model, so more wells must NOT discard the measurement.
+
+    This is the edit where a good estimate matters most -- growing the plate is exactly
+    when the operator needs to know the loop no longer fits.
+    """
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    mpc.set_measured_per_fov_s(7.0)
+    before = mpc.get_time_point_estimate()
+    assert before.measured is True
+
+    x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
+    y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
+    z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+    mpc.scanCoordinates.add_flexible_region(99, x_min + 2, y_min + 2, z_mid, 3, 1, 0)
+
+    after = mpc.get_time_point_estimate()
+    assert after.measured is True, "adding FOVs must not discard a valid per-FOV measurement"
+    assert after.n_fovs > before.n_fovs
+    assert after.seconds > before.seconds
+    scope.close()
+
+
+def test_clearing_the_measurement_falls_back_to_the_model():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    modelled_seconds = mpc.get_time_point_estimate().seconds
+    mpc.set_measured_per_fov_s(7.0)
+    assert mpc.get_time_point_estimate().measured is True
+
+    mpc.clear_measured_per_fov_s()
+    fallback = mpc.get_time_point_estimate()
+    assert fallback.measured is False
+    assert fallback.seconds == pytest.approx(modelled_seconds)
+    scope.close()
+
+
 def test_probe_result_usable_only_when_representative():
     from control.core.multi_point_controller import TimingProbeResult
 
