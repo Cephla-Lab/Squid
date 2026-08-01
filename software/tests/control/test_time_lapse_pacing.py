@@ -5,8 +5,12 @@ requested time points whenever a round took longer than dt.  A real Nt=3 / dt=5 
 whose rounds took 31.5 s produced exactly one time point.
 """
 
+import copy
+import inspect
 import logging
 import os
+import tempfile
+import threading
 import time
 
 import pytest
@@ -145,6 +149,160 @@ def test_real_run_does_open_the_illumination():
     assert spy.lc_on > 0, "a normal acquisition must open the illumination"
     assert spy.lc_on == spy.lc_off, f"illumination left unbalanced: {spy.lc_on} on vs {spy.lc_off} off"
     scope.close()
+
+
+def _run_probe(mpc, timeout_s: float = 120):
+    """Run the timing probe and block until it reports back."""
+    done = threading.Event()
+    captured = {}
+
+    def on_finished(result):
+        captured["result"] = result
+        done.set()
+
+    refusal = mpc.run_timing_probe(on_finished=on_finished)
+    assert refusal is None, f"probe refused unexpectedly: {refusal}"
+    assert done.wait(timeout_s), "timing probe never finished"
+    return captured["result"]
+
+
+def _configure_probeable(mpc, scope, n_x: int = 3, n_y: int = 1):
+    """A valid, probeable acquisition: autofocus off, several FOVs, a scratch save path."""
+    mpc_tests.select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.set_af_flag(False)
+    mpc.set_reflection_af_flag(False)
+    mpc.set_NZ(1)
+    mpc.set_base_path(tempfile.mkdtemp(prefix="probe_test_"))
+    mpc.scanCoordinates.clear_regions()
+
+    x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
+    y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
+    z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+    mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, n_x, n_y, 0)
+    return mpc
+
+
+def test_timing_probe_runs_the_first_two_planned_fovs():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+    assert len(mpc._flatten_planned_fovs()) >= 2
+
+    result = _run_probe(mpc)
+
+    assert result.ok, result.note
+    assert result.n_fovs_probed == 2
+    assert result.per_fov_s > 0
+    # The measured FOV is the second one, so its move is a real inter-FOV hop.
+    assert result.move_s is not None and result.acquire_s is not None
+    scope.close()
+
+
+def test_timing_probe_does_not_mutate_the_scan_plan():
+    """run_acquisition applies the focus map by mutating ScanCoordinates; a probe must not."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    before_fovs = copy.deepcopy(mpc.scanCoordinates.region_fov_coordinates)
+    before_centers = copy.deepcopy(mpc.scanCoordinates.region_centers)
+
+    _run_probe(mpc)
+
+    assert mpc.scanCoordinates.region_fov_coordinates == before_fovs
+    assert mpc.scanCoordinates.region_centers == before_centers
+    scope.close()
+
+
+def test_timing_probe_cleans_up_after_itself():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+    mpc.set_Nt(7)
+    mpc.set_deltat(11)
+    before = {"Nt": mpc.Nt, "deltat": mpc.deltat, "experiment_ID": mpc.experiment_ID}
+
+    _run_probe(mpc)
+
+    assert mpc.Nt == before["Nt"], "probe must restore Nt"
+    assert mpc.deltat == before["deltat"], "probe must restore deltat"
+    assert mpc.experiment_ID == before["experiment_ID"], "probe must restore experiment_ID"
+    assert mpc.dry_run is False, "probe must clear the dry_run flag"
+    leftovers = [n for n in os.listdir(mpc.base_path) if n.startswith(mpc._TIMING_PROBE_DIR_PREFIX)]
+    assert leftovers == [], f"probe left folders behind: {leftovers}"
+    scope.close()
+
+
+def test_timing_probe_never_opens_the_illumination():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_probeable(mpc, scope)
+
+    spy = _IlluminationSpy(mpc.liveController, scope.low_level_drivers.microcontroller)
+    try:
+        result = _run_probe(mpc)
+    finally:
+        spy.restore()
+
+    assert result.ok, result.note
+    assert spy.lc_on == 0, f"LiveController.turn_on_illumination called {spy.lc_on}x during a probe"
+    assert spy.mcu_on == 0, f"Microcontroller.turn_on_illumination called {spy.mcu_on}x during a probe"
+    scope.close()
+
+
+def test_illumination_fuse_raises_then_restores():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+
+    with mpc._illumination_fuse():
+        with pytest.raises(RuntimeError, match="attempted to open illumination"):
+            mpc.liveController.turn_on_illumination()
+        with pytest.raises(RuntimeError, match="attempted to open illumination"):
+            scope.low_level_drivers.microcontroller.turn_on_illumination()
+
+    # Restored to the real bound methods, not left shadowed by the raising stubs.
+    assert inspect.ismethod(mpc.liveController.turn_on_illumination)
+    assert inspect.ismethod(scope.low_level_drivers.microcontroller.turn_on_illumination)
+    scope.close()
+
+
+def test_timing_probe_refusals():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+
+    # Nothing configured yet: no channels, no FOVs.
+    mpc.scanCoordinates.clear_regions()
+    mpc.set_selected_configurations([])
+    assert mpc.timing_probe_refusal_reason() is not None
+
+    _configure_probeable(mpc, scope)
+    assert mpc.timing_probe_refusal_reason() is None
+
+    # Contrast autofocus cannot run dark.
+    mpc.set_af_flag(True)
+    mpc.set_reflection_af_flag(False)
+    reason = mpc.timing_probe_refusal_reason()
+    assert reason is not None and "Contrast autofocus" in reason
+    # ...and run_timing_probe refuses rather than starting a thread.
+    assert mpc.run_timing_probe(on_finished=lambda _r: None) == reason
+    mpc.set_af_flag(False)
+
+    mpc.protocol_info = {"name": "demo", "round": "R01"}
+    assert mpc.timing_probe_refusal_reason() is not None
+    mpc.protocol_info = None
+
+    assert mpc.timing_probe_refusal_reason() is None
+    scope.close()
+
+
+def test_probe_result_usable_only_when_representative():
+    from control.core.multi_point_controller import TimingProbeResult
+
+    assert TimingProbeResult(ok=True, per_fov_s=7.0).usable()
+    assert not TimingProbeResult(ok=False, per_fov_s=7.0).usable()
+    assert not TimingProbeResult(ok=True, per_fov_s=7.0, aborted=True).usable()
+    assert not TimingProbeResult(ok=True, per_fov_s=7.0, laser_af_failures=1).usable()
+    assert not TimingProbeResult(ok=True, per_fov_s=None).usable()
 
 
 def test_all_time_points_run_when_rounds_overrun_dt():
