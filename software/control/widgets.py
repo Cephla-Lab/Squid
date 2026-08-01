@@ -1183,6 +1183,11 @@ class _TimingSimulationMixin:
         # rather than in a separate popup.
         self._probe_note = ""
         self._simulation_dialog = None
+        # timing_probe_finished lives on the shared controller, so EVERY multipoint widget
+        # receives it.  Only the one that launched the probe may react -- the same ownership
+        # rule is_current_acquisition_widget enforces for acquisition_finished.  Without it
+        # the other widget also re-enters toggle_acquisition and trips its own start guards.
+        self._timing_simulation_is_mine = False
 
     def _start_timing_simulation(self):
         refusal = self.multipointController.timing_probe_refusal_reason()
@@ -1190,6 +1195,7 @@ class _TimingSimulationMixin:
             error_dialog(f"Cannot simulate: {refusal}", title="Simulate Run")
             return
 
+        self._timing_simulation_is_mine = True
         self.setEnabled_all(False)
         self.btn_startAcquisition.setEnabled(False)
         self._show_simulation_dialog()
@@ -1222,6 +1228,10 @@ class _TimingSimulationMixin:
             self._simulation_dialog = None
 
     def _on_timing_probe_finished(self, result):
+        if not self._timing_simulation_is_mine:
+            return  # another multipoint widget launched this probe; it owns the result
+        self._timing_simulation_is_mine = False
+
         self._hide_simulation_dialog()
         self.setEnabled_all(True)
         self.btn_startAcquisition.setEnabled(True)
