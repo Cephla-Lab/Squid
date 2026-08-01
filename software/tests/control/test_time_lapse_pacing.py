@@ -493,13 +493,13 @@ def test_time_point_duration_estimate_requires_configuration():
     scope.close()
 
 
-def test_pacing_dialog_is_skipped_when_there_is_nothing_to_warn_about():
-    """The helper must return True without ever constructing a dialog in these cases.
+def test_pacing_dialog_is_skipped_when_there_is_no_time_series():
+    """The helper must return PROCEED without ever constructing a dialog in these cases.
 
-    Qt is not driven here on purpose: every branch under test returns before the
-    QMessageBox call, so reaching one would raise instead of silently passing.
+    Qt is not driven here on purpose: every branch under test returns before the QMessageBox
+    is built, so reaching one would raise instead of silently passing.
     """
-    from control.widgets import check_time_lapse_pacing_with_dialog
+    from control.widgets import time_lapse_pacing_choice, PacingChoice
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
@@ -512,23 +512,46 @@ def test_pacing_dialog_is_skipped_when_there_is_nothing_to_warn_about():
     # Single time point: no interval to pace against.
     mpc.set_Nt(1)
     mpc.set_deltat(10)
-    assert check_time_lapse_pacing_with_dialog(mpc, logger) is True
+    assert time_lapse_pacing_choice(mpc, logger) is PacingChoice.PROCEED
 
-    # Continuous mode: dt == 0 means "as fast as possible", nothing to warn about.
+    # Continuous mode: dt == 0 means "as fast as possible", nothing to pace against.
     mpc.set_Nt(5)
     mpc.set_deltat(0)
-    assert check_time_lapse_pacing_with_dialog(mpc, logger) is True
-
-    # dt comfortably larger than the estimate: the run fits its schedule.
-    mpc.set_deltat(mpc.get_estimated_time_point_duration_s() * 100)
-    assert check_time_lapse_pacing_with_dialog(mpc, logger) is True
+    assert time_lapse_pacing_choice(mpc, logger) is PacingChoice.PROCEED
 
     # An estimator failure must not block the acquisition.
     mpc.set_deltat(0.001)
-    mpc.scanCoordinates.clear_regions()  # makes get_estimated_time_point_duration_s raise
-    assert check_time_lapse_pacing_with_dialog(mpc, logger) is True
+    mpc.scanCoordinates.clear_regions()  # makes the estimate raise
+    assert time_lapse_pacing_choice(mpc, logger) is PacingChoice.PROCEED
 
     scope.close()
+
+
+def test_pacing_message_text():
+    """Pin the operator-facing strings.  They are deliberately terse; keep them that way."""
+    from control.widgets import pacing_message
+    from control.core.multi_point_controller import TimePointEstimate
+
+    estimated = TimePointEstimate(seconds=32.0, measured=False, per_fov_s=8.0, n_fovs=4)
+    measured = TimePointEstimate(seconds=34.0, measured=True, per_fov_s=8.5, n_fovs=4)
+
+    # Unchanged from the shipped wording, so the common case reads exactly as before.
+    assert pacing_message(5, estimated) == "Estimated loop interval exceeds 5 s. Est: 32 s. Proceed?"
+    assert pacing_message(60, estimated) == "Interval 60 s. Est: 32 s. Proceed?"
+    assert pacing_message(5, measured) == "Measured loop interval exceeds 5 s. Measured: 34 s. Proceed?"
+    assert pacing_message(60, measured) == "Interval 60 s. Measured: 34 s. Proceed?"
+    # A failed probe explains itself in the same one-liner.
+    assert pacing_message(5, estimated, "Simulation failed.") == "Simulation failed. Est: 32 s. Proceed?"
+
+
+def test_probe_note_only_set_for_unusable_results():
+    from control.widgets import probe_note_for
+    from control.core.multi_point_controller import TimingProbeResult
+
+    assert probe_note_for(TimingProbeResult(ok=True, per_fov_s=7.0)) == ""
+    assert probe_note_for(TimingProbeResult(ok=True, per_fov_s=7.0, aborted=True)) == "Simulation stopped."
+    assert probe_note_for(TimingProbeResult(ok=False)) == "Simulation failed."
+    assert probe_note_for(TimingProbeResult(ok=True, per_fov_s=7.0, laser_af_failures=2)) == "Simulation AF failed."
 
 
 def test_time_point_duration_estimate_matches_reference_run():

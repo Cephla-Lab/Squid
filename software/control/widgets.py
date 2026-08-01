@@ -1,4 +1,5 @@
 import configparser
+import enum
 import gc
 import os
 import json
@@ -94,39 +95,89 @@ def check_space_available_with_error_dialog(
     return True
 
 
-def check_time_lapse_pacing_with_dialog(
-    multi_point_controller: MultiPointController, logger: logging.Logger, parent=None
-) -> bool:
-    """Warn (proceed/cancel) when one time point looks longer than the requested dt interval.
+class PacingChoice(enum.Enum):
+    PROCEED = "proceed"
+    SIMULATE = "simulate"
+    CANCEL = "cancel"
 
-    This is advisory, NOT a veto: an overrunning time lapse still acquires every requested
-    time point, it just stretches out.  Returns True to proceed, False if the user cancelled.
+
+def pacing_message(dt: float, estimate, probe_note: str = "") -> str:
+    """One line.  Do not grow this -- the two numbers are what the operator decides on."""
+    if probe_note:
+        return f"{probe_note} Est: {estimate.seconds:.0f} s. Proceed?"
+    label = "Measured" if estimate.measured else "Est"
+    if estimate.seconds > dt:
+        lead = "Measured" if estimate.measured else "Estimated"
+        return f"{lead} loop interval exceeds {dt:.0f} s. {label}: {estimate.seconds:.0f} s. Proceed?"
+    return f"Interval {dt:.0f} s. {label}: {estimate.seconds:.0f} s. Proceed?"
+
+
+def time_lapse_pacing_choice(
+    multi_point_controller: MultiPointController,
+    logger: logging.Logger,
+    parent=None,
+    probe_note: str = "",
+) -> PacingChoice:
+    """Pre-flight pacing dialog, shown for EVERY time lapse (Nt > 1).
+
+    It appears even when the estimate fits inside dt, so the operator always has the option
+    to measure the interval on real hardware instead of trusting the open-loop model.  This
+    is advisory, never a veto: an overrunning time lapse still acquires every requested time
+    point, it just stretches out.
     """
     Nt = multi_point_controller.Nt
     dt = multi_point_controller.deltat
     if Nt <= 1 or dt <= 0:
-        return True  # single time point, or continuous mode - nothing to pace against
+        return PacingChoice.PROCEED  # single time point, or continuous mode - nothing to pace against
 
     try:
-        estimated_s = multi_point_controller.get_estimated_time_point_duration_s()
+        estimate = multi_point_controller.get_time_point_estimate()
     except Exception:
         logger.exception("Could not estimate time point duration; skipping the time-lapse pacing check.")
-        return True
+        return PacingChoice.PROCEED
 
-    logger.info(f"Time-lapse pacing check: estimated {estimated_s:.1f} [s] per time point, {dt=} [s], {Nt=}")
-    if estimated_s <= dt:
-        return True
-
-    logger.warning(f"Time point estimate ({estimated_s:.1f} s) exceeds dt ({dt:.1f} s) for a {Nt} time point run.")
-    message = f"Estimated loop interval exceeds {dt:.0f} s. Est: {estimated_s:.0f} s. Proceed?"
-    reply = QMessageBox.question(
-        parent,
-        "Time Point Longer Than Interval",
-        message,
-        QMessageBox.Yes | QMessageBox.No,
-        QMessageBox.Yes,
+    logger.info(
+        f"Time-lapse pacing check: {'measured' if estimate.measured else 'estimated'} "
+        f"{estimate.seconds:.1f} [s] per time point ({estimate.per_fov_s:.2f} [s]/FOV x {estimate.n_fovs} FOVs), "
+        f"{dt=} [s], {Nt=}"
     )
-    return reply == QMessageBox.Yes
+    if estimate.seconds > dt:
+        logger.warning(
+            f"Time point estimate ({estimate.seconds:.1f} s) exceeds dt ({dt:.1f} s) for a {Nt} time point run."
+        )
+
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning if estimate.seconds > dt else QMessageBox.Question)
+    box.setWindowTitle("Time-Lapse Pacing")
+    box.setText(pacing_message(dt, estimate, probe_note))
+
+    simulate_button = None
+    refusal = multi_point_controller.timing_probe_refusal_reason()
+    if refusal is None:
+        simulate_button = box.addButton("Re-simulate" if estimate.measured else "Simulate", QMessageBox.ActionRole)
+    else:
+        logger.info(f"Simulate unavailable: {refusal}")
+    proceed_button = box.addButton("Proceed", QMessageBox.AcceptRole)
+    box.addButton("Cancel", QMessageBox.RejectRole)
+    box.setDefaultButton(proceed_button)
+    box.exec_()
+
+    clicked = box.clickedButton()
+    if simulate_button is not None and clicked is simulate_button:
+        return PacingChoice.SIMULATE
+    return PacingChoice.PROCEED if clicked is proceed_button else PacingChoice.CANCEL
+
+
+def probe_note_for(result) -> str:
+    """Short note for a probe whose measurement must not be trusted, else ''."""
+    if result.aborted:
+        return "Simulation stopped."
+    if not result.ok or not result.per_fov_s:
+        return "Simulation failed."
+    if result.laser_af_failures:
+        # A FOV whose autofocus failed did not do the work a real FOV will do.
+        return "Simulation AF failed."
+    return ""
 
 
 def check_ram_available_with_error_dialog(
@@ -1115,6 +1166,82 @@ class AcquisitionYAMLDropMixin:
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+
+class _TimingSimulationMixin:
+    """Mixin providing the "simulate run to estimate interval timing" round trip.
+
+    Widgets using this mixin must have ``self.multipointController`` (a
+    QtMultiPointController, for its ``timing_probe_finished`` signal), ``self._log``,
+    ``self.btn_startAcquisition``, and ``setEnabled_all(bool)``.  Call
+    ``_init_timing_simulation()`` from __init__ and connect
+    ``multipointController.timing_probe_finished`` to ``_on_timing_probe_finished``.
+    """
+
+    def _init_timing_simulation(self):
+        # Carried into the next pacing dialog so a failed simulation explains itself there
+        # rather than in a separate popup.
+        self._probe_note = ""
+        self._simulation_dialog = None
+
+    def _start_timing_simulation(self):
+        refusal = self.multipointController.timing_probe_refusal_reason()
+        if refusal:
+            error_dialog(f"Cannot simulate: {refusal}", title="Simulate Run")
+            return
+
+        self.setEnabled_all(False)
+        self.btn_startAcquisition.setEnabled(False)
+        self._show_simulation_dialog()
+
+        refusal = self.multipointController.run_timing_probe(
+            on_finished=self.multipointController.timing_probe_finished.emit
+        )
+        if refusal is not None:
+            # Refused between the check above and the launch (e.g. a run started meanwhile).
+            self._log.warning(f"Timing probe refused at launch: {refusal}")
+            self._on_timing_probe_finished(None)
+
+    def _show_simulation_dialog(self):
+        from qtpy.QtWidgets import QProgressDialog
+        from qtpy.QtCore import Qt
+
+        # Non-modal and always-on-top, matching the laser-engine wait dialog: the operator
+        # must be able to reach the rest of the UI if the probe hangs.
+        self._simulation_dialog = QProgressDialog("Simulating 2 FOVs (no illumination)…", "Stop", 0, 0, self)
+        self._simulation_dialog.setWindowTitle("Simulate Run")
+        self._simulation_dialog.setWindowModality(Qt.NonModal)
+        self._simulation_dialog.setWindowFlags(self._simulation_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._simulation_dialog.setMinimumDuration(0)
+        self._simulation_dialog.canceled.connect(self.multipointController.request_abort_aquisition)
+        self._simulation_dialog.show()
+
+    def _hide_simulation_dialog(self):
+        if self._simulation_dialog is not None:
+            self._simulation_dialog.close()
+            self._simulation_dialog = None
+
+    def _on_timing_probe_finished(self, result):
+        self._hide_simulation_dialog()
+        self.setEnabled_all(True)
+        self.btn_startAcquisition.setEnabled(True)
+
+        if result is None:
+            self._probe_note = "Simulation failed."
+        else:
+            self._probe_note = probe_note_for(result)
+            if result.usable():
+                self.multipointController.set_measured_per_fov_s(
+                    result.per_fov_s,
+                    context={"n_fovs_probed": result.n_fovs_probed, "note": result.note},
+                )
+                self._log.info(f"Timing simulation measured {result.per_fov_s:.2f} [s] per FOV")
+            else:
+                self._log.warning(f"Timing simulation not usable: {self._probe_note} ({result.note})")
+
+        # Re-open the pacing dialog, now reading "Measured:" (or explaining the failure).
+        self.btn_startAcquisition.setChecked(True)
+        self.toggle_acquisition(True)
 
 
 class _ApplyChannelOffsetMixin:
@@ -6055,7 +6182,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _TimingSimulationMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6097,6 +6224,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.setup_connections()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
+        self._init_timing_simulation()
         self.acquisition_in_place = False
 
     def add_components(self):
@@ -6521,6 +6649,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
+        self.multipointController.timing_probe_finished.connect(self._on_timing_probe_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
@@ -6869,19 +6998,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 error_dialog(problem)
                 self.btn_startAcquisition.setChecked(False)
                 return
+
+            # Ahead of start_new_experiment(): cancelling or diverting to a simulation here
+            # must not leave an empty timestamped experiment folder behind.
+            choice = time_lapse_pacing_choice(self.multipointController, self._log, self, self._probe_note)
+            self._probe_note = ""
+            if choice is PacingChoice.CANCEL:
+                self._log.info("User cancelled acquisition at the time-lapse pacing dialog.")
+                self.btn_startAcquisition.setChecked(False)
+                return
+            if choice is PacingChoice.SIMULATE:
+                self.btn_startAcquisition.setChecked(False)
+                self._start_timing_simulation()
+                return
+
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
                 self._log.info("Skipping disk space check - image saving is disabled")
             elif not check_space_available_with_error_dialog(self.multipointController, self._log):
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
-                self.btn_startAcquisition.setChecked(False)
-                return
-
-            # Advisory: a time point longer than dt is allowed (nothing is skipped), but the
-            # operator should know the run will stretch out before they commit to it.
-            if not check_time_lapse_pacing_with_dialog(self.multipointController, self._log, self):
-                self._log.info("User cancelled acquisition after the time-lapse pacing warning.")
                 self.btn_startAcquisition.setChecked(False)
                 return
 
@@ -7569,7 +7705,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _TimingSimulationMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -7615,6 +7751,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.manual_shape = None
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
+        self._init_timing_simulation()
 
         self.shapes_mm = None
 
@@ -8116,6 +8253,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
+        self.multipointController.timing_probe_finished.connect(self._on_timing_probe_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
@@ -9292,6 +9430,20 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 QMessageBox.warning(self, "Warning", problem)
                 self.btn_startAcquisition.setChecked(False)
                 return
+
+            # Ahead of start_new_experiment(): cancelling or diverting to a simulation here
+            # must not leave an empty timestamped experiment folder behind.
+            choice = time_lapse_pacing_choice(self.multipointController, self._log, self, self._probe_note)
+            self._probe_note = ""
+            if choice is PacingChoice.CANCEL:
+                self.btn_startAcquisition.setChecked(False)
+                self._log.info("User cancelled acquisition at the time-lapse pacing dialog.")
+                return
+            if choice is PacingChoice.SIMULATE:
+                self.btn_startAcquisition.setChecked(False)
+                self._start_timing_simulation()
+                return
+
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -9299,13 +9451,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             elif not check_space_available_with_error_dialog(self.multipointController, self._log):
                 self.btn_startAcquisition.setChecked(False)
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
-                return
-
-            # Advisory: a time point longer than dt is allowed (nothing is skipped), but the
-            # operator should know the run will stretch out before they commit to it.
-            if not check_time_lapse_pacing_with_dialog(self.multipointController, self._log, self):
-                self.btn_startAcquisition.setChecked(False)
-                self._log.info("User cancelled acquisition after the time-lapse pacing warning.")
                 return
 
             if not check_ram_available_with_error_dialog(
