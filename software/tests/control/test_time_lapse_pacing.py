@@ -41,7 +41,44 @@ def _configure_single_fov(mpc: MultiPointController, nz: int = 1, n_channels: in
     return all_configuration_names
 
 
-def _run_time_lapse(nt: int, dt: float):
+class _IlluminationSpy:
+    """Counts every illumination on/off call at both the LiveController and MCU level.
+
+    Wraps rather than replaces, so the real hardware path still executes and the timing
+    behaviour under test is the behaviour that ships.
+    """
+
+    def __init__(self, live_controller, microcontroller):
+        self.lc_on = 0
+        self.lc_off = 0
+        self.mcu_on = 0
+        self.mcu_off = 0
+        self._targets = []
+        for obj, name, counter in (
+            (live_controller, "turn_on_illumination", "lc_on"),
+            (live_controller, "turn_off_illumination", "lc_off"),
+            (microcontroller, "turn_on_illumination", "mcu_on"),
+            (microcontroller, "turn_off_illumination", "mcu_off"),
+        ):
+            self._targets.append((obj, name, getattr(obj, name)))
+            setattr(obj, name, self._wrap(getattr(obj, name), counter))
+
+    def _wrap(self, original, counter):
+        def wrapper(*args, **kwargs):
+            setattr(self, counter, getattr(self, counter) + 1)
+            return original(*args, **kwargs)
+
+        return wrapper
+
+    def restore(self):
+        for obj, name, original in self._targets:
+            try:
+                delattr(obj, name)
+            except AttributeError:
+                setattr(obj, name, original)
+
+
+def _run_time_lapse(nt: int, dt: float, dry_run: bool = False, spy: bool = False):
     """Run a full simulated acquisition with the given time-lapse settings."""
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
@@ -52,6 +89,10 @@ def _run_time_lapse(nt: int, dt: float):
     mpc_tests.select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.set_Nt(nt)
     mpc.set_deltat(dt)
+    mpc.set_dry_run(dry_run)
+
+    if spy:
+        tt.illumination_spy = _IlluminationSpy(mpc.liveController, scope.low_level_drivers.microcontroller)
 
     started = time.time()
     mpc.run_acquisition()
@@ -61,6 +102,49 @@ def _run_time_lapse(nt: int, dt: float):
 
     worker = mpc.multiPointWorker
     return mpc, tt, worker, elapsed, scope
+
+
+def test_dry_run_flag_reaches_the_worker():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    _configure_single_fov(mpc)
+
+    assert mpc.dry_run is False
+    mpc.set_dry_run(True)
+    assert mpc.dry_run is True
+
+    mpc, tt, worker, _elapsed, scope2 = _run_time_lapse(nt=1, dt=0, dry_run=True)
+    assert worker._dry_run is True
+    scope.close()
+    scope2.close()
+
+
+def test_dry_run_never_opens_the_illumination():
+    """The load-bearing safety test.
+
+    A dry run must not open the light on ANY path.  If this regresses, an operator running
+    a timing simulation silently photobleaches their sample with no error message.
+    """
+    mpc, tt, worker, _elapsed, scope = _run_time_lapse(nt=1, dt=0, dry_run=True, spy=True)
+    spy = tt.illumination_spy
+    spy.restore()
+
+    assert spy.lc_on == 0, f"LiveController.turn_on_illumination called {spy.lc_on}x during a dry run"
+    assert spy.mcu_on == 0, f"Microcontroller.turn_on_illumination called {spy.mcu_on}x during a dry run"
+    # Every frame still pays the round trip -- twice, since the "on" is substituted by an "off".
+    assert spy.lc_off > 0, "the equal-cost substitute command was never issued"
+    scope.close()
+
+
+def test_real_run_does_open_the_illumination():
+    """Counterpart to the dry-run test: proves the spy would have caught a leak."""
+    mpc, tt, worker, _elapsed, scope = _run_time_lapse(nt=1, dt=0, dry_run=False, spy=True)
+    spy = tt.illumination_spy
+    spy.restore()
+
+    assert spy.lc_on > 0, "a normal acquisition must open the illumination"
+    assert spy.lc_on == spy.lc_off, f"illumination left unbalanced: {spy.lc_on} on vs {spy.lc_off} off"
+    scope.close()
 
 
 def test_all_time_points_run_when_rounds_overrun_dt():
