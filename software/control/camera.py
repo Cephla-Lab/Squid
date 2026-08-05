@@ -476,7 +476,7 @@ class DefaultCamera(AbstractCamera):
         else:
             return CameraAcquisitionMode.CONTINUOUS
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if not self.get_is_streaming():
             self._log.warning("Trigger requested, but not streaming. Skipping.")
             return

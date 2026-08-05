@@ -735,7 +735,7 @@ class ToupcamCamera(AbstractCamera):
         elif mode == "HDR":
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 2)
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise RuntimeError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 

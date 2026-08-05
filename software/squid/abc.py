@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List, Dict
 import abc
 import enum
+import threading
 import time
 
 import pydantic
@@ -433,16 +434,23 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._software_crop_width_ratio = 1.0
         self._software_crop_height_ratio = 1.0
 
+        # Held for the duration of any operation that pauses streaming (see
+        # _pause_streaming); send_trigger try-acquires it and drops the trigger if a
+        # pause is in flight. Reentrant so a driver can hold it across a compound
+        # operation that itself pauses streaming.
+        self._trigger_lock = threading.RLock()
+
     @contextmanager
     def _pause_streaming(self):
-        was_streaming = self.get_is_streaming()
-        try:
-            if was_streaming:
-                self.stop_streaming()
-            yield
-        finally:
-            if was_streaming:
-                self.start_streaming()
+        with self._trigger_lock:
+            was_streaming = self.get_is_streaming()
+            try:
+                if was_streaming:
+                    self.stop_streaming()
+                yield
+            finally:
+                if was_streaming:
+                    self.start_streaming()
 
     def enable_callbacks(self, enabled: bool):
         """
@@ -852,7 +860,6 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
     def send_trigger(self, illumination_time: Optional[float] = None):
         """
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
@@ -864,6 +871,27 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         trigger system that controls illumination, a non-None illumination_time is allowed (but will be ignored)
 
         When this returns, it does not mean it is safe to immediately send another trigger.
+
+        If a settings change that pauses streaming is in flight (the operation holds
+        self._trigger_lock, see _pause_streaming), the trigger is dropped: sending a
+        trigger into a stream that is being torn down or brought back up is never
+        useful. Callers pace themselves via get_ready_for_trigger, which reports
+        not-ready while streaming is off.
+        """
+        if not self._trigger_lock.acquire(blocking=False):
+            self._log.debug("Camera settings change in progress, dropping trigger.")
+            return
+        try:
+            self._send_trigger_imp(illumination_time)
+        finally:
+            self._trigger_lock.release()
+
+    @abc.abstractmethod
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
+        """
+        Driver-specific trigger implementation called by send_trigger. Implementations
+        must raise CameraError if the camera cannot accept a trigger (not streaming,
+        not ready, or the vendor call fails).
         """
         pass
 

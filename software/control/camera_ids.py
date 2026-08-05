@@ -1,3 +1,4 @@
+from typing import Optional
 import time
 import numpy as np
 import threading
@@ -289,7 +290,7 @@ class Camera(object):
         except Exception as e:
             self.log.error("Cannot change pixelformat", e)
 
-    def send_trigger(self):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.is_streaming:
             self.nodemap.FindNode("TriggerSoftware").Execute()
             self.nodemap.FindNode("TriggerSoftware").WaitUntilDone()

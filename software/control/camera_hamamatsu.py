@@ -91,8 +91,6 @@ class HamamatsuCamera(AbstractCamera):
         self._current_frame: Optional[CameraFrame] = None
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
-        # Serializes send_trigger against settings changes that pause streaming.
-        self._trigger_lock = threading.Lock()
 
         camera, capabilities = HamamatsuCamera._open(index=0)
 
@@ -256,9 +254,9 @@ class HamamatsuCamera(AbstractCamera):
         if mode not in self._sensor_modes:
             raise ValueError(f"Unknown sensor mode '{mode}'. Valid modes: {list(self._sensor_modes.keys())}")
 
-        # Hold the trigger lock for the whole switch: a concurrent send_trigger (e.g.
-        # the live view timer thread) blocks until the stream is back up with the new
-        # readout speed and exposure/strobe applied, instead of racing the pause.
+        # Hold the trigger lock (reentrant with _pause_streaming's) across the whole
+        # switch so racing triggers are dropped until the new readout speed AND the
+        # recalculated exposure/strobe are in effect, not just until streaming restarts.
         with self._trigger_lock:
             with self._pause_streaming():
                 if not self._set_prop(DCAM_IDPROP.READOUTSPEED, self._sensor_modes[mode]):
@@ -489,34 +487,25 @@ class HamamatsuCamera(AbstractCamera):
         else:
             raise ValueError(f"Unknown dcam trigger source mode {dcam_mode=}")
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
-        # A concurrent settings change (e.g. sensor mode) holds this lock for its whole
-        # streaming pause. Don't send (or queue) a trigger while that's in flight -
-        # drop it; the caller's next trigger fires against the restarted stream.
-        if not self._trigger_lock.acquire(blocking=False):
-            self._log.debug("Camera settings change in progress, dropping trigger.")
-            return
-        try:
-            if not self.get_is_streaming():
-                raise CameraError(f"Camera is not streaming, cannot send trigger.")
+        if not self.get_is_streaming():
+            raise CameraError(f"Camera is not streaming, cannot send trigger.")
 
-            if not self.get_ready_for_trigger():
-                raise CameraError(
-                    f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
-                )
-            if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-                self._hw_trigger_fn(illumination_time)
-            elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-                if not self._camera.cap_firetrigger():
-                    raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
+        if not self.get_ready_for_trigger():
+            raise CameraError(
+                f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
+            )
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            if not self._camera.cap_firetrigger():
+                raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
 
-                self._last_trigger_timestamp = time.time()
-                self._trigger_sent.set()
-        finally:
-            self._trigger_lock.release()
+            self._last_trigger_timestamp = time.time()
+            self._trigger_sent.set()
 
     def get_ready_for_trigger(self) -> bool:
         # Not ready while streaming is stopped (e.g. inside _pause_streaming() during a

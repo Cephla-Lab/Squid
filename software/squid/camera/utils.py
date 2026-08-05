@@ -383,7 +383,7 @@ class SimulatedCamera(AbstractCamera):
         return self._acquisition_mode
 
     @debug_log
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
             self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
             return

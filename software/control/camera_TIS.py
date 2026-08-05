@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy
 from collections import namedtuple
 from time import sleep
@@ -152,7 +153,7 @@ class Camera(object):
         self._set_property("Trigger Polarity", "RisingEdge")
         self._set_property("Trigger Delay (us)", 0)
 
-    def send_trigger(self):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         pass
 
     def read_frame(self):
