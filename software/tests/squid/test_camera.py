@@ -1,5 +1,7 @@
 from typing import Optional, Sequence
 
+import pytest
+
 import squid.camera.utils
 import squid.config
 from squid.abc import AbstractCamera, CameraFrame
@@ -105,3 +107,14 @@ def test_read_frame_on_timeout():
     assert frames[frame_to_idx(8)] is None
     assert frames[frame_to_idx(9)] is not None
     assert frames[frame_to_idx(10)] is not None
+
+
+def test_abstract_camera_sensor_mode_defaults():
+    # Call the base-class implementations explicitly: SimulatedCamera overrides
+    # these, but the ABC defaults must mean "not supported".
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+    assert AbstractCamera.get_available_sensor_modes(sim_cam) == []
+    assert AbstractCamera.get_sensor_mode(sim_cam) is None
+    with pytest.raises(NotImplementedError):
+        AbstractCamera.set_sensor_mode(sim_cam, "fast")

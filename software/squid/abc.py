@@ -791,6 +791,27 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    def get_available_sensor_modes(self) -> Sequence[str]:
+        """
+        Driver-defined sensor mode names (e.g. readout speeds, gain modes). An empty
+        list means sensor mode selection is not supported by this camera.
+        """
+        return []
+
+    def get_sensor_mode(self) -> Optional[str]:
+        """
+        The currently active sensor mode, or None if mode selection is not supported.
+        """
+        return None
+
+    def set_sensor_mode(self, mode: str):
+        """
+        Switch the camera to the given sensor mode. The mode must be one of
+        get_available_sensor_modes(). Implementations must refresh exposure/strobe
+        timing afterwards if the mode change affects it.
+        """
+        raise NotImplementedError("Sensor mode selection is not implemented for this camera.")
+
     def set_acquisition_mode(self, acquisition_mode: CameraAcquisitionMode):
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
