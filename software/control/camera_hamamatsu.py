@@ -385,6 +385,9 @@ class HamamatsuCamera(AbstractCamera):
 
     def stop_streaming(self):
         self._log.debug("Stopping Hamamatsu streaming.")
+        # Clear the flag before tearing down capture so get_ready_for_trigger()
+        # reports not-ready for the whole teardown, not just after it.
+        self._is_streaming.clear()
         success = True
         if not self._camera.cap_stop():
             self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
@@ -396,7 +399,6 @@ class HamamatsuCamera(AbstractCamera):
 
         self._log.debug(f"Stopped with {success=}")
         self._trigger_sent.clear()
-        self._is_streaming.clear()
         return success
 
     def get_is_streaming(self):
