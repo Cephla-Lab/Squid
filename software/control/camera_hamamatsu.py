@@ -215,10 +215,6 @@ class HamamatsuCamera(AbstractCamera):
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
-    @staticmethod
-    def _normalize_sensor_mode_name(vendor_text: str) -> str:
-        return vendor_text.strip().lower().replace(" ", "_")
-
     def _discover_sensor_modes(self) -> Dict[str, int]:
         # Squid's "sensor mode" maps to DCAM's READOUTSPEED property, and is
         # unrelated to DCAM's own SENSORMODE property (area/subarray mode).
@@ -234,7 +230,8 @@ class HamamatsuCamera(AbstractCamera):
         step = max(1, int(readout_speed_attr.valuestep))
         for value in range(int(readout_speed_attr.valuemin), int(readout_speed_attr.valuemax) + 1, step):
             vendor_text = self._camera.prop_getvaluetext(DCAM_IDPROP.READOUTSPEED, value)
-            name = self._normalize_sensor_mode_name(vendor_text) if vendor_text else str(value)
+            # Mode names are the vendor's value texts, verbatim.
+            name = vendor_text if vendor_text else str(value)
             modes[name] = value
         return modes
 
