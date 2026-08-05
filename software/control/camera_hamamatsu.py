@@ -97,6 +97,7 @@ class HamamatsuCamera(AbstractCamera):
         self._camera: Dcam = camera
         self._capabilities: HamamatsuCapabilities = capabilities
         self._sensor_modes: Dict[str, int] = self._discover_sensor_modes()
+        self._sensor_mode_names_by_value: Dict[int, str] = {v: name for (name, v) in self._sensor_modes.items()}
         self._is_streaming = threading.Event()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
@@ -246,8 +247,7 @@ class HamamatsuCamera(AbstractCamera):
         value = self._camera.prop_getvalue(DCAM_IDPROP.READOUTSPEED)
         if value is False:
             raise CameraError("Failed to read READOUTSPEED from camera")
-        reverse_map = {v: name for (name, v) in self._sensor_modes.items()}
-        return reverse_map.get(int(value))
+        return self._sensor_mode_names_by_value.get(int(value))
 
     def set_sensor_mode(self, mode: str):
         if not self._sensor_modes:
