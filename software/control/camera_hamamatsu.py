@@ -494,9 +494,12 @@ class HamamatsuCamera(AbstractCamera):
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
         # A concurrent settings change (e.g. sensor mode) holds this lock for its whole
-        # streaming pause, so a trigger that races the pause waits and then fires
-        # against the restarted stream instead of erroring.
-        with self._trigger_lock:
+        # streaming pause. Don't send (or queue) a trigger while that's in flight -
+        # drop it; the caller's next trigger fires against the restarted stream.
+        if not self._trigger_lock.acquire(blocking=False):
+            self._log.debug("Camera settings change in progress, dropping trigger.")
+            return
+        try:
             if not self.get_is_streaming():
                 raise CameraError(f"Camera is not streaming, cannot send trigger.")
 
@@ -512,6 +515,8 @@ class HamamatsuCamera(AbstractCamera):
 
                 self._last_trigger_timestamp = time.time()
                 self._trigger_sent.set()
+        finally:
+            self._trigger_lock.release()
 
     def get_ready_for_trigger(self) -> bool:
         # Not ready while streaming is stopped (e.g. inside _pause_streaming() during a
