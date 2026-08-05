@@ -26,7 +26,7 @@ from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 import control._def  # Import module for runtime access to MCP-modifiable settings
-from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
+from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
 
@@ -3749,6 +3749,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
+        # Sensor mode dropdown: only shown when the camera implements mode selection.
+        sensor_modes = self.camera.get_available_sensor_modes()
+        if sensor_modes:
+            self.dropdown_sensorMode = QComboBox()
+            self.dropdown_sensorMode.addItems(sensor_modes)
+            current_mode = self.camera.get_sensor_mode()
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+            self.dropdown_sensorMode.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+            self.dropdown_sensorMode.currentTextChanged.connect(self.set_sensor_mode)
+            sensor_mode_line = QHBoxLayout()
+            sensor_mode_line.addWidget(QLabel("Sensor Mode"))
+            sensor_mode_line.addWidget(self.dropdown_sensorMode)
+            self.camera_layout.addLayout(sensor_mode_line)
+
         if include_camera_temperature_setting:
             temp_line = QHBoxLayout()
             temp_line.addWidget(QLabel("Set Temperature (C)"))
@@ -3807,6 +3822,23 @@ class CameraSettingsWidget(QFrame):
             self.camera.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
+
+    def set_sensor_mode(self, mode: str):
+        try:
+            self.camera.set_sensor_mode(mode)
+        except (CameraError, ValueError, NotImplementedError):
+            self._log.exception(f"Failed to set sensor mode '{mode}', reverting selection.")
+            self.dropdown_sensorMode.blockSignals(True)
+            current_mode = self.camera.get_sensor_mode()
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+            self.dropdown_sensorMode.blockSignals(False)
+            return
+
+        # Readout speed can change the valid exposure range.
+        exposure_min, exposure_max = self.camera.get_exposure_limits()
+        self.entry_exposureTime.setMinimum(exposure_min)
+        self.entry_exposureTime.setMaximum(exposure_max)
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
