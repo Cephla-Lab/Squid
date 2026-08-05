@@ -3641,7 +3641,8 @@ class CameraSettingsWidget(QFrame):
         set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setValue(20)
-        self.camera.set_exposure_time(20)
+        # Use the spinbox value, not a literal: setValue clamps to the camera's exposure limits.
+        self.camera.set_exposure_time(self.entry_exposureTime.value())
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
