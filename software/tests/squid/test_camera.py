@@ -126,3 +126,23 @@ def test_camera_config_default_sensor_mode():
 
     updated = config.model_copy(update={"default_sensor_mode": "fast"})
     assert updated.default_sensor_mode == "fast"
+
+
+def test_simulated_camera_sensor_modes():
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+    assert sim_cam.get_available_sensor_modes() == ["standard", "fast"]
+    assert sim_cam.get_sensor_mode() == "standard"
+
+    sim_cam.set_sensor_mode("fast")
+    assert sim_cam.get_sensor_mode() == "fast"
+
+    with pytest.raises(ValueError):
+        sim_cam.set_sensor_mode("warp_speed")
+
+
+def test_simulated_camera_default_sensor_mode_from_config():
+    config = squid.config.get_camera_config().model_copy(update={"default_sensor_mode": "fast"})
+    sim_cam = squid.camera.utils.get_camera(config, simulated=True)
+
+    assert sim_cam.get_sensor_mode() == "fast"
