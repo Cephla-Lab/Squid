@@ -3754,7 +3754,6 @@ class CameraSettingsWidget(QFrame):
             pass
         format_line.addWidget(QLabel("Binning"))
         format_line.addWidget(self.dropdown_binning)
-        self.camera_layout.addLayout(format_line)
 
         # Sensor mode dropdown: only shown when the camera implements mode selection.
         sensor_modes = self.camera.get_available_sensor_modes()
@@ -3766,10 +3765,9 @@ class CameraSettingsWidget(QFrame):
                 self.dropdown_sensorMode.setCurrentText(current_mode)
             self.dropdown_sensorMode.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
             self.dropdown_sensorMode.currentTextChanged.connect(self.set_sensor_mode)
-            sensor_mode_line = QHBoxLayout()
-            sensor_mode_line.addWidget(QLabel("Sensor Mode"))
-            sensor_mode_line.addWidget(self.dropdown_sensorMode)
-            self.camera_layout.addLayout(sensor_mode_line)
+            format_line.addWidget(QLabel("Sensor Mode"))
+            format_line.addWidget(self.dropdown_sensorMode)
+        self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
             temp_line = QHBoxLayout()
