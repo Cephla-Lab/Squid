@@ -219,13 +219,18 @@ class HamamatsuCamera(AbstractCamera):
         return vendor_text.strip().lower().replace(" ", "_")
 
     def _discover_sensor_modes(self) -> Dict[str, int]:
+        # Squid's "sensor mode" maps to DCAM's READOUTSPEED property, and is
+        # unrelated to DCAM's own SENSORMODE property (area/subarray mode).
         modes = {}
         readout_speed_attr = self._camera.prop_getattr(DCAM_IDPROP.READOUTSPEED)
         if readout_speed_attr is False:
             self._log.info("READOUTSPEED is not supported on this model; sensor mode selection unavailable.")
             return modes
 
-        step = int(readout_speed_attr.valuestep) if readout_speed_attr.valuestep else 1
+        # Clamp to >=1: a fractional valuestep in (0, 1) would int() down to 0 and
+        # crash range(). max(1, ...) also covers the 0/unset case identically to
+        # the old truthiness check, since int(0.0) == 0 -> max(1, 0) == 1.
+        step = max(1, int(readout_speed_attr.valuestep))
         for value in range(int(readout_speed_attr.valuemin), int(readout_speed_attr.valuemax) + 1, step):
             vendor_text = self._camera.prop_getvaluetext(DCAM_IDPROP.READOUTSPEED, value)
             name = self._normalize_sensor_mode_name(vendor_text) if vendor_text else str(value)

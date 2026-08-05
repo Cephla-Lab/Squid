@@ -1500,6 +1500,12 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
+        # Sensor mode changes (readout speed) can shift the valid exposure range;
+        # refresh the exposure control the user actually sees (LiveControlWidget's),
+        # since CameraSettingsWidget's own exposure entry is hidden here
+        # (include_gain_exposure_time=False). The focus camera has no
+        # LiveControlWidget, so its CameraSettingsWidget signal is left unconnected.
+        self.cameraSettingWidget.signal_sensor_mode_changed.connect(self.liveControlWidget.refresh_exposure_time_limits)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller

@@ -3603,6 +3603,7 @@ class ObjectivesWidget(QWidget):
 class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
+    signal_sensor_mode_changed = Signal()
 
     def __init__(
         self,
@@ -3829,16 +3830,26 @@ class CameraSettingsWidget(QFrame):
         except (CameraError, ValueError, NotImplementedError):
             self._log.exception(f"Failed to set sensor mode '{mode}', reverting selection.")
             self.dropdown_sensorMode.blockSignals(True)
-            current_mode = self.camera.get_sensor_mode()
-            if current_mode is not None:
-                self.dropdown_sensorMode.setCurrentText(current_mode)
-            self.dropdown_sensorMode.blockSignals(False)
+            try:
+                current_mode = None
+                try:
+                    current_mode = self.camera.get_sensor_mode()
+                except CameraError:
+                    self._log.exception("Failed to read back current sensor mode while reverting selection.")
+                if current_mode is not None:
+                    self.dropdown_sensorMode.setCurrentText(current_mode)
+            finally:
+                self.dropdown_sensorMode.blockSignals(False)
             return
 
         # Readout speed can change the valid exposure range.
         exposure_min, exposure_max = self.camera.get_exposure_limits()
         self.entry_exposureTime.setMinimum(exposure_min)
         self.entry_exposureTime.setMaximum(exposure_max)
+        # Notify listeners (e.g. LiveControlWidget) whose own exposure control
+        # needs its min/max refreshed too, since this widget's own
+        # entry_exposureTime is often hidden (include_gain_exposure_time=False).
+        self.signal_sensor_mode_changed.emit()
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
@@ -4349,6 +4360,19 @@ class LiveControlWidget(QFrame):
     def update_camera_settings(self):
         self.signal_newAnalogGain.emit(self.entry_analogGain.value())
         self.signal_newExposureTime.emit(self.entry_exposureTime.value())
+
+    def refresh_exposure_time_limits(self):
+        """Refresh the exposure spinbox's min/max from the camera.
+
+        Needed after something changes the camera's valid exposure range
+        without going through this widget - e.g. a sensor mode / readout
+        speed change made via CameraSettingsWidget. setMinimum/setMaximum
+        auto-clamp the current value and emit valueChanged, which is already
+        connected to the camera's exposure setter, so the clamp propagates.
+        """
+        exposure_min, exposure_max = self.camera.get_exposure_limits()
+        self.entry_exposureTime.setMinimum(exposure_min)
+        self.entry_exposureTime.setMaximum(exposure_max)
 
     def refresh_mode_list(self):
         # Update the mode selection dropdown (only show enabled channels)
