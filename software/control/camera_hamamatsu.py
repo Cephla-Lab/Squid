@@ -96,6 +96,7 @@ class HamamatsuCamera(AbstractCamera):
 
         self._camera: Dcam = camera
         self._capabilities: HamamatsuCapabilities = capabilities
+        self._sensor_modes: Dict[str, int] = self._discover_sensor_modes()
         self._is_streaming = threading.Event()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
@@ -104,6 +105,9 @@ class HamamatsuCamera(AbstractCamera):
         # We just set it to some sane value to start.
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
+
+        if self._config.default_sensor_mode:
+            self.set_sensor_mode(self._config.default_sensor_mode)
 
     def close(self):
         self._cleanup_read_thread()
@@ -209,6 +213,49 @@ class HamamatsuCamera(AbstractCamera):
             raise CameraError("Failed to get strobe delay properties from camera")
 
         return (line_interval_s + trigger_delay_s) * 1000.0
+
+    @staticmethod
+    def _normalize_sensor_mode_name(vendor_text: str) -> str:
+        return vendor_text.strip().lower().replace(" ", "_")
+
+    def _discover_sensor_modes(self) -> Dict[str, int]:
+        modes = {}
+        readout_speed_attr = self._camera.prop_getattr(DCAM_IDPROP.READOUTSPEED)
+        if readout_speed_attr is False:
+            self._log.info("READOUTSPEED is not supported on this model; sensor mode selection unavailable.")
+            return modes
+
+        step = int(readout_speed_attr.valuestep) if readout_speed_attr.valuestep else 1
+        for value in range(int(readout_speed_attr.valuemin), int(readout_speed_attr.valuemax) + 1, step):
+            vendor_text = self._camera.prop_getvaluetext(DCAM_IDPROP.READOUTSPEED, value)
+            name = self._normalize_sensor_mode_name(vendor_text) if vendor_text else str(value)
+            modes[name] = value
+        return modes
+
+    def get_available_sensor_modes(self) -> Sequence[str]:
+        return list(self._sensor_modes.keys())
+
+    def get_sensor_mode(self) -> Optional[str]:
+        if not self._sensor_modes:
+            return None
+        value = self._camera.prop_getvalue(DCAM_IDPROP.READOUTSPEED)
+        if value is False:
+            raise CameraError("Failed to read READOUTSPEED from camera")
+        reverse_map = {v: name for (name, v) in self._sensor_modes.items()}
+        return reverse_map.get(int(value))
+
+    def set_sensor_mode(self, mode: str):
+        if not self._sensor_modes:
+            raise NotImplementedError("Sensor mode selection is not supported by this camera model.")
+        if mode not in self._sensor_modes:
+            raise ValueError(f"Unknown sensor mode '{mode}'. Valid modes: {list(self._sensor_modes.keys())}")
+
+        with self._pause_streaming():
+            if not self._set_prop(DCAM_IDPROP.READOUTSPEED, self._sensor_modes[mode]):
+                raise CameraError(f"Failed to set sensor mode to '{mode}'")
+
+        # Force exposure + strobe delay recalculation, since readout speed changes the line interval.
+        self.set_exposure_time(self._exposure_time_ms)
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
