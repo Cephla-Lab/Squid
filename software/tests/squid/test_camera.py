@@ -118,3 +118,11 @@ def test_abstract_camera_sensor_mode_defaults():
     assert AbstractCamera.get_sensor_mode(sim_cam) is None
     with pytest.raises(NotImplementedError):
         AbstractCamera.set_sensor_mode(sim_cam, "fast")
+
+
+def test_camera_config_default_sensor_mode():
+    config = squid.config.get_camera_config()
+    assert config.default_sensor_mode is None
+
+    updated = config.model_copy(update={"default_sensor_mode": "fast"})
+    assert updated.default_sensor_mode == "fast"
