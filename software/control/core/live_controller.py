@@ -8,7 +8,7 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control.microcontroller import Microcontroller
-from squid.abc import CameraAcquisitionMode, AbstractCamera, CameraError
+from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
@@ -418,15 +418,7 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        try:
-            self.camera.send_trigger(self.camera.get_exposure_time())
-        except CameraError as e:
-            # Transient: another thread can pause streaming (sensor mode / ROI /
-            # pixel format change) between our ready check and the trigger. An
-            # uncaught exception here would kill the trigger timer thread, so
-            # report failure and let the timer's retry path handle it.
-            self._log.warning(f"Trigger failed, will retry: {e}")
-            return False
+        self.camera.send_trigger(self.camera.get_exposure_time())
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
