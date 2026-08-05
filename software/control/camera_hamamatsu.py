@@ -215,6 +215,11 @@ class HamamatsuCamera(AbstractCamera):
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
+    # READOUTSPEED values for the ORCA-Fusion BT (C15440-20UP), slowest (best SNR)
+    # first. DCAM's own value texts are just the numbers, so we name the modes
+    # after Hamamatsu's documented scan modes.
+    _READOUTSPEED_NAMES = {1: "ultra quiet", 2: "standard", 3: "fast"}
+
     def _discover_sensor_modes(self) -> Dict[str, int]:
         # Squid's "sensor mode" maps to DCAM's READOUTSPEED property, and is
         # unrelated to DCAM's own SENSORMODE property (area/subarray mode).
@@ -229,10 +234,7 @@ class HamamatsuCamera(AbstractCamera):
         # the old truthiness check, since int(0.0) == 0 -> max(1, 0) == 1.
         step = max(1, int(readout_speed_attr.valuestep))
         for value in range(int(readout_speed_attr.valuemin), int(readout_speed_attr.valuemax) + 1, step):
-            vendor_text = self._camera.prop_getvaluetext(DCAM_IDPROP.READOUTSPEED, value)
-            # Mode names are the vendor's value texts, verbatim.
-            name = vendor_text if vendor_text else str(value)
-            modes[name] = value
+            modes[self._READOUTSPEED_NAMES.get(value, str(value))] = value
         return modes
 
     def get_available_sensor_modes(self) -> Sequence[str]:
