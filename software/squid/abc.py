@@ -875,8 +875,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         If a settings change that pauses streaming is in flight (the operation holds
         self._trigger_lock, see _pause_streaming), the trigger is dropped: sending a
         trigger into a stream that is being torn down or brought back up is never
-        useful. Callers pace themselves via get_ready_for_trigger, which reports
-        not-ready while streaming is off.
+        useful. Callers pace themselves via get_ready_for_trigger; implementations
+        should report not-ready there while streaming is off (see HamamatsuCamera).
         """
         if not self._trigger_lock.acquire(blocking=False):
             self._log.debug("Camera settings change in progress, dropping trigger.")
@@ -899,7 +899,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_ready_for_trigger(self) -> bool:
         """
         Returns true if the camera is ready for another trigger, false otherwise.  Calling
-        send_trigger when this is False will result in an exception from send_trigger.
+        send_trigger when this is False will result in an exception from send_trigger,
+        unless a streaming-pausing settings change is in flight, in which case
+        send_trigger drops the trigger silently instead (see send_trigger).
         """
         pass
 

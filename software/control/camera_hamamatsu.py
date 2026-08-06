@@ -519,37 +519,40 @@ class HamamatsuCamera(AbstractCamera):
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         # Numbers are in unbinned pixels. Supports C15440-20UP (ORCA-Fusion BT) only.
-        with self._pause_streaming():
-            roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
+        # Trigger lock held across the pause AND the strobe/exposure recalculation, as
+        # in set_sensor_mode.
+        with self._trigger_lock:
+            with self._pause_streaming():
+                roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
-            def fail(msg):
-                """
-                This is a helper for turning off roi mode if any of the sets below fail.
-                """
-                self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
-                raise ValueError(msg)
+                def fail(msg):
+                    """
+                    This is a helper for turning off roi mode if any of the sets below fail.
+                    """
+                    self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
+                    raise ValueError(msg)
 
-            if not roi_mode_on:
-                raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
+                if not roi_mode_on:
+                    raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
-            offset_x = control.utils.truncate_to_interval(offset_x, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
-                fail("Could not set roi x offset.")
+                offset_x = control.utils.truncate_to_interval(offset_x, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
+                    fail("Could not set roi x offset.")
 
-            width = control.utils.truncate_to_interval(width, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
-                fail("Could not set roi width.")
+                width = control.utils.truncate_to_interval(width, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
+                    fail("Could not set roi width.")
 
-            offset_y = control.utils.truncate_to_interval(offset_y, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
-                fail("Could not set roi y offset.")
+                offset_y = control.utils.truncate_to_interval(offset_y, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
+                    fail("Could not set roi y offset.")
 
-            height = control.utils.truncate_to_interval(height, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
-                fail("Could not set roi height.")
+                height = control.utils.truncate_to_interval(height, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
+                    fail("Could not set roi height.")
 
-        # Force exposure + strobe delay recalculation if needed
-        self.set_exposure_time(self.get_exposure_time())
+            # Force exposure + strobe delay recalculation if needed
+            self.set_exposure_time(self.get_exposure_time())
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         return (
