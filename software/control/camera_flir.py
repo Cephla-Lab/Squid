@@ -1184,7 +1184,7 @@ class FLIRCamera(AbstractCamera):
             # Default to continuous if not set
             return CameraAcquisitionMode.CONTINUOUS
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         """Send a trigger to the camera."""
         if not self.get_is_streaming():
             raise CameraError("Camera is not streaming, cannot send trigger")
