@@ -270,6 +270,119 @@ channels:
         assert result.channel_names == ["Valid Channel", "Another Valid"]
 
 
+class TestParseWellsByName:
+    """Tests for the additive wellplate_scan.wells (wells-by-name) field."""
+
+    def _write(self, tmp_path, body):
+        yaml_file = tmp_path / "wells.yaml"
+        yaml_file.write_text(body)
+        return str(yaml_file)
+
+    def test_wells_as_string(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+wellplate_scan:
+  scan_size_mm: 1.0
+  wells: "A1:B3"
+""",
+        )
+        result = parse_acquisition_yaml(path)
+        assert result.wells == "A1:B3"
+        assert result.wellplate_regions is None
+
+    def test_wells_as_list_joined_with_comma(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+wellplate_scan:
+  wells:
+    - A1
+    - B2
+    - C3
+""",
+        )
+        result = parse_acquisition_yaml(path)
+        assert result.wells == "A1,B2,C3"
+
+    def test_wells_and_regions_both_specified_raises(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+wellplate_scan:
+  wells: "A1"
+  regions:
+    - name: A1
+      center_mm: [14.3, 11.36, 0.5]
+      shape: Square
+""",
+        )
+        with pytest.raises(ValueError, match="either 'wells' or 'regions', not both"):
+            parse_acquisition_yaml(path)
+
+    def test_wells_absent_is_none(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+wellplate_scan:
+  regions:
+    - name: A1
+      center_mm: [14.3, 11.36, 0.5]
+      shape: Square
+""",
+        )
+        result = parse_acquisition_yaml(path)
+        assert result.wells is None
+        assert result.wellplate_regions is not None
+        assert result.wellplate_regions[0]["name"] == "A1"
+
+    def test_regions_only_yaml_unaffected(self, tmp_path):
+        """An existing regions-only method parses exactly as before (wells is None)."""
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+z_stack:
+  nz: 3
+  delta_z_mm: 0.002
+wellplate_scan:
+  scan_size_mm: 2.1
+  overlap_percent: 15.0
+  regions:
+    - name: C4
+      center_mm: [38.31, 28.75, 1.2]
+      shape: Circle
+""",
+        )
+        result = parse_acquisition_yaml(path)
+        assert result.wells is None
+        assert result.scan_shape == "Circle"
+        assert len(result.wellplate_regions) == 1
+        assert result.nz == 3
+
+    def test_empty_wells_string_is_none(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            """
+acquisition:
+  widget_type: wellplate
+wellplate_scan:
+  wells: ""
+""",
+        )
+        result = parse_acquisition_yaml(path)
+        assert result.wells is None
+
+
 class TestValidateHardware:
     """Tests for validate_hardware function."""
 
