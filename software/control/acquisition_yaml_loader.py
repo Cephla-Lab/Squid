@@ -8,6 +8,20 @@ from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
+class ChannelYAMLSettings:
+    """Per-channel settings parsed from an acquisition YAML's channels section.
+
+    Fields are None when absent from the YAML (e.g. files written by older
+    versions), so callers can restore only what was actually recorded.
+    """
+
+    name: str
+    exposure_time_ms: Optional[float] = None
+    analog_gain: Optional[float] = None
+    illumination_intensity: Optional[float] = None
+
+
+@dataclass
 class AcquisitionYAMLData:
     """Parsed acquisition YAML data structure."""
 
@@ -32,6 +46,7 @@ class AcquisitionYAMLData:
 
     # Channels
     channel_names: List[str] = field(default_factory=list)
+    channel_settings: List[ChannelYAMLSettings] = field(default_factory=list)
 
     # Autofocus
     contrast_af: bool = False
@@ -49,6 +64,38 @@ class AcquisitionYAMLData:
     delta_x_mm: float = 0.9
     delta_y_mm: float = 0.9
     flexible_positions: Optional[List[Dict]] = None  # [{name, center_mm}, ...]
+
+
+def _as_float(value) -> Optional[float]:
+    """Coerce a YAML scalar to float, returning None for anything non-numeric."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _parse_channel_settings(channels: List[Dict]) -> List[ChannelYAMLSettings]:
+    """Extract per-channel settings from serialized AcquisitionChannel dicts.
+
+    Channels are written by serialize_for_yaml(AcquisitionChannel), so settings
+    live in nested camera_settings / illumination_settings dicts. Entries without
+    a name are skipped; missing or non-numeric values parse to None.
+    """
+    parsed = []
+    for ch in channels:
+        name = ch.get("name")
+        if not name:
+            continue
+        camera_settings = ch.get("camera_settings") or {}
+        illumination_settings = ch.get("illumination_settings") or {}
+        parsed.append(
+            ChannelYAMLSettings(
+                name=name,
+                exposure_time_ms=_as_float(camera_settings.get("exposure_time_ms")),
+                analog_gain=_as_float(camera_settings.get("gain_mode")),
+                illumination_intensity=_as_float(illumination_settings.get("intensity")),
+            )
+        )
+    return parsed
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
@@ -126,6 +173,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         delta_t_s=time_series.get("delta_t_s", 0.0),
         # Channels
         channel_names=[ch.get("name") for ch in channels if ch.get("name")],
+        channel_settings=_parse_channel_settings(channels),
         # Autofocus
         contrast_af=autofocus.get("contrast_af", False),
         laser_af=autofocus.get("laser_af", False),
