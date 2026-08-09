@@ -1,30 +1,56 @@
 # Camera Registry Configuration (v1.0)
 #
-# This file maps user-friendly camera names to hardware identifiers.
-# When configuring acquisition channels, users select cameras by name.
-#
-# This file is optional. If not present, the system assumes a single-camera setup.
-#
 # Copy this file to cameras.yaml and edit for your system.
+#
+# This file is OPTIONAL. Without it — and with a single-camera cameras.yaml, which is
+# effectively ignored — the imaging camera comes entirely from the INI [CAMERA_CONFIG]
+# section, exactly as before. The registry only changes behavior when it declares more
+# than one camera.
+#
+# MULTI-CAMERA (one active at a time; see docs/dual-camera.md):
+# declare each camera with a unique id, name, serial_number and type. Camera id 1 is the
+# primary: it is the active camera at startup, and channels with no camera binding image
+# on it. Only one camera is live at any moment — selecting a channel bound to the other
+# camera switches to it.
+#
+# UPGRADING an existing multi-camera cameras.yaml: `type` is now REQUIRED whenever more
+# than one camera is declared. A file without it fails validation, and the software logs
+# a warning and falls back to the single INI camera. Add `type` to every entry.
+#
+# Per-camera fields (only id/name/serial_number/type are required with >1 camera; every
+# other value falls back to the INI [CAMERA_CONFIG] setting when absent):
+#   type:                 Toupcam | FLIR | Hamamatsu | iDS | TIS | Tucsen | Photometrics |
+#                         Andor | Default
+#   hardware_trigger:     true if this camera's trigger line is wired to the controller
+#                         (default true). A camera with `hardware_trigger: false` runs in
+#                         software-trigger mode only, and the GUI stops offering Hardware
+#                         Trigger while it is active.
+#   model:                display string only (shown in the UI for reference)
+#   rotate_image_angle, flip, crop_width, crop_height, default_pixel_format, default_binning
+#     flip:               Vertical | Horizontal | Both
+#     default_pixel_format: MONO8 | MONO10 | MONO12 | MONO14 | MONO16 | RGB24 | RGB32 |
+#                         RGB48 | BAYER_RG8 | BAYER_RG12
+#     default_binning:    [x, y]
 
 version: 1.0
 
 cameras:
-  # Primary imaging camera
+  # Primary imaging camera (id 1). Must be present, and should be the hardware-triggered
+  # one if any camera is wired for hardware trigger.
   - name: "Main Camera"
-    serial_number: "ABC12345"      # Camera serial number (from manufacturer)
-    model: "Hamamatsu C15440"      # Optional: displayed in UI for reference
+    id: 1
+    serial_number: "12345ABC"          # Camera serial number (from manufacturer)
+    model: "ITR3CMOS26000KMA"          # Optional: displayed in UI for reference
+    type: "Toupcam"
+    hardware_trigger: true
 
-  # Secondary camera for simultaneous imaging (multi-camera systems)
-  # - name: "Side Camera"
-  #   serial_number: "DEF67890"
-  #   model: "Basler acA2040"
-
-  # Example: Dual-camera fluorescence system
-  # - name: "GFP Camera"
-  #   serial_number: "CAM001"
-  #   model: "Photometrics Prime 95B"
-  #
-  # - name: "RFP Camera"
-  #   serial_number: "CAM002"
-  #   model: "Photometrics Prime 95B"
+  # Secondary camera (one active at a time). Typical dual-camera setup: a color camera on
+  # the second port of a beam splitter, with no trigger wiring.
+  # Delete this entry on single-camera systems.
+  - name: "Side Camera"
+    id: 2
+    serial_number: "67890XYZ"
+    model: "E3ISPM"
+    type: "Toupcam"
+    hardware_trigger: false
+    default_pixel_format: "RGB24"
