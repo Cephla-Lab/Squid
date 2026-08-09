@@ -174,20 +174,26 @@ def get_unavailable_camera_channels(selected_channels, cameras: Dict[int, Abstra
     return [ch.name for ch in selected_channels if _channel_camera_id(ch) not in cameras]
 
 
-def _camera_frame_geometry(camera: AbstractCamera) -> Tuple[int, int, bool, float]:
-    """(width, height, is_color, pixel_size_um) of the frames this camera delivers.
+def _camera_frame_geometry(camera: AbstractCamera) -> Tuple[int, int, bool, int, float]:
+    """(width, height, is_color, storage_bit_depth, pixel_size_um) for this camera's frames.
 
     get_crop_size() is None on an axis with no configured crop, and crop_image() clamps a
     crop larger than the frame, so the delivered size is the smaller of crop and
     resolution (both of which already account for binning). Comparing crop alone would
     make every uncropped camera look identical regardless of sensor size.
+
+    Bit depth matters on its own: two mono cameras of the same size and pixel size still
+    differ as uint8 vs uint16, and a Zarr array's dtype is fixed by the first frame — the
+    second camera's frames would be silently up/down-cast rather than fail.
     """
     crop_width, crop_height = camera.get_crop_size()
     resolution_width, resolution_height = camera.get_resolution()
+    pixel_format = camera.get_pixel_format()
     return (
         min(crop_width, resolution_width) if crop_width else resolution_width,
         min(crop_height, resolution_height) if crop_height else resolution_height,
-        CameraPixelFormat.is_color_format(camera.get_pixel_format()),
+        CameraPixelFormat.is_color_format(pixel_format),
+        CameraPixelFormat.storage_bit_depth(pixel_format),
         round(camera.get_pixel_size_binned_um(), 4),
     )
 
@@ -197,8 +203,8 @@ def get_camera_geometry_mismatch(selected_channels, cameras: Dict[int, AbstractC
 
     Zarr stores one uniform array per region/FOV (shape+dtype fixed by the first frame,
     single pixel_size_um), so a mixed-camera selection is only Zarr-compatible when every
-    used camera matches in frame size, color-ness, and binned pixel size. Returns None when
-    compatible, else a user-facing message.
+    used camera matches in frame size, color-ness, storage bit depth, and binned pixel
+    size. Returns None when compatible, else a user-facing message.
     """
     geometry_by_camera = {}
     for channel in selected_channels:
@@ -210,8 +216,8 @@ def get_camera_geometry_mismatch(selected_channels, cameras: Dict[int, AbstractC
     if len(set(geometry_by_camera.values())) <= 1:
         return None
     details = "; ".join(
-        f"camera {camera_id}: {width}x{height} px, {'color' if is_color else 'mono'}, {pixel_um} um/px"
-        for camera_id, (width, height, is_color, pixel_um) in sorted(geometry_by_camera.items())
+        f"camera {camera_id}: {width}x{height} px, {'color' if is_color else 'mono'} " f"uint{depth}, {pixel_um} um/px"
+        for camera_id, (width, height, is_color, depth, pixel_um) in sorted(geometry_by_camera.items())
     )
     return (
         "Selected channels span cameras with different frame geometry "

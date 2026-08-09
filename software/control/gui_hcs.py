@@ -2073,6 +2073,12 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # Switching the file saving option to Zarr live can make the current channel
+            # selection unacquirable, so the multipoint guards re-run on apply.
+            if ENABLE_FLEXIBLE_MULTIPOINT:
+                dialog.signal_config_changed.connect(self.flexibleMultiPointWidget._update_multi_camera_guard)
+            if ENABLE_WELLPLATE_MULTIPOINT:
+                dialog.signal_config_changed.connect(self.wellplateMultiPointWidget._update_multi_camera_guard)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")

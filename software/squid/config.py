@@ -459,6 +459,27 @@ class CameraPixelFormat(enum.Enum):
         )
 
     @staticmethod
+    def storage_bit_depth(pixel_format) -> int:
+        """Bits per component of the array frames in this format are stored in: 8 (uint8)
+        or 16 (uint16).
+
+        The member names carry bits per *pixel*, not per component: RGB24 and RGB32 are
+        3x8 and 4x8 (see camera_toupcam's RGB32 -> "bit depth of 8" mapping), so both are
+        uint8 frames, while MONO10/12/14/16, RGB48 and BAYER_RG12 all need uint16.
+        """
+        return (
+            8
+            if pixel_format
+            in (
+                CameraPixelFormat.MONO8,
+                CameraPixelFormat.RGB24,
+                CameraPixelFormat.RGB32,
+                CameraPixelFormat.BAYER_RG8,
+            )
+            else 16
+        )
+
+    @staticmethod
     def from_string(pixel_format_string):
         return CameraPixelFormat[pixel_format_string]
 

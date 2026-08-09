@@ -278,6 +278,17 @@ class ChannelSequenceController(QObject):
         config_set = set(self._config_order())
         return [n for n in self._included_order if n in config_set and n not in self._disabled_names]
 
+    def unavailable_included_names(self):
+        """Channels the sequence asks for that ordered_selected_names() silently drops
+        because their camera is unavailable.
+
+        A dropped acquisition YAML (or a cached sequence from when the camera was present)
+        can name such a channel: it is greyed out and excluded from the run without any
+        other signal, so the multipoint widgets surface this list in their warning label.
+        """
+        config_set = set(self._config_order())
+        return [n for n in self._included_order if n in config_set and n in self._disabled_names]
+
     def set_included_order(self, names):
         self._included_order = reconcile_included(list(names), self._config_order())
         self._rebuild()

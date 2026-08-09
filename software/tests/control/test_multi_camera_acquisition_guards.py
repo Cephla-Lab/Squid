@@ -4,9 +4,13 @@ Two independent checks, both pure functions in control.core.multi_point_utils:
   * unavailable camera: a channel bound to a camera id that never opened would silently
     be imaged on whatever camera happens to be active, so it must block the start.
   * mixed frame geometry: Zarr stores one uniform array per region, so a selection that
-    spans cameras with different frame shape/color-ness/pixel size cannot be saved.
+    spans cameras differing in frame size, color-ness, storage bit depth or pixel size
+    cannot be saved.
+
+Plus the widget layer that surfaces both before Start is pressed.
 """
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +19,7 @@ from qtpy.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem, QPus
 
 import control._def
 import control.microscope
+import control.widgets
 import squid.config
 import tests.control.test_stubs as ts
 from control.core.multi_point_utils import get_camera_geometry_mismatch, get_unavailable_camera_channels
@@ -125,6 +130,41 @@ def test_unavailable_camera_is_not_a_geometry_mismatch():
     assert get_camera_geometry_mismatch(channels, cameras) is None
 
 
+def test_mono8_vs_mono16_mismatch_detected():
+    """Same size, same pixel size, both mono — but uint8 vs uint16 frames. Zarr fixes the
+    array dtype from the first frame, so the other camera's frames would be silently
+    up/down-cast."""
+    cameras = {
+        1: _sim("SN1", pixel_format=CameraPixelFormat.MONO8),
+        2: _sim("SN2", pixel_format=CameraPixelFormat.MONO16),
+    }
+    channels = [_Ch("A", camera=1), _Ch("B", camera=2)]
+    message = get_camera_geometry_mismatch(channels, cameras)
+    assert message is not None
+    assert "uint8" in message and "uint16" in message
+
+
+def test_pixel_format_storage_bit_depth_buckets():
+    """RGB24/RGB32 are 3x8 and 4x8 bits per pixel, i.e. uint8 frames; everything above
+    8 bits per component needs uint16."""
+    for eight_bit in (
+        CameraPixelFormat.MONO8,
+        CameraPixelFormat.RGB24,
+        CameraPixelFormat.RGB32,
+        CameraPixelFormat.BAYER_RG8,
+    ):
+        assert CameraPixelFormat.storage_bit_depth(eight_bit) == 8
+    for sixteen_bit in (
+        CameraPixelFormat.MONO10,
+        CameraPixelFormat.MONO12,
+        CameraPixelFormat.MONO14,
+        CameraPixelFormat.MONO16,
+        CameraPixelFormat.RGB48,
+        CameraPixelFormat.BAYER_RG12,
+    ):
+        assert CameraPixelFormat.storage_bit_depth(sixteen_bit) == 16
+
+
 def test_unavailable_camera_channels_listed():
     cameras = {1: _sim("SN1")}
     channels = [_Ch("OK", camera=1), _Ch("Ghost1", camera=2), _Ch("Ghost2", camera=2)]
@@ -221,11 +261,14 @@ class _GuardHost(_MultiCameraGuardMixin):
     """Only the attributes the mixin touches, so the guard is testable without building a
     whole multipoint widget (both real hosts wire the same pieces)."""
 
-    def __init__(self, cameras, channels):
+    def __init__(self, cameras, channels, dropped=()):
         self.list_configurations = QListWidget()
         self.list_configurations.setSelectionMode(QAbstractItemView.MultiSelection)
         self.btn_startAcquisition = QPushButton()
         self.objectiveStore = SimpleNamespace(current_objective="10x")
+        # Stands in for ChannelSequenceController: `dropped` are the channels the user's
+        # persisted sequence asks for that the list refuses to acquire (camera missing).
+        self.channel_sequence = SimpleNamespace(unavailable_included_names=lambda: list(dropped))
         self._live_controller = SimpleNamespace(
             microscope=SimpleNamespace(cameras=cameras),
             get_channels=lambda objective: channels,
@@ -252,8 +295,8 @@ class _GuardHost(_MultiCameraGuardMixin):
             item.setSelected(True)
 
 
-def _host(qtbot, cameras, channels, selection):
-    host = _GuardHost(cameras, channels)
+def _host(qtbot, cameras, channels, selection, dropped=()):
+    host = _GuardHost(cameras, channels, dropped=dropped)
     qtbot.addWidget(host.container)
     host.select(*selection)
     return host
@@ -329,9 +372,102 @@ def test_widget_guard_is_inert_on_single_camera_systems(qtbot, monkeypatch):
         [_Ch("DAPI", camera=None), _Ch("GFP", camera=1)],
         [("DAPI", "DAPI"), ("GFP", "GFP")],
     )
-    host.btn_startAcquisition.setEnabled(False)
+    host.disable_the_start_aquisition_button()
 
     host._update_multi_camera_guard()
 
     assert host.label_multiCameraWarning.isHidden()
     assert not host.btn_startAcquisition.isEnabled()
+
+
+def test_guard_does_not_reenable_start_held_by_the_loading_position_lock(qtbot, monkeypatch):
+    """guard disables -> stage reaches loading position -> user fixes the selection.
+    The guard's veto lifts, but the loading-position veto is still on."""
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    host = _mixed_geometry_host(qtbot)
+    host._update_multi_camera_guard()
+    assert not host.btn_startAcquisition.isEnabled()  # guard veto
+
+    host.disable_the_start_aquisition_button()  # stage reached the loading position
+    host.list_configurations.item(1).setSelected(False)  # user drops the offending channel
+    host._update_multi_camera_guard()
+
+    assert host.label_multiCameraWarning.isHidden()
+    assert not host.btn_startAcquisition.isEnabled(), "loading-position lock was overridden"
+
+    host.enable_the_start_aquisition_button()  # stage left the loading position
+    assert host.btn_startAcquisition.isEnabled()
+
+
+def test_loading_position_lock_does_not_override_the_guard(qtbot, monkeypatch):
+    """The mirror image: leaving the loading position must not enable Start while a
+    camera conflict is still on screen."""
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    host = _mixed_geometry_host(qtbot)
+    host._update_multi_camera_guard()
+
+    host.disable_the_start_aquisition_button()
+    host.enable_the_start_aquisition_button()
+
+    assert not host.btn_startAcquisition.isEnabled()
+
+
+def test_start_time_recheck_dialogs_after_a_live_switch_to_zarr(qtbot, monkeypatch):
+    """Preferences can flip FILE_SAVING_OPTION to Zarr long after the last selection
+    change, so Start re-runs the guard and refuses visibly instead of letting the
+    controller backstop raise into a log-only handler."""
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.OME_TIFF)
+    host = _mixed_geometry_host(qtbot)
+    host._update_multi_camera_guard()
+    assert host.btn_startAcquisition.isEnabled()
+
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    shown = []
+    monkeypatch.setattr(control.widgets, "error_dialog", lambda message, *a, **kw: shown.append(message))
+    host.btn_startAcquisition.setChecked(True)
+
+    assert host._reject_if_multi_camera_conflict() is True
+    assert len(shown) == 1 and "Zarr" in shown[0]
+    assert not host.btn_startAcquisition.isChecked()
+    assert not host.btn_startAcquisition.isEnabled()
+
+
+def test_start_time_recheck_is_silent_when_there_is_no_conflict(qtbot, monkeypatch):
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.OME_TIFF)
+    host = _mixed_geometry_host(qtbot)
+    shown = []
+    monkeypatch.setattr(control.widgets, "error_dialog", lambda message, *a, **kw: shown.append(message))
+
+    assert host._reject_if_multi_camera_conflict() is False
+    assert shown == []
+
+
+@pytest.mark.parametrize(
+    "widget_class",
+    [control.widgets.FlexibleMultiPointWidget, control.widgets.WellplateMultiPointWidget],
+)
+def test_multipoint_widgets_recheck_the_guard_when_start_is_pressed(widget_class):
+    """Both Start paths must go through the re-check; without it a conflict created after
+    the last selection change reaches the controller backstop, which only logs."""
+    for method_name in ("toggle_acquisition", "on_snap_images"):
+        source = inspect.getsource(getattr(widget_class, method_name))
+        assert "_reject_if_multi_camera_conflict" in source, f"{widget_class.__name__}.{method_name}"
+
+
+def test_silently_dropped_channels_are_named_without_blocking_start(qtbot, monkeypatch):
+    """A dropped acquisition YAML (or a cached sequence) can name a channel whose camera
+    never opened; the list quietly removes it. The remaining run is valid, so Start stays
+    enabled, but the label has to say what will not be imaged."""
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    host = _host(
+        qtbot,
+        {1: _sim("SN1")},
+        [_Ch("DAPI", camera=1), _Ch("Ghost", camera=2)],
+        [("DAPI", "DAPI")],  # only DAPI is selectable; Ghost was dropped by the list
+        dropped=["Ghost"],
+    )
+
+    assert host._update_multi_camera_guard() is None
+    assert not host.label_multiCameraWarning.isHidden()
+    assert "Ghost" in host.label_multiCameraWarning.text()
+    assert host.btn_startAcquisition.isEnabled()

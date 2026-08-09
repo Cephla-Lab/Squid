@@ -1087,25 +1087,50 @@ class _MultiCameraGuardMixin:
 
     Host widgets call ``_create_multi_camera_warning_label()`` in add_components, place
     ``self.label_multiCameraWarning`` under their channel list, and must provide
-    ``list_configurations``, ``btn_startAcquisition``, ``objectiveStore`` and
-    ``_guard_live_controller()``. On single-camera systems the checks never fire.
+    ``list_configurations``, ``btn_startAcquisition``, ``channel_sequence``,
+    ``objectiveStore`` and ``_guard_live_controller()``. On single-camera systems the
+    checks never fire.
     """
+
+    # Start has two independent owners: this guard and the stage's loading-position lock
+    # (gui_hcs.connectSlidePositionController, which wires bare enable/disable signals).
+    # Each records its own veto and the button is enabled only when neither vetoes, so
+    # lifting one veto can never override the other. Class-level defaults keep both
+    # owners safe if they fire before add_components.
+    _multi_camera_block_active = False
+    _start_button_externally_allowed = True
 
     def _create_multi_camera_warning_label(self):
         self.label_multiCameraWarning = QLabel("")
         self.label_multiCameraWarning.setWordWrap(True)
         self.label_multiCameraWarning.setStyleSheet("color: #B00020; font-weight: bold;")
         self.label_multiCameraWarning.setVisible(False)
-        # Tracks whether *this* guard is the one holding Start disabled, so clearing the
-        # warning never re-enables a button some other owner disabled (e.g. the stage's
-        # loading-position lock in gui_hcs.connectSlidePositionController).
         self._multi_camera_block_active = False
+        self._start_button_externally_allowed = True
 
     def _guard_live_controller(self):
         """The LiveController whose microscope/channels the guard inspects."""
         raise NotImplementedError
 
-    def _update_multi_camera_guard(self):
+    def _apply_start_button_state(self):
+        self.btn_startAcquisition.setEnabled(
+            self._start_button_externally_allowed and not self._multi_camera_block_active
+        )
+
+    def disable_the_start_aquisition_button(self):
+        self._start_button_externally_allowed = False
+        self._apply_start_button_state()
+
+    def enable_the_start_aquisition_button(self):
+        self._start_button_externally_allowed = True
+        self._apply_start_button_state()
+
+    def _update_multi_camera_guard(self) -> Optional[str]:
+        """Refresh the warning label and this guard's veto on Start.
+
+        Returns the blocking message when the current selection must not be acquired, else
+        None — so Start-time callers can put the same text in a dialog.
+        """
         from control.core import multi_point_utils
 
         live_controller = self._guard_live_controller()
@@ -1124,16 +1149,35 @@ class _MultiCameraGuardMixin:
             mismatch = multi_point_utils.get_camera_geometry_mismatch(channels, microscope.cameras)
             if mismatch:
                 problems.append(mismatch)
-        if problems:
-            self.label_multiCameraWarning.setText(" ".join(problems))
-            self.label_multiCameraWarning.setVisible(True)
-            self._multi_camera_block_active = True
-            self.btn_startAcquisition.setEnabled(False)
-        else:
-            self.label_multiCameraWarning.setVisible(False)
-            if self._multi_camera_block_active:
-                self._multi_camera_block_active = False
-                self.btn_startAcquisition.setEnabled(True)
+
+        self._multi_camera_block_active = bool(problems)
+        self._apply_start_button_state()
+
+        # Channels the sequence asks for that the list drops on its own (their camera never
+        # opened). The remaining run is valid, so this does not veto Start — but without
+        # the label nothing tells the user those channels will not be imaged.
+        dropped = self.channel_sequence.unavailable_included_names()
+        notices = [f"Not acquired (camera unavailable): {', '.join(dropped)}."] if dropped else []
+
+        text = " ".join(problems + notices)
+        self.label_multiCameraWarning.setText(text)
+        self.label_multiCameraWarning.setVisible(bool(text))
+        return " ".join(problems) if problems else None
+
+    def _reject_if_multi_camera_conflict(self) -> bool:
+        """Re-check at Start and refuse visibly when the selection cannot be acquired.
+
+        Needed because the conflict can appear after the last selection change — most
+        obviously a live switch of the file saving option to Zarr in Preferences. Without
+        this the run would reach MultiPointController's backstop, whose ValueError inside a
+        Qt slot is only logged, so the GUI would appear to ignore the click.
+        """
+        blocking_message = self._update_multi_camera_guard()
+        if blocking_message is None:
+            return False
+        self.btn_startAcquisition.setChecked(False)
+        error_dialog(blocking_message)
+        return True
 
 
 class AcquisitionYAMLMismatchDialog(QDialog):
@@ -6718,6 +6762,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.btn_startAcquisition.setChecked(False)
                 return
 
+            if self._reject_if_multi_camera_conflict():
+                return
+
             # add the current location to the location list if the list is empty
             if len(self.location_list) == 0:
                 self.add_location()
@@ -7185,6 +7232,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
             return
 
+        if self._reject_if_multi_camera_conflict():
+            return
+
         # Set the selected channels for acquisition
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
         # Set the acquisition parameters
@@ -7250,13 +7300,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
-
-    def disable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(False)
-
-    def enable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(True)
-        self._update_multi_camera_guard()  # a camera conflict still keeps Start disabled
 
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
@@ -9090,6 +9133,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self.btn_startAcquisition.setChecked(False)
                 return
 
+            if self._reject_if_multi_camera_conflict():
+                return
+
             # if XY is not checked, use current position
             if not self.checkbox_xy.isChecked():
                 self.set_coordinates_to_current_position()
@@ -9261,13 +9307,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 # In Current Position mode, coverage should be disabled (N/A)
                 self.entry_well_coverage.setEnabled(False)
 
-    def disable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(False)
-
-    def enable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(True)
-        self._update_multi_camera_guard()  # a camera conflict still keeps Start disabled
-
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
 
@@ -9283,6 +9322,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():
             QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
+            return
+
+        if self._reject_if_multi_camera_conflict():
             return
 
         # Set the selected channels for acquisition
