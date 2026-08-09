@@ -126,6 +126,30 @@ def test_process_raw_frame_keeps_rgb_3_channel_end_to_end():
     assert frame.is_color()
 
 
+# --- white balance -----------------------------------------------------------------------------
+
+
+def test_auto_white_balance_gains_takes_the_on_flag():
+    """The per-camera settings tab's Auto WB button calls set_auto_white_balance_gains(on=...)
+    from a Qt slot, so a signature that omits `on` fails as a swallowed TypeError with no
+    white balance applied — on the RGB simulation path the docs point people at."""
+    cam = make_sim(CameraPixelFormat.RGB24, **SMALL_FRAME)
+    cam.set_white_balance_gains(2.0, 3.0, 4.0)
+
+    assert cam.set_auto_white_balance_gains(on=True) == (1.0, 1.0, 1.0)
+    assert cam.get_white_balance_gains() == (1.0, 1.0, 1.0)
+
+
+def test_auto_white_balance_off_leaves_the_gains_alone():
+    """Off is "stop auto-balancing", not "re-balance": the widget reads the gains back and
+    re-applies them, which only makes sense if turning it off keeps what is there."""
+    cam = make_sim(CameraPixelFormat.RGB24, **SMALL_FRAME)
+    cam.set_white_balance_gains(2.0, 3.0, 4.0)
+
+    assert cam.set_auto_white_balance_gains(on=False) == (2.0, 3.0, 4.0)
+    assert cam.get_white_balance_gains() == (2.0, 3.0, 4.0)
+
+
 # --- switching pixel format must invalidate the cached raw frame ------------------------------
 
 

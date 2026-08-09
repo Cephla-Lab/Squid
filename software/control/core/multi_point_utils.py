@@ -246,8 +246,13 @@ def get_camera_geometry_mismatch(selected_channels, cameras: Dict[int, AbstractC
         f"camera {camera_id}: {width}x{height} px, {'color' if is_color else 'mono'} " f"uint{depth}, {pixel_um} um/px"
         for camera_id, (width, height, is_color, depth, pixel_um) in sorted(geometry_by_camera.items())
     )
+    # The remedy is individual images, not OME-TIFF: OME-TIFF fixes one shape and dtype per
+    # region/FOV stack too, so it fails or silently mis-casts on every axis checked here
+    # (RGB raises NotImplementedError, differing mono Y*X raises mid-run, differing mono bit
+    # depth is quietly .astype()'d).
     return (
         "Selected channels span cameras with different frame geometry "
         f"({details}). This selection cannot be saved as Zarr — switch the file saving option "
-        "to OME-TIFF, or make the cameras match via binning/crop, or select channels from one camera."
+        "to individual images, or make the cameras match via binning/crop, or select channels "
+        "from one camera."
     )

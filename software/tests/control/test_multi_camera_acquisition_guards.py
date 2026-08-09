@@ -103,6 +103,11 @@ def test_color_vs_mono_mismatch_detected():
     assert message is not None
     assert "color" in message and "mono" in message
     assert "Zarr" in message
+    # The suggested remedy has to be one that actually works. OME-TIFF holds none of the
+    # mismatches this guard rejects: RGB raises NotImplementedError, differing mono Y*X
+    # raises mid-run, and differing mono bit depth is silently re-cast.
+    assert "individual images" in message
+    assert "OME-TIFF" not in message
 
 
 def test_crop_mismatch_detected():
@@ -509,6 +514,54 @@ def test_run_acquisition_resumes_live_the_warm_up_stopped(monkeypatch, is_live, 
 
     assert mpc.liveController_was_live_before_multipoint is expected
     assert mpc._live_stopped_for_warm_up is False  # consumed, so it cannot leak into a later run
+
+
+def _warm_up_that_stopped_live(monkeypatch, mpc):
+    """Run the warm-up on a live microscope so it stops live and arms the handoff flag —
+    the state a Start attempt is in when the disk/RAM dialog is still on screen."""
+    monkeypatch.setattr(mpc.liveController, "stop_live", lambda: setattr(mpc.liveController, "is_live", False))
+    _record_warm_up_grabs(monkeypatch, mpc)
+    mpc.liveController.is_live = True
+    mpc._warm_up_cameras_and_get_test_image()
+    assert mpc._live_stopped_for_warm_up is True  # precondition, not the assertion under test
+
+
+def test_start_new_experiment_clears_a_stranded_warm_up_flag(monkeypatch, tmp_path):
+    """Only run_acquisition consumes the flag, and several Start paths abort before it: the
+    disk-space and RAM dialogs (both widgets), a failed validate, the backstop raise. The
+    next Start goes through start_new_experiment first, so that is where the leak dies."""
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1])
+    mpc.set_base_path(str(tmp_path))
+    _warm_up_that_stopped_live(monkeypatch, mpc)  # ...then the user cancels at the dialog
+
+    mpc.start_new_experiment("after the abort")
+
+    assert mpc._live_stopped_for_warm_up is False
+
+
+def test_a_run_after_an_aborted_warm_up_does_not_resume_live(monkeypatch, tmp_path):
+    """The consequence of the leak: the next run to skip the warm-up (skip-saving, snap,
+    fluidics, TCP) would inherit the flag, decide the user had been live, and switch
+    illumination back on over the sample when it finishes — with nobody at the scope."""
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1])
+    mpc.set_base_path(str(tmp_path))
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.OME_TIFF)
+    monkeypatch.setattr(mpc, "_start_per_acquisition_log", lambda *a, **kw: None)
+    mpc.start_new_experiment("aborted attempt")
+    _warm_up_that_stopped_live(monkeypatch, mpc)
+
+    # A later run that never warms up, with the user no longer live.
+    def _stop(*args, **kwargs):
+        raise _PastTheGuards()
+
+    monkeypatch.setattr(mpc.camera, "enable_callbacks", _stop)
+    mpc.start_new_experiment("later run")
+    with pytest.raises(_PastTheGuards):
+        mpc.run_acquisition()
+
+    assert mpc.liveController_was_live_before_multipoint is False
 
 
 def test_acquisition_parameters_json_records_per_channel_pixel_sizes(monkeypatch, tmp_path):

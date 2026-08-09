@@ -354,8 +354,13 @@ class SimulatedCamera(AbstractCamera):
         self._white_balance_gains = (red_gain, green_gain, blue_gain)
 
     @debug_log
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        self.set_white_balance_gains(1.0, 1.0, 1.0)
+    def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
+        # The GUI calls this with on=True/False (see CameraSettingsWidget.toggle_auto_wb), so
+        # the flag is part of the signature even though a simulated sensor has nothing to
+        # auto-balance. On: hand back the neutral gains. Off: leave the gains as they are —
+        # the caller reads them back and re-applies them.
+        if on:
+            self.set_white_balance_gains(1.0, 1.0, 1.0)
 
         return self.get_white_balance_gains()
 

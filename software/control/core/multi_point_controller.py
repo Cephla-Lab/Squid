@@ -461,6 +461,13 @@ class MultiPointController:
         self.overlap_percent = overlap_percent
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
+        # Only run_acquisition consumes the warm-up's live-handoff flag, and several Start
+        # paths abort before reaching it (disk/RAM dialog on either widget, a failed
+        # validate, the multi-camera backstop raise). A stranded True would make the next run
+        # that skips the warm-up — skip-saving, snap, fluidics, TCP — resume live it never
+        # stopped, illuminating the sample unattended. This runs before the estimate on every
+        # Start path, so the warm-up re-arms it right after when it legitimately applies.
+        self._live_stopped_for_warm_up = False
         # generate unique experiment ID
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()

@@ -173,11 +173,6 @@ The same check runs at acquisition start as a backstop for headless/MCP runs, wh
 the widget: the run fails fast with the same message. A selection containing an unavailable
 camera's channel is rejected the same way, naming the channels.
 
-> **Note:** that warning's suggested remedy ("switch the file saving option to OME-TIFF")
-> is misleading. OME-TIFF cannot hold this selection either — the geometry differences the
-> guard rejects (frame size, color-ness, bit depth) are exactly the ones OME-TIFF fails or
-> silently mis-casts on. Use **individual images** instead.
-
 Zarr remains fully valid — and selectable — for single-camera runs.
 
 ## 5. Failures and edge cases

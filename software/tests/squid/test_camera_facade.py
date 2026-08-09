@@ -109,6 +109,18 @@ def test_is_color_and_geometry_follow_active(cameras):
     assert facade.get_pixel_size_binned_um() == cameras[2].get_pixel_size_binned_um()
 
 
+def test_auto_white_balance_delegates_to_active(cameras):
+    """The Auto WB button in the per-camera settings tab reaches the camera through the
+    facade, keyword-style, so both hops must carry the `on` flag."""
+    facade = ActiveCameraFacade(cameras, active_id=1)
+    cameras[1].set_white_balance_gains(2.0, 2.0, 2.0)
+    cameras[2].set_white_balance_gains(3.0, 3.0, 3.0)
+
+    assert facade.set_auto_white_balance_gains(on=True) == (1.0, 1.0, 1.0)
+    assert cameras[1].get_white_balance_gains() == (1.0, 1.0, 1.0)
+    assert cameras[2].get_white_balance_gains() == (3.0, 3.0, 3.0)  # inactive camera untouched
+
+
 def test_close_closes_all(cameras):
     closed = []
     for cam_id, cam in cameras.items():
