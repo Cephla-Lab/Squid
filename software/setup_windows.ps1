@@ -3,8 +3,8 @@
 .SYNOPSIS
     Setup script for Squid on Windows.
 .DESCRIPTION
-    Verifies prerequisites, clones the repository if needed, installs Python
-    dependencies, and creates a desktop shortcut.
+    Installs Python 3.12 if it is missing, clones the repository if needed,
+    installs Python dependencies, and creates a desktop shortcut.
 
     This script targets Python 3.12 and napari 0.7:
 
@@ -12,6 +12,13 @@
          3.12 is the newest version with wheels for every dependency here
          (notably PyQt5 and hidapi), and pinning one interpreter keeps every
          Windows install reproducible.
+
+         If no 3.12 is present the script downloads the official installer
+         from python.org and runs it silently, per-user, so no admin rights
+         or UAC prompt are needed. It installs 3.12.10 specifically: that is
+         the final 3.12 release with a Windows binary installer (3.12.11 and
+         later are source-only security releases). Pass -SkipPythonInstall to
+         require a pre-existing interpreter instead.
 
       2. napari is installed as napari[pyqt5]==0.7.1, NOT napari[all]. As of
          napari 0.7 the "all"/"qt" extras resolve to PyQt6, but Squid's GUI is
@@ -34,10 +41,14 @@
          manager providing them.
 .PARAMETER RepoPath
     Path where Squid repository should be cloned. Defaults to Desktop\Squid.
+.PARAMETER SkipPythonInstall
+    Fail instead of installing Python 3.12 when no suitable interpreter is
+    found. Useful on machines where Python is managed centrally.
 #>
 
 param(
-    [string]$RepoPath = "$env:USERPROFILE\Desktop\Squid"
+    [string]$RepoPath = "$env:USERPROFILE\Desktop\Squid",
+    [switch]$SkipPythonInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +58,17 @@ $ErrorActionPreference = "Stop"
 $REQUIRED_PYTHON_MAJOR = 3
 $REQUIRED_PYTHON_MINOR = 12
 $REQUIRED_PYTHON = "$REQUIRED_PYTHON_MAJOR.$REQUIRED_PYTHON_MINOR"
+
+# 3.12.10 is the last 3.12 with a Windows binary installer; 3.12.11+ are
+# source-only security releases, so this version does not float.
+#
+# The hash is of https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe.
+# To re-derive it after a version bump:
+#   (Get-FileHash .\python-3.12.10-amd64.exe -Algorithm SHA256).Hash
+$PYTHON_INSTALLER_VERSION = "3.12.10"
+$PYTHON_INSTALLER_SHA256 = "67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB"
+$PYTHON_INSTALLER_URL =
+    "https://www.python.org/ftp/python/$PYTHON_INSTALLER_VERSION/python-$PYTHON_INSTALLER_VERSION-amd64.exe"
 
 Write-Host "Using SQUID_REPO_PATH='$RepoPath'"
 
@@ -78,7 +100,7 @@ function Get-PythonInfo {
     )
 
     $probe = "import sys; print(sys.version_info[0]); print(sys.version_info[1]); " +
-             "print(8 * (sys.maxsize > 2**32)); print(sys.executable)"
+             "print(64 if sys.maxsize > 2**32 else 32); print(sys.executable)"
 
     # A wrong-version py launcher, or the Microsoft Store python.exe stub,
     # writes to stderr and exits non-zero. Under $ErrorActionPreference =
@@ -106,57 +128,138 @@ function Get-PythonInfo {
     }
 }
 
+# Locate a 64-bit Python 3.12, or return $null. Interpreters that were found
+# but rejected are recorded in $script:FoundPythonVersions for the error path.
+function Find-Python312 {
+    # The py launcher is tried first because it can select an exact version
+    # even when a different Python owns the PATH.
+    $candidates = @()
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $candidates += @{ Exe = "py"; Prefix = @("-$REQUIRED_PYTHON") }
+    }
+    foreach ($name in @("python$REQUIRED_PYTHON", "python3", "python")) {
+        if (Get-Command $name -ErrorAction SilentlyContinue) {
+            $candidates += @{ Exe = $name; Prefix = @() }
+        }
+    }
+    # Default per-user install location, checked explicitly because a Python
+    # this script just installed is not on this process's PATH.
+    $defaultInstall = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
+    if (Test-Path $defaultInstall) {
+        $candidates += @{ Exe = $defaultInstall; Prefix = @() }
+    }
+
+    $script:FoundPythonVersions = @()
+    foreach ($candidate in $candidates) {
+        $info = Get-PythonInfo -Exe $candidate.Exe -Prefix $candidate.Prefix
+        if ($null -eq $info) {
+            continue
+        }
+
+        $version = "$($info.Major).$($info.Minor)"
+        $script:FoundPythonVersions += "$version ($($info.Executable))"
+
+        if ($info.Major -ne $REQUIRED_PYTHON_MAJOR -or $info.Minor -ne $REQUIRED_PYTHON_MINOR) {
+            continue
+        }
+        if ($info.Bits -ne 64) {
+            Write-Warning "Ignoring 32-bit Python at $($info.Executable); Squid needs 64-bit Python."
+            continue
+        }
+
+        # Return sys.executable rather than the launcher so every later call
+        # (pip, the desktop shortcut) is pinned to this exact interpreter.
+        return $info.Executable
+    }
+
+    return $null
+}
+
+# Download and silently install Python from python.org.
+function Install-Python312 {
+    $installer = Join-Path $env:TEMP "python-$PYTHON_INSTALLER_VERSION-amd64.exe"
+
+    Write-Host "Downloading Python $PYTHON_INSTALLER_VERSION from $PYTHON_INSTALLER_URL"
+    # Invoke-WebRequest renders a progress bar per chunk in Windows PowerShell,
+    # which turns this 27 MB download into a multi-minute one. Older Windows
+    # also defaults to TLS 1.0, which python.org refuses.
+    $previousProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $PYTHON_INSTALLER_URL -OutFile $installer -UseBasicParsing
+    } finally {
+        $ProgressPreference = $previousProgress
+    }
+
+    $actualHash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash
+    if ($actualHash -ne $PYTHON_INSTALLER_SHA256) {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+        throw ("Downloaded Python installer failed its integrity check; not running it.`n" +
+               "  expected SHA256: $PYTHON_INSTALLER_SHA256`n" +
+               "  actual   SHA256: $actualHash")
+    }
+
+    Write-Host "Installing Python $PYTHON_INSTALLER_VERSION (per-user, no admin rights needed)..."
+    # InstallAllUsers=0 and InstallLauncherAllUsers=0 keep this out of Program
+    # Files, so the install runs without a UAC prompt. Both PrependPath and the
+    # py launcher are wanted: PrependPath for interactive use, the launcher so
+    # `py -3.12` finds this interpreter regardless of PATH order.
+    $installArgs = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=1",
+        "Include_launcher=1",
+        "InstallLauncherAllUsers=0",
+        "Include_test=0",
+        "AssociateFiles=0",
+        "Shortcuts=0"
+    )
+    $process = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+    # 3010 is "success, reboot required"; the interpreter is usable right now.
+    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+        throw ("Python installer failed with exit code $($process.ExitCode). " +
+               "Install Python $REQUIRED_PYTHON manually from https://www.python.org/downloads/ " +
+               "and re-run this script.")
+    }
+
+    # The installer edits PATH for *new* processes; refresh this one so the
+    # re-probe below can see the interpreter it just installed.
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = (@($machinePath, $userPath) | Where-Object { $_ }) -join ";"
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisites
 # ---------------------------------------------------------------------------
 
-# Find a Python 3.12 interpreter. The py launcher is tried first because it can
-# select an exact version even when a different Python owns the PATH.
-$candidates = @()
-if (Get-Command py -ErrorAction SilentlyContinue) {
-    $candidates += @{ Exe = "py"; Prefix = @("-$REQUIRED_PYTHON") }
-}
-foreach ($name in @("python$REQUIRED_PYTHON", "python3", "python")) {
-    if (Get-Command $name -ErrorAction SilentlyContinue) {
-        $candidates += @{ Exe = $name; Prefix = @() }
-    }
-}
-
-$PythonExe = $null
-$foundVersions = @()
-foreach ($candidate in $candidates) {
-    $info = Get-PythonInfo -Exe $candidate.Exe -Prefix $candidate.Prefix
-    if ($null -eq $info) {
-        continue
-    }
-
-    $version = "$($info.Major).$($info.Minor)"
-    $foundVersions += "$version ($($info.Executable))"
-
-    if ($info.Major -ne $REQUIRED_PYTHON_MAJOR -or $info.Minor -ne $REQUIRED_PYTHON_MINOR) {
-        continue
-    }
-    if ($info.Bits -ne 64) {
-        Write-Warning "Ignoring 32-bit Python at $($info.Executable); Squid needs 64-bit Python."
-        continue
-    }
-
-    # Use sys.executable rather than the launcher so every later call (pip,
-    # the desktop shortcut) is pinned to this exact interpreter.
-    $PythonExe = $info.Executable
-    break
-}
+$PythonExe = Find-Python312
 
 if ($null -eq $PythonExe) {
-    $detail = if ($foundVersions.Count -gt 0) {
-        "Found instead: " + ($foundVersions -join ", ") + "."
+    $detail = if ($script:FoundPythonVersions.Count -gt 0) {
+        "Found instead: " + ($script:FoundPythonVersions -join ", ") + "."
     } else {
         "No Python interpreter was found on PATH."
     }
-    Write-Error ("64-bit Python $REQUIRED_PYTHON is required but was not found. $detail`n" +
-                 "Install it from https://www.python.org/downloads/release/python-3120/ " +
-                 "(check 'Add python.exe to PATH' in the installer), then re-run this script.")
-    exit 1
+
+    if ($SkipPythonInstall) {
+        Write-Error ("64-bit Python $REQUIRED_PYTHON is required but was not found. $detail`n" +
+                     "Install it from https://www.python.org/downloads/ (check 'Add python.exe " +
+                     "to PATH'), or re-run without -SkipPythonInstall to install it automatically.")
+        exit 1
+    }
+
+    Write-Host "64-bit Python $REQUIRED_PYTHON not found. $detail"
+    Install-Python312
+
+    $PythonExe = Find-Python312
+    if ($null -eq $PythonExe) {
+        throw ("Python $REQUIRED_PYTHON still could not be found after installing it. " +
+               "Try opening a new terminal and re-running this script.")
+    }
 }
 Write-Host "Using Python $REQUIRED_PYTHON at $PythonExe"
 
