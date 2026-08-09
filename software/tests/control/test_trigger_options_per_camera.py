@@ -10,6 +10,7 @@ runs (same pattern as test_channel_display_labels.py).
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from qtpy.QtWidgets import QComboBox, QDoubleSpinBox
@@ -45,6 +46,7 @@ class _LiveTriggerStub:
     def __init__(self, supports_hw=True, trigger_mode=TriggerMode.SOFTWARE, exposure_limits=(0.1, 1000.0)):
         self.is_switching_mode = False
         self.applied_modes = []
+        self._log = MagicMock()
         self.dropdown_triggerManu = QComboBox()
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setRange(0.1, 5000.0)
@@ -70,7 +72,8 @@ class _NapariTriggerStub:
 
     def __init__(self, supports_hw=True, trigger_mode=TriggerMode.SOFTWARE, exposure_limits=(0.1, 1000.0)):
         self.is_switching_mode = False
-        self.observed = []
+        self.signal_emissions = []
+        self._log = MagicMock()
         self.dropdown_triggerMode = QComboBox()
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setRange(0.1, 5000.0)
@@ -82,9 +85,11 @@ class _NapariTriggerStub:
         self.dropdown_triggerMode.currentIndexChanged.connect(self._record)
 
     def _record(self, index):
+        # Records the raw emission - no filtering of its own, so assertions about
+        # "repopulation is not a user choice" are about production behaviour
+        # (blockSignals) and not about the stub.
+        self.signal_emissions.append(index)
         self.on_trigger_mode_changed(index)
-        if not self.is_switching_mode:
-            self.observed.append(self.dropdown_triggerMode.itemData(index))
 
     def items(self):
         return [self.dropdown_triggerMode.itemData(i) for i in range(self.dropdown_triggerMode.count())]
@@ -160,6 +165,27 @@ class TestLiveControlTriggerOptions:
         assert stub.items() == [TriggerMode.SOFTWARE]
         assert stub.is_switching_mode is False
 
+    def test_unofferable_held_mode_is_clamped_warned_and_synced(self, qtbot, monkeypatch):
+        """setCurrentText on an absent entry is a silent no-op, which would leave the
+        dropdown reading Software while the controller still holds Hardware - and a
+        one-item dropdown offers no way back. Clamp, warn, and sync the controller."""
+        monkeypatch.setattr(control.widgets, "ENABLE_RECORDING", False)
+        stub = _LiveTriggerStub(supports_hw=False, trigger_mode=TriggerMode.HARDWARE)
+        stub.refresh_trigger_options()
+        assert stub.items() == [TriggerMode.SOFTWARE]
+        assert stub.dropdown_triggerManu.currentText() == TriggerMode.SOFTWARE
+        assert stub.applied_modes == [TriggerMode.SOFTWARE]  # controller pulled into agreement
+        assert stub._log.warning.called
+        assert stub.is_switching_mode is False
+
+    def test_offerable_held_mode_is_not_clamped_or_warned(self, qtbot, monkeypatch):
+        monkeypatch.setattr(control.widgets, "ENABLE_RECORDING", False)
+        stub = _LiveTriggerStub(supports_hw=True, trigger_mode=TriggerMode.HARDWARE)
+        stub.refresh_trigger_options()
+        assert stub.dropdown_triggerManu.currentText() == TriggerMode.HARDWARE
+        assert stub.applied_modes == []
+        assert not stub._log.warning.called
+
 
 class TestNapariLiveTriggerOptions:
     def test_hardware_hidden_when_camera_cannot_be_triggered(self, qtbot):
@@ -180,8 +206,34 @@ class TestNapariLiveTriggerOptions:
         stub.on_active_camera_changed(2)
         assert stub.items() == [TriggerMode.SOFTWARE, TriggerMode.CONTINUOUS]
         assert (stub.entry_exposureTime.minimum(), stub.entry_exposureTime.maximum()) == (2.0, 300.0)
-        assert stub.observed == []  # repopulation is not a user choice
+        # Production blocks the combo's signals while repopulating, so the change handler
+        # never sees the intermediate indices at all.
+        assert stub.signal_emissions == []
         assert stub.is_switching_mode is False
+
+    def test_unofferable_held_mode_clamps_display_and_warns(self, qtbot):
+        """No hardware sync here on purpose: LiveControlWidget always exists and runs
+        first on a camera change, so syncing here too would double-program the MCU."""
+        stub = _NapariTriggerStub(supports_hw=False, trigger_mode=TriggerMode.HARDWARE)
+        stub.refresh_trigger_options()
+        assert stub.dropdown_triggerMode.currentData() == TriggerMode.SOFTWARE
+        assert stub._log.warning.called
+        assert stub.is_switching_mode is False
+
+    def test_trigger_mode_change_handler_is_guarded(self, qtbot, capsys):
+        """The handler's only observable effect is its printout; it must produce nothing
+        while a repopulation is in flight, and something for a real user change."""
+        stub = _NapariTriggerStub(supports_hw=True)
+        stub.refresh_trigger_options()
+        capsys.readouterr()  # drop anything emitted so far
+
+        stub.is_switching_mode = True
+        stub.on_trigger_mode_changed(1)
+        assert capsys.readouterr().out == ""
+
+        stub.is_switching_mode = False
+        stub.on_trigger_mode_changed(1)
+        assert "Selected:" in capsys.readouterr().out
 
 
 class TestCameraTabName:

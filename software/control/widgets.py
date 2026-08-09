@@ -4184,6 +4184,7 @@ class LiveControlWidget(QFrame):
         must not offer Hardware, so the option list is rebuilt on every camera switch
         and the selection is resynced to the mode the LiveController actually holds.
         """
+        clamped_mode = None
         try:
             self.is_switching_mode = True
             self.dropdown_triggerManu.blockSignals(True)
@@ -4194,10 +4195,25 @@ class LiveControlWidget(QFrame):
             if ENABLE_RECORDING:
                 trigger_modes.append(TriggerMode.CONTINUOUS)
             self.dropdown_triggerManu.addItems(trigger_modes)
-            self.dropdown_triggerManu.setCurrentText(self.liveController.trigger_mode)
+            held_mode = self.liveController.trigger_mode
+            if held_mode not in trigger_modes:
+                # setCurrentText with an absent entry is a silent no-op, which would leave
+                # the dropdown showing Software while the controller still holds Hardware -
+                # and a one-item dropdown gives the user no way back. Clamp instead, and
+                # sync the controller below so UI and hardware state agree.
+                clamped_mode = TriggerMode.SOFTWARE
+                held_mode = clamped_mode
+            self.dropdown_triggerManu.setCurrentText(held_mode)
         finally:
             self.dropdown_triggerManu.blockSignals(False)
             self.is_switching_mode = False
+
+        if clamped_mode is not None:
+            self._log.warning(
+                f"Trigger mode '{self.liveController.trigger_mode}' is not available on the active "
+                f"camera; falling back to '{clamped_mode}'."
+            )
+            self.liveController.set_trigger_mode(clamped_mode)
 
     def on_active_camera_changed(self, camera_id: int):
         """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""
@@ -12062,6 +12078,7 @@ class NapariLiveWidget(QWidget):
         must not offer Hardware, so the option list is rebuilt on every camera switch
         and the selection is resynced to the mode the LiveController actually holds.
         """
+        clamped_mode = None
         try:
             self.is_switching_mode = True
             self.dropdown_triggerMode.blockSignals(True)
@@ -12073,11 +12090,24 @@ class NapariLiveWidget(QWidget):
             for display_name, mode in trigger_modes:
                 self.dropdown_triggerMode.addItem(display_name, mode)
             index = self.dropdown_triggerMode.findData(self.liveController.trigger_mode)
+            if index < 0:
+                # Held mode is not offered by this camera; showing it is impossible, so
+                # clamp the display to Software rather than leaving whatever index 0 is.
+                # The hardware sync is LiveControlWidget's job - it always exists and runs
+                # first on a camera change, so doing it here too would double-program the MCU.
+                clamped_mode = TriggerMode.SOFTWARE
+                index = self.dropdown_triggerMode.findData(clamped_mode)
             if index >= 0:
                 self.dropdown_triggerMode.setCurrentIndex(index)
         finally:
             self.dropdown_triggerMode.blockSignals(False)
             self.is_switching_mode = False
+
+        if clamped_mode is not None:
+            self._log.warning(
+                f"Trigger mode '{self.liveController.trigger_mode}' is not available on the active "
+                f"camera; showing '{clamped_mode}'."
+            )
 
     def on_active_camera_changed(self, camera_id: int):
         """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""

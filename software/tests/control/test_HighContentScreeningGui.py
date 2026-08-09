@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 import control._def
@@ -10,6 +12,13 @@ from control.core.config.repository import ConfigRepository
 from control.core.live_controller import LiveController
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 
+TWO_CAMERA_REGISTRY = CameraRegistryConfig(
+    cameras=[
+        CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
+        CameraDefinition(name="Side Camera", id=2, serial_number="SIM-2", type="Toupcam", hardware_trigger=False),
+    ]
+)
+
 
 @pytest.fixture
 def confirm_exit_yes(monkeypatch):
@@ -21,6 +30,50 @@ def confirm_exit_yes(monkeypatch):
         raise RuntimeError(f"Unexpected QMessageBox: {title} - {text}")
 
     monkeypatch.setattr(QMessageBox, "question", confirm_exit)
+
+
+def test_camera_change_from_a_plain_thread_reaches_the_gui(qtbot, monkeypatch, confirm_exit_yes):
+    """The switches that matter come from threads with no Qt event loop: the acquisition
+    worker (MultiPointWorker._select_config -> set_microscope_mode) and the TCP server
+    thread. Anything posted to the *calling* thread there never runs, so the bridge has
+    to be a real cross-thread delivery onto the GUI event loop."""
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: TWO_CAMERA_REGISTRY)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    gui_thread_id = threading.get_ident()
+    handled_on_thread = []
+    win.signal_active_camera_changed.connect(lambda camera_id: handled_on_thread.append(threading.get_ident()))
+
+    combo = win.liveControlWidget.dropdown_triggerManu
+    assert control._def.TriggerMode.HARDWARE in [combo.itemText(i) for i in range(combo.count())]
+
+    errors = []
+
+    def switch():
+        try:
+            scope.set_active_camera(2)
+        except Exception as e:  # surfaced below; a bare thread would swallow it
+            errors.append(e)
+
+    worker = threading.Thread(target=switch, name="fake-acquisition-worker")
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert not errors, errors
+    assert scope.active_camera_id == 2
+
+    # Delivery is queued, so nothing has reached the widget yet - joining the thread does
+    # not spin the GUI event loop.
+    assert handled_on_thread == []
+    assert control._def.TriggerMode.HARDWARE in [combo.itemText(i) for i in range(combo.count())]
+
+    # ...and it does arrive once the GUI event loop runs.
+    qtbot.waitUntil(lambda: len(handled_on_thread) > 0, timeout=5000)
+    assert handled_on_thread == [gui_thread_id]
+    assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
 
 
 def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
@@ -59,13 +112,7 @@ def test_single_camera_gui_has_one_plain_camera_tab(qtbot, confirm_exit_yes):
 def test_multi_camera_gui_names_tabs_from_registry(qtbot, monkeypatch, confirm_exit_yes):
     """Two cameras: the primary tab takes its cameras.yaml name and each extra camera
     gets its own settings tab bound to its own concrete camera (never the facade)."""
-    registry = CameraRegistryConfig(
-        cameras=[
-            CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
-            CameraDefinition(name="Side Camera", id=2, serial_number="SIM-2", type="Toupcam", hardware_trigger=False),
-        ]
-    )
-    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: registry)
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: TWO_CAMERA_REGISTRY)
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
@@ -84,8 +131,8 @@ def test_multi_camera_gui_names_tabs_from_registry(qtbot, monkeypatch, confirm_e
     combo = win.liveControlWidget.dropdown_triggerManu
     assert control._def.TriggerMode.HARDWARE in [combo.itemText(i) for i in range(combo.count())]
     scope.set_active_camera(2)
-    # The listener hops to the GUI thread via QTimer.singleShot; call the same handler
-    # directly rather than spinning the event loop inside the test.
+    # Same-thread call: exercise the handler directly here and leave the queued
+    # cross-thread delivery to test_camera_change_from_a_plain_thread_reaches_the_gui.
     win._on_active_camera_changed(2)
     assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
 
@@ -95,13 +142,7 @@ def test_startup_channel_on_secondary_camera_syncs_trigger_options(qtbot, monkey
     startup channel may switch the active camera - before the GUI's camera-change
     listener is wired. The widget must sync itself, or the dropdown offers Hardware
     for a camera whose trigger line is not wired."""
-    registry = CameraRegistryConfig(
-        cameras=[
-            CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
-            CameraDefinition(name="Side Camera", id=2, serial_number="SIM-2", type="Toupcam", hardware_trigger=False),
-        ]
-    )
-    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: registry)
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: TWO_CAMERA_REGISTRY)
 
     original_get_channels = LiveController.get_channels
 

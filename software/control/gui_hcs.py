@@ -604,6 +604,9 @@ class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
     signal_performance_mode_changed = Signal(bool)
+    # Carries Microscope active-camera notifications onto the GUI thread. See the
+    # add_camera_change_listener hookup in make_connections for why this is a signal.
+    signal_active_camera_changed = Signal(int)
 
     def __init__(
         self,
@@ -1540,11 +1543,15 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget.update_camera_settings()
 
         # Dual-camera: refresh GUI state on active-camera switch. The listener fires on
-        # whichever thread called set_active_camera (GUI for live, worker for acquisitions),
-        # so hop to the GUI thread with a queued singleShot (fire-and-forget is fine here).
-        self.microscope.add_camera_change_listener(
-            lambda camera_id: QTimer.singleShot(0, lambda: self._on_active_camera_changed(camera_id))
-        )
+        # whichever thread called set_active_camera: the GUI thread for a live channel
+        # change, but the acquisition worker thread (MultiPointWorker._select_config) or
+        # the TCP server thread otherwise. Those are plain threading.Threads with no Qt
+        # event loop, so anything posted to the *calling* thread (QTimer.singleShot) would
+        # never run. Emitting a signal is thread-safe and, because the receiver lives in
+        # the GUI thread, Qt resolves the connection to a queued delivery onto the GUI
+        # event loop.
+        self.signal_active_camera_changed.connect(self._on_active_camera_changed)
+        self.microscope.add_camera_change_listener(self.signal_active_camera_changed.emit)
 
         self.connectSlidePositionController()
 
@@ -1958,11 +1965,12 @@ class HighContentScreeningGui(QMainWindow):
         self._live_warning_box = box
         box.show()
 
+    @Slot(int)
     def _on_active_camera_changed(self, camera_id: int) -> None:
         """GUI-thread handler for a Microscope active-camera switch.
 
-        Runs from a queued QTimer.singleShot, so exceptions would be swallowed by Qt -
-        catch and log them here.
+        Reached through signal_active_camera_changed, i.e. a queued cross-thread
+        delivery, so exceptions would be swallowed by Qt - catch and log them here.
         """
         try:
             self.liveControlWidget.on_active_camera_changed(camera_id)
