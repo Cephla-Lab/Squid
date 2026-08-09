@@ -19,7 +19,8 @@ _log = squid.logging.get_logger(__name__)
 
 _CACHE_PATH = "cache/channel_sequence.yaml"
 
-_UNAVAILABLE_CAMERA_TOOLTIP = "This channel's camera is declared in cameras.yaml but is not available."
+# Shared by the channel lists here and the live-view dropdowns in control.widgets.
+UNAVAILABLE_CAMERA_TOOLTIP = "This channel's camera is declared in cameras.yaml but is not available."
 
 
 def _item_name(item):
@@ -311,7 +312,7 @@ class ChannelSequenceController(QObject):
                         item.setIcon(icon)
                     if not enabled:
                         item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
-                        item.setToolTip(_UNAVAILABLE_CAMERA_TOOLTIP)
+                        item.setToolTip(UNAVAILABLE_CAMERA_TOOLTIP)
                         self._disabled_names.add(name)
                 self._list.addItem(item)
             for i in range(self._list.count()):

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 from qtpy.QtWidgets import QComboBox
 
+from control.channel_sequence import UNAVAILABLE_CAMERA_TOOLTIP
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 from control.widgets import (
     CAMERA_DOT_COLORS,
@@ -168,10 +169,47 @@ class TestLiveControlDropdown:
         widget._select_dropdown_entry("nonexistent")  # no-op, keeps selection
         assert widget.dropdown_modeSelection.currentIndex() == 1
 
-    def test_unavailable_camera_entry_is_disabled(self, qtbot):
+    def test_unavailable_camera_entry_is_disabled_with_tooltip(self, qtbot):
         widget = _DropdownStub(TWO_CAM, available_camera_ids=[1])  # camera 2 failed to open
         widget._add_mode_item(_Ch("DAPI", camera=None))
         widget._add_mode_item(_Ch("BF Color", camera=2))
         model = widget.dropdown_modeSelection.model()
         assert model.item(0).isEnabled()
+        assert model.item(0).toolTip() == ""
         assert not model.item(1).isEnabled()
+        assert model.item(1).toolTip() == UNAVAILABLE_CAMERA_TOOLTIP
+
+
+class TestDropdownActivatedReader:
+    """Pins the exact reader idiom both live widgets connect to `activated`:
+    `itemData(index) or itemText(index)`. A revert to the old activated[str]
+    idiom would feed the decorated label ("BF Color — Side Camera") into
+    get_channel_by_name while the rest of the suite stayed green."""
+
+    @staticmethod
+    def _wire_production_reader(combo, captured):
+        # Same lambda LiveControlWidget.add_components connects (NapariLiveWidget's
+        # handler reads the identical expression from its config_index argument).
+        combo.activated.connect(lambda index: captured.append(combo.itemData(index) or combo.itemText(index)))
+
+    def test_activated_on_decorated_entry_passes_bare_name(self, qtbot):
+        widget = _DropdownStub(TWO_CAM, available_camera_ids=[1, 2])
+        widget._add_mode_item(_Ch("DAPI", camera=None))
+        widget._add_mode_item(_Ch("BF Color", camera=2))
+        combo = widget.dropdown_modeSelection
+        assert combo.itemText(1) == "BF Color — Side Camera"  # decorated on screen
+        captured = []
+        self._wire_production_reader(combo, captured)
+        combo.activated.emit(1)
+        assert captured == ["BF Color"]  # bare name reaches select_new_microscope_mode_by_name
+
+    def test_activated_falls_back_to_item_text_when_no_userdata(self, qtbot):
+        # Robustness half of the idiom: an entry populated without userData
+        # (legacy population) must still resolve via its (bare) text.
+        widget = _DropdownStub(ONE_CAM, available_camera_ids=[1])
+        combo = widget.dropdown_modeSelection
+        combo.addItem("DAPI")  # no userData
+        captured = []
+        self._wire_production_reader(combo, captured)
+        combo.activated.emit(0)
+        assert captured == ["DAPI"]

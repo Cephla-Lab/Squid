@@ -23,7 +23,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from control.channel_sequence import enable_channel_sequence
+from control.channel_sequence import UNAVAILABLE_CAMERA_TOOLTIP, enable_channel_sequence
 import control.utils as utils
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
@@ -4154,6 +4154,7 @@ class LiveControlWidget(QFrame):
             index = self.dropdown_modeSelection.count() - 1
             item = self.dropdown_modeSelection.model().item(index)
             item.setEnabled(False)
+            item.setToolTip(UNAVAILABLE_CAMERA_TOOLTIP)
 
     def _select_dropdown_entry(self, config_name: str):
         index = self.dropdown_modeSelection.findData(config_name)
@@ -4283,9 +4284,12 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        # Pass the bare channel name from userData (item text may carry camera decoration).
+        # Pass the bare channel name from userData (item text may carry camera decoration);
+        # fall back to the text for entries populated without userData.
         self.dropdown_modeSelection.activated.connect(
-            lambda index: self.select_new_microscope_mode_by_name(self.dropdown_modeSelection.itemData(index))
+            lambda index: self.select_new_microscope_mode_by_name(
+                self.dropdown_modeSelection.itemData(index) or self.dropdown_modeSelection.itemText(index)
+            )
         )
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
@@ -11657,6 +11661,7 @@ class NapariLiveWidget(QWidget):
             index = self.dropdown_modeSelection.count() - 1
             item = self.dropdown_modeSelection.model().item(index)
             item.setEnabled(False)
+            item.setToolTip(UNAVAILABLE_CAMERA_TOOLTIP)
 
     def _select_dropdown_entry(self, config_name: str):
         index = self.dropdown_modeSelection.findData(config_name)
