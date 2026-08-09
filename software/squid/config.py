@@ -593,6 +593,35 @@ def get_camera_config() -> CameraConfig:
     return _camera_config
 
 
+def camera_config_from_definition(definition) -> CameraConfig:
+    """Build a per-camera CameraConfig from a cameras.yaml CameraDefinition.
+
+    Starts from the INI-derived [CAMERA_CONFIG] defaults (the module singleton) and
+    overlays any per-camera overrides the definition provides. The INI singleton is
+    never mutated.
+    """
+    updates = {"serial_number": definition.serial_number}
+    if definition.type is not None:
+        new_type = _old_camera_variant_to_enum(definition.type)
+        updates["camera_type"] = new_type
+        if new_type != _camera_config.camera_type:
+            # The INI camera_model belongs to the INI camera_type; don't carry it across drivers.
+            updates["camera_model"] = None
+    if definition.rotate_image_angle is not None:
+        updates["rotate_image_angle"] = definition.rotate_image_angle
+    if definition.flip is not None:
+        updates["flip"] = FlipVariant(definition.flip)
+    if definition.crop_width is not None:
+        updates["crop_width"] = definition.crop_width
+    if definition.crop_height is not None:
+        updates["crop_height"] = definition.crop_height
+    if definition.default_pixel_format is not None:
+        updates["default_pixel_format"] = CameraPixelFormat.from_string(definition.default_pixel_format)
+    if definition.default_binning is not None:
+        updates["default_binning"] = (definition.default_binning[0], definition.default_binning[1])
+    return _camera_config.model_copy(update=updates)
+
+
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
     camera_model=_def.FOCUS_CAMERA_MODEL,
