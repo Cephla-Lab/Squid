@@ -57,6 +57,22 @@ from control._def import *
 from PIL import Image, ImageDraw, ImageFont
 
 
+def camera_display_name(registry, camera_id) -> str:
+    """Display text for a channel's camera id. '(None)' means primary/unassigned."""
+    if registry is None or camera_id is None:
+        return "(None)"
+    definition = registry.get_camera_by_id(camera_id)
+    return definition.name if definition is not None and definition.name else "(None)"
+
+
+def camera_id_from_display(registry, display_text) -> Optional[int]:
+    """Inverse of camera_display_name: camera id for a dropdown display text."""
+    if registry is None or not display_text or display_text == "(None)":
+        return None
+    definition = registry.get_camera_by_name(display_text)
+    return definition.id if definition is not None else None
+
+
 def error_dialog(message: str, title: str = "Error"):
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
@@ -16000,10 +16016,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         # Camera dropdown
         camera_combo = QComboBox()
         camera_combo.addItem("(None)")
-        camera_names = self.config_repo.get_camera_names()
-        camera_combo.addItems(camera_names)
-        if channel.camera and channel.camera in camera_names:
-            camera_combo.setCurrentText(channel.camera)
+        registry = self.config_repo.get_camera_registry()
+        camera_combo.addItems(self.config_repo.get_camera_names())
+        camera_combo.setCurrentText(camera_display_name(registry, channel.camera))
         self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
 
         # Filter wheel dropdown
@@ -16275,9 +16290,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
             # Camera
             camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
-            if camera_combo and isinstance(camera_combo, QComboBox):
-                camera_text = camera_combo.currentText()
-                channel.camera = camera_text if camera_text != "(None)" else None
+            if camera_combo is not None and isinstance(camera_combo, QComboBox):
+                channel.camera = camera_id_from_display(
+                    self.config_repo.get_camera_registry(), camera_combo.currentText()
+                )
 
             # Filter wheel: None = no selection, else explicit wheel name
             wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
@@ -16412,9 +16428,8 @@ class AddAcquisitionChannelDialog(QDialog):
 
         # Camera
         camera = None
-        if self.camera_combo:
-            camera_text = self.camera_combo.currentText()
-            camera = camera_text if camera_text != "(None)" else None
+        if self.camera_combo is not None:
+            camera = camera_id_from_display(self.config_repo.get_camera_registry(), self.camera_combo.currentText())
 
         # Filter wheel and position
         filter_wheel = None
