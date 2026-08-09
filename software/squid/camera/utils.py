@@ -235,7 +235,13 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+        return [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO12,
+            CameraPixelFormat.MONO16,
+            CameraPixelFormat.RGB24,
+            CameraPixelFormat.RGB48,
+        ]
 
     @debug_log
     def get_binning(self) -> Tuple[int, int]:
@@ -397,6 +403,14 @@ class SimulatedCamera(AbstractCamera):
                 self._current_raw_frame = self._current_raw_frame << 4
             elif self.get_pixel_format() == CameraPixelFormat.MONO16:
                 self._current_raw_frame = np.random.randint(65535, size=(height, width), dtype=np.uint16)
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
+                    200 * 256
+                )
+            elif self.get_pixel_format() == CameraPixelFormat.RGB24:
+                self._current_raw_frame = np.random.randint(255, size=(height, width, 3), dtype=np.uint8)
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
+            elif self.get_pixel_format() == CameraPixelFormat.RGB48:
+                self._current_raw_frame = np.random.randint(65535, size=(height, width, 3), dtype=np.uint16)
                 self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
                     200 * 256
                 )
