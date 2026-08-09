@@ -7,6 +7,7 @@ from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
 from control.core.config.repository import ConfigRepository
+from control.core.live_controller import LiveController
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 
 
@@ -86,6 +87,39 @@ def test_multi_camera_gui_names_tabs_from_registry(qtbot, monkeypatch, confirm_e
     # The listener hops to the GUI thread via QTimer.singleShot; call the same handler
     # directly rather than spinning the event loop inside the test.
     win._on_active_camera_changed(2)
+    assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
+
+
+def test_startup_channel_on_secondary_camera_syncs_trigger_options(qtbot, monkeypatch, confirm_exit_yes):
+    """LiveControlWidget builds its trigger dropdown, then set_microscope_mode on the
+    startup channel may switch the active camera - before the GUI's camera-change
+    listener is wired. The widget must sync itself, or the dropdown offers Hardware
+    for a camera whose trigger line is not wired."""
+    registry = CameraRegistryConfig(
+        cameras=[
+            CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
+            CameraDefinition(name="Side Camera", id=2, serial_number="SIM-2", type="Toupcam", hardware_trigger=False),
+        ]
+    )
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: registry)
+
+    original_get_channels = LiveController.get_channels
+
+    def get_channels_with_secondary_first(self, objective):
+        # Copy so the repository's shared channel objects are never mutated.
+        channels = [channel.model_copy(deep=True) for channel in original_get_channels(self, objective)]
+        if channels:
+            channels[0].camera = 2
+        return channels
+
+    monkeypatch.setattr(LiveController, "get_channels", get_channels_with_secondary_first)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    assert scope.active_camera_id == 2
+    combo = win.liveControlWidget.dropdown_triggerManu
     assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
 
 

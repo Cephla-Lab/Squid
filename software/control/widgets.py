@@ -4111,6 +4111,11 @@ class LiveControlWidget(QFrame):
         if self.currentConfiguration:
             self.liveController.set_microscope_mode(self.currentConfiguration)
             self.update_ui_for_mode(self.currentConfiguration)
+            # set_microscope_mode may have switched the active camera (the startup channel
+            # can be bound to a non-primary one). The dropdown and exposure range built
+            # above describe the pre-switch camera, and the GUI's camera-change listener
+            # is not wired until make_connections, so sync them here.
+            self.on_active_camera_changed(self.liveController.microscope.active_camera_id)
 
         # Wire 'Apply in Live' checkbox enable state to laser AF reference availability.
         laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
