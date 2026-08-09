@@ -95,17 +95,29 @@ panel shows a notice listing the dropped channels (`Not acquired (camera unavail
   dropdown offers Software (and Continuous, if recording is enabled) only. Each camera
   **remembers its own trigger mode**: switch to the color camera and back, and the primary
   returns to Hardware Trigger.
-- **Misconfiguration to avoid:** a primary camera with `hardware_trigger: false` combined
-  with `DEFAULT_TRIGGER_MODE = Hardware Trigger` in the INI. The requested mode cannot be
-  offered; the software logs a warning and clamps to Software Trigger at startup (which
-  also issues one MCU trigger-mode command during widget construction). Fix one of the two
-  settings.
+- **Misconfiguration that crashes startup:** a primary camera with
+  `hardware_trigger: false` combined with `DEFAULT_TRIGGER_MODE = Hardware Trigger` in the
+  INI. Startup applies the INI default trigger mode to the active (primary) camera, and a
+  camera built without a hardware-trigger function cannot enter that mode, so the
+  application **aborts before the window appears** with:
+
+  ```
+  ValueError: Cannot set HARDWARE_TRIGGER camera acquisition mode without a hw_trigger_fn.
+  You must provide one when constructing the camera.
+  ```
+
+  Nothing catches this — there is no warning and no fallback. Fix it in configuration:
+  either make the hardware-wired camera `id: 1` in `cameras.yaml`, or set the INI default
+  trigger mode to Software Trigger. (Clamping gracefully at startup, the way the trigger
+  dropdown already clamps on a runtime camera switch, would be a reasonable future
+  improvement — it is **not** current behavior.)
 - **Camera settings tabs:** each camera gets its own settings tab, labeled with its
   `cameras.yaml` name (`Main Camera`, `Side Camera`) instead of the single `Camera` tab.
   Each tab talks to its own camera.
 - **Settings cache:** `cache/camera_settings.yaml` is keyed by serial number, so binning
-  and pixel format are remembered per camera. A legacy flat cache file migrates
-  automatically as the primary camera's settings.
+  and pixel format are remembered per camera. A legacy flat cache file (no `cameras:` key)
+  is still read, and applies to *every* camera that asks for it until each writes its own
+  per-serial entry on the next shutdown.
 - Switching cameras also re-clamps the exposure spinbox to the new camera's limits and
   redraws the navigation viewer's FOV rectangle (sensor size and pixel size differ per
   camera).
@@ -126,30 +138,45 @@ by the run. This happens on the GUI **Start** path with saving enabled (it rides
 the disk-space estimate). Runs that skip saving, plus snap, fluidics and headless paths,
 skip the warm-up — the same as single-camera behavior today.
 
-### File format guidance for mixed mono + color runs
+### File format guidance for runs that mix cameras
 
-| Saving option | Mixed mono + color |
+| Saving option | Channels spanning cameras with different frame geometry |
 |---|---|
 | **Individual images** (default) | **Use this.** Each frame is its own file, so shapes and dtypes may differ freely. |
-| **OME-TIFF** | **Not supported.** The OME-TIFF writer is 2D-grayscale-only and raises `NotImplementedError: OME-TIFF saving currently supports 2D grayscale images only` on an RGB frame. |
-| **Zarr v3** | **Blocked** for mixed frame geometry (see below). |
+| **OME-TIFF** | **Not supported.** Every channel in a run must produce the same frame shape (see below). |
+| **Zarr v3** | **Blocked** by the Start guard for mixed frame geometry (see below). |
 | **Multi-page TIFF** | Not blocked, but not exercised by this feature — prefer individual images. |
+
+**OME-TIFF requires every selected channel to produce the same frame shape.** One stack
+file is opened per region + FOV, and its shape and dtype are fixed by the first plane
+written, so:
+
+- **RGB is ruled out entirely** — the writer is 2D-grayscale-only and raises
+  `NotImplementedError: OME-TIFF saving currently supports 2D grayscale images only`.
+- **Two mono cameras of different Y×X also fail** — the second write raises
+  `ValueError: Image dimensions do not match existing OME memmap stack`.
+- **Two mono cameras of matching Y×X but different bit depth are silently re-cast** to the
+  first plane's dtype (`.astype()`), with no error and no log line. This one corrupts data
+  quietly rather than failing, so do not rely on OME-TIFF to catch it.
+
+For **any** camera mismatch — mono + color, or mismatched mono — use **individual images**.
 
 A **Zarr** store allocates one uniform array per region/FOV: shape and dtype are fixed by
 the first frame written, and a single `pixel_size_um` is recorded. So when the file saving
 option is Zarr **and** the checked channels span cameras that differ in frame size,
 color-ness, storage bit depth or binned pixel size, the multipoint panel shows a persistent
-red warning and **disables Start** until you switch the format, uncheck one camera's
-channels, or make the cameras match via binning/crop. Two cameras with *identical* geometry
-may still use Zarr.
+red warning and **disables Start** until you switch to individual images, uncheck one
+camera's channels, or make the cameras match via binning/crop. Two cameras with *identical*
+geometry may still use Zarr.
 
 The same check runs at acquisition start as a backstop for headless/MCP runs, which bypass
 the widget: the run fails fast with the same message. A selection containing an unavailable
 camera's channel is rejected the same way, naming the channels.
 
 > **Note:** that warning's suggested remedy ("switch the file saving option to OME-TIFF")
-> only holds when no color camera is involved — OME-TIFF *can* hold mono frames of
-> differing shapes, but not RGB. For a **mono + color** mix, use **individual images**.
+> is misleading. OME-TIFF cannot hold this selection either — the geometry differences the
+> guard rejects (frame size, color-ness, bit depth) are exactly the ones OME-TIFF fails or
+> silently mis-casts on. Use **individual images** instead.
 
 Zarr remains fully valid — and selectable — for single-camera runs.
 
