@@ -240,3 +240,49 @@ class TestRoundTrip:
             assert settings is not None
             assert settings.binning == (2, 2)
             assert settings.pixel_format is None
+
+
+def _sim_with_serial(serial):
+    import squid.config
+    from squid.camera.utils import SimulatedCamera
+
+    config = squid.config.get_camera_config().model_copy(update={"serial_number": serial})
+    return SimulatedCamera(config, hw_trigger_fn=None, hw_set_strobe_delay_ms_fn=None)
+
+
+def test_multi_camera_round_trip(tmp_path):
+    from squid.camera.settings_cache import load_camera_settings, save_all_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    cam1, cam2 = _sim_with_serial("SN1"), _sim_with_serial("SN2")
+    cam1.set_binning(2, 2)
+    cam2.set_binning(1, 1)
+    save_all_camera_settings({1: cam1, 2: cam2}, cache_path=cache)
+
+    s1 = load_camera_settings(serial="SN1", cache_path=cache)
+    s2 = load_camera_settings(serial="SN2", cache_path=cache)
+    assert s1.binning == (2, 2)
+    assert s2.binning == (1, 1)
+    assert load_camera_settings(serial="SN-UNKNOWN", cache_path=cache) is None
+
+
+def test_legacy_flat_file_readable_for_any_serial(tmp_path):
+    from squid.camera.settings_cache import load_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    cache.write_text("binning: [3, 3]\npixel_format: MONO16\n")
+    settings = load_camera_settings(serial="SN1", cache_path=cache)
+    assert settings.binning == (3, 3)
+    assert settings.pixel_format == "MONO16"
+    # And with no serial (single-camera call sites)
+    assert load_camera_settings(cache_path=cache).binning == (3, 3)
+
+
+def test_none_serial_reads_default_key(tmp_path):
+    from squid.camera.settings_cache import load_camera_settings, save_all_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    cam = _sim_with_serial(None)  # INI-only camera without serial
+    cam.set_binning(2, 2)
+    save_all_camera_settings({1: cam}, cache_path=cache)
+    assert load_camera_settings(cache_path=cache).binning == (2, 2)

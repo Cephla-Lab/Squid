@@ -922,16 +922,19 @@ class HighContentScreeningGui(QMainWindow):
 
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
+        # Settings are per-camera identity state, so this widget drives the primary
+        # concrete camera, not the facade (which would retarget on a camera switch).
+        primary_camera = self.microscope.cameras[PRIMARY_CAMERA_ID]
         if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                self.camera,
+                primary_camera,
                 include_gain_exposure_time=False,
                 include_camera_temperature_setting=True,
                 include_camera_auto_wb_setting=False,
             )
         else:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                self.camera,
+                primary_camera,
                 include_gain_exposure_time=False,
                 include_camera_temperature_setting=False,
                 include_camera_auto_wb_setting=True,
@@ -1093,32 +1096,38 @@ class HighContentScreeningGui(QMainWindow):
         self.setupCameraTabWidget()
 
     def _restore_cached_camera_settings(self) -> None:
-        """Restore cached camera settings from disk and update UI widgets.
+        """Restore each camera's cached settings from disk and update UI widgets.
 
-        Applies both hardware settings (via camera API) and synchronizes the UI
-        dropdown widgets. Silently returns if no cached settings exist.
+        Settings are cached per camera serial number, so every concrete camera is
+        restored from its own entry. Only the primary camera's dropdowns are synced -
+        the other cameras' settings widgets are built later and read live camera
+        state. Cameras with no cached entry keep their configured defaults.
         Errors are logged but do not prevent application startup.
         """
-        cached_settings = squid.camera.settings_cache.load_camera_settings()
-        if not cached_settings:
-            return
-
-        binning_restored = self._restore_binning(cached_settings.binning)
-        pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
-
-        if binning_restored or pixel_format_restored:
-            self.log.info(
-                f"Restored camera settings: binning={cached_settings.binning}, "
-                f"pixel_format={cached_settings.pixel_format}"
+        for camera_id, camera in self.microscope.cameras.items():
+            sync_widget = camera_id == PRIMARY_CAMERA_ID
+            cached_settings = squid.camera.settings_cache.load_camera_settings(
+                serial=getattr(camera._config, "serial_number", None)
             )
+            if not cached_settings:
+                continue
 
-    def _restore_binning(self, binning: Tuple[int, int]) -> bool:
-        """Apply binning setting to camera and sync UI dropdown.
+            binning_restored = self._restore_binning(camera, cached_settings.binning, sync_widget)
+            pixel_format_restored = self._restore_pixel_format(camera, cached_settings.pixel_format, sync_widget)
+
+            if binning_restored or pixel_format_restored:
+                self.log.info(
+                    f"Restored camera {camera_id} settings: binning={cached_settings.binning}, "
+                    f"pixel_format={cached_settings.pixel_format}"
+                )
+
+    def _restore_binning(self, camera: AbstractCamera, binning: Tuple[int, int], sync_widget: bool) -> bool:
+        """Apply binning setting to the given camera, optionally syncing the UI dropdown.
 
         Returns True if successfully applied, False otherwise.
         """
         try:
-            self.camera.set_binning(*binning)
+            camera.set_binning(*binning)
         except ValueError as e:
             self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
             return False
@@ -1126,14 +1135,15 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Camera error while restoring binning settings: {e}")
             return False
 
-        binning_text = f"{binning[0]}x{binning[1]}"
-        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
-        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
-        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+        if sync_widget:
+            binning_text = f"{binning[0]}x{binning[1]}"
+            self.cameraSettingWidget.dropdown_binning.blockSignals(True)
+            self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+            self.cameraSettingWidget.dropdown_binning.blockSignals(False)
         return True
 
-    def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
-        """Apply pixel format setting to camera and sync UI dropdown.
+    def _restore_pixel_format(self, camera: AbstractCamera, pixel_format_str: Optional[str], sync_widget: bool) -> bool:
+        """Apply pixel format setting to the given camera, optionally syncing the UI dropdown.
 
         Returns True if successfully applied, False otherwise.
         """
@@ -1147,7 +1157,7 @@ class HighContentScreeningGui(QMainWindow):
             return False
 
         try:
-            self.camera.set_pixel_format(pixel_format)
+            camera.set_pixel_format(pixel_format)
         except ValueError as e:
             self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
             return False
@@ -1155,9 +1165,10 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Camera error while restoring pixel format settings: {e}")
             return False
 
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
-        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        if sync_widget:
+            self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
+            self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
+            self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
         return True
 
     def setupImageDisplayTabs(self):
@@ -2800,7 +2811,7 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
         try:
-            squid.camera.settings_cache.save_camera_settings(self.camera)
+            squid.camera.settings_cache.save_all_camera_settings(self.microscope.cameras)
         except Exception:
             if for_restart:
                 self.log.exception(f"Error saving camera settings during {context}")
