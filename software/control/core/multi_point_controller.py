@@ -17,7 +17,13 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    AcquisitionParameters,
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    get_camera_geometry_mismatch,
+    get_unavailable_camera_channels,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -698,6 +704,10 @@ class MultiPointController:
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
             return
+        # Multi-camera backstop for entry points with no Start button to disable (TCP
+        # control server, scripts). The multipoint widgets refuse these selections up
+        # front; raising here (rather than returning) tells a headless caller why.
+        self._raise_on_incompatible_camera_selection()
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -1072,6 +1082,32 @@ class MultiPointController:
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def _raise_on_incompatible_camera_selection(self) -> None:
+        """Reject a channel selection the hardware or the file format cannot deliver.
+
+        Two cases, both fatal for the run: a selected channel bound to a camera that never
+        opened (it would silently be imaged on whichever camera is active), and a Zarr run
+        whose selection spans cameras with different frame geometry (one region is one
+        uniform array). No-ops on single-camera systems.
+
+        Signals finished before raising — same as the validate_acquisition_settings path
+        above — so a GUI that already disabled itself for this run is restored.
+        """
+        problem = None
+        unavailable = get_unavailable_camera_channels(self.selected_configurations, self.microscope.cameras)
+        if unavailable:
+            problem = (
+                f"Cannot start acquisition: channels {unavailable} are bound to a camera that is not "
+                "available (declared in cameras.yaml but failed to open, or unknown camera id)."
+            )
+        elif control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            problem = get_camera_geometry_mismatch(self.selected_configurations, self.microscope.cameras)
+        if problem is None:
+            return
+        self._log.error(problem)
+        self.callbacks.signal_acquisition_finished()
+        raise ValueError(problem)
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""

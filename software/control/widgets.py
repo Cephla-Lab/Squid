@@ -1078,6 +1078,64 @@ class _ApplyChannelOffsetMixin:
         self.multipointController.set_apply_channel_offset(checked)
 
 
+class _MultiCameraGuardMixin:
+    """Mixin that blocks Start while the selected channels span cameras that cannot be
+    acquired together (unavailable camera, or mixed frame geometry under Zarr).
+
+    Mirrors MultiPointController's headless backstop so the conflict is visible before the
+    user presses Start, instead of surfacing as an exception at acquisition start.
+
+    Host widgets call ``_create_multi_camera_warning_label()`` in add_components, place
+    ``self.label_multiCameraWarning`` under their channel list, and must provide
+    ``list_configurations``, ``btn_startAcquisition``, ``objectiveStore`` and
+    ``_guard_live_controller()``. On single-camera systems the checks never fire.
+    """
+
+    def _create_multi_camera_warning_label(self):
+        self.label_multiCameraWarning = QLabel("")
+        self.label_multiCameraWarning.setWordWrap(True)
+        self.label_multiCameraWarning.setStyleSheet("color: #B00020; font-weight: bold;")
+        self.label_multiCameraWarning.setVisible(False)
+        # Tracks whether *this* guard is the one holding Start disabled, so clearing the
+        # warning never re-enables a button some other owner disabled (e.g. the stage's
+        # loading-position lock in gui_hcs.connectSlidePositionController).
+        self._multi_camera_block_active = False
+
+    def _guard_live_controller(self):
+        """The LiveController whose microscope/channels the guard inspects."""
+        raise NotImplementedError
+
+    def _update_multi_camera_guard(self):
+        from control.core import multi_point_utils
+
+        live_controller = self._guard_live_controller()
+        microscope = live_controller.microscope
+        selected_names = [(item.data(Qt.UserRole) or item.text()) for item in self.list_configurations.selectedItems()]
+        channels = [
+            ch
+            for ch in live_controller.get_channels(self.objectiveStore.current_objective)
+            if ch.name in selected_names
+        ]
+        problems = []
+        unavailable = multi_point_utils.get_unavailable_camera_channels(channels, microscope.cameras)
+        if unavailable:
+            problems.append(f"Channels unavailable (camera missing): {', '.join(unavailable)}.")
+        if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            mismatch = multi_point_utils.get_camera_geometry_mismatch(channels, microscope.cameras)
+            if mismatch:
+                problems.append(mismatch)
+        if problems:
+            self.label_multiCameraWarning.setText(" ".join(problems))
+            self.label_multiCameraWarning.setVisible(True)
+            self._multi_camera_block_active = True
+            self.btn_startAcquisition.setEnabled(False)
+        else:
+            self.label_multiCameraWarning.setVisible(False)
+            if self._multi_camera_block_active:
+                self._multi_camera_block_active = False
+                self.btn_startAcquisition.setEnabled(True)
+
+
 class AcquisitionYAMLMismatchDialog(QDialog):
     """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
 
@@ -5881,7 +5939,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _MultiCameraGuardMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -5921,6 +5979,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.add_components()
         self.setup_layout()
         self.setup_connections()
+        self._update_multi_camera_guard()  # cached channel selection may already conflict
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
@@ -6078,6 +6137,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             cache_key="flexible",
             decorate=_make_channel_decorator(lambda: self.multipointController.liveController),
         )
+        self._create_multi_camera_warning_label()
 
         self.checkbox_withAutofocus = QCheckBox("Contrast AF")
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
@@ -6274,9 +6334,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
-        grid_config = QHBoxLayout()
-        grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        config_row = QHBoxLayout()
+        config_row.addWidget(self.list_configurations)
+        config_row.addSpacerItem(edge_spacer)
+
+        grid_config = QVBoxLayout()
+        grid_config.addLayout(config_row)
+        grid_config.addWidget(self.label_multiCameraWarning)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -6349,6 +6413,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        self.list_configurations.itemSelectionChanged.connect(self._update_multi_camera_guard)
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
@@ -6632,6 +6697,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     def refresh_channel_list(self):
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
+        self._update_multi_camera_guard()
+
+    def _guard_live_controller(self):
+        return self.multipointController.liveController
 
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
@@ -7187,6 +7256,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
+        self._update_multi_camera_guard()  # a camera conflict still keeps Start disabled
 
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
@@ -7286,6 +7356,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
 
+            # The channel selection changed with the list's signals blocked, so re-run the
+            # guard by hand.
+            self._update_multi_camera_guard()
+
     def _load_positions(self, positions):
         """Load positions from YAML into the location list."""
         # Clear existing locations
@@ -7351,7 +7425,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _MultiCameraGuardMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -7438,6 +7512,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self._loading_from_cache = False
 
         self.add_components()
+        self._update_multi_camera_guard()  # cached channel selection may already conflict
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
 
@@ -7555,6 +7630,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             cache_key="wellplate",
             decorate=_make_channel_decorator(lambda: self.liveController),
         )
+        self._create_multi_camera_warning_label()
 
         # Add a combo box for shape selection
         self.combobox_shape = QComboBox()
@@ -7810,6 +7886,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Configuration list
         grid.addWidget(self.list_configurations, 2, 0)
+        grid.addWidget(self.label_multiCameraWarning, 3, 0, 1, 3)  # Span full row, under the list
 
         # Options and Start button
         options_layout = QVBoxLayout()
@@ -7898,6 +7975,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        self.list_configurations.itemSelectionChanged.connect(self._update_multi_camera_guard)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -9188,6 +9266,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
+        self._update_multi_camera_guard()  # a camera conflict still keeps Start disabled
 
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
@@ -9239,6 +9318,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def refresh_channel_list(self):
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
+        self._update_multi_camera_guard()
+
+    def _guard_live_controller(self):
+        return self.liveController
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -9505,6 +9588,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # The channel selection changed with the list's signals blocked, so re-run the
+            # guard by hand.
+            self._update_multi_camera_guard()
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

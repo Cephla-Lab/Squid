@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
+import control._def
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.models import AcquisitionChannel
-from squid.abc import CameraFrame
+from squid.abc import AbstractCamera, CameraFrame
+from squid.config import CameraPixelFormat
 
 if TYPE_CHECKING:
     from control.slack_notifier import TimepointStats, AcquisitionStats
@@ -147,3 +149,72 @@ class MultiPointControllerFunctions:
     # The waiting callback receives the list of channel keys it's waiting on (e.g. ["470", "55x"]).
     signal_laser_engine_waiting: Callable[[List[str]], None] = lambda *a, **kw: None
     signal_laser_engine_ready: Callable[[], None] = lambda *a, **kw: None
+
+
+# ---------------------------------------------------------------------------------------
+# Multi-camera selection checks
+#
+# Pure functions (no Qt, no controller state) so the multipoint widgets can use them to
+# disable Start and MultiPointController can use them as the headless backstop.
+# ---------------------------------------------------------------------------------------
+
+
+def _channel_camera_id(channel) -> int:
+    """The camera a channel images on. A null `camera` means the primary camera."""
+    return channel.camera if getattr(channel, "camera", None) is not None else control._def.PRIMARY_CAMERA_ID
+
+
+def get_unavailable_camera_channels(selected_channels, cameras: Dict[int, AbstractCamera]) -> List[str]:
+    """Names of selected channels whose camera id is not an available (opened) camera.
+
+    Such a channel cannot be imaged: LiveController.set_microscope_mode logs the failed
+    switch and keeps the current camera, so the channel would silently be captured on the
+    wrong sensor.
+    """
+    return [ch.name for ch in selected_channels if _channel_camera_id(ch) not in cameras]
+
+
+def _camera_frame_geometry(camera: AbstractCamera) -> Tuple[int, int, bool, float]:
+    """(width, height, is_color, pixel_size_um) of the frames this camera delivers.
+
+    get_crop_size() is None on an axis with no configured crop, and crop_image() clamps a
+    crop larger than the frame, so the delivered size is the smaller of crop and
+    resolution (both of which already account for binning). Comparing crop alone would
+    make every uncropped camera look identical regardless of sensor size.
+    """
+    crop_width, crop_height = camera.get_crop_size()
+    resolution_width, resolution_height = camera.get_resolution()
+    return (
+        min(crop_width, resolution_width) if crop_width else resolution_width,
+        min(crop_height, resolution_height) if crop_height else resolution_height,
+        CameraPixelFormat.is_color_format(camera.get_pixel_format()),
+        round(camera.get_pixel_size_binned_um(), 4),
+    )
+
+
+def get_camera_geometry_mismatch(selected_channels, cameras: Dict[int, AbstractCamera]) -> Optional[str]:
+    """Check whether the selected channels' cameras produce interchangeable frames.
+
+    Zarr stores one uniform array per region/FOV (shape+dtype fixed by the first frame,
+    single pixel_size_um), so a mixed-camera selection is only Zarr-compatible when every
+    used camera matches in frame size, color-ness, and binned pixel size. Returns None when
+    compatible, else a user-facing message.
+    """
+    geometry_by_camera = {}
+    for channel in selected_channels:
+        camera_id = _channel_camera_id(channel)
+        camera = cameras.get(camera_id)
+        if camera is None:
+            continue  # unavailable cameras are reported by get_unavailable_camera_channels
+        geometry_by_camera[camera_id] = _camera_frame_geometry(camera)
+    if len(set(geometry_by_camera.values())) <= 1:
+        return None
+    details = "; ".join(
+        f"camera {camera_id}: {width}x{height} px, {'color' if is_color else 'mono'}, {pixel_um} um/px"
+        for camera_id, (width, height, is_color, pixel_um) in sorted(geometry_by_camera.items())
+    )
+    return (
+        "Selected channels span cameras with different frame geometry "
+        f"({details}). This selection cannot be saved as Zarr — switch the file saving option "
+        "to OME-TIFF, or make the cameras match via binning/crop, or select channels from one camera."
+    )
