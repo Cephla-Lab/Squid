@@ -1,11 +1,13 @@
 import os
+from typing import Callable, Optional, Tuple
 
 import yaml
 from qtpy.QtCore import QEvent, QItemSelectionModel, QObject, QRect, Qt, QTimer
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtGui import QColor, QIcon, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QListWidgetItem,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -16,6 +18,14 @@ import squid.logging
 _log = squid.logging.get_logger(__name__)
 
 _CACHE_PATH = "cache/channel_sequence.yaml"
+
+_UNAVAILABLE_CAMERA_TOOLTIP = "This channel's camera is declared in cameras.yaml but is not available."
+
+
+def _item_name(item):
+    """Channel identity: the bare name stored in Qt.UserRole (decorated lists),
+    with a text fallback for undecorated lists."""
+    return item.data(Qt.UserRole) or item.text()
 
 
 def display_order(included_order, config_order):
@@ -150,7 +160,10 @@ class ChannelOrderDelegate(QStyledItemDelegate):
 
         painter.save()
         selected = bool(opt.state & QStyle.State_Selected)
-        text_pen = opt.palette.color(QPalette.HighlightedText if selected else QPalette.Text)
+        # Disabled rows (channel's camera unavailable) draw with the Disabled
+        # palette group so they actually read as greyed out.
+        color_group = QPalette.Normal if opt.state & QStyle.State_Enabled else QPalette.Disabled
+        text_pen = opt.palette.color(color_group, QPalette.HighlightedText if selected else QPalette.Text)
         painter.setPen(text_pen)
         name_rect = QRect(text_rect)
         name_rect.setLeft(text_rect.left() + gutter)
@@ -183,7 +196,8 @@ class ChannelOrderDelegate(QStyledItemDelegate):
                 up_rect, down_rect = self._arrow_rects(option.rect)
                 if up_rect.contains(pos) or down_rect.contains(pos):
                     if event.type() == QEvent.MouseButtonRelease:
-                        name = index.data()
+                        # Identity is the bare name in UserRole; display text may be decorated.
+                        name = index.data(Qt.UserRole) or index.data()
                         if up_rect.contains(pos):
                             self._controller.move_up(name)
                         else:
@@ -197,14 +211,29 @@ class ChannelSequenceController(QObject):
     acquisition sequence: selected channels form an ordered block at the top,
     reordered with the per-row up/down controls drawn by ChannelOrderDelegate
     (which call move_up/move_down); `included_order` is the single source of
-    truth. Persists to a per-widget cache. Parent it to the list widget."""
+    truth. Persists to a per-widget cache. Parent it to the list widget.
 
-    def __init__(self, list_widget, get_names, cache_key, cache_path=_CACHE_PATH):
+    Items store the bare channel name in Qt.UserRole (identity); the visible
+    text/icon may be decorated via the optional `decorate` hook, which maps a
+    channel name to (label, icon, enabled). `enabled=False` marks a channel
+    whose camera is declared but unavailable: the row is greyed out (not
+    hidden), unselectable, and excluded from ordered_selected_names()."""
+
+    def __init__(
+        self,
+        list_widget,
+        get_names,
+        cache_key,
+        cache_path=_CACHE_PATH,
+        decorate: Optional[Callable[[str], Tuple[str, Optional[QIcon], bool]]] = None,
+    ):
         super().__init__(list_widget)
         self._list = list_widget
         self._get_names = get_names
         self._cache_key = cache_key
         self._cache_path = cache_path
+        self._decorate = decorate
+        self._disabled_names = set()
         self._suppress = False
         # Owned single-shot timer for the deferred selection rebuild. Parenting
         # it to the controller (itself parented to the list) means it is
@@ -243,8 +272,10 @@ class ChannelSequenceController(QObject):
     def ordered_selected_names(self):
         # Pure read: `_included_order` is updated synchronously on selection, so
         # this is always correct even while a visual rebuild is still pending.
+        # Channels whose camera is unavailable (greyed out) are not acquirable,
+        # so they are excluded here even if a cached sequence includes them.
         config_set = set(self._config_order())
-        return [n for n in self._included_order if n in config_set]
+        return [n for n in self._included_order if n in config_set and n not in self._disabled_names]
 
     def set_included_order(self, names):
         self._included_order = reconcile_included(list(names), self._config_order())
@@ -263,23 +294,35 @@ class ChannelSequenceController(QObject):
         # context that has already blocked the list's signals (e.g. YAML drop).
         was_blocked = self._list.blockSignals(True)
         current = self._list.currentItem()
-        current_name = current.text() if current is not None else None
+        current_name = _item_name(current) if current is not None else None
         try:
             config_order = self._config_order()
             order = display_order(self._included_order, config_order)
             included_set = set(reconcile_included(self._included_order, config_order))
             self._list.clear()
+            self._disabled_names = set()
             for name in order:
-                self._list.addItem(name)
+                item = QListWidgetItem(name)
+                item.setData(Qt.UserRole, name)  # identity: always the bare channel name
+                if self._decorate is not None:
+                    label, icon, enabled = self._decorate(name)
+                    item.setText(label)
+                    if icon is not None:
+                        item.setIcon(icon)
+                    if not enabled:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+                        item.setToolTip(_UNAVAILABLE_CAMERA_TOOLTIP)
+                        self._disabled_names.add(name)
+                self._list.addItem(item)
             for i in range(self._list.count()):
                 item = self._list.item(i)
-                if item.text() in included_set:
+                if _item_name(item) in included_set and item.flags() & Qt.ItemIsSelectable:
                     item.setSelected(True)
             # Restore the focused (current) row without disturbing the selection,
             # so repeated up/down presses keep acting on the same channel.
             if current_name is not None:
                 for i in range(self._list.count()):
-                    if self._list.item(i).text() == current_name:
+                    if _item_name(self._list.item(i)) == current_name:
                         self._list.setCurrentRow(i, QItemSelectionModel.NoUpdate)
                         break
         finally:
@@ -295,7 +338,7 @@ class ChannelSequenceController(QObject):
         # turn: restructuring the list inside its own itemSelectionChanged
         # handler (during mouse processing) is unsafe, and deferring also
         # coalesces rapid selections.
-        selected = [i.text() for i in self._list.selectedItems()]
+        selected = [_item_name(i) for i in self._list.selectedItems()]
         selected_set = set(selected)
         new_order = [n for n in self._included_order if n in selected_set]
         existing = set(new_order)
@@ -336,10 +379,21 @@ class ChannelSequenceController(QObject):
         save_cached_order(self._cache_key, self._included_order, self._cache_path)
 
 
-def enable_channel_sequence(list_widget, get_names, cache_key, cache_path=_CACHE_PATH):
+def enable_channel_sequence(
+    list_widget,
+    get_names,
+    cache_key,
+    cache_path=_CACHE_PATH,
+    decorate: Optional[Callable[[str], Tuple[str, Optional[QIcon], bool]]] = None,
+):
     """Turn a channel QListWidget into an ordered acquisition sequence with
     per-row up/down reorder controls. `get_names` returns the channel names in
     config order. Returns the controller (store it on the widget; read
     ordered_selected_names() for acquisition, call set_included_order() to
-    restore a saved sequence)."""
-    return ChannelSequenceController(list_widget, get_names, cache_key, cache_path)
+    restore a saved sequence).
+
+    `decorate`, when given, maps a channel name to (label, icon, enabled) for
+    display: the label/icon are decoration only (identity stays the bare name
+    in Qt.UserRole), and enabled=False greys out a channel whose camera is
+    declared but unavailable."""
+    return ChannelSequenceController(list_widget, get_names, cache_key, cache_path, decorate=decorate)

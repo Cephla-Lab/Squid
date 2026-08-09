@@ -304,3 +304,76 @@ class TestDragSelectDisabled:
         lw, ctrl = _controller(qtbot, ["a", "b", "c"], path=str(tmp_path / "c.yaml"))
         hover = QMouseEvent(QEvent.MouseMove, QPointF(5, 5), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
         assert ctrl.eventFilter(lw.viewport(), hover) is False
+
+
+def _decorated_controller(qtbot, names, decorate, path):
+    lw = QListWidget()
+    qtbot.addWidget(lw)
+    ctrl = enable_channel_sequence(lw, lambda: list(names), "flexible", cache_path=path, decorate=decorate)
+    return lw, ctrl
+
+
+def _suffix_decorator(disabled=()):
+    """Decorate every channel as '<name> — Cam'; names in `disabled` are unavailable."""
+
+    def decorate(name):
+        return f"{name} — Cam", None, name not in disabled
+
+    return decorate
+
+
+class TestDecoration:
+    """Task 9 invariant: item text may be decorated, but identity is the bare
+    channel name stored in Qt.UserRole; ordering/persistence stay name-based."""
+
+    def test_items_store_bare_name_in_userrole(self, qtbot, tmp_path):
+        lw, ctrl = _controller(qtbot, ["a", "b"], path=str(tmp_path / "c.yaml"))
+        assert [lw.item(i).data(Qt.UserRole) for i in range(lw.count())] == ["a", "b"]
+
+    def test_decorated_text_but_bare_name_identity(self, qtbot, tmp_path):
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b"], _suffix_decorator(), str(tmp_path / "c.yaml"))
+        assert _rows(lw) == ["a — Cam", "b — Cam"]
+        assert [lw.item(i).data(Qt.UserRole) for i in range(lw.count())] == ["a", "b"]
+
+    def test_selection_and_cache_use_bare_names(self, qtbot, tmp_path):
+        path = str(tmp_path / "c.yaml")
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b", "c"], _suffix_decorator(), path)
+        lw.item(1).setSelected(True)  # b
+        lw.item(0).setSelected(True)  # a
+        assert ctrl.ordered_selected_names() == ["b", "a"]
+        assert cs.load_cached_order("flexible", path=path) == ["b", "a"]
+
+    def test_set_included_order_accepts_bare_names_with_decoration(self, qtbot, tmp_path):
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b", "c"], _suffix_decorator(), str(tmp_path / "c.yaml"))
+        ctrl.set_included_order(["c", "a"])
+        assert ctrl.ordered_selected_names() == ["c", "a"]
+        assert _rows(lw)[:2] == ["c — Cam", "a — Cam"]
+
+    def test_arrow_click_reorders_by_bare_name_with_decoration(self, qtbot, tmp_path):
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b", "c"], _suffix_decorator(), str(tmp_path / "c.yaml"))
+        ctrl.set_included_order(["a", "b", "c"])
+        delegate = lw.itemDelegate()
+        opt = QStyleOptionViewItem()
+        opt.rect = QRect(0, 0, 200, 20)
+        row = next(i for i in range(lw.count()) if lw.item(i).data(Qt.UserRole) == "b")
+        index = lw.model().index(row, 0)
+        up_rect, _ = ChannelOrderDelegate._arrow_rects(opt.rect)
+
+        handled = delegate.editorEvent(_release_at(up_rect.center()), lw.model(), opt, index)
+        assert handled
+        assert ctrl.ordered_selected_names() == ["b", "a", "c"]
+
+    def test_unavailable_channel_disabled_with_tooltip(self, qtbot, tmp_path):
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b"], _suffix_decorator(disabled=["b"]), str(tmp_path / "c.yaml"))
+        item_b = next(lw.item(i) for i in range(lw.count()) if lw.item(i).data(Qt.UserRole) == "b")
+        assert not item_b.flags() & Qt.ItemIsEnabled
+        assert not item_b.flags() & Qt.ItemIsSelectable
+        assert item_b.toolTip() != ""
+
+    def test_unavailable_channel_excluded_from_ordered_names(self, qtbot, tmp_path):
+        path = str(tmp_path / "c.yaml")
+        cs.save_cached_order("flexible", ["b", "a"], path=path)  # b was included last session
+        lw, ctrl = _decorated_controller(qtbot, ["a", "b"], _suffix_decorator(disabled=["b"]), path)
+        assert ctrl.ordered_selected_names() == ["a"]  # b's camera is gone: not acquirable
+        item_b = next(lw.item(i) for i in range(lw.count()) if lw.item(i).data(Qt.UserRole) == "b")
+        assert not item_b.isSelected()

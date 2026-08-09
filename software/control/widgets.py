@@ -73,6 +73,64 @@ def camera_id_from_display(registry, display_text) -> Optional[int]:
     return definition.id if definition is not None else None
 
 
+# Per-camera dot colors for channel lists, indexed by (camera_id - 1). Chosen to be
+# distinguishable on light and dark palettes.
+CAMERA_DOT_COLORS = ["#4C9BD4", "#E0A438", "#7BC47F", "#C57BC4"]
+
+
+def camera_dot_icon(camera_id: int) -> QIcon:
+    """Small filled circle identifying a camera in channel lists."""
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor(CAMERA_DOT_COLORS[(camera_id - 1) % len(CAMERA_DOT_COLORS)]))
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(1, 1, 10, 10)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def channel_display_label(channel, registry) -> str:
+    """Display text for a channel in dropdowns/lists.
+
+    Identity stays the bare channel name (stored in Qt.UserRole); this is decoration only.
+    """
+    if registry is None or len(registry.cameras) <= 1:
+        return channel.name
+    camera_id = channel.camera if channel.camera is not None else control._def.PRIMARY_CAMERA_ID
+    if camera_id == control._def.PRIMARY_CAMERA_ID:
+        return channel.name
+    definition = registry.get_camera_by_id(camera_id)
+    if definition is None:
+        return f"{channel.name} — camera {camera_id} (unavailable)"
+    return f"{channel.name} — {definition.name}"
+
+
+def _make_channel_decorator(live_controller_getter):
+    """Returns a decorate(channel_name) -> (label, icon, enabled) function for channel lists.
+
+    live_controller_getter is a zero-arg callable so the decorator always sees the
+    current controller/microscope state. `enabled` is False when the channel's camera
+    is declared but unavailable (failed to open) — items get greyed out, not hidden.
+    """
+
+    def decorate(channel_name):
+        live_controller = live_controller_getter()
+        microscope = live_controller.microscope
+        registry = microscope.config_repo.get_camera_registry()
+        if registry is None or len(registry.cameras) <= 1:
+            return channel_name, None, True
+        channel = live_controller.get_channel_by_name(microscope.objective_store.current_objective, channel_name)
+        if channel is None:
+            return channel_name, None, True
+        camera_id = channel.camera if channel.camera is not None else control._def.PRIMARY_CAMERA_ID
+        available = camera_id in microscope.cameras
+        return channel_display_label(channel, registry), camera_dot_icon(camera_id), available
+
+    return decorate
+
+
 def error_dialog(message: str, title: str = "Error"):
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
@@ -4073,6 +4131,35 @@ class LiveControlWidget(QFrame):
         self._live_current_z_offset_um: float = 0.0
         self.checkbox_applyOnChannelSwitch.toggled.connect(self._on_apply_in_live_toggled)
 
+    def _channel_registry(self):
+        return self.liveController.microscope.config_repo.get_camera_registry()
+
+    def _multi_camera(self) -> bool:
+        registry = self._channel_registry()
+        return registry is not None and len(registry.cameras) > 1
+
+    def _add_mode_item(self, config):
+        """Add a channel entry: decorated label + camera dot for display, bare
+        channel name in userData (identity). Entries whose camera is declared
+        but unavailable are greyed out."""
+        registry = self._channel_registry()
+        label = channel_display_label(config, registry)
+        if self._multi_camera():
+            camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
+            self.dropdown_modeSelection.addItem(camera_dot_icon(camera_id), label, userData=config.name)
+        else:
+            self.dropdown_modeSelection.addItem(label, userData=config.name)
+        camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
+        if not camera_available:
+            index = self.dropdown_modeSelection.count() - 1
+            item = self.dropdown_modeSelection.model().item(index)
+            item.setEnabled(False)
+
+    def _select_dropdown_entry(self, config_name: str):
+        index = self.dropdown_modeSelection.findData(config_name)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
@@ -4095,8 +4182,9 @@ class LiveControlWidget(QFrame):
 
         self.dropdown_modeSelection = QComboBox()
         for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItems([microscope_configuration.name])
-        self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
+            self._add_mode_item(microscope_configuration)
+        if self.currentConfiguration is not None:
+            self._select_dropdown_entry(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
         self.btn_live = QPushButton("Start Live")
@@ -4195,7 +4283,10 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        # Pass the bare channel name from userData (item text may carry camera decoration).
+        self.dropdown_modeSelection.activated.connect(
+            lambda index: self.select_new_microscope_mode_by_name(self.dropdown_modeSelection.itemData(index))
+        )
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
@@ -4342,7 +4433,7 @@ class LiveControlWidget(QFrame):
         for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = microscope_configuration
-            self.dropdown_modeSelection.addItem(microscope_configuration.name)
+            self._add_mode_item(microscope_configuration)
         self.dropdown_modeSelection.blockSignals(False)
 
         # Update to first configuration
@@ -4365,7 +4456,8 @@ class LiveControlWidget(QFrame):
         try:
             self.is_switching_mode = True
             self.currentConfiguration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if config:
+                self._select_dropdown_entry(config.name)
             if self.currentConfiguration:
                 self.signal_live_configuration.emit(self.currentConfiguration)
 
@@ -5917,6 +6009,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 for ch in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective)
             ],
             cache_key="flexible",
+            decorate=_make_channel_decorator(lambda: self.multipointController.liveController),
         )
 
         self.checkbox_withAutofocus = QCheckBox("Contrast AF")
@@ -7393,6 +7486,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.list_configurations,
             lambda: [ch.name for ch in self.liveController.get_channels(self.objectiveStore.current_objective)],
             cache_key="wellplate",
+            decorate=_make_channel_decorator(lambda: self.liveController),
         )
 
         # Add a combo box for shape selection
@@ -9477,6 +9571,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
                 for ch in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective)
             ],
             cache_key="fluidics",
+            decorate=_make_channel_decorator(lambda: self.multipointController.liveController),
         )
 
         # Reflection AF checkbox
@@ -11539,6 +11634,35 @@ class NapariLiveWidget(QWidget):
         positions = np.linspace(0, 1, len(colors))
         return pg.ColorMap(positions, colors)
 
+    def _channel_registry(self):
+        return self.liveController.microscope.config_repo.get_camera_registry()
+
+    def _multi_camera(self) -> bool:
+        registry = self._channel_registry()
+        return registry is not None and len(registry.cameras) > 1
+
+    def _add_mode_item(self, config):
+        """Add a channel entry: decorated label + camera dot for display, bare
+        channel name in userData (identity). Entries whose camera is declared
+        but unavailable are greyed out."""
+        registry = self._channel_registry()
+        label = channel_display_label(config, registry)
+        if self._multi_camera():
+            camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
+            self.dropdown_modeSelection.addItem(camera_dot_icon(camera_id), label, userData=config.name)
+        else:
+            self.dropdown_modeSelection.addItem(label, userData=config.name)
+        camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
+        if not camera_available:
+            index = self.dropdown_modeSelection.count() - 1
+            item = self.dropdown_modeSelection.model().item(index)
+            item.setEnabled(False)
+
+    def _select_dropdown_entry(self, config_name: str):
+        index = self.dropdown_modeSelection.findData(config_name)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+
     def initControlWidgets(self, show_trigger_options, show_display_options, show_autolevel, autolevel):
         # Initialize histogram widget
         self.pg_image_item = pg.ImageItem()
@@ -11553,8 +11677,9 @@ class NapariLiveWidget(QWidget):
         # Microscope Configuration (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
         for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
+            self._add_mode_item(config)
+        if self.live_configuration is not None:
+            self._select_dropdown_entry(self.live_configuration.name)
         self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_name)
 
         # Live button
@@ -11800,7 +11925,10 @@ class NapariLiveWidget(QWidget):
         )
 
     def select_new_microscope_mode_by_name(self, config_index):
-        config_name = self.dropdown_modeSelection.itemText(config_index)
+        # Bare channel name lives in userData (item text may carry camera decoration).
+        config_name = self.dropdown_modeSelection.itemData(config_index) or self.dropdown_modeSelection.itemText(
+            config_index
+        )
         maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
 
         if not maybe_new_config:
@@ -11814,7 +11942,8 @@ class NapariLiveWidget(QWidget):
         try:
             self.is_switching_mode = True
             self.live_configuration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if config:
+                self._select_dropdown_entry(config.name)
             if self.live_configuration:
                 self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
                 self.entry_analogGain.setValue(self.live_configuration.analog_gain)
@@ -11873,7 +12002,7 @@ class NapariLiveWidget(QWidget):
         for config in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = config
-            self.dropdown_modeSelection.addItem(config.name)
+            self._add_mode_item(config)
         self.dropdown_modeSelection.blockSignals(False)
 
         if self.dropdown_modeSelection.count() > 0 and first_config:
@@ -12353,7 +12482,7 @@ class TrackingControllerWidget(QFrame):
             self.setEnabled_all(False)
             self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                (item.data(Qt.UserRole) or item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
@@ -12384,7 +12513,7 @@ class TrackingControllerWidget(QFrame):
             self.setEnabled_all(False)
             self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                (item.data(Qt.UserRole) or item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
