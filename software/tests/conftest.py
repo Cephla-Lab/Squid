@@ -70,6 +70,32 @@ def _close_quietly(obj, label):
 
 
 @pytest.fixture(autouse=True)
+def isolate_ambient_camera_registry(monkeypatch):
+    """Pin the default-path camera registry to None (the CI truth) during tests.
+
+    machine_configs/cameras.yaml is machine-specific and gitignored; a dev machine may
+    carry a multi-camera file for manual GUI testing. Tests must not depend on it:
+    Microscope.build_from_global_config reads the registry via a default-path
+    ConfigRepository, so without this pin every microscope-building test would flip to
+    a multi-camera facade build on such machines. Repositories constructed with an
+    explicit base_path (e.g. tmp_path in repository tests) are unaffected, and tests
+    that monkeypatch get_camera_registry themselves override this pin (autouse
+    fixtures apply first).
+    """
+    from control.core.config.repository import ConfigRepository
+
+    default_machine_configs_path = ConfigRepository().machine_configs_path
+    original_get_camera_registry = ConfigRepository.get_camera_registry
+
+    def _get_camera_registry(self):
+        if self.machine_configs_path == default_machine_configs_path:
+            return None
+        return original_get_camera_registry(self)
+
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", _get_camera_registry)
+
+
+@pytest.fixture(autouse=True)
 def cleanup_leaked_hardware(monkeypatch):
     """
     Automatically close hardware-simulation objects created during each test.
