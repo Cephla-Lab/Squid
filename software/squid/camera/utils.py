@@ -228,6 +228,8 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         self._pixel_format = pixel_format
+        # Invalidate cached frame so next frame regenerates with the new dtype/channel count
+        self._current_raw_frame = None
 
     @debug_log
     def get_pixel_format(self) -> CameraPixelFormat:
