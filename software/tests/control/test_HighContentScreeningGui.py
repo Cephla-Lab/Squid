@@ -6,6 +6,8 @@ import control.gui_hcs
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
+from control.core.config.repository import ConfigRepository
+from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 
 
 @pytest.fixture
@@ -32,6 +34,59 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     scope_without = control.microscope.Microscope.build_from_global_config(True)
     without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
     qtbot.add_widget(without_piezo)
+
+
+def test_single_camera_gui_has_one_plain_camera_tab(qtbot, confirm_exit_yes):
+    """Single-camera systems must not drift: one tab literally named "Camera", no
+    per-camera extras, and the trigger dropdown offering Software + Hardware."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    labels = [win.cameraTabWidget.tabText(i) for i in range(win.cameraTabWidget.count())]
+    assert labels.count("Camera") == 1
+    assert win.cameraSettingWidgets_extra == {}
+
+    combo = win.liveControlWidget.dropdown_triggerManu
+    options = [combo.itemText(i) for i in range(combo.count())]
+    expected = [control._def.TriggerMode.SOFTWARE, control._def.TriggerMode.HARDWARE]
+    if control.gui_hcs.ENABLE_RECORDING:
+        expected.append(control._def.TriggerMode.CONTINUOUS)
+    assert options == expected
+
+
+def test_multi_camera_gui_names_tabs_from_registry(qtbot, monkeypatch, confirm_exit_yes):
+    """Two cameras: the primary tab takes its cameras.yaml name and each extra camera
+    gets its own settings tab bound to its own concrete camera (never the facade)."""
+    registry = CameraRegistryConfig(
+        cameras=[
+            CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
+            CameraDefinition(name="Side Camera", id=2, serial_number="SIM-2", type="Toupcam", hardware_trigger=False),
+        ]
+    )
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: registry)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    labels = [win.cameraTabWidget.tabText(i) for i in range(win.cameraTabWidget.count())]
+    assert "Main Camera" in labels
+    assert "Side Camera" in labels
+    assert "Camera" not in labels
+    assert list(win.cameraSettingWidgets_extra) == [2]
+    assert win.cameraSettingWidgets_extra[2].camera is scope.cameras[2]
+    assert win.cameraSettingWidget.camera is scope.cameras[control._def.PRIMARY_CAMERA_ID]
+
+    # The trigger dropdown follows the active camera's capability. Camera 2 declares
+    # hardware_trigger: false, so Hardware must disappear once it becomes active.
+    combo = win.liveControlWidget.dropdown_triggerManu
+    assert control._def.TriggerMode.HARDWARE in [combo.itemText(i) for i in range(combo.count())]
+    scope.set_active_camera(2)
+    # The listener hops to the GUI thread via QTimer.singleShot; call the same handler
+    # directly rather than spinning the event loop inside the test.
+    win._on_active_camera_changed(2)
+    assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):

@@ -703,6 +703,8 @@ class HighContentScreeningGui(QMainWindow):
         self.spinningDiskConfocalWidget: Optional[widgets.SpinningDiskConfocalWidget] = None
         self.nl5Wdiget: Optional[NL5Widget] = None
         self.cameraSettingWidget: Optional[widgets.CameraSettingsWidget] = None
+        # Settings widgets for the non-primary cameras of a multi-camera build, keyed by camera id.
+        self.cameraSettingWidgets_extra: Dict[int, widgets.CameraSettingsWidget] = {}
         self.profileWidget: Optional[widgets.ProfileWidget] = None
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
@@ -941,6 +943,21 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         self._restore_cached_camera_settings()
+
+        # Dual-camera: one settings widget per non-primary concrete camera. Each drives
+        # its own camera object (settings are per-camera identity state), so a camera
+        # switch never retargets an already-built widget. Built after the cache restore
+        # so their dropdowns read back the restored binning / pixel format.
+        if self.microscope.has_multiple_cameras():
+            for camera_id, concrete_camera in sorted(self.microscope.cameras.items()):
+                if camera_id == PRIMARY_CAMERA_ID:
+                    continue
+                self.cameraSettingWidgets_extra[camera_id] = widgets.CameraSettingsWidget(
+                    concrete_camera,
+                    include_gain_exposure_time=False,
+                    include_camera_temperature_setting=False,
+                    include_camera_auto_wb_setting=True,
+                )
 
         self.profileWidget = widgets.ProfileWidget(self.microscope.config_repo)
         self.liveControlWidget = widgets.LiveControlWidget(
@@ -1328,6 +1345,14 @@ class HighContentScreeningGui(QMainWindow):
         pos = self.stage.get_pos()
         self.alignmentWidget.set_current_position(pos.x_mm, pos.y_mm)
 
+    @staticmethod
+    def _camera_tab_name(camera_id: int, registry) -> str:
+        """Tab label for a camera settings widget: the cameras.yaml name if it has one."""
+        definition = registry.get_camera_by_id(camera_id) if registry is not None else None
+        if definition is not None and definition.name:
+            return definition.name
+        return f"Camera {camera_id}"
+
     def setupCameraTabWidget(self):
         if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
@@ -1339,7 +1364,15 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
         if self.emission_filter_wheel:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
-        self.cameraTabWidget.addTab(self.cameraSettingWidget, "Camera")
+        # Multi-camera builds label each camera tab with its cameras.yaml name so the
+        # user can tell them apart; single-camera builds keep the plain "Camera" tab.
+        multi_camera = self.microscope.has_multiple_cameras()
+        registry = self.microscope.config_repo.get_camera_registry() if multi_camera else None
+        self.cameraTabWidget.addTab(
+            self.cameraSettingWidget, self._camera_tab_name(PRIMARY_CAMERA_ID, registry) if multi_camera else "Camera"
+        )
+        for camera_id, extra_widget in self.cameraSettingWidgets_extra.items():
+            self.cameraTabWidget.addTab(extra_widget, self._camera_tab_name(camera_id, registry))
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
@@ -1505,6 +1538,13 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
         self.liveControlWidget.update_camera_settings()
+
+        # Dual-camera: refresh GUI state on active-camera switch. The listener fires on
+        # whichever thread called set_active_camera (GUI for live, worker for acquisitions),
+        # so hop to the GUI thread with a queued singleShot (fire-and-forget is fine here).
+        self.microscope.add_camera_change_listener(
+            lambda camera_id: QTimer.singleShot(0, lambda: self._on_active_camera_changed(camera_id))
+        )
 
         self.connectSlidePositionController()
 
@@ -1917,6 +1957,21 @@ class HighContentScreeningGui(QMainWindow):
         box.destroyed.connect(lambda _=None: setattr(self, "_live_warning_box", None))
         self._live_warning_box = box
         box.show()
+
+    def _on_active_camera_changed(self, camera_id: int) -> None:
+        """GUI-thread handler for a Microscope active-camera switch.
+
+        Runs from a queued QTimer.singleShot, so exceptions would be swallowed by Qt -
+        catch and log them here.
+        """
+        try:
+            self.liveControlWidget.on_active_camera_changed(camera_id)
+            if self.napariLiveWidget is not None:
+                self.napariLiveWidget.on_active_camera_changed(camera_id)
+            # Sensor size / pixel size differ per camera, so the FOV rectangle changes.
+            self.navigationViewer.redraw_fov()
+        except Exception:
+            self.log.exception("Error handling active-camera change in GUI")
 
     def _show_laser_engine_dialog(self, channel_keys: list) -> None:
         """Show a non-cancelable modal progress dialog while the worker waits

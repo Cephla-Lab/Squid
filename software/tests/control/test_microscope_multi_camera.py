@@ -163,3 +163,12 @@ def test_set_trigger_mode_updates_memory(two_camera_scope):
     scope.live_controller.set_trigger_mode(TriggerMode.SOFTWARE)
     assert scope.get_stored_trigger_mode(2) == TriggerMode.SOFTWARE
     assert scope.get_stored_trigger_mode(1) == TriggerMode.HARDWARE
+
+
+def test_facade_reports_active_camera_hw_capability(two_camera_scope):
+    """The trigger dropdown asks the facade whether Hardware is offerable, so the
+    facade must report the *active* camera's capability, not the primary's."""
+    scope = two_camera_scope
+    assert scope.camera.supports_hardware_trigger() is True
+    scope.set_active_camera(2)
+    assert scope.camera.supports_hardware_trigger() is False

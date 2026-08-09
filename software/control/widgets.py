@@ -4101,13 +4101,16 @@ class LiveControlWidget(QFrame):
         else:
             self.currentConfiguration = channels[0]
 
+        # flag used to prevent from settings being set by twice - from both mode change slot and value change slot;
+        # another way is to use blockSignals(True). Initialized before add_components because the widget builders
+        # (refresh_trigger_options) already use it.
+        self.is_switching_mode = False
+
         self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         if self.currentConfiguration:
             self.liveController.set_microscope_mode(self.currentConfiguration)
             self.update_ui_for_mode(self.currentConfiguration)
-
-        self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
         # Wire 'Apply in Live' checkbox enable state to laser AF reference availability.
         laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
@@ -4169,16 +4172,48 @@ class LiveControlWidget(QFrame):
             self.dropdown_modeSelection.itemData(index) or self.dropdown_modeSelection.itemText(index)
         )
 
+    def refresh_trigger_options(self):
+        """Repopulate the trigger dropdown for the active camera's capabilities.
+
+        A camera whose trigger line is not wired (cameras.yaml hardware_trigger: false)
+        must not offer Hardware, so the option list is rebuilt on every camera switch
+        and the selection is resynced to the mode the LiveController actually holds.
+        """
+        try:
+            self.is_switching_mode = True
+            self.dropdown_triggerManu.blockSignals(True)
+            self.dropdown_triggerManu.clear()
+            trigger_modes = [TriggerMode.SOFTWARE]
+            if self.camera.supports_hardware_trigger():
+                trigger_modes.append(TriggerMode.HARDWARE)
+            if ENABLE_RECORDING:
+                trigger_modes.append(TriggerMode.CONTINUOUS)
+            self.dropdown_triggerManu.addItems(trigger_modes)
+            self.dropdown_triggerManu.setCurrentText(self.liveController.trigger_mode)
+        finally:
+            self.dropdown_triggerManu.blockSignals(False)
+            self.is_switching_mode = False
+
+    def on_active_camera_changed(self, camera_id: int):
+        """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""
+        self.refresh_trigger_options()
+        # Exposure limits differ per camera; re-clamp the spinbox. Guarded: Qt emits
+        # valueChanged when the held value falls outside the new range, and a clamp
+        # forced by a camera switch must not be persisted as a user edit of the channel.
+        try:
+            self.is_switching_mode = True
+            low, high = self.camera.get_exposure_limits()
+            self.entry_exposureTime.setMinimum(low)
+            self.entry_exposureTime.setMaximum(high)
+        finally:
+            self.is_switching_mode = False
+
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
-        # line 0: trigger mode
+        # line 0: trigger mode (options depend on the active camera - see refresh_trigger_options)
         self.dropdown_triggerManu = QComboBox()
-        trigger_modes = [TriggerMode.SOFTWARE, TriggerMode.HARDWARE]
-        if ENABLE_RECORDING:
-            trigger_modes.append(TriggerMode.CONTINUOUS)
-        self.dropdown_triggerManu.addItems(trigger_modes)
-        self.dropdown_triggerManu.setCurrentText(self.camera.get_acquisition_mode().value)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
+        self.refresh_trigger_options()
 
         # line 1: fps
         self.entry_triggerFPS = QDoubleSpinBox()
@@ -4483,6 +4518,11 @@ class LiveControlWidget(QFrame):
         return float(raw)
 
     def update_trigger_mode(self):
+        # refresh_trigger_options repopulates this dropdown on a camera switch; the
+        # resulting index changes must not be mistaken for a user choice and re-sent
+        # to the MCU on top of the mode set_active_camera already applied.
+        if self.is_switching_mode:
+            return
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
 
     def update_config_exposure_time(self, new_value):
@@ -11747,15 +11787,9 @@ class NapariLiveWidget(QWidget):
             lambda v: self.label_illuminationIntensity.setText(str(v) + "%")
         )
 
-        # Trigger mode
+        # Trigger mode (options depend on the active camera - see refresh_trigger_options)
         self.dropdown_triggerMode = QComboBox()
-        trigger_modes = [
-            ("Software", TriggerMode.SOFTWARE),
-            ("Hardware", TriggerMode.HARDWARE),
-            ("Continuous", TriggerMode.CONTINUOUS),
-        ]
-        for display_name, mode in trigger_modes:
-            self.dropdown_triggerMode.addItem(display_name, mode)
+        self.refresh_trigger_options()
         self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
 
         # Trigger FPS
@@ -12016,7 +12050,45 @@ class NapariLiveWidget(QWidget):
             self.update_ui_for_mode(first_config)
             self.liveController.set_microscope_mode(first_config)
 
+    def refresh_trigger_options(self):
+        """Repopulate the trigger dropdown for the active camera's capabilities.
+
+        A camera whose trigger line is not wired (cameras.yaml hardware_trigger: false)
+        must not offer Hardware, so the option list is rebuilt on every camera switch
+        and the selection is resynced to the mode the LiveController actually holds.
+        """
+        try:
+            self.is_switching_mode = True
+            self.dropdown_triggerMode.blockSignals(True)
+            self.dropdown_triggerMode.clear()
+            trigger_modes = [("Software", TriggerMode.SOFTWARE)]
+            if self.liveController.camera.supports_hardware_trigger():
+                trigger_modes.append(("Hardware", TriggerMode.HARDWARE))
+            trigger_modes.append(("Continuous", TriggerMode.CONTINUOUS))
+            for display_name, mode in trigger_modes:
+                self.dropdown_triggerMode.addItem(display_name, mode)
+            index = self.dropdown_triggerMode.findData(self.liveController.trigger_mode)
+            if index >= 0:
+                self.dropdown_triggerMode.setCurrentIndex(index)
+        finally:
+            self.dropdown_triggerMode.blockSignals(False)
+            self.is_switching_mode = False
+
+    def on_active_camera_changed(self, camera_id: int):
+        """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""
+        self.refresh_trigger_options()
+        # Exposure limits differ per camera; re-clamp the spinbox. Guarded: Qt emits
+        # valueChanged when the held value falls outside the new range, and a clamp
+        # forced by a camera switch must not be persisted as a user edit of the channel.
+        try:
+            self.is_switching_mode = True
+            self.entry_exposureTime.setRange(*self.liveController.camera.get_exposure_limits())
+        finally:
+            self.is_switching_mode = False
+
     def on_trigger_mode_changed(self, index):
+        if self.is_switching_mode:
+            return
         # Get the actual value using user data
         actual_value = self.dropdown_triggerMode.itemData(index)
         print(f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})")
