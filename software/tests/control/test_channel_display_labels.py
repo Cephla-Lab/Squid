@@ -8,6 +8,7 @@ and readers use `item.data(Qt.UserRole) or item.text()`.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from qtpy.QtWidgets import QComboBox
 
 from control.channel_sequence import UNAVAILABLE_CAMERA_TOOLTIP
@@ -15,6 +16,7 @@ from control.models.camera_registry import CameraDefinition, CameraRegistryConfi
 from control.widgets import (
     CAMERA_DOT_COLORS,
     LiveControlWidget,
+    NapariLiveWidget,
     _make_channel_decorator,
     camera_dot_icon,
     channel_display_label,
@@ -124,7 +126,7 @@ class TestMakeChannelDecorator:
 
 
 class _DropdownStub:
-    """LiveControlWidget-shaped stub exposing only what the dropdown helpers use."""
+    """LiveControlWidget-shaped stub borrowing the REAL dropdown helper methods."""
 
     _channel_registry = LiveControlWidget._channel_registry
     _multi_camera = LiveControlWidget._multi_camera
@@ -136,6 +138,17 @@ class _DropdownStub:
         self.liveController = MagicMock()
         self.liveController.microscope.config_repo.get_camera_registry.return_value = registry
         self.liveController.microscope.cameras = {camera_id: object() for camera_id in available_camera_ids}
+
+
+class _NapariDropdownStub(_DropdownStub):
+    """Same stub shape, borrowing NapariLiveWidget's copies of the methods —
+    the two widgets' implementations are meant to stay byte-identical, and
+    binding each class's own methods catches a one-copy edit."""
+
+    _channel_registry = NapariLiveWidget._channel_registry
+    _multi_camera = NapariLiveWidget._multi_camera
+    _add_mode_item = NapariLiveWidget._add_mode_item
+    _select_dropdown_entry = NapariLiveWidget._select_dropdown_entry
 
 
 class TestLiveControlDropdown:
@@ -169,8 +182,9 @@ class TestLiveControlDropdown:
         widget._select_dropdown_entry("nonexistent")  # no-op, keeps selection
         assert widget.dropdown_modeSelection.currentIndex() == 1
 
-    def test_unavailable_camera_entry_is_disabled_with_tooltip(self, qtbot):
-        widget = _DropdownStub(TWO_CAM, available_camera_ids=[1])  # camera 2 failed to open
+    @pytest.mark.parametrize("stub_class", [_DropdownStub, _NapariDropdownStub])
+    def test_unavailable_camera_entry_is_disabled_with_tooltip(self, qtbot, stub_class):
+        widget = stub_class(TWO_CAM, available_camera_ids=[1])  # camera 2 failed to open
         widget._add_mode_item(_Ch("DAPI", camera=None))
         widget._add_mode_item(_Ch("BF Color", camera=2))
         model = widget.dropdown_modeSelection.model()
@@ -180,36 +194,77 @@ class TestLiveControlDropdown:
         assert model.item(1).toolTip() == UNAVAILABLE_CAMERA_TOOLTIP
 
 
+class _LiveActivatedStub(_DropdownStub):
+    """Adds the REAL LiveControlWidget activated handler plus a recording
+    select_new_microscope_mode_by_name, so the test exercises the production
+    reader itself (not a copy of its expression)."""
+
+    _on_mode_dropdown_activated = LiveControlWidget._on_mode_dropdown_activated
+
+    def __init__(self, registry, available_camera_ids):
+        super().__init__(registry, available_camera_ids)
+        self.selected_names = []
+
+    def select_new_microscope_mode_by_name(self, config_name):
+        self.selected_names.append(config_name)
+
+
+class _NapariActivatedStub(_NapariDropdownStub):
+    """Runs the REAL NapariLiveWidget.select_new_microscope_mode_by_name; the
+    recording seam is liveController.get_channel_by_name (returning None stops
+    the handler before set_microscope_mode/update_ui_for_mode)."""
+
+    select_new_microscope_mode_by_name = NapariLiveWidget.select_new_microscope_mode_by_name
+
+    def __init__(self, registry, available_camera_ids):
+        super().__init__(registry, available_camera_ids)
+        self.objectiveStore = SimpleNamespace(current_objective="20x")
+        self._log = MagicMock()
+        self.looked_up_names = []
+
+        def record_lookup(objective, name):
+            self.looked_up_names.append(name)
+            return None
+
+        self.liveController.get_channel_by_name = record_lookup
+
+
 class TestDropdownActivatedReader:
-    """Pins the exact reader idiom both live widgets connect to `activated`:
-    `itemData(index) or itemText(index)`. A revert to the old activated[str]
-    idiom would feed the decorated label ("BF Color — Side Camera") into
-    get_channel_by_name while the rest of the suite stayed green."""
+    """Exercises the two REAL production dropdown readers — the exact code where
+    a decorated label could leak into get_channel_by_name:
+    LiveControlWidget._on_mode_dropdown_activated (connected to `activated` in
+    add_components) and NapariLiveWidget.select_new_microscope_mode_by_name.
+    Reverting either to the old activated[str]/itemText idiom fails these."""
 
-    @staticmethod
-    def _wire_production_reader(combo, captured):
-        # Same lambda LiveControlWidget.add_components connects (NapariLiveWidget's
-        # handler reads the identical expression from its config_index argument).
-        combo.activated.connect(lambda index: captured.append(combo.itemData(index) or combo.itemText(index)))
-
-    def test_activated_on_decorated_entry_passes_bare_name(self, qtbot):
-        widget = _DropdownStub(TWO_CAM, available_camera_ids=[1, 2])
+    def test_live_widget_activated_handler_passes_bare_name(self, qtbot):
+        widget = _LiveActivatedStub(TWO_CAM, available_camera_ids=[1, 2])
         widget._add_mode_item(_Ch("DAPI", camera=None))
         widget._add_mode_item(_Ch("BF Color", camera=2))
         combo = widget.dropdown_modeSelection
         assert combo.itemText(1) == "BF Color — Side Camera"  # decorated on screen
-        captured = []
-        self._wire_production_reader(combo, captured)
+        # Same connection add_components makes, then a user activation:
+        combo.activated.connect(widget._on_mode_dropdown_activated)
         combo.activated.emit(1)
-        assert captured == ["BF Color"]  # bare name reaches select_new_microscope_mode_by_name
+        assert widget.selected_names == ["BF Color"]  # bare name, not the label
 
-    def test_activated_falls_back_to_item_text_when_no_userdata(self, qtbot):
+    def test_live_widget_activated_handler_falls_back_to_item_text(self, qtbot):
         # Robustness half of the idiom: an entry populated without userData
         # (legacy population) must still resolve via its (bare) text.
-        widget = _DropdownStub(ONE_CAM, available_camera_ids=[1])
-        combo = widget.dropdown_modeSelection
-        combo.addItem("DAPI")  # no userData
-        captured = []
-        self._wire_production_reader(combo, captured)
-        combo.activated.emit(0)
-        assert captured == ["DAPI"]
+        widget = _LiveActivatedStub(ONE_CAM, available_camera_ids=[1])
+        widget.dropdown_modeSelection.addItem("DAPI")  # no userData
+        widget._on_mode_dropdown_activated(0)
+        assert widget.selected_names == ["DAPI"]
+
+    def test_napari_widget_handler_passes_bare_name_to_lookup(self, qtbot):
+        widget = _NapariActivatedStub(TWO_CAM, available_camera_ids=[1, 2])
+        widget._add_mode_item(_Ch("DAPI", camera=None))
+        widget._add_mode_item(_Ch("BF Color", camera=2))
+        assert widget.dropdown_modeSelection.itemText(1) == "BF Color — Side Camera"
+        widget.select_new_microscope_mode_by_name(1)  # activated passes the index
+        assert widget.looked_up_names == ["BF Color"]  # bare name reaches channel lookup
+
+    def test_napari_widget_handler_falls_back_to_item_text(self, qtbot):
+        widget = _NapariActivatedStub(ONE_CAM, available_camera_ids=[1])
+        widget.dropdown_modeSelection.addItem("DAPI")  # no userData
+        widget.select_new_microscope_mode_by_name(0)
+        assert widget.looked_up_names == ["DAPI"]

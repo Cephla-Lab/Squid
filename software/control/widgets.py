@@ -4161,6 +4161,14 @@ class LiveControlWidget(QFrame):
         if index >= 0:
             self.dropdown_modeSelection.setCurrentIndex(index)
 
+    def _on_mode_dropdown_activated(self, index: int):
+        """`activated` handler: pass the bare channel name from userData (item
+        text may carry camera decoration); fall back to the text for entries
+        populated without userData."""
+        self.select_new_microscope_mode_by_name(
+            self.dropdown_modeSelection.itemData(index) or self.dropdown_modeSelection.itemText(index)
+        )
+
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
@@ -4284,13 +4292,7 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        # Pass the bare channel name from userData (item text may carry camera decoration);
-        # fall back to the text for entries populated without userData.
-        self.dropdown_modeSelection.activated.connect(
-            lambda index: self.select_new_microscope_mode_by_name(
-                self.dropdown_modeSelection.itemData(index) or self.dropdown_modeSelection.itemText(index)
-            )
-        )
+        self.dropdown_modeSelection.activated.connect(self._on_mode_dropdown_activated)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
