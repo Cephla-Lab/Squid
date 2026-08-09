@@ -3,8 +3,13 @@
 .SYNOPSIS
     Setup script for Squid on Windows.
 .DESCRIPTION
-    Installs Python 3.12 if it is missing, clones the repository if needed,
-    installs Python dependencies, and creates a desktop shortcut.
+    Installs Python 3.12 and Git if they are missing, clones the repository if
+    needed, installs Python dependencies, and creates a desktop shortcut.
+
+    Both prerequisites are fetched from their official download hosts, checked
+    against a pinned SHA256 before being run, and installed silently per-user
+    so no admin rights or UAC prompts are involved. -SkipPythonInstall and
+    -SkipGitInstall opt out of either.
 
     This script targets Python 3.12 and napari 0.7:
 
@@ -44,11 +49,14 @@
 .PARAMETER SkipPythonInstall
     Fail instead of installing Python 3.12 when no suitable interpreter is
     found. Useful on machines where Python is managed centrally.
+.PARAMETER SkipGitInstall
+    Fail instead of installing Git when it is not found.
 #>
 
 param(
     [string]$RepoPath = "$env:USERPROFILE\Desktop\Squid",
-    [switch]$SkipPythonInstall
+    [switch]$SkipPythonInstall,
+    [switch]$SkipGitInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,6 +77,16 @@ $PYTHON_INSTALLER_VERSION = "3.12.10"
 $PYTHON_INSTALLER_SHA256 = "67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB"
 $PYTHON_INSTALLER_URL =
     "https://www.python.org/ftp/python/$PYTHON_INSTALLER_VERSION/python-$PYTHON_INSTALLER_VERSION-amd64.exe"
+
+# Git is pinned too, for reproducibility rather than compatibility - Squid
+# works with any modern Git. To bump: pick a release from
+# https://github.com/git-for-windows/git/releases and take the SHA256 that
+# the release notes publish next to the .exe.
+$GIT_INSTALLER_VERSION = "2.55.0.3"
+$GIT_INSTALLER_TAG = "v2.55.0.windows.3"
+$GIT_INSTALLER_SHA256 = "AF12577D0FDFF74243A5988197AA49B957D5044EDC17004F6DDF0768996F1DCA"
+$GIT_INSTALLER_URL =
+    "https://github.com/git-for-windows/git/releases/download/$GIT_INSTALLER_TAG/Git-$GIT_INSTALLER_VERSION-64-bit.exe"
 
 Write-Host "Using SQUID_REPO_PATH='$RepoPath'"
 
@@ -175,61 +193,134 @@ function Find-Python312 {
     return $null
 }
 
-# Download and silently install Python from python.org.
-function Install-Python312 {
-    $installer = Join-Path $env:TEMP "python-$PYTHON_INSTALLER_VERSION-amd64.exe"
+# Locate git.exe, or return $null.
+function Find-Git {
+    $command = Get-Command git -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
 
-    Write-Host "Downloading Python $PYTHON_INSTALLER_VERSION from $PYTHON_INSTALLER_URL"
+    # Not on PATH. A Git this script just installed will not be either, since
+    # the installer only edits PATH for new processes - but it does record
+    # where it landed: HKLM for an elevated install, HKCU for a per-user one.
+    foreach ($key in @("HKCU:\Software\GitForWindows", "HKLM:\Software\GitForWindows")) {
+        $installPath = (Get-ItemProperty -Path $key -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+        if ($installPath) {
+            $exe = Join-Path $installPath "cmd\git.exe"
+            if (Test-Path $exe) {
+                return $exe
+            }
+        }
+    }
+
+    foreach ($dir in @("$env:LOCALAPPDATA\Programs\Git", "$env:ProgramFiles\Git")) {
+        $exe = Join-Path $dir "cmd\git.exe"
+        if (Test-Path $exe) {
+            return $exe
+        }
+    }
+
+    return $null
+}
+
+# Download an installer, verify it against a known SHA256, and run it silently.
+function Invoke-SilentInstaller {
+    param(
+        [string]$DisplayName,
+        [string]$Url,
+        [string]$Sha256,
+        [string]$FileName,
+        [string[]]$InstallerArgs,
+        # Inno Setup and the Python installer both use 3010 for "succeeded,
+        # reboot pending" - the payload is usable immediately either way.
+        [int[]]$SuccessExitCodes = @(0, 3010),
+        [string]$ManualUrl
+    )
+
+    $installer = Join-Path $env:TEMP $FileName
+
+    Write-Host "Downloading $DisplayName from $Url"
     # Invoke-WebRequest renders a progress bar per chunk in Windows PowerShell,
-    # which turns this 27 MB download into a multi-minute one. Older Windows
-    # also defaults to TLS 1.0, which python.org refuses.
+    # which turns a 30-70 MB download into a multi-minute one. Older Windows
+    # also defaults to TLS 1.0, which both download hosts refuse.
     $previousProgress = $ProgressPreference
     $ProgressPreference = "SilentlyContinue"
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $PYTHON_INSTALLER_URL -OutFile $installer -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $installer -UseBasicParsing
     } finally {
         $ProgressPreference = $previousProgress
     }
 
     $actualHash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash
-    if ($actualHash -ne $PYTHON_INSTALLER_SHA256) {
+    if ($actualHash -ne $Sha256) {
         Remove-Item $installer -Force -ErrorAction SilentlyContinue
-        throw ("Downloaded Python installer failed its integrity check; not running it.`n" +
-               "  expected SHA256: $PYTHON_INSTALLER_SHA256`n" +
+        throw ("Downloaded $DisplayName installer failed its integrity check; not running it.`n" +
+               "  expected SHA256: $Sha256`n" +
                "  actual   SHA256: $actualHash")
     }
 
-    Write-Host "Installing Python $PYTHON_INSTALLER_VERSION (per-user, no admin rights needed)..."
+    Write-Host "Installing $DisplayName (per-user, no admin rights needed)..."
+    $process = Start-Process -FilePath $installer -ArgumentList $InstallerArgs -Wait -PassThru
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+    if ($SuccessExitCodes -notcontains $process.ExitCode) {
+        throw ("$DisplayName installer failed with exit code $($process.ExitCode). " +
+               "Install it manually from $ManualUrl and re-run this script.")
+    }
+
+    # The installers edit PATH for *new* processes; refresh this one so the
+    # re-probe by the caller can see what was just installed.
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = (@($machinePath, $userPath) | Where-Object { $_ }) -join ";"
+}
+
+function Install-Python312 {
     # InstallAllUsers=0 and InstallLauncherAllUsers=0 keep this out of Program
     # Files, so the install runs without a UAC prompt. Both PrependPath and the
     # py launcher are wanted: PrependPath for interactive use, the launcher so
     # `py -3.12` finds this interpreter regardless of PATH order.
-    $installArgs = @(
-        "/quiet",
-        "InstallAllUsers=0",
-        "PrependPath=1",
-        "Include_launcher=1",
-        "InstallLauncherAllUsers=0",
-        "Include_test=0",
-        "AssociateFiles=0",
-        "Shortcuts=0"
-    )
-    $process = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
-    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    Invoke-SilentInstaller `
+        -DisplayName "Python $PYTHON_INSTALLER_VERSION" `
+        -Url $PYTHON_INSTALLER_URL `
+        -Sha256 $PYTHON_INSTALLER_SHA256 `
+        -FileName "python-$PYTHON_INSTALLER_VERSION-amd64.exe" `
+        -ManualUrl "https://www.python.org/downloads/" `
+        -InstallerArgs @(
+            "/quiet",
+            "InstallAllUsers=0",
+            "PrependPath=1",
+            "Include_launcher=1",
+            "InstallLauncherAllUsers=0",
+            "Include_test=0",
+            "AssociateFiles=0",
+            "Shortcuts=0"
+        )
+}
 
-    # 3010 is "success, reboot required"; the interpreter is usable right now.
-    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-        throw ("Python installer failed with exit code $($process.ExitCode). " +
-               "Install Python $REQUIRED_PYTHON manually from https://www.python.org/downloads/ " +
-               "and re-run this script.")
-    }
-
-    # The installer edits PATH for *new* processes; refresh this one so the
-    # re-probe below can see the interpreter it just installed.
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = (@($machinePath, $userPath) | Where-Object { $_ }) -join ";"
+function Install-Git {
+    # Git for Windows is an Inno Setup installer built with
+    # PrivilegesRequired=none, so an unelevated run installs per-user into
+    # %LOCALAPPDATA%\Programs\Git with no UAC prompt, and records itself under
+    # HKCU instead of HKLM. Run elevated it installs machine-wide instead;
+    # both are fine, and Find-Git handles either.
+    #
+    # The default PathOption already puts git on PATH, which is what the clone
+    # below and everyday use both need.
+    Invoke-SilentInstaller `
+        -DisplayName "Git $GIT_INSTALLER_VERSION" `
+        -Url $GIT_INSTALLER_URL `
+        -Sha256 $GIT_INSTALLER_SHA256 `
+        -FileName "Git-$GIT_INSTALLER_VERSION-64-bit.exe" `
+        -ManualUrl "https://git-scm.com/download/win" `
+        -InstallerArgs @(
+            "/VERYSILENT",
+            "/NORESTART",
+            "/SP-",
+            "/SUPPRESSMSGBOXES",
+            "/NOCANCEL"
+        )
 }
 
 # ---------------------------------------------------------------------------
@@ -263,12 +354,26 @@ if ($null -eq $PythonExe) {
 }
 Write-Host "Using Python $REQUIRED_PYTHON at $PythonExe"
 
-# Check if git is installed
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Error "Git is not installed or not in PATH. Please install Git from https://git-scm.com"
-    exit 1
+$GitExe = Find-Git
+
+if ($null -eq $GitExe) {
+    if ($SkipGitInstall) {
+        Write-Error ("Git was not found. Install it from https://git-scm.com/download/win, " +
+                     "or re-run without -SkipGitInstall to install it automatically.")
+        exit 1
+    }
+
+    Write-Host "Git not found."
+    Install-Git
+
+    $GitExe = Find-Git
+    if ($null -eq $GitExe) {
+        throw ("Git still could not be found after installing it. " +
+               "Try opening a new terminal and re-running this script.")
+    }
 }
-Write-Host "Found $(git --version)"
+Write-Host "Using Git at $GitExe"
+Write-Host "Found $(& $GitExe --version)"
 
 # ---------------------------------------------------------------------------
 # Repository
@@ -283,14 +388,14 @@ if (-not (Test-Path $RepoPath)) {
     Write-Host "Cloning Squid repository..."
     # --recurse-submodules: control/ndviewer_light and fluidics_v2 are
     # submodules, and the GUI fails to start without them.
-    git clone --recurse-submodules $SQUID_REPO_HTTP $RepoPath
+    & $GitExe clone --recurse-submodules $SQUID_REPO_HTTP $RepoPath
     Assert-LastExitCode "git clone"
 } else {
-    $currentHead = git -C $RepoPath rev-parse HEAD
+    $currentHead = & $GitExe -C $RepoPath rev-parse HEAD
     Assert-LastExitCode "git rev-parse"
     Write-Host "Using existing repo at '$RepoPath' at HEAD=$currentHead"
     Write-Host "Updating submodules..."
-    git -C $RepoPath submodule update --init --recursive
+    & $GitExe -C $RepoPath submodule update --init --recursive
     Assert-LastExitCode "git submodule update"
 }
 
