@@ -10,24 +10,30 @@ Two independent checks, both pure functions in control.core.multi_point_utils:
 Plus the widget layer that surfaces both before Start is pressed.
 """
 
+import dataclasses
 import inspect
 import json
+import os
+import threading
 from types import SimpleNamespace
 
+import imageio.v2 as iio
 import numpy as np
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
 import control._def
+import control.core.multi_point_worker
 import control.microscope
 import control.widgets
 import squid.config
 import tests.control.test_stubs as ts
-from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_controller import MultiPointController, NoOpCallbacks
 from control.core.multi_point_utils import get_camera_geometry_mismatch, get_unavailable_camera_channels
 from control.core.config.repository import ConfigRepository
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
+from control.utils_acquisition import get_image_filepath
 from control.widgets import _MultiCameraGuardMixin
 from squid.camera.utils import SimulatedCamera
 from squid.config import CameraPixelFormat
@@ -214,9 +220,20 @@ def test_used_camera_ids_are_deduplicated_in_first_use_order():
 
 # ------------------------------------------------- controller backstop (headless)
 
+# Tiny per-camera crops for the same reason as SMALL_FRAME above: the end-to-end
+# acquisition test materializes real frames from both cameras.
 TWO_CAMERA_REGISTRY = CameraRegistryConfig(
     cameras=[
-        CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
+        CameraDefinition(
+            name="Main Camera",
+            id=1,
+            serial_number="SIM-1",
+            type="Toupcam",
+            default_pixel_format="MONO16",
+            crop_width=64,
+            crop_height=48,
+            default_binning=[1, 1],
+        ),
         CameraDefinition(
             name="Side Camera",
             id=2,
@@ -224,6 +241,9 @@ TWO_CAMERA_REGISTRY = CameraRegistryConfig(
             type="Toupcam",
             hardware_trigger=False,
             default_pixel_format="RGB24",
+            crop_width=64,
+            crop_height=48,
+            default_binning=[1, 1],
         ),
     ]
 )
@@ -234,11 +254,13 @@ class _PastTheGuards(Exception):
     run_acquisition got past the camera guards without starting an acquisition."""
 
 
-def _simulated_controller(monkeypatch, registry):
+def _simulated_controller(monkeypatch, registry, callbacks=None):
     """A MultiPointController on a simulated microscope built from `registry` (None = the
     single-camera build)."""
     monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: registry)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    if callbacks is not None:
+        return ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
     return ts.get_test_multi_point_controller(microscope=scope)
 
 
@@ -511,6 +533,93 @@ def test_both_acquisition_metadata_writers_record_per_channel_pixel_sizes():
     is only fully described if both carry the per-channel map."""
     for method in (MultiPointController.start_new_experiment, MultiPointController.run_acquisition):
         assert "channel_pixel_sizes_um" in inspect.getsource(method), method.__qualname__
+
+
+# ------------------------------------------------- end-to-end mixed acquisition (sim)
+
+
+def test_end_to_end_mixed_camera_acquisition_saves_both_channels(monkeypatch, tmp_path):
+    """Full-pipeline proof for dual-camera v1: a two-channel selection spanning the mono
+    primary and the RGB secondary camera runs to completion in simulation, switches the
+    active camera per channel, and lands one file per channel on disk.
+
+    INDIVIDUAL_IMAGES is the format on purpose: mixed geometry under Zarr is exactly
+    what the controller guard rejects, and the OME-TIFF writer supports 2D grayscale
+    only (utils_ome_tiff_writer.validate_capture_info raises for RGB frames), so
+    individual images is the one non-Zarr saver that can persist the RGB channel today.
+    Save jobs run in a JobRunner subprocess, which re-reads the INI; the checked-in test
+    INIs default to INDIVIDUAL_IMAGES, and SaveImageJob only special-cases
+    MULTI_PAGE_TIFF, so the subprocess saves individual images either way.
+    """
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.INDIVIDUAL_IMAGES)
+    # multi_point_worker star-imports _def at module load; pin its stale binding too so
+    # the worker picks SaveImageJob regardless of the ambient INI.
+    monkeypatch.setattr(
+        control.core.multi_point_worker, "FILE_SAVING_OPTION", control._def.FileSavingOption.INDIVIDUAL_IMAGES
+    )
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+
+    started = threading.Event()
+    finished = threading.Event()
+    imaged_channels = []
+    callbacks = dataclasses.replace(
+        NoOpCallbacks,
+        signal_acquisition_start=lambda params: started.set(),
+        signal_acquisition_finished=finished.set,
+        signal_new_image=lambda frame, info: imaged_channels.append(info.configuration.name),
+    )
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY, callbacks=callbacks)
+
+    # Two bare-name channels (the name is the channel identity), one per camera. The
+    # names deliberately avoid the worker's name-triggered specials ("RGB" composites,
+    # "BF LED matrix" save transforms) so this exercises the plain per-channel path.
+    base = mpc.liveController.get_channels(mpc.objectiveStore.current_objective)[0]
+    mono = base.model_copy(update={"name": "Main Mono", "camera": 1})
+    color = base.model_copy(update={"name": "Side Color", "camera": 2})
+    mpc.selected_configurations = [mono, color]
+
+    # Tiny run — 1 region, 1 FOV, NZ=1, Nt=1 — so completion never races the timeouts.
+    mpc.set_NZ(1)
+    mpc.set_Nt(1)
+    stage_config = mpc.stage.get_config()
+    mpc.scanCoordinates.clear_regions()
+    mpc.scanCoordinates.add_single_fov_region(
+        "e2e",
+        center_x=stage_config.X_AXIS.MIN_POSITION + 0.5,
+        center_y=stage_config.Y_AXIS.MIN_POSITION + 0.5,
+        center_z=stage_config.Z_AXIS.MIN_POSITION + 0.1,
+    )
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("mixed camera e2e")
+
+    switches = []
+    mpc.microscope.add_camera_change_listener(switches.append)
+
+    mpc.run_acquisition()
+    # Generous waits: the JobRunner subprocess spawn dominates, not the two tiny frames.
+    assert started.wait(30)
+    assert finished.wait(120)
+
+    # (a) completed, having imaged each channel exactly once
+    assert sorted(imaged_channels) == ["Main Mono", "Side Color"]
+
+    # (c) the active camera toggled: to 2 for the second channel, back to 1 when the
+    # controller restored the pre-acquisition (primary-camera) channel on completion.
+    assert switches == [2, 1]
+
+    # (b) one file per channel in the timepoint folder, each with its own camera's
+    # geometry — 2D uint16 from the mono primary, HxWx3 uint8 from the RGB secondary.
+    padding = control._def.FILE_ID_PADDING
+    timepoint_dir = os.path.join(str(tmp_path), mpc.experiment_ID, f"{0:0{padding}}")
+    file_id = f"e2e_{0:0{padding}}_{0:0{padding}}"
+    mono_path = get_image_filepath(timepoint_dir, file_id, "Main Mono", np.uint16)
+    color_path = get_image_filepath(timepoint_dir, file_id, "Side Color", np.uint8)
+    assert os.path.isfile(mono_path), sorted(os.listdir(timepoint_dir))
+    assert os.path.isfile(color_path), sorted(os.listdir(timepoint_dir))
+    mono_image = iio.imread(mono_path)
+    color_image = iio.imread(color_path)
+    assert mono_image.ndim == 2 and mono_image.dtype == np.uint16
+    assert color_image.ndim == 3 and color_image.shape[2] == 3 and color_image.dtype == np.uint8
 
 
 # ------------------------------------------------------ widget guard (Start disable)

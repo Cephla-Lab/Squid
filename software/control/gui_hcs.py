@@ -2414,6 +2414,28 @@ class HighContentScreeningGui(QMainWindow):
             self.multiPointWithFluidicsWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
+        # Dual-camera v1: Tracking and Simple Recording drive the primary camera's
+        # pipeline only, so opening one of those tabs forces the primary camera.
+        tab_name = self.recordTabWidget.tabText(index)
+        if (
+            tab_name in ("Tracking", "Simple Recording")
+            and self.microscope.has_multiple_cameras()
+            and self.microscope.active_camera_id != PRIMARY_CAMERA_ID
+        ):
+            self.log.info("Switching to primary camera: Tracking/Simple Recording use the primary camera only (v1).")
+            try:
+                # set_active_camera assumes triggering is quiesced; stop live (and sync
+                # the Live button) before switching. Not restarted: these tabs' flows
+                # start their own live/streaming.
+                if self.liveController.is_live:
+                    self.liveControlWidget.stop_live()
+                self.microscope.set_active_camera(PRIMARY_CAMERA_ID)
+            except Exception:
+                # Broad on purpose: a failed switch (e.g. MCU timeout) already rolled
+                # back inside set_active_camera, and a tab change must never raise into
+                # Qt's signal dispatch.
+                self.log.exception("Could not switch to primary camera for Tracking/Simple Recording")
+
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
             if ENABLE_FLEXIBLE_MULTIPOINT

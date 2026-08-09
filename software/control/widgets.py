@@ -4582,6 +4582,12 @@ class LiveControlWidget(QFrame):
             self.liveController.stop_live()
             self.btn_live.setText("Start Live")
 
+    def stop_live(self):
+        """Stop live and sync the Live button (for flows that must quiesce live, e.g.
+        switching to a tab that forces a camera change)."""
+        self.toggle_live(False)
+        self.btn_live.setChecked(False)
+
     def toggle_autolevel(self, autolevel_on):
         self.btn_autolevel.setChecked(autolevel_on)
 

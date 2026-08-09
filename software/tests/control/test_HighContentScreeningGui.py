@@ -191,6 +191,41 @@ def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confi
     win.toggleAcquisitionStart(False)
 
 
+def test_tracking_recording_tabs_force_primary_camera(qtbot, monkeypatch, confirm_exit_yes):
+    """Dual-camera v1: Tracking and Simple Recording drive the primary camera's pipeline
+    only, so opening one of those tabs while another camera is active must switch back
+    to the primary (quiescing live first) — and multipoint tabs must not."""
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+    monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: TWO_CAMERA_REGISTRY)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    recording_index = win.recordTabWidget.indexOf(win.recordingControlWidget)
+    assert recording_index >= 0, "Simple Recording tab was not added despite ENABLE_RECORDING"
+
+    # A multipoint tab leaves the active camera alone.
+    scope.set_active_camera(2)
+    win.onTabChanged(win.recordTabWidget.indexOf(win.wellplateMultiPointWidget))
+    assert scope.active_camera_id == 2
+
+    # Simple Recording forces the primary camera, stopping live (and syncing the Live
+    # button) first — set_active_camera assumes triggering is quiesced.
+    win.liveController.is_live = True
+    win.liveControlWidget.btn_live.setChecked(True)
+    win.onTabChanged(recording_index)
+    assert scope.active_camera_id == control._def.PRIMARY_CAMERA_ID
+    assert win.liveController.is_live is False
+    assert not win.liveControlWidget.btn_live.isChecked()
+
+    # Re-selecting the tab with the primary already active is a no-op (no stray switch,
+    # live left alone).
+    win.onTabChanged(recording_index)
+    assert scope.active_camera_id == control._def.PRIMARY_CAMERA_ID
+    assert win.liveController.is_live is False
+
+
 def test_acquisition_start_emits_selected_channels(qtbot, confirm_exit_yes):
     """The napari multichannel viewer is initialized from signal_acquisition_channels.
     That signal must be emitted when the acquisition starts (alongside

@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 import control._def
@@ -7,9 +8,20 @@ from control.microscope import Microscope
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 from squid.camera.facade import ActiveCameraFacade
 
+# Tiny per-camera crops: the ambient INI camera config is 4168x4168, and the headless
+# snap test below materializes a real frame — 64x48 keeps that to a few KB instead of
+# ~52 MB of RGB24.
 TWO_CAMERA_REGISTRY = CameraRegistryConfig(
     cameras=[
-        CameraDefinition(name="Main Camera", id=1, serial_number="SIM-1", type="Toupcam"),
+        CameraDefinition(
+            name="Main Camera",
+            id=1,
+            serial_number="SIM-1",
+            type="Toupcam",
+            crop_width=64,
+            crop_height=48,
+            default_binning=[1, 1],
+        ),
         CameraDefinition(
             name="Side Camera",
             id=2,
@@ -17,6 +29,9 @@ TWO_CAMERA_REGISTRY = CameraRegistryConfig(
             type="Toupcam",
             hardware_trigger=False,
             default_pixel_format="RGB24",
+            crop_width=64,
+            crop_height=48,
+            default_binning=[1, 1],
         ),
     ]
 )
@@ -172,3 +187,23 @@ def test_facade_reports_active_camera_hw_capability(two_camera_scope):
     assert scope.camera.supports_hardware_trigger() is True
     scope.set_active_camera(2)
     assert scope.camera.supports_hardware_trigger() is False
+
+
+def test_headless_acquire_image_on_secondary_channel(two_camera_scope):
+    """MCP/TCP-server path equivalence: the control server's snap API is
+    set_microscope_mode + acquire_image on the microscope, so selecting a channel
+    bound to camera 2 must route the trigger and the frame read to camera 2."""
+    scope = two_camera_scope
+    channel = _make_channel("BF Color", camera_id=2, exposure_ms=5)
+    scope.live_controller.set_microscope_mode(channel)
+    assert scope.active_camera_id == 2
+    assert scope.camera.get_active_id() == 2
+
+    scope.camera.start_streaming()
+    image = scope.acquire_image()
+
+    assert image is not None
+    # Camera 2 is the RGB24 one (camera 1 serves 2D MONO16), so a 3-channel uint8
+    # frame proves the facade read from the channel's camera, not the primary.
+    assert image.ndim == 3 and image.shape[2] == 3
+    assert image.dtype == np.uint8

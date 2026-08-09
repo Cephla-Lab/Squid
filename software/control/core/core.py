@@ -1662,6 +1662,11 @@ class NavigationViewer(QFrame):
     def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
+        # No stage position seen yet (x_mm/y_mm are set by position_after_move events):
+        # nothing to draw. Reachable via a camera switch right after startup, before the
+        # first position event lands. Mirrors draw_fov_current_location's None handling.
+        if self.x_mm is None or self.y_mm is None:
+            return
         self.draw_current_fov(self.x_mm, self.y_mm)
 
     def update_wellplate_settings(
