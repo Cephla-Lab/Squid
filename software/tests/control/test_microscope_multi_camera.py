@@ -119,3 +119,47 @@ def test_close_closes_all_cameras(two_camera_scope):
         cam.close = lambda cid=cam_id: closed.append(cid)
     scope.close()
     assert sorted(closed) == [1, 2]
+
+
+def _make_channel(name, camera_id, exposure_ms=25):
+    """Build a minimal AcquisitionChannel for set_microscope_mode tests."""
+    from control.models import AcquisitionChannel
+
+    return AcquisitionChannel(
+        name=name,
+        camera=camera_id,
+        camera_settings={"exposure_time_ms": exposure_ms, "gain_mode": 0.0},
+        illumination_settings={"illumination_channel": "", "intensity": 20.0},
+    )
+
+
+def test_set_microscope_mode_switches_to_channel_camera(two_camera_scope):
+    scope = two_camera_scope
+    channel_cam2 = _make_channel("BF Color", camera_id=2, exposure_ms=42)
+    scope.live_controller.set_microscope_mode(channel_cam2)
+    assert scope.active_camera_id == 2
+    assert scope.cameras[2].get_exposure_time() == 42
+
+    channel_primary = _make_channel("Fluor 488", camera_id=None, exposure_ms=13)
+    scope.live_controller.set_microscope_mode(channel_primary)
+    assert scope.active_camera_id == 1
+    assert scope.cameras[1].get_exposure_time() == 13
+    assert scope.cameras[2].get_exposure_time() == 42  # untouched
+
+
+def test_set_microscope_mode_unavailable_camera_keeps_current(two_camera_scope):
+    scope = two_camera_scope
+    channel_bad = _make_channel("Ghost", camera_id=7)
+    scope.live_controller.set_microscope_mode(channel_bad)
+    # Logged error, no switch, no crash:
+    assert scope.active_camera_id == 1
+
+
+def test_set_trigger_mode_updates_memory(two_camera_scope):
+    scope = two_camera_scope
+    scope.live_controller.set_trigger_mode(TriggerMode.HARDWARE)
+    assert scope.get_stored_trigger_mode(1) == TriggerMode.HARDWARE
+    scope.set_active_camera(2)
+    scope.live_controller.set_trigger_mode(TriggerMode.SOFTWARE)
+    assert scope.get_stored_trigger_mode(2) == TriggerMode.SOFTWARE
+    assert scope.get_stored_trigger_mode(1) == TriggerMode.HARDWARE

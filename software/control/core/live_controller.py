@@ -521,6 +521,18 @@ class LiveController(QObject):
 
         self.currentConfiguration = configuration
 
+        # Dual-camera: switch the active camera to this channel's camera before applying
+        # any camera settings. channel.camera is None => primary camera.
+        target_camera_id = configuration.camera or PRIMARY_CAMERA_ID
+        if target_camera_id != self.microscope.active_camera_id:
+            try:
+                self.microscope.set_active_camera(target_camera_id)
+            except ValueError as e:
+                self._log.error(
+                    f"Channel '{configuration.name}' wants camera {target_camera_id} which is not available "
+                    f"({e}); keeping camera {self.microscope.active_camera_id}."
+                )
+
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
         try:
