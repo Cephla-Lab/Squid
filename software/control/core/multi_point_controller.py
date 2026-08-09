@@ -21,8 +21,10 @@ from control.core.multi_point_utils import (
     AcquisitionParameters,
     MultiPointControllerFunctions,
     ScanPositionInformation,
+    compute_channel_pixel_sizes,
     get_camera_geometry_mismatch,
     get_unavailable_camera_channels,
+    get_used_camera_ids,
 )
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -502,6 +504,11 @@ class MultiPointController:
                 self._log.debug(f"Could not get default objective info: {e}")
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
+        # Only the active camera's sensor is described above; with channels spread over
+        # several cameras each one has its own image pixel size.
+        acquisition_parameters["channel_pixel_sizes_um"] = compute_channel_pixel_sizes(
+            self.selected_configurations, self.microscope.cameras, self.objectiveStore.get_pixel_size_factor()
+        )
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
@@ -572,6 +579,44 @@ class MultiPointController:
                 self.camera.stop_streaming()
         return (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
 
+    def _warm_up_cameras_and_get_test_image(self) -> Tuple[Optional[np.array], bool]:
+        """Grab one frame from every camera this acquisition will use.
+
+        A camera's first frame after streaming starts is the slow one; taking it here means
+        no camera pays for it inside the run. Single-camera runs do exactly what they always
+        did — one grab, no switch — since the only used id is already the active one.
+
+        Ends on the first channel's camera (the one the run starts on) and returns its
+        frame, which the disk-space estimate sizes an image from.
+        """
+        used_camera_ids = get_used_camera_ids(self.selected_configurations) or [self.microscope.active_camera_id]
+        first_camera_id = used_camera_ids[0]
+
+        test_image, is_color = (None, True)
+        try:
+            for camera_id in used_camera_ids:
+                if camera_id not in self.microscope.cameras:
+                    # Unavailable: _raise_on_incompatible_camera_selection rejects this before
+                    # a real run, and grabbing from whatever is active instead would be a lie.
+                    continue
+                self._make_camera_active(camera_id)
+                frame, frame_is_color = self._temporary_get_an_image_hack()
+                if camera_id == first_camera_id:
+                    test_image, is_color = frame, frame_is_color
+        finally:
+            try:
+                self._make_camera_active(first_camera_id)
+            except Exception:
+                # Not fatal — the worker switches per channel anyway — but losing the
+                # original failure by raising out of the finally would be.
+                self._log.exception(f"Could not return to camera {first_camera_id} after the warm-up")
+        return test_image, is_color
+
+    def _make_camera_active(self, camera_id: int) -> None:
+        """Switch to camera_id, unless it is already active or never opened."""
+        if camera_id in self.microscope.cameras and camera_id != self.microscope.active_camera_id:
+            self.microscope.set_active_camera(camera_id)
+
     def get_estimated_acquisition_disk_storage(self):
         """
         This does its best to return the number of bytes needed to store the settings for the currently
@@ -587,7 +632,7 @@ class MultiPointController:
         test_image = None
         is_color = True
         try:
-            test_image, is_color = self._temporary_get_an_image_hack()
+            test_image, is_color = self._warm_up_cameras_and_get_test_image()
         except Exception as e:
             self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
             # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
@@ -879,7 +924,8 @@ class MultiPointController:
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
             objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
-            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+            pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+            pixel_size_um = pixel_size_factor * self.camera.get_pixel_size_binned_um()
             objective_info = {
                 "name": current_objective,
                 "magnification": objective_dict.get("magnification"),
@@ -887,6 +933,11 @@ class MultiPointController:
                 "pixel_size_um": pixel_size_um,
                 "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
                 "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
+                # pixel_size_um/sensor_pixel_size_um above describe the active camera only;
+                # a run whose channels span cameras needs one number per channel.
+                "channel_pixel_sizes_um": compute_channel_pixel_sizes(
+                    self.selected_configurations, self.microscope.cameras, pixel_size_factor
+                ),
             }
 
             # Get wellplate format if available

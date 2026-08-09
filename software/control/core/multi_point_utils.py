@@ -174,6 +174,33 @@ def get_unavailable_camera_channels(selected_channels, cameras: Dict[int, Abstra
     return [ch.name for ch in selected_channels if _channel_camera_id(ch) not in cameras]
 
 
+def get_used_camera_ids(selected_channels) -> List[int]:
+    """Camera ids the selected channels image on, de-duplicated, in first-use order.
+
+    First-use order (not sorted) because the acquisition starts on the first channel's
+    camera: a caller that visits every camera in this order ends up one switch away from
+    where the run begins.
+    """
+    return list(dict.fromkeys(_channel_camera_id(channel) for channel in selected_channels))
+
+
+def compute_channel_pixel_sizes(selected_channels, cameras, pixel_size_factor) -> Dict[str, float]:
+    """Per-channel image pixel size in um: objective factor x that channel's camera's binned pixel size.
+
+    With more than one camera "the" sensor pixel size of a run is only the active camera's,
+    so acquisition metadata records this map alongside it. A channel whose camera is not
+    available (or a run with no objective factor) is omitted rather than given a number
+    from the wrong sensor.
+    """
+    sizes = {}
+    for channel in selected_channels:
+        camera = cameras.get(_channel_camera_id(channel))
+        if camera is None or pixel_size_factor is None:
+            continue
+        sizes[channel.name] = float(pixel_size_factor) * float(camera.get_pixel_size_binned_um())
+    return sizes
+
+
 def _camera_frame_geometry(camera: AbstractCamera) -> Tuple[int, int, bool, int, float]:
     """(width, height, is_color, storage_bit_depth, pixel_size_um) for this camera's frames.
 

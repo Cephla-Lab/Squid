@@ -23,6 +23,7 @@ from control.core.multi_point_utils import (
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
+    compute_channel_pixel_sizes,
 )
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
@@ -133,6 +134,7 @@ class MultiPointWorker:
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
+        pixel_factor = None
         try:
             pixel_factor = self.objectiveStore.get_pixel_size_factor()
             sensor_pixel_um = self.camera.get_pixel_size_binned_um()
@@ -142,6 +144,16 @@ class MultiPointWorker:
                 self._pixel_size_um = None
         except Exception:
             self._pixel_size_um = None
+        # _pixel_size_um above is the camera that is active right now; on a run whose
+        # channels span cameras it is only right for that camera's channels.
+        try:
+            self._channel_pixel_sizes_um = compute_channel_pixel_sizes(
+                self.selected_configurations, self.microscope.cameras, pixel_factor
+            )
+        except Exception:
+            self._channel_pixel_sizes_um = {}
+        if len(set(self._channel_pixel_sizes_um.values())) > 1:
+            self._log.info(f"Channels of this run have different pixel sizes (um): {self._channel_pixel_sizes_um}")
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
