@@ -95,6 +95,70 @@ class TestCameraDefinition:
         assert "greater than or equal to 1" in str(exc_info.value)
 
 
+class TestCameraDefinitionDualCameraFields:
+    """New fields for dual-camera support: type, hardware_trigger, per-camera overrides."""
+
+    def test_defaults(self):
+        cam = CameraDefinition(serial_number="SN1")
+        assert cam.type is None
+        assert cam.hardware_trigger is True
+        assert cam.rotate_image_angle is None
+        assert cam.flip is None
+        assert cam.crop_width is None
+        assert cam.crop_height is None
+        assert cam.default_pixel_format is None
+        assert cam.default_binning is None
+
+    def test_full_definition_parses(self):
+        cam = CameraDefinition(
+            name="Side Camera",
+            id=2,
+            serial_number="SN2",
+            type="Toupcam",
+            hardware_trigger=False,
+            rotate_image_angle=180.0,
+            flip="Horizontal",
+            crop_width=3000,
+            crop_height=3000,
+            default_pixel_format="RGB24",
+            default_binning=[2, 2],
+        )
+        assert cam.type == "Toupcam"
+        assert cam.hardware_trigger is False
+        assert cam.default_binning == [2, 2]
+
+    def test_unknown_type_rejected(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", type="NotACamera")
+
+    def test_unknown_pixel_format_rejected(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_pixel_format="MONO99")
+
+    def test_unknown_flip_rejected(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", flip="Diagonal")
+
+    def test_binning_must_be_pair_of_positive_ints(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_binning=[2])
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_binning=[0, 2])
+
+    def test_multi_camera_requires_type(self):
+        with pytest.raises(ValidationError, match="type"):
+            CameraRegistryConfig(
+                cameras=[
+                    CameraDefinition(name="Main", id=1, serial_number="SN1", type="Toupcam"),
+                    CameraDefinition(name="Side", id=2, serial_number="SN2"),  # no type
+                ]
+            )
+
+    def test_single_camera_type_optional(self):
+        config = CameraRegistryConfig(cameras=[CameraDefinition(serial_number="SN1")])
+        assert config.cameras[0].type is None
+
+
 class TestCameraRegistryConfig:
     """Tests for CameraRegistryConfig model."""
 
@@ -119,8 +183,8 @@ class TestCameraRegistryConfig:
         """Test registry with multiple cameras (requires explicit id)."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345", type="Toupcam"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890", type="Toupcam"),
             ]
         )
         assert len(registry.cameras) == 2
@@ -140,8 +204,8 @@ class TestCameraRegistryConfig:
         """Test finding camera by name."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345", type="Toupcam"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890", type="Toupcam"),
             ]
         )
         camera = registry.get_camera_by_name("Main Camera")
@@ -173,8 +237,8 @@ class TestCameraRegistryConfig:
         """Test finding camera by ID."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345", type="Toupcam"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890", type="Toupcam"),
             ]
         )
         camera = registry.get_camera_by_id(2)
@@ -195,8 +259,8 @@ class TestCameraRegistryConfig:
         """Test getting list of all camera names."""
         registry = CameraRegistryConfig(
             cameras=[
-                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
-                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890"),
+                CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345", type="Toupcam"),
+                CameraDefinition(name="Side Camera", id=2, serial_number="DEF67890", type="Toupcam"),
             ]
         )
         names = registry.get_camera_names()
@@ -207,8 +271,8 @@ class TestCameraRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             CameraRegistryConfig(
                 cameras=[
-                    CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345"),
-                    CameraDefinition(name="Main Camera", id=2, serial_number="DEF67890"),
+                    CameraDefinition(name="Main Camera", id=1, serial_number="ABC12345", type="Toupcam"),
+                    CameraDefinition(name="Main Camera", id=2, serial_number="DEF67890", type="Toupcam"),
                 ]
             )
         assert "Camera names must be unique" in str(exc_info.value)
@@ -218,8 +282,8 @@ class TestCameraRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             CameraRegistryConfig(
                 cameras=[
-                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345"),
-                    CameraDefinition(name="Camera 2", id=2, serial_number="ABC12345"),
+                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345", type="Toupcam"),
+                    CameraDefinition(name="Camera 2", id=2, serial_number="ABC12345", type="Toupcam"),
                 ]
             )
         assert "Camera serial numbers must be unique" in str(exc_info.value)
@@ -229,8 +293,8 @@ class TestCameraRegistryConfig:
         with pytest.raises(ValidationError) as exc_info:
             CameraRegistryConfig(
                 cameras=[
-                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345"),
-                    CameraDefinition(name="Camera 2", id=1, serial_number="DEF67890"),
+                    CameraDefinition(name="Camera 1", id=1, serial_number="ABC12345", type="Toupcam"),
+                    CameraDefinition(name="Camera 2", id=1, serial_number="DEF67890", type="Toupcam"),
                 ]
             )
         assert "Camera IDs must be unique" in str(exc_info.value)
