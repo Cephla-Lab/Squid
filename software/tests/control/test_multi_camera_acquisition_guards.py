@@ -323,17 +323,18 @@ def _record_warm_up_grabs(monkeypatch, mpc, fail_on=None):
     return grabbed_on
 
 
-def test_warm_up_grabs_one_frame_per_used_camera_and_ends_on_the_first(monkeypatch):
+def test_warm_up_grabs_one_frame_per_used_camera_and_ends_on_the_starting_one(monkeypatch):
     """Every camera the run will use pays its slow first frame before the run, not inside
-    it; the estimate keeps the frame from the camera the run starts on."""
+    it. The run's starting camera goes last, so the loop ends where the run begins and the
+    estimate keeps that camera's frame."""
     mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
     mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1, 2])
     grabbed_on = _record_warm_up_grabs(monkeypatch, mpc)
 
     test_image, is_color = mpc._warm_up_cameras_and_get_test_image()
 
-    assert grabbed_on == [2, 1]  # each used camera once, in first-use order
-    assert mpc.microscope.active_camera_id == 2  # back on the first channel's camera
+    assert grabbed_on == [1, 2]  # each used camera once, starting camera (2) last
+    assert mpc.microscope.active_camera_id == 2  # where the run begins
     assert int(test_image[0][0]) == 2 and is_color is True
 
 
@@ -374,16 +375,118 @@ def test_warm_up_skips_a_camera_that_never_opened(monkeypatch):
     assert grabbed_on == [1]
 
 
-def test_warm_up_puts_the_first_camera_back_when_a_later_grab_fails(monkeypatch):
-    """A failed grab must not strand the run on the wrong camera."""
+def test_warm_up_survives_a_secondary_camera_failing(monkeypatch):
+    """A camera that will not warm up costs the run its own first frame, nothing more — it
+    must not discard the frame the estimate came for."""
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1])  # starts on 2, so 1 is secondary
+    grabbed_on = _record_warm_up_grabs(monkeypatch, mpc, fail_on=1)
+
+    test_image, _ = mpc._warm_up_cameras_and_get_test_image()
+
+    assert grabbed_on == [1, 2]  # tried the secondary, carried on to the starting camera
+    assert int(test_image[0][0]) == 2
+    assert mpc.microscope.active_camera_id == 2
+
+
+def test_warm_up_reraises_when_the_starting_camera_fails_and_stays_on_it(monkeypatch):
+    """The starting camera failing is what the caller's worst-case-image fallback is for,
+    so that one still propagates — and must not strand the run on another camera."""
     mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
     mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1])
-    _record_warm_up_grabs(monkeypatch, mpc, fail_on=1)
+    _record_warm_up_grabs(monkeypatch, mpc, fail_on=2)
 
     with pytest.raises(RuntimeError):
         mpc._warm_up_cameras_and_get_test_image()
 
     assert mpc.microscope.active_camera_id == 2
+
+
+def test_warm_up_stops_live_before_it_switches_cameras(monkeypatch):
+    """set_active_camera assumes triggering is quiesced; the live trigger timer is its own
+    thread and would send a trigger into the middle of the switch."""
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [2, 1])
+    calls = []
+    mpc.liveController.is_live = True
+
+    def _stop_live():
+        mpc.liveController.is_live = False
+        calls.append("stop_live")
+
+    monkeypatch.setattr(mpc.liveController, "stop_live", _stop_live)
+    real_set_active_camera = mpc.microscope.set_active_camera
+
+    def _set_active_camera(camera_id):
+        calls.append(f"switch to {camera_id}")
+        real_set_active_camera(camera_id)
+
+    monkeypatch.setattr(mpc.microscope, "set_active_camera", _set_active_camera)
+    _record_warm_up_grabs(monkeypatch, mpc)
+
+    mpc._warm_up_cameras_and_get_test_image()
+
+    assert calls[0] == "stop_live", calls
+    assert "switch to 2" in calls
+    assert mpc._live_stopped_for_warm_up is True  # so run_acquisition still resumes live
+
+
+def test_warm_up_leaves_live_alone_on_a_single_camera_system(monkeypatch):
+    """Parity: the single-camera path never switches, so it must not stop live either."""
+    mpc = _simulated_controller(monkeypatch, None)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [None, 1])
+    mpc.liveController.is_live = True
+    stopped = []
+    monkeypatch.setattr(mpc.liveController, "stop_live", lambda: stopped.append(True))
+    _record_warm_up_grabs(monkeypatch, mpc)
+
+    mpc._warm_up_cameras_and_get_test_image()
+
+    assert stopped == []
+    assert mpc.liveController.is_live is True
+    assert mpc._live_stopped_for_warm_up is False
+
+
+def test_warm_up_leaves_live_alone_when_no_camera_switch_is_needed(monkeypatch):
+    """Two cameras, but every selected channel is on the one already active."""
+    mpc = _simulated_controller(monkeypatch, TWO_CAMERA_REGISTRY)
+    mpc.selected_configurations = _channels_on_cameras(mpc, [1, None])
+    mpc.liveController.is_live = True
+    stopped = []
+    monkeypatch.setattr(mpc.liveController, "stop_live", lambda: stopped.append(True))
+    _record_warm_up_grabs(monkeypatch, mpc)
+
+    mpc._warm_up_cameras_and_get_test_image()
+
+    assert stopped == []
+    assert mpc._live_stopped_for_warm_up is False
+
+
+@pytest.mark.parametrize(
+    "is_live, stopped_for_warm_up, expected",
+    [(True, False, True), (False, True, True), (False, False, False)],
+)
+def test_run_acquisition_resumes_live_the_warm_up_stopped(monkeypatch, is_live, stopped_for_warm_up, expected):
+    """The warm-up stopping live must not read, to run_acquisition, as "the user was not
+    live" — that would silently drop the resume-live-afterwards behavior."""
+    mpc = _simulated_controller(monkeypatch, None)
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.OME_TIFF)
+    monkeypatch.setattr(mpc, "_start_per_acquisition_log", lambda *a, **kw: None)
+    monkeypatch.setattr(mpc.liveController, "stop_live", lambda: setattr(mpc.liveController, "is_live", False))
+    mpc.liveController.is_live = is_live
+    mpc._live_stopped_for_warm_up = stopped_for_warm_up
+
+    # The first step after the live-stop block, so the run never actually starts.
+    def _stop(*args, **kwargs):
+        raise _PastTheGuards()
+
+    monkeypatch.setattr(mpc.camera, "enable_callbacks", _stop)
+
+    with pytest.raises(_PastTheGuards):
+        mpc.run_acquisition()
+
+    assert mpc.liveController_was_live_before_multipoint is expected
+    assert mpc._live_stopped_for_warm_up is False  # consumed, so it cannot leak into a later run
 
 
 def test_acquisition_parameters_json_records_per_channel_pixel_sizes(monkeypatch, tmp_path):

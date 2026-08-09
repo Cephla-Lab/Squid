@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -200,6 +200,9 @@ class MultiPointController:
         self._per_acq_log_handler = None
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._slack_notifier = None  # Optional SlackNotifier for notifications
+        # Set by the per-camera warm-up when it stops live to switch cameras; consumed by
+        # run_acquisition so live still resumes after the run.
+        self._live_stopped_for_warm_up = False
 
         # Pre-warm job runner subprocess at controller init (reduces acquisition start delay)
         # Backpressure values (tuple) are created here and shared with both the pre-warmed runner
@@ -586,24 +589,43 @@ class MultiPointController:
         no camera pays for it inside the run. Single-camera runs do exactly what they always
         did — one grab, no switch — since the only used id is already the active one.
 
-        Ends on the first channel's camera (the one the run starts on) and returns its
-        frame, which the disk-space estimate sizes an image from.
+        The run's starting camera (the first channel's) is visited LAST, so the loop ends
+        where the run begins — one switch fewer — and returns that camera's frame, which the
+        disk-space estimate sizes an image from.
+
+        Coverage: the only caller is get_estimated_acquisition_disk_storage, i.e. the GUI
+        Start path with saving enabled. Skip-saving runs, Snap Images, the fluidics Start
+        path and headless/TCP runs are not warmed up — none of them ever were.
         """
         used_camera_ids = get_used_camera_ids(self.selected_configurations) or [self.microscope.active_camera_id]
         first_camera_id = used_camera_ids[0]
+        visit_order = used_camera_ids[1:] + used_camera_ids[:1]  # starting camera last
+        self._stop_live_before_camera_switches(used_camera_ids)
 
         test_image, is_color = (None, True)
         try:
-            for camera_id in used_camera_ids:
+            for camera_id in visit_order:
                 if camera_id not in self.microscope.cameras:
                     # Unavailable: _raise_on_incompatible_camera_selection rejects this before
                     # a real run, and grabbing from whatever is active instead would be a lie.
                     continue
-                self._make_camera_active(camera_id)
-                frame, frame_is_color = self._temporary_get_an_image_hack()
+                try:
+                    self._make_camera_active(camera_id)
+                    frame, frame_is_color = self._temporary_get_an_image_hack()
+                except Exception:
+                    if camera_id == first_camera_id:
+                        # The run starts on this one: let the caller log and fall back to a
+                        # synthetic worst-case image, exactly as it did before the loop existed.
+                        raise
+                    # A secondary camera that will not warm up must not cost us the frame we
+                    # came for; it just pays its first frame during the run.
+                    self._log.exception(f"Warm-up of camera {camera_id} failed, continuing")
+                    continue
                 if camera_id == first_camera_id:
                     test_image, is_color = frame, frame_is_color
         finally:
+            # Usually already there (starting camera visited last); this catches the paths
+            # where it was skipped or its switch rolled back to another camera.
             try:
                 self._make_camera_active(first_camera_id)
             except Exception:
@@ -611,6 +633,29 @@ class MultiPointController:
                 # original failure by raising out of the finally would be.
                 self._log.exception(f"Could not return to camera {first_camera_id} after the warm-up")
         return test_image, is_color
+
+    def _stop_live_before_camera_switches(self, used_camera_ids: List[int]) -> None:
+        """Quiesce live triggering when the warm-up is about to switch cameras.
+
+        set_active_camera assumes triggering is quiesced — it reprograms the MCU trigger
+        mode — but the live trigger timer is a threading.Timer on its own thread and would
+        happily send_trigger() through the facade mid-switch, which is the one-pending-MCU-
+        command race from PR #461. run_acquisition stops live moments later anyway, so this
+        only moves the stop earlier, and only for a run that actually switches cameras: the
+        single-camera path never gets here.
+        """
+        self._live_stopped_for_warm_up = False
+        switches_cameras = any(
+            camera_id in self.microscope.cameras and camera_id != self.microscope.active_camera_id
+            for camera_id in used_camera_ids
+        )
+        if not (switches_cameras and self.liveController.is_live):
+            return
+        self._log.info("Stopping live view: the per-camera warm-up is about to switch cameras")
+        self.liveController.stop_live()
+        # run_acquisition decides whether to resume live afterwards by reading is_live; without
+        # this it would find the live view we just stopped and never bring it back.
+        self._live_stopped_for_warm_up = True
 
     def _make_camera_active(self, camera_id: int) -> None:
         """Switch to camera_id, unless it is already active or never opened."""
@@ -622,6 +667,10 @@ class MultiPointController:
         This does its best to return the number of bytes needed to store the settings for the currently
         configured acquisition on disk.  If you don't have at least this amount of disk space available
         when starting this acquisition, it is likely it will fail with an "out of disk space" error.
+
+        Side effect on multi-camera systems: this also performs the acquisition's per-camera
+        warm-up, which switches cameras (and stops live view to do so safely) and leaves the
+        run's starting camera active.
         """
         # TODO(imo): This needs updating for AbstractCamera
         if not len(self.liveController.get_channels(self.objectiveStore.current_objective)):
@@ -814,12 +863,14 @@ class MultiPointController:
             self.abort_acqusition_requested = False
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
-            # stop live
+            # stop live. The per-camera warm-up may already have stopped it so it could switch
+            # cameras safely; either way the user was live before this run and wants it back.
+            self.liveController_was_live_before_multipoint = (
+                self.liveController.is_live or self._live_stopped_for_warm_up
+            )
+            self._live_stopped_for_warm_up = False
             if self.liveController.is_live:
-                self.liveController_was_live_before_multipoint = True
                 self.liveController.stop_live()  # @@@ to do: also uncheck the live button
-            else:
-                self.liveController_was_live_before_multipoint = False
 
             self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
