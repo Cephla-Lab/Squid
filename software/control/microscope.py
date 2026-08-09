@@ -756,7 +756,13 @@ class Microscope:
         return self._camera_trigger_modes.get(camera_id, control._def.TriggerMode.SOFTWARE)
 
     def remember_trigger_mode_for_active_camera(self, mode: control._def.TriggerMode) -> None:
-        self._camera_trigger_modes[self._active_camera_id] = mode
+        # Take the switch lock so the read of _active_camera_id and the memory write are
+        # atomic with respect to set_active_camera: a set_trigger_mode call racing a
+        # switch from another thread must not record the mode against a mid-transition
+        # camera id. RLock: the call from inside set_active_camera's locked section
+        # (via LiveController.set_trigger_mode) stays safe.
+        with self._camera_switch_lock:
+            self._camera_trigger_modes[self._active_camera_id] = mode
 
     def add_camera_change_listener(self, listener: Callable[[int], None]) -> None:
         self._camera_change_listeners.append(listener)
@@ -783,18 +789,39 @@ class Microscope:
             if not isinstance(self.camera, squid.camera.facade.ActiveCameraFacade):
                 raise ValueError("set_active_camera requires a multi-camera build (no facade installed).")
 
-            outgoing = self.cameras[self._active_camera_id]
+            previous_id = self._active_camera_id
+            outgoing = self.cameras[previous_id]
             if outgoing.get_acquisition_mode() == CameraAcquisitionMode.CONTINUOUS:
                 outgoing.stop_streaming()
 
             self.camera.set_active(camera_id)
             self._active_camera_id = camera_id
 
-            self.live_controller.set_trigger_mode(self.get_stored_trigger_mode(camera_id))
+            try:
+                self.live_controller.set_trigger_mode(self.get_stored_trigger_mode(camera_id))
 
-            incoming = self.cameras[camera_id]
-            if not incoming.get_is_streaming():
-                incoming.start_streaming()
+                incoming = self.cameras[camera_id]
+                if not incoming.get_is_streaming():
+                    incoming.start_streaming()
+            except Exception as switch_exc:
+                # Applying the incoming camera's trigger mode (or starting its stream)
+                # failed (e.g. unwired camera rejecting HARDWARE, MCU timeout). Roll back
+                # so microscope.camera, the active id, and the listeners (never notified
+                # of the failed switch) stay consistent with the camera that is actually
+                # configured.
+                self.camera.set_active(previous_id)
+                self._active_camera_id = previous_id
+                try:
+                    # Best-effort resync of camera acquisition mode + MCU trigger mode to
+                    # the outgoing camera's stored state.
+                    self.live_controller.set_trigger_mode(self.get_stored_trigger_mode(previous_id))
+                except Exception as rollback_exc:
+                    self._log.error(
+                        f"Rollback of trigger mode to camera {previous_id} failed: {rollback_exc}. "
+                        f"Original switch error: {switch_exc}"
+                    )
+                self._log.exception(f"Switching to camera {camera_id} failed; rolled back to camera {previous_id}")
+                raise
 
         for listener in list(self._camera_change_listeners):
             try:

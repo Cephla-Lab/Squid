@@ -91,6 +91,27 @@ def test_change_listener_fires_once_per_switch(two_camera_scope):
     assert seen == [2, 1]
 
 
+def test_failed_switch_rolls_back_active_camera(two_camera_scope, monkeypatch):
+    """If applying the incoming camera's trigger mode raises mid-switch (unwired camera
+    rejecting HARDWARE, MCU timeout), the switch must roll back: facade and active id
+    restored to the outgoing camera, and no change listener notified."""
+    scope = two_camera_scope
+    seen = []
+    scope.add_camera_change_listener(seen.append)
+
+    def boom(mode):
+        raise RuntimeError("simulated MCU timeout")
+
+    monkeypatch.setattr(scope.live_controller, "set_trigger_mode", boom)
+
+    with pytest.raises(RuntimeError, match="simulated MCU timeout"):
+        scope.set_active_camera(2)
+
+    assert scope.active_camera_id == 1
+    assert scope.camera.get_active_id() == 1
+    assert seen == []
+
+
 def test_close_closes_all_cameras(two_camera_scope):
     scope = two_camera_scope
     closed = []
