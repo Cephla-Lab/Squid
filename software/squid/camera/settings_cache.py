@@ -71,11 +71,17 @@ def _serial_key(camera: AbstractCamera) -> str:
 
 
 def _settings_dict_for(camera: AbstractCamera) -> Optional[dict]:
-    """Read a camera's persistable settings, or None if the camera cannot be read."""
+    """Read a camera's persistable settings, or None if the camera cannot be read.
+
+    Deliberately catches everything: driver-level failures are not confined to any one
+    exception type (a yanked USB camera raises OSError, for instance). This runs from
+    application shutdown, where one unreachable camera must cost neither the other
+    cameras' settings nor the rest of the cleanup sequence.
+    """
     try:
         binning = camera.get_binning()
         pixel_format = camera.get_pixel_format()
-    except (AttributeError, RuntimeError) as e:
+    except Exception as e:
         _log.error(f"Cannot read camera settings - camera may be disconnected: {e}")
         return None
     return {"binning": list(binning), "pixel_format": pixel_format.value if pixel_format else None}

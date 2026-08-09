@@ -286,3 +286,62 @@ def test_none_serial_reads_default_key(tmp_path):
     cam.set_binning(2, 2)
     save_all_camera_settings({1: cam}, cache_path=cache)
     assert load_camera_settings(cache_path=cache).binning == (2, 2)
+
+
+def test_none_serial_falls_back_to_sole_v2_entry(tmp_path):
+    """A serial-less camera adopts the only cached entry, even under another key."""
+    from squid.camera.settings_cache import load_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    with open(cache, "w") as f:
+        yaml.safe_dump({"version": 2, "cameras": {"SN1": {"binning": [2, 2], "pixel_format": "MONO12"}}}, f)
+
+    settings = load_camera_settings(cache_path=cache)
+
+    assert settings is not None
+    assert settings.binning == (2, 2)
+    assert settings.pixel_format == "MONO12"
+
+
+def test_save_all_isolates_a_camera_that_raises(tmp_path, monkeypatch):
+    """One broken camera must not cost the healthy cameras their settings.
+
+    save_all_camera_settings runs from closeEvent; anything escaping it aborts every
+    later shutdown step (camera close, Z retract, microcontroller close).
+    """
+    from squid.camera.settings_cache import load_camera_settings, save_all_camera_settings
+
+    def _raise():
+        raise OSError("usb gone")
+
+    cache = tmp_path / "camera_settings.yaml"
+    healthy, broken = _sim_with_serial("SN-OK"), _sim_with_serial("SN-BAD")
+    healthy.set_binning(2, 2)
+    monkeypatch.setattr(broken, "get_binning", _raise)
+
+    save_all_camera_settings({1: healthy, 2: broken}, cache_path=cache)
+
+    with open(cache, "r") as f:
+        data = yaml.safe_load(f)
+    assert set(data["cameras"]) == {"SN-OK"}
+    assert load_camera_settings(serial="SN-OK", cache_path=cache).binning == (2, 2)
+    assert load_camera_settings(serial="SN-BAD", cache_path=cache) is None
+
+
+def test_save_all_leaves_cache_untouched_when_no_camera_readable(tmp_path, monkeypatch):
+    """Nothing readable means keep the last good cache rather than truncating it."""
+    from squid.camera.settings_cache import save_all_camera_settings
+
+    def _raise():
+        raise RuntimeError("Camera disconnected")
+
+    cache = tmp_path / "camera_settings.yaml"
+    cache.write_text("binning: [3, 3]\npixel_format: MONO16\n")
+    original = cache.read_text()
+
+    broken = _sim_with_serial("SN-BAD")
+    monkeypatch.setattr(broken, "get_binning", _raise)
+
+    save_all_camera_settings({1: broken}, cache_path=cache)
+
+    assert cache.read_text() == original
