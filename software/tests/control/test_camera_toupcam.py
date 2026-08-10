@@ -10,12 +10,13 @@ logic against a scripted set of enumerated devices.
 import inspect
 from typing import Dict, List, Optional
 
+import numpy as np
 import pytest
 
 import control.toupcam as real_toupcam
 import squid.logging
-from control.camera_toupcam import ToupcamCamera
-from squid.abc import CameraPixelFormat
+from control.camera_toupcam import ToupcamCamera, ToupCamCapabilities
+from squid.abc import CameraFrameFormat, CameraPixelFormat
 from squid.config import CameraConfig, CameraVariant
 
 
@@ -420,3 +421,249 @@ def test_set_auto_white_balance_gains_off_does_not_trigger_awb():
 
     assert camera._camera.awb_init_calls == 0
     assert camera._camera.awb_once_calls == 0
+
+
+# --------------------------------------------------------------------------
+# Colour capture: frame format selection, row pitch, buffer unpacking
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pixel_format, expected",
+    [
+        (CameraPixelFormat.MONO8, CameraFrameFormat.RAW),
+        (CameraPixelFormat.MONO12, CameraFrameFormat.RAW),
+        (CameraPixelFormat.MONO16, CameraFrameFormat.RAW),
+        (CameraPixelFormat.RGB24, CameraFrameFormat.RGB),
+        (CameraPixelFormat.RGB32, CameraFrameFormat.RGB),
+        (CameraPixelFormat.RGB48, CameraFrameFormat.RGB),
+    ],
+)
+def test_frame_format_follows_pixel_format(pixel_format, expected):
+    assert ToupcamCamera._frame_format_for_pixel_format(pixel_format) == expected
+
+
+@pytest.mark.parametrize(
+    "width, pixel_size, expected",
+    [
+        (3, 3, 12),  # RGB24, 9 bytes of pixels padded up to a 4 byte boundary
+        (4, 3, 12),  # RGB24, already aligned
+        (3, 4, 12),  # RGB32 rows are packed, never padded
+        (3, 6, 20),  # RGB48, 18 bytes of pixels padded up to 20
+        (2, 6, 12),  # RGB48, already aligned
+    ],
+)
+def test_row_pitch_matches_sdk_default(width, pixel_size, expected):
+    assert ToupcamCamera._row_pitch_bytes(width, pixel_size) == expected
+
+
+def _camera_with_buffer(buffer: bytes) -> ToupcamCamera:
+    camera = ToupcamCamera.__new__(ToupcamCamera)
+    camera._internal_read_buffer = buffer
+    camera._log = squid.logging.get_logger("test_camera_toupcam")
+    return camera
+
+
+def test_rgb24_unpacking_strips_row_padding():
+    # 2 rows of 3 RGB24 pixels: 9 bytes of pixel data, then 3 bytes of padding.
+    pixels = np.arange(1, 19, dtype=np.uint8).reshape(2, 9)
+    padding = np.zeros((2, 3), dtype=np.uint8)
+    buffer = np.hstack([pixels, padding]).tobytes()
+
+    image = _camera_with_buffer(buffer)._rgb_image_from_read_buffer(width=3, height=2, pixel_size=3)
+
+    assert image.shape == (2, 3, 3)
+    assert image.dtype == np.uint8
+    np.testing.assert_array_equal(image, pixels.reshape(2, 3, 3))
+
+
+def test_rgb32_unpacking_drops_the_fourth_component():
+    # 1 row of 2 RGBA pixels; the fourth byte is padding the sensor does not fill.
+    buffer = bytes([1, 2, 3, 255, 4, 5, 6, 255])
+
+    image = _camera_with_buffer(buffer)._rgb_image_from_read_buffer(width=2, height=1, pixel_size=4)
+
+    assert image.shape == (1, 2, 3)
+    np.testing.assert_array_equal(image, np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8))
+
+
+@pytest.mark.parametrize(
+    "pixel_size, dtype, values",
+    [
+        (1, np.uint8, [1, 2, 3]),  # Grey8 in RGB mode
+        (2, np.uint16, [1000, 2000, 3000]),  # Grey16 in RGB mode
+    ],
+)
+def test_grey_in_rgb_mode_stays_two_dimensional(pixel_size, dtype, values):
+    """A mono pixel format in RGB frame format is the SDK's Grey8/Grey16 output."""
+    row = np.array(values, dtype=dtype)
+    padding = b"\x00" * (ToupcamCamera._row_pitch_bytes(3, pixel_size) - 3 * pixel_size)
+
+    image = _camera_with_buffer(row.tobytes() + padding)._rgb_image_from_read_buffer(
+        width=3, height=1, pixel_size=pixel_size
+    )
+
+    assert image.shape == (1, 3)
+    assert image.dtype == dtype
+    np.testing.assert_array_equal(image, row.reshape(1, 3))
+
+
+def test_rgb48_unpacking_yields_uint16_components():
+    # 1 row of 3 RGB48 pixels: 18 bytes of pixel data padded out to a 20 byte pitch.
+    pixels = np.arange(1000, 1009, dtype=np.uint16)
+    buffer = pixels.tobytes() + b"\x00\x00"
+
+    image = _camera_with_buffer(buffer)._rgb_image_from_read_buffer(width=3, height=1, pixel_size=6)
+
+    assert image.shape == (1, 3, 3)
+    assert image.dtype == np.uint16
+    np.testing.assert_array_equal(image, pixels.reshape(1, 3, 3))
+
+
+# --------------------------------------------------------------------------
+# Available pixel formats follow the sensor type
+# --------------------------------------------------------------------------
+
+
+def _capabilities(is_mono: bool) -> ToupCamCapabilities:
+    return ToupCamCapabilities(
+        binning_to_resolution={},
+        has_fan=False,
+        has_TEC=False,
+        has_low_noise_mode=False,
+        has_black_level=False,
+        is_mono=is_mono,
+    )
+
+
+def _camera_with_capabilities(is_mono: bool) -> ToupcamCamera:
+    camera = ToupcamCamera.__new__(ToupcamCamera)
+    camera._capabilities = _capabilities(is_mono)
+    camera._log = squid.logging.get_logger("test_camera_toupcam")
+    return camera
+
+
+def test_mono_camera_offers_only_mono_formats():
+    formats = _camera_with_capabilities(is_mono=True).get_available_pixel_formats()
+
+    assert list(formats) == [
+        CameraPixelFormat.MONO8,
+        CameraPixelFormat.MONO12,
+        CameraPixelFormat.MONO14,
+        CameraPixelFormat.MONO16,
+    ]
+
+
+def test_colour_camera_offers_only_rgb_formats():
+    formats = _camera_with_capabilities(is_mono=False).get_available_pixel_formats()
+
+    assert list(formats) == [CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48]
+
+
+@pytest.mark.parametrize("is_mono", [True, False])
+def test_available_pixel_formats_never_offers_bayer(is_mono):
+    """_raw_set_pixel_format has no BAYER branch, so offering one crashes a Qt slot."""
+    formats = _camera_with_capabilities(is_mono).get_available_pixel_formats()
+
+    assert CameraPixelFormat.BAYER_RG8 not in formats
+    assert CameraPixelFormat.BAYER_RG12 not in formats
+
+
+def test_is_mono_capability_read_from_device_flag(fake_sdk):
+    fake_sdk([FakeDeviceSpec("port-a", serial="SN-A", flag=real_toupcam.TOUPCAM_FLAG_MONO)])
+
+    _, capabilities = ToupcamCamera._open(index=0)
+
+    assert capabilities.is_mono
+
+
+def test_is_mono_capability_false_for_colour_device(fake_sdk):
+    fake_sdk([FakeDeviceSpec("port-a", serial="SN-A", flag=real_toupcam.TOUPCAM_FLAG_FAN)])
+
+    _, capabilities = ToupcamCamera._open(index=0)
+
+    assert not capabilities.is_mono
+
+
+class _RecordingHandle:
+    def __init__(self):
+        self.put_calls = []
+
+    def put_Option(self, option, value):
+        self.put_calls.append((option, value))
+
+
+def test_unsupported_pixel_format_is_rejected_without_touching_the_camera():
+    """A rejected switch must not leave a frame/pixel format pair we cannot map."""
+    camera = _camera_with_capabilities(is_mono=False)
+    camera._camera = _RecordingHandle()
+
+    with pytest.raises(ValueError, match="RGB24, RGB32, RGB48"):
+        camera.set_pixel_format(CameraPixelFormat.BAYER_RG8)
+
+    assert camera._camera.put_calls == []
+
+
+def test_unsupported_mono_format_on_colour_camera_is_rejected():
+    camera = _camera_with_capabilities(is_mono=False)
+    camera._camera = _RecordingHandle()
+
+    with pytest.raises(ValueError):
+        camera.set_pixel_format(CameraPixelFormat.MONO16)
+
+    assert camera._camera.put_calls == []
+
+
+# --------------------------------------------------------------------------
+# Strobe timing for the colour formats
+# --------------------------------------------------------------------------
+
+
+class _FakeStrobeHandle:
+    """A handle exposing only what _calculate_strobe_info reads."""
+
+    def __init__(self, width=3104, height=2084):
+        self._size = (width, height)
+
+    def get_Size(self):
+        return self._size
+
+    def get_Roi(self):
+        return (0, 0, self._size[0], self._size[1])
+
+    def get_Option(self, option):
+        if option == real_toupcam.TOUPCAM_OPTION_BANDWIDTH:
+            return 100
+        if option == real_toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE:
+            return 100  # tenths of fps
+        if option == real_toupcam.TOUPCAM_OPTION_LOW_NOISE:
+            return 0
+        raise AssertionError(f"unexpected option read: {option}")
+
+    def put_Option(self, option, value):
+        pass
+
+
+def _strobe_info_for(pixel_size: int):
+    return ToupcamCamera._calculate_strobe_info(
+        camera=_FakeStrobeHandle(),
+        pixel_size=pixel_size,
+        exposure_time_ms=20.0,
+        capabilities=_capabilities(is_mono=True),
+    )
+
+
+@pytest.mark.parametrize("pixel_size", [3, 4, 6])
+def test_strobe_info_is_finite_for_colour_pixel_sizes(pixel_size):
+    """RGB pixel sizes used to leave line_length at 0 and divide by zero."""
+    info = _strobe_info_for(pixel_size)
+
+    assert info.strobe_time_us > 0
+
+
+def test_strobe_info_keys_off_sensor_depth_not_pixel_bytes():
+    # RGB24/RGB32 are 8 bit sensor readouts; RGB48 is a 16 bit one. Each must match
+    # the mono format read at the same depth.
+    assert _strobe_info_for(3) == _strobe_info_for(1)
+    assert _strobe_info_for(4) == _strobe_info_for(1)
+    assert _strobe_info_for(6) == _strobe_info_for(2)
