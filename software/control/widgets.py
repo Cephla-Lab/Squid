@@ -12064,7 +12064,8 @@ class NapariLiveWidget(QWidget):
             layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
             layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
-            self.viewer.window._qt_viewer.layerButtons.hide()
+            if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
+                self.viewer.window._qt_viewer.layerButtons.hide()
             self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
             self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
 
@@ -12105,7 +12106,8 @@ class NapariLiveWidget(QWidget):
         layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
         layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
-        self.viewer.window._qt_viewer.layerButtons.hide()
+        if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
+            self.viewer.window._qt_viewer.layerButtons.hide()
         self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
         self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
         self.print_window_menu_items()
