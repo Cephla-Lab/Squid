@@ -173,8 +173,8 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # set window size
-        desktopWidget = QDesktopWidget()
-        width = min(desktopWidget.height() * 0.9, 1000)  # @@@TO MOVE@@@#
+        screen_height = QApplication.primaryScreen().size().height()
+        width = int(min(screen_height * 0.9, 1000))  # @@@TO MOVE@@@#
         height = width
         self.setFixedSize(width, height)
 
