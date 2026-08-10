@@ -71,7 +71,10 @@ in `general.yaml` only (per-objective overrides can't change it).
 Once more than one camera is configured, every channel entry in the live dropdown, the
 napari live widget and the multipoint channel lists gets:
 
-- a small **colored dot** identifying its camera (fixed palette, keyed by camera id), and
+- a small **sensor-type icon**: a neutral **grey dot** for a monochrome camera, an
+  **RGB tri-color disc** for a color camera (derived from the camera's current pixel
+  format; for a camera that failed to open, from its `default_pixel_format` in
+  `cameras.yaml`), and
 - for non-primary channels, a **`— <camera name>` suffix**, e.g. `BF Color — Side Camera`.
 
 This is decoration only. The canonical channel name is stored in the item's data, so saved

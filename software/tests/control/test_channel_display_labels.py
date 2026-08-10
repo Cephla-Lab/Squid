@@ -14,7 +14,6 @@ from qtpy.QtWidgets import QComboBox
 from control.channel_sequence import UNAVAILABLE_CAMERA_TOOLTIP
 from control.models.camera_registry import CameraDefinition, CameraRegistryConfig
 from control.widgets import (
-    CAMERA_DOT_COLORS,
     LiveControlWidget,
     NapariLiveWidget,
     _make_channel_decorator,
@@ -53,12 +52,29 @@ def test_label_for_unknown_camera_id_marks_unavailable():
     assert channel_display_label(_Ch("Ghost", camera=9), TWO_CAM) == "Ghost — camera 9 (unavailable)"
 
 
+def _rgba_list(icon):
+    """All pixel RGBA tuples of an icon's 12x12 rendering, for content comparison."""
+    image = icon.pixmap(12, 12).toImage()
+    return [image.pixelColor(x, y).getRgb() for y in range(image.height()) for x in range(image.width())]
+
+
 def test_dot_icon_deterministic(qtbot):
-    icon_a = camera_dot_icon(2)
-    icon_b = camera_dot_icon(2)
-    assert not icon_a.isNull() and not icon_b.isNull()
-    assert len(CAMERA_DOT_COLORS) >= 2
-    assert camera_dot_icon(1).cacheKey() != 0
+    assert _rgba_list(camera_dot_icon(False)) == _rgba_list(camera_dot_icon(False))
+    assert _rgba_list(camera_dot_icon(True)) == _rgba_list(camera_dot_icon(True))
+    assert _rgba_list(camera_dot_icon(True)) != _rgba_list(camera_dot_icon(False))
+
+
+def test_mono_icon_is_neutral_grey(qtbot):
+    opaque = [(r, g, b) for (r, g, b, a) in _rgba_list(camera_dot_icon(False)) if a > 200]
+    assert opaque, "mono icon should have opaque pixels"
+    assert all(max(px) - min(px) < 30 for px in opaque), "mono dot must stay neutral (no hue)"
+
+
+def test_color_icon_shows_distinct_rgb_wedges(qtbot):
+    opaque = [(r, g, b) for (r, g, b, a) in _rgba_list(camera_dot_icon(True)) if a > 200]
+    assert any(r - g > 60 and r - b > 60 for (r, g, b) in opaque), "expected a red wedge"
+    assert any(g - r > 40 and g - b > 40 for (r, g, b) in opaque), "expected a green wedge"
+    assert any(b - r > 60 and b - g > 60 for (r, g, b) in opaque), "expected a blue wedge"
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +134,38 @@ class TestMakeChannelDecorator:
         label, icon, enabled = decorate("BF Color")
         assert label == "BF Color — Side Camera"
         assert enabled is False
+
+    def test_icon_encodes_sensor_type_from_live_camera(self, qtbot):
+        controller = _fake_live_controller(
+            TWO_CAM, [_Ch("DAPI", camera=1), _Ch("BF Color", camera=2)], available_camera_ids=[1, 2]
+        )
+        controller.microscope.cameras[1] = SimpleNamespace(is_color=False)
+        controller.microscope.cameras[2] = SimpleNamespace(is_color=True)
+        decorate = _make_channel_decorator(lambda: controller)
+        _, mono_icon, _ = decorate("DAPI")
+        _, color_icon, _ = decorate("BF Color")
+        assert _rgba_list(mono_icon) == _rgba_list(camera_dot_icon(False))
+        assert _rgba_list(color_icon) == _rgba_list(camera_dot_icon(True))
+
+    def test_missing_camera_icon_falls_back_to_registry_default_pixel_format(self, qtbot):
+        registry = CameraRegistryConfig(
+            cameras=[
+                CameraDefinition(name="Main Camera", id=1, serial_number="SN1", type="Toupcam"),
+                CameraDefinition(
+                    name="Side Camera",
+                    id=2,
+                    serial_number="SN2",
+                    type="Toupcam",
+                    hardware_trigger=False,
+                    default_pixel_format="RGB24",
+                ),
+            ]
+        )
+        controller = _fake_live_controller(registry, [_Ch("BF Color", camera=2)], available_camera_ids=[1])
+        decorate = _make_channel_decorator(lambda: controller)
+        _, icon, enabled = decorate("BF Color")
+        assert enabled is False
+        assert _rgba_list(icon) == _rgba_list(camera_dot_icon(True))
 
 
 # ---------------------------------------------------------------------------

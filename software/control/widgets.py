@@ -73,22 +73,51 @@ def camera_id_from_display(registry, display_text) -> Optional[int]:
     return definition.id if definition is not None else None
 
 
-# Per-camera dot colors for channel lists, indexed by (camera_id - 1). Chosen to be
-# distinguishable on light and dark palettes.
-CAMERA_DOT_COLORS = ["#4C9BD4", "#E0A438", "#7BC47F", "#C57BC4"]
+# Channel-list camera icons are semantic: a neutral grey dot marks a monochrome
+# camera, an RGB tri-wedge disc marks a color camera. Camera *identity* is carried
+# by the "— <camera name>" label suffix, not the icon.
+_MONO_DOT_COLOR = "#8A939B"  # readable on light and dark palettes
+_RGB_WEDGE_COLORS = [QColor(220, 60, 60), QColor(60, 170, 80), QColor(70, 105, 225)]
 
 
-def camera_dot_icon(camera_id: int) -> QIcon:
-    """Small filled circle identifying a camera in channel lists."""
+def camera_dot_icon(is_color: bool) -> QIcon:
+    """Sensor-type icon for channel lists: grey dot = mono, RGB disc = color."""
     pixmap = QPixmap(12, 12)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    painter.setBrush(QColor(CAMERA_DOT_COLORS[(camera_id - 1) % len(CAMERA_DOT_COLORS)]))
     painter.setPen(Qt.NoPen)
-    painter.drawEllipse(1, 1, 10, 10)
+    if is_color:
+        # Three 120-degree wedges starting at the top (Qt angles are 1/16 deg, CCW).
+        for i, wedge_color in enumerate(_RGB_WEDGE_COLORS):
+            painter.setBrush(wedge_color)
+            painter.drawPie(1, 1, 10, 10, (90 - i * 120) * 16, -120 * 16)
+    else:
+        painter.setBrush(QColor(_MONO_DOT_COLOR))
+        painter.drawEllipse(1, 1, 10, 10)
     painter.end()
     return QIcon(pixmap)
+
+
+def _camera_is_color(microscope, registry, camera_id: int) -> bool:
+    """Whether a camera produces color frames, for icon selection.
+
+    Prefers the live camera's current pixel format; falls back to the registry's
+    declared default for cameras that failed to open. Unknown -> mono.
+    """
+    camera = microscope.cameras.get(camera_id)
+    if camera is not None:
+        try:
+            return bool(camera.is_color)
+        except Exception:
+            return False
+    definition = registry.get_camera_by_id(camera_id) if registry is not None else None
+    if definition is not None and definition.default_pixel_format:
+        try:
+            return CameraPixelFormat.is_color_format(CameraPixelFormat.from_string(definition.default_pixel_format))
+        except KeyError:
+            return False
+    return False
 
 
 def channel_display_label(channel, registry) -> str:
@@ -126,7 +155,8 @@ def _make_channel_decorator(live_controller_getter):
             return channel_name, None, True
         camera_id = channel.camera if channel.camera is not None else control._def.PRIMARY_CAMERA_ID
         available = camera_id in microscope.cameras
-        return channel_display_label(channel, registry), camera_dot_icon(camera_id), available
+        icon = camera_dot_icon(_camera_is_color(microscope, registry, camera_id))
+        return channel_display_label(channel, registry), icon, available
 
     return decorate
 
@@ -4256,7 +4286,8 @@ class LiveControlWidget(QFrame):
         label = channel_display_label(config, registry)
         if self._multi_camera():
             camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
-            self.dropdown_modeSelection.addItem(camera_dot_icon(camera_id), label, userData=config.name)
+            is_color = _camera_is_color(self.liveController.microscope, registry, camera_id)
+            self.dropdown_modeSelection.addItem(camera_dot_icon(is_color), label, userData=config.name)
         else:
             self.dropdown_modeSelection.addItem(label, userData=config.name)
         camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
@@ -11851,7 +11882,8 @@ class NapariLiveWidget(QWidget):
         label = channel_display_label(config, registry)
         if self._multi_camera():
             camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
-            self.dropdown_modeSelection.addItem(camera_dot_icon(camera_id), label, userData=config.name)
+            is_color = _camera_is_color(self.liveController.microscope, registry, camera_id)
+            self.dropdown_modeSelection.addItem(camera_dot_icon(is_color), label, userData=config.name)
         else:
             self.dropdown_modeSelection.addItem(label, userData=config.name)
         camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
