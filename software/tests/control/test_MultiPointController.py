@@ -446,6 +446,15 @@ def test_acquisition_moves_to_per_fov_z():
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
+
+    captured_z_mm = []
+    original_receive_image = tt.receive_image
+
+    def record_z(frame, info):
+        captured_z_mm.append(info.position.z_mm)
+        original_receive_image(frame, info)
+
+    tt.receive_image = record_z  # must be set BEFORE get_callbacks()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
     stage = mpc.stage
@@ -463,5 +472,6 @@ def test_acquisition_moves_to_per_fov_z():
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
-    # NZ defaults to 1, so the stage ends the run at the per-FOV z.
-    assert mpc.stage.get_pos().z_mm == pytest.approx(z_target, abs=1e-3)
+    # Every image of this single-FOV, NZ=1 acquisition was captured at the per-FOV z.
+    assert captured_z_mm, "no images were captured"
+    assert all(z == pytest.approx(z_target, abs=1e-3) for z in captured_z_mm)
