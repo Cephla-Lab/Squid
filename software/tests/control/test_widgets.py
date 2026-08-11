@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
@@ -2609,3 +2610,68 @@ class TestWarningErrorWidgetErrorExemptionWithDroppedCount:
 
         # But the error should be in the messages
         assert any(m["level"] == logging.ERROR for m in widget._messages)
+
+
+def _fake_wellplate_for_toggle(loaded: bool):
+    fake = SimpleNamespace(
+        scanCoordinates=MagicMock(),
+        navigationViewer=MagicMock(),
+        cached_loaded_coordinates_df=MagicMock(),
+        cached_loaded_file_path="/tmp/coords.csv",
+        text_loaded_coordinates=MagicMock(),
+        btn_load_scan_coordinates=MagicMock(),
+        has_loaded_coordinates=loaded,
+        _log=MagicMock(),
+    )
+    fake._set_has_loaded_coordinates = lambda v: control.widgets.WellplateMultiPointWidget._set_has_loaded_coordinates(
+        fake, v
+    )
+    return fake
+
+
+def test_clear_loaded_coordinates_resets_state():
+    fake = _fake_wellplate_for_toggle(loaded=True)
+
+    control.widgets.WellplateMultiPointWidget.clear_loaded_coordinates(fake)
+
+    fake.scanCoordinates.clear_regions.assert_called_once()
+    fake.navigationViewer.clear_overlay.assert_called_once()
+    assert fake.cached_loaded_coordinates_df is None
+    assert fake.cached_loaded_file_path is None
+    fake.text_loaded_coordinates.clear.assert_called_once()
+    assert fake.has_loaded_coordinates is False
+    fake.btn_load_scan_coordinates.setText.assert_called_with("Load New Coords")
+
+
+def test_load_or_clear_click_clears_when_loaded():
+    fake = _fake_wellplate_for_toggle(loaded=True)
+    fake.clear_loaded_coordinates = MagicMock()
+
+    control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.clear_loaded_coordinates.assert_called_once()
+
+
+def test_load_or_clear_click_opens_dialog_when_not_loaded():
+    fake = _fake_wellplate_for_toggle(loaded=False)
+    fake.load_coordinates = MagicMock()
+
+    with patch("control.widgets.QFileDialog.getOpenFileName", return_value=("/tmp/some.csv", "")):
+        control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.load_coordinates.assert_called_once_with("/tmp/some.csv")
+
+
+def test_load_or_clear_click_cancelled_dialog_loads_nothing():
+    fake = _fake_wellplate_for_toggle(loaded=False)
+    fake.load_coordinates = MagicMock()
+
+    with patch("control.widgets.QFileDialog.getOpenFileName", return_value=("", "")):
+        control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.load_coordinates.assert_not_called()
+
+
+def test_dead_save_clear_toggle_machinery_removed():
+    assert not hasattr(control.widgets.WellplateMultiPointWidget, "toggle_coordinate_controls")
+    assert not hasattr(control.widgets.WellplateMultiPointWidget, "on_save_or_clear_coordinates_clicked")

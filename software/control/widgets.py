@@ -7735,8 +7735,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self._on_mosaic_mode_changed(self.napariMosaicWidget.mode)
 
         # Connect save/clear coordinates button
-        self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
-        self.btn_load_scan_coordinates.clicked.connect(self.on_load_coordinates_clicked)
+        self.btn_save_scan_coordinates.clicked.connect(self.save_coordinates)
+        self.btn_load_scan_coordinates.clicked.connect(self.on_load_or_clear_coordinates_clicked)
 
         # Connect acquisition tabs
         self.checkbox_xy.toggled.connect(self.on_xy_toggled)
@@ -8094,7 +8094,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # If no file has been loaded previously, open file dialog immediately
             # But skip if we're loading from cache
             if self.cached_loaded_coordinates_df is None and not getattr(self, "_loading_from_cache", False):
-                QTimer.singleShot(100, self.on_load_coordinates_clicked)
+                QTimer.singleShot(100, self.on_load_or_clear_coordinates_clicked)
             else:
                 # Restore cached coordinates when switching to Load Coordinates mode
                 self.restore_cached_coordinates()
@@ -8973,7 +8973,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
         self.setEnabled_all(True)
-        self.toggle_coordinate_controls(self.has_loaded_coordinates)
 
     def setEnabled_all(self, enabled):
         for widget in self.findChildren(QWidget):
@@ -9063,46 +9062,30 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
 
-    def toggle_coordinate_controls(self, has_coordinates: bool):
-        """Toggle button text and control states based on whether coordinates are loaded"""
-        if has_coordinates:
-            self.btn_save_scan_coordinates.setText("Clear Coordinates")
-            # Disable scan controls when coordinates are loaded
-            self.combobox_shape.setEnabled(False)
-            self.entry_scan_size.setEnabled(False)
-            self.entry_well_coverage.setEnabled(False)
-            self.entry_overlap.setEnabled(False)
-            # Disable well selector
-            if self.well_selection_widget is not None:
-                self.well_selection_widget.setEnabled(False)
-        else:
-            self.btn_save_scan_coordinates.setText("Save Coordinates")
-            # Re-enable scan controls when coordinates are cleared - use update_scan_control_ui for proper logic
-            self.update_scan_control_ui()
-
-        self.has_loaded_coordinates = has_coordinates
-
-    def on_save_or_clear_coordinates_clicked(self):
-        """Handle save/clear coordinates button click"""
+    def on_load_or_clear_coordinates_clicked(self):
+        """Toggle for btn_load_scan_coordinates: open the load dialog when nothing
+        is loaded, clear the loaded coordinates otherwise."""
         if self.has_loaded_coordinates:
-            # Clear coordinates
-            self.scanCoordinates.clear_regions()
-            self.toggle_coordinate_controls(has_coordinates=False)
-            # Update display/coordinates as needed
-            self.update_coordinates()
-        else:
-            # Save coordinates (existing save functionality)
-            self.save_coordinates()
-
-    def on_load_coordinates_clicked(self):
-        """Open file dialog and load coordinates from selected CSV file"""
+            self.clear_loaded_coordinates()
+            return
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"  # Default directory
+            self, "Load Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"
         )
-
         if file_path:
             self._log.info(f"Loading coordinates from {file_path}")
             self.load_coordinates(file_path)
+
+    def clear_loaded_coordinates(self):
+        self.scanCoordinates.clear_regions()
+        self.navigationViewer.clear_overlay()
+        self.cached_loaded_coordinates_df = None
+        self.cached_loaded_file_path = None
+        self.text_loaded_coordinates.clear()
+        self._set_has_loaded_coordinates(False)
+
+    def _set_has_loaded_coordinates(self, loaded: bool):
+        self.has_loaded_coordinates = loaded
+        self.btn_load_scan_coordinates.setText("Clear Coords" if loaded else "Load New Coords")
 
     def restore_cached_coordinates(self):
         """Restore previously loaded coordinates from cached dataframe"""
@@ -9132,6 +9115,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Update text area to show loaded file path
         if self.cached_loaded_file_path:
             self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
+        self._set_has_loaded_coordinates(True)
 
     def load_coordinates(self, file_path: str):
         """Load scan coordinates from a CSV file.
@@ -9173,6 +9157,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Update text area to show loaded file path
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
+            self._set_has_loaded_coordinates(True)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
