@@ -2772,3 +2772,46 @@ def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
     assert fake.scanCoordinates.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
     assert fake.scanCoordinates.region_centers["A1"] == [10.0, 10.0]
     fake.navigationViewer.register_fovs_to_image.assert_called_once()
+
+
+def test_parfocal_adjusted_z_mm_uses_xeryon_switcher_offset(monkeypatch):
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_1", ["4x", "10x"])
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2", ["20x", "40x"])
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM", 2)
+
+    # pos1 -> pos2: the changer parks the stage 2 mm lower for position-2 objectives.
+    assert control.widgets.parfocal_adjusted_z_mm("10x", "20x", 3.0) == pytest.approx(1.0)
+    # pos2 -> pos1: back up.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "10x", 1.0) == pytest.approx(3.0)
+    # Same position (either one): unchanged.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "40x", 1.0) == pytest.approx(1.0)
+    assert control.widgets.parfocal_adjusted_z_mm("4x", "10x", 3.0) == pytest.approx(3.0)
+    # Target == current: unmodified.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "20x", 1.0) == pytest.approx(1.0)
+
+
+def test_parfocal_adjusted_z_mm_is_noop_without_switcher(monkeypatch):
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+
+    assert control.widgets.parfocal_adjusted_z_mm("10x", "20x", 3.0) == pytest.approx(3.0)
+
+
+def test_coordinate_rows_for_save_stamps_default_z_and_keeps_existing_z():
+    fovs = {"A1": [(10.0, 10.0), (10.5, 10.0, 4.0)], "B2": [(20.0, 20.0)]}
+
+    df = control.widgets.coordinate_rows_for_save(fovs, 3.0)
+
+    assert list(df.columns) == ["region", "x (mm)", "y (mm)", "z (mm)"]
+    assert df["region"].tolist() == ["A1", "A1", "B2"]
+    assert df["z (mm)"].tolist() == [3.0, 4.0, 3.0]
+
+
+def test_save_load_round_trip_preserves_z():
+    sc = _scan_coordinates_for_test()
+    fovs = {"A1": [(10.0, 10.0), (10.5, 10.0)]}
+
+    df = control.widgets.coordinate_rows_for_save(fovs, 3.25)
+    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.25), (10.5, 10.0, 3.25)]

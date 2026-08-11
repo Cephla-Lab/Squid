@@ -212,6 +212,38 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
     return region_fov_coords, z_dropped
 
 
+def _objective_relative_z_mm(objective_name):
+    """Relative stage-Z frame of an objective under the Xeryon 2-position switcher:
+    the changer parks the stage XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM lower while a
+    position-2 objective is in use (objective_changer_2_pos_controller.moveToPosition2).
+    0 for position-1 objectives, names not in the position lists, and machines without
+    the switcher."""
+    if not control._def.USE_XERYON:
+        return 0.0
+    if objective_name in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
+        return -float(control._def.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM)
+    return 0.0
+
+
+def parfocal_adjusted_z_mm(current_objective, target_objective, z_mm):
+    """Shift a stage z from the current objective's frame to the target objective's,
+    using the objective switcher's per-machine Z offset (no-op without a switcher)."""
+    return z_mm + (_objective_relative_z_mm(target_objective) - _objective_relative_z_mm(current_objective))
+
+
+def coordinate_rows_for_save(region_fov_coordinates, z_default_mm):
+    """Flatten region FOV coordinates into a coordinates dataframe with a z column.
+
+    FOVs that already carry z (3-tuples) keep it; 2-tuple FOVs get z_default_mm.
+    """
+    rows = []
+    for region_id, fov_coords in region_fov_coordinates.items():
+        for coord in fov_coords:
+            z = float(coord[2]) if len(coord) == 3 else z_default_mm
+            rows.append([region_id, float(coord[0]), float(coord[1]), z])
+    return pd.DataFrame(rows, columns=["region", "x (mm)", "y (mm)", "z (mm)"])
+
+
 class WrapperWindow(QMainWindow):
     def __init__(self, content_widget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -9191,56 +9223,45 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             QMessageBox.warning(self, "Load Error", f"Failed to load coordinates from {file_path}\nError: {str(e)}")
 
     def save_coordinates(self):
-        """Save scan coordinates to a CSV file.
+        """Save scan coordinates to CSV files (one per objective).
 
-        Opens a file dialog for the user to specify a folder name and location.
-        Coordinates are saved in CSV format with headers for each objective.
+        Each FOV row carries 'z (mm)': the current stage z for the objective in
+        use, shifted for the other objectives by the objective switcher's
+        per-machine Z offset (XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM).
         """
-        # Open file dialog for user to specify folder name and location
         folder_path, _ = QFileDialog.getSaveFileName(
             self, "Create Folder for Scan Coordinates", "", "Folder"  # Default directory
         )
+        if not folder_path:
+            return
 
-        if folder_path:
-            # Create the folder if it doesn't exist
-            os.makedirs(folder_path, exist_ok=True)
+        os.makedirs(folder_path, exist_ok=True)
+        folder_name = os.path.basename(folder_path)
+        current_objective = self.objectiveStore.current_objective
+        z_current_mm = self.stage.get_pos().z_mm
 
-            folder_name = os.path.basename(folder_path)
+        def _save_for_objective(objective_name):
+            self.objectiveStore.set_current_objective(objective_name)
+            self.update_coordinates()
+            z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
+            df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
+            file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
+            df.to_csv(file_path, index=False)
+            self._log.info(f"Saved scan coordinates to {file_path}")
 
-            current_objective = self.objectiveStore.current_objective
-
-            def _helper_save_coordinates(self, file_path: str):
-                # Get coordinates from scanCoordinates
-                coordinates = []
-                for region_id, fov_coords in self.scanCoordinates.region_fov_coordinates.items():
-                    for x, y in fov_coords:
-                        coordinates.append([region_id, x, y])
-
-                # Save to CSV with headers
-
-                df = pd.DataFrame(coordinates, columns=["region", "x (mm)", "y (mm)"])
-                df.to_csv(file_path, index=False)
-
-                self._log.info(f"Saved scan coordinates to {file_path}")
-
-            try:
-                for objective_name in self.objectiveStore.objectives_dict.keys():
-                    if objective_name == current_objective:
-                        continue
-                    else:
-                        self.objectiveStore.set_current_objective(objective_name)
-                        self.update_coordinates()
-                        obj_file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
-                        _helper_save_coordinates(self, obj_file_path)
-
+        try:
+            for objective_name in self.objectiveStore.objectives_dict.keys():
+                if objective_name != current_objective:
+                    _save_for_objective(objective_name)
+            _save_for_objective(current_objective)
+        except Exception as e:
+            self._log.error(f"Failed to save coordinates: {str(e)}")
+            QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
+        finally:
+            # Leave the store on the objective the user had selected even if a save failed.
+            if self.objectiveStore.current_objective != current_objective:
                 self.objectiveStore.set_current_objective(current_objective)
                 self.update_coordinates()
-                obj_file_path = os.path.join(folder_path, f"{folder_name}_{current_objective}.csv")
-                _helper_save_coordinates(self, obj_file_path)
-
-            except Exception as e:
-                self._log.error(f"Failed to save coordinates: {str(e)}")
-                QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
