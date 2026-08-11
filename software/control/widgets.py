@@ -152,6 +152,66 @@ def save_last_used_saving_path(path: str) -> None:
             pass  # Silently fail - caching is a convenience feature
 
 
+def load_coordinate_regions_from_dataframe(scan_coordinates, df):
+    """Clear scan_coordinates and populate its regions from a coordinates dataframe.
+
+    The dataframe must have 'region', 'x (mm)' and 'y (mm)' columns. If a 'z (mm)'
+    column is present and fully populated, FOVs are loaded as (x, y, z) tuples so
+    the acquisition moves Z per FOV; otherwise FOVs are (x, y). Region centers are
+    stored as mutable [x, y] lists without z — nothing reads a center z, and
+    ScanCoordinates.update_fov_z_level appends one when a focus map sets it.
+
+    Returns:
+        (region_fov_coords, z_dropped): dict of region_id -> list of loaded FOV
+        tuples (for navigation-viewer registration by the caller), and whether a
+        'z (mm)' column was present but ignored because it contained empty cells.
+
+    Raises:
+        ValueError: on missing required columns, or z values outside SOFTWARE_POS_LIMIT.
+    """
+    required_columns = ["region", "x (mm)", "y (mm)"]
+    if not all(col in df.columns for col in required_columns):
+        raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+
+    has_z = "z (mm)" in df.columns
+    z_dropped = False
+    if has_z and df["z (mm)"].isna().any():
+        # Keep every region's tuples homogeneous and never let NaN reach the stage.
+        has_z = False
+        z_dropped = True
+
+    if has_z:
+        z_min = control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE
+        z_max = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE
+        out_of_range = df[(df["z (mm)"] < z_min) | (df["z (mm)"] > z_max)]
+        if not out_of_range.empty:
+            raise ValueError(
+                f"z (mm) values outside software limits [{z_min}, {z_max}] mm: "
+                f"{sorted(out_of_range['z (mm)'].unique().tolist())}"
+            )
+
+    scan_coordinates.clear_regions()
+
+    region_fov_coords = {}
+    for region_id in df["region"].unique():
+        region_points = df[df["region"] == region_id]
+        if has_z:
+            coords = [
+                (float(x), float(y), float(z))
+                for x, y, z in zip(region_points["x (mm)"], region_points["y (mm)"], region_points["z (mm)"])
+            ]
+        else:
+            coords = [(float(x), float(y)) for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])]
+        scan_coordinates.region_fov_coordinates[region_id] = coords
+        scan_coordinates.region_centers[region_id] = [
+            float(region_points["x (mm)"].mean()),
+            float(region_points["y (mm)"].mean()),
+        ]
+        region_fov_coords[region_id] = coords
+
+    return region_fov_coords, z_dropped
+
+
 class WrapperWindow(QMainWindow):
     def __init__(self, content_widget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -9088,74 +9148,41 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.btn_load_scan_coordinates.setText("Clear Coords" if loaded else "Load New Coords")
 
     def restore_cached_coordinates(self):
-        """Restore previously loaded coordinates from cached dataframe"""
+        """Restore previously loaded coordinates from the cached dataframe."""
         if self.cached_loaded_coordinates_df is None:
             return
 
-        df = self.cached_loaded_coordinates_df
+        region_fov_coords, _ = load_coordinate_regions_from_dataframe(
+            self.scanCoordinates, self.cached_loaded_coordinates_df
+        )
+        for coords in region_fov_coords.values():
+            self.navigationViewer.register_fovs_to_image(coords)
 
-        # Clear existing coordinates
-        self.scanCoordinates.clear_regions()
-
-        # Load coordinates into scanCoordinates from cached dataframe
-        for region_id in df["region"].unique():
-            region_points = df[df["region"] == region_id]
-            coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-            self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-            # Calculate and store region center (average of points)
-            center_x = region_points["x (mm)"].mean()
-            center_y = region_points["y (mm)"].mean()
-            self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-            # Register FOVs with navigation viewer
-            for x, y in coords:
-                self.navigationViewer.register_fov_to_image(x, y)
-
-        # Update text area to show loaded file path
         if self.cached_loaded_file_path:
             self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
         self._set_has_loaded_coordinates(True)
 
     def load_coordinates(self, file_path: str):
-        """Load scan coordinates from a CSV file.
-
-        Args:
-            file_path: Path to CSV file containing coordinates
-        """
+        """Load scan coordinates (optionally with per-FOV z) from a CSV file."""
         try:
-            # Read coordinates from CSV
             df = pd.read_csv(file_path)
-
-            # Validate CSV format
-            required_columns = ["region", "x (mm)", "y (mm)"]
-            if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+            region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
             # Cache the dataframe and file path
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
 
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
-            for region_id in df["region"].unique():
-                region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-                # Calculate and store region center (average of points)
-                center_x = region_points["x (mm)"].mean()
-                center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-                # Register FOVs with navigation viewer
+            for coords in region_fov_coords.values():
                 self.navigationViewer.register_fovs_to_image(coords)
 
-            self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
+            if z_dropped:
+                QMessageBox.warning(
+                    self,
+                    "Z column ignored",
+                    "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
+                )
 
-            # Update text area to show loaded file path
+            self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
             self._set_has_loaded_coordinates(True)
 
@@ -9818,30 +9845,18 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             file_path: Path to CSV file containing coordinates
         """
         try:
-            # Read coordinates from CSV
             df = pd.read_csv(file_path)
+            region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
-            # Validate CSV format
-            required_columns = ["region", "x (mm)", "y (mm)"]
-            if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
-
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
-            for region_id in df["region"].unique():
-                region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-                # Calculate and store region center (average of points)
-                center_x = region_points["x (mm)"].mean()
-                center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-                # Register FOVs with navigation viewer
+            for coords in region_fov_coords.values():
                 self.navigationViewer.register_fovs_to_image(coords)
+
+            if z_dropped:
+                QMessageBox.warning(
+                    self,
+                    "Z column ignored",
+                    "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
+                )
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 

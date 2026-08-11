@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
 
@@ -13,6 +14,7 @@ import control._def
 import control.microscope
 import control.widgets
 from control.core import core as core_module
+from control.core.scan_coordinates import ScanCoordinates
 from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
 from squid.abc import CameraFrame, CameraFrameFormat
 from squid.config import CameraPixelFormat
@@ -2675,3 +2677,98 @@ def test_load_or_clear_click_cancelled_dialog_loads_nothing():
 def test_dead_save_clear_toggle_machinery_removed():
     assert not hasattr(control.widgets.WellplateMultiPointWidget, "toggle_coordinate_controls")
     assert not hasattr(control.widgets.WellplateMultiPointWidget, "on_save_or_clear_coordinates_clicked")
+
+
+def _scan_coordinates_for_test():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    return ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+
+
+def test_load_regions_with_z_column_builds_3tuples_and_list_centers():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame(
+        {
+            "region": ["A1", "A1", "B2"],
+            "x (mm)": [10.0, 10.5, 20.0],
+            "y (mm)": [10.0, 10.0, 20.0],
+            "z (mm)": [3.0, 3.0, 3.5],
+        }
+    )
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0), (10.5, 10.0, 3.0)]
+    assert sc.region_fov_coordinates["B2"] == [(20.0, 20.0, 3.5)]
+    assert sc.region_centers["A1"] == [10.25, 10.0]
+    assert isinstance(sc.region_centers["A1"], list)
+    assert fovs == sc.region_fov_coordinates
+
+
+def test_load_regions_without_z_column_builds_2tuples():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
+
+
+def test_load_regions_with_nan_z_drops_the_column():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame(
+        {"region": ["A1", "A1"], "x (mm)": [10.0, 10.5], "y (mm)": [10.0, 10.0], "z (mm)": [3.0, float("nan")]}
+    )
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is True
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0), (10.5, 10.0)]
+
+
+def test_load_regions_with_out_of_range_z_raises():
+    sc = _scan_coordinates_for_test()
+    bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [bad_z]})
+
+    with pytest.raises(ValueError, match="z"):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+
+def test_load_regions_missing_required_columns_raises():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0]})
+
+    with pytest.raises(ValueError, match="region"):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+
+def test_loaded_regions_survive_update_fov_z_level():
+    # Regression: tuple centers used to crash update_fov_z_level (focus-map path).
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
+    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    sc.update_fov_z_level("A1", 0, 4.0)
+
+    assert sc.region_fov_coordinates["A1"][0] == (10.0, 10.0, 4.0)
+    assert sc.region_centers["A1"] == [10.0, 10.0, 4.0]
+
+
+def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
+    # The fluidics widget's loader goes through the same shared helper.
+    csv_path = tmp_path / "coords.csv"
+    pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [3.0]}).to_csv(csv_path, index=False)
+
+    fake = SimpleNamespace(
+        scanCoordinates=_scan_coordinates_for_test(),
+        navigationViewer=MagicMock(),
+        _log=MagicMock(),
+    )
+
+    control.widgets.MultiPointWithFluidicsWidget.load_coordinates(fake, str(csv_path))
+
+    assert fake.scanCoordinates.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
+    assert fake.scanCoordinates.region_centers["A1"] == [10.0, 10.0]
+    fake.navigationViewer.register_fovs_to_image.assert_called_once()
