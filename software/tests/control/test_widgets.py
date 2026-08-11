@@ -2614,11 +2614,11 @@ class TestWarningErrorWidgetErrorExemptionWithDroppedCount:
         assert any(m["level"] == logging.ERROR for m in widget._messages)
 
 
-def _fake_wellplate_for_toggle(loaded: bool):
+def _fake_wellplate_for_toggle(loaded: bool, scan_coordinates=None, cached_df=None):
     fake = SimpleNamespace(
-        scanCoordinates=MagicMock(),
+        scanCoordinates=scan_coordinates if scan_coordinates is not None else MagicMock(),
         navigationViewer=MagicMock(),
-        cached_loaded_coordinates_df=MagicMock(),
+        cached_loaded_coordinates_df=cached_df if cached_df is not None else MagicMock(),
         cached_loaded_file_path="/tmp/coords.csv",
         text_loaded_coordinates=MagicMock(),
         btn_load_scan_coordinates=MagicMock(),
@@ -2694,19 +2694,7 @@ def test_restore_cached_coordinates_invalid_cached_df_does_not_raise_and_warns()
     bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
     bad_df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [bad_z]})
 
-    fake = SimpleNamespace(
-        scanCoordinates=sc,
-        navigationViewer=MagicMock(),
-        cached_loaded_coordinates_df=bad_df,
-        cached_loaded_file_path="/tmp/coords.csv",
-        text_loaded_coordinates=MagicMock(),
-        btn_load_scan_coordinates=MagicMock(),
-        has_loaded_coordinates=False,
-        _log=MagicMock(),
-    )
-    fake._set_has_loaded_coordinates = lambda v: control.widgets.WellplateMultiPointWidget._set_has_loaded_coordinates(
-        fake, v
-    )
+    fake = _fake_wellplate_for_toggle(loaded=False, scan_coordinates=sc, cached_df=bad_df)
 
     with patch("control.widgets.QMessageBox.warning") as mock_warning:
         control.widgets.WellplateMultiPointWidget.restore_cached_coordinates(fake)

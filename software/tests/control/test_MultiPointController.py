@@ -448,14 +448,14 @@ def test_acquisition_moves_to_per_fov_z():
     tt = TestAcquisitionTracker()
 
     captured_z_mm = []
-    original_receive_image = tt.receive_image
 
     def record_z(frame, info):
         captured_z_mm.append(info.position.z_mm)
-        original_receive_image(frame, info)
+        tt.receive_image(frame, info)
 
-    tt.receive_image = record_z  # must be set BEFORE get_callbacks()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    callbacks = tt.get_callbacks()
+    callbacks.signal_new_image = record_z
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
 
     stage = mpc.stage
     x = stage.get_config().X_AXIS.MIN_POSITION + 1.0

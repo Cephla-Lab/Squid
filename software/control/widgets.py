@@ -213,11 +213,23 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
         ]
 
     scan_coordinates.clear_regions()
-    for region_id, coords in region_fov_coords.items():
-        scan_coordinates.region_fov_coordinates[region_id] = coords
-        scan_coordinates.region_centers[region_id] = region_centers[region_id]
+    scan_coordinates.region_fov_coordinates.update(region_fov_coords)
+    scan_coordinates.region_centers.update(region_centers)
 
     return region_fov_coords, z_dropped
+
+
+def _register_loaded_fovs(widget, region_fov_coords, z_dropped):
+    """Register freshly loaded FOVs on the widget's navigation viewer, warning once
+    when load_coordinate_regions_from_dataframe dropped an incomplete z column."""
+    for coords in region_fov_coords.values():
+        widget.navigationViewer.register_fovs_to_image(coords)
+    if z_dropped:
+        QMessageBox.warning(
+            widget,
+            "Z column ignored",
+            "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
+        )
 
 
 def _objective_relative_z_mm(objective_name):
@@ -228,7 +240,7 @@ def _objective_relative_z_mm(objective_name):
     the switcher."""
     if not control._def.USE_XERYON:
         return 0.0
-    if objective_name in control._def.XERYON_OBJECTIVE_SWITCHER_POS_2:
+    if control._def.xeryon_objective_position(objective_name) == 2:
         return -float(control._def.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM)
     return 0.0
 
@@ -9222,15 +9234,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
 
-            for coords in region_fov_coords.values():
-                self.navigationViewer.register_fovs_to_image(coords)
-
-            if z_dropped:
-                QMessageBox.warning(
-                    self,
-                    "Z column ignored",
-                    "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
-                )
+            _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
@@ -9887,15 +9891,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             df = pd.read_csv(file_path)
             region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
-            for coords in region_fov_coords.values():
-                self.navigationViewer.register_fovs_to_image(coords)
-
-            if z_dropped:
-                QMessageBox.warning(
-                    self,
-                    "Z column ignored",
-                    "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
-                )
+            _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 

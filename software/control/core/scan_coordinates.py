@@ -673,7 +673,12 @@ class ScanCoordinates:
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
 
     def update_fov_z_level(self, region_id, fov, new_z):
-        """Update z-level for a specific FOV and its region center"""
+        """Update z-level for a specific FOV and its region center.
+
+        No production caller at the moment (the focus-map write-back was removed;
+        acquisitions now rewrite a private snapshot instead) — kept as the public
+        API for setting a per-FOV z, and it documents the requirement that region
+        centers stay mutable lists."""
         if not self.validate_region(region_id):
             print(f"Region {region_id} not found")
             return
