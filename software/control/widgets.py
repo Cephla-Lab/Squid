@@ -158,8 +158,12 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
     The dataframe must have 'region', 'x (mm)' and 'y (mm)' columns. If a 'z (mm)'
     column is present and fully populated, FOVs are loaded as (x, y, z) tuples so
     the acquisition moves Z per FOV; otherwise FOVs are (x, y). Region centers are
-    stored as mutable [x, y] lists without z — nothing reads a center z, and
-    ScanCoordinates.update_fov_z_level appends one when a focus map sets it.
+    stored as mutable [x, y] lists without z — nothing reads a center z, and a
+    mutable list keeps them consistent with the ScanCoordinates.add_* builders
+    (and append-safe for any future center-z writer).
+
+    All parsing/conversion happens before scan_coordinates is mutated, so a bad
+    row raises without clearing or partially overwriting existing regions.
 
     Returns:
         (region_fov_coords, z_dropped): dict of region_id -> list of loaded FOV
@@ -190,9 +194,9 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
                 f"{sorted(out_of_range['z (mm)'].unique().tolist())}"
             )
 
-    scan_coordinates.clear_regions()
-
+    # Parse/convert everything up front so a bad cell raises before any mutation.
     region_fov_coords = {}
+    region_centers = {}
     for region_id in df["region"].unique():
         region_points = df[df["region"] == region_id]
         if has_z:
@@ -202,12 +206,16 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
             ]
         else:
             coords = [(float(x), float(y)) for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])]
-        scan_coordinates.region_fov_coordinates[region_id] = coords
-        scan_coordinates.region_centers[region_id] = [
+        region_fov_coords[region_id] = coords
+        region_centers[region_id] = [
             float(region_points["x (mm)"].mean()),
             float(region_points["y (mm)"].mean()),
         ]
-        region_fov_coords[region_id] = coords
+
+    scan_coordinates.clear_regions()
+    for region_id, coords in region_fov_coords.items():
+        scan_coordinates.region_fov_coordinates[region_id] = coords
+        scan_coordinates.region_centers[region_id] = region_centers[region_id]
 
     return region_fov_coords, z_dropped
 
@@ -9184,15 +9192,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         if self.cached_loaded_coordinates_df is None:
             return
 
-        region_fov_coords, _ = load_coordinate_regions_from_dataframe(
-            self.scanCoordinates, self.cached_loaded_coordinates_df
-        )
-        for coords in region_fov_coords.values():
-            self.navigationViewer.register_fovs_to_image(coords)
+        try:
+            region_fov_coords, _ = load_coordinate_regions_from_dataframe(
+                self.scanCoordinates, self.cached_loaded_coordinates_df
+            )
+            for coords in region_fov_coords.values():
+                self.navigationViewer.register_fovs_to_image(coords)
 
-        if self.cached_loaded_file_path:
-            self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
-        self._set_has_loaded_coordinates(True)
+            if self.cached_loaded_file_path:
+                self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
+            self._set_has_loaded_coordinates(True)
+
+        except Exception as e:
+            # SOFTWARE_POS_LIMIT.Z_POSITIVE/Z_NEGATIVE are runtime-mutable, so a
+            # cached dataframe that validated at load time can fail validation on
+            # a later restore (e.g. mode switch away and back). This method is
+            # called from a Qt slot, so a raised exception here would propagate
+            # into the event loop.
+            self._log.error(f"Failed to restore cached coordinates: {str(e)}")
+            QMessageBox.warning(self, "Load Error", f"Failed to restore cached coordinates\nError: {str(e)}")
 
     def load_coordinates(self, file_path: str):
         """Load scan coordinates (optionally with per-FOV z) from a CSV file."""

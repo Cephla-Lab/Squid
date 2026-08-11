@@ -2684,6 +2684,38 @@ def _scan_coordinates_for_test():
     return ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
 
 
+def test_restore_cached_coordinates_invalid_cached_df_does_not_raise_and_warns():
+    # SOFTWARE_POS_LIMIT.Z_POSITIVE/Z_NEGATIVE are runtime-mutable, so a cached
+    # dataframe that validated at load time can fail validation on a later
+    # restore (e.g. mode switch away and back). restore_cached_coordinates is
+    # called from a Qt slot (on_xy_mode_changed), so it must not let the
+    # helper's ValueError propagate into the event loop.
+    sc = _scan_coordinates_for_test()
+    bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
+    bad_df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [bad_z]})
+
+    fake = SimpleNamespace(
+        scanCoordinates=sc,
+        navigationViewer=MagicMock(),
+        cached_loaded_coordinates_df=bad_df,
+        cached_loaded_file_path="/tmp/coords.csv",
+        text_loaded_coordinates=MagicMock(),
+        btn_load_scan_coordinates=MagicMock(),
+        has_loaded_coordinates=False,
+        _log=MagicMock(),
+    )
+    fake._set_has_loaded_coordinates = lambda v: control.widgets.WellplateMultiPointWidget._set_has_loaded_coordinates(
+        fake, v
+    )
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warning:
+        control.widgets.WellplateMultiPointWidget.restore_cached_coordinates(fake)
+
+    mock_warning.assert_called_once()
+    fake._log.error.assert_called_once()
+    assert fake.has_loaded_coordinates is False
+
+
 def test_load_regions_with_z_column_builds_3tuples_and_list_centers():
     sc = _scan_coordinates_for_test()
     df = pd.DataFrame(
@@ -2742,6 +2774,21 @@ def test_load_regions_missing_required_columns_raises():
 
     with pytest.raises(ValueError, match="region"):
         control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+
+def test_load_regions_mid_loop_conversion_failure_leaves_existing_regions_intact():
+    # A non-numeric cell in a later region must not wipe out regions that were
+    # already loaded successfully in a previous call.
+    sc = _scan_coordinates_for_test()
+    good_df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
+    control.widgets.load_coordinate_regions_from_dataframe(sc, good_df)
+
+    bad_df = pd.DataFrame({"region": ["B2"], "x (mm)": ["not-a-number"], "y (mm)": [20.0]})
+
+    with pytest.raises(ValueError):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, bad_df)
+
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
 
 
 def test_loaded_regions_survive_update_fov_z_level():
