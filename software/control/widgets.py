@@ -12444,10 +12444,9 @@ class NapariMultiChannelWidget(QWidget):
         self.objectiveStore = objectiveStore
         self.camera = camera
         self.contrastManager = contrastManager
-        self.image_width = 0
-        self.image_height = 0
         self.dtype = np.uint8
         self.channels = set()
+        # Fallback only; each layer is scaled by the pixel size passed with its own frame.
         self.pixel_size_um = 1
         self.dz_um = 1
         self.Nz = 1
@@ -12520,7 +12519,16 @@ class NapariMultiChannelWidget(QWidget):
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def initLayers(self, image_height, image_width, image_dtype):
-        """Initializes the full canvas for each channel based on the acquisition parameters."""
+        """Prepare the viewer for an acquisition. Individual layers are built on demand by
+        updateLayers, which sizes each one from the frame that feeds it, so image_height and
+        image_width are only the announced geometry of the first frame - nothing here stores
+        them.
+
+        layers_initialized latches True: updateLayers rebuilds a single layer in place when
+        its geometry changes, so there is no longer any path that resets it. Do not size
+        anything off widget-wide geometry here - that is exactly what stopped a mono and a
+        colour camera from coexisting.
+        """
         if self.acquisition_initialized:
             for layer in list(self.viewer.layers):
                 if layer.name not in self.channels:
@@ -12531,16 +12539,22 @@ class NapariMultiChannelWidget(QWidget):
             if self.dtype != np.dtype(image_dtype) and not USE_NAPARI_FOR_LIVE_VIEW:
                 self.contrastManager.scale_contrast_limits(image_dtype)
 
-        self.image_width = image_width
-        self.image_height = image_height
         self.dtype = np.dtype(image_dtype)
         self.layers_initialized = True
         self.update_layer_count = 0
 
-    def updateLayers(self, image, x, y, k, channel_name):
-        """Updates the appropriate slice of the canvas with the new image data."""
+    def updateLayers(self, image, x, y, k, channel_name, pixel_size_um=None):
+        """Updates the appropriate slice of the canvas with the new image data.
+
+        pixel_size_um is this frame's own image pixel size, resolved by the emitter from the
+        channel's bound camera. self.pixel_size_um is only a fallback: it is computed once at
+        acquisition start from the *active* camera, so on a dual-camera run with different
+        pixel pitch or binning it describes the wrong sensor for half the channels, and
+        layers scaled with it do not overlay.
+        """
         rgb = len(image.shape) == 3
         incoming_dtype = np.dtype(image.dtype)
+        layer_pixel_size_um = self.pixel_size_um if pixel_size_um is None else pixel_size_um
 
         if not self.layers_initialized:
             self.initLayers(image.shape[0], image.shape[1], image.dtype)
@@ -12554,7 +12568,6 @@ class NapariMultiChannelWidget(QWidget):
         existing = self.viewer.layers[channel_name] if channel_name in self.viewer.layers else None
         if existing is not None and (existing.data.dtype != incoming_dtype or existing.data.shape[1:] != image.shape):
             self.viewer.layers.remove(existing)
-            self.channels.discard(channel_name)
             existing = None
 
         if existing is None:
@@ -12574,7 +12587,7 @@ class NapariMultiChannelWidget(QWidget):
                     color = self.generateColormap(channel_info)
                 canvas = np.zeros((self.Nz, image.shape[0], image.shape[1]), dtype=incoming_dtype)
 
-            limits = self.getContrastLimits(incoming_dtype)
+            limits = self.contrastManager.get_limits_for_dtype(channel_name, incoming_dtype)
             layer = self.viewer.add_image(
                 canvas,
                 name=channel_name,
@@ -12583,11 +12596,9 @@ class NapariMultiChannelWidget(QWidget):
                 colormap=color,
                 contrast_limits=limits,
                 blending="additive",
-                scale=(self.dz_um, self.pixel_size_um, self.pixel_size_um),
+                scale=(self.dz_um, layer_pixel_size_um, layer_pixel_size_um),
             )
 
-            # print(f"multi channel - dz_um:{self.dz_um}, pixel_y_um:{self.pixel_size_um}, pixel_x_um:{self.pixel_size_um}")
-            layer.contrast_limits = self.contrastManager.get_limits(channel_name)
             layer.events.contrast_limits.connect(self.signalContrastLimits)
 
             if not self.viewer_scale_initialized:
@@ -12598,7 +12609,7 @@ class NapariMultiChannelWidget(QWidget):
 
         layer = self.viewer.layers[channel_name]
         layer.data[k] = image
-        layer.contrast_limits = self.contrastManager.get_limits(channel_name)
+        layer.contrast_limits = self.contrastManager.get_limits_for_dtype(channel_name, incoming_dtype)
         self.update_layer_count += 1
         if self.update_layer_count % len(self.channels) == 0:
             if self.Nz > 1:

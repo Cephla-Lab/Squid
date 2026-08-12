@@ -24,11 +24,12 @@ COLOR_CHANNEL = "BF LED matrix full"
 
 
 class FakeLayer:
-    def __init__(self, data, name, rgb):
+    def __init__(self, data, name, rgb, contrast_limits=(0, 1), scale=(1, 1, 1)):
         self.data = data
         self.name = name
         self.rgb = rgb
-        self.contrast_limits = (0, 1)
+        self.contrast_limits = contrast_limits
+        self.scale = scale
         self.events = MagicMock()
         self.refresh_count = 0
 
@@ -75,7 +76,7 @@ class FakeViewer:
         self.dims = MagicMock()
 
     def add_image(self, data, name, visible, rgb, colormap, contrast_limits, blending, scale):
-        layer = FakeLayer(data, name, rgb)
+        layer = FakeLayer(data, name, rgb, contrast_limits=contrast_limits, scale=scale)
         self.layers._layers[name] = layer
         self.layers.add_calls += 1
         return layer
@@ -92,8 +93,6 @@ def widget():
     w.camera = MagicMock()
     w.contrastManager = ContrastManager()
     w.viewer = FakeViewer()
-    w.image_width = 0
-    w.image_height = 0
     w.dtype = np.uint8
     w.channels = set()
     w.pixel_size_um = 1
@@ -179,6 +178,57 @@ def test_single_camera_run_is_unchanged(widget):
     assert widget.viewer.layers.add_calls == 2
     for layer in widget.viewer.layers:
         assert (layer.data.dtype, layer.data.shape) == (np.uint16, (1, 8, 8))
+
+
+def test_each_layer_gets_contrast_limits_for_its_own_dtype(widget):
+    """ContrastManager tracks one run-wide acquisition_dtype, so its default limits describe
+    whichever camera arrived first. A uint8 RGB layer handed uint16 limits renders black (and
+    a uint16 layer handed uint8 limits renders saturated white), so each layer's defaults
+    must come from its own dtype. The old teardown hid this by re-running initLayers, which
+    rescaled the limits before re-adding every layer."""
+    # start_acquisition announces uint16, so ContrastManager.acquisition_dtype latches to
+    # uint16 exactly as it does on a real run whose first frame is the mono camera's.
+    start_acquisition(widget)
+    run_fovs(widget, 2)
+
+    assert widget.viewer.layers[MONO_CHANNEL].contrast_limits == (0, 65535)
+    assert widget.viewer.layers[COLOR_CHANNEL].contrast_limits == (0, 255)
+
+
+def test_user_set_contrast_limits_still_win(widget):
+    """A limit the user dragged in napari must survive; only the default comes from dtype."""
+    start_acquisition(widget)
+    run_fovs(widget, 1)
+    widget.contrastManager.update_limits(COLOR_CHANNEL, 10, 200)
+
+    run_fovs(widget, 1)
+
+    assert widget.viewer.layers[COLOR_CHANNEL].contrast_limits == (10, 200)
+
+
+def test_each_layer_is_scaled_by_its_own_cameras_pixel_size(widget):
+    """Layers fed by cameras with different pixel pitch must still overlay, so the scale
+    comes from the pixel size passed with each frame - not from the widget-wide value, which
+    is computed once from whichever camera was active at acquisition start."""
+    start_acquisition(widget)
+    widget.pixel_size_um = 999.0  # the wrong-sensor fallback; must not be used
+
+    widget.updateLayers(color_frame(), x=0.0, y=0.0, k=0, channel_name=COLOR_CHANNEL, pixel_size_um=1.85)
+    widget.updateLayers(mono_frame(), x=0.0, y=0.0, k=0, channel_name=MONO_CHANNEL, pixel_size_um=3.45)
+
+    assert tuple(widget.viewer.layers[COLOR_CHANNEL].scale)[1:] == (1.85, 1.85)
+    assert tuple(widget.viewer.layers[MONO_CHANNEL].scale)[1:] == (3.45, 3.45)
+
+
+def test_pixel_size_falls_back_to_the_widget_value(widget):
+    """Callers that pass no pixel size (older signal payloads, single-camera paths) keep the
+    previous behaviour."""
+    start_acquisition(widget)
+    widget.pixel_size_um = 2.5
+
+    widget.updateLayers(mono_frame(), x=0.0, y=0.0, k=0, channel_name=MONO_CHANNEL)
+
+    assert tuple(widget.viewer.layers[MONO_CHANNEL].scale)[1:] == (2.5, 2.5)
 
 
 def test_geometry_change_on_one_channel_rebuilds_only_that_layer(widget):

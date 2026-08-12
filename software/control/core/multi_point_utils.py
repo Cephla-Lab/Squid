@@ -159,9 +159,13 @@ class MultiPointControllerFunctions:
 # ---------------------------------------------------------------------------------------
 
 
-def _channel_camera_id(channel) -> int:
+def channel_camera_id(channel) -> int:
     """The camera a channel images on. A null `camera` means the primary camera."""
     return channel.camera if getattr(channel, "camera", None) is not None else control._def.PRIMARY_CAMERA_ID
+
+
+# Historical private alias; callers in this module still use it.
+_channel_camera_id = channel_camera_id
 
 
 def get_unavailable_camera_channels(selected_channels, cameras: Dict[int, AbstractCamera]) -> List[str]:

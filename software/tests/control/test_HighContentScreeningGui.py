@@ -99,7 +99,8 @@ def test_single_camera_gui_has_one_plain_camera_tab(qtbot, confirm_exit_yes):
 
     labels = [win.cameraTabWidget.tabText(i) for i in range(win.cameraTabWidget.count())]
     assert labels.count("Camera") == 1
-    assert win.cameraSettingWidgets_extra == {}
+    assert list(win.cameraSettingWidgets) == [control._def.PRIMARY_CAMERA_ID]
+    assert win.cameraSettingWidgets[control._def.PRIMARY_CAMERA_ID] is win.cameraSettingWidget
 
     combo = win.liveControlWidget.dropdown_triggerManu
     options = [combo.itemText(i) for i in range(combo.count())]
@@ -122,8 +123,8 @@ def test_multi_camera_gui_names_tabs_from_registry(qtbot, monkeypatch, confirm_e
     assert "Main Camera" in labels
     assert "Side Camera" in labels
     assert "Camera" not in labels
-    assert list(win.cameraSettingWidgets_extra) == [2]
-    assert win.cameraSettingWidgets_extra[2].camera is scope.cameras[2]
+    assert sorted(win.cameraSettingWidgets) == [control._def.PRIMARY_CAMERA_ID, 2]
+    assert win.cameraSettingWidgets[2].camera is scope.cameras[2]
     assert win.cameraSettingWidget.camera is scope.cameras[control._def.PRIMARY_CAMERA_ID]
 
     # The trigger dropdown follows the active camera's capability. Camera 2 declares
@@ -164,49 +165,99 @@ def test_startup_channel_on_secondary_camera_syncs_trigger_options(qtbot, monkey
     assert [combo.itemText(i) for i in range(combo.count())] == [control._def.TriggerMode.SOFTWARE]
 
 
-def test_live_exposure_edit_reaches_the_active_camera(qtbot, monkeypatch, confirm_exit_yes):
-    """Editing exposure/gain in the live control panel must reach whichever camera is
-    active, not always the primary. The edit is dispatched through a CameraSettingsWidget
-    and each of those is bound to one concrete camera, so sending it to the primary
-    widget unconditionally left the secondary camera's exposure untouched: the number
-    changed in the UI and in the channel config, but the sensor kept its old exposure
-    until the channel was re-selected — and the primary camera was silently retuned."""
+def _build_two_camera_gui(qtbot, monkeypatch):
     monkeypatch.setattr(ConfigRepository, "get_camera_registry", lambda self: TWO_CAMERA_REGISTRY)
-    # These spinbox edits persist through the repository. isolate_ambient_user_profiles
-    # already keeps that off the machine's profile, but the generated one is session
-    # scoped, so stub the write rather than leave these values behind for later tests.
-    monkeypatch.setattr(ConfigRepository, "update_channel_setting", lambda *args, **kwargs: True)
-
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
     qtbot.add_widget(win)
+    return scope, win
 
+
+def _bind_live_channel_to(win, camera_id):
+    """Point the live panel at a channel bound to camera_id, as selecting one would.
+
+    A deep copy, because the repository hands out shared channel objects and a test must
+    not mutate them for everything else in the session.
+    """
+    configuration = win.liveControlWidget.currentConfiguration.model_copy(deep=True)
+    configuration.camera = camera_id
+    win.liveControlWidget.currentConfiguration = configuration
+
+
+def test_live_exposure_edit_reaches_the_channels_own_camera(qtbot, monkeypatch, confirm_exit_yes):
+    """Editing exposure/gain in the live control panel must reach the camera the edited
+    channel images on. The edit is dispatched through a CameraSettingsWidget and each of
+    those drives one concrete camera, so sending it to the primary widget unconditionally
+    left the secondary camera's exposure untouched: the number changed in the UI and in the
+    channel config, but the sensor kept its old exposure until the channel was re-selected
+    — and the primary camera was silently retuned."""
+    scope, win = _build_two_camera_gui(qtbot, monkeypatch)
     primary = scope.cameras[control._def.PRIMARY_CAMERA_ID]
     secondary = scope.cameras[2]
 
-    # The startup channel decides the active camera, so don't assume which one it is.
-    scope.set_active_camera(control._def.PRIMARY_CAMERA_ID)
-    win._on_active_camera_changed(control._def.PRIMARY_CAMERA_ID)
-
+    _bind_live_channel_to(win, control._def.PRIMARY_CAMERA_ID)
     win.liveControlWidget.entry_exposureTime.setValue(11.0)
     assert primary.get_exposure_time() == pytest.approx(11.0)
+    secondary_before = secondary.get_exposure_time()
 
-    scope.set_active_camera(2)
-    win._on_active_camera_changed(2)
-
+    _bind_live_channel_to(win, 2)
     win.liveControlWidget.entry_exposureTime.setValue(37.0)
-    assert secondary.get_exposure_time() == pytest.approx(37.0), "exposure edit did not reach the active camera"
-    assert primary.get_exposure_time() == pytest.approx(11.0), "exposure edit leaked onto the inactive camera"
+    assert secondary.get_exposure_time() == pytest.approx(37.0), "exposure edit did not reach the channel's camera"
+    assert primary.get_exposure_time() == pytest.approx(11.0), "exposure edit leaked onto the other camera"
+    assert secondary_before != pytest.approx(37.0)
 
     win.liveControlWidget.entry_analogGain.setValue(4.0)
-    assert secondary.get_analog_gain() == pytest.approx(4.0), "gain edit did not reach the active camera"
+    assert secondary.get_analog_gain() == pytest.approx(4.0), "gain edit did not reach the channel's camera"
 
-    # ...and switching back drives the primary again, leaving the secondary where it was.
-    scope.set_active_camera(control._def.PRIMARY_CAMERA_ID)
-    win._on_active_camera_changed(control._def.PRIMARY_CAMERA_ID)
+    # ...and back to a primary-bound channel, leaving the secondary where it was.
+    _bind_live_channel_to(win, control._def.PRIMARY_CAMERA_ID)
     win.liveControlWidget.entry_exposureTime.setValue(12.0)
     assert primary.get_exposure_time() == pytest.approx(12.0)
     assert secondary.get_exposure_time() == pytest.approx(37.0)
+
+
+def test_live_exposure_edit_ignores_a_stale_active_camera(qtbot, monkeypatch, confirm_exit_yes):
+    """The dispatch must key on the channel's own camera binding, the same key
+    set_microscope_mode treats as authoritative — not on microscope.active_camera_id, which
+    still points at whatever ran last. An acquisition ending on camera 2 left the active id
+    at 2, so editing a channel bound to camera 1 retuned camera 2 instead."""
+    scope, win = _build_two_camera_gui(qtbot, monkeypatch)
+    primary = scope.cameras[control._def.PRIMARY_CAMERA_ID]
+    secondary = scope.cameras[2]
+
+    # Leave the active camera on 2 (as an acquisition would) while editing a channel on 1.
+    # No manual _on_active_camera_changed call: the GUI is wired to the microscope's change
+    # listener, and a same-thread switch dispatches it synchronously — calling it by hand
+    # would let the test pass even if that wiring were removed.
+    scope.set_active_camera(2)
+    assert scope.active_camera_id == 2
+    secondary_exposure = secondary.get_exposure_time()
+
+    _bind_live_channel_to(win, control._def.PRIMARY_CAMERA_ID)
+    win.liveControlWidget.entry_exposureTime.setValue(23.0)
+
+    assert primary.get_exposure_time() == pytest.approx(23.0), "edit did not follow the channel binding"
+    assert secondary.get_exposure_time() == pytest.approx(secondary_exposure), "stale active camera was retuned"
+
+
+def test_live_exposure_edit_applies_when_the_target_spinbox_already_matches(qtbot, monkeypatch, confirm_exit_yes):
+    """The edit must reach the sensor even when the target camera's settings tab already
+    displays that number. Routing through QDoubleSpinBox.setValue alone dropped it:
+    setValue emits nothing when the value is unchanged, and that spinbox is not resynced
+    when set_microscope_mode writes exposure straight to the camera."""
+    scope, win = _build_two_camera_gui(qtbot, monkeypatch)
+    secondary = scope.cameras[2]
+
+    _bind_live_channel_to(win, 2)
+    # The tab shows 50 while the sensor is on 20 — exactly what set_microscope_mode leaves
+    # behind when it applies a channel's exposure directly to the camera.
+    win.cameraSettingWidgets[2].entry_exposureTime.setValue(50.0)
+    secondary.set_exposure_time(20.0)
+    assert secondary.get_exposure_time() == pytest.approx(20.0)
+
+    win.liveControlWidget.entry_exposureTime.setValue(50.0)
+
+    assert secondary.get_exposure_time() == pytest.approx(50.0), "edit was swallowed by an unchanged spinbox"
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):

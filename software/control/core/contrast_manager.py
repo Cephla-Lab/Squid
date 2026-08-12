@@ -18,15 +18,34 @@ class ContrastManager:
         return self.contrast_limits.get(channel, self.get_default_limits())
 
     def get_default_limits(self):
-        if self.acquisition_dtype is None:
+        return self.default_limits_for_dtype(self.acquisition_dtype)
+
+    @staticmethod
+    def default_limits_for_dtype(dtype):
+        """Full display range of one dtype, independent of the run-wide acquisition_dtype."""
+        if dtype is None:
             return (0, 1)
-        elif np.issubdtype(self.acquisition_dtype, np.integer):
-            info = np.iinfo(self.acquisition_dtype)
+        elif np.issubdtype(dtype, np.integer):
+            info = np.iinfo(dtype)
             return (info.min, info.max)
-        elif np.issubdtype(self.acquisition_dtype, np.floating):
+        elif np.issubdtype(dtype, np.floating):
             return (0.0, 1.0)
         else:
             return (0, 1)
+
+    def get_limits_for_dtype(self, channel, dtype):
+        """Limits for one channel, defaulting to the full range of ITS OWN dtype.
+
+        get_limits() falls back to get_default_limits(), which is derived from the single
+        run-wide acquisition_dtype - i.e. from whichever camera delivered the first frame.
+        On a dual-camera run that is the wrong range for the other camera's channels: a
+        uint8 RGB layer handed uint16 limits renders essentially black, and a uint16 layer
+        handed uint8 limits renders saturated white. A limit the user has actually set for
+        the channel still wins.
+        """
+        if channel in self.contrast_limits:
+            return self.contrast_limits[channel]
+        return self.default_limits_for_dtype(dtype)
 
     def get_scaled_limits(self, channel, target_dtype):
         min_val, max_val = self.get_limits(channel)

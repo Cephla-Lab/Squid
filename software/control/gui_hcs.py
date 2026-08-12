@@ -55,6 +55,7 @@ from control.core.multi_point_utils import (
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
+    channel_camera_id,
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
@@ -202,7 +203,8 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_current_configuration = Signal(AcquisitionChannel)
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    # image, x_mm, y_mm, k, channel, pixel_size_um (of that channel's own camera)
+    napari_layers_update = Signal(np.ndarray, float, float, int, str, float)
     signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
     signal_acquisition_save_target = Signal(object)  # Optional[str] — output dir for save view
     signal_acquisition_progress = Signal(int, int, int)
@@ -389,6 +391,21 @@ class QtMultiPointController(MultiPointController, QObject):
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
 
+    def _layer_pixel_size_um(self, configuration) -> float:
+        """Image pixel size for this channel's own camera, for the napari layer's scale.
+
+        Resolved from the channel's `camera` binding rather than from the active camera:
+        this runs per frame on the acquisition thread, the frame reaches the widget through
+        a queued connection, and the worker may already have switched cameras by then, so
+        reading the facade in the widget would race. Cameras differing in pixel pitch or
+        binning must still overlay in the viewer.
+        """
+        factor = self.objectiveStore.get_pixel_size_factor()
+        camera = self.microscope.cameras.get(channel_camera_id(configuration))
+        if camera is None or factor is None:
+            return self.camera.get_pixel_size_binned_um()
+        return float(factor) * float(camera.get_pixel_size_binned_um())
+
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
         # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
@@ -408,7 +425,12 @@ class QtMultiPointController(MultiPointController, QObject):
         objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
-            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+            frame.frame,
+            info.position.x_mm,
+            info.position.y_mm,
+            info.z_index,
+            napri_layer_name,
+            self._layer_pixel_size_um(info.configuration),
         )
 
         # Cache parsed well indices per region_id — usually a small dict (<=96
@@ -705,9 +727,11 @@ class HighContentScreeningGui(QMainWindow):
         # add to this as you add widgets.
         self.spinningDiskConfocalWidget: Optional[widgets.SpinningDiskConfocalWidget] = None
         self.nl5Wdiget: Optional[NL5Widget] = None
+        # Kept as the primary camera's widget for callers that only ever mean the primary
+        # (it is also cameraSettingWidgets[PRIMARY_CAMERA_ID]).
         self.cameraSettingWidget: Optional[widgets.CameraSettingsWidget] = None
-        # Settings widgets for the non-primary cameras of a multi-camera build, keyed by camera id.
-        self.cameraSettingWidgets_extra: Dict[int, widgets.CameraSettingsWidget] = {}
+        # Every camera's settings widget, primary included, keyed by camera id.
+        self.cameraSettingWidgets: Dict[int, widgets.CameraSettingsWidget] = {}
         self.profileWidget: Optional[widgets.ProfileWidget] = None
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
@@ -955,12 +979,15 @@ class HighContentScreeningGui(QMainWindow):
             for camera_id, concrete_camera in sorted(self.microscope.cameras.items()):
                 if camera_id == PRIMARY_CAMERA_ID:
                     continue
-                self.cameraSettingWidgets_extra[camera_id] = widgets.CameraSettingsWidget(
+                self.cameraSettingWidgets[camera_id] = widgets.CameraSettingsWidget(
                     concrete_camera,
                     include_gain_exposure_time=False,
                     include_camera_temperature_setting=False,
                     include_camera_auto_wb_setting=True,
                 )
+        # Every per-camera lookup goes through this one map, primary included, so no caller
+        # has to re-derive "extras plus the primary" and risk missing or double-counting it.
+        self.cameraSettingWidgets[PRIMARY_CAMERA_ID] = self.cameraSettingWidget
 
         self.profileWidget = widgets.ProfileWidget(self.microscope.config_repo)
         self.liveControlWidget = widgets.LiveControlWidget(
@@ -1371,11 +1398,9 @@ class HighContentScreeningGui(QMainWindow):
         # user can tell them apart; single-camera builds keep the plain "Camera" tab.
         multi_camera = self.microscope.has_multiple_cameras()
         registry = self.microscope.config_repo.get_camera_registry() if multi_camera else None
-        self.cameraTabWidget.addTab(
-            self.cameraSettingWidget, self._camera_tab_name(PRIMARY_CAMERA_ID, registry) if multi_camera else "Camera"
-        )
-        for camera_id, extra_widget in self.cameraSettingWidgets_extra.items():
-            self.cameraTabWidget.addTab(extra_widget, self._camera_tab_name(camera_id, registry))
+        for camera_id, camera_widget in sorted(self.cameraSettingWidgets.items()):
+            label = self._camera_tab_name(camera_id, registry) if multi_camera else "Camera"
+            self.cameraTabWidget.addTab(camera_widget, label)
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
@@ -1966,24 +1991,47 @@ class HighContentScreeningGui(QMainWindow):
         self._live_warning_box = box
         box.show()
 
-    def _active_camera_setting_widget(self) -> "widgets.CameraSettingsWidget":
-        """The CameraSettingsWidget bound to the camera that is imaging right now.
+    def _camera_setting_widget_for_live_edit(self) -> "widgets.CameraSettingsWidget":
+        """The CameraSettingsWidget for the camera the edited channel images on.
 
-        Each widget drives one concrete camera (see the construction site), so a live
-        exposure/gain edit has to be dispatched to the active camera's widget. Sending it
-        to the primary widget unconditionally applied every edit to the primary camera no
-        matter which camera was active: on a dual-camera system, editing exposure for a
-        channel bound to the secondary camera left that camera untouched and silently
-        retuned the primary instead.
+        Each widget drives one concrete camera, so a live exposure/gain edit has to be
+        dispatched to the right one; sending every edit to the primary widget retuned the
+        primary camera no matter which camera the channel used.
+
+        Keyed on the channel's own `camera` binding - the same key
+        LiveController.set_microscope_mode treats as authoritative - and not on
+        microscope.active_camera_id, which merely reflects whatever ran last. After an
+        acquisition ending on camera 2, the active id is still 2, so keying on it would
+        retune camera 2 while the user edited a channel bound to camera 1.
         """
-        widget = self.cameraSettingWidgets_extra.get(self.microscope.active_camera_id)
+        configuration = getattr(self.liveControlWidget, "currentConfiguration", None)
+        camera_id = channel_camera_id(configuration) if configuration is not None else self.microscope.active_camera_id
+        widget = self.cameraSettingWidgets.get(camera_id)
         return widget if widget is not None else self.cameraSettingWidget
 
     def _apply_live_exposure_time(self, exposure_time_ms: float) -> None:
-        self._active_camera_setting_widget().set_exposure_time(exposure_time_ms)
+        widget = self._camera_setting_widget_for_live_edit()
+        # setValue alone is not enough to reach the sensor: QDoubleSpinBox emits nothing when
+        # it already holds that number, and this spinbox is not resynced when
+        # set_microscope_mode writes exposure straight to the camera - so re-entering a value
+        # the tab happens to show would silently leave the old exposure on the sensor. Sync
+        # the display with signals blocked, then drive the camera with the spinbox's clamped
+        # value so display and sensor cannot disagree.
+        widget.entry_exposureTime.blockSignals(True)
+        try:
+            widget.entry_exposureTime.setValue(exposure_time_ms)
+        finally:
+            widget.entry_exposureTime.blockSignals(False)
+        widget.camera.set_exposure_time(widget.entry_exposureTime.value())
 
     def _apply_live_analog_gain(self, analog_gain: float) -> None:
-        self._active_camera_setting_widget().set_analog_gain(analog_gain)
+        widget = self._camera_setting_widget_for_live_edit()
+        widget.entry_analogGain.blockSignals(True)
+        try:
+            widget.entry_analogGain.setValue(analog_gain)
+        finally:
+            widget.entry_analogGain.blockSignals(False)
+        widget.set_analog_gain_if_supported(widget.entry_analogGain.value())
 
     @Slot(int)
     def _on_active_camera_changed(self, camera_id: int) -> None:
