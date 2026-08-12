@@ -232,11 +232,12 @@ class ObjectiveTurret4PosControllerSimulation:
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
         # Accepted for constructor parity with the real controller; the simulation
-        # tracks objectives by name and never computes pulses, so all four are unused.
+        # tracks objectives by name and never computes pulses, so all five are unused.
         offset_pulses: Optional[int] = None,
         calibrated_pulses: Optional[dict] = None,
         backlash_deg: Optional[float] = None,
         direction_inverted: Optional[bool] = None,
+        di_invert: Optional[bool] = None,
     ):
         from control._def import OBJECTIVE_TURRET_POSITIONS
 
@@ -334,6 +335,7 @@ class ObjectiveTurret4PosController:
         calibrated_pulses: Optional[dict] = None,
         backlash_deg: Optional[float] = None,
         direction_inverted: Optional[bool] = None,
+        di_invert: Optional[bool] = None,
     ) -> None:
         from control._def import (
             OBJECTIVE_TURRET_POSITIONS,
@@ -341,6 +343,7 @@ class ObjectiveTurret4PosController:
             OBJECTIVE_TURRET_CALIBRATED_PULSES,
             OBJECTIVE_TURRET_BACKLASH_DEG,
             OBJECTIVE_TURRET_DIRECTION_INVERTED,
+            OBJECTIVE_TURRET_DI_INVERT,
         )
 
         self._slave_id = slave_id
@@ -365,6 +368,14 @@ class ObjectiveTurret4PosController:
         if not isinstance(inverted, bool):
             raise ValueError(f"OBJECTIVE_TURRET_DIRECTION_INVERTED must be a boolean, got {inverted!r}")
         self._direction_inverted = inverted
+        # Origin-switch (DI1) polarity inversion for changers whose sensor triggers
+        # on the opposite logic level (SingleMotor 2026-08-12). Applied only to the
+        # DI trigger verdict in the status snapshot; the homing state machine,
+        # direction logic and calibration all stay in the same logical frame.
+        di_inv = di_invert if di_invert is not None else OBJECTIVE_TURRET_DI_INVERT
+        if not isinstance(di_inv, bool):
+            raise ValueError(f"OBJECTIVE_TURRET_DI_INVERT must be a boolean, got {di_inv!r}")
+        self._di_invert = di_inv
         self._stage = stage
         self._current_objective: Optional[str] = None
         self._is_open = False
@@ -628,6 +639,8 @@ class ObjectiveTurret4PosController:
         values consistent with each other (same block SingleMotor polls)."""
         vals = self._modbus.read_input_registers(self._slave_id, STATUS_BLOCK_START, STATUS_BLOCK_COUNT)
         di1 = bool(vals[_OFS_DI] & 1)
+        if self._di_invert:
+            di1 = not di1
         position = (vals[_OFS_POSITION] << 16) | vals[_OFS_POSITION + 1]
         if position >= 0x80000000:
             position -= 0x100000000

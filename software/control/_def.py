@@ -1273,6 +1273,13 @@ OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
 # re-measure the calibrated slots: the physical zero moves with the sweep
 # direction.
 OBJECTIVE_TURRET_DIRECTION_INVERTED = False
+# Set True for objective changers whose origin-switch sensor triggers on the
+# opposite logic level (port of SingleMotor's "原点开关极性取反" option, 2026-08-12).
+# Software homing / distance search then invert the DI1 trigger verdict, so the
+# homing direction and the sweep-backoff-fine-search state machine stay unchanged.
+# Toggling on an existing machine requires re-homing: the sensor edge found by
+# fine search (and thus the physical zero) sits on the other side of the window.
+OBJECTIVE_TURRET_DI_INVERT = False
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
