@@ -179,19 +179,26 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
 
     has_z = "z (mm)" in df.columns
     z_dropped = False
-    if has_z and df["z (mm)"].isna().any():
-        # Keep every region's tuples homogeneous and never let NaN reach the stage.
-        has_z = False
-        z_dropped = True
+    z_values = None
+    if has_z:
+        # Coerce up front: an object-dtype column (numeric strings, stray text) would
+        # make the raw range comparison below raise TypeError. Parseable strings load
+        # correctly; unparseable cells become NaN and take the same warn-and-load-
+        # XY-only path as empty cells (tuples stay homogeneous, NaN never reaches
+        # the stage).
+        z_values = pd.to_numeric(df["z (mm)"], errors="coerce")
+        if z_values.isna().any():
+            has_z = False
+            z_dropped = True
 
     if has_z:
         z_min = control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE
         z_max = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE
-        out_of_range = df[(df["z (mm)"] < z_min) | (df["z (mm)"] > z_max)]
+        out_of_range = z_values[(z_values < z_min) | (z_values > z_max)]
         if not out_of_range.empty:
             raise ValueError(
                 f"z (mm) values outside software limits [{z_min}, {z_max}] mm: "
-                f"{sorted(out_of_range['z (mm)'].unique().tolist())}"
+                f"{sorted(out_of_range.unique().tolist())}"
             )
 
     # Parse/convert everything up front so a bad cell raises before any mutation.
@@ -202,7 +209,7 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
         if has_z:
             coords = [
                 (float(x), float(y), float(z))
-                for x, y, z in zip(region_points["x (mm)"], region_points["y (mm)"], region_points["z (mm)"])
+                for x, y, z in zip(region_points["x (mm)"], region_points["y (mm)"], z_values.loc[region_points.index])
             ]
         else:
             coords = [(float(x), float(y)) for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])]

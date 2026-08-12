@@ -2747,6 +2747,28 @@ def test_load_regions_with_nan_z_drops_the_column():
     assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0), (10.5, 10.0)]
 
 
+def test_load_regions_with_numeric_string_z_loads_correctly():
+    # Hand-edited CSVs can yield an object-dtype z column; parseable values load.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": ["3.0"]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
+
+
+def test_load_regions_with_unparseable_z_drops_the_column():
+    # Non-numeric z text takes the same warn-and-load-XY-only path as empty cells.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": ["not-a-number"]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is True
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
+
+
 def test_load_regions_with_out_of_range_z_raises():
     sc = _scan_coordinates_for_test()
     bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
