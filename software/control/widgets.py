@@ -12620,10 +12620,12 @@ class NapariMultiChannelWidget(QWidget):
     def signalContrastLimits(self, event):
         layer = event.source
         min_val, max_val = map(float, layer.contrast_limits)
-        self.contrastManager.update_limits(layer.name, min_val, max_val)
+        # Record the dtype the user chose these limits in - it is the layer's own camera's
+        # dtype, so another camera's frames can never reinterpret them.
+        self.contrastManager.update_limits(layer.name, min_val, max_val, dtype=layer.data.dtype)
 
     def getContrastLimits(self, dtype):
-        return self.contrastManager.get_default_limits()
+        return self.contrastManager.default_limits_for_dtype(dtype)
 
     def resetView(self):
         self.viewer.reset_view()
