@@ -471,7 +471,11 @@ class LiveController(QObject):
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+            if self.currentConfiguration is not None:
+                # No channel selected yet (e.g. trigger mode set right after startup, or
+                # applied during a camera switch): keep the camera's current exposure;
+                # set_microscope_mode applies the channel exposure when one is selected.
+                self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
 
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
@@ -486,6 +490,11 @@ class LiveController(QObject):
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
             self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
         self.trigger_mode = mode
+        # Per-camera trigger-mode memory (dual-camera): record the user's choice for the
+        # active camera so set_active_camera can restore it later. The focus-camera
+        # LiveController is excluded — its camera is not in microscope.cameras.
+        if not self.for_displacement_measurement:
+            self.microscope.remember_trigger_mode_for_active_camera(mode)
 
     def set_trigger_fps(self, fps):
         if (self.trigger_mode == TriggerMode.SOFTWARE) or (
@@ -511,6 +520,18 @@ class LiveController(QObject):
                 self.turn_off_illumination()
 
         self.currentConfiguration = configuration
+
+        # Dual-camera: switch the active camera to this channel's camera before applying
+        # any camera settings. channel.camera is None => primary camera.
+        target_camera_id = configuration.camera or PRIMARY_CAMERA_ID
+        if target_camera_id != self.microscope.active_camera_id:
+            try:
+                self.microscope.set_active_camera(target_camera_id)
+            except ValueError as e:
+                self._log.error(
+                    f"Channel '{configuration.name}' wants camera {target_camera_id} which is not available "
+                    f"({e}); keeping camera {self.microscope.active_camera_id}."
+                )
 
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)

@@ -31,6 +31,9 @@ class ToupCamCapabilities(pydantic.BaseModel):
     has_TEC: bool
     has_low_noise_mode: bool
     has_black_level: bool
+    # Monochrome sensor.  Decides which pixel formats the camera can produce, so it is
+    # what get_available_pixel_formats reports off.
+    is_mono: bool = True
 
 
 class StrobeInfo(pydantic.BaseModel):
@@ -60,9 +63,39 @@ class ToupcamCamera(AbstractCamera):
         if event_number == toupcam.TOUPCAM_EVENT_IMAGE:
             camera._on_frame_callback()
 
+    # Pixel formats the SDK debayers for us.  These are the only ones that need the RGB
+    # frame format; everything else (MONO*) is read straight off the sensor in RAW mode.
+    _RGB_PIXEL_FORMATS = (
+        CameraPixelFormat.RGB24,
+        CameraPixelFormat.RGB32,
+        CameraPixelFormat.RGB48,
+    )
+
     @staticmethod
-    def _tdib_width_bytes(w):
-        return (w * 24 + 31) // 32 * 4
+    def _frame_format_for_pixel_format(pixel_format: CameraPixelFormat) -> CameraFrameFormat:
+        """
+        The frame format a pixel format has to be read in.
+
+        The RGB formats are produced by the SDK's own debayering, which only runs in RGB
+        frame format (TOUPCAM_OPTION_RAW=0).  MONO formats come off the sensor in RAW mode.
+        """
+        if pixel_format in ToupcamCamera._RGB_PIXEL_FORMATS:
+            return CameraFrameFormat.RGB
+        return CameraFrameFormat.RAW
+
+    @staticmethod
+    def _row_pitch_bytes(width: int, pixel_size_in_bytes: int) -> int:
+        """
+        Bytes from the start of one row to the start of the next, in RGB frame format.
+
+        This must match the SDK's default row pitch, which is what PullImageV2 writes:
+        RGB32 rows are packed (Width * 4), every other format is padded out to a 4 byte
+        boundary (TDIBWIDTHBYTES(bits_per_pixel * Width)).  See the PullImageV4 rowPitch
+        table in toupcam.py.
+        """
+        if pixel_size_in_bytes == 4:
+            return width * 4
+        return (width * pixel_size_in_bytes * 8 + 31) // 32 * 4
 
     @staticmethod
     def _calculate_strobe_info(
@@ -71,7 +104,12 @@ class ToupcamCamera(AbstractCamera):
         log = squid.logging.get_logger("ToupcamCamera._calculate_strobe_delay")
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
 
-        pixel_bits = pixel_size * 8
+        # The line length table below is indexed by the sensor's readout depth - what
+        # TOUPCAM_OPTION_BITDEPTH selects - and not by the size of the pixel we are handed.
+        # They differ for the debayered RGB formats: RGB24 (3 bytes) and RGB32 (4 bytes)
+        # are 8 bit readouts, RGB48 (6 bytes) is a 16 bit one.  Deriving pixel_bits from
+        # the byte size alone leaves line_length at 0 for those, which then divides by zero.
+        pixel_bits = 8 if pixel_size in (1, 3, 4) else 16
         line_length = 0
         low_noise = 0
 
@@ -172,38 +210,41 @@ class ToupcamCamera(AbstractCamera):
         return StrobeInfo(strobe_time_us=strobe_time, trigger_delay_us=trigger_delay_us)
 
     @staticmethod
-    def _open(index=None, sn=None) -> Tuple[toupcam.Toupcam, ToupCamCapabilities]:
-        log = squid.logging.get_logger("ToupcamCamera._open")
-        log.info(f"Opening toupcam with {index=}, {sn=}")
-        devices = toupcam.Toupcam.EnumV2()
-        if len(devices) <= 0:
-            raise ValueError("There are no Toupcam V2 devices.  Is the camera connected and powered on?")
+    def _read_serial_number(camera: toupcam.Toupcam) -> Optional[str]:
+        """
+        Best effort read of the true serial number from an already open camera handle.
 
-        if index is not None and sn is not None:
-            raise ValueError("You specified both a device index and a sn, this is not allowed.")
+        The Toupcam SDK only exposes the serial number once a device is open, and the
+        vendored python binding has used both spellings over time, so try each.  Returns
+        None if the serial number could not be read.
+        """
+        log = squid.logging.get_logger("ToupcamCamera._read_serial_number")
+        getter = getattr(camera, "SerialNumber", None) or getattr(camera, "get_SerialNumber", None)
+        if getter is None:
+            log.warning("This toupcam binding has no serial number getter.")
+            return None
+        try:
+            return getter()
+        except Exception:
+            log.exception("Failed to read the serial number from an open toupcam device.")
+            return None
 
-        if sn is not None:
-            sn_matches = [idx for idx in range(len(devices)) if devices[idx].id == sn]
-            if not len(sn_matches):
-                all_sn = [d.id for d in devices]
-                raise ValueError(f"Could not find camera with SN={sn}, options are: {','.join(all_sn)}")
-
-        for idx, device in enumerate(devices):
-            log.info(
-                "Camera {}: {}: flag = {:#x}, preview = {}, still = {}".format(
-                    idx,
-                    device.displayname,
-                    device.model.flag,
-                    device.model.preview,
-                    device.model.still,
-                )
+    @staticmethod
+    def _close_quietly(camera: toupcam.Toupcam):
+        try:
+            camera.Close()
+        except Exception:
+            squid.logging.get_logger("ToupcamCamera._close_quietly").exception(
+                "Failed to close a probed toupcam device."
             )
 
-        for r in devices[index].model.res:
-            log.info("\t = [{} x {}]".format(r.width, r.height))
+    @staticmethod
+    def _capabilities_for_device(device: toupcam.ToupcamDeviceV2) -> ToupCamCapabilities:
+        log = squid.logging.get_logger("ToupcamCamera._capabilities_for_device")
 
         resolution_list = []
-        for r in devices[index].model.res:
+        for r in device.model.res:
+            log.info("\t = [{} x {}]".format(r.width, r.height))
             resolution_list.append((r.width, r.height))
         if len(resolution_list) == 0:
             raise ValueError("No resolutions found for camera")
@@ -217,16 +258,145 @@ class ToupcamCamera(AbstractCamera):
             y_binning = int(highest_res[1] / res[1])
             binning_res[(x_binning, y_binning)] = res
 
-        camera = toupcam.Toupcam.Open(devices[index].id)
-        capabilities = ToupCamCapabilities(
+        return ToupCamCapabilities(
             binning_to_resolution=binning_res,
-            has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
-            has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
-            has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
-            has_black_level=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0,
+            has_fan=(device.model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
+            has_TEC=(device.model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
+            has_low_noise_mode=(device.model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
+            has_black_level=(device.model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0,
+            is_mono=(device.model.flag & toupcam.TOUPCAM_FLAG_MONO) > 0,
         )
 
+    @staticmethod
+    def _resolve_sn_to_index(
+        devices: Sequence[toupcam.ToupcamDeviceV2], sn: str
+    ) -> Tuple[int, Optional[toupcam.Toupcam]]:
+        """
+        Find the device in `devices` that `sn` refers to.  See _open for the accepted strings.
+
+        Returns (index, camera), where camera is an already open handle for the matched
+        device when we had to open it to read its serial number (the caller owns it and
+        must not open the device a second time), and None when the match came from the
+        enumeration data alone.  Raises ValueError when nothing matches.
+        """
+        log = squid.logging.get_logger("ToupcamCamera._resolve_sn_to_index")
+
+        # Pass 1: the opaque enumeration id.  Free - no device needs to be opened.
+        for idx, device in enumerate(devices):
+            if device.id == sn:
+                log.info(f"Matched {sn=} against the enumeration id of device {idx}.")
+                return idx, None
+
+        # Pass 2: the true serial number, which the SDK only reports for an open device.
+        # We open each candidate in turn and close it again unless it is the one we want.
+        # A device that is already open elsewhere (eg: the other camera of a 2 camera
+        # system) cannot be probed, so treat a failed open as "not this one" and continue.
+        log.info(f"No enumeration id matched {sn=}, probing {len(devices)} device(s) for their serial numbers.")
+        descriptions = []
+        for idx, device in enumerate(devices):
+            try:
+                camera = toupcam.Toupcam.Open(device.id)
+            except Exception:
+                log.exception(f"Failed to open toupcam device {idx} (id={device.id}) while probing serial numbers.")
+                camera = None
+
+            if camera is None:
+                log.warning(f"Could not open toupcam device {idx} (id={device.id}) to read its serial number.")
+                descriptions.append(f"id={device.id} (serial unavailable, could not open)")
+                continue
+
+            keep_open = False
+            try:
+                serial = ToupcamCamera._read_serial_number(camera)
+                log.info(f"Probed toupcam device {idx}: id={device.id}, serial={serial}")
+                if serial is not None and serial == sn:
+                    keep_open = True
+                    return idx, camera
+                descriptions.append(
+                    f"id={device.id} serial={serial}" if serial is not None else f"id={device.id} (serial unavailable)"
+                )
+            finally:
+                if not keep_open:
+                    ToupcamCamera._close_quietly(camera)
+
+        raise ValueError(
+            f"Could not find a Toupcam camera matching serial_number={sn}.  Available cameras: "
+            f"{'; '.join(descriptions)}.  Use one of those id or serial strings as the camera's serial_number."
+        )
+
+    @staticmethod
+    def _open(index=None, sn=None) -> Tuple[toupcam.Toupcam, ToupCamCapabilities]:
+        """
+        Open a toupcam device and work out its capabilities.
+
+        Args:
+            index: 0 based index into the EnumV2 device list.  When neither index nor sn
+                is given, the first enumerated device (index 0) is opened.
+            sn: identifies the camera to open.  Two forms are accepted, tried in order:
+                  1. the opaque enumeration id (toupcam.ToupcamDeviceV2.id, ie: the string
+                     Toupcam_Open takes).  Matching this costs nothing.
+                  2. the camera's true serial number as reported by Toupcam.SerialNumber()
+                     (eg: "TP110826145730ABCD1234FEDC56787").  The SDK only exposes this
+                     for an open device, so devices are opened one at a time until one
+                     matches, and any non matching device is closed again.
+                Specifying both index and sn is an error.
+        """
+        log = squid.logging.get_logger("ToupcamCamera._open")
+        log.info(f"Opening toupcam with {index=}, {sn=}")
+
+        if index is not None and sn is not None:
+            raise ValueError("You specified both a device index and a sn, this is not allowed.")
+
+        devices = toupcam.Toupcam.EnumV2()
+        if len(devices) <= 0:
+            raise ValueError("There are no Toupcam V2 devices.  Is the camera connected and powered on?")
+
+        for idx, device in enumerate(devices):
+            log.info(
+                "Camera {}: {}: flag = {:#x}, preview = {}, still = {}".format(
+                    idx,
+                    device.displayname,
+                    device.model.flag,
+                    device.model.preview,
+                    device.model.still,
+                )
+            )
+
+        # Non-None only when resolving the sn left us holding an open handle for the match.
+        camera: Optional[toupcam.Toupcam] = None
+        if sn is not None:
+            (index, camera) = ToupcamCamera._resolve_sn_to_index(devices, sn)
+        elif index is None:
+            index = 0
+
+        if not 0 <= index < len(devices):
+            raise ValueError(f"Toupcam device index={index} is out of range, only {len(devices)} device(s) enumerated.")
+
+        device = devices[index]
+        try:
+            capabilities = ToupcamCamera._capabilities_for_device(device)
+            if camera is None:
+                camera = toupcam.Toupcam.Open(device.id)
+            if camera is None:
+                raise ValueError(f"Failed to open Toupcam device {index} (id={device.id}).  Is it in use already?")
+        except Exception:
+            # Don't leak a device we opened (or that sn probing left us holding).
+            if camera is not None:
+                ToupcamCamera._close_quietly(camera)
+            raise
+
         return camera, capabilities
+
+    @staticmethod
+    def _open_for_config(config: CameraConfig) -> Tuple[toupcam.Toupcam, ToupCamCapabilities]:
+        """
+        Open the camera this config points at: the one matching config.serial_number when
+        the config gives one (needed when more than one toupcam is connected), otherwise
+        the first enumerated camera.
+        """
+        if config.serial_number:
+            return ToupcamCamera._open(sn=config.serial_number)
+        return ToupcamCamera._open(index=0)
 
     def __init__(self, config: CameraConfig, hw_trigger_fn, hw_set_strobe_delay_ms_fn):
         super().__init__(config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
@@ -246,7 +416,7 @@ class ToupcamCamera(AbstractCamera):
         # is what the camera driver calls when a new frame is available.
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
-        (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
+        (self._camera, self._capabilities) = ToupcamCamera._open_for_config(config)
         self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
 
@@ -320,6 +490,35 @@ class ToupcamCamera(AbstractCamera):
             self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
             raise ex
 
+    def _rgb_image_from_read_buffer(self, width: int, height: int, pixel_size: int) -> np.array:
+        """
+        Unpack a frame the SDK produced in RGB frame format out of the internal read buffer.
+
+        Rows are padded out to the pitch _row_pitch_bytes describes, so the padding has to
+        be sliced off before the buffer can be seen as an image.  Not every frame read this
+        way is colour: RGB frame format also covers the SDK's Grey8/Grey16 output (a mono
+        pixel format in RGB mode), which stays 2D.  Colour frames come back as
+        (height, width, 3) - uint8 for RGB24/RGB32, uint16 for RGB48 - with RGB32's fourth
+        byte per pixel dropped, since the rest of squid expects 3 channel colour frames.
+        """
+        row_pitch = ToupcamCamera._row_pitch_bytes(width, pixel_size)
+        rows = np.frombuffer(self._internal_read_buffer, dtype=np.uint8, count=row_pitch * height).reshape(
+            height, row_pitch
+        )
+        packed = rows[:, : width * pixel_size]
+
+        if pixel_size in (2, 6):
+            # uint16 components: one for Grey16, three for RGB48.  .view needs a contiguous
+            # buffer, and slicing the padding off broke that.
+            wide = np.ascontiguousarray(packed).view(np.uint16)
+            return wide.reshape(height, width) if pixel_size == 2 else wide.reshape(height, width, 3)
+
+        if pixel_size == 1:  # Grey8
+            return packed.reshape(height, width)
+
+        image = packed.reshape(height, width, pixel_size)
+        return image[:, :, :3] if pixel_size == 4 else image
+
     def _on_frame_callback(self):
         """
         This is the callback that we have the toupcam software call when a frame is ready.  It should always be running.
@@ -349,16 +548,18 @@ class ToupcamCamera(AbstractCamera):
             this_frame_format = self.get_frame_format()
             this_pixel_format = self.get_pixel_format()
 
-            if this_frame_format != CameraFrameFormat.RAW:
-                self._log.error("Only RAW CameraFrameFormat are supported, cannot handle frame.")
-                return
-
             (x_offset, y_offset, width, height) = self.get_region_of_interest()
-            if self._get_pixel_size_in_bytes() == 1:
-                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint8")
-            elif self._get_pixel_size_in_bytes() == 2:
-                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint16")
-            current_raw_image = raw_image.reshape(height, width)
+            pixel_size = self._get_pixel_size_in_bytes()
+
+            if this_frame_format == CameraFrameFormat.RGB:
+                current_raw_image = self._rgb_image_from_read_buffer(width, height, pixel_size)
+            elif pixel_size == 1:
+                current_raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint8").reshape(height, width)
+            elif pixel_size == 2:
+                current_raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint16").reshape(height, width)
+            else:
+                self._log.error(f"Cannot handle a RAW frame with {pixel_size=}, dropping it.")
+                return
 
             process_start_ns = time.perf_counter_ns()
             current_frame = CameraFrame(
@@ -418,8 +619,8 @@ class ToupcamCamera(AbstractCamera):
 
         # calculate buffer size
         pixel_size = self._get_pixel_size_in_bytes()
-        if self.get_frame_format() == CameraFrameFormat.RGB and pixel_size != 4:
-            buffer_size = ToupcamCamera._tdib_width_bytes(width * pixel_size * 8) * height
+        if self.get_frame_format() == CameraFrameFormat.RGB:
+            buffer_size = ToupcamCamera._row_pitch_bytes(width, pixel_size) * height
         else:
             buffer_size = width * pixel_size * height
         # create the buffer
@@ -484,8 +685,11 @@ class ToupcamCamera(AbstractCamera):
         else:
             self.set_temperature(self._config.default_temperature)
 
-        self._raw_set_frame_format(CameraFrameFormat.RAW)
-        self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
+        # The frame format has to follow the pixel format: a colour camera configured with
+        # an RGB default_pixel_format needs the SDK's debayering, which only runs in RGB
+        # frame format.  Hard coding RAW here made every RGB format fail to configure.
+        self._raw_set_frame_format(ToupcamCamera._frame_format_for_pixel_format(self._pixel_format))
+        self._raw_set_pixel_format(self._pixel_format)
         try:
             self.set_black_level(self._config.default_black_level)
         except NotImplementedError:
@@ -625,7 +829,21 @@ class ToupcamCamera(AbstractCamera):
         self._pixel_format = pixel_format
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        # Validate before touching the camera.  The frame format switch below and the pixel
+        # format itself have to land together: applying the first and then failing on the
+        # second leaves a frame/pixel format pair that _get_pixel_size_in_bytes cannot map,
+        # which breaks every later frame and exposure change rather than just this call.
+        available = self.get_available_pixel_formats()
+        if pixel_format not in available:
+            raise ValueError(
+                f"Unsupported pixel format: {pixel_format=}. This camera supports: "
+                f"{', '.join(pf.name for pf in available)}."
+            )
+
         with self._pause_streaming():
+            # Switching between a MONO and an RGB format is also a frame format switch, so
+            # do it here rather than making every caller pair the two calls up themselves.
+            self._raw_set_frame_format(ToupcamCamera._frame_format_for_pixel_format(pixel_format))
             self._raw_set_pixel_format(pixel_format)
             self.set_black_level(self._config.default_black_level)
         self._update_internal_settings()
@@ -634,7 +852,25 @@ class ToupcamCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        raise NotImplementedError("get_available_pixel_formats is not implemented for Toupcam")
+        """
+        The pixel formats this camera can actually produce.
+
+        A monochrome sensor reads out grey levels; a colour one is debayered by the SDK
+        into RGB.  Reading a colour sensor with a MONO format is possible but hands back
+        undebayered Bayer data that looks like a grid artifact, so it is not offered.
+
+        Reporting this properly matters for the GUI: the camera settings tab falls back to
+        a hard coded mono list when this raises, which on a colour camera offers formats
+        that cannot be set and hides the ones that can.
+        """
+        if self._capabilities.is_mono:
+            return (
+                CameraPixelFormat.MONO8,
+                CameraPixelFormat.MONO12,
+                CameraPixelFormat.MONO14,
+                CameraPixelFormat.MONO16,
+            )
+        return ToupcamCamera._RGB_PIXEL_FORMATS
 
     def set_auto_exposure(self, enabled: bool):
         try:
@@ -648,6 +884,16 @@ class ToupcamCamera(AbstractCamera):
             self._camera.put_Option(
                 toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RGB_VAL
             )  # 0 is RGB mode, 1 is RAW mode
+            # The SDK's byte order defaults to BGR on Windows (RGB elsewhere).  The rest of
+            # squid treats colour frames as RGB, so pin it rather than inheriting a channel
+            # swap that only shows up on one platform.  Not every model implements it.
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BYTEORDER, 0)  # 0 is RGB, 1 is BGR
+            except toupcam.HRESULTException as ex:
+                self._log.warning(
+                    f"Could not pin the byte order to RGB, colour channels may be swapped --> "
+                    f"{control.toupcam_exceptions.explain(ex)}"
+                )
         elif data_format == CameraFrameFormat.RAW:
             self._camera.put_Option(
                 toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RAW_VAL
@@ -847,8 +1093,19 @@ class ToupcamCamera(AbstractCamera):
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
         self._camera.put_WhiteBalanceGain((red_gain, green_gain, blue_gain))
 
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        self._camera.AwbInit()
+    def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
+        """
+        Turn auto white balance on or off, and return the resulting (R, G, B) gains.
+
+        The SDK's auto white balance (AwbInit) is a one push operation: it works out the
+        gains once and leaves them set, so there is no continuous adjustment to turn back
+        off here.  (The SDK does have a continuous mode, TOUPCAM_OPTION_AWB_CONTINUOUS,
+        but this driver never enables it.)
+        """
+        if on:
+            self._camera.AwbInit()
+        else:
+            self._log.debug("Auto white balance is one push on toupcam cameras, nothing to turn off.")
         return self.get_white_balance_gains()
 
     _BLACK_LEVEL_MAPPING = {

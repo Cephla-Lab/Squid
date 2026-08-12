@@ -1,6 +1,7 @@
+import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import Callable, Dict, List, Optional, Protocol
 
 import imageio
 import numpy as np
@@ -24,6 +25,7 @@ import control.illumination_andor
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
+import squid.camera.facade
 import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
@@ -384,12 +386,52 @@ class Microscope:
 
             return True
 
-        camera = squid.camera.utils.get_camera(
-            config=squid.config.get_camera_config(),
-            simulated=camera_simulated,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
+        camera_registry = None
+        try:
+            camera_registry = ConfigRepository().get_camera_registry()
+        except Exception:
+            squid.logging.get_logger("Microscope.build").exception(
+                "Failed to load cameras.yaml; falling back to single-camera INI config"
+            )
+
+        cameras: Dict[int, AbstractCamera] = {}
+        if camera_registry is not None and len(camera_registry.cameras) > 1:
+            build_log = squid.logging.get_logger("Microscope.build")
+            for definition in camera_registry.cameras:
+                camera_config = squid.config.camera_config_from_definition(definition)
+                try:
+                    cameras[definition.id] = squid.camera.utils.get_camera(
+                        config=camera_config,
+                        simulated=camera_simulated,
+                        hw_trigger_fn=acquisition_camera_hw_trigger_fn if definition.hardware_trigger else None,
+                        hw_set_strobe_delay_ms_fn=(
+                            acquisition_camera_hw_strobe_delay_fn if definition.hardware_trigger else None
+                        ),
+                    )
+                except Exception:
+                    if definition.id == control._def.PRIMARY_CAMERA_ID:
+                        raise
+                    build_log.exception(
+                        f"Camera '{definition.name}' (id={definition.id}, sn={definition.serial_number}) "
+                        f"failed to open; continuing without it. Channels bound to it will be unavailable."
+                    )
+            if control._def.PRIMARY_CAMERA_ID not in cameras:
+                raise ValueError(
+                    f"cameras.yaml declares multiple cameras but none has id={control._def.PRIMARY_CAMERA_ID} "
+                    "(the primary camera). Assign id 1 to the hardware-triggered primary camera."
+                )
+        else:
+            cameras[control._def.PRIMARY_CAMERA_ID] = squid.camera.utils.get_camera(
+                config=squid.config.get_camera_config(),
+                simulated=camera_simulated,
+                hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+            )
+
+        if len(cameras) > 1:
+            camera = squid.camera.facade.ActiveCameraFacade(cameras, active_id=control._def.PRIMARY_CAMERA_ID)
+        else:
+            camera = cameras[control._def.PRIMARY_CAMERA_ID]
 
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
@@ -423,6 +465,7 @@ class Microscope:
         return Microscope(
             stage=stage,
             camera=camera,
+            cameras=cameras,
             illumination_controller=illumination_controller,
             addons=addons,
             low_level_drivers=low_level_devices,
@@ -437,6 +480,7 @@ class Microscope:
         illumination_controller: IlluminationController,
         addons: MicroscopeAddons,
         low_level_drivers: LowLevelDrivers,
+        cameras: Optional[Dict[int, AbstractCamera]] = None,
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
@@ -447,6 +491,14 @@ class Microscope:
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
+        # Concrete cameras keyed by cameras.yaml id. Single-camera systems: {PRIMARY_CAMERA_ID: camera}.
+        self.cameras: Dict[int, AbstractCamera] = (
+            cameras if cameras is not None else {control._def.PRIMARY_CAMERA_ID: camera}
+        )
+        self._active_camera_id: int = control._def.PRIMARY_CAMERA_ID
+        self._camera_switch_lock = threading.RLock()
+        self._camera_trigger_modes: Dict[int, control._def.TriggerMode] = {}
+        self._camera_change_listeners: List[Callable[[int], None]] = []
         self.illumination_controller: IlluminationController = illumination_controller
 
         self.addons = addons
@@ -516,7 +568,10 @@ class Microscope:
                     "requires v1.1+"
                 )
 
-        self.camera.set_pixel_format(
+        # The INI default pixel format applies to the primary camera only: non-primary
+        # cameras already got their per-camera default_pixel_format from their own
+        # config at construction.
+        self.cameras[control._def.PRIMARY_CAMERA_ID].set_pixel_format(
             squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         )
         if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
@@ -529,6 +584,16 @@ class Microscope:
         else:
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
             self.live_controller.trigger_mode = control._def.TriggerMode.SOFTWARE
+
+        # Per-camera trigger-mode memory: the primary starts at the default mode applied
+        # above; every other camera is parked in SOFTWARE trigger (never HARDWARE — its
+        # trigger line may not be wired).
+        self._camera_trigger_modes[control._def.PRIMARY_CAMERA_ID] = self.live_controller.trigger_mode
+        for camera_id, concrete_camera in self.cameras.items():
+            if camera_id == control._def.PRIMARY_CAMERA_ID:
+                continue
+            concrete_camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self._camera_trigger_modes[camera_id] = control._def.TriggerMode.SOFTWARE
 
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
@@ -677,6 +742,92 @@ class Microscope:
             raise ValueError("No focus camera, cannot change its stream handler functions.")
 
         self.stream_handler_focus.set_functions(functions)
+
+    @property
+    def active_camera_id(self) -> int:
+        return self._active_camera_id
+
+    def has_multiple_cameras(self) -> bool:
+        return len(self.cameras) > 1
+
+    def get_stored_trigger_mode(self, camera_id: int) -> control._def.TriggerMode:
+        # Default to SOFTWARE: a camera without stored state must never default to
+        # HARDWARE (its trigger line may not be wired).
+        return self._camera_trigger_modes.get(camera_id, control._def.TriggerMode.SOFTWARE)
+
+    def remember_trigger_mode_for_active_camera(self, mode: control._def.TriggerMode) -> None:
+        # Take the switch lock so the read of _active_camera_id and the memory write are
+        # atomic with respect to set_active_camera: a set_trigger_mode call racing a
+        # switch from another thread must not record the mode against a mid-transition
+        # camera id. RLock: the call from inside set_active_camera's locked section
+        # (via LiveController.set_trigger_mode) stays safe.
+        with self._camera_switch_lock:
+            self._camera_trigger_modes[self._active_camera_id] = mode
+
+    def add_camera_change_listener(self, listener: Callable[[int], None]) -> None:
+        self._camera_change_listeners.append(listener)
+
+    def set_active_camera(self, camera_id: int) -> None:
+        """Switch the active imaging camera.
+
+        Low-level: assumes triggering is quiesced (LiveController.set_microscope_mode
+        stops the live timer and turns illumination off before calling this; the
+        acquisition worker is between frames when it calls this via set_microscope_mode).
+        Applies the incoming camera's stored trigger mode, which also reprograms the MCU
+        trigger mode via LiveController.set_trigger_mode.
+        """
+        with self._camera_switch_lock:
+            if camera_id == self._active_camera_id:
+                return
+            if camera_id not in self.cameras:
+                raise ValueError(
+                    f"Camera id {camera_id} is not available. Available: {sorted(self.cameras)}. "
+                    "It may be declared in cameras.yaml but failed to open."
+                )
+            import squid.camera.facade  # local import to avoid cycles at module import time
+
+            if not isinstance(self.camera, squid.camera.facade.ActiveCameraFacade):
+                raise ValueError("set_active_camera requires a multi-camera build (no facade installed).")
+
+            previous_id = self._active_camera_id
+            outgoing = self.cameras[previous_id]
+            if outgoing.get_acquisition_mode() == CameraAcquisitionMode.CONTINUOUS:
+                outgoing.stop_streaming()
+
+            self.camera.set_active(camera_id)
+            self._active_camera_id = camera_id
+
+            try:
+                self.live_controller.set_trigger_mode(self.get_stored_trigger_mode(camera_id))
+
+                incoming = self.cameras[camera_id]
+                if not incoming.get_is_streaming():
+                    incoming.start_streaming()
+            except Exception as switch_exc:
+                # Applying the incoming camera's trigger mode (or starting its stream)
+                # failed (e.g. unwired camera rejecting HARDWARE, MCU timeout). Roll back
+                # so microscope.camera, the active id, and the listeners (never notified
+                # of the failed switch) stay consistent with the camera that is actually
+                # configured.
+                self.camera.set_active(previous_id)
+                self._active_camera_id = previous_id
+                try:
+                    # Best-effort resync of camera acquisition mode + MCU trigger mode to
+                    # the outgoing camera's stored state.
+                    self.live_controller.set_trigger_mode(self.get_stored_trigger_mode(previous_id))
+                except Exception as rollback_exc:
+                    self._log.error(
+                        f"Rollback of trigger mode to camera {previous_id} failed: {rollback_exc}. "
+                        f"Original switch error: {switch_exc}"
+                    )
+                self._log.exception(f"Switching to camera {camera_id} failed; rolled back to camera {previous_id}")
+                raise
+
+        for listener in list(self._camera_change_listeners):
+            try:
+                listener(camera_id)
+            except Exception:
+                self._log.exception("camera change listener failed")
 
     def initialize_core_components(self) -> None:
         """Initialize and home core hardware components like piezo stage."""
@@ -1087,10 +1238,13 @@ class Microscope:
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
 
-        try:
-            self.camera.close()
-        except Exception as e:
-            self._log.warning(f"Error closing camera: {e}")
+        # Close the concrete cameras directly (not via self.camera): identical for
+        # single-camera builds, and avoids double-closing through the facade.
+        for camera_id, concrete_camera in self.cameras.items():
+            try:
+                concrete_camera.close()
+            except Exception:
+                self._log.exception(f"Error closing camera {camera_id}")
 
     def move_to_position(self, x: float, y: float, z: float) -> None:
         """Move the stage to an absolute XYZ position.

@@ -4,19 +4,31 @@ This module provides save/load functionality for camera settings (binning, pixel
 to maintain user preferences across application restarts. Settings are stored as YAML
 in the cache directory.
 
+The on-disk format is keyed by camera serial number so that a multi-camera system keeps
+one entry per camera:
+
+    version: 2
+    cameras:
+      SN1: {binning: [2, 2], pixel_format: MONO8}
+      SN2: {binning: [1, 1], pixel_format: MONO12}
+
+Cameras without a serial number (INI-only configurations) are stored under the
+"default" key. Files written by older versions are a flat mapping without the
+"cameras" key; those are still read, and apply to whichever camera asks for them.
+
 Typical usage:
     # On application close
-    save_camera_settings(camera)
+    save_all_camera_settings(microscope.cameras)
 
     # On application startup
-    settings = load_camera_settings()
+    settings = load_camera_settings(serial=camera._config.serial_number)
     if settings:
         camera.set_binning(*settings.binning)
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import yaml
 
@@ -27,6 +39,9 @@ _log = squid.logging.get_logger(__name__)
 
 _DEFAULT_CACHE_PATH = Path("cache/camera_settings.yaml")
 DEFAULT_BINNING: Tuple[int, int] = (1, 1)
+
+# Key used for cameras that have no serial number in their config.
+_DEFAULT_SERIAL_KEY = "default"
 
 
 @dataclass(frozen=True)
@@ -49,12 +64,72 @@ class CachedCameraSettings:
             raise ValueError(f"Binning values must be positive, got {self.binning}")
 
 
-def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
-    """Save current camera settings (binning and pixel format) to a YAML cache file.
+def _serial_key(camera: AbstractCamera) -> str:
+    """Cache key for a camera: its serial number, or 'default' when it has none."""
+    serial = getattr(camera._config, "serial_number", None)
+    return serial if serial else _DEFAULT_SERIAL_KEY
+
+
+def _settings_dict_for(camera: AbstractCamera) -> Optional[dict]:
+    """Read a camera's persistable settings, or None if the camera cannot be read.
+
+    Deliberately catches everything: driver-level failures are not confined to any one
+    exception type (a yanked USB camera raises OSError, for instance). This runs from
+    application shutdown, where one unreachable camera must cost neither the other
+    cameras' settings nor the rest of the cleanup sequence.
+    """
+    try:
+        binning = camera.get_binning()
+        pixel_format = camera.get_pixel_format()
+    except Exception as e:
+        _log.error(f"Cannot read camera settings - camera may be disconnected: {e}")
+        return None
+    return {"binning": list(binning), "pixel_format": pixel_format.value if pixel_format else None}
+
+
+def save_all_camera_settings(cameras: Dict[int, AbstractCamera], cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
+    """Save settings for every concrete camera, keyed by serial number.
 
     Creates parent directories if they do not exist. This function is fail-safe -
     errors are logged but do not raise exceptions, allowing application shutdown
-    to continue.
+    to continue. Cameras that cannot be read are skipped; if no camera can be read
+    the existing cache file is left untouched.
+
+    Args:
+        cameras: Microscope.cameras, i.e. {camera_id: AbstractCamera}. Must be the
+            concrete cameras, not the ActiveCameraFacade - these settings are
+            per-camera identity state.
+        cache_path: Path to the cache file. Defaults to 'cache/camera_settings.yaml'
+            relative to the current working directory.
+    """
+    per_serial = {}
+    for camera in cameras.values():
+        settings = _settings_dict_for(camera)
+        if settings is not None:
+            per_serial[_serial_key(camera)] = settings
+
+    if not per_serial:
+        return
+
+    payload = {"version": 2, "cameras": per_serial}
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            yaml.safe_dump(payload, f, default_flow_style=False)
+        _log.info(f"Camera settings saved for {sorted(per_serial)}")
+    except PermissionError as e:
+        _log.error(f"Cannot save camera settings - permission denied for {cache_path}: {e}")
+    except OSError as e:
+        _log.error(f"Cannot save camera settings - file system error: {e}")
+
+
+def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
+    """Write the legacy single-camera (v1) flat cache file.
+
+    Kept for callers that only ever have one camera and do not care about serial
+    numbers. Multi-camera callers must use save_all_camera_settings, which writes
+    the per-serial v2 format. This function is fail-safe - errors are logged but do
+    not raise exceptions, allowing application shutdown to continue.
 
     Args:
         camera: Camera instance to read settings from.
@@ -84,18 +159,25 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
         _log.error(f"Cannot save camera settings - file system error: {e}")
 
 
-def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[CachedCameraSettings]:
-    """Load cached camera settings from a YAML cache file.
+def load_camera_settings(
+    cache_path: Path = _DEFAULT_CACHE_PATH, *, serial: Optional[str] = None
+) -> Optional[CachedCameraSettings]:
+    """Load one camera's cached settings from a YAML cache file.
 
     This function is fail-safe - returns None on any error condition.
 
     Args:
         cache_path: Path to the cache file. Defaults to 'cache/camera_settings.yaml'
             relative to the current working directory.
+        serial: Serial number of the camera whose settings to load. None means the
+            "default" entry, falling back to the only entry when the cache holds
+            exactly one camera (single-camera systems). Keyword-only, so existing
+            positional callers keep passing cache_path.
 
     Returns:
-        CachedCameraSettings if the file exists and contains valid data, None otherwise.
-        Returns None if the file doesn't exist (expected on first run).
+        CachedCameraSettings if the file exists and holds valid data for this camera,
+        None otherwise. Returns None if the file doesn't exist (expected on first run)
+        or has no entry for `serial`.
     """
     if not cache_path.exists():
         _log.debug("No camera settings cache file found - using defaults")
@@ -115,6 +197,29 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
     except OSError as e:
         _log.error(f"Cannot read camera settings cache - file system error: {e}")
         return None
+
+    if not isinstance(settings, dict):
+        _log.error(f"Camera settings cache at {cache_path} is not a mapping - using defaults")
+        return None
+
+    if "cameras" in settings:
+        # v2 per-serial format.
+        per_serial = settings.get("cameras")
+        if not isinstance(per_serial, dict):
+            per_serial = {}
+        key = serial if serial else _DEFAULT_SERIAL_KEY
+        entry = per_serial.get(key)
+        if entry is None and serial is None and len(per_serial) == 1:
+            # Single-camera system whose one camera does have a serial number.
+            entry = next(iter(per_serial.values()))
+        if entry is None:
+            _log.debug(f"No cached camera settings for serial '{key}'")
+            return None
+        if not isinstance(entry, dict):
+            _log.warning(f"Cached camera settings for serial '{key}' are malformed: {entry!r}")
+            return None
+        settings = entry
+    # else: legacy v1 flat format - the whole file is the requested camera's settings.
 
     try:
         binning_raw = settings.get("binning")

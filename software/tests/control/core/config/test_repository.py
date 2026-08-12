@@ -437,9 +437,11 @@ cameras:
     id: 1
     serial_number: "ABC123"
     model: "Hamamatsu C15440"
+    type: "Hamamatsu"
   - name: "Side Camera"
     id: 2
     serial_number: "DEF456"
+    type: "Toupcam"
 """
         )
 
@@ -492,9 +494,11 @@ cameras:
   - name: "Main Camera"
     id: 1
     serial_number: "ABC"
+    type: "Toupcam"
   - name: "Secondary Camera"
     id: 2
     serial_number: "DEF"
+    type: "Toupcam"
 """
         )
 
@@ -1116,9 +1120,11 @@ cameras:
   - name: "Main Camera"
     id: 1
     serial_number: "ABC123"
+    type: "Toupcam"
   - name: "Side Camera"
     id: 2
     serial_number: "DEF456"
+    type: "Toupcam"
 """
         )
 

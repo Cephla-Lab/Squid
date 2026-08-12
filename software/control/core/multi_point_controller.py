@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,15 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    AcquisitionParameters,
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    compute_channel_pixel_sizes,
+    get_camera_geometry_mismatch,
+    get_unavailable_camera_channels,
+    get_used_camera_ids,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -192,6 +200,9 @@ class MultiPointController:
         self._per_acq_log_handler = None
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._slack_notifier = None  # Optional SlackNotifier for notifications
+        # Set by the per-camera warm-up when it stops live to switch cameras; consumed by
+        # run_acquisition so live still resumes after the run.
+        self._live_stopped_for_warm_up = False
 
         # Pre-warm job runner subprocess at controller init (reduces acquisition start delay)
         # Backpressure values (tuple) are created here and shared with both the pre-warmed runner
@@ -450,6 +461,13 @@ class MultiPointController:
         self.overlap_percent = overlap_percent
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
+        # Only run_acquisition consumes the warm-up's live-handoff flag, and several Start
+        # paths abort before reaching it (disk/RAM dialog on either widget, a failed
+        # validate, the multi-camera backstop raise). A stranded True would make the next run
+        # that skips the warm-up — skip-saving, snap, fluidics, TCP — resume live it never
+        # stopped, illuminating the sample unattended. This runs before the estimate on every
+        # Start path, so the warm-up re-arms it right after when it legitimately applies.
+        self._live_stopped_for_warm_up = False
         # generate unique experiment ID
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
@@ -496,6 +514,11 @@ class MultiPointController:
                 self._log.debug(f"Could not get default objective info: {e}")
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
+        # Only the active camera's sensor is described above; with channels spread over
+        # several cameras each one has its own image pixel size.
+        acquisition_parameters["channel_pixel_sizes_um"] = compute_channel_pixel_sizes(
+            self.selected_configurations, self.microscope.cameras, self.objectiveStore.get_pixel_size_factor()
+        )
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
@@ -566,11 +589,95 @@ class MultiPointController:
                 self.camera.stop_streaming()
         return (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
 
+    def _warm_up_cameras_and_get_test_image(self) -> Tuple[Optional[np.array], bool]:
+        """Grab one frame from every camera this acquisition will use.
+
+        A camera's first frame after streaming starts is the slow one; taking it here means
+        no camera pays for it inside the run. Single-camera runs do exactly what they always
+        did — one grab, no switch — since the only used id is already the active one.
+
+        The run's starting camera (the first channel's) is visited LAST, so the loop ends
+        where the run begins — one switch fewer — and returns that camera's frame, which the
+        disk-space estimate sizes an image from.
+
+        Coverage: the only caller is get_estimated_acquisition_disk_storage, i.e. the GUI
+        Start path with saving enabled. Skip-saving runs, Snap Images, the fluidics Start
+        path and headless/TCP runs are not warmed up — none of them ever were.
+        """
+        used_camera_ids = get_used_camera_ids(self.selected_configurations) or [self.microscope.active_camera_id]
+        first_camera_id = used_camera_ids[0]
+        visit_order = used_camera_ids[1:] + used_camera_ids[:1]  # starting camera last
+        self._stop_live_before_camera_switches(used_camera_ids)
+
+        test_image, is_color = (None, True)
+        try:
+            for camera_id in visit_order:
+                if camera_id not in self.microscope.cameras:
+                    # Unavailable: _raise_on_incompatible_camera_selection rejects this before
+                    # a real run, and grabbing from whatever is active instead would be a lie.
+                    continue
+                try:
+                    self._make_camera_active(camera_id)
+                    frame, frame_is_color = self._temporary_get_an_image_hack()
+                except Exception:
+                    if camera_id == first_camera_id:
+                        # The run starts on this one: let the caller log and fall back to a
+                        # synthetic worst-case image, exactly as it did before the loop existed.
+                        raise
+                    # A secondary camera that will not warm up must not cost us the frame we
+                    # came for; it just pays its first frame during the run.
+                    self._log.exception(f"Warm-up of camera {camera_id} failed, continuing")
+                    continue
+                if camera_id == first_camera_id:
+                    test_image, is_color = frame, frame_is_color
+        finally:
+            # Usually already there (starting camera visited last); this catches the paths
+            # where it was skipped or its switch rolled back to another camera.
+            try:
+                self._make_camera_active(first_camera_id)
+            except Exception:
+                # Not fatal — the worker switches per channel anyway — but losing the
+                # original failure by raising out of the finally would be.
+                self._log.exception(f"Could not return to camera {first_camera_id} after the warm-up")
+        return test_image, is_color
+
+    def _stop_live_before_camera_switches(self, used_camera_ids: List[int]) -> None:
+        """Quiesce live triggering when the warm-up is about to switch cameras.
+
+        set_active_camera assumes triggering is quiesced — it reprograms the MCU trigger
+        mode — but the live trigger timer is a threading.Timer on its own thread and would
+        happily send_trigger() through the facade mid-switch, which is the one-pending-MCU-
+        command race from PR #461. run_acquisition stops live moments later anyway, so this
+        only moves the stop earlier, and only for a run that actually switches cameras: the
+        single-camera path never gets here.
+        """
+        self._live_stopped_for_warm_up = False
+        switches_cameras = any(
+            camera_id in self.microscope.cameras and camera_id != self.microscope.active_camera_id
+            for camera_id in used_camera_ids
+        )
+        if not (switches_cameras and self.liveController.is_live):
+            return
+        self._log.info("Stopping live view: the per-camera warm-up is about to switch cameras")
+        self.liveController.stop_live()
+        # run_acquisition decides whether to resume live afterwards by reading is_live; without
+        # this it would find the live view we just stopped and never bring it back.
+        self._live_stopped_for_warm_up = True
+
+    def _make_camera_active(self, camera_id: int) -> None:
+        """Switch to camera_id, unless it is already active or never opened."""
+        if camera_id in self.microscope.cameras and camera_id != self.microscope.active_camera_id:
+            self.microscope.set_active_camera(camera_id)
+
     def get_estimated_acquisition_disk_storage(self):
         """
         This does its best to return the number of bytes needed to store the settings for the currently
         configured acquisition on disk.  If you don't have at least this amount of disk space available
         when starting this acquisition, it is likely it will fail with an "out of disk space" error.
+
+        Side effect on multi-camera systems: this also performs the acquisition's per-camera
+        warm-up, which switches cameras (and stops live view to do so safely) and leaves the
+        run's starting camera active.
         """
         # TODO(imo): This needs updating for AbstractCamera
         if not len(self.liveController.get_channels(self.objectiveStore.current_objective)):
@@ -581,7 +688,7 @@ class MultiPointController:
         test_image = None
         is_color = True
         try:
-            test_image, is_color = self._temporary_get_an_image_hack()
+            test_image, is_color = self._warm_up_cameras_and_get_test_image()
         except Exception as e:
             self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
             # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
@@ -698,6 +805,10 @@ class MultiPointController:
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
             return
+        # Multi-camera backstop for entry points with no Start button to disable (TCP
+        # control server, scripts). The multipoint widgets refuse these selections up
+        # front; raising here (rather than returning) tells a headless caller why.
+        self._raise_on_incompatible_camera_selection()
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -759,12 +870,14 @@ class MultiPointController:
             self.abort_acqusition_requested = False
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
-            # stop live
+            # stop live. The per-camera warm-up may already have stopped it so it could switch
+            # cameras safely; either way the user was live before this run and wants it back.
+            self.liveController_was_live_before_multipoint = (
+                self.liveController.is_live or self._live_stopped_for_warm_up
+            )
+            self._live_stopped_for_warm_up = False
             if self.liveController.is_live:
-                self.liveController_was_live_before_multipoint = True
                 self.liveController.stop_live()  # @@@ to do: also uncheck the live button
-            else:
-                self.liveController_was_live_before_multipoint = False
 
             self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
@@ -869,7 +982,8 @@ class MultiPointController:
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
             objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
-            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+            pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+            pixel_size_um = pixel_size_factor * self.camera.get_pixel_size_binned_um()
             objective_info = {
                 "name": current_objective,
                 "magnification": objective_dict.get("magnification"),
@@ -877,6 +991,11 @@ class MultiPointController:
                 "pixel_size_um": pixel_size_um,
                 "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
                 "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
+                # pixel_size_um/sensor_pixel_size_um above describe the active camera only;
+                # a run whose channels span cameras needs one number per channel.
+                "channel_pixel_sizes_um": compute_channel_pixel_sizes(
+                    self.selected_configurations, self.microscope.cameras, pixel_size_factor
+                ),
             }
 
             # Get wellplate format if available
@@ -1072,6 +1191,32 @@ class MultiPointController:
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def _raise_on_incompatible_camera_selection(self) -> None:
+        """Reject a channel selection the hardware or the file format cannot deliver.
+
+        Two cases, both fatal for the run: a selected channel bound to a camera that never
+        opened (it would silently be imaged on whichever camera is active), and a Zarr run
+        whose selection spans cameras with different frame geometry (one region is one
+        uniform array). No-ops on single-camera systems.
+
+        Signals finished before raising — same as the validate_acquisition_settings path
+        above — so a GUI that already disabled itself for this run is restored.
+        """
+        problem = None
+        unavailable = get_unavailable_camera_channels(self.selected_configurations, self.microscope.cameras)
+        if unavailable:
+            problem = (
+                f"Cannot start acquisition: channels {unavailable} are bound to a camera that is not "
+                "available (declared in cameras.yaml but failed to open, or unknown camera id)."
+            )
+        elif control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            problem = get_camera_geometry_mismatch(self.selected_configurations, self.microscope.cameras)
+        if problem is None:
+            return
+        self._log.error(problem)
+        self.callbacks.signal_acquisition_finished()
+        raise ValueError(problem)
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""

@@ -155,3 +155,52 @@ class TestFullViewMagnificationPersistence:
         )
         # Integer factor 3 -> 2.22 um, NOT the exact target 2.0 um.
         assert widget.viewer_pixel_size_mm == pytest.approx(0.00222, abs=1e-5)
+
+
+class TestContrastManagerWriteBack:
+    """The mosaic renders at mosaic_dtype - latched from whichever tile arrives first, which
+    on a dual-camera run may be the other camera's depth. It must not write that view's
+    numbers back over a channel's stored limits.
+    """
+
+    @pytest.fixture
+    def widget_with_real_contrast(self, qtbot, monkeypatch):
+        from control.core.contrast_manager import ContrastManager
+
+        monkeypatch.setattr(control._def, "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM", 2.0)
+        contrast = ContrastManager()
+        widget = UnifiedMosaicWidget(_FakeObjectiveStore(factor=1.85), _FakeCamera(), contrast)
+        qtbot.addWidget(widget)
+        widget.mode = DisplayMode.MOSAIC
+        return widget, contrast
+
+    def test_derived_limits_are_not_written_back_to_the_manager(self, widget_with_real_contrast):
+        """A uint16 channel's contrast selection must survive being displayed in a uint8
+        mosaic. Without the event blocker the assignment echoed through _on_contrast_change
+        and stored the uint8 equivalent, so (800, 1600) came back as (3.1, 6.2)."""
+        widget, contrast = widget_with_real_contrast
+        contrast.update_limits("BF", 800.0, 1600.0, dtype=np.uint16)
+
+        # A uint8 tile latches mosaic_dtype to uint8, so the displayed limits are rescaled.
+        widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+        assert widget.mosaic_dtype == np.uint8
+
+        assert contrast.contrast_limits["BF"] == (800.0, 1600.0), "the mosaic overwrote the channel's limits"
+        assert contrast.limit_dtypes["BF"] == np.dtype(np.uint16), "the channel was re-anchored to the view's dtype"
+        # The layer itself still shows the rescaled values, so the view looks right.
+        assert tuple(widget.viewer.layers["BF"].contrast_limits) == pytest.approx((3.11, 6.22), abs=0.01)
+
+    def test_a_user_drag_in_the_mosaic_is_recorded_with_the_view_dtype(self, widget_with_real_contrast):
+        """A real contrast change here is expressed in mosaic_dtype, so it must be labelled
+        that way - otherwise it would later be read as if it were the channel's own depth."""
+        widget, contrast = widget_with_real_contrast
+        widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+
+        widget.viewer.layers["BF"].contrast_limits = (20.0, 240.0)  # unblocked: a user drag
+
+        assert contrast.contrast_limits["BF"] == (20.0, 240.0)
+        assert contrast.limit_dtypes["BF"] == np.dtype(np.uint8)
+        # ...and read back at the channel's acquisition depth it converts, rather than being
+        # taken literally as uint16 values.
+        converted = contrast.get_limits_for_dtype("BF", np.uint16)
+        assert converted == pytest.approx((5140.0, 61680.0), rel=0.01)

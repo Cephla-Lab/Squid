@@ -13,6 +13,24 @@ from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
+# Vocabulary matches the INI camera_type strings (see squid/config.py _old_camera_variant_to_enum)
+KNOWN_CAMERA_TYPES = ["Toupcam", "FLIR", "Hamamatsu", "iDS", "TIS", "Tucsen", "Photometrics", "Andor", "Default"]
+# Vocabulary matches control.utils.FlipVariant member values (use FlipVariant(value) to convert)
+KNOWN_FLIP_VALUES = ["Vertical", "Horizontal", "Both"]
+# Vocabulary matches squid.config.CameraPixelFormat member values
+KNOWN_PIXEL_FORMATS = [
+    "MONO8",
+    "MONO10",
+    "MONO12",
+    "MONO14",
+    "MONO16",
+    "RGB24",
+    "RGB32",
+    "RGB48",
+    "BAYER_RG8",
+    "BAYER_RG12",
+]
+
 
 class CameraDefinition(BaseModel):
     """A camera in the system.
@@ -26,7 +44,30 @@ class CameraDefinition(BaseModel):
     serial_number: str = Field(..., min_length=1, description="Hardware serial number")
     model: Optional[str] = Field(None, description="Camera model for display")
 
+    # Dual-camera fields. All optional; absent values fall back to the INI [CAMERA_CONFIG] section.
+    type: Optional[str] = Field(None, description="Camera driver type (same vocabulary as INI camera_type)")
+    hardware_trigger: bool = Field(True, description="Whether this camera's hardware trigger line is wired")
+    rotate_image_angle: Optional[float] = Field(None, description="Per-camera rotation override")
+    flip: Optional[str] = Field(None, description="Per-camera flip override (Vertical/Horizontal/Both)")
+    crop_width: Optional[int] = Field(None, ge=1, description="Per-camera unbinned crop width override")
+    crop_height: Optional[int] = Field(None, ge=1, description="Per-camera unbinned crop height override")
+    default_pixel_format: Optional[str] = Field(None, description="Per-camera default pixel format override")
+    default_binning: Optional[List[int]] = Field(None, description="Per-camera default binning override, [x, y]")
+
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_dual_camera_fields(self) -> "CameraDefinition":
+        if self.type is not None and self.type not in KNOWN_CAMERA_TYPES:
+            raise ValueError(f"Unknown camera type '{self.type}'. Known: {KNOWN_CAMERA_TYPES}")
+        if self.flip is not None and self.flip not in KNOWN_FLIP_VALUES:
+            raise ValueError(f"Unknown flip value '{self.flip}'. Known: {KNOWN_FLIP_VALUES}")
+        if self.default_pixel_format is not None and self.default_pixel_format not in KNOWN_PIXEL_FORMATS:
+            raise ValueError(f"Unknown pixel format '{self.default_pixel_format}'. Known: {KNOWN_PIXEL_FORMATS}")
+        if self.default_binning is not None:
+            if len(self.default_binning) != 2 or any(b < 1 for b in self.default_binning):
+                raise ValueError(f"default_binning must be [x, y] with positive ints, got {self.default_binning}")
+        return self
 
 
 class CameraRegistryConfig(BaseModel):
@@ -41,7 +82,8 @@ class CameraRegistryConfig(BaseModel):
 
     Validation rules:
     - Single camera: name and id are optional (defaults: id=1, name="Camera")
-    - Multiple cameras: name and id are required for all cameras
+    - Multiple cameras: name, id and type are required for all cameras
+      (type cannot be inferred from the single INI camera_type when cameras differ)
     - Names must be unique
     - IDs must be unique
     - Serial numbers must be unique
@@ -101,6 +143,11 @@ class CameraRegistryConfig(BaseModel):
                 if cam.name is None:
                     raise ValueError(
                         f"Camera at index {i} (serial: {cam.serial_number}) missing required 'name' "
+                        f"(required when multiple cameras exist)"
+                    )
+                if cam.type is None:
+                    raise ValueError(
+                        f"Camera at index {i} (serial: {cam.serial_number}) missing required 'type' "
                         f"(required when multiple cameras exist)"
                     )
 

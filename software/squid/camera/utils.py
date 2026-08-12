@@ -228,6 +228,8 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         self._pixel_format = pixel_format
+        # Invalidate cached frame so next frame regenerates with the new dtype/channel count
+        self._current_raw_frame = None
 
     @debug_log
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -235,7 +237,13 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+        return [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO12,
+            CameraPixelFormat.MONO16,
+            CameraPixelFormat.RGB24,
+            CameraPixelFormat.RGB48,
+        ]
 
     @debug_log
     def get_binning(self) -> Tuple[int, int]:
@@ -346,8 +354,13 @@ class SimulatedCamera(AbstractCamera):
         self._white_balance_gains = (red_gain, green_gain, blue_gain)
 
     @debug_log
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        self.set_white_balance_gains(1.0, 1.0, 1.0)
+    def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
+        # The GUI calls this with on=True/False (see CameraSettingsWidget.toggle_auto_wb), so
+        # the flag is part of the signature even though a simulated sensor has nothing to
+        # auto-balance. On: hand back the neutral gains. Off: leave the gains as they are —
+        # the caller reads them back and re-applies them.
+        if on:
+            self.set_white_balance_gains(1.0, 1.0, 1.0)
 
         return self.get_white_balance_gains()
 
@@ -397,6 +410,14 @@ class SimulatedCamera(AbstractCamera):
                 self._current_raw_frame = self._current_raw_frame << 4
             elif self.get_pixel_format() == CameraPixelFormat.MONO16:
                 self._current_raw_frame = np.random.randint(65535, size=(height, width), dtype=np.uint16)
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
+                    200 * 256
+                )
+            elif self.get_pixel_format() == CameraPixelFormat.RGB24:
+                self._current_raw_frame = np.random.randint(255, size=(height, width, 3), dtype=np.uint8)
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
+            elif self.get_pixel_format() == CameraPixelFormat.RGB48:
+                self._current_raw_frame = np.random.randint(65535, size=(height, width, 3), dtype=np.uint16)
                 self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
                     200 * 256
                 )

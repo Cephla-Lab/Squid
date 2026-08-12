@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
+import control._def
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.models import AcquisitionChannel
-from squid.abc import CameraFrame
+from squid.abc import AbstractCamera, CameraFrame
+from squid.config import CameraPixelFormat
 
 if TYPE_CHECKING:
     from control.slack_notifier import TimepointStats, AcquisitionStats
@@ -147,3 +149,114 @@ class MultiPointControllerFunctions:
     # The waiting callback receives the list of channel keys it's waiting on (e.g. ["470", "55x"]).
     signal_laser_engine_waiting: Callable[[List[str]], None] = lambda *a, **kw: None
     signal_laser_engine_ready: Callable[[], None] = lambda *a, **kw: None
+
+
+# ---------------------------------------------------------------------------------------
+# Multi-camera selection checks
+#
+# Pure functions (no Qt, no controller state) so the multipoint widgets can use them to
+# disable Start and MultiPointController can use them as the headless backstop.
+# ---------------------------------------------------------------------------------------
+
+
+def channel_camera_id(channel) -> int:
+    """The camera a channel images on. A null `camera` means the primary camera."""
+    return channel.camera if getattr(channel, "camera", None) is not None else control._def.PRIMARY_CAMERA_ID
+
+
+# Historical private alias; callers in this module still use it.
+_channel_camera_id = channel_camera_id
+
+
+def get_unavailable_camera_channels(selected_channels, cameras: Dict[int, AbstractCamera]) -> List[str]:
+    """Names of selected channels whose camera id is not an available (opened) camera.
+
+    Such a channel cannot be imaged: LiveController.set_microscope_mode logs the failed
+    switch and keeps the current camera, so the channel would silently be captured on the
+    wrong sensor.
+    """
+    return [ch.name for ch in selected_channels if _channel_camera_id(ch) not in cameras]
+
+
+def get_used_camera_ids(selected_channels) -> List[int]:
+    """Camera ids the selected channels image on, de-duplicated, in first-use order.
+
+    First-use order (not sorted) because the acquisition starts on the first channel's
+    camera: a caller that visits every camera in this order ends up one switch away from
+    where the run begins.
+    """
+    return list(dict.fromkeys(_channel_camera_id(channel) for channel in selected_channels))
+
+
+def compute_channel_pixel_sizes(selected_channels, cameras, pixel_size_factor) -> Dict[str, float]:
+    """Per-channel image pixel size in um: objective factor x that channel's camera's binned pixel size.
+
+    With more than one camera "the" sensor pixel size of a run is only the active camera's,
+    so acquisition metadata records this map alongside it. A channel whose camera is not
+    available (or a run with no objective factor) is omitted rather than given a number
+    from the wrong sensor.
+    """
+    sizes = {}
+    for channel in selected_channels:
+        camera = cameras.get(_channel_camera_id(channel))
+        if camera is None or pixel_size_factor is None:
+            continue
+        sizes[channel.name] = float(pixel_size_factor) * float(camera.get_pixel_size_binned_um())
+    return sizes
+
+
+def _camera_frame_geometry(camera: AbstractCamera) -> Tuple[int, int, bool, int, float]:
+    """(width, height, is_color, storage_bit_depth, pixel_size_um) for this camera's frames.
+
+    get_crop_size() is None on an axis with no configured crop, and crop_image() clamps a
+    crop larger than the frame, so the delivered size is the smaller of crop and
+    resolution (both of which already account for binning). Comparing crop alone would
+    make every uncropped camera look identical regardless of sensor size.
+
+    Bit depth matters on its own: two mono cameras of the same size and pixel size still
+    differ as uint8 vs uint16, and a Zarr array's dtype is fixed by the first frame — the
+    second camera's frames would be silently up/down-cast rather than fail.
+    """
+    crop_width, crop_height = camera.get_crop_size()
+    resolution_width, resolution_height = camera.get_resolution()
+    pixel_format = camera.get_pixel_format()
+    return (
+        min(crop_width, resolution_width) if crop_width else resolution_width,
+        min(crop_height, resolution_height) if crop_height else resolution_height,
+        CameraPixelFormat.is_color_format(pixel_format),
+        CameraPixelFormat.storage_bit_depth(pixel_format),
+        round(camera.get_pixel_size_binned_um(), 4),
+    )
+
+
+def get_camera_geometry_mismatch(selected_channels, cameras: Dict[int, AbstractCamera]) -> Optional[str]:
+    """Check whether the selected channels' cameras produce interchangeable frames.
+
+    Zarr stores one uniform array per region/FOV (shape+dtype fixed by the first frame,
+    single pixel_size_um), so a mixed-camera selection is only Zarr-compatible when every
+    used camera matches in frame size, color-ness, storage bit depth, and binned pixel
+    size. Returns None when compatible, else a user-facing message.
+    """
+    geometry_by_camera = {}
+    for channel in selected_channels:
+        camera_id = _channel_camera_id(channel)
+        camera = cameras.get(camera_id)
+        if camera is None:
+            continue  # unavailable cameras are reported by get_unavailable_camera_channels
+        geometry_by_camera[camera_id] = _camera_frame_geometry(camera)
+    if len(set(geometry_by_camera.values())) <= 1:
+        return None
+    details = "; ".join(
+        f"camera {camera_id}: {width}x{height} px, {'color' if is_color else 'mono'} " f"uint{depth}, {pixel_um} um/px"
+        for camera_id, (width, height, is_color, depth, pixel_um) in sorted(geometry_by_camera.items())
+    )
+    # The remedy is individual images, not OME-TIFF: OME-TIFF fixes one shape and dtype per
+    # region/FOV stack too, so it fails or silently mis-casts on every axis checked here
+    # (RGB raises NotImplementedError, differing mono Y*X raises mid-run, differing mono bit
+    # depth is quietly .astype()'d).
+    return (
+        "Selected channels span cameras with different frame geometry "
+        f"({details}). This selection cannot be saved as Zarr — switch the file saving option "
+        "to individual images, or make the cameras match via binning/crop, or select channels "
+        "from one camera."
+    )

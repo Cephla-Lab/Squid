@@ -114,6 +114,11 @@ class TriggerMode:
         raise ValueError(f"Invalid trigger mode: {option}")
 
 
+# The camera id (cameras.yaml) that is the default/primary imaging camera.
+# A channel with camera=None uses this camera.
+PRIMARY_CAMERA_ID = 1
+
+
 class Acquisition:
     NUMBER_OF_FOVS_PER_AF = 3
     IMAGE_FORMAT = "tiff"

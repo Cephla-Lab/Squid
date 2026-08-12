@@ -23,7 +23,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from control.channel_sequence import enable_channel_sequence
+from control.channel_sequence import UNAVAILABLE_CAMERA_TOOLTIP, enable_channel_sequence
 import control.utils as utils
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
@@ -55,6 +55,110 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from PIL import Image, ImageDraw, ImageFont
+
+
+def camera_display_name(registry, camera_id) -> str:
+    """Display text for a channel's camera id. '(None)' means primary/unassigned."""
+    if registry is None or camera_id is None:
+        return "(None)"
+    definition = registry.get_camera_by_id(camera_id)
+    return definition.name if definition is not None and definition.name else "(None)"
+
+
+def camera_id_from_display(registry, display_text) -> Optional[int]:
+    """Inverse of camera_display_name: camera id for a dropdown display text."""
+    if registry is None or not display_text or display_text == "(None)":
+        return None
+    definition = registry.get_camera_by_name(display_text)
+    return definition.id if definition is not None else None
+
+
+# Channel-list camera icons are semantic: a neutral grey dot marks a monochrome
+# camera, an RGB tri-wedge disc marks a color camera. Camera *identity* is carried
+# by the "— <camera name>" label suffix, not the icon.
+_MONO_DOT_COLOR = "#8A939B"  # readable on light and dark palettes
+_RGB_WEDGE_COLORS = [QColor(220, 60, 60), QColor(60, 170, 80), QColor(70, 105, 225)]
+
+
+def camera_dot_icon(is_color: bool) -> QIcon:
+    """Sensor-type icon for channel lists: grey dot = mono, RGB disc = color."""
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    if is_color:
+        # Three 120-degree wedges starting at the top (Qt angles are 1/16 deg, CCW).
+        for i, wedge_color in enumerate(_RGB_WEDGE_COLORS):
+            painter.setBrush(wedge_color)
+            painter.drawPie(1, 1, 10, 10, (90 - i * 120) * 16, -120 * 16)
+    else:
+        painter.setBrush(QColor(_MONO_DOT_COLOR))
+        painter.drawEllipse(1, 1, 10, 10)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _camera_is_color(microscope, registry, camera_id: int) -> bool:
+    """Whether a camera produces color frames, for icon selection.
+
+    Prefers the live camera's current pixel format; falls back to the registry's
+    declared default for cameras that failed to open. Unknown -> mono.
+    """
+    camera = microscope.cameras.get(camera_id)
+    if camera is not None:
+        try:
+            return bool(camera.is_color)
+        except Exception:
+            return False
+    definition = registry.get_camera_by_id(camera_id) if registry is not None else None
+    if definition is not None and definition.default_pixel_format:
+        try:
+            return CameraPixelFormat.is_color_format(CameraPixelFormat.from_string(definition.default_pixel_format))
+        except KeyError:
+            return False
+    return False
+
+
+def channel_display_label(channel, registry) -> str:
+    """Display text for a channel in dropdowns/lists.
+
+    Identity stays the bare channel name (stored in Qt.UserRole); this is decoration only.
+    """
+    if registry is None or len(registry.cameras) <= 1:
+        return channel.name
+    camera_id = channel.camera if channel.camera is not None else control._def.PRIMARY_CAMERA_ID
+    if camera_id == control._def.PRIMARY_CAMERA_ID:
+        return channel.name
+    definition = registry.get_camera_by_id(camera_id)
+    if definition is None:
+        return f"{channel.name} — camera {camera_id} (unavailable)"
+    return f"{channel.name} — {definition.name}"
+
+
+def _make_channel_decorator(live_controller_getter):
+    """Returns a decorate(channel_name) -> (label, icon, enabled) function for channel lists.
+
+    live_controller_getter is a zero-arg callable so the decorator always sees the
+    current controller/microscope state. `enabled` is False when the channel's camera
+    is declared but unavailable (failed to open) — items get greyed out, not hidden.
+    """
+
+    def decorate(channel_name):
+        live_controller = live_controller_getter()
+        microscope = live_controller.microscope
+        registry = microscope.config_repo.get_camera_registry()
+        if registry is None or len(registry.cameras) <= 1:
+            return channel_name, None, True
+        channel = live_controller.get_channel_by_name(microscope.objective_store.current_objective, channel_name)
+        if channel is None:
+            return channel_name, None, True
+        camera_id = channel.camera if channel.camera is not None else control._def.PRIMARY_CAMERA_ID
+        available = camera_id in microscope.cameras
+        icon = camera_dot_icon(_camera_is_color(microscope, registry, camera_id))
+        return channel_display_label(channel, registry), icon, available
+
+    return decorate
 
 
 def error_dialog(message: str, title: str = "Error"):
@@ -1002,6 +1106,108 @@ class _ApplyChannelOffsetMixin:
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
+
+
+class _MultiCameraGuardMixin:
+    """Mixin that blocks Start while the selected channels span cameras that cannot be
+    acquired together (unavailable camera, or mixed frame geometry under Zarr).
+
+    Mirrors MultiPointController's headless backstop so the conflict is visible before the
+    user presses Start, instead of surfacing as an exception at acquisition start.
+
+    Host widgets call ``_create_multi_camera_warning_label()`` in add_components, place
+    ``self.label_multiCameraWarning`` under their channel list, and must provide
+    ``list_configurations``, ``btn_startAcquisition``, ``channel_sequence``,
+    ``objectiveStore`` and ``_guard_live_controller()``. On single-camera systems the
+    checks never fire.
+    """
+
+    # Start has two independent owners: this guard and the stage's loading-position lock
+    # (gui_hcs.connectSlidePositionController, which wires bare enable/disable signals).
+    # Each records its own veto and the button is enabled only when neither vetoes, so
+    # lifting one veto can never override the other. Class-level defaults keep both
+    # owners safe if they fire before add_components.
+    _multi_camera_block_active = False
+    _start_button_externally_allowed = True
+
+    def _create_multi_camera_warning_label(self):
+        self.label_multiCameraWarning = QLabel("")
+        self.label_multiCameraWarning.setWordWrap(True)
+        self.label_multiCameraWarning.setStyleSheet("color: #B00020; font-weight: bold;")
+        self.label_multiCameraWarning.setVisible(False)
+        self._multi_camera_block_active = False
+        self._start_button_externally_allowed = True
+
+    def _guard_live_controller(self):
+        """The LiveController whose microscope/channels the guard inspects."""
+        raise NotImplementedError
+
+    def _apply_start_button_state(self):
+        self.btn_startAcquisition.setEnabled(
+            self._start_button_externally_allowed and not self._multi_camera_block_active
+        )
+
+    def disable_the_start_aquisition_button(self):
+        self._start_button_externally_allowed = False
+        self._apply_start_button_state()
+
+    def enable_the_start_aquisition_button(self):
+        self._start_button_externally_allowed = True
+        self._apply_start_button_state()
+
+    def _update_multi_camera_guard(self) -> Optional[str]:
+        """Refresh the warning label and this guard's veto on Start.
+
+        Returns the blocking message when the current selection must not be acquired, else
+        None — so Start-time callers can put the same text in a dialog.
+        """
+        from control.core import multi_point_utils
+
+        live_controller = self._guard_live_controller()
+        microscope = live_controller.microscope
+        selected_names = [(item.data(Qt.UserRole) or item.text()) for item in self.list_configurations.selectedItems()]
+        channels = [
+            ch
+            for ch in live_controller.get_channels(self.objectiveStore.current_objective)
+            if ch.name in selected_names
+        ]
+        problems = []
+        unavailable = multi_point_utils.get_unavailable_camera_channels(channels, microscope.cameras)
+        if unavailable:
+            problems.append(f"Channels unavailable (camera missing): {', '.join(unavailable)}.")
+        if control._def.FILE_SAVING_OPTION == control._def.FileSavingOption.ZARR_V3:
+            mismatch = multi_point_utils.get_camera_geometry_mismatch(channels, microscope.cameras)
+            if mismatch:
+                problems.append(mismatch)
+
+        self._multi_camera_block_active = bool(problems)
+        self._apply_start_button_state()
+
+        # Channels the sequence asks for that the list drops on its own (their camera never
+        # opened). The remaining run is valid, so this does not veto Start — but without
+        # the label nothing tells the user those channels will not be imaged.
+        dropped = self.channel_sequence.unavailable_included_names()
+        notices = [f"Not acquired (camera unavailable): {', '.join(dropped)}."] if dropped else []
+
+        text = " ".join(problems + notices)
+        self.label_multiCameraWarning.setText(text)
+        self.label_multiCameraWarning.setVisible(bool(text))
+        return " ".join(problems) if problems else None
+
+    def _reject_if_multi_camera_conflict(self) -> bool:
+        """Re-check at Start and refuse visibly when the selection cannot be acquired.
+
+        Needed because the conflict can appear after the last selection change — most
+        obviously a live switch of the file saving option to Zarr in Preferences. Without
+        this the run would reach MultiPointController's backstop, whose ValueError inside a
+        Qt slot is only logged, so the GUI would appear to ignore the click.
+        """
+        blocking_message = self._update_multi_camera_guard()
+        if blocking_message is None:
+            return False
+        self.btn_startAcquisition.setChecked(False)
+        error_dialog(blocking_message)
+        return True
 
 
 class AcquisitionYAMLMismatchDialog(QDialog):
@@ -4027,13 +4233,21 @@ class LiveControlWidget(QFrame):
         else:
             self.currentConfiguration = channels[0]
 
+        # flag used to prevent from settings being set by twice - from both mode change slot and value change slot;
+        # another way is to use blockSignals(True). Initialized before add_components because the widget builders
+        # (refresh_trigger_options) already use it.
+        self.is_switching_mode = False
+
         self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         if self.currentConfiguration:
             self.liveController.set_microscope_mode(self.currentConfiguration)
             self.update_ui_for_mode(self.currentConfiguration)
-
-        self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
+            # set_microscope_mode may have switched the active camera (the startup channel
+            # can be bound to a non-primary one). The dropdown and exposure range built
+            # above describe the pre-switch camera, and the GUI's camera-change listener
+            # is not wired until make_connections, so sync them here.
+            self.on_active_camera_changed(self.liveController.microscope.active_camera_id)
 
         # Wire 'Apply in Live' checkbox enable state to laser AF reference availability.
         laser_af = getattr(self.liveController.microscope, "laser_autofocus_controller", None)
@@ -4057,16 +4271,103 @@ class LiveControlWidget(QFrame):
         self._live_current_z_offset_um: float = 0.0
         self.checkbox_applyOnChannelSwitch.toggled.connect(self._on_apply_in_live_toggled)
 
+    def _channel_registry(self):
+        return self.liveController.microscope.config_repo.get_camera_registry()
+
+    def _multi_camera(self) -> bool:
+        registry = self._channel_registry()
+        return registry is not None and len(registry.cameras) > 1
+
+    def _add_mode_item(self, config):
+        """Add a channel entry: decorated label + camera dot for display, bare
+        channel name in userData (identity). Entries whose camera is declared
+        but unavailable are greyed out."""
+        registry = self._channel_registry()
+        label = channel_display_label(config, registry)
+        if self._multi_camera():
+            camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
+            is_color = _camera_is_color(self.liveController.microscope, registry, camera_id)
+            self.dropdown_modeSelection.addItem(camera_dot_icon(is_color), label, userData=config.name)
+        else:
+            self.dropdown_modeSelection.addItem(label, userData=config.name)
+        camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
+        if not camera_available:
+            index = self.dropdown_modeSelection.count() - 1
+            item = self.dropdown_modeSelection.model().item(index)
+            item.setEnabled(False)
+            item.setToolTip(UNAVAILABLE_CAMERA_TOOLTIP)
+
+    def _select_dropdown_entry(self, config_name: str):
+        index = self.dropdown_modeSelection.findData(config_name)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+
+    def _on_mode_dropdown_activated(self, index: int):
+        """`activated` handler: pass the bare channel name from userData (item
+        text may carry camera decoration); fall back to the text for entries
+        populated without userData."""
+        self.select_new_microscope_mode_by_name(
+            self.dropdown_modeSelection.itemData(index) or self.dropdown_modeSelection.itemText(index)
+        )
+
+    def refresh_trigger_options(self):
+        """Repopulate the trigger dropdown for the active camera's capabilities.
+
+        A camera whose trigger line is not wired (cameras.yaml hardware_trigger: false)
+        must not offer Hardware, so the option list is rebuilt on every camera switch
+        and the selection is resynced to the mode the LiveController actually holds.
+        """
+        clamped_mode = None
+        try:
+            self.is_switching_mode = True
+            self.dropdown_triggerManu.blockSignals(True)
+            self.dropdown_triggerManu.clear()
+            trigger_modes = [TriggerMode.SOFTWARE]
+            if self.camera.supports_hardware_trigger():
+                trigger_modes.append(TriggerMode.HARDWARE)
+            if ENABLE_RECORDING:
+                trigger_modes.append(TriggerMode.CONTINUOUS)
+            self.dropdown_triggerManu.addItems(trigger_modes)
+            held_mode = self.liveController.trigger_mode
+            if held_mode not in trigger_modes:
+                # setCurrentText with an absent entry is a silent no-op, which would leave
+                # the dropdown showing Software while the controller still holds Hardware -
+                # and a one-item dropdown gives the user no way back. Clamp instead, and
+                # sync the controller below so UI and hardware state agree.
+                clamped_mode = TriggerMode.SOFTWARE
+                held_mode = clamped_mode
+            self.dropdown_triggerManu.setCurrentText(held_mode)
+        finally:
+            self.dropdown_triggerManu.blockSignals(False)
+            self.is_switching_mode = False
+
+        if clamped_mode is not None:
+            self._log.warning(
+                f"Trigger mode '{self.liveController.trigger_mode}' is not available on the active "
+                f"camera; falling back to '{clamped_mode}'."
+            )
+            self.liveController.set_trigger_mode(clamped_mode)
+
+    def on_active_camera_changed(self, camera_id: int):
+        """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""
+        self.refresh_trigger_options()
+        # Exposure limits differ per camera; re-clamp the spinbox. Guarded: Qt emits
+        # valueChanged when the held value falls outside the new range, and a clamp
+        # forced by a camera switch must not be persisted as a user edit of the channel.
+        try:
+            self.is_switching_mode = True
+            low, high = self.camera.get_exposure_limits()
+            self.entry_exposureTime.setMinimum(low)
+            self.entry_exposureTime.setMaximum(high)
+        finally:
+            self.is_switching_mode = False
+
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
-        # line 0: trigger mode
+        # line 0: trigger mode (options depend on the active camera - see refresh_trigger_options)
         self.dropdown_triggerManu = QComboBox()
-        trigger_modes = [TriggerMode.SOFTWARE, TriggerMode.HARDWARE]
-        if ENABLE_RECORDING:
-            trigger_modes.append(TriggerMode.CONTINUOUS)
-        self.dropdown_triggerManu.addItems(trigger_modes)
-        self.dropdown_triggerManu.setCurrentText(self.camera.get_acquisition_mode().value)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
+        self.refresh_trigger_options()
 
         # line 1: fps
         self.entry_triggerFPS = QDoubleSpinBox()
@@ -4079,8 +4380,9 @@ class LiveControlWidget(QFrame):
 
         self.dropdown_modeSelection = QComboBox()
         for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItems([microscope_configuration.name])
-        self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
+            self._add_mode_item(microscope_configuration)
+        if self.currentConfiguration is not None:
+            self._select_dropdown_entry(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
         self.btn_live = QPushButton("Start Live")
@@ -4179,7 +4481,7 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        self.dropdown_modeSelection.activated.connect(self._on_mode_dropdown_activated)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
@@ -4311,6 +4613,12 @@ class LiveControlWidget(QFrame):
             self.liveController.stop_live()
             self.btn_live.setText("Start Live")
 
+    def stop_live(self):
+        """Stop live and sync the Live button (for flows that must quiesce live, e.g.
+        switching to a tab that forces a camera change)."""
+        self.toggle_live(False)
+        self.btn_live.setChecked(False)
+
     def toggle_autolevel(self, autolevel_on):
         self.btn_autolevel.setChecked(autolevel_on)
 
@@ -4326,7 +4634,7 @@ class LiveControlWidget(QFrame):
         for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = microscope_configuration
-            self.dropdown_modeSelection.addItem(microscope_configuration.name)
+            self._add_mode_item(microscope_configuration)
         self.dropdown_modeSelection.blockSignals(False)
 
         # Update to first configuration
@@ -4349,7 +4657,8 @@ class LiveControlWidget(QFrame):
         try:
             self.is_switching_mode = True
             self.currentConfiguration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if config:
+                self._select_dropdown_entry(config.name)
             if self.currentConfiguration:
                 self.signal_live_configuration.emit(self.currentConfiguration)
 
@@ -4369,6 +4678,11 @@ class LiveControlWidget(QFrame):
         return float(raw)
 
     def update_trigger_mode(self):
+        # refresh_trigger_options repopulates this dropdown on a camera switch; the
+        # resulting index changes must not be mistaken for a user choice and re-sent
+        # to the MCU on top of the mode set_active_camera already applied.
+        if self.is_switching_mode:
+            return
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
 
     def update_config_exposure_time(self, new_value):
@@ -5706,7 +6020,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _MultiCameraGuardMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -5746,6 +6060,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.add_components()
         self.setup_layout()
         self.setup_connections()
+        self._update_multi_camera_guard()  # cached channel selection may already conflict
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
@@ -5901,7 +6216,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 for ch in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective)
             ],
             cache_key="flexible",
+            decorate=_make_channel_decorator(lambda: self.multipointController.liveController),
         )
+        self._create_multi_camera_warning_label()
 
         self.checkbox_withAutofocus = QCheckBox("Contrast AF")
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
@@ -6098,9 +6415,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
-        grid_config = QHBoxLayout()
-        grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        config_row = QHBoxLayout()
+        config_row.addWidget(self.list_configurations)
+        config_row.addSpacerItem(edge_spacer)
+
+        grid_config = QVBoxLayout()
+        grid_config.addLayout(config_row)
+        grid_config.addWidget(self.label_multiCameraWarning)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -6173,6 +6494,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        self.list_configurations.itemSelectionChanged.connect(self._update_multi_camera_guard)
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
@@ -6456,6 +6778,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     def refresh_channel_list(self):
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
+        self._update_multi_camera_guard()
+
+    def _guard_live_controller(self):
+        return self.multipointController.liveController
 
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
@@ -6471,6 +6797,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if self.multipointController.acquisition_in_progress():
                 self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
                 self.btn_startAcquisition.setChecked(False)
+                return
+
+            if self._reject_if_multi_camera_conflict():
                 return
 
             # add the current location to the location list if the list is empty
@@ -6940,6 +7269,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
             return
 
+        if self._reject_if_multi_camera_conflict():
+            return
+
         # Set the selected channels for acquisition
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
         # Set the acquisition parameters
@@ -7005,12 +7337,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
-
-    def disable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(False)
-
-    def enable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(True)
 
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
@@ -7110,6 +7436,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
 
+            # The channel selection changed with the list's signals blocked, so re-run the
+            # guard by hand.
+            self._update_multi_camera_guard()
+
     def _load_positions(self, positions):
         """Load positions from YAML into the location list."""
         # Clear existing locations
@@ -7175,7 +7505,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _MultiCameraGuardMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -7262,6 +7592,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self._loading_from_cache = False
 
         self.add_components()
+        self._update_multi_camera_guard()  # cached channel selection may already conflict
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
 
@@ -7377,7 +7708,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.list_configurations,
             lambda: [ch.name for ch in self.liveController.get_channels(self.objectiveStore.current_objective)],
             cache_key="wellplate",
+            decorate=_make_channel_decorator(lambda: self.liveController),
         )
+        self._create_multi_camera_warning_label()
 
         # Add a combo box for shape selection
         self.combobox_shape = QComboBox()
@@ -7633,6 +7966,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Configuration list
         grid.addWidget(self.list_configurations, 2, 0)
+        grid.addWidget(self.label_multiCameraWarning, 3, 0, 1, 3)  # Span full row, under the list
 
         # Options and Start button
         options_layout = QVBoxLayout()
@@ -7721,6 +8055,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        self.list_configurations.itemSelectionChanged.connect(self._update_multi_camera_guard)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -8835,6 +9170,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self.btn_startAcquisition.setChecked(False)
                 return
 
+            if self._reject_if_multi_camera_conflict():
+                return
+
             # if XY is not checked, use current position
             if not self.checkbox_xy.isChecked():
                 self.set_coordinates_to_current_position()
@@ -9006,12 +9344,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 # In Current Position mode, coverage should be disabled (N/A)
                 self.entry_well_coverage.setEnabled(False)
 
-    def disable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(False)
-
-    def enable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(True)
-
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
 
@@ -9027,6 +9359,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():
             QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
+            return
+
+        if self._reject_if_multi_camera_conflict():
             return
 
         # Set the selected channels for acquisition
@@ -9062,6 +9397,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def refresh_channel_list(self):
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
+        self._update_multi_camera_guard()
+
+    def _guard_live_controller(self):
+        return self.liveController
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -9329,6 +9668,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_tab_styles()
             self.update_coordinates()
 
+            # The channel selection changed with the list's signals blocked, so re-run the
+            # guard by hand.
+            self._update_multi_camera_guard()
+
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""
         if not self.well_selection_widget:
@@ -9461,6 +9804,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
                 for ch in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective)
             ],
             cache_key="fluidics",
+            decorate=_make_channel_decorator(lambda: self.multipointController.liveController),
         )
 
         # Reflection AF checkbox
@@ -11523,6 +11867,37 @@ class NapariLiveWidget(QWidget):
         positions = np.linspace(0, 1, len(colors))
         return pg.ColorMap(positions, colors)
 
+    def _channel_registry(self):
+        return self.liveController.microscope.config_repo.get_camera_registry()
+
+    def _multi_camera(self) -> bool:
+        registry = self._channel_registry()
+        return registry is not None and len(registry.cameras) > 1
+
+    def _add_mode_item(self, config):
+        """Add a channel entry: decorated label + camera dot for display, bare
+        channel name in userData (identity). Entries whose camera is declared
+        but unavailable are greyed out."""
+        registry = self._channel_registry()
+        label = channel_display_label(config, registry)
+        if self._multi_camera():
+            camera_id = config.camera if config.camera is not None else control._def.PRIMARY_CAMERA_ID
+            is_color = _camera_is_color(self.liveController.microscope, registry, camera_id)
+            self.dropdown_modeSelection.addItem(camera_dot_icon(is_color), label, userData=config.name)
+        else:
+            self.dropdown_modeSelection.addItem(label, userData=config.name)
+        camera_available = config.camera is None or config.camera in self.liveController.microscope.cameras
+        if not camera_available:
+            index = self.dropdown_modeSelection.count() - 1
+            item = self.dropdown_modeSelection.model().item(index)
+            item.setEnabled(False)
+            item.setToolTip(UNAVAILABLE_CAMERA_TOOLTIP)
+
+    def _select_dropdown_entry(self, config_name: str):
+        index = self.dropdown_modeSelection.findData(config_name)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+
     def initControlWidgets(self, show_trigger_options, show_display_options, show_autolevel, autolevel):
         # Initialize histogram widget
         self.pg_image_item = pg.ImageItem()
@@ -11537,8 +11912,9 @@ class NapariLiveWidget(QWidget):
         # Microscope Configuration (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
         for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
+            self._add_mode_item(config)
+        if self.live_configuration is not None:
+            self._select_dropdown_entry(self.live_configuration.name)
         self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_name)
 
         # Live button
@@ -11599,15 +11975,9 @@ class NapariLiveWidget(QWidget):
             lambda v: self.label_illuminationIntensity.setText(str(v) + "%")
         )
 
-        # Trigger mode
+        # Trigger mode (options depend on the active camera - see refresh_trigger_options)
         self.dropdown_triggerMode = QComboBox()
-        trigger_modes = [
-            ("Software", TriggerMode.SOFTWARE),
-            ("Hardware", TriggerMode.HARDWARE),
-            ("Continuous", TriggerMode.CONTINUOUS),
-        ]
-        for display_name, mode in trigger_modes:
-            self.dropdown_triggerMode.addItem(display_name, mode)
+        self.refresh_trigger_options()
         self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
 
         # Trigger FPS
@@ -11694,7 +12064,8 @@ class NapariLiveWidget(QWidget):
             layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
             layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
-            self.viewer.window._qt_viewer.layerButtons.hide()
+            if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
+                self.viewer.window._qt_viewer.layerButtons.hide()
             self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
             self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
 
@@ -11735,7 +12106,8 @@ class NapariLiveWidget(QWidget):
         layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
         layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
-        self.viewer.window._qt_viewer.layerButtons.hide()
+        if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
+            self.viewer.window._qt_viewer.layerButtons.hide()
         self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
         self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
         self.print_window_menu_items()
@@ -11784,7 +12156,10 @@ class NapariLiveWidget(QWidget):
         )
 
     def select_new_microscope_mode_by_name(self, config_index):
-        config_name = self.dropdown_modeSelection.itemText(config_index)
+        # Bare channel name lives in userData (item text may carry camera decoration).
+        config_name = self.dropdown_modeSelection.itemData(config_index) or self.dropdown_modeSelection.itemText(
+            config_index
+        )
         maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
 
         if not maybe_new_config:
@@ -11798,7 +12173,8 @@ class NapariLiveWidget(QWidget):
         try:
             self.is_switching_mode = True
             self.live_configuration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
+            if config:
+                self._select_dropdown_entry(config.name)
             if self.live_configuration:
                 self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
                 self.entry_analogGain.setValue(self.live_configuration.analog_gain)
@@ -11857,14 +12233,66 @@ class NapariLiveWidget(QWidget):
         for config in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = config
-            self.dropdown_modeSelection.addItem(config.name)
+            self._add_mode_item(config)
         self.dropdown_modeSelection.blockSignals(False)
 
         if self.dropdown_modeSelection.count() > 0 and first_config:
             self.update_ui_for_mode(first_config)
             self.liveController.set_microscope_mode(first_config)
 
+    def refresh_trigger_options(self):
+        """Repopulate the trigger dropdown for the active camera's capabilities.
+
+        A camera whose trigger line is not wired (cameras.yaml hardware_trigger: false)
+        must not offer Hardware, so the option list is rebuilt on every camera switch
+        and the selection is resynced to the mode the LiveController actually holds.
+        """
+        clamped_mode = None
+        try:
+            self.is_switching_mode = True
+            self.dropdown_triggerMode.blockSignals(True)
+            self.dropdown_triggerMode.clear()
+            trigger_modes = [("Software", TriggerMode.SOFTWARE)]
+            if self.liveController.camera.supports_hardware_trigger():
+                trigger_modes.append(("Hardware", TriggerMode.HARDWARE))
+            trigger_modes.append(("Continuous", TriggerMode.CONTINUOUS))
+            for display_name, mode in trigger_modes:
+                self.dropdown_triggerMode.addItem(display_name, mode)
+            index = self.dropdown_triggerMode.findData(self.liveController.trigger_mode)
+            if index < 0:
+                # Held mode is not offered by this camera; showing it is impossible, so
+                # clamp the display to Software rather than leaving whatever index 0 is.
+                # The hardware sync is LiveControlWidget's job - it always exists and runs
+                # first on a camera change, so doing it here too would double-program the MCU.
+                clamped_mode = TriggerMode.SOFTWARE
+                index = self.dropdown_triggerMode.findData(clamped_mode)
+            if index >= 0:
+                self.dropdown_triggerMode.setCurrentIndex(index)
+        finally:
+            self.dropdown_triggerMode.blockSignals(False)
+            self.is_switching_mode = False
+
+        if clamped_mode is not None:
+            self._log.warning(
+                f"Trigger mode '{self.liveController.trigger_mode}' is not available on the active "
+                f"camera; showing '{clamped_mode}'."
+            )
+
+    def on_active_camera_changed(self, camera_id: int):
+        """GUI-thread slot invoked (queued) after Microscope.set_active_camera."""
+        self.refresh_trigger_options()
+        # Exposure limits differ per camera; re-clamp the spinbox. Guarded: Qt emits
+        # valueChanged when the held value falls outside the new range, and a clamp
+        # forced by a camera switch must not be persisted as a user edit of the channel.
+        try:
+            self.is_switching_mode = True
+            self.entry_exposureTime.setRange(*self.liveController.camera.get_exposure_limits())
+        finally:
+            self.is_switching_mode = False
+
     def on_trigger_mode_changed(self, index):
+        if self.is_switching_mode:
+            return
         # Get the actual value using user data
         actual_value = self.dropdown_triggerMode.itemData(index)
         print(f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})")
@@ -12016,10 +12444,9 @@ class NapariMultiChannelWidget(QWidget):
         self.objectiveStore = objectiveStore
         self.camera = camera
         self.contrastManager = contrastManager
-        self.image_width = 0
-        self.image_height = 0
         self.dtype = np.uint8
         self.channels = set()
+        # Fallback only; each layer is scaled by the pixel size passed with its own frame.
         self.pixel_size_um = 1
         self.dz_um = 1
         self.Nz = 1
@@ -12092,7 +12519,16 @@ class NapariMultiChannelWidget(QWidget):
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def initLayers(self, image_height, image_width, image_dtype):
-        """Initializes the full canvas for each channel based on the acquisition parameters."""
+        """Prepare the viewer for an acquisition. Individual layers are built on demand by
+        updateLayers, which sizes each one from the frame that feeds it, so image_height and
+        image_width are only the announced geometry of the first frame - nothing here stores
+        them.
+
+        layers_initialized latches True: updateLayers rebuilds a single layer in place when
+        its geometry changes, so there is no longer any path that resets it. Do not size
+        anything off widget-wide geometry here - that is exactly what stopped a mono and a
+        colour camera from coexisting.
+        """
         if self.acquisition_initialized:
             for layer in list(self.viewer.layers):
                 if layer.name not in self.channels:
@@ -12103,30 +12539,44 @@ class NapariMultiChannelWidget(QWidget):
             if self.dtype != np.dtype(image_dtype) and not USE_NAPARI_FOR_LIVE_VIEW:
                 self.contrastManager.scale_contrast_limits(image_dtype)
 
-        self.image_width = image_width
-        self.image_height = image_height
         self.dtype = np.dtype(image_dtype)
         self.layers_initialized = True
         self.update_layer_count = 0
 
-    def updateLayers(self, image, x, y, k, channel_name):
-        """Updates the appropriate slice of the canvas with the new image data."""
-        rgb = len(image.shape) == 3
+    def updateLayers(self, image, x, y, k, channel_name, pixel_size_um=None):
+        """Updates the appropriate slice of the canvas with the new image data.
 
-        # Check if the layer exists and has a different dtype
-        if self.dtype != np.dtype(image.dtype):  # or self.viewer.layers[channel_name].data.dtype != image.dtype:
-            # Remove the existing layer
-            self.layers_initialized = False
-            self.acquisition_initialized = False
+        pixel_size_um is this frame's own image pixel size, resolved by the emitter from the
+        channel's bound camera. self.pixel_size_um is only a fallback: it is computed once at
+        acquisition start from the *active* camera, so on a dual-camera run with different
+        pixel pitch or binning it describes the wrong sensor for half the channels, and
+        layers scaled with it do not overlay.
+        """
+        rgb = len(image.shape) == 3
+        incoming_dtype = np.dtype(image.dtype)
+        layer_pixel_size_um = self.pixel_size_um if pixel_size_um is None else pixel_size_um
 
         if not self.layers_initialized:
             self.initLayers(image.shape[0], image.shape[1], image.dtype)
 
-        if channel_name not in self.viewer.layers:
+        # Dual-camera runs interleave frames from cameras with different geometry - a mono
+        # camera's MONO16 (uint16, HxW) and a colour camera's RGB24 (uint8, HxWx3). Compare
+        # against THIS channel's own layer and rebuild only that one. Comparing against a
+        # single widget-wide self.dtype instead made every camera switch clear the whole
+        # LayerList and re-add each layer as its next frame arrived, which stalled the GUI
+        # thread for seconds per FOV (Windows then reports "Not Responding").
+        existing = self.viewer.layers[channel_name] if channel_name in self.viewer.layers else None
+        if existing is not None and (existing.data.dtype != incoming_dtype or existing.data.shape[1:] != image.shape):
+            self.viewer.layers.remove(existing)
+            existing = None
+
+        if existing is None:
             self.channels.add(channel_name)
+            # Per-channel geometry: a layer must match the camera that feeds it, not
+            # whichever camera happened to send the first frame of the acquisition.
             if rgb:
                 color = None  # RGB images do not need a colormap
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width, 3), dtype=self.dtype)
+                canvas = np.zeros((self.Nz, image.shape[0], image.shape[1], 3), dtype=incoming_dtype)
             else:
                 channel_info = CHANNEL_COLORS_MAP.get(
                     self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
@@ -12135,9 +12585,9 @@ class NapariMultiChannelWidget(QWidget):
                     color = AVAILABLE_COLORMAPS[channel_info["name"]]
                 else:
                     color = self.generateColormap(channel_info)
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width), dtype=self.dtype)
+                canvas = np.zeros((self.Nz, image.shape[0], image.shape[1]), dtype=incoming_dtype)
 
-            limits = self.getContrastLimits(self.dtype)
+            limits = self.contrastManager.get_limits_for_dtype(channel_name, incoming_dtype)
             layer = self.viewer.add_image(
                 canvas,
                 name=channel_name,
@@ -12146,11 +12596,9 @@ class NapariMultiChannelWidget(QWidget):
                 colormap=color,
                 contrast_limits=limits,
                 blending="additive",
-                scale=(self.dz_um, self.pixel_size_um, self.pixel_size_um),
+                scale=(self.dz_um, layer_pixel_size_um, layer_pixel_size_um),
             )
 
-            # print(f"multi channel - dz_um:{self.dz_um}, pixel_y_um:{self.pixel_size_um}, pixel_x_um:{self.pixel_size_um}")
-            layer.contrast_limits = self.contrastManager.get_limits(channel_name)
             layer.events.contrast_limits.connect(self.signalContrastLimits)
 
             if not self.viewer_scale_initialized:
@@ -12161,7 +12609,7 @@ class NapariMultiChannelWidget(QWidget):
 
         layer = self.viewer.layers[channel_name]
         layer.data[k] = image
-        layer.contrast_limits = self.contrastManager.get_limits(channel_name)
+        layer.contrast_limits = self.contrastManager.get_limits_for_dtype(channel_name, incoming_dtype)
         self.update_layer_count += 1
         if self.update_layer_count % len(self.channels) == 0:
             if self.Nz > 1:
@@ -12172,10 +12620,12 @@ class NapariMultiChannelWidget(QWidget):
     def signalContrastLimits(self, event):
         layer = event.source
         min_val, max_val = map(float, layer.contrast_limits)
-        self.contrastManager.update_limits(layer.name, min_val, max_val)
+        # Record the dtype the user chose these limits in - it is the layer's own camera's
+        # dtype, so another camera's frames can never reinterpret them.
+        self.contrastManager.update_limits(layer.name, min_val, max_val, dtype=layer.data.dtype)
 
     def getContrastLimits(self, dtype):
-        return self.contrastManager.get_default_limits()
+        return self.contrastManager.default_limits_for_dtype(dtype)
 
     def resetView(self):
         self.viewer.reset_view()
@@ -12337,7 +12787,7 @@ class TrackingControllerWidget(QFrame):
             self.setEnabled_all(False)
             self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                (item.data(Qt.UserRole) or item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
@@ -12368,7 +12818,7 @@ class TrackingControllerWidget(QFrame):
             self.setEnabled_all(False)
             self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                (item.data(Qt.UserRole) or item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
@@ -14562,7 +15012,7 @@ class SampleSettingsWidget(QFrame):
             json.dump(data, f)
 
 
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
@@ -16000,10 +16450,9 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         # Camera dropdown
         camera_combo = QComboBox()
         camera_combo.addItem("(None)")
-        camera_names = self.config_repo.get_camera_names()
-        camera_combo.addItems(camera_names)
-        if channel.camera and channel.camera in camera_names:
-            camera_combo.setCurrentText(channel.camera)
+        registry = self.config_repo.get_camera_registry()
+        camera_combo.addItems(self.config_repo.get_camera_names())
+        camera_combo.setCurrentText(camera_display_name(registry, channel.camera))
         self.table.setCellWidget(row, self.COL_CAMERA, camera_combo)
 
         # Filter wheel dropdown
@@ -16275,9 +16724,10 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
 
             # Camera
             camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
-            if camera_combo and isinstance(camera_combo, QComboBox):
-                camera_text = camera_combo.currentText()
-                channel.camera = camera_text if camera_text != "(None)" else None
+            if camera_combo is not None and isinstance(camera_combo, QComboBox):
+                channel.camera = camera_id_from_display(
+                    self.config_repo.get_camera_registry(), camera_combo.currentText()
+                )
 
             # Filter wheel: None = no selection, else explicit wheel name
             wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
@@ -16412,9 +16862,8 @@ class AddAcquisitionChannelDialog(QDialog):
 
         # Camera
         camera = None
-        if self.camera_combo:
-            camera_text = self.camera_combo.currentText()
-            camera = camera_text if camera_text != "(None)" else None
+        if self.camera_combo is not None:
+            camera = camera_id_from_display(self.config_repo.get_camera_registry(), self.camera_combo.currentText())
 
         # Filter wheel and position
         filter_wheel = None

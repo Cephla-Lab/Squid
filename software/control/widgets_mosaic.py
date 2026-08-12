@@ -549,7 +549,14 @@ class UnifiedMosaicWidget(QWidget):
             new_limits = self.contrastManager.get_scaled_limits(channel_name, self.mosaic_dtype)
             layer = self.viewer.layers[channel_name]
             if tuple(layer.contrast_limits) != tuple(new_limits):
-                layer.contrast_limits = new_limits
+                # Block the contrast event: these limits were just derived FROM the manager,
+                # rescaled into this view's dtype (mosaic_dtype comes from whichever tile
+                # arrived first). Letting the assignment echo back through
+                # _on_contrast_change overwrote the channel's stored limits with this view's
+                # dtype, so a contrast set on a uint16 channel came back as its uint8
+                # equivalent - e.g. (800, 1600) stored as (3.1, 6.2).
+                with layer.events.contrast_limits.blocker():
+                    layer.contrast_limits = new_limits
 
     def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left):
         """Place tile on the mosaic canvas, expanding and shifting if extents grew."""
@@ -686,7 +693,9 @@ class UnifiedMosaicWidget(QWidget):
     def _on_contrast_change(self, event):
         layer = event.source
         min_val, max_val = layer.contrast_limits
-        self.contrastManager.update_limits(layer.name, min_val, max_val)
+        # A real user drag in this view. Label it with the dtype it is expressed in - this
+        # view renders at mosaic_dtype, which need not be the channel's acquisition dtype.
+        self.contrastManager.update_limits(layer.name, min_val, max_val, dtype=self.mosaic_dtype)
 
     # --- Zoom limits (active in plate mode) ---
 

@@ -812,6 +812,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         return self._set_acquisition_mode_imp(acquisition_mode=acquisition_mode)
 
+    def supports_hardware_trigger(self) -> bool:
+        """True iff this camera was constructed with the hardware trigger functions wired."""
+        return bool(self._hw_trigger_fn) and bool(self._hw_set_strobe_delay_ms_fn)
+
     @abc.abstractmethod
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         """
