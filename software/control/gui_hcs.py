@@ -1535,8 +1535,10 @@ class HighContentScreeningGui(QMainWindow):
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
-        self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-        self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
+        # Dispatched per active camera, not bound to the primary widget - see
+        # _active_camera_setting_widget.
+        self.liveControlWidget.signal_newExposureTime.connect(self._apply_live_exposure_time)
+        self.liveControlWidget.signal_newAnalogGain.connect(self._apply_live_analog_gain)
         if not self.live_only_mode:
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
         self.liveControlWidget.update_camera_settings()
@@ -1617,8 +1619,8 @@ class HighContentScreeningGui(QMainWindow):
             self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
 
             if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napariLiveWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-                self.napariLiveWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
+                self.napariLiveWidget.signal_newExposureTime.connect(self._apply_live_exposure_time)
+                self.napariLiveWidget.signal_newAnalogGain.connect(self._apply_live_analog_gain)
                 self.napariLiveWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
         else:
             self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
@@ -1789,8 +1791,8 @@ class HighContentScreeningGui(QMainWindow):
             if USE_NAPARI_FOR_LIVE_CONTROL:
                 self.napari_connections["napariLiveWidget"].extend(
                     [
-                        (self.napariLiveWidget.signal_newExposureTime, self.cameraSettingWidget.set_exposure_time),
-                        (self.napariLiveWidget.signal_newAnalogGain, self.cameraSettingWidget.set_analog_gain),
+                        (self.napariLiveWidget.signal_newExposureTime, self._apply_live_exposure_time),
+                        (self.napariLiveWidget.signal_newAnalogGain, self._apply_live_analog_gain),
                         (self.napariLiveWidget.signal_autoLevelSetting, self.imageDisplayWindow.set_autolevel),
                     ]
                 )
@@ -1963,6 +1965,25 @@ class HighContentScreeningGui(QMainWindow):
         box.destroyed.connect(lambda _=None: setattr(self, "_live_warning_box", None))
         self._live_warning_box = box
         box.show()
+
+    def _active_camera_setting_widget(self) -> "widgets.CameraSettingsWidget":
+        """The CameraSettingsWidget bound to the camera that is imaging right now.
+
+        Each widget drives one concrete camera (see the construction site), so a live
+        exposure/gain edit has to be dispatched to the active camera's widget. Sending it
+        to the primary widget unconditionally applied every edit to the primary camera no
+        matter which camera was active: on a dual-camera system, editing exposure for a
+        channel bound to the secondary camera left that camera untouched and silently
+        retuned the primary instead.
+        """
+        widget = self.cameraSettingWidgets_extra.get(self.microscope.active_camera_id)
+        return widget if widget is not None else self.cameraSettingWidget
+
+    def _apply_live_exposure_time(self, exposure_time_ms: float) -> None:
+        self._active_camera_setting_widget().set_exposure_time(exposure_time_ms)
+
+    def _apply_live_analog_gain(self, analog_gain: float) -> None:
+        self._active_camera_setting_widget().set_analog_gain(analog_gain)
 
     @Slot(int)
     def _on_active_camera_changed(self, camera_id: int) -> None:
