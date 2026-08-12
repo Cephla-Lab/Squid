@@ -2674,6 +2674,29 @@ def test_load_or_clear_click_cancelled_dialog_loads_nothing():
     fake.load_coordinates.assert_not_called()
 
 
+def test_update_coordinates_leaves_loaded_plan_untouched():
+    # Regression: after an acquisition finished in Load Coordinates mode,
+    # acquisition_is_finished -> reset_coordinates -> update_coordinates fell into
+    # the Select Wells branch and silently replaced the loaded plan with regions
+    # derived from whatever wells were still ticked in the well selector — while
+    # the UI kept claiming the file was loaded. Loaded plans are owned by the
+    # load/restore/clear flow; update_coordinates must not touch them.
+    fake = SimpleNamespace(
+        tab_widget=None,
+        checkbox_xy=MagicMock(isChecked=MagicMock(return_value=True)),
+        combobox_xy_mode=MagicMock(currentText=MagicMock(return_value="Load Coordinates")),
+        entry_scan_size=MagicMock(),
+        entry_overlap=MagicMock(),
+        combobox_shape=MagicMock(),
+        scanCoordinates=MagicMock(),
+    )
+
+    control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
+
+    fake.scanCoordinates.clear_regions.assert_not_called()
+    fake.scanCoordinates.set_well_coordinates.assert_not_called()
+
+
 def test_dead_save_clear_toggle_machinery_removed():
     assert not hasattr(control.widgets.WellplateMultiPointWidget, "toggle_coordinate_controls")
     assert not hasattr(control.widgets.WellplateMultiPointWidget, "on_save_or_clear_coordinates_clicked")

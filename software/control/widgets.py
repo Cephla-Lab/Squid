@@ -8866,6 +8866,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
+        elif self.combobox_xy_mode.currentText() == "Load Coordinates":
+            # Loaded plans are owned by the load/restore/clear flow and have no scan
+            # inputs to re-derive from. Falling through to the well-selector branch
+            # below silently replaced a loaded plan with whatever wells were ticked
+            # (e.g. right after an acquisition finished, via reset_coordinates) while
+            # the UI still claimed the file was loaded.
+            return
         else:
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
