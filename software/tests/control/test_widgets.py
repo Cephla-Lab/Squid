@@ -2824,18 +2824,6 @@ def test_load_regions_mid_loop_conversion_failure_leaves_existing_regions_intact
     assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
 
 
-def test_loaded_regions_survive_update_fov_z_level():
-    # Regression: tuple centers used to crash update_fov_z_level (focus-map path).
-    sc = _scan_coordinates_for_test()
-    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
-    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
-
-    sc.update_fov_z_level("A1", 0, 4.0)
-
-    assert sc.region_fov_coordinates["A1"][0] == (10.0, 10.0, 4.0)
-    assert sc.region_centers["A1"] == [10.0, 10.0, 4.0]
-
-
 def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
     # The fluidics widget's loader goes through the same shared helper.
     csv_path = tmp_path / "coords.csv"

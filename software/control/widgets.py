@@ -7853,7 +7853,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Seed from current mode; signal only fires on later toggles.
             self._on_mosaic_mode_changed(self.napariMosaicWidget.mode)
 
-        # Connect save/clear coordinates button
         self.btn_save_scan_coordinates.clicked.connect(self.save_coordinates)
         self.btn_load_scan_coordinates.clicked.connect(self.on_load_or_clear_coordinates_clicked)
 

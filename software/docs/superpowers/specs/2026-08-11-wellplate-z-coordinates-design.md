@@ -114,9 +114,10 @@ path and any double registration) replaces the three near-identical loops
   `isinstance(fov, tuple)` (`core.py:1789`).
 - **Region centers:** `[mean_x, mean_y]` **mutable lists, without Z**. Nothing reads
   center Z (the worker takes Z only from FOV tuples; the MCP server and
-  `acquisition.yaml` readers are length-guarded), and `update_fov_z_level`'s `else`
-  branch appends Z to a 2-element list when a focus map needs to. The list container is
-  what fixes crash (1).
+  `acquisition.yaml` readers are length-guarded); mutable lists keep loaded centers
+  consistent with the `add_*` builders. Crash (1) was eliminated outright — the
+  center-mutating write-back path (`update_fov_z_level`) was removed as dead code
+  once the snapshot fix left it with no callers.
 - **NaN policy:** if `z (mm)` exists but contains any NaN, warn and load the whole file
   XY-only. Regions must stay length-homogeneous (`get_region_bounds`' `np.array` raises
   `ValueError` on mixed 2-/3-tuples; verified on the installed numpy 1.26) and NaN must
@@ -133,7 +134,8 @@ path and any double registration) replaces the three near-identical loops
   `{k: list(v) for k, v in ...}` (`multi_point_utils.py:24`).
 - The controller's focus-map branch keeps its in-place rewrite of the (now private)
   snapshot and **drops the `update_fov_z_level` write-back call**
-  (`multi_point_controller.py:786`). `update_fov_z_level` itself is unchanged.
+  (`multi_point_controller.py:786`). That left `update_fov_z_level` with no production
+  callers, and it was subsequently deleted as dead code.
 - Net semantics, as decided: **the focus map wins for that run** (loaded Z is dropped
   while it's active), but the GUI's plan — including loaded Z — is untouched afterwards.
   The Z actually used per image remains recorded in the worker's per-timepoint
@@ -153,8 +155,11 @@ path and any double registration) replaces the three near-identical loops
 - Other region builders that drop the Z they're handed (`add_single_fov_region`,
   `add_template_region`, `add_flexible_region_with_step_size`, `set_manual_coordinates`).
 - Worker quirks: `FROM CENTER` + AF timepoint drift, `af_fov_count` z-level counting.
-- Wiping of loaded regions after each acquisition (`update_coordinates` else-branch);
-  unchanged, but restore now works and preserves Z.
+
+(Originally deferred but **fixed on this branch** after the smoke test demonstrated it
+silently swapping a loaded plan for well-selector regions: the post-acquisition
+`update_coordinates()` wipe. `update_coordinates()` now leaves loaded plans untouched —
+they are owned by the Load / Clear / mode-switch flow.)
 
 ## Testing
 

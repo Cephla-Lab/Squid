@@ -672,33 +672,6 @@ class ScanCoordinates:
 
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
 
-    def update_fov_z_level(self, region_id, fov, new_z):
-        """Update z-level for a specific FOV and its region center.
-
-        No production caller at the moment (the focus-map write-back was removed;
-        acquisitions now rewrite a private snapshot instead) — kept as the public
-        API for setting a per-FOV z, and it documents the requirement that region
-        centers stay mutable lists."""
-        if not self.validate_region(region_id):
-            print(f"Region {region_id} not found")
-            return
-
-        # Update FOV coordinates
-        fov_coords = self.region_fov_coordinates[region_id]
-        if fov < len(fov_coords):
-            # Handle both (x,y) and (x,y,z) cases
-            x, y = fov_coords[fov][:2]  # Takes first two elements regardless of length
-            self.region_fov_coordinates[region_id][fov] = (x, y, new_z)
-
-        # If first FOV, update region center coordinates
-        if fov == 0:
-            if len(self.region_centers[region_id]) == 3:
-                self.region_centers[region_id][2] = new_z
-            else:
-                self.region_centers[region_id].append(new_z)
-
-        self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
-
 
 class ScanCoordinatesSiLA2(ScanCoordinates):
     def __init__(
