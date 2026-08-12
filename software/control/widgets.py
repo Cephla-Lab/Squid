@@ -12540,21 +12540,30 @@ class NapariMultiChannelWidget(QWidget):
     def updateLayers(self, image, x, y, k, channel_name):
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
-
-        # Check if the layer exists and has a different dtype
-        if self.dtype != np.dtype(image.dtype):  # or self.viewer.layers[channel_name].data.dtype != image.dtype:
-            # Remove the existing layer
-            self.layers_initialized = False
-            self.acquisition_initialized = False
+        incoming_dtype = np.dtype(image.dtype)
 
         if not self.layers_initialized:
             self.initLayers(image.shape[0], image.shape[1], image.dtype)
 
-        if channel_name not in self.viewer.layers:
+        # Dual-camera runs interleave frames from cameras with different geometry - a mono
+        # camera's MONO16 (uint16, HxW) and a colour camera's RGB24 (uint8, HxWx3). Compare
+        # against THIS channel's own layer and rebuild only that one. Comparing against a
+        # single widget-wide self.dtype instead made every camera switch clear the whole
+        # LayerList and re-add each layer as its next frame arrived, which stalled the GUI
+        # thread for seconds per FOV (Windows then reports "Not Responding").
+        existing = self.viewer.layers[channel_name] if channel_name in self.viewer.layers else None
+        if existing is not None and (existing.data.dtype != incoming_dtype or existing.data.shape[1:] != image.shape):
+            self.viewer.layers.remove(existing)
+            self.channels.discard(channel_name)
+            existing = None
+
+        if existing is None:
             self.channels.add(channel_name)
+            # Per-channel geometry: a layer must match the camera that feeds it, not
+            # whichever camera happened to send the first frame of the acquisition.
             if rgb:
                 color = None  # RGB images do not need a colormap
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width, 3), dtype=self.dtype)
+                canvas = np.zeros((self.Nz, image.shape[0], image.shape[1], 3), dtype=incoming_dtype)
             else:
                 channel_info = CHANNEL_COLORS_MAP.get(
                     self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
@@ -12563,9 +12572,9 @@ class NapariMultiChannelWidget(QWidget):
                     color = AVAILABLE_COLORMAPS[channel_info["name"]]
                 else:
                     color = self.generateColormap(channel_info)
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width), dtype=self.dtype)
+                canvas = np.zeros((self.Nz, image.shape[0], image.shape[1]), dtype=incoming_dtype)
 
-            limits = self.getContrastLimits(self.dtype)
+            limits = self.getContrastLimits(incoming_dtype)
             layer = self.viewer.add_image(
                 canvas,
                 name=channel_name,
