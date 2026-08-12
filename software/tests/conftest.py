@@ -12,8 +12,10 @@ finalization).
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
+import warnings
 from unittest.mock import patch
 
 import pytest
@@ -103,19 +105,25 @@ def isolate_ambient_camera_registry(monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def canonical_user_profiles(tmp_path_factory):
-    """A freshly generated "default" profile, the same one CI runs against.
+def canonical_user_profiles_template(tmp_path_factory):
+    """A freshly generated "default" profile to copy per test, or None if it can't be made.
 
     user_profiles/ is gitignored, so a CI checkout has none and the app generates it from
     machine_configs/illumination_channel_config.yaml on first use. Doing exactly that here
     gives every test the same starting point CI has: channels at their default exposure and
     gain, and none of them bound to a camera.
+
+    Returns None instead of raising when generation is impossible. isolate_ambient_user_profiles
+    is autouse, so a raise here fails EVERY test in the session — over a gitignored file the
+    application itself merely warns about (ConfigRepository.load_profile swallows the same
+    FileNotFoundError). Falling back to the ambient profile keeps such a checkout working
+    exactly as it did before this fixture existed.
     """
     from control.core.config.repository import ConfigRepository
     from control.default_config_generator import ensure_default_configs
     import control._def
 
-    profiles_root = tmp_path_factory.mktemp("user_profiles")
+    profiles_root = tmp_path_factory.mktemp("user_profiles_template")
     (profiles_root / "default").mkdir()
 
     # Real base_path, so machine_configs (the illumination config) still resolves; only the
@@ -123,6 +131,12 @@ def canonical_user_profiles(tmp_path_factory):
     # __init__, so this repository is a plain one.
     repo = ConfigRepository()
     repo.user_profiles_path = profiles_root
+    hint = (
+        "Tests will use the machine's own user_profiles/ instead, so results may depend on "
+        "local channel state. To get the isolated profile, populate the illumination config "
+        "the way CI does: cp machine_configs/illumination_channel_config.yaml.example "
+        "machine_configs/illumination_channel_config.yaml"
+    )
     try:
         ensure_default_configs(
             repo,
@@ -130,41 +144,52 @@ def canonical_user_profiles(tmp_path_factory):
             list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None,
             include_confocal=False,
         )
-    except FileNotFoundError as e:
-        raise pytest.UsageError(
-            f"Could not generate the test profile: {e}. Populate it the way CI does:\n"
-            "  cp machine_configs/illumination_channel_config.yaml.example "
-            "machine_configs/illumination_channel_config.yaml"
-        ) from e
+    except (FileNotFoundError, OSError) as e:
+        warnings.warn(f"Could not generate the test profile ({e}). {hint}")
+        return None
 
-    # Generation also declines silently when legacy XML configs are pending migration,
-    # which would leave every test with an empty profile.
+    # Generation also declines silently when legacy XML configs are pending migration
+    # (see has_legacy_configs_to_migrate), which would leave an empty profile behind.
     if not (profiles_root / "default" / "channel_configs" / "general.yaml").exists():
-        raise pytest.UsageError(
-            "The test profile was not generated (no general.yaml). If software/"
-            "acquisition_configurations/ holds legacy XML configs, run "
-            "tools/migrate_acquisition_configs.py first."
+        warnings.warn(
+            f"The test profile was not generated (no general.yaml); if "
+            f"software/acquisition_configurations/ holds legacy XML configs, run "
+            f"tools/migrate_acquisition_configs.py first. {hint}"
         )
+        return None
     return profiles_root
 
 
 @pytest.fixture(autouse=True)
-def isolate_ambient_user_profiles(monkeypatch, canonical_user_profiles):
-    """Point default-path repositories at the canonical profile, not the machine's.
+def isolate_ambient_user_profiles(monkeypatch, tmp_path_factory, canonical_user_profiles_template):
+    """Give each test its own copy of the canonical profile, not the machine's.
 
     user_profiles/ is machine-specific and gitignored, and it is read *and written* by the
-    running application: the live-control exposure/gain spinboxes persist through
-    ConfigRepository on every edit. Without this pin,
+    running application: the live-control exposure/gain/intensity spinboxes persist through
+    ConfigRepository on every edit. Without this,
 
       * tests inherit whatever the developer's channels happen to hold - notably a
         `camera:` binding, which decides the active camera at startup and so changes what
         the trigger dropdown offers and whether an acquisition needs a camera switch, and
       * a test that drives those spinboxes rewrites the developer's channel configs.
 
+    The copy is per test rather than one shared directory: a widget-driven edit persists, so
+    a shared profile would carry one test's channel values (or a ProfileWidget-created
+    profile) into every later test in the session, making outcomes order-dependent.
+
     Repositories constructed with an explicit base_path (tmp_path in the repository tests)
     are left alone, as in isolate_ambient_camera_registry.
     """
+    if canonical_user_profiles_template is None:
+        return  # nothing generated; leave the ambient profile in place (see the fixture above)
+
     from control.core.config.repository import ConfigRepository
+
+    # A directory of our own, NOT the test's tmp_path: the repository tests use tmp_path as
+    # a ConfigRepository base_path, so planting a profile under it would collide with the
+    # profiles they build there themselves.
+    profiles_root = tmp_path_factory.mktemp("isolated_profiles") / "user_profiles"
+    shutil.copytree(canonical_user_profiles_template, profiles_root)
 
     default_user_profiles_path = ConfigRepository().user_profiles_path
     original_init = ConfigRepository.__init__
@@ -172,7 +197,7 @@ def isolate_ambient_user_profiles(monkeypatch, canonical_user_profiles):
     def _init(self, base_path=None):
         original_init(self, base_path)
         if self.user_profiles_path == default_user_profiles_path:
-            self.user_profiles_path = canonical_user_profiles
+            self.user_profiles_path = profiles_root
 
     monkeypatch.setattr(ConfigRepository, "__init__", _init)
 
