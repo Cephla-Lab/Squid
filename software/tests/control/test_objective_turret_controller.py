@@ -712,3 +712,88 @@ def test_sim_accepts_direction_inverted_kwarg():
     sim.move_to_objective("10x")
     assert sim.current_objective == "10x"
     sim.close()
+
+
+# --- DI polarity inversion (opposite-logic origin switches) ---
+#
+# With di_invert the raw DI level flips meaning: 1 = released, 0 = inside the
+# sensor window (the exact inverse of the default logic). The scripts below are
+# raw levels; the flipped verdicts drive the same state machine as the
+# non-inverted homing tests.
+
+
+def test_di_invert_home_from_inside_window_uses_inverted_levels(monkeypatch):
+    # Raw [0, 0, 1, 0] -> verdicts [1, 1, 0, 1]: inside -> backoff releases after
+    # one jog -> fine jog hits the edge. Same flow as the default-polarity case:
+    # no velocity sweep, SET_ZERO at start and at the trigger edge, clamped at home.
+    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    fake.di_script = [0, 0, 1, 0]
+    controller.home()
+    assert (REG_RUN_MODE, MODE_SPEED) not in fake.writes
+    assert [v for (a, v) in fake.writes if a == REG_SET_ZERO] == [SET_ZERO_MAGIC, SET_ZERO_MAGIC]
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    controller.close()
+
+
+def test_di_invert_home_sweeps_when_released_level_high(monkeypatch):
+    # Raw level 1 = released -> the sweep starts; the sweep direction bit stays the
+    # same (logical negative, toward the sensor) — only the trigger verdict flips.
+    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    # released -> sweep polls miss then trigger (0) -> backoff released (1) ->
+    # fine jog hits the edge (0).
+    fake.di_script = [1, 1, 0, 1, 0]
+    controller.home()
+    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
+    assert (REG_DIRECTION, 0) in fake.writes
+    assert (REG_TARGET_SPEED, HOMING_SWEEP_SPEED) in fake.writes
+    controller.close()
+
+
+def test_di_invert_backoff_jog_direction_unchanged(monkeypatch):
+    # Backoff still jogs positive (away from the sensor); the inversion applies to
+    # the trigger verdict only, never to the jog direction.
+    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    fake.di_script = [0, 0, 1, 0]
+    controller.home()
+    assert (otc.REG_TARGET_POSITION, otc.HOMING_BACKOFF_STEP) in fake.writes
+    controller.close()
+
+
+def test_di_invert_falls_back_to_def_when_not_passed(monkeypatch):
+    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DI_INVERT", True)
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=False)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    fake.di_script = [0, 0, 1, 0]  # raw 0 = inside the window under inverted logic
+    controller.home()
+    assert (REG_RUN_MODE, MODE_SPEED) not in fake.writes  # inside-window path taken
+    controller.close()
+
+
+@pytest.mark.parametrize("bad_invert", [1, "true", 0.0], ids=["int", "str", "float"])
+def test_non_bool_di_invert_raises(monkeypatch, bad_invert):
+    # .ini parsing can yield an int/str; only a real boolean is accepted.
+    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
+    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
+    with pytest.raises(ValueError):
+        ObjectiveTurret4PosController(
+            serial_number="SIM", stage=None, direction_inverted=False, di_invert=bad_invert
+        )
+
+
+def test_sim_accepts_di_invert_kwarg():
+    sim = ObjectiveTurret4PosControllerSimulation(
+        serial_number="SIM-001",
+        positions=OBJECTIVE_TURRET_POSITIONS,
+        di_invert=True,
+    )
+    assert sim.is_open
+    sim.move_to_objective("10x")
+    assert sim.current_objective == "10x"
+    sim.close()
