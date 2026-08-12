@@ -42,6 +42,15 @@ See `machine_configs/cameras.yaml.example` for the full field list. Key points:
   `camera_type` can't describe two different cameras.
 - **`hardware_trigger: false`** means this camera's trigger line is not wired; it runs in
   software-trigger mode only.
+- **What goes in `serial_number`** (Toupcam): either the SDK's own serial, as
+  `Toupcam.SerialNumber()` reports it (e.g. `TP24082314375443175B435F464E9A3`), or the opaque
+  enumeration id (the `\\?\usb#vid_0547&...` string). Prefer the serial — the enumeration id
+  encodes the USB port and changes if the camera is replugged elsewhere. Matching the
+  enumeration id costs nothing; matching a serial means opening each device in turn to read
+  it, which is why a device already held open by the other camera logs a benign
+  `SerialNumber ... Not implemented` error while probing. If nothing matches, the driver
+  raises and **lists every camera it found with its id and serial** — the easiest way to
+  discover the right value for a machine.
 - Optional per-camera overrides — `rotate_image_angle`, `flip`, `crop_width`,
   `crop_height`, `default_pixel_format`, `default_binning` — fall back to the INI
   `[CAMERA_CONFIG]` values when absent. Give a color camera an RGB `default_pixel_format`.
@@ -58,8 +67,9 @@ falls back to the single INI camera. It does not crash, but you silently get one
 
 Nothing changes. With no `cameras.yaml`, or with one declared camera, the imaging camera
 comes entirely from the INI `[CAMERA_CONFIG]` section — a **1-camera `cameras.yaml` is
-effectively ignored** (there is no serial-number-based camera selection in v1). The
-registry only takes over when it declares more than one camera.
+effectively ignored**, including its `serial_number`, so that camera is opened as the first
+device the driver enumerates. The registry only takes over when it declares more than one
+camera; serial-number selection comes with it.
 
 ## 2. Bind channels to cameras — Settings ▸ Channel Configuration…
 
@@ -198,10 +208,12 @@ Zarr remains fully valid — and selectable — for single-camera runs.
   Flexible and Wellplate panels). Its only net is the acquisition-start backstop, which
   aborts the run and writes the reason to the log.
 - **No per-camera Zarr stores.** v1 validates the mismatch instead of splitting stores.
-- **No serial-number camera opening (except FLIR).** Most drivers open the "first camera
-  found", so two cameras of the **same vendor type** are not reliably distinguishable yet —
-  the serial numbers are recorded in `cameras.yaml` but not yet plumbed through the
-  Toupcam/Hamamatsu/Tucsen drivers. Different-vendor pairs and simulation are fine.
+- **Serial-number camera opening works for Toupcam and FLIR only.** Those two drivers open
+  the specific device a `serial_number` names, so two cameras of the same vendor — even the
+  same model — are distinguishable. Every other driver (Hamamatsu, Tucsen, iDS, Photometrics,
+  Andor, Default/Daheng) still opens the "first camera found": the serial number is recorded
+  in `cameras.yaml` but not used to choose the device, so a same-vendor pair on those drivers
+  is not reliably distinguishable. Different-vendor pairs and simulation are fine.
 - **No switch-minimizing channel reordering** — your channel order is preserved.
 - **`hardware_bindings.yaml` emission-wheel dispatch** is not wired per camera.
 
