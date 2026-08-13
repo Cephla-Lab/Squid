@@ -28,17 +28,26 @@ void test_tmc2660_zero_current(void) {
     TEST_ASSERT_EQUAL_UINT8(0, tmc2660_current_scale(0.0f, 0.22f));
 }
 
-void test_tmc2660_clamps_instead_of_wrapping(void) {
-    // cmd 21 CONFIGURE_STEPPER_DRIVER accepts a u16, so the host can send 65535 mA.
-    // Master computes uint8_t(65.535*0.22/0.2298*31) = uint8_t(1944) = 152, which
-    // overflows the 5-bit CS field of SGCSCONF. Clamping can only ever REDUCE
-    // current, so it cannot change behavior for any in-range value.
-    TEST_ASSERT_EQUAL_UINT8(31, tmc2660_current_scale(65535.0f, 0.22f));
+void test_tmc2660_rejects_out_of_range(void) {
+    // cmd 21 CONFIGURE_STEPPER_DRIVER accepts a u16, so the host can request more
+    // current than the formula can express. Master's uint8_t result then wrapped
+    // mod 32 inside SGCSCONF's 5-bit CS field — arbitrarily higher or lower than
+    // asked for. Report it instead, matching tmc2240_irun.
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2660_current_scale(65535.0f, 0.22f));
+    // 1100 mA on X (R = 0.22) is just past the ~1044 mA ceiling; master gave CS = 0.
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2660_current_scale(1100.0f, 0.22f));
+    // The largest in-range request must still succeed and be unchanged. 1044 mA is
+    // the last milliamp under the cscale = 1.0 ceiling (which sits at 1044.5 mA):
+    // cscale = 0.99948, cscale*31 = 30.98, truncated to 30 — bit-identical to what
+    // master returns for the same input. CS = 31 would need cscale >= 1.0, which
+    // this rule now rejects, so 31 is unreachable from any integer milliamp
+    // request; see the fix-round note in task-1-report.md.
+    TEST_ASSERT_EQUAL_UINT8(30, tmc2660_current_scale(1044.0f, 0.22f));
 }
 
 // ---------------------------------------------------------------------------
 // TMC2240 — datasheet form, /sqrt(2) included (design M8).
-// A regression to 15/22/19 means someone dropped the sqrt(2) and reintroduced
+// A regression to 15/15/19 means someone dropped the sqrt(2) and reintroduced
 // the octoaxes defect.
 // ---------------------------------------------------------------------------
 void test_tmc2240_irun_xy_range1(void) {
@@ -56,8 +65,8 @@ void test_tmc2240_irun_w_range2(void) {
 void test_tmc2240_irun_rejects_out_of_range(void) {
     // 1900 mA RMS exceeds range 1's 1414 mA RMS ceiling. Must be reported,
     // not silently clamped: a quietly under-currented filter wheel stalls.
-    TEST_ASSERT_EQUAL_UINT8(TMC2240_IRUN_OUT_OF_RANGE, tmc2240_irun(1900.0f, 1));
-    TEST_ASSERT_EQUAL_UINT8(TMC2240_IRUN_OUT_OF_RANGE, tmc2240_irun(1000.0f, 0));
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2240_irun(1900.0f, 1));
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2240_irun(1000.0f, 0));
 }
 
 void test_tmc2240_irun_zero_current(void) {
@@ -109,7 +118,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_tmc2660_shipped_z);
     RUN_TEST(test_tmc2660_shipped_w);
     RUN_TEST(test_tmc2660_zero_current);
-    RUN_TEST(test_tmc2660_clamps_instead_of_wrapping);
+    RUN_TEST(test_tmc2660_rejects_out_of_range);
     RUN_TEST(test_tmc2240_irun_xy_range1);
     RUN_TEST(test_tmc2240_irun_z_range0);
     RUN_TEST(test_tmc2240_irun_w_range2);

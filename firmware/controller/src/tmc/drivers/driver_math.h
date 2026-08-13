@@ -28,15 +28,22 @@
   machine, so it is deliberately a SEPARATE PR with its own bench thermal
   check. Do not "fix" it here.
 
-  The clamp is the one addition: cmd 21 accepts a u16 milliamp value, so a bad
-  host value could previously overflow the 5-bit CS field of SGCSCONF. Clamping
-  only ever reduces current and cannot change any in-range result.
+  Out-of-range handling is the one addition, and it is NOT a clamp. cmd 21
+  accepts a u16 milliamp value, so the host can request more current than this
+  formula can express. Master's uint8_t result then wrapped mod 32 inside
+  SGCSCONF's 5-bit CS field, landing arbitrarily HIGHER or LOWER than asked for
+  — 1100 mA on X (R = 0.22) produced a raw 32, i.e. CS = 0, minimum current.
+  Returning a sentinel makes that failure explicit and matches tmc2240_irun.
+  In-range results are untouched, which is what the bit-identity constraint
+  actually requires.
 */
+#define TMC_CURRENT_OUT_OF_RANGE 0xFF
+
 static inline uint8_t tmc2660_current_scale(float current_rms_ma, float r_sense_ohm)
 {
     float cscale = (current_rms_ma / 1000.0f) * r_sense_ohm / 0.2298f;
     if (cscale < 0.0f) cscale = 0.0f;
-    if (cscale > 1.0f) cscale = 1.0f;
+    if (cscale > 1.0f) return TMC_CURRENT_OUT_OF_RANGE;
     return (uint8_t)(cscale * 31.0f);
 }
 
@@ -57,9 +64,10 @@ static inline uint8_t tmc2660_current_scale(float current_rms_ma, float r_sense_
   same defect they already found and fixed on their own TMC2660 path
   (2026-05-11) and never propagated.
 */
-#define TMC2240_R_REF_OHM 12000.0f  /* confirmed on the Squid 2240 board, 2026-08-12 */
-#define TMC2240_SQRT2     1.41421356f
-#define TMC2240_IRUN_OUT_OF_RANGE 0xFF
+#define TMC2240_R_REF_OHM (12000.0f)  /* confirmed on the Squid 2240 board, 2026-08-12 */
+#define TMC2240_SQRT2     (1.41421356f)
+/* Alias kept for readability at 2240 call sites; same value as the shared sentinel. */
+#define TMC2240_IRUN_OUT_OF_RANGE TMC_CURRENT_OUT_OF_RANGE
 
 static inline float tmc2240_ifs_peak_a(uint8_t current_range)
 {
@@ -88,7 +96,7 @@ static inline uint8_t tmc2240_irun(float current_rms_ma, uint8_t current_range)
     float target_a = current_rms_ma / 1000.0f;
 
     if (target_a < 0.0f) target_a = 0.0f;
-    if (target_a > ifs_rms) return TMC2240_IRUN_OUT_OF_RANGE;
+    if (target_a > ifs_rms) return TMC_CURRENT_OUT_OF_RANGE;
 
     float cs = (target_a / ifs_rms) * 32.0f - 1.0f;
     if (cs < 0.0f) cs = 0.0f;
