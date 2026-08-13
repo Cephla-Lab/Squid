@@ -1238,6 +1238,19 @@ XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
+
+def xeryon_objective_position(objective_name):
+    """Position index (1 or 2) of an objective on the Xeryon 2-position switcher,
+    or None if the objective is not in either per-machine position list. Single
+    source of the objective->position rule for both the hardware mover and the
+    parfocal Z math (position 2 parks the stage POS_2_OFFSET_MM lower)."""
+    if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+        return 1
+    if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+        return 2
+    return None
+
+
 # Motorized 4-position objective turret (NiMotion RS-485 stepper, Modbus-RTU)
 USE_OBJECTIVE_TURRET = False
 OBJECTIVE_TURRET_SERIAL_NUMBER = ""

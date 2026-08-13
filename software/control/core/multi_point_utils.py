@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ScanPositionInformation:
-    scan_region_coords_mm: List[Tuple[float, float]]
+    scan_region_coords_mm: List[List[float]]
     scan_region_names: List[str]
     scan_region_fov_coords_mm: Dict[str, List[Tuple[float, float, float]]]
 
@@ -21,7 +21,12 @@ class ScanPositionInformation:
         return ScanPositionInformation(
             scan_region_coords_mm=list(scan_coordinates.region_centers.values()),
             scan_region_names=list(scan_coordinates.region_centers.keys()),
-            scan_region_fov_coords_mm=dict(scan_coordinates.region_fov_coordinates),
+            # Copy the inner lists too: the controller's focus-map branch rewrites
+            # FOV entries in place, and sharing them would leak interpolated z into
+            # the GUI's ScanCoordinates (and crash a later Save Coordinates).
+            scan_region_fov_coords_mm={
+                region_id: list(coords) for region_id, coords in scan_coordinates.region_fov_coordinates.items()
+            },
         )
 
 
