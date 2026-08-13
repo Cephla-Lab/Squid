@@ -2609,3 +2609,55 @@ class TestWarningErrorWidgetErrorExemptionWithDroppedCount:
 
         # But the error should be in the messages
         assert any(m["level"] == logging.ERROR for m in widget._messages)
+
+
+# ---------------------------------------------------------------------------
+# CameraSettingsWidget.toggle_auto_wb
+#
+# Called straight off the class with a mock self: the button press behaviour is what
+# matters here, not the Qt widget tree, and constructing the real widget needs a camera.
+# ---------------------------------------------------------------------------
+
+
+def _auto_wb_widget(streaming=True):
+    widget = MagicMock()
+    widget.camera.get_is_streaming.return_value = streaming
+    return widget
+
+
+def test_toggle_auto_wb_refuses_when_camera_not_streaming():
+    """The SDK computes gains from live frames, so a stopped camera must not be asked."""
+    widget = _auto_wb_widget(streaming=False)
+
+    control.widgets.CameraSettingsWidget.toggle_auto_wb(widget, True)
+
+    widget.camera.set_auto_white_balance_gains.assert_not_called()
+    widget.btn_auto_wb.setChecked.assert_called_once_with(False)
+
+
+def test_toggle_auto_wb_runs_when_streaming():
+    widget = _auto_wb_widget(streaming=True)
+
+    control.widgets.CameraSettingsWidget.toggle_auto_wb(widget, True)
+
+    widget.camera.set_auto_white_balance_gains.assert_called_once_with(on=True)
+
+
+def test_toggle_auto_wb_swallows_driver_errors():
+    """A driver failure must not escape to the global excepthook and look like a crash."""
+    widget = _auto_wb_widget(streaming=True)
+    widget.camera.set_auto_white_balance_gains.side_effect = RuntimeError("Not implemented")
+
+    control.widgets.CameraSettingsWidget.toggle_auto_wb(widget, True)
+
+    widget.btn_auto_wb.setChecked.assert_called_once_with(False)
+
+
+def test_toggle_auto_wb_off_path_swallows_driver_errors():
+    """The off path reads gains back, which fails just as easily on an unsupported camera."""
+    widget = _auto_wb_widget(streaming=True)
+    widget.camera.get_white_balance_gains.side_effect = RuntimeError("Not implemented")
+
+    control.widgets.CameraSettingsWidget.toggle_auto_wb(widget, False)
+
+    widget.camera.set_white_balance_gains.assert_not_called()

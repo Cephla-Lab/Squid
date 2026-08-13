@@ -4016,13 +4016,27 @@ class CameraSettingsWidget(QFrame):
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
-        if pressed:
-            # Run auto white balance once, then uncheck
-            self.camera.set_auto_white_balance_gains(on=True)
-        else:
-            self.camera.set_auto_white_balance_gains(on=False)
-            r, g, b = self.camera.get_white_balance_gains()
-            self.camera.set_white_balance_gains(r, g, b)
+        # The SDK works the gains out from live frames, so a stopped camera fails this
+        # with an unhelpful driver error.  Say so plainly and leave the button unchecked.
+        if pressed and not self.camera.get_is_streaming():
+            self._log.warning("Cannot run auto white balance while the camera is not streaming; start live first.")
+            self.btn_auto_wb.setChecked(False)
+            return
+
+        # Any driver-level failure here (unsupported by this camera model, camera
+        # unplugged, ...) is reported and swallowed: an uncaught exception from a button
+        # press escapes to the global excepthook and looks like a crash to the user.
+        try:
+            if pressed:
+                # Run auto white balance once, then uncheck
+                self.camera.set_auto_white_balance_gains(on=True)
+            else:
+                self.camera.set_auto_white_balance_gains(on=False)
+                r, g, b = self.camera.get_white_balance_gains()
+                self.camera.set_white_balance_gains(r, g, b)
+        except Exception as e:
+            self._log.warning(f"Auto white balance failed on this camera: {e}")
+            self.btn_auto_wb.setChecked(False)
 
     def set_exposure_time(self, exposure_time):
         self.entry_exposureTime.setValue(exposure_time)
