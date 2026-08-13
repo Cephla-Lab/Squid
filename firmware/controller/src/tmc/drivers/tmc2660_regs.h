@@ -28,9 +28,23 @@
 
 /*
   CHOPCONF: master writes 0x000900C3 to enable and 0x000900C0 to disable.
-  0x0900C3 = CHOPCONF_ADDR(0x080000) | 0x010000 | 0x00C0 | TOFF(3).
-  The 0x00C0 body and the 0x010000 bit are master's fixed chopper settings;
-  only TOFF varies between the enable and disable datagrams.
+
+  This word is NOT "address bits plus a magic tail" — every bit below the
+  selector is a named chopper field:
+
+    [19:17] 100    register select (CHOPCONF)
+    [16:15] TBL   = 2  blanking time (%10 -> 36 clocks)
+    [14]    CHM   = 0  standard (spreadCycle) chopper
+    [13]    RNDTF = 0  fixed chopper off time
+    [12:11] HDEC  = 0
+    [10:7]  HEND  = 1  hysteresis end; the field is offset by 3, so this is -2
+    [6:4]   HSTRT = 4  hysteresis start
+    [3:0]   TOFF  = the toff argument
+
+  So the 0x010000 term is TBL bit 1 and 0x00C0 is HEND=1 | HSTRT=4. Anyone
+  parameterising blanking or hysteresis later must edit those fields — do not
+  read 0x010000 as part of the address and OR new bits onto the constant.
+  Only TOFF differs between the enable and disable datagrams.
 */
 static inline uint32_t tmc2660_chopconf_datagram(uint8_t toff)
 {
@@ -54,6 +68,14 @@ static inline uint32_t tmc2660_smarten_datagram(void)
   passing sgt = 100 here silently encodes -28, whereas master clamped to +63.
   For every in-range input the two are bit-identical (verified exhaustively
   over sgt x cs x sfilt).
+
+  DANGER — DO NOT LAUNDER THE SENTINEL INTO cs. tmc2660_current_scale returns
+  TMC_CURRENT_OUT_OF_RANGE (0xFF) when the requested milliamps cannot be
+  encoded. 0xFF & 0x1F == 31, so forwarding that value here yields CS = 31,
+  i.e. MAXIMUM motor current — precisely inverting the "reject, never clamp"
+  contract stated at driver_math.h:99-102. A pure value builder has no error
+  channel, so the caller MUST compare against TMC_CURRENT_OUT_OF_RANGE and
+  fail the command BEFORE calling this.
 */
 static inline uint32_t tmc2660_sgcsconf_datagram(uint8_t cs, int8_t sgt, bool sfilt)
 {

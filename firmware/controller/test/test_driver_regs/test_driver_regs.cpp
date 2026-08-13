@@ -59,7 +59,11 @@ void test_tmc2240_ihold_irun_packing(void) {
 void test_tmc2240_drv_conf_carries_current_range_and_slope(void) {
     uint32_t v = tmc2240_drv_conf_value(2);
     TEST_ASSERT_EQUAL_UINT32(2u, v & 0x03u);
-    TEST_ASSERT_EQUAL_UINT32(1u, (v >> 4) & 0x0Fu);  // SLOPE_CONTROL = 1 (200 V/us)
+    // SLOPE_CONTROL is bits [5:4] — two bits, not four.
+    TEST_ASSERT_EQUAL_UINT32(1u, (v >> 4) & 0x03u);  // SLOPE_CONTROL = 1 (200 V/us)
+    // Bits 6-7 are reserved and must stay clear; a 0x0F mask here would read
+    // them as part of SLOPE_CONTROL and hide it if they ever got set.
+    TEST_ASSERT_EQUAL_UINT32(0u, (v >> 6) & 0x03u);
 }
 
 void test_tmc2240_gconf_sets_direct_mode(void) {

@@ -30,7 +30,7 @@
 #define TMC2240_WRITE_BIT 0x80
 #define TMC2240_ADDRESS_MASK 0x7F
 
-/* Highest register address we shadow. Sized to cover SG4_THRS (0x74). */
+/* Shadow array length: indices 0..0x74, sized to cover SG4_THRS (0x74). */
 #define TMC2240_SHADOW_COUNT 0x75
 
 /* IOIN.VERSION is bits [31:24] and reads 0x40 on a TMC2240. */
@@ -60,6 +60,21 @@
 #define TMC2240_SGT_SHIFT 16
 #define TMC2240_SGT_MASK  (0x7Fu << TMC2240_SGT_SHIFT)
 
+/*
+  DANGER — DO NOT LAUNDER THE SENTINEL INTO ihold OR irun. tmc2240_irun
+  returns TMC2240_IRUN_OUT_OF_RANGE (0xFF) when the requested current exceeds
+  what the selected CURRENT_RANGE can deliver. 0xFF & 0x1F == 31, so
+  forwarding it here writes IRUN = 31, i.e. MAXIMUM current.
+
+  Concretely: cmd 21 asks for 3000 mA on an axis configured CURRENT_RANGE = 1
+  (2.0 A ceiling). tmc2240_irun correctly refuses and returns the sentinel. A
+  caller that passes it straight through turns that refusal into sustained
+  full-scale current through an undersized motor — the opposite of the
+  "reject, never clamp" contract at driver_math.h:99-102.
+
+  This builder has no error channel by design. The caller MUST test for the
+  sentinel and fail the command BEFORE calling.
+*/
 static inline uint32_t tmc2240_ihold_irun_value(uint8_t ihold, uint8_t irun, uint8_t ihold_delay)
 {
     return ((uint32_t)(ihold & 0x1Fu) << TMC2240_IHOLD_SHIFT)
@@ -67,7 +82,11 @@ static inline uint32_t tmc2240_ihold_irun_value(uint8_t ihold, uint8_t irun, uin
          | ((uint32_t)(ihold_delay & 0x0Fu) << TMC2240_IHOLDDELAY_SHIFT);
 }
 
-/* CURRENT_RANGE [1:0]; SLOPE_CONTROL [7:4] = 1 (200 V/us, the ADI default). */
+/*
+  CURRENT_RANGE [1:0]; SLOPE_CONTROL [5:4] = 1 (200 V/us, the ADI default).
+  SLOPE_CONTROL is TWO bits, not four — bits 6-7 are reserved and must stay
+  clear. Do not widen the mask to 0x0F when reading this field back.
+*/
 static inline uint32_t tmc2240_drv_conf_value(uint8_t current_range)
 {
     return ((uint32_t)(current_range & 0x03u)) | (1u << 4);
@@ -111,6 +130,13 @@ static inline uint32_t tmc2240_chopconf_value(uint8_t toff, uint8_t hstrt, int8_
   (TMC4361A datasheet §10.3.6 requires waiting for COVER_DONE, and the
   automatic SPI output interferes). A garbage read-back here writes TOFF = 0
   and silently disables the driver mid-operation.
+
+  DANGER — DO NOT LAUNDER THE SENTINEL INTO mres. tmc_microsteps_to_mres
+  returns TMC_MRES_INVALID (0xFF) for a microstep count that is zero, above
+  256, or not a power of two. 0xFF & 0x0F == 15, a RESERVED MRES code, so
+  forwarding it here programs an undefined microstep resolution. Note that
+  driver_math.h:126-127 says the MRES value "can be mirrored directly" into
+  this field — true, but only once the caller has rejected TMC_MRES_INVALID.
 */
 static inline uint32_t tmc2240_chopconf_with_mres(uint32_t chopconf, uint8_t mres)
 {
