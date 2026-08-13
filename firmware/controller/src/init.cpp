@@ -20,15 +20,30 @@
   three reads, not a summary, so a zero word beside a TMC2660 verdict is one
   flaky read; the failure is a DRIVER_UNKNOWN verdict.
 
+  WHY THIS IS BOOT-ONLY BY DEFAULT
+  --------------------------------
   This writes ASCII onto the same USB serial link that carries the 24-byte status
-  packets. At boot that link is idle - loop() has not run, so no packet has been
-  sent - and on the filter-wheel path the host resynchronises by sliding a byte
-  at a time until a CRC matches (software/control/microcontroller.py,
-  read_received_packet), costing a few "Bad checksum" warnings. That cost is
-  accepted deliberately: the gate it serves is what decides whether this firmware
-  is safe for the installed base, and the design requires measuring the warm
-  filter-wheel path too, because that one re-probes an already-configured 2660 at
-  RDSEL = 2 where SG and SE are both zero at standstill.
+  packets, and the host's resynchronisation makes that expensive anywhere except
+  at boot. It does not merely lose a packet: the host slides one byte at a time
+  and accepts any 24-byte window whose LAST BYTE IS ZERO, regardless of CRC
+  (software/control/microcontroller.py:1553, a legacy allowance for firmware that
+  sent no checksum). Every status packet carries buffer_tx[19..21] = 0
+  (serial_communication.cpp:90-92), and these report lines contain no zero byte
+  at all, so the window that gets accepted is reliably a MISALIGNED one - a few
+  trailing ASCII bytes followed by the head of the real packet. The host then
+  reads msg[0]/msg[1] out of ASCII ('0' = 48) and overwrites x/y/z/theta with
+  garbage: a wild position jump in the GUI and the logs, plus an ack for a
+  command id nobody sent. Not a warning - a bad reading presented as good.
+
+  At boot none of that applies: loop() has not started, so no status packet has
+  been sent and there is no real packet for a misaligned window to straddle.
+
+  The warm filter-wheel path (INITFILTERWHEEL at runtime) is therefore behind
+  -D TMC_PROBE_REPORT_RUNTIME and is NOT in the shipping default. The bench gate
+  does need that path - it re-probes an already-configured 2660 at RDSEL = 2,
+  where SG and SE are both zero at standstill, which is the case most likely to
+  read all-zeros - so capture it from a purpose-built image. See platformio.ini
+  and the call site in commands.cpp.
 */
 void report_driver_probe(uint8_t axis)
 {
