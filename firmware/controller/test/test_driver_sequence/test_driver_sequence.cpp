@@ -1056,6 +1056,15 @@ static void expect_verdict(const char *label, const uint32_t *r, unsigned n, uin
 
     snprintf(g_msg, sizeof g_msg, "%s: driver_probe_raw must hold the LAST read word", label);
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(r[n - 1], g_axis.driver_probe_raw, g_msg);
+
+    /* The fail-safe, asserted on every row of the table rather than in one
+       hand-picked case: an axis may be commanded to move if and only if the
+       probe identified its driver. tmc_driver_ready() is the predicate the
+       eight move entry points in stage_commands.cpp gate on. */
+    snprintf(g_msg, sizeof g_msg,
+             "%s: a %s axis must %sbe allowed to move", label, tmc_driver_name(want),
+             (want == DRIVER_UNKNOWN) ? "NOT " : "");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(want != DRIVER_UNKNOWN, tmc_driver_ready(&g_axis), g_msg);
 }
 
 void test_probe_decision_table(void)
@@ -1108,6 +1117,45 @@ void test_probe_records_raw_word_on_every_exit_path(void)
         "a positive verdict must record the LAST read word, not a selected one");
 }
 
+/*
+  The fail-safe predicate on its own, independent of any probe run.
+
+  The case that matters most is the axis that was never probed at all. Nothing
+  in this branch calls tmc_driver_probe() on a filter wheel until the host sends
+  INITFILTERWHEEL, and tmc4361A_init() leaves driver_type = DRIVER_UNKNOWN
+  (TMC4361A.cpp:161) — so "never probed" and "probed and unidentifiable" must
+  reach the same verdict, or an axis nobody ever looked at would move at an
+  unknown current.
+
+  WHAT THIS DOES NOT COVER: the eight call sites in stage_commands.cpp that
+  enforce this. That file is not host-compilable (globals.h / functions.h pull
+  in Arduino, FastLED, PacketSerial and the Teensy pin map), so deleting a
+  `if (!axis_driver_ready(...)) return;` line would leave this suite green.
+  The call sites are verified by inspection and by the teensy41 build only.
+*/
+void test_driver_ready_rejects_unknown_and_never_probed_axes(void)
+{
+    g_axis.driver_type = DRIVER_UNKNOWN;
+    TEST_ASSERT_FALSE_MESSAGE(tmc_driver_ready(&g_axis),
+        "a DRIVER_UNKNOWN axis (probed and unidentifiable, or never probed at "
+        "all, which tmc4361A_init() leaves in this same state) must reject moves");
+
+    g_axis.driver_type = DRIVER_TMC2660;
+    TEST_ASSERT_TRUE_MESSAGE(tmc_driver_ready(&g_axis),
+        "an identified TMC2660 axis must move exactly as it does on master (design M5)");
+
+    g_axis.driver_type = DRIVER_TMC2240;
+    TEST_ASSERT_TRUE_MESSAGE(tmc_driver_ready(&g_axis),
+        "an identified TMC2240 axis must be allowed to move");
+
+    /* The predicate is "not DRIVER_UNKNOWN" rather than a whitelist of the two
+       known parts, and that is sufficient only because driver_type has exactly
+       three producers: tmc4361A_init() writes DRIVER_UNKNOWN and
+       tmc_driver_probe() writes one of the three constants. A fourth driver
+       added without a dispatch arm in TMC4361A_Utils.cpp would read as ready
+       here — it would then be caught by the dispatch, which does whitelist. */
+}
+
 /* ------------------------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -1143,6 +1191,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_probe_reads_only_ioin_three_times_with_settle_delays);
     RUN_TEST(test_probe_decision_table);
     RUN_TEST(test_probe_records_raw_word_on_every_exit_path);
+    RUN_TEST(test_driver_ready_rejects_unknown_and_never_probed_axes);
 
     return UNITY_END();
 }

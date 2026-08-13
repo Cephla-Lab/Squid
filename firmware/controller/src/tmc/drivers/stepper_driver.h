@@ -65,6 +65,26 @@ static inline const char *tmc_driver_name(uint8_t driver_type)
    own include of tmc2240_regs.h for TMC2240_SHADOW_COUNT. */
 #include "../TMC4361A.h"
 
+/* The fail-safe predicate: may this axis be commanded to move?
+
+   An axis whose driver could not be identified is never commanded. The probe
+   could not confirm that anything is answering on that axis's SPI, so its
+   current scaling — and therefore its torque — is unknown (design M4). The
+   DRIVER_UNKNOWN default set by tmc4361A_init() means a never-probed axis
+   answers false here too, so the failure is safe rather than silent.
+
+   It lives in this header, rather than only in the move callbacks that enforce
+   it, so that it is reachable on the host: test_driver_sequence pins it against
+   every row of the probe's decision table. stage_commands.cpp, where the eight
+   enforcing call sites are, cannot be compiled by env:native — it reaches
+   Arduino, FastLED, PacketSerial and the Teensy pin map through globals.h /
+   functions.h — so without this seam the fail-safe decision would have no
+   automated coverage at all. */
+static inline bool tmc_driver_ready(const TMC4361ATypeDef *tmc4361A)
+{
+    return tmc4361A->driver_type != DRIVER_UNKNOWN;
+}
+
 /* The five dispatched operations. Implementations in tmc2660.cpp / tmc2240.cpp;
    dispatch bodies in TMC4361A_Utils.cpp. */
 void    tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);

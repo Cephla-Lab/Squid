@@ -1,5 +1,7 @@
 #include "stage_commands.h"
 
+#include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready()
+
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
 // so the host stops waiting for a completion that won't arrive.
@@ -18,8 +20,34 @@ static inline void report_move_error()
     mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 }
 
+/*
+  An axis whose driver could not be identified is never commanded. The probe
+  could not confirm that anything is answering on that axis's SPI, so its
+  current scaling — and therefore its torque — is unknown (design M4).
+
+  Failing loudly here is the whole point: silently moving an axis whose driver
+  is unidentified is how a mis-populated board turns into a wrecked sample.
+
+  report_move_error(), NOT mark_move_failed(): every call site below rejects
+  before its callback has claimed mcu_cmd_execution_in_progress for this
+  command, so there is nothing of this command's to unwind. Clearing the flag
+  would instead unwind an unrelated motion still running on another axis —
+  send_position_update() fires on its own timer, so the host would see
+  in_progress false and read a still-moving axis as finished. This is the same
+  distinction the filter-wheel `enabled` gate already makes.
+*/
+static inline bool axis_driver_ready(uint8_t axis)
+{
+    if (!tmc_driver_ready(&tmc4361[axis])) {
+        report_move_error();
+        return false;
+    }
+    return true;
+}
+
 void callback_move_x()
 {
+    if (!axis_driver_ready(x)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[x]);
     X_direction = sgn(relative_position);
@@ -37,6 +65,7 @@ void callback_move_x()
 
 void callback_move_y()
 {
+    if (!axis_driver_ready(y)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[y]);
     Y_direction = sgn(relative_position);
@@ -54,6 +83,10 @@ void callback_move_y()
 
 void callback_move_z()
 {
+    // Before focusPosition is touched: do_focus_control() re-issues
+    // moveTo(z, focusPosition) every loop, so a rejected move that had already
+    // written focusPosition would be carried out anyway on the next pass.
+    if (!axis_driver_ready(z)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
@@ -89,6 +122,8 @@ static void dispatch_filterwheel_move(uint8_t axis, bool enabled, long target, i
         return;
     }
 
+    if (!axis_driver_ready(axis)) return;
+
     *direction = sgn(target - tmc4361A_currentPosition(&tmc4361[axis]));
     *target_position = target;
     mcu_cmd_execution_in_progress = true;
@@ -116,6 +151,7 @@ void callback_move_w2()
 
 void callback_move_to_x()
 {
+    if (!axis_driver_ready(x)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     X_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
     X_commanded_target_position = absolute_position;
@@ -132,6 +168,7 @@ void callback_move_to_x()
 
 void callback_move_to_y()
 {
+    if (!axis_driver_ready(y)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Y_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
     Y_commanded_target_position = absolute_position;
@@ -148,6 +185,7 @@ void callback_move_to_y()
 
 void callback_move_to_z()
 {
+    if (!axis_driver_ready(z)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;
@@ -520,6 +558,29 @@ void callback_home_or_zero()
     // homing
     else if (buffer_rx[3] == HOME_NEGATIVE || buffer_rx[3] == HOME_POSITIVE)
     {
+        /*
+          Only this branch is gated. The zeroing branch above is not a motion
+          command: tmc4361A_setCurrentPosition() writes VMAX = 0 and then sets
+          XACTUAL and X_TARGET to the same value, i.e. it re-origins the
+          coordinate and halts. Rejecting it would take away the operator's
+          ability to re-zero an axis they are diagnosing while adding no safety.
+
+          This callback decodes no axis of its own — it switches on the raw
+          protocol constant in buffer_rx[2], which is not an array index — so the
+          guard converts. AXES_XY starts two axes and needs both ready;
+          protocol_axis_to_internal() returns 0xFF for it and for AXIS_THETA.
+          An unhandled value falls through the switch untouched, as on master.
+        */
+        if (buffer_rx[2] == AXES_XY)
+        {
+            if (!axis_driver_ready(x) || !axis_driver_ready(y)) return;
+        }
+        else
+        {
+            uint8_t home_axis = protocol_axis_to_internal(buffer_rx[2]);
+            if (home_axis != 0xFF && !axis_driver_ready(home_axis)) return;
+        }
+
         switch (buffer_rx[2])
         {
         case AXIS_X:
