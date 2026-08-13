@@ -4011,19 +4011,28 @@ class CappedSlider(QSlider):
             return
         super().sliderChange(change)
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def _overlay_region(self) -> Optional[QRegion]:
+        """Region beyond the cap to gray out, minus the handle so it stays visible."""
         if self._cap is None or self._cap >= self.maximum():
-            return
+            return None
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
         groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
         cap_x = QStyle.sliderPositionFromValue(
             self.minimum(), self.maximum(), self._cap, groove.width(), opt.upsideDown
         )
         overlay = QRect(groove.x() + cap_x, groove.y(), groove.width() - cap_x, groove.height())
+        return QRegion(overlay).subtracted(QRegion(handle))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        region = self._overlay_region()
+        if region is None or region.isEmpty():
+            return
         painter = QPainter(self)
-        painter.fillRect(overlay, QColor(128, 128, 128, 150))
+        painter.setClipRegion(region)
+        painter.fillRect(region.boundingRect(), QColor(128, 128, 128, 150))
         painter.end()
 
 
