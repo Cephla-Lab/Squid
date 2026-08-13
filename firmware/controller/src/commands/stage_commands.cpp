@@ -1,6 +1,6 @@
 #include "stage_commands.h"
 
-#include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready()
+#include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
 
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag

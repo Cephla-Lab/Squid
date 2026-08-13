@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <cstring>
 
 #include "constants_protocol.h"
@@ -265,6 +266,186 @@ void test_response_execution_status_byte(void) {
     TEST_ASSERT_EQUAL_UINT8(2, response[1]);
 }
 
+/***************************************************************************************************/
+/**************************** Driver fail-safe guards (source scan) ********************************/
+/***************************************************************************************************/
+/*
+  WHY A TEST THAT READS SOURCE AS TEXT.
+
+  An axis whose driver the probe could not identify must reject motion. That is
+  enforced by guards in src/commands/stage_commands.cpp (host move commands) and
+  src/operations.cpp (joystick and focus wheel), and NEITHER FILE CAN BE
+  COMPILED BY env:native — both reach Arduino, FastLED, PacketSerial and the
+  Teensy pin map through globals.h / functions.h. test_driver_sequence pins the
+  PREDICATE (tmc_driver_ready against every row of the probe's decision table),
+  but before this case nothing at all pinned the CALL SITES: deleting any guard
+  line left the whole suite green and shipped an axis that moves at unknown
+  current.
+
+  So this scans the two files as text. That is a blunt instrument and it is
+  worth being honest about its limits:
+
+    - IT IS BRITTLE TO RENAMES. Rename a callback or the helper and this fails
+      even though the code is correct. That is the intended trade: a failure
+      here is a prompt to update the expected counts deliberately, which is
+      exactly the moment to re-check that every entry point is still guarded.
+    - It counts raw text, comments included. The comments in both files are
+      deliberately written without a "(" after the helper names so they do not
+      inflate the counts; keep it that way when editing them.
+    - It proves a guard is PRESENT and TEXTUALLY BEFORE the motion call in the
+      same function. It cannot prove the guard is reachable, correct, or that
+      the right axis was passed. Those are covered by review, not by this.
+
+  A real firmware-level test of the call sites needs the whole command layer
+  host-compilable, which is a much larger piece of work than this task.
+*/
+
+static char g_source[192 * 1024];
+
+/* The native test binary's working directory is not contractual, so try the
+   plausible roots and fail loudly if none of them holds the file — a silently
+   skipped scan would be worse than no scan at all. */
+static const char *load_source(const char *relative_path)
+{
+    static const char *const PREFIXES[] = {"", "../", "../../", "../../../", "../../../../"};
+
+    for (unsigned i = 0; i < sizeof PREFIXES / sizeof PREFIXES[0]; i++)
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s%s", PREFIXES[i], relative_path);
+
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            continue;
+
+        size_t n = fread(g_source, 1, sizeof g_source - 1, f);
+        int truncated = (n == sizeof g_source - 1);
+        fclose(f);
+
+        g_source[n] = '\0';
+
+        /* A truncated read would silently undercount the guards. */
+        TEST_ASSERT_FALSE_MESSAGE(truncated, "g_source is too small for the file being scanned");
+        return g_source;
+    }
+    return NULL;
+}
+
+static unsigned count_occurrences(const char *haystack, const char *needle)
+{
+    unsigned n = 0;
+    size_t len = strlen(needle);
+    for (const char *p = strstr(haystack, needle); p != NULL; p = strstr(p + len, needle))
+        n++;
+    return n;
+}
+
+/* The guard must appear after the function's signature and before the first
+   call in it that puts a motor in motion. */
+static void assert_guard_precedes_motion(const char *source, const char *file_label,
+                                         const char *signature, const char *guard,
+                                         const char *motion_call)
+{
+    static char msg[512];
+
+    const char *fn = strstr(source, signature);
+    snprintf(msg, sizeof msg, "%s: could not find `%s` — renamed?", file_label, signature);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
+
+    const char *g = strstr(fn, guard);
+    const char *m = strstr(fn, motion_call);
+
+    snprintf(msg, sizeof msg, "%s: `%s` commands motion with no %s guard — a "
+                              "DRIVER_UNKNOWN axis would move at unknown current",
+             file_label, signature, guard);
+    TEST_ASSERT_NOT_NULL_MESSAGE(g, msg);
+
+    snprintf(msg, sizeof msg, "%s: `%s` no longer contains `%s` — this scan is "
+                              "pinning the wrong call",
+             file_label, signature, motion_call);
+    TEST_ASSERT_NOT_NULL_MESSAGE(m, msg);
+
+    snprintf(msg, sizeof msg, "%s: in `%s` the %s guard comes AFTER `%s`; state is "
+                              "written, or the motor commanded, before the check",
+             file_label, signature, guard, motion_call);
+    TEST_ASSERT_TRUE_MESSAGE(g < m, msg);
+}
+
+void test_stage_commands_guards_every_move_entry_point(void)
+{
+    const char *src = load_source("src/commands/stage_commands.cpp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/commands/stage_commands.cpp from any "
+                                      "candidate working directory");
+
+    /* 1 definition + 10 uses. The uses are: move_x, move_y, move_z,
+       dispatch_filterwheel_move, move_to_x, move_to_y, move_to_z, and three in
+       callback_home_or_zero (x and y for AXES_XY, plus the single-axis case). */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(11, count_occurrences(src, "axis_driver_ready("),
+        "stage_commands.cpp must hold exactly 11 axis_driver_ready references: "
+        "1 definition and 10 call sites. A lower count means a move entry point "
+        "lost its fail-safe");
+
+    /* The helper reaches the predicate exactly once, in its own body. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "tmc_driver_ready("),
+        "axis_driver_ready() must be the single place stage_commands.cpp consults "
+        "the predicate");
+
+    /* The guard must not clear mcu_cmd_execution_in_progress: it rejects before
+       the callback claims that flag, and clearing it reports an unrelated axis
+       still in motion as finished. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "report_move_error();\n        return false;"),
+        "axis_driver_ready() must reject with report_move_error(), never "
+        "mark_move_failed() — see the task 8 report section 3");
+
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_x()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_y()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_z()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_to_x()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_to_y()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_to_z()",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    /* Covers callback_move_w, _w2, _move_to_w and _move_to_w2, which are tail
+       calls into this dispatcher and hold no motion call of their own. */
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "static void dispatch_filterwheel_move(",
+                                 "axis_driver_ready(", "tmc4361A_moveTo(");
+    /* Homing, not zeroing: setCurrentPosition is a halt and re-origin, so the
+       zeroing branch is deliberately ungated and holds no setSpeed. */
+    assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_home_or_zero()",
+                                 "axis_driver_ready(", "tmc4361A_setSpeed(");
+}
+
+void test_operations_guards_the_operator_driven_motion_paths(void)
+{
+    const char *src = load_source("src/operations.cpp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/operations.cpp from any candidate "
+                                      "working directory");
+
+    /* X joystick block, Y joystick block, focus wheel. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, count_occurrences(src, "tmc_driver_ready("),
+        "operations.cpp must gate all three operator-driven motion paths: the X "
+        "and Y joystick blocks and do_focus_control(). Rejecting host moves holds "
+        "the joystick gate permanently open, so a missing one here is worse than "
+        "it looks");
+
+    /* Silent by design — these are not host commands and must not attribute a
+       hardware fault to whatever the host last sent. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "mcu_cmd_execution_status ="),
+        "the operations.cpp gates must reject silently: assigning "
+        "mcu_cmd_execution_status here mislabels an unrelated command as failed. "
+        "(The needle carries the ` =` so the prose above the gates, which names "
+        "the variable, does not trip this.)");
+
+    assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
+                                 "tmc_driver_ready(", "tmc4361A_setSpeed(");
+    assert_guard_precedes_motion(src, "operations.cpp", "void do_focus_control()",
+                                 "tmc_driver_ready(", "tmc4361A_moveTo(");
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -298,6 +479,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_response_layout_constants);
     RUN_TEST(test_response_version_byte_position);
     RUN_TEST(test_response_execution_status_byte);
+
+    // Driver fail-safe guards (source scan)
+    RUN_TEST(test_stage_commands_guards_every_move_entry_point);
+    RUN_TEST(test_operations_guards_the_operator_driven_motion_paths);
 
     return UNITY_END();
 }

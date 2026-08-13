@@ -256,10 +256,31 @@ void callback_initialize()
     focusPosition = 0;
     first_packet_from_joystick_panel = true;
     // Re-initialise the TMC4361A and its power stage on each stage axis.
-    // No probe here: this path does NOT call tmc4361A_init(), so driver_type
-    // still holds the verdict the boot probe cached.
+    //
+    // This path does NOT call tmc4361A_init(), so driver_type still holds the
+    // verdict the boot probe cached — and an axis the boot probe could not
+    // identify would otherwise stay move-rejecting until someone power-cycles
+    // the instrument, since W/W2 are the only axes with a runtime re-probe.
+    // INITIALIZE is an explicit re-initialisation command, so it is the right
+    // place to give the operator a second look at a dead axis.
+    //
+    // Only DRIVER_UNKNOWN axes are re-probed. An axis that WAS identified keeps
+    // its verdict untouched, which matters for two reasons. It preserves M5 —
+    // a probed TMC2660 sees exactly master's SPI traffic on this path, with no
+    // probe datagrams inserted ahead of the init. And it keeps the healthy
+    // axes away from a read the design has not yet closed: re-probing an
+    // already-configured TMC2660 reads it at SDOFF = 1 / RDSEL = 2, where SG
+    // and SE are both zero at standstill, and whether that can come back
+    // all-zeros is exactly the open question design section 10 step 0 goes to
+    // the bench to answer (see TMC4361A.h on driver_probe_raw). If it can, an
+    // unconditional re-probe here would let INITIALIZE turn a working stage
+    // axis into a rejected one — the opposite of the recovery this is for.
     for (int i = 0; i < STAGE_AXES; i++)
+    {
+        if (tmc4361[i].driver_type == DRIVER_UNKNOWN)
+            tmc_driver_probe(&tmc4361[i]);
         tmc_driver_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+    }
 
     // Re-apply run current. Master got this for free: tmc4361A_tmc2660_init()
     // ended in tmc4361A_cScaleInit(), which rewrote SGCSCONF from the retained
