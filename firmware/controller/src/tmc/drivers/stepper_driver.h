@@ -57,4 +57,21 @@ static inline const char *tmc_driver_name(uint8_t driver_type)
 #define TMC_SPIOUT_CONF_2240  0x4445000Du  /* cover data length 40, format 0x0D */
 #define TMC_SPIOUT_CONF_PROBE 0x4445000Au  /* length 40, 2660 auto-format 0x0A */
 
+/* Pulled in for TMC4361ATypeDef, which the dispatch signatures below need.
+   NOTE: this is why TMC4361A.h must NOT include this header — it would form a
+   cycle that the include guards turn into "TMC4361ATypeDef undeclared" rather
+   than into infinite recursion, because TMC4361A.h needs the struct DEFINED
+   before this file's declarations are parsed. TMC4361A.h therefore keeps its
+   own include of tmc2240_regs.h for TMC2240_SHADOW_COUNT. */
+#include "../TMC4361A.h"
+
+/* The five dispatched operations. Implementations in tmc2660.cpp / tmc2240.cpp;
+   dispatch bodies in TMC4361A_Utils.cpp. */
+void    tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);
+void    tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio);
+void    tmc_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps);
+void    tmc_driver_enable(TMC4361ATypeDef *tmc4361A, bool enable);
+int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity,
+                                     bool filter_en, uint32_t vstall_lim);
+
 #endif /* STEPPER_DRIVER_H */

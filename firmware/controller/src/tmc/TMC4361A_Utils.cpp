@@ -89,6 +89,8 @@
           Arguments: TMC4361ATypeDef *tmc4361A
 */
 #include "TMC4361A_Utils.h"
+#include "drivers/tmc2660.h"
+#include "drivers/tmc2660_regs.h"
 
 /*
   -----------------------------------------------------------------------------
@@ -231,7 +233,9 @@ void tmc4361A_rstBits(TMC4361ATypeDef *tmc4361A, uint8_t address, int32_t dat) {
   -----------------------------------------------------------------------------
 */
 void tmc4361A_cScaleInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, SGCSCONF | SFILT | tmc4361A->cscaleParam[CSCALE_IDX]);
+  // SGCSCONF | SFILT | cs, unmasked exactly as master wrote it. The named
+  // constants come from drivers/tmc2660_regs.h so the magic numbers exist once.
+  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, TMC2660_SGCSCONF_ADDR | TMC2660_SFILT | tmc4361A->cscaleParam[CSCALE_IDX]);
   // current open loop scaling
   tmc4361A_writeInt(tmc4361A, TMC4361A_SCALE_VALUES, (tmc4361A->cscaleParam[HOLDSCALE_IDX] << TMC4361A_HOLD_SCALE_VAL_SHIFT) +   // Set hold scale value (0 to 255)
                     (tmc4361A->cscaleParam[DRV2SCALE_IDX] << TMC4361A_DRV2_SCALE_VAL_SHIFT) +   // Set DRV2 scale  (0 to 255)
@@ -452,23 +456,7 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *tmc4361A) {
   -----------------------------------------------------------------------------
 */
 void tmc4361A_tmc2660_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
-  // reset
-  tmc4361A_writeInt(tmc4361A, TMC4361A_RESET_REG, 0x52535400);
-  // clk
-  tmc4361A_writeInt(tmc4361A, TMC4361A_CLK_FREQ, clk_Hz_TMC4361);
-  // SPI configuration
-  tmc4361A_writeInt(tmc4361A, TMC4361A_SPIOUT_CONF, 0x4440108A);
-  // cover datagram for TMC2660
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C3); // CHOPCONF
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000A0000); // SMARTEN
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000C000A); // SGCSCON
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000E00A1); // SDOFF = 1 -> SPI mode
-  // current scaling
-  tmc4361A_cScaleInit(tmc4361A);
-  // microstepping setting
-  tmc4361A_writeMicrosteps(tmc4361A);
-  tmc4361A_writeSPR(tmc4361A);
-  return;
+  tmc2660_driver_init(tmc4361A, clk_Hz_TMC4361);
 }
 
 /*
@@ -493,7 +481,7 @@ void tmc4361A_tmc2660_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
   -----------------------------------------------------------------------------
 */
 void tmc4361A_tmc2660_disable_driver(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C0); // CHOPCONF
+  tmc2660_driver_enable(tmc4361A, false);
 }
 
 /*
@@ -518,7 +506,7 @@ void tmc4361A_tmc2660_disable_driver(TMC4361ATypeDef *tmc4361A) {
   -----------------------------------------------------------------------------
 */
 void tmc4361A_tmc2660_enable_driver(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C3); // CHOPCONF
+  tmc2660_driver_enable(tmc4361A, true);
 }
 
 /*
@@ -2129,30 +2117,5 @@ int8_t tmc4361A_move_no_stick(TMC4361ATypeDef *tmc4361A, int32_t x_pos, int32_t 
   -----------------------------------------------------------------------------
 */
 int16_t tmc4361A_config_init_stallGuard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity, bool filter_en, uint32_t vstall_lim){
-  // First, ensure values are within limits
-  bool success = true;
-  if((sensitivity > 63) || (sensitivity < -64) || (vstall_lim >= (1<<24))){
-    success = false;
-  }
-  sensitivity = constrain(sensitivity, -64, 63);
-  vstall_lim = constrain(vstall_lim, 0, ((1<<24)-1));
-  // Mask the high bit
-  sensitivity = sensitivity & 0x7F;
-  // Build the datagram
-  uint32_t datagram = 0;
-  datagram = filter_en ? SFILT : 0;
-  datagram |= SGCSCONF;
-  datagram |= (sensitivity << 8);
-  datagram |= tmc4361A->cscaleParam[CSCALE_IDX];
-  // Next, write to the TMC2660 - write to the "cover_0.3 *10^6 /(200*256)low" register
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, datagram);
-  // Enable stall detection on the TMC4316A
-  // set vstall limit
-  tmc4361A_writeInt(tmc4361A, TMC4361A_VSTALL_LIMIT_WR, vstall_lim);
-  // enable stop on stall
-  tmc4361A_setBits(tmc4361A, TMC4361A_REFERENCE_CONF, TMC4361A_STOP_ON_STALL_MASK);
-  // disable drive after stall
-  tmc4361A_rstBits(tmc4361A, TMC4361A_REFERENCE_CONF, TMC4361A_DRV_AFTER_STALL_MASK);
-
-  return success;
+  return tmc2660_driver_config_stallguard(tmc4361A, sensitivity, filter_en, vstall_lim);
 }

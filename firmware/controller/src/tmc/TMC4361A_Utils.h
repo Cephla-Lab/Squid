@@ -82,9 +82,10 @@ int16_t tmc4361A_config_init_stallGuard(TMC4361ATypeDef *tmc4361A, int8_t sensit
 #define TMC4361A_BOOST_SCALE_VAL 0xFF
 static const uint8_t TMC2660_TMC4361A_defaultCscaleval[N_CPARAM] = {TMC2660_CSCALE, TMC4361A_HOLD_SCALE_VAL, TMC4361A_DRV2_SCALE_VAL, TMC4361A_DRV1_SCALE_VAL, TMC4361A_BOOST_SCALE_VAL};
 
-// TMC2660 register parameters
-#define SGCSCONF    0x0C0000
-#define SFILT       0x010000
+// TMC2660 register parameters now live in drivers/tmc2660_regs.h as
+// TMC2660_SGCSCONF_ADDR / TMC2660_SFILT, next to the builders the native tests
+// pin. The unprefixed SGCSCONF / SFILT duplicates that used to sit here were a
+// second copy of the same two magic numbers.
 
 // Error handling macros
 #define NO_ERR            0
