@@ -1,8 +1,8 @@
 """Camera settings persistence for session continuity.
 
-This module provides save/load functionality for camera settings (binning, pixel format)
-to maintain user preferences across application restarts. Settings are stored as YAML
-in the cache directory.
+This module provides save/load functionality for camera settings (binning, pixel format,
+white balance gains) to maintain user preferences across application restarts. Settings
+are stored as YAML in the cache directory.
 
 The on-disk format is keyed by camera serial number so that a multi-camera system keeps
 one entry per camera:
@@ -10,7 +10,10 @@ one entry per camera:
     version: 2
     cameras:
       SN1: {binning: [2, 2], pixel_format: MONO8}
-      SN2: {binning: [1, 1], pixel_format: MONO12}
+      SN2: {binning: [1, 1], pixel_format: RGB24, white_balance_gains: [25, -10, 40]}
+
+white_balance_gains is absent for cameras that have no white balance (mono cameras),
+and entries written before it existed simply load as None.
 
 Cameras without a serial number (INI-only configurations) are stored under the
 "default" key. Files written by older versions are a flat mapping without the
@@ -52,16 +55,21 @@ class CachedCameraSettings:
         binning: Tuple of (x, y) binning factors. Must be positive integers.
         pixel_format: String representation of CameraPixelFormat enum value,
             or None if not cached.
+        white_balance_gains: (R, G, B) white balance gains, or None when the camera has
+            no white balance (mono cameras) or nothing was cached.
     """
 
     binning: Tuple[int, int]
     pixel_format: Optional[str]
+    white_balance_gains: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self):
         if len(self.binning) != 2:
             raise ValueError(f"Binning must be a 2-tuple, got {self.binning}")
         if self.binning[0] < 1 or self.binning[1] < 1:
             raise ValueError(f"Binning values must be positive, got {self.binning}")
+        if self.white_balance_gains is not None and len(self.white_balance_gains) != 3:
+            raise ValueError(f"White balance gains must be a 3-tuple, got {self.white_balance_gains}")
 
 
 def _serial_key(camera: AbstractCamera) -> str:
@@ -84,7 +92,17 @@ def _settings_dict_for(camera: AbstractCamera) -> Optional[dict]:
     except Exception as e:
         _log.error(f"Cannot read camera settings - camera may be disconnected: {e}")
         return None
-    return {"binning": list(binning), "pixel_format": pixel_format.value if pixel_format else None}
+
+    settings = {"binning": list(binning), "pixel_format": pixel_format.value if pixel_format else None}
+
+    # Read in its own try: a mono camera has no white balance and raises here, which must
+    # not cost us the binning and pixel format we already read successfully.
+    try:
+        settings["white_balance_gains"] = list(camera.get_white_balance_gains())
+    except Exception as e:
+        _log.debug(f"Not caching white balance gains - camera does not provide them: {e}")
+
+    return settings
 
 
 def save_all_camera_settings(cameras: Dict[int, AbstractCamera], cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
@@ -230,9 +248,18 @@ def load_camera_settings(
                 _log.warning("Camera settings cache missing 'binning' key - using default")
             binning_raw = list(DEFAULT_BINNING)
 
+        gains_raw = settings.get("white_balance_gains")
+        gains = None
+        if gains_raw is not None:
+            if isinstance(gains_raw, list) and len(gains_raw) == 3:
+                gains = (float(gains_raw[0]), float(gains_raw[1]), float(gains_raw[2]))
+            else:
+                _log.warning(f"Invalid white balance gains in cache: {gains_raw} - ignoring")
+
         return CachedCameraSettings(
             binning=(int(binning_raw[0]), int(binning_raw[1])),
             pixel_format=settings.get("pixel_format"),
+            white_balance_gains=gains,
         )
     except (TypeError, ValueError) as e:
         _log.error(f"Camera settings cache contains invalid data: {e}")

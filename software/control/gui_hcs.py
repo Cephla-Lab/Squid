@@ -1161,12 +1161,40 @@ class HighContentScreeningGui(QMainWindow):
 
             binning_restored = self._restore_binning(camera, cached_settings.binning, sync_widget)
             pixel_format_restored = self._restore_pixel_format(camera, cached_settings.pixel_format, sync_widget)
+            # After the pixel format, since that is what decides whether this camera is
+            # delivering colour at all.
+            wb_restored = self._restore_white_balance_gains(camera, cached_settings.white_balance_gains)
 
-            if binning_restored or pixel_format_restored:
-                self.log.info(
-                    f"Restored camera {camera_id} settings: binning={cached_settings.binning}, "
-                    f"pixel_format={cached_settings.pixel_format}"
-                )
+            # Each value is reported only when it actually applied: printing the cached
+            # value regardless reads as success even when the camera rejected it.
+            restored = []
+            if binning_restored:
+                restored.append(f"binning={cached_settings.binning}")
+            if pixel_format_restored:
+                restored.append(f"pixel_format={cached_settings.pixel_format}")
+            if wb_restored:
+                restored.append(f"white_balance_gains={cached_settings.white_balance_gains}")
+
+            if restored:
+                self.log.info(f"Restored camera {camera_id} settings: {', '.join(restored)}")
+
+    def _restore_white_balance_gains(self, camera: AbstractCamera, gains: Optional[Tuple[float, float, float]]) -> bool:
+        """Apply cached white balance gains to the given camera.
+
+        Returns True if successfully applied, False otherwise. A camera with no white
+        balance (a mono one) has no cached gains and returns early, so reaching the
+        failure path means gains we *did* cache would not go back on - worth a warning,
+        because the save on close then overwrites them with whatever the camera holds.
+        """
+        if gains is None:
+            return False
+
+        try:
+            camera.set_white_balance_gains(*gains)
+        except Exception as e:
+            self.log.warning(f"Could not restore white balance gains {gains} on this camera: {e}")
+            return False
+        return True
 
     def _restore_binning(self, camera: AbstractCamera, binning: Tuple[int, int], sync_widget: bool) -> bool:
         """Apply binning setting to the given camera, optionally syncing the UI dropdown.

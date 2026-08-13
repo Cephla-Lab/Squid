@@ -104,6 +104,49 @@ def isolate_ambient_camera_registry(monkeypatch):
     monkeypatch.setattr(ConfigRepository, "get_camera_registry", _get_camera_registry)
 
 
+@pytest.fixture(autouse=True)
+def isolate_ambient_camera_settings_cache(monkeypatch, tmp_path_factory):
+    """Keep tests out of the machine's cache/camera_settings.yaml.
+
+    That file is gitignored, machine-specific, and written by the running application:
+    HighContentScreeningGui's close path calls save_all_camera_settings(). Any test that
+    builds and closes a GUI therefore overwrote the developer's real per-camera binning,
+    pixel format and white balance with the test's simulated cameras - the GUI tests use
+    serials "SIM-1"/"SIM-2", which is exactly what such a clobbered file ends up holding.
+
+    The redirect wraps the three module functions rather than patching
+    _DEFAULT_CACHE_PATH: that constant is bound as a default argument value at import
+    time, so rebinding the module attribute would not change where an existing call goes.
+
+    Calls that pass an explicit cache_path (the settings-cache tests use tmp_path) are
+    handed straight through, as in isolate_ambient_camera_registry.
+    """
+    import squid.camera.settings_cache as settings_cache
+
+    default_path = settings_cache._DEFAULT_CACHE_PATH
+    isolated_path = tmp_path_factory.mktemp("camera_settings_cache") / "camera_settings.yaml"
+
+    original_save_all = settings_cache.save_all_camera_settings
+    original_save = settings_cache.save_camera_settings
+    original_load = settings_cache.load_camera_settings
+
+    def _redirected(cache_path):
+        return isolated_path if cache_path == default_path else cache_path
+
+    def _save_all(cameras, cache_path=default_path):
+        return original_save_all(cameras, cache_path=_redirected(cache_path))
+
+    def _save(camera, cache_path=default_path):
+        return original_save(camera, cache_path=_redirected(cache_path))
+
+    def _load(cache_path=default_path, *, serial=None):
+        return original_load(_redirected(cache_path), serial=serial)
+
+    monkeypatch.setattr(settings_cache, "save_all_camera_settings", _save_all)
+    monkeypatch.setattr(settings_cache, "save_camera_settings", _save)
+    monkeypatch.setattr(settings_cache, "load_camera_settings", _load)
+
+
 @pytest.fixture(scope="session")
 def canonical_user_profiles_template(tmp_path_factory):
     """A freshly generated "default" profile to copy per test, or None if it can't be made.

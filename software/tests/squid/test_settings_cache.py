@@ -345,3 +345,95 @@ def test_save_all_leaves_cache_untouched_when_no_camera_readable(tmp_path, monke
     save_all_camera_settings({1: broken}, cache_path=cache)
 
     assert cache.read_text() == original
+
+
+# ---------------------------------------------------------------------------
+# White balance gains
+# ---------------------------------------------------------------------------
+
+
+def test_white_balance_gains_round_trip(tmp_path, monkeypatch):
+    """A colour camera's gains survive a save/load cycle."""
+    from squid.camera.settings_cache import load_camera_settings, save_all_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    camera = _sim_with_serial("SN-COLOR")
+    monkeypatch.setattr(camera, "get_white_balance_gains", lambda: (25, -10, 40))
+
+    save_all_camera_settings({1: camera}, cache_path=cache)
+
+    assert load_camera_settings(serial="SN-COLOR", cache_path=cache).white_balance_gains == (25.0, -10.0, 40.0)
+
+
+def test_camera_without_white_balance_still_caches_other_settings(tmp_path, monkeypatch):
+    """A mono camera raises on white balance; binning and pixel format must survive."""
+    from squid.camera.settings_cache import load_camera_settings, save_all_camera_settings
+
+    def _raise():
+        raise RuntimeError("Not implemented")
+
+    cache = tmp_path / "camera_settings.yaml"
+    camera = _sim_with_serial("SN-MONO")
+    camera.set_binning(2, 2)
+    monkeypatch.setattr(camera, "get_white_balance_gains", _raise)
+
+    save_all_camera_settings({1: camera}, cache_path=cache)
+
+    settings = load_camera_settings(serial="SN-MONO", cache_path=cache)
+    assert settings.binning == (2, 2)
+    assert settings.white_balance_gains is None
+    assert "white_balance_gains" not in yaml.safe_load(cache.read_text())["cameras"]["SN-MONO"]
+
+
+def test_cache_without_white_balance_key_loads_as_none(tmp_path):
+    """Entries written before white balance was cached must still load."""
+    from squid.camera.settings_cache import load_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    cache.write_text("version: 2\ncameras:\n  SN1: {binning: [2, 2], pixel_format: MONO16}\n")
+
+    settings = load_camera_settings(serial="SN1", cache_path=cache)
+    assert settings.binning == (2, 2)
+    assert settings.white_balance_gains is None
+
+
+def test_malformed_white_balance_gains_are_ignored(tmp_path):
+    """Bad gains must not throw away the rest of the entry."""
+    from squid.camera.settings_cache import load_camera_settings
+
+    cache = tmp_path / "camera_settings.yaml"
+    cache.write_text("version: 2\ncameras:\n  SN1: {binning: [2, 2], white_balance_gains: [1, 2]}\n")
+
+    settings = load_camera_settings(serial="SN1", cache_path=cache)
+    assert settings is not None
+    assert settings.binning == (2, 2)
+    assert settings.white_balance_gains is None
+
+
+def test_cached_settings_rejects_wrong_length_gains():
+    from squid.camera.settings_cache import CachedCameraSettings
+
+    with pytest.raises(ValueError):
+        CachedCameraSettings(binning=(1, 1), pixel_format=None, white_balance_gains=(1.0, 2.0))
+
+
+def test_default_path_saves_never_touch_the_real_cache():
+    """The autouse isolation fixture must keep default-path writes off the machine's file.
+
+    Goes through the module attribute rather than an imported name, because that is how
+    the application calls it (and how the fixture's redirect is reached). Without the
+    fixture this test rewrites the developer's own cache/camera_settings.yaml.
+    """
+    import squid.camera.settings_cache as settings_cache
+
+    real_path = settings_cache._DEFAULT_CACHE_PATH
+    before = real_path.read_text() if real_path.exists() else None
+
+    camera = _sim_with_serial("SN-LEAK-CHECK")
+    settings_cache.save_all_camera_settings({1: camera})  # no cache_path -> the default
+
+    after = real_path.read_text() if real_path.exists() else None
+    assert after == before, "a default-path save reached the machine's real camera settings cache"
+
+    # ...and the save still worked, just somewhere harmless.
+    assert settings_cache.load_camera_settings(serial="SN-LEAK-CHECK") is not None
