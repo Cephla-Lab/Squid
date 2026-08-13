@@ -204,3 +204,100 @@ class TestContrastManagerWriteBack:
         # taken literally as uint16 values.
         converted = contrast.get_limits_for_dtype("BF", np.uint16)
         assert converted == pytest.approx((5140.0, 61680.0), rel=0.01)
+
+
+class TestRgbSaveAsPng:
+    """Colour layers are saved as PNG.
+
+    They cannot join the overview's (C, Y, X) OME-TIFF stack - a colour plane is
+    (H, W, 3) - so they are written alongside it instead of being dropped.
+    """
+
+    @staticmethod
+    def _snapshot(mono, rgb, per_well=False, plate=None):
+        snapshot = {
+            "mode": "plate",
+            "resolution_um": 5.0,
+            "channels": mono,
+            "rgb_channels": rgb,
+            "saved_at": "now",
+            "save_overview": True,
+            "save_per_well": per_well,
+        }
+        if plate:
+            snapshot["plate"] = plate
+        return snapshot
+
+    @staticmethod
+    def _sidecar(target):
+        import yaml
+
+        name = next(p for p in target.iterdir() if p.suffix == ".yaml")
+        return yaml.safe_load(name.read_text())
+
+    def test_rgb_layer_is_written_as_png_beside_the_mono_tiff(self, mosaic_widget, tmp_path):
+        widget, _ = mosaic_widget
+        mono = [("Fluorescence 405 nm Ex", np.zeros((8, 12), np.uint16))]
+        rgb = [("BF LED matrix full", np.zeros((8, 12, 3), np.uint8))]
+
+        widget._write_save_snapshot(str(tmp_path), self._snapshot(mono, rgb))
+
+        pngs = sorted(p.name for p in tmp_path.glob("*.png"))
+        assert pngs == ["mosaic_plate_5um_BF_LED_matrix_full.png"]
+        assert list(tmp_path.glob("*.ome.tiff")), "the mono stack must still be written"
+        sidecar = self._sidecar(tmp_path)
+        assert sidecar["rgb_channel_names"] == ["BF LED matrix full"]
+        assert sidecar["rgb_view_files"] == pngs
+
+    def test_colour_only_acquisition_still_saves(self, mosaic_widget, tmp_path):
+        """Previously this produced nothing: no mono layers meant the save was skipped."""
+        widget, _ = mosaic_widget
+        rgb = [("BF LED matrix full", np.zeros((8, 12, 3), np.uint8))]
+
+        widget._write_save_snapshot(str(tmp_path), self._snapshot([], rgb))
+
+        assert list(tmp_path.glob("*.png"))
+        assert not list(tmp_path.glob("*.ome.tiff")), "nothing to stack, so no TIFF"
+        assert self._sidecar(tmp_path)["channel_names"] == []
+
+    def test_mono_only_save_is_unchanged(self, mosaic_widget, tmp_path):
+        widget, _ = mosaic_widget
+        mono = [("Fluorescence 405 nm Ex", np.zeros((8, 12), np.uint16))]
+
+        widget._write_save_snapshot(str(tmp_path), self._snapshot(mono, []))
+
+        assert list(tmp_path.glob("*.ome.tiff"))
+        assert not list(tmp_path.glob("*.png"))
+        sidecar = self._sidecar(tmp_path)
+        assert "rgb_channel_names" not in sidecar
+        assert "rgb_view_files" not in sidecar
+
+    def test_png_keeps_channel_order(self, mosaic_widget, tmp_path):
+        """squid holds colour as RGB and cv2 writes BGR, so the conversion must happen."""
+        import cv2
+
+        widget, _ = mosaic_widget
+        image = np.zeros((3, 4, 3), dtype=np.uint8)
+        image[0, :] = (255, 0, 0)  # red
+        image[2, :] = (0, 0, 255)  # blue
+
+        widget._write_save_snapshot(str(tmp_path), self._snapshot([], [("BF", image)]))
+
+        written = next(tmp_path.glob("*.png"))
+        read_back = cv2.cvtColor(cv2.imread(str(written), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+        assert np.array_equal(read_back, image), "red and blue must not be swapped"
+
+    def test_per_well_writes_a_png_per_well(self, mosaic_widget, tmp_path):
+        widget, _ = mosaic_widget
+        mono = [("Fluorescence 405 nm Ex", np.zeros((8, 12), np.uint16))]
+        rgb = [("BF LED matrix full", np.zeros((8, 12, 3), np.uint8))]
+        plate = {"well_slot_shape_px": [4, 6], "well_ids": ["A1", "A2"]}
+
+        widget._write_save_snapshot(str(tmp_path), self._snapshot(mono, rgb, per_well=True, plate=plate))
+
+        wells = tmp_path / "wells"
+        assert sorted(p.name for p in wells.glob("*.png")) == [
+            "A1_5um_BF_LED_matrix_full.png",
+            "A2_5um_BF_LED_matrix_full.png",
+        ]
+        assert sorted(p.name for p in wells.glob("*.tiff")) == ["A1_5um.tiff", "A2_5um.tiff"]

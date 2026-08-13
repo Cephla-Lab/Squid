@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
 import tifffile
 import yaml
@@ -870,20 +871,24 @@ class UnifiedMosaicWidget(QWidget):
         if resolution_um is None:
             self._log.warning("Save skipped: viewer_pixel_size_mm is unset.")
             return None
+        # Mono and colour are separated here because they leave by different routes: the
+        # mono channels are stacked into one (C, Y, X) OME-TIFF, which an (H, W, 3) colour
+        # layer cannot join, so colour layers are written as PNGs instead.
         channels = []
+        rgb_channels = []
         for layer in self._image_layers():
             if layer.data.ndim == 3 and layer.data.shape[2] == 3:
-                # Defer RGB save support — see plan R7.
-                self._log.warning(f"Skipping RGB layer '{layer.name}' from save (not supported yet).")
+                rgb_channels.append((layer.name, np.array(layer.data, copy=True)))
                 continue
             channels.append((layer.name, np.array(layer.data, copy=True)))
-        if not channels:
-            self._log.warning("Save skipped: no monochrome image layers present.")
+        if not channels and not rgb_channels:
+            self._log.warning("Save skipped: no image layers present.")
             return None
         snapshot = {
             "mode": self.mode.value,
             "resolution_um": resolution_um,
             "channels": channels,
+            "rgb_channels": rgb_channels,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             # Capture the flag values now so toggling them between snapshot and
             # write doesn't leave the sidecar describing one thing and the
@@ -917,14 +922,24 @@ class UnifiedMosaicWidget(QWidget):
             resolution_um = snapshot["resolution_um"]
             res_tag = f"{int(round(resolution_um))}um"
             channels = snapshot["channels"]
+            rgb_channels = snapshot.get("rgb_channels") or []
             channel_names = [name for name, _ in channels]
-            sidecar = {k: v for k, v in snapshot.items() if k != "channels"}
+            sidecar = {k: v for k, v in snapshot.items() if k not in ("channels", "rgb_channels")}
             sidecar["channel_names"] = channel_names
+            if rgb_channels:
+                sidecar["rgb_channel_names"] = [name for name, _ in rgb_channels]
 
             save_overview = snapshot["save_overview"]
             save_per_well = snapshot["save_per_well"] and mode == DisplayMode.PLATE.value
 
-            if save_overview:
+            if save_overview and rgb_channels:
+                sidecar["rgb_view_files"] = self._write_rgb_pngs(
+                    target_dir, rgb_channels, f"mosaic_{mode}_{res_tag}", resolution_um
+                )
+
+            # Guarded on `channels`: a colour-only acquisition has nothing to stack, and
+            # np.stack would raise on the empty list.
+            if save_overview and channels:
                 stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
                 whole_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.ome.tiff")
                 tifffile.imwrite(
@@ -953,21 +968,60 @@ class UnifiedMosaicWidget(QWidget):
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
 
+    def _write_rgb_pngs(self, target_dir: str, rgb_channels: list, name_prefix: str, resolution_um: float) -> List[str]:
+        """Write each colour layer as its own PNG and return the filenames written.
+
+        PNG rather than a channel of the OME-TIFF: that stack is (C, Y, X) with one plane
+        per channel, which an (H, W, 3) colour image cannot be a member of. One file per
+        colour layer keeps the colour together and stays readable anywhere.
+
+        The pixel size cannot be carried inside a PNG, so it is only recorded in the YAML
+        sidecar alongside the mono TIFF's - a consumer needs the sidecar to scale these.
+        """
+        written = []
+        for name, data in rgb_channels:
+            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+            path = os.path.join(target_dir, f"{name_prefix}_{safe_name}.png")
+            # squid holds colour frames as RGB; cv2 writes the array as BGR.
+            bgr = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
+            if not cv2.imwrite(path, bgr):
+                self._log.error(f"Failed to write RGB layer '{name}' to {path}")
+                continue
+            written.append(os.path.basename(path))
+            self._log.info(f"Saved RGB view: {path} ({data.shape}, {resolution_um:.3f} um/px)")
+        return written
+
     def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
         """Plate-mode helper: crop each well's slot from the channel stack and
-        write one multi-channel TIFF per well."""
+        write one multi-channel TIFF per well. Colour layers are cropped the same way but
+        written as one PNG per well per layer, for the same reason as the whole view."""
         plate = snapshot.get("plate") or {}
         slot_h, slot_w = plate.get("well_slot_shape_px", (0, 0))
         if slot_h == 0 or slot_w == 0:
             return
         wells_dir = os.path.join(target_dir, "wells")
         ensure_directory_exists(wells_dir)
+        rgb_channels = snapshot.get("rgb_channels") or []
         for well_id in plate.get("well_ids", []):
             try:
                 row, col = parse_well_id(well_id)
             except (ValueError, TypeError):
                 self._log.warning(f"Skipping per-well save for unparseable well_id '{well_id}'")
                 continue
+
+            if rgb_channels:
+                y_start = row * slot_h
+                x_start = col * slot_w
+                well_rgb = [
+                    (name, data[y_start : y_start + slot_h, x_start : x_start + slot_w]) for name, data in rgb_channels
+                ]
+                self._write_rgb_pngs(
+                    wells_dir,
+                    [(name, crop) for name, crop in well_rgb if crop.size],
+                    f"{well_id}_{res_tag}",
+                    snapshot["resolution_um"],
+                )
+
             crops = []
             for _, data in snapshot["channels"]:
                 y_start = row * slot_h
