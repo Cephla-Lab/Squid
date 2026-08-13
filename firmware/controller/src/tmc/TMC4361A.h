@@ -80,6 +80,18 @@ typedef struct
   float    r_sense;             /* TMC2660 only, ohms */
   uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
   uint8_t  driver_toff;         /* cached TOFF so enable() can restore it */
+  /* The raw 32-bit word of the LAST cover read tmc_driver_probe() performed,
+     kept whatever the verdict was. Diagnostic only — nothing branches on it.
+
+     It exists because two open questions about the probe can only be closed by
+     looking at the bytes a real driver returns: whether a live TMC2660 can read
+     all-zeros (the liveness rule would then declare a working axis
+     DRIVER_UNKNOWN and refuse its moves) and whether a 2660 reply can carry
+     0x40 in byte [31:24] (it would then misdetect as a TMC2240, the one
+     genuinely unsafe direction). Neither is visible in driver_type. Task 7
+     emits this over the packet protocol so the answer is a log read on any
+     machine rather than a special build. */
+  uint32_t driver_probe_raw;
   /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
      read-modify-write sources from here. See design §6.3. */
   uint32_t tmc2240_shadow[TMC2240_SHADOW_COUNT];

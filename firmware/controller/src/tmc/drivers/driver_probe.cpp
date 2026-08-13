@@ -83,7 +83,23 @@ uint8_t tmc_driver_probe(TMC4361ATypeDef *tmc4361A)
     uint8_t votes_2660 = 0;
 
     for (uint8_t i = 0; i < PROBE_READS; i++) {
-        switch (classify_response(tmc2240_cover_read(tmc4361A, TMC2240_REG_IOIN))) {
+        uint32_t response = tmc2240_cover_read(tmc4361A, TMC2240_REG_IOIN);
+
+        /* Keep the LAST read verbatim. Two things about this design can only be
+           settled by looking at the raw word on real silicon — whether a live
+           TMC2660 can read all-zeros (which would make the liveness rule brick
+           it) and whether a 2660 reply can carry 0x40 in byte [31:24] (which
+           would make it misdetect as a 2240) — and neither is answerable from
+           driver_type alone. Storing it makes that a log read on any machine in
+           the field instead of a one-off instrumented build, and keeps the
+           coincidence auditable for as long as the code ships.
+
+           The LAST read, not a "best" one: any selection rule would make this
+           field a summary rather than a measurement. If the three reads
+           disagree, driver_type is already DRIVER_UNKNOWN and says so. */
+        tmc4361A->driver_probe_raw = response;
+
+        switch (classify_response(response)) {
             case DRIVER_TMC2240: votes_2240++; break;
             case DRIVER_TMC2660: votes_2660++; break;
             default:                           break;
