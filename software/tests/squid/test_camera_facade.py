@@ -4,7 +4,7 @@ import squid.config
 from squid.abc import CameraAcquisitionMode, CameraFrame
 from squid.camera.facade import ActiveCameraFacade
 from squid.camera.utils import SimulatedCamera
-from squid.config import CameraPixelFormat, FlipVariant
+from squid.config import CameraPixelFormat
 
 
 def make_sim(serial, pixel_format=CameraPixelFormat.MONO16, hw=False):
@@ -128,30 +128,3 @@ def test_close_closes_all(cameras):
     facade = ActiveCameraFacade(cameras, active_id=1)
     facade.close()
     assert sorted(closed) == [1, 2]
-
-
-def test_display_to_sensor_displacement_follows_the_active_camera():
-    """Each camera can be mounted differently, so the correction must track the switch.
-
-    The facade owns no config of its own, so this also pins that it delegates rather
-    than falling through to the base implementation and its missing self._config.
-    """
-    cam1 = make_sim("SN1")
-    cam2 = make_sim("SN2")
-    # Same rotation, different flips - as on a rig where one sensor is mounted mirrored.
-    # The probe vector needs both components: these two flips differ only vertically.
-    cam1._config = cam1._config.model_copy(update={"rotate_image_angle": 90, "flip": FlipVariant.BOTH})
-    cam2._config = cam2._config.model_copy(update={"rotate_image_angle": 90, "flip": FlipVariant.HORIZONTAL})
-    try:
-        facade = ActiveCameraFacade({1: cam1, 2: cam2}, active_id=1)
-
-        assert facade.display_to_sensor_displacement(10.0, 4.0) == cam1.display_to_sensor_displacement(10.0, 4.0)
-
-        facade.set_active(2)
-        assert facade.display_to_sensor_displacement(10.0, 4.0) == cam2.display_to_sensor_displacement(10.0, 4.0)
-
-        # The two must genuinely differ, otherwise the assertions above prove nothing.
-        assert cam1.display_to_sensor_displacement(10.0, 4.0) != cam2.display_to_sensor_displacement(10.0, 4.0)
-    finally:
-        cam1.close()
-        cam2.close()

@@ -169,11 +169,6 @@ class ActiveCameraFacade(AbstractCamera):
     def get_crop_size(self) -> Tuple[int, int]:
         return self._active().get_crop_size()
 
-    def display_to_sensor_displacement(self, dx: float, dy: float) -> Tuple[float, float]:
-        # Must delegate: the base implementation reads self._config, which the facade
-        # does not have, and the rotation/flip differ per camera anyway.
-        return self._active().display_to_sensor_displacement(dx, dy)
-
     def get_fov_size_mm(self) -> float:
         return self._active().get_fov_size_mm()
 

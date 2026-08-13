@@ -110,46 +110,6 @@ def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional
     return ret_image
 
 
-def display_to_sensor_displacement(
-    dx: float, dy: float, rotate_image_angle: Optional[float], flip_image: Optional[FlipVariant]
-) -> Tuple[float, float]:
-    """Map a displacement read off the displayed image back onto raw sensor axes.
-
-    rotate_and_flip_image() is what turns a raw frame into what the user sees, so
-    anything that measures a position on screen - click to move, for one - is working in
-    rotated and flipped coordinates while the stage moves along sensor axes. This
-    inverts that transform.
-
-    Only a displacement is handled, not a point: the rotation and flip are both about
-    the image centre, so a centre-relative vector needs the linear part alone and no
-    translation. Sizes never enter into it, which is why nothing here takes an image
-    width or height.
-    """
-    # The flip is applied last on the way out, so it comes off first here. Each flip is
-    # its own inverse.
-    if flip_image is not None:
-        if flip_image == FlipVariant.VERTICAL:
-            dy = -dy
-        elif flip_image == FlipVariant.HORIZONTAL:
-            dx = -dx
-        elif flip_image == FlipVariant.BOTH:
-            dx, dy = -dx, -dy
-
-    # cv2 rotates clockwise about the centre with y running down the image, so the
-    # forward map for 90 is (x, y) -> (-y, x); these are its inverses.
-    if rotate_image_angle and rotate_image_angle != 0:
-        if rotate_image_angle == 90:
-            dx, dy = dy, -dx
-        elif rotate_image_angle == -90:
-            dx, dy = -dy, dx
-        elif rotate_image_angle == 180:
-            dx, dy = -dx, -dy
-        else:
-            raise ValueError(f"Unhandled rotation: {rotate_image_angle}")
-
-    return dx, dy
-
-
 def generate_dpc(im_left, im_right):
     # Normalize the images
     im_left = im_left.astype(float) / 255

@@ -5,12 +5,6 @@ import tempfile
 import threading
 import time
 
-import numpy as np
-import pytest
-
-from control.utils import display_to_sensor_displacement, rotate_and_flip_image
-from squid.config import FlipVariant
-
 
 def test_squid_repo_info():
     # At least make sure we get something and that it calls without issue.
@@ -218,46 +212,3 @@ def test_threaded_operation_helper():
     # Verify results
     assert operation_result == [("value1", "value2")]
     assert callback_result == [(True, None)]
-
-
-# ---------------------------------------------------------------------------
-# display_to_sensor_displacement
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("rotate", [None, 90, -90, 180])
-@pytest.mark.parametrize("flip", [None, FlipVariant.VERTICAL, FlipVariant.HORIZONTAL, FlipVariant.BOTH])
-@pytest.mark.parametrize("marker", [(0, 0), (1, 5), (4, 2), (2, 3)])
-def test_display_to_sensor_displacement_inverts_the_display_transform(rotate, flip, marker):
-    """Round-trip against the real transform rather than re-deriving the maths.
-
-    A pixel is marked in a raw frame, the frame is put through the display transform,
-    and the inverse must recover the mark's original centre-relative offset. Odd
-    dimensions keep the centre on an exact pixel.
-    """
-    height, width = 5, 7
-    row, col = marker
-    raw = np.zeros((height, width), dtype=np.uint8)
-    raw[row, col] = 255
-    expected = (col - (width - 1) / 2, row - (height - 1) / 2)
-
-    displayed = rotate_and_flip_image(raw, rotate, flip)
-    disp_h, disp_w = displayed.shape
-    disp_row, disp_col = (int(v) for v in np.argwhere(displayed == 255)[0])
-    seen = (disp_col - (disp_w - 1) / 2, disp_row - (disp_h - 1) / 2)
-
-    assert display_to_sensor_displacement(*seen, rotate, flip) == pytest.approx(expected)
-
-
-def test_display_to_sensor_displacement_is_identity_without_rotation_or_flip():
-    assert display_to_sensor_displacement(12.0, -7.0, None, None) == (12.0, -7.0)
-
-
-def test_display_to_sensor_displacement_swaps_axes_for_90():
-    """A 90 degree view turns a horizontal click into vertical stage travel."""
-    assert display_to_sensor_displacement(10.0, 0.0, 90, None) == (0.0, -10.0)
-
-
-def test_display_to_sensor_displacement_rejects_unhandled_rotation():
-    with pytest.raises(ValueError):
-        display_to_sensor_displacement(1.0, 1.0, 45, None)
