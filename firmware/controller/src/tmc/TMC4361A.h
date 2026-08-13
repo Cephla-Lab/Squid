@@ -67,10 +67,15 @@ typedef struct
   uint32_t dac_fullscale_msteps;
 
   /* --- Stepper driver identity and per-driver state (design M3/M4/M8) ---
-     driver_type is set once per axis by tmc_driver_probe() and cached here so
-     re-initialisation (callback_initialize, init_filterwheel_axis) does not
-     re-probe. It defaults to DRIVER_UNKNOWN, which fails safe: an axis that
-     was never probed rejects moves. */
+     driver_type is set per axis by tmc_driver_probe() and cached here, so
+     callback_initialize can re-init the drivers without re-probing.
+     NOTE: init_filterwheel_axis does NOT inherit a cached identity — it calls
+     tmc4361A_init() on its first line, which resets this field to
+     DRIVER_UNKNOWN, so that path must probe every time it runs. A second
+     INITFILTERWHEEL that skipped the probe would leave the wheel at
+     DRIVER_UNKNOWN and, by the fail-safe rule, rejecting all moves.
+     The DRIVER_UNKNOWN default is what makes that failure safe rather than
+     silent: an axis that was never probed rejects moves. */
   uint8_t  driver_type;
   float    r_sense;             /* TMC2660 only, ohms */
   uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
