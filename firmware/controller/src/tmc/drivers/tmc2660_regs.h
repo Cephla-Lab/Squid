@@ -14,7 +14,9 @@
 
   Register selector bits are [19:17]:
     DRVCTRL  000  (unused: SDOFF=1 means motion comes over SPI, not step/dir)
-    CHOPCONF 100  -> 0x080000, master writes 0x09xxxx (bit 16 set)
+    CHOPCONF 100  -> 0x080000 (master's words read 0x09xxxx because TBL bit 1,
+                               at bit 16, is set — that is a chopper field,
+                               not part of the address)
     SMARTEN  101  -> 0x0A0000
     SGCSCONF 110  -> 0x0C0000
     DRVCONF  111  -> 0x0E0000
@@ -26,29 +28,50 @@
 #define TMC2660_DRVCONF_ADDR  0x0E0000u
 #define TMC2660_SFILT         0x010000u
 
+/* CHOPCONF field positions. The [19:17] selector is already folded into
+   TMC2660_CHOPCONF_ADDR, so these are the chopper fields below it. */
+#define TMC2660_CHOPCONF_TOFF_SHIFT  0   /* [3:0]   */
+#define TMC2660_CHOPCONF_HSTRT_SHIFT 4   /* [6:4]   */
+#define TMC2660_CHOPCONF_HEND_SHIFT  7   /* [10:7]  */
+#define TMC2660_CHOPCONF_HDEC_SHIFT  11  /* [12:11] */
+#define TMC2660_CHOPCONF_RNDTF_SHIFT 13  /* [13]    */
+#define TMC2660_CHOPCONF_CHM_SHIFT   14  /* [14]    */
+#define TMC2660_CHOPCONF_TBL_SHIFT   15  /* [16:15] */
+
 /*
-  CHOPCONF: master writes 0x000900C3 to enable and 0x000900C0 to disable.
+  CHOPCONF: master writes 0x000900C3 to enable and 0x000900C0 to disable
+  (TMC4361A_TMC2660_Utils.cpp:462, :496, :521).
 
-  This word is NOT "address bits plus a magic tail" — every bit below the
-  selector is a named chopper field:
+  The body is spelled out as named fields rather than as master's opaque
+  constant, so the bit layout lives in code that the pinned tests check instead
+  of in a comment that can drift. Three prose-versus-silicon errors have already
+  been caught on this branch, every one of them in a comment sitting above
+  correct code; this removes a place for a fourth.
 
-    [19:17] 100    register select (CHOPCONF)
-    [16:15] TBL   = 2  blanking time (%10 -> 36 clocks)
-    [14]    CHM   = 0  standard (spreadCycle) chopper
-    [13]    RNDTF = 0  fixed chopper off time
-    [12:11] HDEC  = 0
-    [10:7]  HEND  = 1  hysteresis end; the field is offset by 3, so this is -2
-    [6:4]   HSTRT = 4  hysteresis start
-    [3:0]   TOFF  = the toff argument
+  Only TOFF is parameterised — it is the sole difference between the enable and
+  disable datagrams. Every other field is master's fixed chopper setting and
+  must not change without a bench thermal check (M5).
 
-  So the 0x010000 term is TBL bit 1 and 0x00C0 is HEND=1 | HSTRT=4. Anyone
-  parameterising blanking or hysteresis later must edit those fields — do not
-  read 0x010000 as part of the address and OR new bits onto the constant.
-  Only TOFF differs between the enable and disable datagrams.
+  HEND: the raw field value is 1, which is derived directly from master's bits
+  and is certain. The TMC26x family stores HEND with a +3 offset (%0000 = -3
+  ... %1111 = 12), so raw 1 means a hysteresis end of -2; that reading depends
+  on the offset convention rather than on our bits. It is the same convention
+  tmc2240_chopconf_value applies when it computes hend + 3. Note the asymmetry
+  between the two builders: this one takes no hysteresis argument and therefore
+  carries the RAW field value, whereas tmc2240_chopconf_value takes the
+  offset-free value and adds the 3 itself.
 */
 static inline uint32_t tmc2660_chopconf_datagram(uint8_t toff)
 {
-    return TMC2660_CHOPCONF_ADDR | 0x010000u | 0x00C0u | (uint32_t)(toff & 0x0Fu);
+    return TMC2660_CHOPCONF_ADDR                 /* [19:17] 100         CHOPCONF selector    */
+         | (2u << TMC2660_CHOPCONF_TBL_SHIFT)    /* [16:15] TBL   = 2   36-clock blanking    */
+         | (0u << TMC2660_CHOPCONF_CHM_SHIFT)    /* [14]    CHM   = 0   spreadCycle chopper  */
+         | (0u << TMC2660_CHOPCONF_RNDTF_SHIFT)  /* [13]    RNDTF = 0   fixed chopper off    */
+         | (0u << TMC2660_CHOPCONF_HDEC_SHIFT)   /* [12:11] HDEC  = 0                        */
+         | (1u << TMC2660_CHOPCONF_HEND_SHIFT)   /* [10:7]  HEND  = 1   raw; -2 after offset */
+         | (4u << TMC2660_CHOPCONF_HSTRT_SHIFT)  /* [6:4]   HSTRT = 4                        */
+         | ((uint32_t)(toff & 0x0Fu) << TMC2660_CHOPCONF_TOFF_SHIFT);
+                                                 /* [3:0]   TOFF  = the toff argument        */
 }
 
 /* SMARTEN: master writes 0x000A0000 — CoolStep disabled. */
