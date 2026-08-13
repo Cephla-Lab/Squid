@@ -120,13 +120,18 @@ int16_t tmc2660_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensi
     if (sensitivity < -64) sensitivity = -64;
     if (vstall_lim > ((1UL << 24) - 1)) vstall_lim = (1UL << 24) - 1;
 
-    /* Master ORed cscaleParam[CSCALE_IDX] in unmasked; the builder masks it to
-       the 5-bit CS field. Identical for every value the field can hold, and the
-       only call sites run at boot with the compile-time default currents, where
-       CS = 29. Above 31 master was ORing into SGCSCONF's reserved bits [7:5],
-       which is not behavior worth reproducing. */
-    uint32_t datagram = tmc2660_sgcsconf_datagram(
-        (uint8_t)tmc4361A->cscaleParam[CSCALE_IDX], sensitivity, filter_en);
+    /* Master ORs cscaleParam[CSCALE_IDX] in UNMASKED. Build the SGT/SFILT part
+       with cs = 0 and OR the raw value, so a cs above 31 reproduces master's
+       word exactly. cs > 31 is reachable: callback_configure_stepper_driver
+       accepts a u16 milliamp value, and the current formula stores whatever
+       uint8_t it yields. Passing the raw value through the masking builder
+       would silently change SGCSCONF on X/Y.
+
+       Same reasoning as tmc4361A_cScaleInit, which also ORs unmasked. The two
+       SGCSCONF writers must agree; if one masks and the other does not, the
+       word an axis ends up with depends on which ran last. */
+    uint32_t datagram = tmc2660_sgcsconf_datagram(0, sensitivity, filter_en);
+    datagram |= (uint32_t)tmc4361A->cscaleParam[CSCALE_IDX];
     tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, (int32_t)datagram);
 
     /* TMC4361A-side stall reaction is driver-agnostic and stays here so both
