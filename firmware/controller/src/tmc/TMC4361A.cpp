@@ -29,6 +29,7 @@
 */
 
 #include "TMC4361A.h"
+#include "drivers/stepper_driver.h"
 
 // => SPI wrapper
 // Send [length] bytes stored in the [data] array over SPI and overwrite [data]
@@ -153,6 +154,15 @@ void tmc4361A_init(TMC4361ATypeDef *tmc4361A, uint8_t channel, ConfigurationType
   tmc4361A->config    = config;
   tmc4361A->velocity_mode = false;
 
+  // Stepper driver identity and per-driver state. Reset on every path that
+  // brings an axis up: the boot loop in init.cpp and init_filterwheel_axis()
+  // in commands.cpp both route through here, and each follows this call with
+  // driver init, which is where the probe will set driver_type.
+  tmc4361A->driver_type   = DRIVER_UNKNOWN;
+  tmc4361A->r_sense       = 0.0f;
+  tmc4361A->current_range = 0;
+  tmc4361A->driver_toff   = 3;
+
   tmc4361A->config->callback     = NULL;
   tmc4361A->config->channel      = channel;
   tmc4361A->config->configIndex  = 0;
@@ -169,6 +179,13 @@ void tmc4361A_init(TMC4361ATypeDef *tmc4361A, uint8_t channel, ConfigurationType
   }
   for (i = 0; i < N_CPARAM; i++) {
     tmc4361A->cscaleParam[i] = 0;
+  }
+  // Zeroed, not seeded with the chip's reset defaults, and that is deliberate:
+  // a zeroed CHOPCONF means TOFF = 0, so any read-modify-write that somehow
+  // runs before tmc2240_driver_init() populates the shadow leaves the driver
+  // off rather than energised at an unknown current.
+  for (i = 0; i < TMC2240_SHADOW_COUNT; i++) {
+    tmc4361A->tmc2240_shadow[i] = 0;
   }
 }
 

@@ -13,6 +13,9 @@
 #include "TMC4361A_Register.h"
 #include "TMC4361A_Constants.h"
 #include "TMC4361A_Fields.h"
+// For TMC2240_SHADOW_COUNT, which sizes the per-axis shadow array below.
+// This header pulls in <stdint.h> only, so it cannot cycle back into this one.
+#include "drivers/tmc2240_regs.h"
 
 // Constants for indexing ramp parameter array
 #define N_RPARAM   9
@@ -62,7 +65,20 @@ typedef struct
   bool velocity_mode;
   uint8_t dac_idx;
   uint32_t dac_fullscale_msteps;
-  
+
+  /* --- Stepper driver identity and per-driver state (design M3/M4/M8) ---
+     driver_type is set once per axis by tmc_driver_probe() and cached here so
+     re-initialisation (callback_initialize, init_filterwheel_axis) does not
+     re-probe. It defaults to DRIVER_UNKNOWN, which fails safe: an axis that
+     was never probed rejects moves. */
+  uint8_t  driver_type;
+  float    r_sense;             /* TMC2660 only, ohms */
+  uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
+  uint8_t  driver_toff;         /* cached TOFF so enable() can restore it */
+  /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
+     read-modify-write sources from here. See design §6.3. */
+  uint32_t tmc2240_shadow[TMC2240_SHADOW_COUNT];
+
   //TMotorConfig motorConfig;
   //TClosedLoopConfig closedLoopConfig;
   uint8_t status;
