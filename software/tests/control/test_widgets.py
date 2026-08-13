@@ -2689,12 +2689,33 @@ def test_update_coordinates_leaves_loaded_plan_untouched():
         entry_overlap=MagicMock(),
         combobox_shape=MagicMock(),
         scanCoordinates=MagicMock(),
+        has_loaded_coordinates=True,
     )
 
     control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
 
     fake.scanCoordinates.clear_regions.assert_not_called()
     fake.scanCoordinates.set_well_coordinates.assert_not_called()
+
+
+def test_update_coordinates_derives_from_wells_when_no_plan_loaded():
+    # Re-applying an acquisition YAML recorded in Load Coordinates mode ticks wells
+    # and calls update_coordinates with no CSV plan loaded; regions must still be
+    # derived from the ticked wells (pre-existing behavior), not left stale.
+    fake = SimpleNamespace(
+        tab_widget=None,
+        checkbox_xy=MagicMock(isChecked=MagicMock(return_value=True)),
+        combobox_xy_mode=MagicMock(currentText=MagicMock(return_value="Load Coordinates")),
+        entry_scan_size=MagicMock(),
+        entry_overlap=MagicMock(),
+        combobox_shape=MagicMock(),
+        scanCoordinates=MagicMock(),
+        has_loaded_coordinates=False,
+    )
+
+    control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
+
+    fake.scanCoordinates.set_well_coordinates.assert_called_once()
 
 
 def test_dead_save_clear_toggle_machinery_removed():
