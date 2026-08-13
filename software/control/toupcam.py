@@ -2014,8 +2014,11 @@ class Toupcam:
             raise HRESULTException(0x80070057)
 
     def put_InitWBGain(self, v):
+        # Local fix to the vendor file: this built a c_short array while
+        # Toupcam_put_InitWBGain is declared as taking c_ushort * 3 (see __initlib),
+        # so ctypes rejected every call with a TypeError before it reached the DLL.
         if len(v) == 3:
-            a = (ctypes.c_short * 3)(v[0], v[1], v[2])
+            a = (ctypes.c_ushort * 3)(v[0], v[1], v[2])
             self.__lib.Toupcam_put_InitWBGain(self.__h, a)
         else:
             raise HRESULTException(0x80070057)

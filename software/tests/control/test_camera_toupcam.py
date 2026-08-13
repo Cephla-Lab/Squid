@@ -49,6 +49,14 @@ class FakeToupcamHandle:
     def get_WhiteBalanceGain(self):
         return (11, 22, 33)
 
+    def put_WhiteBalanceGain(self, gains):
+        # The real SDK declares this as c_int * 3, so ctypes raises on a float. Model that,
+        # otherwise a driver that forwards floats looks fine here and fails on hardware.
+        for g in gains:
+            if not isinstance(g, int):
+                raise TypeError("'float' object cannot be interpreted as an integer")
+        self.white_balance_gains = tuple(gains)
+
 
 class FakeDeviceSpec:
     def __init__(
@@ -101,6 +109,9 @@ class FakeToupcamSdk:
     def __init__(self, specs: List[FakeDeviceSpec]):
         self._specs = specs
         self.open_calls: List[str] = []
+        # Full camId strings, suffixes and all.  open_calls keeps just the device id, so
+        # tests about *which* device was opened stay readable.
+        self.open_camids: List[str] = []
         self.handles: Dict[str, FakeToupcamHandle] = {}
         sdk = self
 
@@ -111,12 +122,17 @@ class FakeToupcamSdk:
 
             @staticmethod
             def Open(cam_id):
-                sdk.open_calls.append(cam_id)
-                spec = next((s for s in sdk._specs if s.device_id == cam_id), None)
+                # Toupcam_Open takes ";key=value" options appended to the camId (eg the
+                # ";wb=rgb" that selects RGB gain white balance), so the device id is only
+                # the part before the first ";".
+                sdk.open_camids.append(cam_id)
+                device_id = cam_id.split(";", 1)[0] if cam_id else cam_id
+                sdk.open_calls.append(device_id)
+                spec = next((s for s in sdk._specs if s.device_id == device_id), None)
                 if spec is None or not spec.openable:
                     return None
                 handle = FakeToupcamHandle(spec.device_id, spec.serial, spec.serial_raises)
-                sdk.handles[cam_id] = handle
+                sdk.handles[device_id] = handle
                 return handle
 
         self.Toupcam = _FakeToupcam
@@ -157,6 +173,45 @@ def test_open_index_zero_opens_first_device(fake_sdk):
     assert camera is sdk.handles["port-a"]
     assert sdk.open_calls == ["port-a"]  # no probing when an index is given
     assert capabilities.binning_to_resolution == {(1, 1): (3000, 2000), (2, 2): (1500, 1000)}
+
+
+def test_open_color_camera_selects_rgb_gain_white_balance(fake_sdk):
+    """A color camera must be opened in RGB gain mode.
+
+    The SDK fixes the white balance mode at open time and the two modes are mutually
+    exclusive, so without the suffix the whole RGB gain API this driver uses (AwbInit,
+    get/put_WhiteBalanceGain) answers "not implemented".
+    """
+    sdk = fake_sdk([FakeDeviceSpec("port-a", serial="SN-A", flag=0)])
+
+    ToupcamCamera._open(index=0)
+
+    assert sdk.open_camids == ["port-a;wb=rgb"]
+
+
+def test_open_mono_camera_has_no_white_balance_suffix(fake_sdk):
+    """Mono cameras have no white balance at all, so they are opened plain."""
+    sdk = fake_sdk([FakeDeviceSpec("port-a", serial="SN-A", flag=real_toupcam.TOUPCAM_FLAG_MONO)])
+
+    _, capabilities = ToupcamCamera._open(index=0)
+
+    assert capabilities.is_mono
+    assert sdk.open_camids == ["port-a"]
+
+
+def test_open_by_serial_probe_keeps_rgb_gain_handle(fake_sdk):
+    """The handle kept from serial probing must already be in RGB gain mode.
+
+    Probing opens each device to read its serial and hands the matching handle back to
+    the caller, so it has to be opened the same way _open would open it.
+    """
+    sdk = fake_sdk([FakeDeviceSpec("port-a", serial="SN-A"), FakeDeviceSpec("port-b", serial="SN-B")])
+
+    camera, _ = ToupcamCamera._open(sn="SN-B")
+
+    assert camera is sdk.handles["port-b"]
+    assert sdk.open_camids == ["port-a;wb=rgb", "port-b;wb=rgb"]
+    assert sdk.open_camids.count("port-b;wb=rgb") == 1, "the matched device must not be reopened"
 
 
 def test_open_index_one_opens_second_device(fake_sdk):
@@ -412,6 +467,27 @@ def test_set_auto_white_balance_gains_on_triggers_sdk_awb():
 
     assert camera._camera.awb_init_calls == 1
     assert result == (11, 22, 33)
+
+
+def test_set_white_balance_gains_accepts_floats():
+    """Cached gains come back off disk as floats; the SDK only takes ints.
+
+    AbstractCamera types these parameters as float, and the settings cache round-trips
+    them through YAML, so the driver must convert rather than forward them.
+    """
+    camera = _camera_with_fake_handle()
+
+    camera.set_white_balance_gains(0.0, -63.0, -42.0)
+
+    assert camera._camera.white_balance_gains == (0, -63, -42)
+
+
+def test_set_white_balance_gains_rounds_rather_than_truncates():
+    camera = _camera_with_fake_handle()
+
+    camera.set_white_balance_gains(-62.6, 10.4, 2.5)
+
+    assert camera._camera.white_balance_gains == (-63, 10, 2)
 
 
 def test_set_auto_white_balance_gains_off_does_not_trigger_awb():

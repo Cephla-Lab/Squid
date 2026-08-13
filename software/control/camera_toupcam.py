@@ -267,6 +267,25 @@ class ToupcamCamera(AbstractCamera):
             is_mono=(device.model.flag & toupcam.TOUPCAM_FLAG_MONO) > 0,
         )
 
+    # Opens the camera in RGB gain white balance mode.  The SDK fixes the white balance
+    # mode at open time and the two modes are mutually exclusive, so this has to be part
+    # of the camId string handed to Toupcam_Open - it cannot be switched afterwards.
+    WB_RGB_OPEN_SUFFIX = ";wb=rgb"
+
+    @staticmethod
+    def _open_id_for_device(device: toupcam.ToupcamDeviceV2) -> str:
+        """
+        The camId string to open `device` with.
+
+        Color cameras get the RGB gain white balance mode appended.  Without it the SDK
+        serves Temp/Tint white balance instead, and the whole RGB gain API this driver
+        uses (AwbInit, get/put_WhiteBalanceGain) reports "not implemented".  Mono cameras
+        have no white balance at all, so they are opened plain.
+        """
+        if device.model.flag & toupcam.TOUPCAM_FLAG_MONO:
+            return device.id
+        return device.id + ToupcamCamera.WB_RGB_OPEN_SUFFIX
+
     @staticmethod
     def _resolve_sn_to_index(
         devices: Sequence[toupcam.ToupcamDeviceV2], sn: str
@@ -295,7 +314,9 @@ class ToupcamCamera(AbstractCamera):
         descriptions = []
         for idx, device in enumerate(devices):
             try:
-                camera = toupcam.Toupcam.Open(device.id)
+                # Opened the same way _open would, so the handle we keep for the match is
+                # already in the right white balance mode and never needs reopening.
+                camera = toupcam.Toupcam.Open(ToupcamCamera._open_id_for_device(device))
             except Exception:
                 log.exception(f"Failed to open toupcam device {idx} (id={device.id}) while probing serial numbers.")
                 camera = None
@@ -376,7 +397,7 @@ class ToupcamCamera(AbstractCamera):
         try:
             capabilities = ToupcamCamera._capabilities_for_device(device)
             if camera is None:
-                camera = toupcam.Toupcam.Open(device.id)
+                camera = toupcam.Toupcam.Open(ToupcamCamera._open_id_for_device(device))
             if camera is None:
                 raise ValueError(f"Failed to open Toupcam device {index} (id={device.id}).  Is it in use already?")
         except Exception:
@@ -1091,7 +1112,10 @@ class ToupcamCamera(AbstractCamera):
         return self._camera.get_WhiteBalanceGain()
 
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
-        self._camera.put_WhiteBalanceGain((red_gain, green_gain, blue_gain))
+        # The SDK takes integer gains (c_int * 3) and ctypes rejects floats outright, but
+        # AbstractCamera types these as float and cached gains come back off disk as
+        # floats, so round rather than hand them straight through.
+        self._camera.put_WhiteBalanceGain((round(red_gain), round(green_gain), round(blue_gain)))
 
     def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
         """
