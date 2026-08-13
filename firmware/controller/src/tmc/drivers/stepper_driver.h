@@ -32,7 +32,8 @@ static inline const char *tmc_driver_name(uint8_t driver_type)
    anything other than TMC_SPIOUT_CONF_2660 on a 2660 axis silently violates M5.
 
    Verified against master: TMC_SPIOUT_CONF_2660 is the exact word written at
-   TMC4361A_TMC2660_Utils.cpp:460. The COVER_DATA_LENGTH field is SPIOUT_CONF
+   master 856bc0ee TMC4361A_TMC2660_Utils.cpp:460 (that file is TMC4361A_Utils.cpp
+   here; the line numbers below are master's). The COVER_DATA_LENGTH field is SPIOUT_CONF
    bits [19:13] (TMC4361A_Fields.h:258-259): 0 in the 2660 word ("set to 0 for
    TMCx drivers"), 40 in both 40-bit words below. SPI_OUTPUT_FORMAT is bits
    [3:0] (TMC4361A_Fields.h:192-197).

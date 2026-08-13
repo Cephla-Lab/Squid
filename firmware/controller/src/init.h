@@ -5,7 +5,7 @@
 #include <SPI.h>
 
 #include "tmc/TMC4361A.h"
-#include "tmc/TMC4361A_TMC2660_Utils.h"
+#include "tmc/TMC4361A_Utils.h"
 
 #include "globals.h"
 #include "functions.h"

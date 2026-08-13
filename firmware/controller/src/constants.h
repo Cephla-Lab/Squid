@@ -20,7 +20,7 @@
 
 #include "def/def_v1.h"
 
-#include "tmc/TMC4361A_TMC2660_Utils.h"
+#include "tmc/TMC4361A_Utils.h"
 
 // default axes, such as X,Y,Z
 #define STAGE_AXES 3

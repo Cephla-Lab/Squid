@@ -88,7 +88,7 @@
       tmc4361A_adjustBows:              Sets shared bow values based on velocity and acceleration
           Arguments: TMC4361ATypeDef *tmc4361A
 */
-#include "TMC4361A_TMC2660_Utils.h"
+#include "TMC4361A_Utils.h"
 
 /*
   -----------------------------------------------------------------------------

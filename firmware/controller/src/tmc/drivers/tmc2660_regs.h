@@ -40,7 +40,8 @@
 
 /*
   CHOPCONF: master writes 0x000900C3 to enable and 0x000900C0 to disable
-  (TMC4361A_TMC2660_Utils.cpp:462, :496, :521).
+  (master 856bc0ee TMC4361A_TMC2660_Utils.cpp:462, :496, :521 — the same file is
+  TMC4361A_Utils.cpp here, and those bodies now delegate to drivers/tmc2660.cpp).
 
   The body is spelled out as named fields rather than as master's opaque
   constant, so the bit layout lives in code that the pinned tests check instead

@@ -7,8 +7,8 @@
 
     With additions and modifications from Hongquan Li 8/3/2022
 */
-#ifndef TMC_UTILS_H_
-#define TMC_UTILS_H_
+#ifndef TMC4361A_UTILS_H_
+#define TMC4361A_UTILS_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -118,4 +118,4 @@ void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A);
 void tmc4361A_setSRampParam(TMC4361ATypeDef *tmc4361A, uint8_t idx, int32_t param);
 void tmc4361A_adjustBows(TMC4361ATypeDef *tmc4361A);
 
-#endif /* TMC_UTILS_H_ */
+#endif /* TMC4361A_UTILS_H_ */

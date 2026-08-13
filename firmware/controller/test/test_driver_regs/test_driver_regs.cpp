@@ -7,7 +7,8 @@ void tearDown(void) {}
 
 // ---------------------------------------------------------------------------
 // TMC2660 — these four datagrams are byte-for-byte what master writes in
-// tmc4361A_tmc2660_init (TMC4361A_TMC2660_Utils.cpp:462-465). Any change here
+// tmc4361A_tmc2660_init (master 856bc0ee TMC4361A_TMC2660_Utils.cpp:462-465,
+// now drivers/tmc2660.cpp: tmc2660_driver_init). Any change here
 // changes the behavior of every fielded 2660 board (design M5).
 // ---------------------------------------------------------------------------
 void test_tmc2660_init_datagrams_match_master(void) {
