@@ -2295,10 +2295,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
-        from control.core.config import ConfigRepository
-
-        config_repo = ConfigRepository()
-        dialog = widgets.IlluminationChannelConfiguratorDialog(config_repo, self)
+        dialog = widgets.IlluminationChannelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
@@ -2310,7 +2307,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def openAdvancedChannelMapping(self):
         """Open the advanced channel hardware mapping dialog"""
-        dialog = widgets.AdvancedChannelMappingDialog(self.microscope.config_repo, self)
+        dialog = widgets.ControllerPortMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

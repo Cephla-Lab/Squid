@@ -373,13 +373,22 @@ class ConfigRepository:
     # Global hardware configuration (cached indefinitely)
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def get_illumination_config(self) -> Optional[IlluminationChannelConfig]:
-        """Load illumination channel configuration (cached)."""
+    def get_illumination_config(self, for_edit: bool = False) -> Optional[IlluminationChannelConfig]:
+        """Load illumination channel configuration (cached).
+
+        Args:
+            for_edit: When True, return a deep copy safe to mutate. Editors must
+                work on a copy and publish through save_illumination_config() so
+                unsaved edits never leak into the shared cache.
+        """
         cache_key = "illumination"
         if cache_key not in self._machine_cache:
             path = self.machine_configs_path / "illumination_channel_config.yaml"
             self._machine_cache[cache_key] = self._load_yaml(path, IlluminationChannelConfig)
-        return self._machine_cache[cache_key]
+        config = self._machine_cache[cache_key]
+        if for_edit and config is not None:
+            return config.model_copy(deep=True)
+        return config
 
     def get_confocal_config(self) -> Optional[ConfocalConfig]:
         """
@@ -410,6 +419,22 @@ class ConfigRepository:
         path = self.machine_configs_path / "illumination_channel_config.yaml"
         self._save_yaml(path, config)
         self._machine_cache["illumination"] = config
+
+    def update_port_mapping(self, mapping: Dict[str, int]) -> bool:
+        """Replace controller_port_mapping and save, leaving channels untouched.
+
+        Read-modify-write on the current cached config, so a mapping edit cannot
+        clobber channel edits saved since the caller loaded its snapshot.
+
+        Returns:
+            True if saved, False if no illumination config exists.
+        """
+        config = self.get_illumination_config(for_edit=True)
+        if config is None:
+            return False
+        config.controller_port_mapping = dict(mapping)
+        self.save_illumination_config(config)
+        return True
 
     def save_confocal_config(self, config: ConfocalConfig) -> None:
         """Save confocal configuration and update cache."""
