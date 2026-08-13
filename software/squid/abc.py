@@ -685,6 +685,19 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         return image
 
+    def display_to_sensor_displacement(self, dx: float, dy: float) -> Tuple[float, float]:
+        """Map a displacement measured on this camera's displayed image onto sensor axes.
+
+        The inverse of the rotate/flip _process_raw_image applies. Callers that read a
+        position off screen and then drive the stage need this, because the stage moves
+        along sensor axes. It lives on the camera because the rotation and flip are
+        per-camera: on a multi-camera system each one can be mounted differently, so the
+        correction has to come from whichever camera produced the image.
+        """
+        return control.utils.display_to_sensor_displacement(
+            dx, dy, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
+        )
+
     def get_crop_size(self) -> Tuple[int, int]:
         """
         Returns the final crop size of the image (after software crop).

@@ -2879,6 +2879,11 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("Click to move: pixel size unavailable, ignoring click")
             return
 
+        # The click is measured on the displayed image, which is rotated and flipped
+        # relative to the sensor, while the stage moves along sensor axes. Without this
+        # a rotated view sends the stage off along the wrong axis.
+        click_x, click_y = self.microscope.camera.display_to_sensor_displacement(click_x, click_y)
+
         pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
         delta_x_mm = pixel_size_um * click_x / 1000.0
         delta_y_mm = pixel_sign_y * pixel_size_um * click_y / 1000.0
