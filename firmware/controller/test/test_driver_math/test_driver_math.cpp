@@ -34,14 +34,20 @@ void test_tmc2660_rejects_out_of_range(void) {
     // mod 32 inside SGCSCONF's 5-bit CS field — arbitrarily higher or lower than
     // asked for. Report it instead, matching tmc2240_irun.
     TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2660_current_scale(65535.0f, 0.22f));
-    // 1100 mA on X (R = 0.22) is just past the ~1044 mA ceiling; master gave CS = 0.
+    // 1100 mA on X (R = 0.22): master's raw value was 32.6, outside the 5-bit CS
+    // field, where it wrapped to CS = 0 — minimum current for an over-request.
     TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2660_current_scale(1100.0f, 0.22f));
-    // The largest in-range request must still succeed and be unchanged. 1044 mA is
-    // the last milliamp under the cscale = 1.0 ceiling (which sits at 1044.5 mA):
-    // cscale = 0.99948, cscale*31 = 30.98, truncated to 30 — bit-identical to what
-    // master returns for the same input. CS = 31 would need cscale >= 1.0, which
-    // this rule now rejects, so 31 is unreachable from any integer milliamp
-    // request; see the fix-round note in task-1-report.md.
+}
+
+void test_tmc2660_full_scale_stays_reachable(void) {
+    // Master saturated at CS = 31 for a band above the formula's nominal ceiling
+    // (1045-1078 mA on X) WITHOUT wrapping. That is legitimate full-scale current
+    // and must keep working — a guard at cscale > 1.0 would make CS = 31
+    // unreachable, so raising Z from 500 to 550 mA in the INI would silently
+    // change nothing instead of going to maximum.
+    TEST_ASSERT_EQUAL_UINT8(31, tmc2660_current_scale(1060.0f, 0.22f));
+    TEST_ASSERT_EQUAL_UINT8(31, tmc2660_current_scale(545.0f, 0.43f));
+    // 1044 mA is the largest request below the ceiling; master gives 30, not 31.
     TEST_ASSERT_EQUAL_UINT8(30, tmc2660_current_scale(1044.0f, 0.22f));
 }
 
@@ -119,6 +125,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_tmc2660_shipped_w);
     RUN_TEST(test_tmc2660_zero_current);
     RUN_TEST(test_tmc2660_rejects_out_of_range);
+    RUN_TEST(test_tmc2660_full_scale_stays_reachable);
     RUN_TEST(test_tmc2240_irun_xy_range1);
     RUN_TEST(test_tmc2240_irun_z_range0);
     RUN_TEST(test_tmc2240_irun_w_range2);

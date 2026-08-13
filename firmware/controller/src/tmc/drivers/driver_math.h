@@ -29,13 +29,18 @@
   check. Do not "fix" it here.
 
   Out-of-range handling is the one addition, and it is NOT a clamp. cmd 21
-  accepts a u16 milliamp value, so the host can request more current than this
-  formula can express. Master's uint8_t result then wrapped mod 32 inside
-  SGCSCONF's 5-bit CS field, landing arbitrarily HIGHER or LOWER than asked for
-  — 1100 mA on X (R = 0.22) produced a raw 32, i.e. CS = 0, minimum current.
-  Returning a sentinel makes that failure explicit and matches tmc2240_irun.
-  In-range results are untouched, which is what the bit-identity constraint
-  actually requires.
+  accepts a u16 milliamp value, so the host can request far more current than
+  the 5-bit CS field can carry. Master's uint8_t result then wrapped mod 32,
+  landing arbitrarily HIGHER or LOWER than asked for — 1100 mA on X (R = 0.22)
+  produced a raw 32, i.e. CS = 0, minimum current. Returning a sentinel makes
+  that failure explicit and matches tmc2240_irun.
+
+  The rejection threshold is deliberately master's own expression rather than
+  the formula's nominal cscale = 1.0 ceiling: master saturated at CS = 31 for a
+  band just above that ceiling (1045-1078 mA on X) WITHOUT wrapping, and that is
+  legitimate full-scale current. Rejecting there would make CS = 31 unreachable,
+  so raising Z from 500 to 550 mA in the INI would silently change nothing
+  instead of going to maximum. Every value master produced is reproduced.
 */
 #define TMC_CURRENT_OUT_OF_RANGE 0xFF
 
@@ -43,8 +48,17 @@ static inline uint8_t tmc2660_current_scale(float current_rms_ma, float r_sense_
 {
     float cscale = (current_rms_ma / 1000.0f) * r_sense_ohm / 0.2298f;
     if (cscale < 0.0f) cscale = 0.0f;
-    if (cscale > 1.0f) return TMC_CURRENT_OUT_OF_RANGE;
-    return (uint8_t)(cscale * 31.0f);
+
+    /* Master's expression, unchanged, so every value it produced is reproduced. */
+    float scaled = cscale * 31.0f;
+
+    /* CS is 5 bits. Master's uint8_t(scaled) stayed valid right up to scaled < 32
+       — including the band above the formula's nominal ceiling where it saturated
+       at CS = 31, which is legitimate full-scale current, not a wrap. Only at
+       scaled >= 32 did the result land outside the field and wrap mod 32. Reject
+       exactly there and nowhere else. */
+    if (scaled >= 32.0f) return TMC_CURRENT_OUT_OF_RANGE;
+    return (uint8_t)scaled;
 }
 
 /* ------------------------------------------------------------------------ */
