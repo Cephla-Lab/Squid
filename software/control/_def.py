@@ -1168,12 +1168,23 @@ def read_sample_formats_csv(file_path):
 
 
 def load_formats():
-    """Load formats, prioritizing cache for sample formats."""
+    """Load formats, prioritizing cache for objectives and sample formats."""
     cache_path = "cache"
     default_path = "objective_and_sample_formats"
 
-    # Load objectives (from default location)
-    objectives = read_objectives_csv(os.path.join(default_path, "objectives.csv"))
+    # Try cache first for objectives, fall back to default if not found. tube_lens_f_mm
+    # is a property of the objectives actually fitted - Nikon are designed for a 200mm
+    # tube lens, Olympus for 180mm - so a machine whose optics differ from the checked-in
+    # default needs its own copy rather than a change every other machine inherits.
+    cached_objectives_path = os.path.join(cache_path, "objectives.csv")
+    default_objectives_path = os.path.join(default_path, "objectives.csv")
+
+    if os.path.exists(cached_objectives_path):
+        print("Using cached objectives")
+        objectives = read_objectives_csv(cached_objectives_path)
+    else:
+        print("Using default objectives")
+        objectives = read_objectives_csv(default_objectives_path)
 
     # Try cache first for sample formats, fall back to default if not found
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
