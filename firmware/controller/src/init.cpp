@@ -1,5 +1,66 @@
 #include "init.h"
 
+#include "tmc/drivers/driver_probe.h"
+#include "tmc/drivers/stepper_driver.h"
+
+/*
+  Boot-time driver report (design M7: host visibility of the driver type is a
+  boot-time serial log, not a protocol change).
+
+  Emitted per axis IMMEDIATELY AFTER that axis is probed and initialised, and
+  only for axes that were probed. That restriction is the point: driver_probe_raw
+  initialises to 0, which is indistinguishable from a genuine all-zeros read, and
+  driver_type is DRIVER_UNKNOWN in both cases - so a line printed for an
+  unprobed axis would read exactly like the failure the bench gate is looking
+  for. An axis that was never probed has no line at all.
+
+  What the gate reads (design 10, step 0): a TMC2660 axis must come back with a
+  word that is neither 0x00000000 nor 0xFFFFFFFF and whose byte [31:24] is not
+  0x40. Read the verdict alongside the word - driver_probe_raw is the LAST of
+  three reads, not a summary, so a zero word beside a TMC2660 verdict is one
+  flaky read; the failure is a DRIVER_UNKNOWN verdict.
+
+  This writes ASCII onto the same USB serial link that carries the 24-byte status
+  packets. At boot that link is idle - loop() has not run, so no packet has been
+  sent - and on the filter-wheel path the host resynchronises by sliding a byte
+  at a time until a CRC matches (software/control/microcontroller.py,
+  read_received_packet), costing a few "Bad checksum" warnings. That cost is
+  accepted deliberately: the gate it serves is what decides whether this firmware
+  is safe for the installed base, and the design requires measuring the warm
+  filter-wheel path too, because that one re-probes an already-configured 2660 at
+  RDSEL = 2 where SG and SE are both zero at standstill.
+*/
+void report_driver_probe(uint8_t axis)
+{
+  // Indexed by INTERNAL axis index (def_v1.h), which is not the protocol order.
+  static const char *const AXIS_LABEL[TOTAL_AXES] = {"Y", "X", "Z", "W", "W2"};
+  static_assert(y == 0 && x == 1 && z == 2 && w == 3 && w2 == 4,
+                "AXIS_LABEL is written out in internal axis-index order");
+
+  if (axis >= TOTAL_AXES)
+    return;
+
+  // Zero-padded to 8 digits, and hand-formatted rather than printf'd: the raw
+  // word is read byte by byte at the bench ("is [31:24] 0x40?"), so suppressed
+  // leading zeros would move the byte boundaries, and pulling newlib's
+  // formatted-output machinery in for one diagnostic line costs ~24 KB of flash.
+  static const char HEX_DIGITS[] = "0123456789ABCDEF";
+  uint32_t raw = tmc4361[axis].driver_probe_raw;
+  char hex[9];
+  for (int i = 7; i >= 0; i--) {
+    hex[i] = HEX_DIGITS[raw & 0x0F];
+    raw >>= 4;
+  }
+  hex[8] = '\0';
+
+  SerialUSB.print("[TMC] ");
+  SerialUSB.print(AXIS_LABEL[axis]);
+  SerialUSB.print(": ");
+  SerialUSB.print(tmc_driver_name(tmc4361[axis].driver_type));
+  SerialUSB.print(" probe_raw=0x");
+  SerialUSB.println(hex);
+}
+
 void init_serial_communication()
 {
     // Initialize Native USB port
@@ -129,18 +190,46 @@ void init_stages()
     digitalWrite(pin_TMC4361_CS[i], HIGH);
   }
 
-  // motor configurations
-  tmc4361A_tmc2660_config(&tmc4361[x], (X_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_xy / 0.2298, X_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
-  tmc4361A_tmc2660_config(&tmc4361[y], (Y_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_xy / 0.2298, Y_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
-  tmc4361A_tmc2660_config(&tmc4361[z], (Z_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_z / 0.2298, Z_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z); // need to make current scaling on TMC2660 is > 16 (out of 31)
+  // Per-axis driver parameters. r_sense is used only by TMC2660 axes and
+  // current_range only by TMC2240 axes; both are set unconditionally because the
+  // probe has not run yet and neither is known to be the live one.
+  //
+  // This must precede the first tmc_driver_set_current() below. tmc4361A_init()
+  // just above zeroed both fields, and a TMC2660 axis asked for current with
+  // r_sense = 0 encodes CS = 0 - minimum current, a stage that cannot move.
+  tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = CURRENT_RANGE_XY;
+  tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = CURRENT_RANGE_XY;
+  tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = CURRENT_RANGE_Z;
 
   // SPI
   SPI.begin();
   delayMicroseconds(5000);
 
-  // initilize TMC4361 and TMC2660 - turn on functionality
+  // Identify the power stage on each axis, then initialise it. The probe needs
+  // SPI, so it cannot run any earlier than this; it is done one axis at a time,
+  // immediately before that axis's driver init, because the probe starts the
+  // automatic SPI output and leaves SPIOUT_CONF at its own word until the
+  // driver's init() writes back the format that driver actually speaks. A
+  // separate earlier pass over all axes would hold every one of them in that
+  // state for the duration of the pass instead of for ~800 us.
+  //
+  // The verdict is cached in tmc4361[i].driver_type, so callback_initialize can
+  // re-init the drivers later without re-probing. init_filterwheel_axis() is the
+  // exception and must probe every time - see commands.cpp.
   for (int i = 0; i < STAGE_AXES; i++)
-    tmc4361A_tmc2660_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+  {
+    tmc_driver_probe(&tmc4361[i]);
+    tmc_driver_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+    report_driver_probe(i);                       // after init, so the probe's SPIOUT_CONF window stays short
+  }
+
+  // Motor configurations. Current is in mA and the driver seam converts it.
+  // These follow SPI.begin() AND tmc_driver_init() because they now write
+  // registers: master could call its predecessor before SPI.begin() only
+  // because that function wrote struct fields and nothing else.
+  tmc4361A_motor_config(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
+  tmc4361A_motor_config(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
+  tmc4361A_motor_config(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z); // need to make current scaling on TMC2660 is > 16 (out of 31)
 
   // enable limit switch reading
   tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
@@ -183,7 +272,8 @@ void init_stages()
   set_DAC8050x_config();
   set_DAC8050x_default_gain();
 
-  // motor stall prevention
-  tmc4361A_config_init_stallGuard(&tmc4361[x], 12, true, 1);
-  tmc4361A_config_init_stallGuard(&tmc4361[y], 12, true, 1);
+  // motor stall prevention. Return value is a bool where 1 = accepted; both
+  // calls are in range, and master discarded it here too.
+  tmc_driver_config_stallguard(&tmc4361[x], 12, true, 1);
+  tmc_driver_config_stallguard(&tmc4361[y], 12, true, 1);
 }

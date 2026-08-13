@@ -16,11 +16,14 @@
 #include "TMC4361A.h"
 
 // Functions for user-facing API
-void tmc4361A_tmc2660_config(TMC4361ATypeDef *tmc4361A, float tmc2660_cscale, float tmc4361a_hold_scale_val, float tmc4361a_drv2_scale_val, float tmc4361a_drv1_scale_val, float tmc4361a_boost_scale_val, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx = NO_DAC, uint32_t dac_fullscale_msteps = 0);
-void tmc4361A_tmc2660_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);
-void tmc4361A_tmc2660_enable_driver(TMC4361ATypeDef *tmc4361A);
-void tmc4361A_tmc2660_disable_driver(TMC4361ATypeDef *tmc4361A);
-void tmc4361A_tmc2660_update(TMC4361ATypeDef *tmc4361A);
+//
+// Driver-agnostic axis configuration. Current is in mA — the unit the host
+// already sends over cmd 21 CONFIGURE_STEPPER_DRIVER — and the driver seam
+// converts it, so no call site computes a driver-specific current scale.
+// The five driver operations themselves (init / set_current / set_microsteps /
+// enable / config_stallguard) are declared in drivers/stepper_driver.h; their
+// dispatch bodies live in TMC4361A_Utils.cpp next to this function.
+void tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx = NO_DAC, uint32_t dac_fullscale_msteps = 0);
 void tmc4361A_setMaxSpeed(TMC4361ATypeDef *tmc4361A, int32_t velocity);
 void tmc4361A_setSpeed(TMC4361ATypeDef *tmc4361A, int32_t velocity);
 void tmc4361A_init_ABN_encoder(TMC4361ATypeDef *tmc4361A, uint32_t enc_res, uint8_t filter_wait_time, uint8_t filter_exponent, uint16_t filter_vmean, bool invert);
@@ -66,7 +69,11 @@ void tmc4361A_setVirtualStop(TMC4361ATypeDef *tmc4361A, uint8_t which, int32_t t
 int8_t tmc4361A_setVirtualLimit(TMC4361ATypeDef *tmc4361A, int dir, int32_t limit);
 void tmc4361A_disableVirtualLimitSwitch(TMC4361ATypeDef *tmc4361A, int dir);
 void tmc4361A_enableVirtualLimitSwitch(TMC4361ATypeDef *tmc4361A, int dir);
-int16_t tmc4361A_config_init_stallGuard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity, bool filter_en, uint32_t vstall_lim);
+// Stall detection is a driver operation: call tmc_driver_config_stallguard()
+// (drivers/stepper_driver.h). The former tmc4361A_config_init_stallGuard()
+// wrapper is gone — it wrote a TMC2660 SGCSCONF cover datagram unconditionally,
+// which on a TMC2240 axis is a 20-bit word sent as a 40-bit frame addressed at
+// whatever its top byte happens to be.
 
 // The following does not need to be accessed by the end user
 // Default motor settings - can override using tmc4361A_setPitch(), tmc4361A_setMicrosteps(), tmc4361A_setSPR()

@@ -6,9 +6,11 @@
 
 /*
   TMC2660 power-stage operations, extracted from master 856bc0ee
-  TMC4361A_TMC2660_Utils.cpp (now TMC4361A_Utils.cpp, whose exported
-  tmc4361A_tmc2660_* names delegate here). Behavior is bit-identical to master
-  (design M5); the register words come from tmc2660_regs.h and are pinned by
+  TMC4361A_TMC2660_Utils.cpp (now TMC4361A_Utils.cpp). Reached through the
+  tmc_driver_* dispatch in that file, which selects between this module and
+  tmc2240.cpp on tmc4361A->driver_type; master's tmc4361A_tmc2660_* entry
+  points are gone. Behavior is bit-identical to master (design M5); the
+  register words come from tmc2660_regs.h and are pinned by
   test/test_driver_regs.
 */
 

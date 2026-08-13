@@ -1,5 +1,9 @@
 #include "commands.h"
 
+#include "../init.h"                     // report_driver_probe()
+#include "../tmc/drivers/driver_probe.h"
+#include "../tmc/drivers/stepper_driver.h"
+
 CommandCallback cmd_map[256] = {0};
 
 void init_callbacks()
@@ -165,8 +169,23 @@ static void init_filterwheel_axis(uint8_t axis)
     pinMode(pin_TMC4361_CS[axis], OUTPUT);
     digitalWrite(pin_TMC4361_CS[axis], HIGH);
 
-    tmc4361A_tmc2660_config(&tmc4361[axis], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
-    tmc4361A_tmc2660_init(&tmc4361[axis], clk_Hz_TMC4361);
+    // Per-axis driver parameters, re-set on every run: tmc4361A_init() above
+    // zeroes r_sense, and a TMC2660 wheel asked for current with r_sense = 0
+    // encodes CS = 0, i.e. minimum current.
+    tmc4361[axis].r_sense = R_sense_w;
+    tmc4361[axis].current_range = CURRENT_RANGE_W;
+
+    // Probe EVERY time this runs, not only on the first INITFILTERWHEEL.
+    // tmc4361A_init() on the first line of this function resets driver_type to
+    // DRIVER_UNKNOWN, so a cached boot-time verdict does not survive to here;
+    // skipping the probe would leave the wheel at DRIVER_UNKNOWN and rejecting
+    // every move. This is also the design's second gate path: it re-probes an
+    // already-configured TMC2660 (SDOFF = 1, RDSEL = 2), which cold boot never
+    // exercises.
+    tmc_driver_probe(&tmc4361[axis]);
+    tmc_driver_init(&tmc4361[axis], clk_Hz_TMC4361);
+    report_driver_probe(axis);
+    tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
     tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
 
     // Calculate velocity and acceleration (ensures values are set for both W and W2)
@@ -205,10 +224,10 @@ void callback_set_axis_disable_enable()
 
     int status = buffer_rx[3];
     if (status == 0) {
-        tmc4361A_tmc2660_disable_driver(&tmc4361[axis]);
+        tmc_driver_enable(&tmc4361[axis], false);
     }
     else {
-        tmc4361A_tmc2660_enable_driver(&tmc4361[axis]);
+        tmc_driver_enable(&tmc4361[axis], true);
     }
 }
 
@@ -223,9 +242,26 @@ void callback_initialize()
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
     first_packet_from_joystick_panel = true;
-    // initilize TMC4361 and TMC2660
+    // Re-initialise the TMC4361A and its power stage on each stage axis.
+    // No probe here: this path does NOT call tmc4361A_init(), so driver_type
+    // still holds the verdict the boot probe cached.
     for (int i = 0; i < STAGE_AXES; i++)
-        tmc4361A_tmc2660_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+        tmc_driver_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+
+    // Re-apply run current. Master got this for free: tmc4361A_tmc2660_init()
+    // ended in tmc4361A_cScaleInit(), which rewrote SGCSCONF from the retained
+    // cscaleParam. tmc2240_driver_init() deliberately does the opposite - it
+    // seeds IHOLD_IRUN to zero so a 2240 is never energised at an unknown
+    // current - and leaves the real value to the caller, so a 2240 axis that
+    // was only INITIALIZEd would sit at IRUN = 0 and produce no torque. The
+    // host does follow INITIALIZE with cmd 21 today, but that is its ordering,
+    // not an invariant of this firmware.
+    //
+    // On a TMC2660 axis this repeats the cScaleInit the init above just did,
+    // from the same struct fields, so the registers land on the same values.
+    tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
+    tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
+    tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
 
     // enable limit switch reading
     tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);

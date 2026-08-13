@@ -49,11 +49,15 @@ void tmc2660_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361)
 }
 
 /*
-  NOT REACHED YET. Master computed the current scale in the caller and handed
-  tmc4361A_tmc2660_config a pre-divided float; Task 7 is what populates
-  tmc4361A->r_sense and moves the call sites onto this milliamp-based entry
-  point. Until then nothing calls this and r_sense is 0, which makes every
-  request encode as CS = 0 rather than as a wrong current.
+  Master computed the current scale in the caller and handed
+  tmc4361A_tmc2660_config a pre-divided float. This takes milliamps instead, and
+  reads r_sense from the axis, so the callers that used to each spell out the
+  same formula now state intent.
+
+  r_sense MUST be populated before the first call: tmc4361A_init() zeroes it,
+  and r_sense = 0 encodes CS = 0 — minimum current, not a wrong current. Both
+  bring-up paths set it immediately after tmc4361A_init() (init.cpp for X/Y/Z,
+  init_filterwheel_axis in commands.cpp for W/W2).
 */
 void tmc2660_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
 {
