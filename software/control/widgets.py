@@ -26,7 +26,7 @@ from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 import control._def  # Import module for runtime access to MCP-modifiable settings
-from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
+from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
 
@@ -3600,9 +3600,16 @@ class ObjectivesWidget(QWidget):
         self.signal_objective_changed.emit()
 
 
+def set_spinbox_range_from_exposure_limits(camera: AbstractCamera, spinbox: QDoubleSpinBox):
+    exposure_min, exposure_max = camera.get_exposure_limits()
+    spinbox.setMinimum(exposure_min)
+    spinbox.setMaximum(exposure_max)
+
+
 class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
+    signal_sensor_mode_changed = Signal()
 
     def __init__(
         self,
@@ -3631,11 +3638,11 @@ class CameraSettingsWidget(QFrame):
         # add buttons and input fields
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setValue(20)
-        self.camera.set_exposure_time(20)
+        # Use the spinbox value, not a literal: setValue clamps to the camera's exposure limits.
+        self.camera.set_exposure_time(self.entry_exposureTime.value())
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
@@ -3747,6 +3754,19 @@ class CameraSettingsWidget(QFrame):
             pass
         format_line.addWidget(QLabel("Binning"))
         format_line.addWidget(self.dropdown_binning)
+
+        # Sensor mode dropdown: only shown when the camera implements mode selection.
+        sensor_modes = self.camera.get_available_sensor_modes()
+        if sensor_modes:
+            self.dropdown_sensorMode = QComboBox()
+            self.dropdown_sensorMode.addItems(sensor_modes)
+            current_mode = self.camera.get_sensor_mode()
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+            self.dropdown_sensorMode.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+            self.dropdown_sensorMode.currentTextChanged.connect(self.set_sensor_mode)
+            format_line.addWidget(QLabel("Sensor Mode"))
+            format_line.addWidget(self.dropdown_sensorMode)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -3807,6 +3827,34 @@ class CameraSettingsWidget(QFrame):
             self.camera.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
+
+    def set_sensor_mode(self, mode: str):
+        try:
+            self.camera.set_sensor_mode(mode)
+        except (CameraError, ValueError, NotImplementedError):
+            self._log.exception(f"Failed to set sensor mode '{mode}', reverting selection.")
+            self._revert_sensor_mode_dropdown()
+            return
+
+        # Readout speed can change the valid exposure range.
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
+        # Notify listeners (e.g. LiveControlWidget) whose own exposure control
+        # needs its min/max refreshed too, since this widget's own
+        # entry_exposureTime is often hidden (include_gain_exposure_time=False).
+        self.signal_sensor_mode_changed.emit()
+
+    def _revert_sensor_mode_dropdown(self):
+        self.dropdown_sensorMode.blockSignals(True)
+        try:
+            try:
+                current_mode = self.camera.get_sensor_mode()
+            except CameraError:
+                self._log.exception("Failed to read back current sensor mode while reverting selection.")
+                current_mode = None
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+        finally:
+            self.dropdown_sensorMode.blockSignals(False)
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
@@ -4093,8 +4141,7 @@ class LiveControlWidget(QFrame):
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setSuffix(" ms")
         self.entry_exposureTime.setValue(0)
@@ -4317,6 +4364,17 @@ class LiveControlWidget(QFrame):
     def update_camera_settings(self):
         self.signal_newAnalogGain.emit(self.entry_analogGain.value())
         self.signal_newExposureTime.emit(self.entry_exposureTime.value())
+
+    def refresh_exposure_time_limits(self):
+        """Refresh the exposure spinbox's min/max from the camera.
+
+        Needed after something changes the camera's valid exposure range
+        without going through this widget - e.g. a sensor mode / readout
+        speed change made via CameraSettingsWidget. setMinimum/setMaximum
+        auto-clamp the current value and emit valueChanged, which is already
+        connected to the camera's exposure setter, so the clamp propagates.
+        """
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
 
     def refresh_mode_list(self):
         # Update the mode selection dropdown (only show enabled channels)

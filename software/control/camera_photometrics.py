@@ -399,7 +399,7 @@ class PhotometricsCamera(AbstractCamera):
                 f"Unknown acquisition mode: {PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode]}"
             )
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
