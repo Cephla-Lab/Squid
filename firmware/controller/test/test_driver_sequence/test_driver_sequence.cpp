@@ -54,6 +54,7 @@
 
 #include <unity.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -533,7 +534,10 @@ void test_tmc2240_init_writes_expected_sequence(void)
 
     g_axis.current_range = 1;
     g_axis.microsteps    = 256;
-    g_axis.driver_toff   = 3;   /* the TMC2660-shaped value tmc4361A_init leaves */
+    /* POISON, not the 3 that tmc4361A_init leaves behind. Seeding 3 here would
+       make the driver_toff assertion below unfalsifiable: delete the caching
+       line in init() and the seed survives, so the case stays green. */
+    g_axis.driver_toff   = 0xAA;
 
     tmc2240_driver_init(&g_axis, 16000000u);
     assert_trace(want, sizeof want / sizeof want[0], "tmc2240_driver_init");
@@ -541,7 +545,10 @@ void test_tmc2240_init_writes_expected_sequence(void)
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00010183u, g_axis.tmc2240_shadow[0x6C],
         "init must leave CHOPCONF in the shadow; enable() and set_microsteps() read it");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, g_axis.driver_toff,
-        "init must cache TOFF from the CHOPCONF word it wrote");
+        "init must cache TOFF from the CHOPCONF word it wrote, overwriting the "
+        "TMC2660-shaped 3 that tmc4361A_init leaves in this field. Without the "
+        "cache, a retune of TMC2240_DEFAULT_TOFF leaves every 2240 axis "
+        "restoring a stale TOFF after each disable/enable cycle");
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_kind(OP_READ),
         "init must not read any TMC2240 register");
 }
@@ -630,6 +637,8 @@ void test_tmc2240_enable_sources_chopconf_from_shadow_without_reading(void)
     memset(&g_axis, 0, sizeof g_axis);
     g_axis.current_range = 1;
     g_axis.microsteps    = 256;
+    g_axis.driver_toff   = 0xAA;   /* poison, so the round trip cannot pass via
+                                      enable()'s TMC2240_DEFAULT_TOFF fallback */
     tmc2240_driver_init(&g_axis, 16000000u);
     tmc2240_driver_enable(&g_axis, false);
     reset_trace();
@@ -836,6 +845,105 @@ void test_tmc2240_cover_write_guards_the_shadow_bounds(void)
         "0x74 is the last valid shadow index and must still be recorded");
 }
 
+/*
+  init()'s TMC_MRES_INVALID fallback.
+
+  tmc_microsteps_to_mres returns 0xFF for a microstep count that is zero, above
+  256, or not a power of two, and 0xFF & 0x0F is 15 — a RESERVED MRES code that
+  would program an undefined microstep resolution on a real part. init() falls
+  back to 0 (256 microsteps), matching what octoaxes' own mstepVal computation
+  produces for the same bad input, rather than rejecting: an axis that cannot be
+  initialised at all is worse than one initialised at full resolution.
+
+  Note this is the OPPOSITE choice from set_microsteps(), which rejects. The two
+  differ deliberately (init has no caller expecting a specific resolution; the
+  setter does), so both directions need a case or a future "harmonisation" will
+  break one of them silently.
+*/
+void test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count(void)
+{
+    g_axis.current_range = 1;
+    g_axis.microsteps    = 0;          /* tmc4361A_init leaves this zero */
+
+    tmc2240_driver_init(&g_axis, 16000000u);
+
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00010183u, cover_write_value(0x6C),
+        "an invalid microstep count must fall back to MRES 0 (256 usteps); "
+        "the 0xFF sentinel masks to MRES 15, which is RESERVED");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, g_axis.driver_toff,
+        "the fallback path must still cache TOFF");
+
+    reset_trace();
+    memset(&g_axis, 0, sizeof g_axis);
+    g_axis.current_range = 1;
+    g_axis.microsteps    = 100;        /* not a power of two */
+    tmc2240_driver_init(&g_axis, 16000000u);
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00010183u, cover_write_value(0x6C),
+        "a non-power-of-two microstep count must fall back to MRES 0");
+}
+
+/*
+  hold_ratio outside 0..1 must be clamped in FLOAT space, before either cast.
+
+  A negative or NaN product makes the float-to-uint8_t conversion undefined
+  behaviour rather than merely wrong, and on a saturating conversion it lands at
+  0xFF -> IHOLD 31 after masking, i.e. FULL hold current on an axis the caller
+  just asked to hold at nothing. A post-cast `if (ihold > 31)` cannot catch that:
+  the damage is done inside the conversion. The `!(x > 0.0f)` form is what makes
+  this catch NaN as well as negatives.
+
+  HOLD_SCALE_VAL is a separate hazard: it is an 8-bit field at bit 24 of
+  SCALE_VALUES and cscaleParam is a signed int32_t, so an unclamped value shifts
+  garbage across the top of the word instead of wrapping inside its field.
+
+  HONEST LIMIT — READ BEFORE TRUSTING THE IHOLD HALF OF THIS CASE.
+  The two IHOLD assertions below are a SPECIFICATION, not a pin. Deleting
+  `if (!(ihold_f > 0.0f))` makes `(uint8_t)(-21.0f)` undefined behaviour rather
+  than defined-wrong, and measured on this toolchain the unguarded path produces
+  the same IHOLD 0 the guarded path does — so the case stays green. Rewriting
+  the block into the brief's post-cast form
+      uint8_t ihold = (uint8_t)(irun * hold_ratio); if (ihold > 31) ihold = 31;
+  also survives, for the same reason. Both were run as mutations and both
+  SURVIVED; see the task 6b report §5 item 3.
+  What IS pinned here: the IHOLD ceiling of 31 (see the case below), and both
+  ends of the HOLD_SCALE_VAL clamp — that one lands in a signed int32_t, where
+  the conversion is defined, so removing either guard changes SCALE_VALUES by a
+  measurable amount.
+*/
+void test_tmc2240_set_current_clamps_hostile_hold_ratio(void)
+{
+    g_axis.current_range = 1;
+
+    tmc2240_driver_set_current(&g_axis, 1000.0f, -1.0f);
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071500u, cover_write_value(0x10),
+        "a negative hold_ratio must yield IHOLD 0, not a wrapped 0xFF -> 31");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FFFFFFu, op_value(OP_WRITE, 0x06),
+        "a negative hold_ratio must yield HOLD_SCALE_VAL 0");
+
+    reset_trace();
+    tmc2240_driver_set_current(&g_axis, 1000.0f, nanf(""));
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071500u, cover_write_value(0x10),
+        "a NaN hold_ratio must yield IHOLD 0; a plain `x < 0` test would let it through");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FFFFFFu, op_value(OP_WRITE, 0x06),
+        "a NaN hold_ratio must yield HOLD_SCALE_VAL 0");
+}
+
+void test_tmc2240_set_current_clamps_hold_ratio_above_one(void)
+{
+    g_axis.current_range = 1;
+
+    /* irun is 21 at 1000 mA, so 21 x 2.0 = 42 overflows the 5-bit IHOLD field
+       and 2.0 x 255 = 510 overflows the 8-bit HOLD_SCALE_VAL field. */
+    tmc2240_driver_set_current(&g_axis, 1000.0f, 2.0f);
+
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x0007151Fu, cover_write_value(0x10),
+        "hold_ratio > 1 must saturate IHOLD at 31; without the clamp 42 masks "
+        "to 10, i.e. a LOWER hold current than asked for");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0xFFFFFFFFu, op_value(OP_WRITE, 0x06),
+        "hold_ratio > 1 must saturate HOLD_SCALE_VAL at 255; without the clamp "
+        "510 shifts across the top of SCALE_VALUES as 0xFE000000");
+}
+
 /* ===========================================================================
    Driver probe
    =========================================================================== */
@@ -939,6 +1047,10 @@ static void expect_verdict(const char *label, const uint32_t *r, unsigned n, uin
              label, tmc_driver_name(want), tmc_driver_name(got));
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(want, got, g_msg);
 
+    /* Tautological against `return tmc4361A->driver_type;` as the function is
+       written today, and kept only so that a future signature change (returning
+       a local, an out-parameter) cannot silently stop updating the field. The
+       0xAA poison does its real work through the `want` assertion above. */
     snprintf(g_msg, sizeof g_msg, "%s: driver_type must equal the returned verdict", label);
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(got, g_axis.driver_type, g_msg);
 
@@ -1023,6 +1135,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_tmc2240_config_stallguard_sets_sgt_and_sfilt_in_one_write);
     RUN_TEST(test_tmc2240_config_stallguard_preserves_unrelated_coolconf_bits);
     RUN_TEST(test_tmc2240_cover_write_guards_the_shadow_bounds);
+    RUN_TEST(test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count);
+    RUN_TEST(test_tmc2240_set_current_clamps_hostile_hold_ratio);
+    RUN_TEST(test_tmc2240_set_current_clamps_hold_ratio_above_one);
 
     RUN_TEST(test_probe_writes_probe_spiout_conf_first_and_does_not_restore);
     RUN_TEST(test_probe_reads_only_ioin_three_times_with_settle_delays);
