@@ -1172,10 +1172,24 @@ class MultiPointWorker:
                 and (self.do_autofocus)
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
-                configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.liveController.get_channel_by_name(
-                    self.objectiveStore.current_objective, configuration_name_AF
-                )
+                # Read through the module, NOT the star-imported name.  `from control._def
+                # import *` above bound a snapshot of MULTIPOINT_AUTOFOCUS_CHANNEL into this
+                # module at import time, and Preferences only rebinds control._def's copy
+                # (widgets.py:_apply_live_settings), so the star-imported name would pin the
+                # AF channel to whatever it was at startup.
+                configuration_name_AF = control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
+                objective = self.objectiveStore.current_objective
+                config_AF = self.liveController.get_channel_by_name(objective, configuration_name_AF)
+                if config_AF is None:
+                    # set_microscope_mode() only logs and returns on a None config, so without
+                    # this guard AF would silently run on whichever channel happened to be
+                    # active -- a wrong-but-plausible focus rather than a visible failure.
+                    available = [c.name for c in self.liveController.get_channels(objective)]
+                    self._log.error(
+                        f"Contrast autofocus channel '{configuration_name_AF}' does not exist for objective "
+                        f"'{objective}'; skipping autofocus for this FOV.  Available channels: {available}"
+                    )
+                    return False
                 self._select_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0

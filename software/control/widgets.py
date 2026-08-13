@@ -1181,12 +1181,15 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, channel_names=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
+        # Channel names for the current objective, used to populate the autofocus channel
+        # picker.  None/empty falls back to a free-text field.
+        self._channel_names = list(channel_names) if channel_names else []
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -1291,10 +1294,24 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # Autofocus Channel
-        self.autofocus_channel_edit = QLineEdit()
-        self.autofocus_channel_edit.setText(
-            self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
+        # Autofocus Channel (contrast-based AF during multipoint acquisition)
+        current_af_channel = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
+        if self._channel_names:
+            # The name has to match a channel exactly or contrast AF is skipped, so offer the
+            # real names -- but keep it editable so a channel that only exists under another
+            # objective or profile can still be entered.
+            self.autofocus_channel_edit = QComboBox()
+            self.autofocus_channel_edit.setEditable(True)
+            self.autofocus_channel_edit.addItems(self._channel_names)
+            if current_af_channel not in self._channel_names:
+                self.autofocus_channel_edit.addItem(current_af_channel)
+            self.autofocus_channel_edit.setCurrentText(current_af_channel)
+        else:
+            self.autofocus_channel_edit = QLineEdit()
+            self.autofocus_channel_edit.setText(current_af_channel)
+        self.autofocus_channel_edit.setToolTip(
+            "Channel used for contrast-based autofocus during multipoint acquisition.\n"
+            "Must match a channel name exactly; unknown names cause autofocus to be skipped."
         )
         layout.addRow("Autofocus Channel:", self.autofocus_channel_edit)
 
@@ -1925,6 +1942,12 @@ class PreferencesDialog(QDialog):
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
 
+    def _autofocus_channel_text(self):
+        """Selected autofocus channel name, from either the combo box or the free-text field."""
+        if isinstance(self.autofocus_channel_edit, QComboBox):
+            return self.autofocus_channel_edit.currentText().strip()
+        return self.autofocus_channel_edit.text().strip()
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
@@ -1956,7 +1979,7 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "live_view_z_step_fast_um", str(self.click_to_move_z_coarse_spinbox.value()))
 
         # Acquisition settings
-        self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
+        self.config.set("GENERAL", "multipoint_autofocus_channel", self._autofocus_channel_text())
         self.config.set(
             "GENERAL",
             "enable_flexible_multipoint",
@@ -2135,8 +2158,9 @@ class PreferencesDialog(QDialog):
         # Default saving path
         control._def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
 
-        # Autofocus channel
-        control._def.MULTIPOINT_AUTOFOCUS_CHANNEL = self.autofocus_channel_edit.text()
+        # Autofocus channel.  Consumers must read control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
+        # (not a star-imported copy) for this to take effect without a restart.
+        control._def.MULTIPOINT_AUTOFOCUS_CHANNEL = self._autofocus_channel_text()
 
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
@@ -2237,7 +2261,7 @@ class PreferencesDialog(QDialog):
 
         # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
-        new_val = self.autofocus_channel_edit.text()
+        new_val = self._autofocus_channel_text()
         if old_val != new_val:
             changes.append(("Autofocus Channel", old_val, new_val, False))
 
@@ -5511,6 +5535,18 @@ class AutoFocusWidget(QFrame):
         self.entry_N.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.autofocusController.set_N(10)
 
+        self.entry_fovs_per_af = QSpinBox()
+        self.entry_fovs_per_af.setMinimum(1)
+        self.entry_fovs_per_af.setMaximum(1000)
+        self.entry_fovs_per_af.setSingleStep(1)
+        self.entry_fovs_per_af.setValue(Acquisition.NUMBER_OF_FOVS_PER_AF)
+        self.entry_fovs_per_af.setKeyboardTracking(False)
+        self.entry_fovs_per_af.setFixedWidth(self.entry_fovs_per_af.sizeHint().width())
+        self.entry_fovs_per_af.setToolTip(
+            "During multipoint acquisition, run contrast autofocus once every N FOVs.\n"
+            "1 = every FOV.  Does not affect the Autofocus button, which always runs on demand."
+        )
+
         self.btn_autofocus = QPushButton("Autofocus")
         self.btn_autofocus.setDefault(False)
         self.btn_autofocus.setCheckable(True)
@@ -5532,16 +5568,34 @@ class AutoFocusWidget(QFrame):
         grid_line0.addSpacing(20)
         grid_line0.addWidget(self.btn_autolevel)
 
+        grid_line1 = QHBoxLayout()
+        grid_line1.addWidget(QLabel("Acquisition AF every"))
+        grid_line1.addWidget(self.entry_fovs_per_af)
+        grid_line1.addWidget(QLabel("FOV(s)"))
+        grid_line1.addStretch()
+
         self.grid.addLayout(grid_line0)
+        self.grid.addLayout(grid_line1)
         self.grid.addWidget(self.btn_autofocus)
         self.setLayout(self.grid)
 
         # connections
+        self.entry_fovs_per_af.valueChanged.connect(self.set_fovs_per_af)
         self.btn_autofocus.toggled.connect(lambda: self.autofocusController.autofocus(False))
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
         self.entry_delta.valueChanged.connect(self.set_deltaZ)
         self.entry_N.valueChanged.connect(self.autofocusController.set_N)
         self.autofocusController.autofocusFinished.connect(self.autofocus_is_finished)
+
+    def set_fovs_per_af(self, value):
+        """Set how often multipoint acquisition runs contrast AF (1 = every FOV).
+
+        NUMBER_OF_FOVS_PER_AF is a class attribute, so every module that did
+        `from control._def import *` shares this one Acquisition object and sees the new
+        value -- unlike a module-level name, which each star import would have copied.
+        """
+        control._def.Acquisition.NUMBER_OF_FOVS_PER_AF = int(value)
+        self.log.info(f"contrast autofocus interval set to every {int(value)} FOV(s)")
 
     def set_deltaZ(self, value):
         mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
