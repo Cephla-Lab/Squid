@@ -87,6 +87,11 @@ static inline uint32_t tmc2240_gconf_value(bool stealthchop)
     return v;
 }
 
+/*
+  HEND is stored with a +3 offset, so the legal input range is -3..12. Like the
+  other builders here this one masks rather than validates: hend = -4 wraps to
+  the encoding for +12, i.e. MAXIMUM hysteresis end. Validate at the caller.
+*/
 static inline uint32_t tmc2240_chopconf_value(uint8_t toff, uint8_t hstrt, int8_t hend,
                                               uint8_t tbl, uint8_t mres, bool interpolate)
 {

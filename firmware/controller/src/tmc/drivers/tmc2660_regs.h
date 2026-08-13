@@ -44,9 +44,16 @@ static inline uint32_t tmc2660_smarten_datagram(void)
 }
 
 /*
-  SGCSCONF: CS [4:0], SGT [12:8] (signed 7-bit), SFILT bit 16.
+  SGCSCONF: CS [4:0], SGT [14:8] (signed 7-bit, -64..63), SFILT bit 16.
   Master's boot value is 0x000C000A (CS = 10, SGT = 0, filter off);
   cScaleInit then rewrites it as SGCSCONF | SFILT | cs.
+
+  This is a PURE ENCODER: it masks, it does not validate. Master's
+  tmc4361A_config_init_stallGuard constrains sgt to -64..63 and reports
+  failure outside that range BEFORE encoding. Callers must keep doing that —
+  passing sgt = 100 here silently encodes -28, whereas master clamped to +63.
+  For every in-range input the two are bit-identical (verified exhaustively
+  over sgt x cs x sfilt).
 */
 static inline uint32_t tmc2660_sgcsconf_datagram(uint8_t cs, int8_t sgt, bool sfilt)
 {

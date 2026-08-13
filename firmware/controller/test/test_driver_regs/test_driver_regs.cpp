@@ -31,7 +31,8 @@ void test_tmc2660_cscale_datagram_matches_master(void) {
 
 void test_tmc2660_sgcsconf_carries_stallguard_threshold(void) {
     // init.cpp:187 configures stallGuard with sensitivity 12, filter on.
-    // SGT occupies bits [12:8].
+    // SGT occupies bits [14:8] — 7 signed bits, which is why master writes
+    // (sensitivity & 0x7F) << 8.
     uint32_t d = tmc2660_sgcsconf_datagram(29, 12, true);
     TEST_ASSERT_EQUAL_UINT32(29u, d & 0x1Fu);
     TEST_ASSERT_EQUAL_UINT32(12u, (d >> 8) & 0x7Fu);
