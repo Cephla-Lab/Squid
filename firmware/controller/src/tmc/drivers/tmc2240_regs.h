@@ -61,6 +61,27 @@
 #define TMC2240_SGT_MASK  (0x7Fu << TMC2240_SGT_SHIFT)
 
 /*
+  SG4_THRS (0x74) field positions.
+
+  The StallGuard4 FILTER ENABLE is bit 8, NOT bit 0. Bits [7:0] are the
+  StallGuard4 THRESHOLD, and bit 9 is SG_ANGLE_OFFSET. Writing the whole
+  register with the value 1 to "turn the filter on" therefore does two wrong
+  things at once: it leaves sg4_filt_en CLEAR, and it sets the stall threshold
+  to 1 — near the bottom of an 8-bit unsigned range, i.e. stall detection that
+  trips almost immediately. Writing 0 to "turn it off" additionally clears
+  SG_ANGLE_OFFSET. Use the read-modify-write helper below against the shadow.
+
+  Transcribed from tmc/ic/TMC2240/TMC2240_HW_Abstraction.h:542-550 in the
+  octoaxes tree (SG4_THRS 0x000000FF@0, SG4_FILT_EN 0x00000100@8,
+  SG_ANGLE_OFFSET 0x00000200@9), which is the layout their
+  tmc2240_fieldWrite(TMC2240_SG4_FILT_EN_FIELD, ...) targets.
+*/
+#define TMC2240_SG4_THRS_SHIFT    0
+#define TMC2240_SG4_THRS_MASK     (0xFFu << TMC2240_SG4_THRS_SHIFT)
+#define TMC2240_SG4_FILT_EN_SHIFT 8
+#define TMC2240_SG4_FILT_EN_MASK  (0x01u << TMC2240_SG4_FILT_EN_SHIFT)
+
+/*
   DANGER — DO NOT LAUNDER THE SENTINEL INTO ihold OR irun. tmc2240_irun
   returns TMC2240_IRUN_OUT_OF_RANGE (0xFF) when the requested current exceeds
   what the selected CURRENT_RANGE can deliver. 0xFF & 0x1F == 31, so
@@ -148,6 +169,16 @@ static inline uint32_t tmc2240_chopconf_with_toff(uint32_t chopconf, uint8_t tof
 {
     return (chopconf & ~TMC2240_TOFF_MASK)
          | (((uint32_t)toff << TMC2240_TOFF_SHIFT) & TMC2240_TOFF_MASK);
+}
+
+/*
+  Same shadow-sourced read-modify-write contract as the two above: touches only
+  sg4_filt_en and leaves the StallGuard4 threshold and SG_ANGLE_OFFSET alone.
+*/
+static inline uint32_t tmc2240_sg4_thrs_with_filt_en(uint32_t sg4_thrs, bool filter_en)
+{
+    return (sg4_thrs & ~TMC2240_SG4_FILT_EN_MASK)
+         | (filter_en ? TMC2240_SG4_FILT_EN_MASK : 0u);
 }
 
 #endif /* TMC2240_REGS_H */
