@@ -56,25 +56,44 @@
 #define TMC2240_EN_PWM_MODE_BIT 2
 #define TMC2240_DIRECT_MODE_BIT 16
 
-/* COOLCONF: StallGuard threshold, bits [22:16] */
-#define TMC2240_SGT_SHIFT 16
-#define TMC2240_SGT_MASK  (0x7Fu << TMC2240_SGT_SHIFT)
+/*
+  COOLCONF: the StallGuard2 threshold SGT at bits [22:16] and its filter SFILT
+  at bit 24.
+
+  StallGuard2 is the mechanism that is live in this topology. SpreadCycle is
+  what tmc2240_gconf_value(false) selects, and StallGuard4 only operates under
+  StealthChop — so SGT/SFILT are the pair the driver configures, and
+  StallGuard2's flag is also the only one the TMC4361A's STOP_ON_STALL can
+  consume.
+
+  SGT and SFILT share a register, so they must be applied in ONE
+  read-modify-write against the shadow. Two separate writes would each clobber
+  the other's field.
+
+  Transcribed from tmc/ic/TMC2240/TMC2240_HW_Abstraction.h:452-457 in the
+  octoaxes tree (SGT 0x007F0000@16, SFILT 0x01000000@24).
+*/
+#define TMC2240_SGT_SHIFT   16
+#define TMC2240_SGT_MASK    (0x7Fu << TMC2240_SGT_SHIFT)
+#define TMC2240_SFILT_SHIFT 24
+#define TMC2240_SFILT_MASK  (0x01u << TMC2240_SFILT_SHIFT)
 
 /*
-  SG4_THRS (0x74) field positions.
+  SG4_THRS (0x74) field positions — STEALTHCHOP ONLY, currently unused.
 
-  The StallGuard4 FILTER ENABLE is bit 8, NOT bit 0. Bits [7:0] are the
-  StallGuard4 THRESHOLD, and bit 9 is SG_ANGLE_OFFSET. Writing the whole
-  register with the value 1 to "turn the filter on" therefore does two wrong
-  things at once: it leaves sg4_filt_en CLEAR, and it sets the stall threshold
-  to 1 — near the bottom of an 8-bit unsigned range, i.e. stall detection that
-  trips almost immediately. Writing 0 to "turn it off" additionally clears
-  SG_ANGLE_OFFSET. Use the read-modify-write helper below against the shadow.
+  StallGuard4 is inert while GCONF.en_pwm_mode is clear, which is how
+  tmc2240_driver_init configures every axis, so nothing in this tree writes this
+  register. The layout is recorded because it is easy to reach for by mistake:
+  sg4_filt_en is bit 8, NOT bit 0, and bits [7:0] are the StallGuard4 THRESHOLD.
+  Writing the whole register with 1 to "turn the filter on" would leave the
+  filter clear, set the threshold to 1 — near the bottom of an 8-bit unsigned
+  range — and clear SG_ANGLE_OFFSET on the way past. If StealthChop is ever
+  enabled here, add a shadow-sourced read-modify-write helper rather than a
+  whole-register write.
 
   Transcribed from tmc/ic/TMC2240/TMC2240_HW_Abstraction.h:542-550 in the
   octoaxes tree (SG4_THRS 0x000000FF@0, SG4_FILT_EN 0x00000100@8,
-  SG_ANGLE_OFFSET 0x00000200@9), which is the layout their
-  tmc2240_fieldWrite(TMC2240_SG4_FILT_EN_FIELD, ...) targets.
+  SG_ANGLE_OFFSET 0x00000200@9).
 */
 #define TMC2240_SG4_THRS_SHIFT    0
 #define TMC2240_SG4_THRS_MASK     (0xFFu << TMC2240_SG4_THRS_SHIFT)
@@ -117,8 +136,13 @@ static inline uint32_t tmc2240_drv_conf_value(uint8_t current_range)
   direct_mode (bit 16) is MANDATORY in this topology: the TMC4361A drives the
   coil currents over SPI, exactly as DRVCONF.SDOFF=1 does for the TMC2660.
   Without it the TMC2240 waits for step/dir input and ignores current commands.
-  SHAFT (bit 4) has no effect in direct mode — direction comes from the
-  TMC4361A's REVERSE_MOTOR_DIR.
+
+  SHAFT (bit 4) has no effect in direct mode, so direction cannot be set here.
+  It comes from the phase sequence of the TMC4361A's internal microstep table,
+  which SPI_OUTPUT_FORMAT 0x0D maps opposite to the TMC2660's 0x0A. Correcting
+  that is a separate write, and it is NOT part of this word:
+  tmc2240_driver_init() sets GENERAL_CONF.REVERSE_MOTOR_DIR (bit 28). Without
+  that write every TMC2240 axis runs backwards.
 */
 static inline uint32_t tmc2240_gconf_value(bool stealthchop)
 {
@@ -169,16 +193,6 @@ static inline uint32_t tmc2240_chopconf_with_toff(uint32_t chopconf, uint8_t tof
 {
     return (chopconf & ~TMC2240_TOFF_MASK)
          | (((uint32_t)toff << TMC2240_TOFF_SHIFT) & TMC2240_TOFF_MASK);
-}
-
-/*
-  Same shadow-sourced read-modify-write contract as the two above: touches only
-  sg4_filt_en and leaves the StallGuard4 threshold and SG_ANGLE_OFFSET alone.
-*/
-static inline uint32_t tmc2240_sg4_thrs_with_filt_en(uint32_t sg4_thrs, bool filter_en)
-{
-    return (sg4_thrs & ~TMC2240_SG4_FILT_EN_MASK)
-         | (filter_en ? TMC2240_SG4_FILT_EN_MASK : 0u);
 }
 
 #endif /* TMC2240_REGS_H */

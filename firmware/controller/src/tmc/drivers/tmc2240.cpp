@@ -6,35 +6,43 @@
 #include "../TMC4361A_Utils.h"
 
 /*
-  Chopper defaults.
+  Chopper defaults — the octoaxes production set, which is the bench starting
+  point.
 
-  CAUTION, these are NOT simply "the octoaxes production values" — the three
-  sources disagree and the differences are real:
+  These are the only values proven on this silicon in this topology. Master's
+  TMC2660 numbers are NOT transferable: that part uses an external sense
+  resistor and a different hysteresis decode, so its chopper was tuned against
+  different physics. Where the three sources disagree:
 
-    field       this file   octoaxes axis.cpp:106-114   master 2660 (0x000900C3)
-    TOFF        3           3                           3
-    HSTRT       4           0                           4
-    HEND        0 (raw 3)   0 (raw 3)                   raw 1  (i.e. -2)
-    TBL         2           2                           2
-    IHOLDDELAY  6           7                           n/a
-    TPOWERDOWN  10          10                          n/a
+    field          this file / octoaxes axis.cpp:104-114   master 2660 (0x000900C3)
+    TOFF           3                                       3
+    HSTRT          0                                       4
+    HEND           0 (raw 3)                               raw 1  (i.e. -2)
+    TBL            2                                       2
+    INTERPOLATION  false (see below)                       n/a
+    IHOLDDELAY     7                                       n/a
+    TPOWERDOWN     10                                      n/a
 
-  So HSTRT follows master's TMC2660 chopper, HEND follows octoaxes, and
-  IHOLDDELAY follows neither. octoaxes' own comment claims hstrt = 0 "aligns
-  with old Squid CHOPCONF = 0x000900C3" — decode that word (tmc2660_regs.h:65-76)
-  and its HSTRT is 4, so their comment is wrong about their own intent.
+  Note octoaxes' own comment at axis.cpp:107 claims hstrt = 0 "aligns with old
+  Squid CHOPCONF = 0x000900C3" — decode that word (tmc2660_regs.h:65-76) and its
+  HSTRT is 4, so their comment is wrong about their own intent. The VALUE is
+  still theirs and still what ran on the hardware; only the stated reason is
+  wrong.
 
-  These are chopper tuning values with acoustic and thermal consequences and no
-  correctness criterion derivable from code, so they are left exactly as the
-  plan specified rather than silently re-picked here; design M5 gates any
-  chopper change on a bench thermal check. Confirm them on the bench before
-  this ships.
+  INTERPOLATION is the one place this file still differs from octoaxes, which
+  passes true (axis.cpp:105). CHOPCONF.INTPOL interpolates step/dir input up to
+  256 microsteps and is inert under direct_mode, where the TMC4361A sends coil
+  currents rather than steps — so the two settings are equivalent here. Left
+  false because false is what an inert bit should read as.
+
+  Design M5 gates any chopper change on a bench thermal check. Confirm on the
+  bench before this ships.
 */
 #define TMC2240_DEFAULT_TOFF        3
-#define TMC2240_DEFAULT_HSTRT       4
+#define TMC2240_DEFAULT_HSTRT       0
 #define TMC2240_DEFAULT_HEND        0
 #define TMC2240_DEFAULT_TBL         2
-#define TMC2240_DEFAULT_IHOLDDELAY  6
+#define TMC2240_DEFAULT_IHOLDDELAY  7
 #define TMC2240_DEFAULT_TPOWERDOWN  10
 #define TMC2240_COVER_SETTLE_US     50
 
@@ -104,11 +112,15 @@ uint32_t tmc2240_cover_read(TMC4361ATypeDef *tmc4361A, uint8_t address)
 */
 static void tmc2240_write_scale_values(TMC4361ATypeDef *tmc4361A)
 {
+    /* Each operand is cast to uint32_t BEFORE shifting. cscaleParam is a signed
+       int32_t, and 255 << 24 overflows a signed int — undefined behaviour, and
+       reachable at hold_ratio = 1.0. tmc4361A_cScaleInit has the same construct
+       but is frozen for this branch; this is new code and does not inherit it. */
     tmc4361A_writeInt(tmc4361A, TMC4361A_SCALE_VALUES,
-                      (tmc4361A->cscaleParam[HOLDSCALE_IDX] << TMC4361A_HOLD_SCALE_VAL_SHIFT)
-                    | (tmc4361A->cscaleParam[DRV2SCALE_IDX] << TMC4361A_DRV2_SCALE_VAL_SHIFT)
-                    | (tmc4361A->cscaleParam[DRV1SCALE_IDX] << TMC4361A_DRV1_SCALE_VAL_SHIFT)
-                    | (tmc4361A->cscaleParam[BSTSCALE_IDX]  << TMC4361A_BOOST_SCALE_VAL_SHIFT));
+                      (int32_t)(((uint32_t)tmc4361A->cscaleParam[HOLDSCALE_IDX] << TMC4361A_HOLD_SCALE_VAL_SHIFT)
+                              | ((uint32_t)tmc4361A->cscaleParam[DRV2SCALE_IDX] << TMC4361A_DRV2_SCALE_VAL_SHIFT)
+                              | ((uint32_t)tmc4361A->cscaleParam[DRV1SCALE_IDX] << TMC4361A_DRV1_SCALE_VAL_SHIFT)
+                              | ((uint32_t)tmc4361A->cscaleParam[BSTSCALE_IDX]  << TMC4361A_BOOST_SCALE_VAL_SHIFT)));
     tmc4361A_setBits(tmc4361A, TMC4361A_CURRENT_CONF, TMC4361A_DRIVE_CURRENT_SCALE_EN_MASK);
     tmc4361A_setBits(tmc4361A, TMC4361A_CURRENT_CONF, TMC4361A_HOLD_CURRENT_SCALE_EN_MASK);
 }
@@ -162,6 +174,22 @@ void tmc2240_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361)
 
     /* Clear the reset flag. */
     tmc2240_cover_write(tmc4361A, TMC2240_REG_GSTAT, 0x07);
+
+    /* Reverse the TMC4361A's internal microstep table.
+
+       Under GCONF.direct_mode the TMC2240's SHAFT bit does nothing, so rotation
+       direction is set entirely by the phase sequence the TMC4361A transmits —
+       and SPI_OUTPUT_FORMAT 0x0D maps those phases opposite to the TMC2660's
+       0x0A. Without this bit every TMC2240 axis runs backwards, which on the
+       first power-on means homing drives away from the limit switch and into
+       the hard stop. octoaxes sets it for exactly this reason and only for
+       DRIVER_TMC2240 (MotorControl.cpp:309-315).
+
+       setBits, not a whole-register write: GENERAL_CONF also carries
+       USE_ASTART_AND_VSTART, which tmc4361A_sRampInit maintains. This is a
+       TMC4361A register read, which is reliable — it is not a TMC2240 cover
+       read, so the "never read to modify" rule is not in play. */
+    tmc4361A_setBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_REVERSE_MOTOR_DIR_MASK);
 
     /* Zero current until set_current() runs, matching the IHOLD_IRUN seed
        above: cscaleParam is all zeros out of tmc4361A_init(). The TMC2660 path
@@ -256,28 +284,38 @@ int16_t tmc2240_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensi
     if (sensitivity < -64) sensitivity = -64;
     if (vstall_lim >= (1UL << 24)) vstall_lim = (1UL << 24) - 1;
 
-    /* StallGuard4: threshold in COOLCONF.SGT, filter enable in SG4_THRS bit 8.
-       The numeric sensitivity scale differs from the TMC2660's StallGuard2 —
-       the equivalent of the 2660's 12 is found empirically on the bench
-       (design M6, bench checklist step 6).
+    /* StallGuard2: threshold in COOLCONF.SGT, filter in COOLCONF.SFILT (bit 24).
 
-       Both registers are read-modify-written from the SHADOW. octoaxes uses
-       tmc2240_fieldWrite here, which reads the register first; their register
-       table marks COOLCONF and SG4_THRS readable, so that read goes out over
+       StallGuard2, not StallGuard4 — init() selects SpreadCycle
+       (GCONF.en_pwm_mode clear), and StallGuard4 only operates under
+       StealthChop. SG4_THRS is inert in this configuration. StallGuard2's flag
+       is also the only one the TMC4361A's STOP_ON_STALL below can consume.
+
+       filter_en must reach SFILT specifically. The TMC2660 path routes the same
+       argument to SGCSCONF.SFILT, so sending it anywhere else would leave a
+       2240 axis running UNFILTERED StallGuard from an identical call — several
+       times the per-fullstep variance, so the M6 bench tuning would find an SGT
+       that is stable on 2660 axes and trips spuriously mid-scan on 2240 axes.
+
+       ONE read-modify-write: SGT and SFILT share COOLCONF, so two separate
+       writes would each clobber the other's field. Sourced from the SHADOW.
+       octoaxes uses tmc2240_fieldWrite here, which reads the register first;
+       their register table marks COOLCONF readable, so that read goes out over
        the cover path — the same unreliable path whose garbage read-backs broke
        enable() on their W axis. Never read a TMC2240 register to modify it.
+
+       The numeric sensitivity scale differs from the TMC2660's, so the
+       equivalent of the 2660's 12 is found empirically on the bench (design M6,
+       bench checklist step 6).
 
        SGT is a signed 7-bit field. The (uint8_t) cast before masking is what
        makes the two's-complement representation land correctly: -64 becomes
        0xC0, masked to 0x40, which is -64 in 7 bits. */
     uint32_t coolconf = tmc4361A->tmc2240_shadow[TMC2240_REG_COOLCONF];
-    coolconf = (coolconf & ~TMC2240_SGT_MASK)
-             | ((((uint32_t)(uint8_t)sensitivity) << TMC2240_SGT_SHIFT) & TMC2240_SGT_MASK);
+    coolconf = (coolconf & ~(TMC2240_SGT_MASK | TMC2240_SFILT_MASK))
+             | ((((uint32_t)(uint8_t)sensitivity) << TMC2240_SGT_SHIFT) & TMC2240_SGT_MASK)
+             | (filter_en ? TMC2240_SFILT_MASK : 0u);
     tmc2240_cover_write(tmc4361A, TMC2240_REG_COOLCONF, coolconf);
-
-    uint32_t sg4_thrs = tmc4361A->tmc2240_shadow[TMC2240_REG_SG4_THRS];
-    tmc2240_cover_write(tmc4361A, TMC2240_REG_SG4_THRS,
-                        tmc2240_sg4_thrs_with_filt_en(sg4_thrs, filter_en));
 
     /* Identical TMC4361A-side stall reaction to the 2660 path. */
     tmc4361A_writeInt(tmc4361A, TMC4361A_VSTALL_LIMIT_WR, (int32_t)vstall_lim);

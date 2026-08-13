@@ -103,20 +103,6 @@ void test_tmc2240_chopconf_with_toff_preserves_other_fields(void) {
     TEST_ASSERT_EQUAL_UINT32(base, on);
 }
 
-void test_tmc2240_sg4_thrs_filter_enable_is_bit_8(void) {
-    // The StallGuard4 FILTER ENABLE is bit 8 of SG4_THRS, not bit 0. Writing the
-    // whole register with 1 to "enable the filter" leaves the filter OFF and
-    // sets the stall THRESHOLD (bits [7:0]) to 1 instead — stall detection that
-    // trips almost immediately. Pin the bit position so that cannot come back.
-    TEST_ASSERT_EQUAL_UINT32(0x00000100u, tmc2240_sg4_thrs_with_filt_en(0, true));
-    TEST_ASSERT_EQUAL_UINT32(0x00000000u, tmc2240_sg4_thrs_with_filt_en(0, false));
-
-    // Read-modify-write: the threshold and SG_ANGLE_OFFSET (bit 9) survive.
-    uint32_t base = 0x0000037Bu;  // thrs = 0x7B, filt_en = 1, angle_offset = 1
-    TEST_ASSERT_EQUAL_UINT32(0x0000037Bu, tmc2240_sg4_thrs_with_filt_en(base, true));
-    TEST_ASSERT_EQUAL_UINT32(0x0000027Bu, tmc2240_sg4_thrs_with_filt_en(base, false));
-}
-
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_tmc2660_init_datagrams_match_master);
@@ -130,6 +116,5 @@ int main(int argc, char **argv) {
     RUN_TEST(test_tmc2240_chopconf_field_packing);
     RUN_TEST(test_tmc2240_chopconf_with_mres_preserves_other_fields);
     RUN_TEST(test_tmc2240_chopconf_with_toff_preserves_other_fields);
-    RUN_TEST(test_tmc2240_sg4_thrs_filter_enable_is_bit_8);
     return UNITY_END();
 }

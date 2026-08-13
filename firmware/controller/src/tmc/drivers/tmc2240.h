@@ -19,11 +19,17 @@
        table marks COOLCONF (0x6D) readable, that read goes out over the same
        unreliable cover path correction 2 exists to avoid. Same latent bug, one
        register over.
-    4. config_stallguard() sets sg4_filt_en at bit 8 of SG4_THRS rather than
-       writing the whole register — see tmc2240_regs.h.
+    4. config_stallguard() routes filter_en to COOLCONF.SFILT, the StallGuard2
+       filter, applied in the SAME read-modify-write as SGT. Theirs writes
+       SG4_THRS.sg4_filt_en, which is StallGuard4 and inert under the SpreadCycle
+       this driver configures — so their 2240 axes run unfiltered StallGuard
+       while their 2660 axes, from the identical argument, run filtered.
 
   Every operation here writes; none of them reads a TMC2240 register in order to
   modify it. Only the probe reads, and it votes across repeats.
+
+  init() also sets GENERAL_CONF.REVERSE_MOTOR_DIR, without which every TMC2240
+  axis runs backwards under direct_mode. See the comment at the write itself.
 */
 
 /* 40-bit cover datagram helpers, also used by the probe. */
