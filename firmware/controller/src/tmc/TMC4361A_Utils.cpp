@@ -436,9 +436,10 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *tmc4361A) {
    answering, so writing driver registers would be writing into the dark. That
    leaves the power stage unconfigured and therefore unenergised, which is
    design M4's fail-safe half. The other half - rejecting that axis's moves so
-   the failure is loud rather than a stage that silently does not move - is NOT
-   in this commit; it lands with the move-rejection task. Until then a
-   DRIVER_UNKNOWN axis accepts move commands and does nothing. */
+   the failure is loud rather than a stage that silently does not move - is now
+   in place: axis_driver_ready() in stage_commands.cpp gates every host move
+   entry point, and operations.cpp gates the joystick and focus-wheel paths.
+   Both are pinned by test_command_layout. */
 
 void tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
   if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_init(tmc4361A, clk_Hz_TMC4361);
