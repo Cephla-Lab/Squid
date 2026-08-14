@@ -1141,6 +1141,22 @@ def read_objectives_csv(file_path):
     return objectives
 
 
+# On-disk column order for sample_formats.csv. Single source of truth for both the
+# reader and the writer below, so the two cannot drift apart.
+SAMPLE_FORMAT_CSV_FIELDNAMES = (
+    "format",
+    "a1_x_mm",
+    "a1_y_mm",
+    "a1_x_pixel",
+    "a1_y_pixel",
+    "well_size_mm",
+    "well_spacing_mm",
+    "number_of_skip",
+    "rows",
+    "cols",
+)
+
+
 def read_sample_formats_csv(file_path):
     sample_formats = {}
     with open(file_path, "r") as csvfile:
@@ -1162,6 +1178,50 @@ def read_sample_formats_csv(file_path):
     return sample_formats
 
 
+def write_sample_formats_csv(file_path, sample_formats):
+    """Write sample formats to file_path atomically.
+
+    The caller's previous file survives any failure intact: we write a sibling
+    temp file, fsync it, then os.replace() onto the target. That matters because
+    load_formats() parses this file at import time, so a half-written file would
+    prevent the application from starting.
+    """
+    directory = os.path.dirname(file_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    # Same directory as the target so os.replace() stays within one filesystem.
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=SAMPLE_FORMAT_CSV_FIELDNAMES)
+            writer.writeheader()
+            for format_, settings in sample_formats.items():
+                # Project explicitly onto the known columns. A missing column raises
+                # (a blank cell is what breaks load_formats() at import time); an
+                # extra key is dropped, but never silently - if you add a setting you
+                # must add it to SAMPLE_FORMAT_CSV_FIELDNAMES or it will not persist.
+                dropped = set(settings) - set(SAMPLE_FORMAT_CSV_FIELDNAMES)
+                if dropped:
+                    log.warning(
+                        f"Sample format {format_!r} has setting(s) {sorted(dropped)} with no column in "
+                        f"SAMPLE_FORMAT_CSV_FIELDNAMES; they will NOT be saved to {file_path}."
+                    )
+                row = {"format": format_}
+                for field in SAMPLE_FORMAT_CSV_FIELDNAMES[1:]:
+                    row[field] = settings[field]
+                writer.writerow(row)
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def load_formats():
     """Load formats, prioritizing cache for sample formats."""
     cache_path = "cache"
@@ -1174,12 +1234,32 @@ def load_formats():
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
+    sample_formats = None
     if os.path.exists(cached_formats_path):
-        print("Using cached sample formats")
-        sample_formats = read_sample_formats_csv(cached_formats_path)
-    else:
-        print("Using default sample formats")
+        try:
+            sample_formats = read_sample_formats_csv(cached_formats_path)
+        except Exception:
+            # Never propagate: this runs at import time, so raising here means the
+            # application cannot start at all.
+            log.exception(
+                f"Cached sample formats at {cached_formats_path} are unreadable. Falling back to the shipped "
+                f"geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN THE CACHE IS NOT BEING "
+                f"APPLIED, so stage positions will differ from your last session. Move the file aside and "
+                f"recalibrate to clear this."
+            )
+        else:
+            if not sample_formats:
+                log.error(
+                    f"Cached sample formats at {cached_formats_path} parsed but contained no formats. Falling "
+                    f"back to the shipped geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN "
+                    f"THE CACHE IS NOT BEING APPLIED."
+                )
+                sample_formats = None
+
+    if sample_formats is None:
         sample_formats = read_sample_formats_csv(default_formats_path)
+    else:
+        log.info(f"Using cached sample formats from {cached_formats_path}")
 
     return objectives, sample_formats
 

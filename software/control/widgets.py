@@ -13019,26 +13019,10 @@ class WellplateFormatWidget(QWidget):
         self.wellplateChanged(index)
 
     def save_formats_to_csv(self):
+        # Atomic, so an interrupted write cannot leave a cache that load_formats()
+        # chokes on at import time. Column order lives with the reader in _def.
         cache_path = os.path.join("cache", self.csv_path)
-        os.makedirs("cache", exist_ok=True)
-
-        fieldnames = [
-            "format",
-            "a1_x_mm",
-            "a1_y_mm",
-            "a1_x_pixel",
-            "a1_y_pixel",
-            "well_size_mm",
-            "well_spacing_mm",
-            "number_of_skip",
-            "rows",
-            "cols",
-        ]
-        with open(cache_path, "w", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
-                writer.writerow({**{"format": format_}, **settings})
+        control._def.write_sample_formats_csv(cache_path, WELLPLATE_FORMAT_SETTINGS)
 
     @staticmethod
     def parse_csv_row(row):
