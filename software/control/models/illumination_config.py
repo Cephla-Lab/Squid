@@ -24,6 +24,19 @@ class IlluminationType(str, Enum):
     TRANSILLUMINATION = "transillumination"  # LED matrix, brightfield
 
 
+# Default max_output by illumination type. Channels loaded from YAML without the
+# field keep full output; the type-based defaults apply when creating channels.
+DEFAULT_MAX_OUTPUT_EPI = 1.0
+DEFAULT_MAX_OUTPUT_TRANSILLUMINATION = 0.2
+
+
+def default_max_output(channel_type: "IlluminationType") -> float:
+    """Default max_output for a newly created channel of the given type."""
+    if channel_type == IlluminationType.EPI_ILLUMINATION:
+        return DEFAULT_MAX_OUTPUT_EPI
+    return DEFAULT_MAX_OUTPUT_TRANSILLUMINATION
+
+
 class IlluminationChannel(BaseModel):
     """Hardware-level definition of an illumination channel.
 
@@ -50,6 +63,12 @@ class IlluminationChannel(BaseModel):
     )
     wavelength_nm: Optional[int] = Field(
         None, gt=0, description="Wavelength in nm (for epi-illumination channels, must be positive)"
+    )
+    max_output: float = Field(
+        DEFAULT_MAX_OUTPUT_EPI,
+        gt=0,
+        le=1,
+        description="Maximum allowed output as a fraction of full scale; caps intensity at max_output*100 percent",
     )
     intensity_calibration_file: Optional[str] = Field(
         None, description="Reference to calibration CSV file in intensity_calibrations/"

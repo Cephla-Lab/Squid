@@ -94,6 +94,19 @@ class LiveController(QObject):
         """Check if current configuration is LED matrix (source code 0-9)."""
         return 0 <= self._get_illumination_source() < 10
 
+    def get_intensity_cap_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
+        """Maximum allowed illumination intensity (percent) for a channel.
+
+        Derived from the illumination channel's max_output (fraction of full
+        scale). Unknown channels or missing config fall back to 100%.
+        """
+        if not channel_config:
+            return 100.0
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return 100.0
+        return channel_config.get_max_output_percent(ill_config)
+
     # ─────────────────────────────────────────────────────────────────────────────
     # Squid laser engine readiness (warn-only)
     # ─────────────────────────────────────────────────────────────────────────────
@@ -245,6 +258,13 @@ class LiveController(QObject):
             return
         illumination_source = self._get_illumination_source()
         intensity = self.currentConfiguration.illumination_intensity
+        intensity_cap = self.get_intensity_cap_percent(self.currentConfiguration)
+        if intensity > intensity_cap:
+            self._log.warning(
+                f"Clamping illumination intensity for '{self.currentConfiguration.name}' from "
+                f"{intensity}% to {intensity_cap}% (channel max output)"
+            )
+            intensity = intensity_cap
         if self._is_led_matrix():
             if self.microscope.addons.sci_microscopy_led_array:
                 # set color based on channel name
