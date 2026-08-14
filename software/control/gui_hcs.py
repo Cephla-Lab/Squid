@@ -671,7 +671,9 @@ class HighContentScreeningGui(QMainWindow):
         self.live_scan_grid_was_on = None
         self.performance_mode = False
         self.napari_connections = {}
-        self.well_selector_visible = False  # Add this line to track well selector visibility
+        # Tracks whether the user wants the well selector shown.  Only the user's own toggle
+        # (the "Show Well Selector" button) changes this; automatic show/hide is transient.
+        self.well_selector_visible = SHOW_WELL_SELECTOR_BY_DEFAULT
 
         self.multipointController: QtMultiPointController = None
         self.streamHandler: core.QtStreamHandler = None
@@ -2336,7 +2338,10 @@ class HighContentScreeningGui(QMainWindow):
             # trigger flexible regions update
             self.flexibleMultiPointWidget.update_fov_positions()
 
-        self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
+        # Only restore the selector if the user had asked for it - switching to the wellplate tab
+        # does not pop it open on its own.
+        well_selector_applies = is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide"
+        self.toggleWellSelector(well_selector_applies and self.well_selector_visible, remember_state=False)
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -2374,10 +2379,12 @@ class HighContentScreeningGui(QMainWindow):
 
         # TODO(imo): Not sure why glass slide is so special here?  It seems like it's just a "1 well plate".
         if format_ == "glass slide":
-            self.toggleWellSelector(False)
+            self.toggleWellSelector(False, remember_state=False)
             self.stageUtils.is_wellplate = False
         else:
-            self.toggleWellSelector(True)
+            # Picking a plate format makes the selector available, but only show it if the user
+            # already has it turned on.
+            self.toggleWellSelector(self.well_selector_visible, remember_state=False)
             self.stageUtils.is_wellplate = True
 
             # replace and reconnect new well selector
@@ -2502,9 +2509,9 @@ class HighContentScreeningGui(QMainWindow):
             else False
         )
         if is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide":
-            self.toggleWellSelector(not acquisition_started, remember_state=False)
+            self.toggleWellSelector(not acquisition_started and self.well_selector_visible, remember_state=False)
         else:
-            self.toggleWellSelector(False)
+            self.toggleWellSelector(False, remember_state=False)
 
     def _update_ram_monitor_visibility(self):
         """Update RAM monitor widget visibility based on setting."""
