@@ -9,6 +9,9 @@ Resolution order:
   1. ``SQUIDXPLORER_PYTHON`` from the config, if it points at a real file.
   2. A ``squidmip-view`` executable on PATH.
   3. Nothing — the caller tells the operator how to configure it.
+
+``SQUIDXPLORER_GUI_LOCK_DIR``, if set, is passed to the viewer as ``SQUIDMIP_GUI_LOCK_DIR``
+so this handoff does not contend with a SquidXplorer already opened from a desktop shortcut.
 """
 
 import os
@@ -29,6 +32,23 @@ _log = squid.logging.get_logger(__name__)
 # opens empty with no error at all.
 _VIEWER_MODULE = "squidmip._viewer"
 _VIEWER_SCRIPT = "squidmip-view"
+_GUI_LOCK_DIR_ENV = "SQUIDMIP_GUI_LOCK_DIR"
+
+
+def squidxplorer_environment() -> Optional[dict]:
+    """Environment for the viewer process, or None to inherit ours unchanged.
+
+    SquidXplorer allows one GUI at a time per lock directory, and that directory defaults to
+    ~/.cache/squidmip for every checkout on the machine. Handing the viewer its own directory
+    is what lets a run open here while another SquidXplorer window is already up.
+    """
+    lock_dir = (getattr(control._def, "SQUIDXPLORER_GUI_LOCK_DIR", "") or "").strip()
+    if not lock_dir:
+        return None
+
+    env = os.environ.copy()
+    env[_GUI_LOCK_DIR_ENV] = lock_dir
+    return env
 
 
 def resolve_squidxplorer_command(run_dir: str) -> Optional[List[str]]:
@@ -67,12 +87,15 @@ def launch_squidxplorer(run_dir: str) -> Tuple[subprocess.Popen, str]:
     fd, stderr_path = tempfile.mkstemp(suffix=".log", prefix="squidxplorer_launch_")
     stderr_file = os.fdopen(fd, "w")
     try:
-        _log.info(f"Launching SquidXplorer: {command}")
+        env = squidxplorer_environment()
+        lock_note = f" with {_GUI_LOCK_DIR_ENV}={env[_GUI_LOCK_DIR_ENV]}" if env else ""
+        _log.info(f"Launching SquidXplorer: {command}{lock_note}")
         process = subprocess.Popen(
             command,
             stdout=subprocess.DEVNULL,
             stderr=stderr_file,
             shell=False,
+            env=env,
         )
     except Exception:
         stderr_file.close()

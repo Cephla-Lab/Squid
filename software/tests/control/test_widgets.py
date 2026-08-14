@@ -202,6 +202,28 @@ def test_resolve_squidxplorer_command_not_installed(monkeypatch):
     assert squidxplorer_launcher.resolve_squidxplorer_command(r"C:\data\run") is None
 
 
+def test_squidxplorer_environment_sets_lock_dir(monkeypatch):
+    """A configured lock dir reaches the viewer, so it can open alongside another SquidXplorer."""
+    from control.squidxplorer_launcher import squidxplorer_environment
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_GUI_LOCK_DIR", r"C:\viewer\.venv\gui-locks", raising=False)
+    monkeypatch.setenv("SOME_UNRELATED_VAR", "kept")
+
+    env = squidxplorer_environment()
+    assert env["SQUIDMIP_GUI_LOCK_DIR"] == r"C:\viewer\.venv\gui-locks"
+    # The rest of the environment has to come along - the viewer needs PATH and friends.
+    assert env["SOME_UNRELATED_VAR"] == "kept"
+
+
+def test_squidxplorer_environment_unset_inherits(monkeypatch):
+    """No configured lock dir means no env override at all, so SquidXplorer's default applies."""
+    from control.squidxplorer_launcher import squidxplorer_environment
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_GUI_LOCK_DIR", "", raising=False)
+
+    assert squidxplorer_environment() is None
+
+
 # ============================================================================
 # SurfacePlotWidget Tests
 # ============================================================================

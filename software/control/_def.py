@@ -1017,6 +1017,14 @@ SAVE_DOWNSAMPLED_WELL_IMAGES = True
 # Left empty, the launcher falls back to a `squidmip-view` executable on PATH.
 SQUIDXPLORER_PYTHON = ""
 
+# SquidXplorer enforces a single GUI instance with a lock directory that defaults to
+# ~/.cache/squidmip, which every SquidXplorer checkout on a machine shares - so a viewer
+# opened from a desktop shortcut and one opened from here fight over the one slot and the
+# second launch silently no-ops. Set this to the same lock directory the shortcut's launcher
+# uses (it is exported there as SQUIDMIP_GUI_LOCK_DIR) to give this handoff its own slot.
+# Left empty, SquidXplorer's default is used.
+SQUIDXPLORER_GUI_LOCK_DIR = ""
+
 # Plate view zoom limits
 # MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
 # in the smallest dimension. 500 pixels allows inspecting cellular-level details.
@@ -1518,6 +1526,9 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             if _general_config.has_option("GENERAL", "squidxplorer_python"):
                 SQUIDXPLORER_PYTHON = _general_config.get("GENERAL", "squidxplorer_python").strip()
                 log.info(f"Loaded SQUIDXPLORER_PYTHON={SQUIDXPLORER_PYTHON} from config")
+            if _general_config.has_option("GENERAL", "squidxplorer_gui_lock_dir"):
+                SQUIDXPLORER_GUI_LOCK_DIR = _general_config.get("GENERAL", "squidxplorer_gui_lock_dir").strip()
+                log.info(f"Loaded SQUIDXPLORER_GUI_LOCK_DIR={SQUIDXPLORER_GUI_LOCK_DIR} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 
