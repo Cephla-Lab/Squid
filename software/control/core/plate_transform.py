@@ -157,6 +157,28 @@ def _placement_for(format_: str):
     return stored.placements.get(format_)
 
 
+def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
+    """One branch, zero arithmetic between stored angles (override-with-inherit).
+
+    Returns (angle, source) where source is "measured" (this format's placement
+    entry), "holder" (the machine's holder record), or "none". Pitch-0 formats
+    (glass slide, '0') always resolve to 0.0: with a 1x1 grid the only well sits
+    at the pivot, so an angle could not move anything anyway.
+    """
+    settings = control._def.get_wellplate_settings(format_)
+    if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
+        return 0.0, "none"
+    placement = _placement_for(format_)
+    if placement is not None and placement.rotation_deg is not None:
+        return placement.rotation_deg, "measured"
+    from control.models.plate_holder import load_plate_holder
+
+    holder = load_plate_holder()
+    if holder is not None:
+        return holder.rotation_deg, "holder"
+    return 0.0, "none"
+
+
 def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> PlateTransform:
     """The single resolver: nominal geometry + measured placement + legacy offset.
 
@@ -166,7 +188,7 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
 
       a1            <- catalog (shipped CSV + user YAML) + placement DELTA
       pitch/shape   <- catalog (shipped CSV + user YAML)
-      rotation      <- placement override when measured (holder default later)
+      rotation      <- placement override when measured, else the holder record
       legacy offset <- WELLPLATE_OFFSET_*, SUPPRESSED for any format that has a
                        placement entry: the delta is the whole measured
                        correction, so exactly one offset is live per format and
@@ -174,16 +196,15 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
     """
     settings = control._def.get_wellplate_settings(format_)
     placement = _placement_for(format_)
+    rotation, _source = resolve_rotation_deg(format_)
     if placement is not None:
         a1_x = settings["a1_x_mm"] + placement.a1_dx_mm
         a1_y = settings["a1_y_mm"] + placement.a1_dy_mm
-        rotation = placement.rotation_deg if placement.rotation_deg is not None else 0.0
         offset_x = 0.0
         offset_y = 0.0
     else:
         a1_x = settings["a1_x_mm"]
         a1_y = settings["a1_y_mm"]
-        rotation = 0.0
         offset_x = control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0
         offset_y = control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0
     if not apply_legacy_offset:
