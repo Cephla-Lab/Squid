@@ -9148,8 +9148,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             file_path: Path to CSV file containing coordinates
         """
         try:
-            # Read coordinates from CSV
-            df = pd.read_csv(file_path)
+            # Read coordinates from CSV (stamped or legacy-unstamped)
+            from control.core.coordinate_provenance import read_scan_coordinates_csv, staleness_warning
+
+            df, stamp = read_scan_coordinates_csv(file_path)
 
             # Validate CSV format
             required_columns = ["region", "x (mm)", "y (mm)"]
@@ -9182,6 +9184,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Update text area to show loaded file path
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
 
+            # The file stores ABSOLUTE stage positions: warn (but still load) if
+            # the placement changed since it was saved.
+            if stamp is not None:
+                stale = staleness_warning(stamp, self.scanCoordinates.format)
+                if stale:
+                    self._log.warning(stale)
+                    QMessageBox.warning(self, "Coordinates may be stale", stale)
+
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
             QMessageBox.warning(self, "Load Error", f"Failed to load coordinates from {file_path}\nError: {str(e)}")
@@ -9212,10 +9222,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                     for x, y in fov_coords:
                         coordinates.append([region_id, x, y])
 
-                # Save to CSV with headers
+                # Save to CSV with headers and a provenance stamp (the placement
+                # these absolute positions were computed under)
+                from control.core.coordinate_provenance import write_scan_coordinates_csv
 
                 df = pd.DataFrame(coordinates, columns=["region", "x (mm)", "y (mm)"])
-                df.to_csv(file_path, index=False)
+                write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
 
                 self._log.info(f"Saved scan coordinates to {file_path}")
 
@@ -9841,8 +9853,10 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             file_path: Path to CSV file containing coordinates
         """
         try:
-            # Read coordinates from CSV
-            df = pd.read_csv(file_path)
+            # Read coordinates from CSV (stamped or legacy-unstamped)
+            from control.core.coordinate_provenance import read_scan_coordinates_csv, staleness_warning
+
+            df, stamp = read_scan_coordinates_csv(file_path)
 
             # Validate CSV format
             required_columns = ["region", "x (mm)", "y (mm)"]
@@ -9867,6 +9881,14 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
                 self.navigationViewer.register_fovs_to_image(coords)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
+
+            # The file stores ABSOLUTE stage positions: warn (but still load) if
+            # the placement changed since it was saved.
+            if stamp is not None:
+                stale = staleness_warning(stamp, self.scanCoordinates.format)
+                if stale:
+                    self._log.warning(stale)
+                    QMessageBox.warning(self, "Coordinates may be stale", stale)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
