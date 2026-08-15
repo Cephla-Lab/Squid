@@ -1105,11 +1105,13 @@ class HighContentScreeningGui(QMainWindow):
 
         binning_restored = self._restore_binning(cached_settings.binning)
         pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
+        sensor_mode_restored = self._restore_sensor_mode(cached_settings.sensor_mode)
 
-        if binning_restored or pixel_format_restored:
+        if binning_restored or pixel_format_restored or sensor_mode_restored:
             self.log.info(
                 f"Restored camera settings: binning={cached_settings.binning}, "
-                f"pixel_format={cached_settings.pixel_format}"
+                f"pixel_format={cached_settings.pixel_format}, "
+                f"sensor_mode={cached_settings.sensor_mode}"
             )
 
     def _restore_binning(self, binning: Tuple[int, int]) -> bool:
@@ -1158,6 +1160,31 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
         self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        return True
+
+    def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:
+        """Apply sensor mode setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        if not sensor_mode:
+            return False
+
+        try:
+            self.camera.set_sensor_mode(sensor_mode)
+        except (NotImplementedError, ValueError) as e:
+            self.log.warning(f"Cannot restore sensor mode '{sensor_mode}' - not supported by this camera: {e}")
+            return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring sensor mode: {e}")
+            return False
+
+        # The dropdown only exists when the camera reported modes at widget build time.
+        dropdown = getattr(self.cameraSettingWidget, "dropdown_sensorMode", None)
+        if dropdown is not None:
+            dropdown.blockSignals(True)
+            dropdown.setCurrentText(sensor_mode)
+            dropdown.blockSignals(False)
         return True
 
     def setupImageDisplayTabs(self):

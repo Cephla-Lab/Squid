@@ -59,6 +59,7 @@ class TestSaveCameraSettings:
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (2, 2)
         mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO8
+        mock_camera.get_sensor_mode.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "camera_settings.yaml"
@@ -76,6 +77,7 @@ class TestSaveCameraSettings:
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (1, 1)
         mock_camera.get_pixel_format.return_value = None
+        mock_camera.get_sensor_mode.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "camera_settings.yaml"
@@ -92,6 +94,7 @@ class TestSaveCameraSettings:
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (1, 1)
         mock_camera.get_pixel_format.return_value = None
+        mock_camera.get_sensor_mode.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "nested" / "dir" / "camera_settings.yaml"
@@ -206,6 +209,80 @@ class TestLoadCameraSettings:
             assert settings is None
 
 
+class TestSensorMode:
+    """Tests for sensor mode persistence."""
+
+    def test_save_settings_includes_sensor_mode(self):
+        mock_camera = Mock()
+        mock_camera.get_binning.return_value = (1, 1)
+        mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO16
+        mock_camera.get_sensor_mode.return_value = "Ultra Quiet"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            save_camera_settings(mock_camera, cache_path)
+
+            with open(cache_path, "r") as f:
+                data = yaml.safe_load(f)
+
+            assert data["sensor_mode"] == "Ultra Quiet"
+
+    def test_save_settings_sensor_mode_none_when_unsupported(self):
+        """Cameras without sensor mode support report None; the cache stores null."""
+        mock_camera = Mock()
+        mock_camera.get_binning.return_value = (1, 1)
+        mock_camera.get_pixel_format.return_value = None
+        mock_camera.get_sensor_mode.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            save_camera_settings(mock_camera, cache_path)
+
+            with open(cache_path, "r") as f:
+                data = yaml.safe_load(f)
+
+            assert data["sensor_mode"] is None
+
+    def test_load_settings_with_sensor_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            with open(cache_path, "w") as f:
+                yaml.safe_dump({"binning": [2, 2], "pixel_format": "MONO8", "sensor_mode": "fast"}, f)
+
+            settings = load_camera_settings(cache_path)
+
+            assert settings is not None
+            assert settings.sensor_mode == "fast"
+
+    def test_load_old_cache_without_sensor_mode_key(self):
+        """Cache files written before sensor mode existed load with sensor_mode=None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            with open(cache_path, "w") as f:
+                yaml.safe_dump({"binning": [2, 2], "pixel_format": "MONO8"}, f)
+
+            settings = load_camera_settings(cache_path)
+
+            assert settings is not None
+            assert settings.sensor_mode is None
+            assert settings.binning == (2, 2)
+
+    def test_round_trip_sensor_mode(self):
+        mock_camera = Mock()
+        mock_camera.get_binning.return_value = (2, 2)
+        mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO8
+        mock_camera.get_sensor_mode.return_value = "standard"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+
+            save_camera_settings(mock_camera, cache_path)
+            settings = load_camera_settings(cache_path)
+
+            assert settings is not None
+            assert settings.sensor_mode == "standard"
+
+
 class TestRoundTrip:
     """Tests for save/load round-trip."""
 
@@ -214,6 +291,7 @@ class TestRoundTrip:
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (4, 4)
         mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO12
+        mock_camera.get_sensor_mode.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "camera_settings.yaml"
@@ -230,6 +308,7 @@ class TestRoundTrip:
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (2, 2)
         mock_camera.get_pixel_format.return_value = None
+        mock_camera.get_sensor_mode.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "camera_settings.yaml"
