@@ -13103,12 +13103,15 @@ class WellplateCalibration(QDialog):
         self.mode_group = QButtonGroup(self)
         self.new_format_radio = QRadioButton("Add New Format")
         self.calibrate_format_radio = QRadioButton("Calibrate Existing Format")
+        self.holder_rotation_radio = QRadioButton("Measure Holder Rotation")
         self.mode_group.addButton(self.new_format_radio)
         self.mode_group.addButton(self.calibrate_format_radio)
+        self.mode_group.addButton(self.holder_rotation_radio)
         self.new_format_radio.setChecked(True)
 
         left_layout.addWidget(self.new_format_radio)
         left_layout.addWidget(self.calibrate_format_radio)
+        left_layout.addWidget(self.holder_rotation_radio)
 
         # Existing format selection (initially hidden)
         self.existing_format_combo = QComboBox(self)
@@ -13120,6 +13123,7 @@ class WellplateCalibration(QDialog):
         # Connect radio buttons to toggle visibility
         self.new_format_radio.toggled.connect(self.toggle_input_mode)
         self.calibrate_format_radio.toggled.connect(self.toggle_input_mode)
+        self.holder_rotation_radio.toggled.connect(self.toggle_input_mode)
 
         # New format inputs container (hidden when calibrating existing format)
         self.new_format_widget = QWidget()
@@ -13271,6 +13275,13 @@ class WellplateCalibration(QDialog):
         center_point_layout.setColumnStretch(0, 1)
         self.center_point_widget.hide()  # Initially hidden
         left_layout.addWidget(self.center_point_widget)
+
+        # Holder rotation mode (initially hidden). All state lives in a pure
+        # HolderAlignmentSession; this widget is a thin view over it.
+        self.holder_session = None
+        self._build_holder_widget()
+        self.holder_widget.hide()
+        left_layout.addWidget(self.holder_widget)
 
         # Add 'Click to Move' checkbox
         self.clickToMoveCheckbox = QCheckBox("Click to Move")
@@ -13428,17 +13439,297 @@ class WellplateCalibration(QDialog):
 
     def toggle_input_mode(self):
         is_new_format = self.new_format_radio.isChecked()
+        is_holder = self.holder_rotation_radio.isChecked()
 
-        self.new_format_widget.setVisible(is_new_format)
-        self.center_well_size_label.setVisible(is_new_format)
-        self.center_well_size_input.setVisible(is_new_format)
+        self.new_format_widget.setVisible(is_new_format and not is_holder)
+        self.center_well_size_label.setVisible(is_new_format and not is_holder)
+        self.center_well_size_input.setVisible(is_new_format and not is_holder)
 
-        self.existing_format_combo.setVisible(not is_new_format)
-        self.existing_params_group.setVisible(not is_new_format)
-        self.update_params_button.setVisible(not is_new_format)
+        self.existing_format_combo.setVisible(not is_new_format and not is_holder)
+        self.existing_params_group.setVisible(not is_new_format and not is_holder)
+        self.update_params_button.setVisible(not is_new_format and not is_holder)
 
-        if not is_new_format:
+        # The per-A1 method/points UI and the Calibrate button belong to the
+        # two format modes; the holder mode has its own flow and Save.
+        self.calibration_method_group.setVisible(not is_holder)
+        self.points_widget.setVisible(not is_holder and self.edge_points_radio.isChecked())
+        self.center_point_widget.setVisible(not is_holder and self.center_point_radio.isChecked())
+        self.calibrateButton.setVisible(not is_holder)
+        self.holder_widget.setVisible(is_holder)
+
+        if is_holder:
+            self._enter_holder_mode()
+        elif not is_new_format:
             self.load_existing_format_values()
+
+    # ------------------------------------------------------------------------
+    # Holder rotation mode - a thin view over HolderAlignmentSession
+    # ------------------------------------------------------------------------
+
+    def _build_holder_widget(self):
+        from control.core.holder_alignment import CORNER_FEATURES
+
+        self.holder_widget = QWidget()
+        layout = QVBoxLayout(self.holder_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.holder_status_label = QLabel("")
+        self.holder_status_label.setWordWrap(True)
+        layout.addWidget(self.holder_status_label)
+
+        self.holder_method_label = QLabel("")
+        self.holder_method_label.setWordWrap(True)
+        layout.addWidget(self.holder_method_label)
+
+        corner_row = QHBoxLayout()
+        self.holder_corner_label = QLabel("Corner (same on every well):")
+        self.holder_corner_combo = QComboBox()
+        for feature in CORNER_FEATURES:
+            self.holder_corner_combo.addItem(feature.replace("corner_", "").replace("_", " "), feature)
+        self.holder_corner_combo.currentIndexChanged.connect(self._holder_corner_changed)
+        corner_row.addWidget(self.holder_corner_label)
+        corner_row.addWidget(self.holder_corner_combo)
+        layout.addLayout(corner_row)
+
+        wells_grid = QGridLayout()
+        self.holder_well_edits = []
+        self.holder_record_buttons = []
+        self.holder_well_status = []
+        for i in range(4):
+            edit = QLineEdit()
+            edit.setFixedWidth(60)
+            edit.editingFinished.connect(lambda index=i: self._holder_nominate(index))
+            record = QPushButton("Record")
+            record.clicked.connect(lambda checked=False, index=i: self._holder_record(index))
+            status = QLabel("")
+            wells_grid.addWidget(edit, i, 0)
+            wells_grid.addWidget(record, i, 1)
+            wells_grid.addWidget(status, i, 2)
+            self.holder_well_edits.append(edit)
+            self.holder_record_buttons.append(record)
+            self.holder_well_status.append(status)
+        wells_grid.setColumnStretch(2, 1)
+        layout.addLayout(wells_grid)
+
+        self.holder_fit_label = QLabel("")
+        self.holder_fit_label.setWordWrap(True)
+        layout.addWidget(self.holder_fit_label)
+
+        verify_row = QHBoxLayout()
+        self.holder_holdout_edit = QLineEdit()
+        self.holder_holdout_edit.setFixedWidth(60)
+        self.holder_holdout_edit.setPlaceholderText("well")
+        self.holder_holdout_button = QPushButton("Record Hold-out")
+        self.holder_holdout_button.clicked.connect(self._holder_record_holdout)
+        self.holder_test_button = QPushButton("Drive to Test Well")
+        self.holder_test_button.clicked.connect(self._holder_drive_to_test)
+        verify_row.addWidget(self.holder_holdout_edit)
+        verify_row.addWidget(self.holder_holdout_button)
+        verify_row.addWidget(self.holder_test_button)
+        layout.addLayout(verify_row)
+
+        self.holder_holdout_label = QLabel("")
+        self.holder_holdout_label.setWordWrap(True)
+        layout.addWidget(self.holder_holdout_label)
+
+        self.holder_save_button = QPushButton("Save Holder Rotation")
+        self.holder_save_button.clicked.connect(self._holder_save)
+        layout.addWidget(self.holder_save_button)
+
+    def _enter_holder_mode(self):
+        """(Re)create the session for the CURRENTLY selected plate format."""
+        from control.core.holder_alignment import HolderAlignmentSession, SessionError
+
+        format_ = self.wellplateFormatWidget.wellplate_format
+        try:
+            self.holder_session = HolderAlignmentSession(format_)
+        except SessionError as e:
+            self.holder_session = None
+            self.holder_status_label.setText(str(e))
+            for widget in (self.holder_corner_combo, self.holder_save_button, self.holder_test_button):
+                widget.setEnabled(False)
+            for button in self.holder_record_buttons:
+                button.setEnabled(False)
+            return
+
+        session = self.holder_session
+        for widget in (self.holder_save_button, self.holder_test_button):
+            widget.setEnabled(True)
+        for button in self.holder_record_buttons:
+            button.setEnabled(True)
+        is_square = session.touches_per_well == 1
+        self.holder_corner_label.setVisible(is_square)
+        self.holder_corner_combo.setVisible(is_square)
+        self.holder_corner_combo.setEnabled(True)
+        self.holder_method_label.setText(
+            f"{format_}: touch the SAME corner on each of the 4 wells below."
+            if is_square
+            else f"{format_}: touch 3 points on the rim of each of the 4 wells below."
+        )
+        for i, well in enumerate(session.reference_wells):
+            self.holder_well_edits[i].setText(well.well_id)
+        self._holder_refresh()
+
+    def _holder_refresh(self):
+        session = self.holder_session
+        self.holder_status_label.setText(session.status_line())
+        for i, well in enumerate(session.reference_wells):
+            done = well.point_mm is not None
+            if done:
+                text = f"({well.point_mm[0]:.3f}, {well.point_mm[1]:.3f}) mm"
+                if well.fitted_radius_mm is not None:
+                    text += f", r = {well.fitted_radius_mm:.3f} mm"
+            else:
+                text = f"{len(well.touches)}/{session.touches_per_well} touches"
+            self.holder_well_status[i].setText(text)
+        # The corner is locked once any touch exists (it applies to every well).
+        if session.touches_per_well == 1:
+            self.holder_corner_combo.setEnabled(not any(w.touches for w in session.reference_wells))
+
+        if not session.can_fit:
+            self.holder_fit_label.setText(f"{session.wells_measured}/4 wells measured (3 minimum to fit).")
+            self.holder_save_button.setEnabled(False)
+            self.holder_test_button.setEnabled(False)
+            return
+        result = session.fit()
+        residuals = ", ".join(f"{r:.0f}" for r in result.residuals_um)
+        lines = [
+            f"Rotation {result.rotation_deg:.2f} deg  (scale QC {result.fitted_scale:.5f})",
+            f"Click noise sigma {result.sigma_hat_um:.0f} um; residuals [{residuals}] um",
+            f"Predicted {result.predicted_rms_um:.0f} um RMS / {result.predicted_p95_um:.0f} um p95 at {result.worst_well}",
+        ]
+        for gate in result.gates:
+            lines.append(("REJECTED: " if gate.level == "reject" else "Check: ") + gate.message)
+        self.holder_fit_label.setText("\n".join(lines))
+        self.holder_save_button.setEnabled(not result.rejected)
+        self.holder_test_button.setEnabled(not result.rejected)
+
+    def _holder_error(self, exc):
+        QMessageBox.warning(self, "Holder Alignment", str(exc))
+
+    def _holder_corner_changed(self):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None:
+            return
+        try:
+            self.holder_session.set_corner_feature(self.holder_corner_combo.currentData())
+        except SessionError as e:
+            self._holder_error(e)
+
+    def _holder_nominate(self, index):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None:
+            return
+        well = self.holder_session.reference_wells[index]
+        text = self.holder_well_edits[index].text().strip()
+        if text == well.well_id:
+            return
+        try:
+            self.holder_session.nominate(index, text)
+        except SessionError as e:
+            self.holder_well_edits[index].setText(well.well_id)
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_record(self, index):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None:
+            return
+        pos = self.stage.get_pos()
+        try:
+            self.holder_session.record_touch(index, pos.x_mm, pos.y_mm)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_record_holdout(self):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        pos = self.stage.get_pos()
+        try:
+            residual = self.holder_session.holdout_residual_um(
+                self.holder_holdout_edit.text().strip(), (pos.x_mm, pos.y_mm)
+            )
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.holder_holdout_label.setText(
+            f"Hold-out residual at {self.holder_holdout_edit.text().strip()}: {residual:.0f} um "
+            f"(measured, not modeled)"
+        )
+
+    def _holder_drive_to_test(self):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        try:
+            result = self.holder_session.fit()
+            x_mm, y_mm = self.holder_session.predicted_touch_mm(result.worst_well)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.stage.move_x_to(x_mm)
+        self.stage.move_y_to(y_mm)
+
+    def _holder_save(self):
+        from control.core.holder_alignment import SessionError
+
+        if self.holder_session is None:
+            return
+        session = self.holder_session
+        try:
+            result = session.fit()
+        except SessionError as e:
+            self._holder_error(e)
+            return
+
+        confirm = False
+        if result.needs_confirmation:
+            # Warn-gates require typing the value to confirm - a click-through
+            # dialog would defeat the point of the gate.
+            typed, ok = QInputDialog.getText(
+                self,
+                "Confirm measured rotation",
+                "\n".join(g.message for g in result.gates if g.level == "warn")
+                + f"\n\nType the angle ({result.rotation_deg:.2f}) to confirm:",
+            )
+            if not ok or typed.strip() != f"{result.rotation_deg:.2f}":
+                return
+            confirm = True
+
+        clear = ()
+        stale = session.formats_with_measured_overrides()
+        if stale:
+            answer = QMessageBox.question(
+                self,
+                "Stale rotation overrides",
+                f"{len(stale)} format(s) carry a rotation measured under the previous mounting: "
+                f"{', '.join(stale)}. Clear them to inherit the new angle?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                clear = tuple(stale)
+
+        try:
+            holder = session.save(confirm_warnings=confirm, clear_overrides=clear)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+        QMessageBox.information(
+            self,
+            "Holder rotation saved",
+            f"Rotation {holder.rotation_deg:.2f} deg saved to machine_configs/plate_holder.yaml. "
+            f"It now applies to every plate format without a measured override.",
+        )
 
     def load_existing_format_values(self):
         """Load current values from selected existing format into the parameter inputs."""
