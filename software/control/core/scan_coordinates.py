@@ -8,7 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
-from control.core.plate_transform import PlateTransform, WellplateSettings
+from control.core.plate_transform import PlateTransform, WellplateSettings, plate_transform_for
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -66,16 +66,12 @@ class ScanCoordinates:
         self.well_selector = None
         self.acquisition_pattern = control._def.ACQUISITION_PATTERN
         self.fov_pattern = control._def.FOV_PATTERN
+        # Identity + display state only. All well-center GEOMETRY (a1, pitch,
+        # offsets) is resolved at compute time via plate_transform_for() - the
+        # __init__ snapshots this class used to keep meant an offset or
+        # calibration change was silently ignored until a signal re-emit.
         self.format = control._def.WELLPLATE_FORMAT
-        self.a1_x_mm = control._def.A1_X_MM
-        self.a1_y_mm = control._def.A1_Y_MM
-        self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
-        self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = control._def.WELL_SPACING_MM
         self.well_size_mm = control._def.WELL_SIZE_MM
-        self.a1_x_pixel = None
-        self.a1_y_pixel = None
-        self.number_of_skip = None
 
         # Centralized region management
         self.region_centers = {}  # {region_id: [x, y, z]}
@@ -86,16 +82,10 @@ class ScanCoordinates:
         self.well_selector = well_selector
 
     def update_wellplate_settings(self, settings: "WellplateSettings"):
-        # Previously this slot took 8 of the signal's 10 positional args and Qt
-        # silently dropped the rest in transit; the object cannot be truncated.
+        # Identity + display state only; geometry is resolved at compute time
+        # via plate_transform_for(self.format).
         self.format = settings.format
-        self.a1_x_mm = settings.a1_x_mm
-        self.a1_y_mm = settings.a1_y_mm
-        self.a1_x_pixel = settings.a1_x_pixel
-        self.a1_y_pixel = settings.a1_y_pixel
         self.well_size_mm = settings.well_size_mm
-        self.well_spacing_mm = settings.well_spacing_mm
-        self.number_of_skip = settings.number_of_skip
 
     @staticmethod
     def _index_to_row(index):
@@ -134,17 +124,9 @@ class ScanCoordinates:
         # populate the coordinates
         rows = np.unique(selected_wells[:, 0])
         _increasing = True
-        # NOTE: built from this object's snapshots (offsets captured at __init__)
-        # to preserve current behaviour exactly; the compute-time-resolution
-        # commit replaces this with plate_transform_for().
-        transform = PlateTransform(
-            a1_x_mm=self.a1_x_mm,
-            a1_y_mm=self.a1_y_mm,
-            pitch_x_mm=self.well_spacing_mm,
-            pitch_y_mm=self.well_spacing_mm,
-            offset_x_mm=self.wellplate_offset_x_mm,
-            offset_y_mm=self.wellplate_offset_y_mm,
-        )
+        # Resolved at COMPUTE time: an in-place calibration edit or offset
+        # change now affects planning without a signal re-emit.
+        transform = plate_transform_for(self.format)
         for row in rows:
             items = selected_wells[selected_wells[:, 0] == row]
             columns = items[:, 1]

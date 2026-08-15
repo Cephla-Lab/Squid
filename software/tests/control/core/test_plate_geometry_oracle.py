@@ -69,9 +69,8 @@ def range_string(settings):
 @pytest.mark.parametrize("off", OFFSETS, ids=["offset0", "offsetXY"])
 @pytest.mark.parametrize("format_", PLATE_FORMATS)
 def test_scan_coordinates_get_selected_wells(monkeypatch, format_, off):
-    # ScanCoordinates snapshots the offsets at __init__ (scan_coordinates.py:71-72),
-    # so they must be patched BEFORE construction. That snapshot-vs-live split is
-    # itself pinned by test_offset_read_time_disagreement below.
+    # Offsets are resolved at compute time, so patch order vs construction no
+    # longer matters (see test_offset_read_time_agreement).
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", off[0])
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
@@ -195,13 +194,14 @@ def test_well1536_selection_widget_navigation(qtbot, monkeypatch, off):
     assert captured == [expected_xy(s, r, c, off[0], off[1]) for r, c in probes]
 
 
-# ---- the snapshot-vs-live inconsistency, pinned so a fix is a visible flip ----
+# ---- snapshot-vs-live: FLIPPED to agreement by compute-time resolution ----
 
 
-def test_offset_read_time_disagreement(monkeypatch):
-    """ScanCoordinates snapshots the offsets at __init__ while the SiLA2 range
-    path reads them live at call time. This inconsistency is CURRENT behaviour;
-    the compute-time-resolution commit will flip this test to agreement."""
+def test_offset_read_time_agreement(monkeypatch):
+    """EXPECTATION FLIPPED by the compute-time-resolution commit:
+    ScanCoordinates used to snapshot the offsets at __init__ (an offset or
+    calibration change was silently ignored until a signal re-emit) while the
+    SiLA2 path read them live. Both now resolve at call time and agree."""
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
 
@@ -221,5 +221,22 @@ def test_offset_read_time_disagreement(monkeypatch):
     sila.get_selected_well_coordinates("A1", s)
     sila_center = sila.region_centers["A1"]
 
-    assert gui_center == (s["a1_x_mm"], s["a1_y_mm"])  # snapshot: offset NOT applied
-    assert sila_center == (s["a1_x_mm"] + 2.0, s["a1_y_mm"] + 2.0)  # live: applied
+    expected = (s["a1_x_mm"] + 2.0, s["a1_y_mm"] + 2.0)
+    assert gui_center == expected  # live now
+    assert sila_center == expected  # live as before
+
+
+def test_calibration_edit_applies_without_reemit(monkeypatch):
+    """The concrete payoff: the calibration dialog mutates
+    WELLPLATE_FORMAT_SETTINGS in place; planning must see it without a signal."""
+    sc = ScanCoordinates(objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock())
+    sc.update_wellplate_settings(WellplateSettings.from_format("96 well plate"))
+    sc.well_selector = SimpleNamespace(get_selected_cells=lambda: [[0, 0]])
+
+    original = _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]["a1_x_mm"]
+    try:
+        _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]["a1_x_mm"] = original + 0.5
+        x, _ = sc.get_selected_wells()["A1"]
+        assert x == original + 0.5 + _def.WELLPLATE_OFFSET_X_mm
+    finally:
+        _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]["a1_x_mm"] = original
