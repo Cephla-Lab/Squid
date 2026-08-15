@@ -178,7 +178,7 @@ class HolderAlignmentSession:
         if feature not in CORNER_FEATURES:
             raise SessionError(f"Unknown corner {feature!r}.")
         if any(w.touches for w in self.reference_wells):
-            raise SessionError("The corner must be chosen before recording - it applies to every well.")
+            raise SessionError("The corner must be chosen before the first point is set - it applies to every well.")
         self.feature = feature
 
     def record_touch(self, index: int, x_mm: float, y_mm: float):
