@@ -74,7 +74,7 @@ def test_select_format_silently_emits_exactly_once(qtbot):
 
     assert index >= 0
     assert len(emissions) == 1, f"expected one emission, saw {[e[0] for e in emissions]}"
-    assert emissions[0][0] == "384 well plate"
+    assert emissions[0][0].format == "384 well plate"
     assert widget.wellplate_format == "384 well plate"
     assert widget.comboBox.currentData() == "384 well plate"
 
@@ -88,7 +88,7 @@ def test_select_format_silently_never_emits_the_first_dict_entry(qtbot):
 
     _select_data(widget, "96 well plate")
     emissions = []
-    widget.signalWellplateSettings.connect(lambda *args: emissions.append(args[0]))
+    widget.signalWellplateSettings.connect(lambda settings: emissions.append(settings.format))
 
     widget.select_format_silently(target)
 

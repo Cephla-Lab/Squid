@@ -1663,21 +1663,16 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_wellplate_settings(
-        self,
-        sample_format,
-        a1_x_mm,
-        a1_y_mm,
-        a1_x_pixel,
-        a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
-        number_of_skip,
-        rows,
-        cols,
-    ):
-        if isinstance(sample_format, QVariant):
-            sample_format = sample_format.value()
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        sample_format = settings.format
+        a1_x_mm = settings.a1_x_mm
+        a1_y_mm = settings.a1_y_mm
+        a1_x_pixel = settings.a1_x_pixel
+        a1_y_pixel = settings.a1_y_pixel
+        well_size_mm = settings.well_size_mm
+        number_of_skip = settings.number_of_skip
+        rows = settings.rows
+        cols = settings.cols
 
         if sample_format == "glass slide":
             if IS_HCS:
@@ -1693,8 +1688,8 @@ class NavigationViewer(QFrame):
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
         self.well_size_mm = well_size_mm
-        # well_spacing_mm parameter is accepted (fixed 10-arg signal) but not stored:
-        # NavigationViewer's mm<->pixel mapping never uses the pitch.
+        # settings.well_spacing_mm is deliberately not stored: NavigationViewer's
+        # mm<->pixel mapping never uses the pitch.
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols

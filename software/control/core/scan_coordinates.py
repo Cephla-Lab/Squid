@@ -8,7 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
-from control.core.plate_transform import PlateTransform
+from control.core.plate_transform import PlateTransform, WellplateSettings
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -85,17 +85,17 @@ class ScanCoordinates:
     def add_well_selector(self, well_selector):
         self.well_selector = well_selector
 
-    def update_wellplate_settings(
-        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
-    ):
-        self.format = format_
-        self.a1_x_mm = a1_x_mm
-        self.a1_y_mm = a1_y_mm
-        self.a1_x_pixel = a1_x_pixel
-        self.a1_y_pixel = a1_y_pixel
-        self.well_size_mm = size_mm
-        self.well_spacing_mm = spacing_mm
-        self.number_of_skip = number_of_skip
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        # Previously this slot took 8 of the signal's 10 positional args and Qt
+        # silently dropped the rest in transit; the object cannot be truncated.
+        self.format = settings.format
+        self.a1_x_mm = settings.a1_x_mm
+        self.a1_y_mm = settings.a1_y_mm
+        self.a1_x_pixel = settings.a1_x_pixel
+        self.a1_y_pixel = settings.a1_y_pixel
+        self.well_size_mm = settings.well_size_mm
+        self.well_spacing_mm = settings.well_spacing_mm
+        self.number_of_skip = settings.number_of_skip
 
     @staticmethod
     def _index_to_row(index):

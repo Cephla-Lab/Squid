@@ -33,6 +33,50 @@ class PlateGeometryError(ValueError):
 
 
 @dataclass(frozen=True)
+class WellplateSettings:
+    """The payload of signalWellplateSettings.
+
+    Replaces the old 10-positional-arg Qt signal, whose slots silently dropped
+    trailing arguments when their signatures were shorter (ScanCoordinates
+    accepted 8 of the 10). An object cannot be truncated in transit, and new
+    fields do not require touching every connect() in lockstep.
+    """
+
+    format: str
+    a1_x_mm: float
+    a1_y_mm: float
+    a1_x_pixel: int
+    a1_y_pixel: int
+    well_size_mm: float
+    well_spacing_mm: float
+    number_of_skip: int
+    rows: int
+    cols: int
+
+    @staticmethod
+    def from_format(format_: str) -> "WellplateSettings":
+        s = control._def.get_wellplate_settings(format_)
+        return WellplateSettings(
+            format=format_,
+            a1_x_mm=s["a1_x_mm"],
+            a1_y_mm=s["a1_y_mm"],
+            a1_x_pixel=s["a1_x_pixel"],
+            a1_y_pixel=s["a1_y_pixel"],
+            well_size_mm=s["well_size_mm"],
+            well_spacing_mm=s["well_spacing_mm"],
+            number_of_skip=s["number_of_skip"],
+            rows=s["rows"],
+            cols=s["cols"],
+        )
+
+    @staticmethod
+    def glass_slide() -> "WellplateSettings":
+        # The literal values the old code emitted for glass slide; only
+        # reachable if the CSV's "glass slide" row is somehow absent.
+        return WellplateSettings("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
+
+
+@dataclass(frozen=True)
 class PlateTransform:
     a1_x_mm: float
     a1_y_mm: float

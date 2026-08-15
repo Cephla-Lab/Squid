@@ -1578,7 +1578,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.scanCoordinates.update_wellplate_settings)
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         self.wellplateFormatWidget.signalWellplateSettings.connect(
-            lambda format_, *args: self.onWellplateChanged(format_)
+            lambda settings: self.onWellplateChanged(settings.format)
         )
 
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)

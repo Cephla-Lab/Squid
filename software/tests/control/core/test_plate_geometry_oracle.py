@@ -27,6 +27,7 @@ import pytest
 
 import control._def as _def
 import control.utils
+from control.core.plate_transform import WellplateSettings
 from control.core.scan_coordinates import ScanCoordinates, ScanCoordinatesSiLA2
 from control.microscope_control_server import MicroscopeControlServer
 
@@ -76,16 +77,7 @@ def test_scan_coordinates_get_selected_wells(monkeypatch, format_, off):
 
     sc = ScanCoordinates(objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock())
     s = _def.WELLPLATE_FORMAT_SETTINGS[format_]
-    sc.update_wellplate_settings(
-        format_,
-        s["a1_x_mm"],
-        s["a1_y_mm"],
-        s["a1_x_pixel"],
-        s["a1_y_pixel"],
-        s["well_size_mm"],
-        s["well_spacing_mm"],
-        s["number_of_skip"],
-    )
+    sc.update_wellplate_settings(WellplateSettings.from_format(format_))
     cells = [[r, c] for r, c in all_wells(s)]
     sc.well_selector = SimpleNamespace(get_selected_cells=lambda: cells)
 
@@ -218,16 +210,7 @@ def test_offset_read_time_disagreement(monkeypatch):
         objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
     )
     s = _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]
-    sc.update_wellplate_settings(
-        "96 well plate",
-        s["a1_x_mm"],
-        s["a1_y_mm"],
-        s["a1_x_pixel"],
-        s["a1_y_pixel"],
-        s["well_size_mm"],
-        s["well_spacing_mm"],
-        s["number_of_skip"],
-    )
+    sc.update_wellplate_settings(WellplateSettings.from_format("96 well plate"))
     sc.well_selector = SimpleNamespace(get_selected_cells=lambda: [[0, 0]])
 
     # Offset changes AFTER construction:

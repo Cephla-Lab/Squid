@@ -25,7 +25,7 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
-from control.core.plate_transform import PlateTransform
+from control.core.plate_transform import PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
@@ -12924,7 +12924,9 @@ class LaserAutofocusControlWidget(QFrame):
 
 class WellplateFormatWidget(QWidget):
 
-    signalWellplateSettings = Signal(str, float, float, int, int, float, float, int, int, int)
+    # One object instead of 10 positional args: slots with shorter signatures
+    # used to silently drop the trailing arguments in transit.
+    signalWellplateSettings = Signal(object)
 
     def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
@@ -13007,26 +13009,11 @@ class WellplateFormatWidget(QWidget):
 
     def setWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-            settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+            self.signalWellplateSettings.emit(WellplateSettings.from_format(wellplate_format))
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
-            return
+            self.signalWellplateSettings.emit(WellplateSettings.glass_slide())
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
-            return
-
-        self.signalWellplateSettings.emit(
-            wellplate_format,
-            settings["a1_x_mm"],
-            settings["a1_y_mm"],
-            settings["a1_x_pixel"],
-            settings["a1_y_pixel"],
-            settings["well_size_mm"],
-            settings["well_spacing_mm"],
-            settings["number_of_skip"],
-            settings["rows"],
-            settings["cols"],
-        )
 
     def getWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:

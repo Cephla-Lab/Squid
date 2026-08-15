@@ -51,7 +51,9 @@ def _viewer_lookup(monkeypatch, sample):
     monkeypatch.setattr(viewer, "update_display_properties", lambda s: None, raising=False)
     monkeypatch.setattr(viewer, "draw_current_fov", lambda x, y: None, raising=False)
 
-    viewer.update_wellplate_settings(sample, 15.0, 12.0, 177, 142, 9.0, 12.0, 0, 2, 4)
+    from control.core.plate_transform import WellplateSettings
+
+    viewer.update_wellplate_settings(WellplateSettings(sample, 15.0, 12.0, 177, 142, 9.0, 12.0, 0, 2, 4))
     assert len(loaded) == 1
     return loaded[0]
 
