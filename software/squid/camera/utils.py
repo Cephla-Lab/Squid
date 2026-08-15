@@ -104,14 +104,12 @@ def get_camera(
 
         return camera
     except ImportError as e:
-        _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
-        _log.warning(e)
-
-        import control.camera
-
-        return control.camera.DefaultCamera(
-            config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
-        )
+        # Do not fall back to another vendor's driver: a misleading Daheng error (or a
+        # silently wrong camera) is much harder to act on than the real cause.
+        raise CameraError(
+            f"Camera driver import failed for camera_type={config.camera_type.name}: {e}. "
+            "Install the vendor SDK for this camera (see 'drivers and libraries/' and setup_22.04.sh)."
+        ) from e
 
 
 class SimulatedCamera(AbstractCamera):

@@ -1,14 +1,30 @@
+import sys
 from typing import Optional, Sequence
+
+import pytest
 
 import squid.camera.utils
 import squid.config
-from squid.abc import AbstractCamera, CameraFrame
+from squid.abc import AbstractCamera, CameraError, CameraFrame
 from squid.camera.utils import SimulatedCamera
 from squid.config import CameraConfig
 
 
 def test_create_simulated_camera():
     sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+
+def test_get_camera_raises_clearly_when_the_driver_import_fails(monkeypatch):
+    # A None entry makes `import control.camera_photometrics` raise ImportError, which is
+    # what happens on a machine without the vendor SDK installed. get_camera must surface
+    # that clearly instead of silently substituting a different vendor's camera.
+    monkeypatch.setitem(sys.modules, "control.camera_photometrics", None)
+    config = squid.config.CameraConfig(
+        camera_type=squid.config.CameraVariant.PHOTOMETRICS,
+        default_pixel_format=squid.config.CameraPixelFormat.MONO16,
+    )
+    with pytest.raises(CameraError, match="PHOTOMETRICS"):
+        squid.camera.utils.get_camera(config, simulated=False)
 
 
 def test_simulated_camera():
