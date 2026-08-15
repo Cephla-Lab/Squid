@@ -3974,7 +3974,11 @@ class CameraSettingsWidget(QFrame):
         # No-op (and no camera command) when the mode is already current; an unknown
         # mode isn't in the item list, so the selection and camera stay unchanged.
         self.dropdown_sensorMode.setCurrentText(mode)
-        return self.camera.get_sensor_mode() == mode
+        try:
+            return self.camera.get_sensor_mode() == mode
+        except CameraError:
+            self._log.exception("Failed to read back sensor mode after restore.")
+            return False
 
     def _revert_sensor_mode_dropdown(self):
         self.dropdown_sensorMode.blockSignals(True)

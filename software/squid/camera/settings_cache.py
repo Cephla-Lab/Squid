@@ -121,6 +121,12 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
         _log.error(f"Cannot read camera settings cache - file system error: {e}")
         return None
 
+    if not isinstance(settings, dict):
+        _log.error(
+            f"Camera settings cache at {cache_path} does not contain a mapping. Delete this file to reset to defaults."
+        )
+        return None
+
     try:
         binning_raw = settings.get("binning")
         if not isinstance(binning_raw, list) or len(binning_raw) != 2:

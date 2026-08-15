@@ -8,6 +8,7 @@ the full (CI-skipped) HighContentScreeningGui.
 from types import SimpleNamespace
 
 import squid.logging
+from squid.abc import CameraError
 from control.gui_hcs import HighContentScreeningGui
 from control.widgets import CameraSettingsWidget
 from tests.tools import get_test_camera
@@ -59,6 +60,20 @@ class TestRestoreSensorMode:
         gui = _make_gui_stub(camera, qtbot)
 
         assert gui.cameraSettingWidget.dropdown_sensorMode is None
+
+        restored = HighContentScreeningGui._restore_sensor_mode(gui, "fast")
+
+        assert restored is False
+
+    def test_readback_camera_error_fails_safe(self, qtbot):
+        """A device error while reading back the mode must fail the restore, not crash startup."""
+        camera = get_test_camera()
+        gui = _make_gui_stub(camera, qtbot)
+
+        def raise_camera_error():
+            raise CameraError("device read failed")
+
+        camera.get_sensor_mode = raise_camera_error
 
         restored = HighContentScreeningGui._restore_sensor_mode(gui, "fast")
 

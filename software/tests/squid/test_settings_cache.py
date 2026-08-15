@@ -165,6 +165,22 @@ class TestLoadCameraSettings:
             settings = load_camera_settings(cache_path)
             assert settings is None
 
+    def test_load_empty_file_returns_none(self):
+        """Empty cache file: yaml.safe_load returns None; must fail safe, not raise."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            cache_path.write_text("")
+
+            assert load_camera_settings(cache_path) is None
+
+    def test_load_non_mapping_yaml_returns_none(self):
+        """Cache file holding a scalar/list instead of a mapping must fail safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
+            cache_path.write_text("just a string\n")
+
+            assert load_camera_settings(cache_path) is None
+
     def test_load_corrupted_yaml(self):
         """Test loading corrupted YAML returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1172,7 +1172,9 @@ class HighContentScreeningGui(QMainWindow):
 
         restored = self.cameraSettingWidget.restore_sensor_mode(sensor_mode)
         if not restored:
-            self.log.warning(f"Cannot restore sensor mode '{sensor_mode}' - not supported by this camera")
+            self.log.warning(
+                f"Cannot restore sensor mode '{sensor_mode}' - camera does not support it or the mode name is unknown"
+            )
         return restored
 
     def setupImageDisplayTabs(self):
