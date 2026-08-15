@@ -8,6 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
+from control.core.plate_transform import PlateTransform
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -133,6 +134,17 @@ class ScanCoordinates:
         # populate the coordinates
         rows = np.unique(selected_wells[:, 0])
         _increasing = True
+        # NOTE: built from this object's snapshots (offsets captured at __init__)
+        # to preserve current behaviour exactly; the compute-time-resolution
+        # commit replaces this with plate_transform_for().
+        transform = PlateTransform(
+            a1_x_mm=self.a1_x_mm,
+            a1_y_mm=self.a1_y_mm,
+            pitch_x_mm=self.well_spacing_mm,
+            pitch_y_mm=self.well_spacing_mm,
+            offset_x_mm=self.wellplate_offset_x_mm,
+            offset_y_mm=self.wellplate_offset_y_mm,
+        )
         for row in rows:
             items = selected_wells[selected_wells[:, 0] == row]
             columns = items[:, 1]
@@ -140,10 +152,8 @@ class ScanCoordinates:
             if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
-                x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
-                y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
                 well_id = self._index_to_row(row) + str(column + 1)
-                well_centers[well_id] = (x_mm, y_mm)
+                well_centers[well_id] = transform.well_center_mm(row, column)
             _increasing = not _increasing
         return well_centers
 
@@ -730,6 +740,19 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
         descriptions = well_names.split(",")
 
+        # Offsets read LIVE at call time - this path has always disagreed with
+        # ScanCoordinates' snapshot-at-__init__ behaviour, and the golden oracle
+        # pins that disagreement until compute-time resolution unifies them.
+        pitch = wellplate_settings["well_spacing_mm"]
+        transform = PlateTransform(
+            a1_x_mm=wellplate_settings["a1_x_mm"],
+            a1_y_mm=wellplate_settings["a1_y_mm"],
+            pitch_x_mm=pitch,
+            pitch_y_mm=pitch,
+            offset_x_mm=control._def.WELLPLATE_OFFSET_X_mm,
+            offset_y_mm=control._def.WELLPLATE_OFFSET_Y_mm,
+        )
+
         for desc in descriptions:
             match = re.match(pattern, desc.strip())
             if match:
@@ -747,29 +770,13 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                             cols = reversed(cols)
 
                         for col in cols:
-                            x_mm = (
-                                wellplate_settings["a1_x_mm"]
-                                + col * wellplate_settings["well_spacing_mm"]
-                                + control._def.WELLPLATE_OFFSET_X_mm
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = transform.well_center_mm(
+                                row, col
                             )
-                            y_mm = (
-                                wellplate_settings["a1_y_mm"]
-                                + row * wellplate_settings["well_spacing_mm"]
-                                + control._def.WELLPLATE_OFFSET_Y_mm
-                            )
-                            self.region_centers[self._index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
                 else:
-                    x_mm = (
-                        wellplate_settings["a1_x_mm"]
-                        + start_col_index * wellplate_settings["well_spacing_mm"]
-                        + control._def.WELLPLATE_OFFSET_X_mm
+                    self.region_centers[start_row + start_col] = transform.well_center_mm(
+                        start_row_index, start_col_index
                     )
-                    y_mm = (
-                        wellplate_settings["a1_y_mm"]
-                        + start_row_index * wellplate_settings["well_spacing_mm"]
-                        + control._def.WELLPLATE_OFFSET_Y_mm
-                    )
-                    self.region_centers[start_row + start_col] = (x_mm, y_mm)
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
