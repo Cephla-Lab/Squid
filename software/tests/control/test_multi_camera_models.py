@@ -158,6 +158,18 @@ class TestCameraDefinitionDualCameraFields:
         config = CameraRegistryConfig(cameras=[CameraDefinition(serial_number="SN1")])
         assert config.cameras[0].type is None
 
+    def test_device_index_defaults_to_none(self):
+        cam = CameraDefinition(serial_number="SN1")
+        assert cam.device_index is None
+
+    def test_device_index_accepted(self):
+        cam = CameraDefinition(serial_number="SN1", device_index=1)
+        assert cam.device_index == 1
+
+    def test_negative_device_index_rejected(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", device_index=-1)
+
 
 class TestCameraRegistryConfig:
     """Tests for CameraRegistryConfig model."""

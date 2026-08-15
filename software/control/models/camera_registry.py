@@ -53,6 +53,12 @@ class CameraDefinition(BaseModel):
     crop_height: Optional[int] = Field(None, ge=1, description="Per-camera unbinned crop height override")
     default_pixel_format: Optional[str] = Field(None, description="Per-camera default pixel format override")
     default_binning: Optional[List[int]] = Field(None, description="Per-camera default binning override, [x, y]")
+    device_index: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Driver enumeration index selecting the physical device, for drivers that "
+        "cannot open by serial number (currently Photometrics/PVCAM)",
+    )
 
     model_config = {"extra": "forbid"}
 

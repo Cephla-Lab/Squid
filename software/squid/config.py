@@ -521,6 +521,10 @@ class CameraConfig(pydantic.BaseModel):
     # cameras using the same SDK/driver.
     serial_number: Optional[str] = None
 
+    # Driver enumeration index selecting the physical device, for drivers whose SDK cannot open by
+    # serial number (currently Photometrics/PVCAM). None means "first detected camera".
+    device_index: Optional[int] = None
+
     # The default readout data bit depth of the camera. Note that this may depend on the gain mode being used.
     default_pixel_format: CameraPixelFormat
 
@@ -621,7 +625,7 @@ def camera_config_from_definition(definition) -> CameraConfig:
     overlays any per-camera overrides the definition provides. The INI singleton is
     never mutated.
     """
-    updates = {"serial_number": definition.serial_number}
+    updates = {"serial_number": definition.serial_number, "device_index": definition.device_index}
     if definition.type is not None:
         new_type = _old_camera_variant_to_enum(definition.type)
         updates["camera_type"] = new_type

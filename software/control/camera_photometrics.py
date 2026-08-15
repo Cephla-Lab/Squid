@@ -17,34 +17,60 @@ from squid.abc import (
 )
 from control._def import *
 
+# PVCAM is a process-global library: init/uninit must bracket ALL open cameras,
+# so a refcount (not per-camera init/uninit) lets two PhotometricsCamera
+# instances coexist and close in any order.
+_pvcam_lock = threading.Lock()
+_pvcam_user_count = 0
+
+
+def _acquire_pvcam():
+    global _pvcam_user_count
+    with _pvcam_lock:
+        if _pvcam_user_count == 0:
+            pvc.init_pvcam()
+        _pvcam_user_count += 1
+
+
+def _release_pvcam():
+    global _pvcam_user_count
+    with _pvcam_lock:
+        if _pvcam_user_count == 0:
+            return
+        _pvcam_user_count -= 1
+        if _pvcam_user_count == 0:
+            pvc.uninit_pvcam()
+
 
 class PhotometricsCamera(AbstractCamera):
     PIXEL_SIZE_UM = 6.5  # Kinetix camera
 
     @staticmethod
     def _open(index: Optional[int] = None) -> PVCam:
-        """Open a Photometrics camera and return the camera object."""
+        """Open the Photometrics camera at the given PVCAM enumeration index.
+
+        None opens the first detected camera. PVCAM has no open-by-serial, so
+        cameras.yaml `device_index` is how a multi-Photometrics system picks a
+        specific device (enumeration order can change if USB topology changes).
+        """
         log = squid.logging.get_logger("PhotometricsCamera._open")
 
-        pvc.init_pvcam()
+        _acquire_pvcam()
 
         try:
-            if index is not None:
-                # Open by index (not commonly used for Photometrics)
-                cameras = list(PVCam.detect_camera())
-                if index >= len(cameras):
-                    raise CameraError(f"Camera index {index} out of range. Found {len(cameras)} cameras.")
-                cam = cameras[index]
-            else:
-                # Open first available camera
-                cam = next(PVCam.detect_camera())
-
+            cameras = list(PVCam.detect_camera())
+            effective_index = 0 if index is None else index
+            if effective_index >= len(cameras):
+                raise CameraError(
+                    f"Camera index {effective_index} out of range. Found {len(cameras)} Photometrics cameras."
+                )
+            cam = cameras[effective_index]
             cam.open()
-            log.info("Photometrics camera opened successfully")
+            log.info(f"Photometrics camera opened successfully (index {effective_index})")
             return cam
 
         except Exception as e:
-            pvc.uninit_pvcam()
+            _release_pvcam()
             raise CameraError(f"Failed to open Photometrics camera: {e}")
 
     def __init__(
@@ -72,7 +98,7 @@ class PhotometricsCamera(AbstractCamera):
         self._is_streaming = threading.Event()
 
         # Open camera
-        self._camera = PhotometricsCamera._open()
+        self._camera = PhotometricsCamera._open(camera_config.device_index)
 
         # Camera configuration
         self._exposure_time_ms = 20  # set it to some default value
@@ -141,7 +167,8 @@ class PhotometricsCamera(AbstractCamera):
             self._camera.close()
         except Exception as e:
             raise CameraError(f"Failed to close camera: {e}")
-        pvc.uninit_pvcam()
+        finally:
+            _release_pvcam()
 
     def _ensure_read_thread_running(self):
         with self._read_thread_lock:

@@ -210,9 +210,12 @@ Zarr remains fully valid — and selectable — for single-camera runs.
 - **No per-camera Zarr stores.** v1 validates the mismatch instead of splitting stores.
 - **Serial-number camera opening works for Toupcam and FLIR only.** Those two drivers open
   the specific device a `serial_number` names, so two cameras of the same vendor — even the
-  same model — are distinguishable. Every other driver (Hamamatsu, Tucsen, iDS, Photometrics,
-  Andor, Default/Daheng) still opens the "first camera found": the serial number is recorded
-  in `cameras.yaml` but not used to choose the device, so a same-vendor pair on those drivers
+  same model — are distinguishable. Photometrics has no open-by-serial in PVCAM, but accepts
+  a per-camera `device_index` (0-based enumeration index) instead, so a dual-Photometrics
+  pair is distinguishable as long as the USB topology stays put — enumeration order can
+  change when devices are replugged. Every other driver (Hamamatsu, Tucsen, iDS, Andor,
+  Default/Daheng) still opens the "first camera found": the serial number is recorded in
+  `cameras.yaml` but not used to choose the device, so a same-vendor pair on those drivers
   is not reliably distinguishable. Different-vendor pairs and simulation are fine.
 - **No switch-minimizing channel reordering** — your channel order is preserved.
 - **`hardware_bindings.yaml` emission-wheel dispatch** is not wired per camera.

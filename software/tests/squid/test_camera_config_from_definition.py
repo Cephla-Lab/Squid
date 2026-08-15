@@ -39,6 +39,18 @@ def test_overrides_applied():
     assert cfg.default_binning == (2, 2)
 
 
+def test_device_index_mapped_to_config():
+    defn = CameraDefinition(serial_number="SN-IDX", device_index=1)
+    cfg = squid.config.camera_config_from_definition(defn)
+    assert cfg.device_index == 1
+
+
+def test_device_index_defaults_to_none_in_config():
+    defn = CameraDefinition(serial_number="SN-NOIDX")
+    cfg = squid.config.camera_config_from_definition(defn)
+    assert cfg.device_index is None
+
+
 def test_type_change_clears_ini_camera_model():
     base = squid.config.get_camera_config()
     other_type = "Hamamatsu" if base.camera_type != squid.config.CameraVariant.HAMAMATSU else "Toupcam"

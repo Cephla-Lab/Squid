@@ -26,6 +26,11 @@
 #                         software-trigger mode only, and the GUI stops offering Hardware
 #                         Trigger while it is active.
 #   model:                display string only (shown in the UI for reference)
+#   device_index:         driver enumeration index (0-based) selecting the physical device,
+#                         for drivers whose SDK cannot open by serial number (currently
+#                         Photometrics/PVCAM). Two same-vendor cameras on such a driver each
+#                         need a distinct device_index. Note the enumeration order can change
+#                         when the USB topology changes (replugging, adding hubs).
 #   rotate_image_angle, flip, crop_width, crop_height, default_pixel_format, default_binning
 #     flip:               Vertical | Horizontal | Both
 #     default_pixel_format: MONO8 | MONO10 | MONO12 | MONO14 | MONO16 | RGB24 | RGB32 |
