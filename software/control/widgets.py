@@ -13763,7 +13763,13 @@ class WellplateCalibration(QDialog):
             text_width = bbox[2] - bbox[0]
             draw.text((x + 20 - text_width / 2, y - text_height + 1), label, fill="black", font=font)
 
-        image_path = os.path.join("images", f'{name.replace(" ", "_")}.png')
+        # Raw name, spaces preserved: NavigationViewer looks the image up as
+        # "images/<sample>.png" with the sample name unmodified, and the shipped
+        # assets already use spaces ("96 well plate_1509x1010.png"). The old
+        # spaces->underscores write meant any custom format named with a space -
+        # including the dialog's own placeholder "custom well plate" - generated
+        # an image the viewer could never find.
+        image_path = os.path.join("images", f"{name}.png")
         image.save(image_path)
         print(f"Wellplate image saved as {image_path}")
         return image_path
