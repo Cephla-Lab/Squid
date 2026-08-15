@@ -13561,10 +13561,16 @@ class WellplateCalibration(QDialog):
         self.holder_corner_label.setVisible(is_square)
         self.holder_corner_combo.setVisible(is_square)
         self.holder_corner_combo.setEnabled(True)
+        # Approaching every well from the same direction makes stage backlash a
+        # CONSTANT offset across the touches, and the fit cancels constant
+        # offsets exactly (translation is discarded in this mode regardless) -
+        # so an instruction buys what motion choreography would, with no
+        # invented backoff constants.
+        approach_hint = "Approach every well from the same direction - backlash then cancels out of the fit."
         self.holder_method_label.setText(
-            f"{format_}: touch the SAME corner on each of the 4 wells below."
+            f"{format_}: touch the SAME corner on each of the 4 wells below.\n{approach_hint}"
             if is_square
-            else f"{format_}: touch 3 points on the rim of each of the 4 wells below."
+            else f"{format_}: touch 3 points on the rim of each of the 4 wells below.\n{approach_hint}"
         )
         for i, well in enumerate(session.reference_wells):
             self.holder_well_edits[i].setText(well.well_id)
