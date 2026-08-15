@@ -12954,6 +12954,11 @@ class WellplateFormatWidget(QWidget):
         self.comboBox.setItemData(index, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
+        # Capture BEFORE overwriting: the Rejected branch below needs the previous
+        # format, and the old code read self.wellplate_format after it had already
+        # been set to "custom" - findData("custom") re-selected "calibrate
+        # format..." and the dropdown was stuck there on cancel.
+        previous_format = self.wellplate_format
         self.wellplate_format = self.comboBox.itemData(index)
         if self.wellplate_format == "custom":
             calibration_dialog = WellplateCalibration(
@@ -12961,11 +12966,36 @@ class WellplateFormatWidget(QWidget):
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
-                # If the dialog was closed without adding a new format, revert to the previous selection
-                prev_index = self.comboBox.findData(self.wellplate_format)
-                self.comboBox.setCurrentIndex(prev_index)
+                # Revert to the previous selection. This is the ONLY revert path;
+                # WellplateCalibration.reject() deliberately does not try to
+                # second-guess it (it used to, with an int-vs-string findData
+                # mismatch that could not find anything).
+                self.wellplate_format = previous_format
+                prev_index = self.comboBox.findData(previous_format)
+                if prev_index >= 0:
+                    self.comboBox.setCurrentIndex(prev_index)
         else:
             self.setWellplateSettings(self.wellplate_format)
+
+    def select_format_silently(self, format_id):
+        """Rebuild the combo and select format_id with exactly ONE settings emission.
+
+        populate_combo_box() starts with comboBox.clear(), so doing this with
+        signals live fires currentIndexChanged three times (-1, 0, target) - the
+        index-0 emission momentarily reconfigures the whole app for whatever
+        format happens to be first in the dict.
+        """
+        self.comboBox.blockSignals(True)
+        try:
+            self.populate_combo_box()
+            index = self.comboBox.findData(format_id)
+            if index >= 0:
+                self.comboBox.setCurrentIndex(index)
+        finally:
+            self.comboBox.blockSignals(False)
+        if index >= 0:
+            self.wellplateChanged(index)
+        return index
 
     def setWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
@@ -13491,8 +13521,10 @@ class WellplateCalibration(QDialog):
                 QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
                 return None
             center, radius = self.calculate_circle(self.corners)
-            well_size_mm = radius * 2
-            a1_x_mm, a1_y_mm = center
+            # Cast: calculate_circle returns numpy float64, and these values are
+            # stored into WELLPLATE_FORMAT_SETTINGS and written to the CSV.
+            well_size_mm = float(radius * 2)
+            a1_x_mm, a1_y_mm = float(center[0]), float(center[1])
         return a1_x_mm, a1_y_mm, well_size_mm
 
     def update_existing_parameters(self):
@@ -13527,14 +13559,10 @@ class WellplateCalibration(QDialog):
                 }
             )
 
-            # Save and refresh
+            # Save and refresh; select_format_silently re-emits the settings
+            # exactly once (no spurious index-0 emission from the combo rebuild).
             self.wellplateFormatWidget.save_formats_to_csv()
-            self.wellplateFormatWidget.populate_combo_box()
-
-            # Re-select the format (triggers wellplateChanged which calls setWellplateSettings)
-            index = self.wellplateFormatWidget.comboBox.findData(selected_format)
-            if index >= 0:
-                self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+            self.wellplateFormatWidget.select_format_silently(selected_format)
 
             QMessageBox.information(
                 self,
@@ -13648,10 +13676,7 @@ class WellplateCalibration(QDialog):
 
     def _finish_calibration(self, format_id, success_message: str):
         """Complete calibration by updating UI and showing success message."""
-        self.wellplateFormatWidget.populate_combo_box()
-        index = self.wellplateFormatWidget.comboBox.findData(format_id)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+        self.wellplateFormatWidget.select_format_silently(format_id)
 
         QMessageBox.information(self, "Calibration Successful", success_message)
         self.accept()
@@ -13774,26 +13799,13 @@ class WellplateCalibration(QDialog):
         # This method is called when the dialog is closed without accepting
         if not self.was_live:
             self.liveController.stop_live()
-        sample = self.navigationViewer.sample
 
-        # Convert sample string to format int
-        if "glass slide" in sample:
-            sample_format = "glass slide"
-        else:
-            try:
-                sample_format = int(sample.split()[0])
-            except (ValueError, IndexError):
-                print(f"Unable to parse sample format from '{sample}'. Defaulting to 0.")
-                sample_format = "glass slide"
-
-        # Set dropdown to the current sample format
-        index = self.wellplateFormatWidget.comboBox.findData(sample_format)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
-
-        # Update wellplate settings
-        self.wellplateFormatWidget.setWellplateSettings(sample_format)
-
+        # Deliberately NO dropdown revert here: WellplateFormatWidget.wellplateChanged
+        # owns the Rejected-revert (it captured the previous format before opening
+        # this dialog). The revert that used to live here parsed
+        # navigationViewer.sample to an int, which findData() could never match
+        # against the string item data - it silently did nothing, or worse fought
+        # the widget's own revert.
         super().reject()
 
 
