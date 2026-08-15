@@ -82,3 +82,32 @@ def test_viewer_falls_back_to_default_with_warning(tmp_path, monkeypatch, caplog
 
     assert path == "images/slide carrier_828x662.png"
     assert any("nonexistent plate" in r.getMessage() for r in caplog.records)
+
+
+def test_plate_image_ignores_wellplate_offset(qtbot, tmp_path, monkeypatch):
+    """The PNG is a plate-frame display asset: WELLPLATE_OFFSET must never leak
+    into it, or the drawn wells shear away from the a1_x_pixel registration."""
+    import control.widgets
+
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("images")
+    format_data = {
+        "rows": 2,
+        "cols": 3,
+        "well_spacing_mm": 9.0,
+        "well_size_mm": 6.2,
+        "a1_x_mm": 11.31,
+        "a1_y_mm": 10.75,
+    }
+
+    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_X_mm", 0.0)
+    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_Y_mm", 0.0)
+    control.widgets.WellplateCalibration.create_wellplate_image(None, "offset zero", format_data, 127.76, 85.48)
+
+    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_X_mm", 25.0)
+    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_Y_mm", -25.0)
+    control.widgets.WellplateCalibration.create_wellplate_image(None, "offset huge", format_data, 127.76, 85.48)
+
+    zero = open(os.path.join("images", "offset zero.png"), "rb").read()
+    huge = open(os.path.join("images", "offset huge.png"), "rb").read()
+    assert zero == huge

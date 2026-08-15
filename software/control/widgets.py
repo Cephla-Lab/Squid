@@ -13706,6 +13706,18 @@ class WellplateCalibration(QDialog):
         well_size_mm = format_data["well_size_mm"]
         a1_x_mm, a1_y_mm = format_data["a1_x_mm"], format_data["a1_y_mm"]
 
+        # Plate-frame display asset: deliberately NO WELLPLATE_OFFSET (and, later,
+        # no rotation). The PNG is registered against the offset-free
+        # a1_x_pixel = round(a1_x_mm * scale) convention computed at save time,
+        # and NavigationViewer derives its origin from that same pair - feeding
+        # the stage-frame offset in here would shear the map away from it.
+        nominal = PlateTransform(
+            a1_x_mm=a1_x_mm,
+            a1_y_mm=a1_y_mm,
+            pitch_x_mm=well_spacing_mm,
+            pitch_y_mm=well_spacing_mm,
+        )
+
         def draw_left_slanted_rectangle(draw, xy, slant, width=4, outline="black", fill=None):
             x1, y1, x2, y2 = xy
 
@@ -13743,8 +13755,9 @@ class WellplateCalibration(QDialog):
         # Draw the wells
         for row in range(rows):
             for col in range(cols):
-                x = mm_to_px(a1_x_mm + col * well_spacing_mm)
-                y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+                cx_mm, cy_mm = nominal.well_center_mm(row, col)
+                x = mm_to_px(cx_mm)
+                y = mm_to_px(cy_mm)
                 draw_circle(x, y, mm_to_px(well_size_mm))
 
         # Load a default font
@@ -13754,7 +13767,7 @@ class WellplateCalibration(QDialog):
         # Add column labels
         for col in range(cols):
             label = str(col + 1)
-            x = mm_to_px(a1_x_mm + col * well_spacing_mm)
+            x = mm_to_px(nominal.well_center_mm(0, col)[0])
             y = mm_to_px((a1_y_mm - well_size_mm / 2) / 2)
             bbox = font.getbbox(label)
             text_width = bbox[2] - bbox[0]
@@ -13765,7 +13778,7 @@ class WellplateCalibration(QDialog):
         for row in range(rows):
             label = chr(65 + row) if row < 26 else chr(65 + row // 26 - 1) + chr(65 + row % 26)
             x = mm_to_px((a1_x_mm - well_size_mm / 2) / 2)
-            y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+            y = mm_to_px(nominal.well_center_mm(row, 0)[1])
             bbox = font.getbbox(label)
             text_height = bbox[3] - bbox[1]
             text_width = bbox[2] - bbox[0]
