@@ -52,6 +52,13 @@ class WellplateSettings:
     number_of_skip: int
     rows: int
     cols: int
+    # Per-axis geometry + shape (derived from the scalar columns for every
+    # shipped format; anisotropic carriers set them via the user-formats YAML).
+    well_spacing_x_mm: float = 0.0  # multiplies the COLUMN index
+    well_spacing_y_mm: float = 0.0  # multiplies the ROW index
+    well_size_x_mm: float = 0.0
+    well_size_y_mm: float = 0.0
+    well_shape: str = "circle"  # "circle" | "rectangle" (square = x == y)
 
     @staticmethod
     def from_format(format_: str) -> "WellplateSettings":
@@ -67,6 +74,11 @@ class WellplateSettings:
             number_of_skip=s["number_of_skip"],
             rows=s["rows"],
             cols=s["cols"],
+            well_spacing_x_mm=s["well_spacing_x_mm"],
+            well_spacing_y_mm=s["well_spacing_y_mm"],
+            well_size_x_mm=s["well_size_x_mm"],
+            well_size_y_mm=s["well_size_y_mm"],
+            well_shape=s["well_shape"],
         )
 
     @staticmethod
@@ -139,12 +151,11 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
     The placement sidecar and holder rotation compose here when they land.
     """
     settings = control._def.get_wellplate_settings(format_)
-    pitch = settings["well_spacing_mm"]
     return PlateTransform(
         a1_x_mm=settings["a1_x_mm"],
         a1_y_mm=settings["a1_y_mm"],
-        pitch_x_mm=pitch,
-        pitch_y_mm=pitch,
+        pitch_x_mm=settings["well_spacing_x_mm"],
+        pitch_y_mm=settings["well_spacing_y_mm"],
         offset_x_mm=control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0,
         offset_y_mm=control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0,
     )

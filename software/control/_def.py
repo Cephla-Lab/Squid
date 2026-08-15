@@ -1142,7 +1142,10 @@ def read_objectives_csv(file_path):
 
 
 # On-disk column order for sample_formats.csv. Single source of truth for both the
-# reader and the writer below, so the two cannot drift apart.
+# reader and the writer below, so the two cannot drift apart. This schema is
+# FROZEN at these 10 columns: per-axis geometry and well shape are derived
+# in-memory (below) and, when a format genuinely differs from the defaults,
+# persisted in the user-formats YAML - never here.
 SAMPLE_FORMAT_CSV_FIELDNAMES = (
     "format",
     "a1_x_mm",
@@ -1156,6 +1159,38 @@ SAMPLE_FORMAT_CSV_FIELDNAMES = (
     "cols",
 )
 
+# In-memory keys derived from the 10 CSV columns; never written back to the CSV
+# (the writer skips them without warning). well_spacing_x_mm multiplies the
+# COLUMN index and well_spacing_y_mm the ROW index; ANSI/SLAS pitch is identical
+# in both axes for every shipped format, so the scalar broadcasts.
+DERIVED_SAMPLE_FORMAT_KEYS = (
+    "well_spacing_x_mm",
+    "well_spacing_y_mm",
+    "well_size_x_mm",
+    "well_size_y_mm",
+    "well_shape",
+)
+
+# Well shape was previously inferred from the format NAME at scattered call
+# sites (384/1536 -> Square, everything else -> Circle) - which silently
+# misclassified any custom rectangular format as a circle. This is the one
+# code-side default; formats defined in the user YAML can override it.
+_RECTANGULAR_SHIPPED_FORMATS = ("384 well plate", "1536 well plate")
+
+
+def _with_derived_geometry(format_key, settings):
+    """Fill the derived per-axis/shape keys, idempotently.
+
+    Applied on CSV load AND in get_wellplate_settings, so runtime-added custom
+    formats (add_custom_format inserts plain dicts) get defaults too.
+    """
+    settings.setdefault("well_spacing_x_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_spacing_y_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_size_x_mm", settings["well_size_mm"])
+    settings.setdefault("well_size_y_mm", settings["well_size_mm"])
+    settings.setdefault("well_shape", "rectangle" if format_key in _RECTANGULAR_SHIPPED_FORMATS else "circle")
+    return settings
+
 
 def read_sample_formats_csv(file_path):
     sample_formats = {}
@@ -1164,17 +1199,20 @@ def read_sample_formats_csv(file_path):
         for row in reader:
             format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
-            sample_formats[format_key] = {
-                "a1_x_mm": float(row["a1_x_mm"]),
-                "a1_y_mm": float(row["a1_y_mm"]),
-                "a1_x_pixel": int(row["a1_x_pixel"]),
-                "a1_y_pixel": int(row["a1_y_pixel"]),
-                "well_size_mm": float(row["well_size_mm"]),
-                "well_spacing_mm": float(row["well_spacing_mm"]),
-                "number_of_skip": int(row["number_of_skip"]),
-                "rows": int(row["rows"]),
-                "cols": int(row["cols"]),
-            }
+            sample_formats[format_key] = _with_derived_geometry(
+                format_key,
+                {
+                    "a1_x_mm": float(row["a1_x_mm"]),
+                    "a1_y_mm": float(row["a1_y_mm"]),
+                    "a1_x_pixel": int(row["a1_x_pixel"]),
+                    "a1_y_pixel": int(row["a1_y_pixel"]),
+                    "well_size_mm": float(row["well_size_mm"]),
+                    "well_spacing_mm": float(row["well_spacing_mm"]),
+                    "number_of_skip": int(row["number_of_skip"]),
+                    "rows": int(row["rows"]),
+                    "cols": int(row["cols"]),
+                },
+            )
     return sample_formats
 
 
@@ -1201,7 +1239,7 @@ def write_sample_formats_csv(file_path, sample_formats):
                 # (a blank cell is what breaks load_formats() at import time); an
                 # extra key is dropped, but never silently - if you add a setting you
                 # must add it to SAMPLE_FORMAT_CSV_FIELDNAMES or it will not persist.
-                dropped = set(settings) - set(SAMPLE_FORMAT_CSV_FIELDNAMES)
+                dropped = set(settings) - set(SAMPLE_FORMAT_CSV_FIELDNAMES) - set(DERIVED_SAMPLE_FORMAT_KEYS)
                 if dropped:
                     log.warning(
                         f"Sample format {format_!r} has setting(s) {sorted(dropped)} with no column in "
@@ -1272,20 +1310,23 @@ OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
 def get_wellplate_settings(wellplate_format):
     if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-        settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+        settings = _with_derived_geometry(wellplate_format, WELLPLATE_FORMAT_SETTINGS[wellplate_format])
     elif wellplate_format == "0":
-        settings = {
-            "format": "0",
-            "a1_x_mm": 0,
-            "a1_y_mm": 0,
-            "a1_x_pixel": 0,
-            "a1_y_pixel": 0,
-            "well_size_mm": 0,
-            "well_spacing_mm": 0,
-            "number_of_skip": 0,
-            "rows": 1,
-            "cols": 1,
-        }
+        settings = _with_derived_geometry(
+            "0",
+            {
+                "format": "0",
+                "a1_x_mm": 0,
+                "a1_y_mm": 0,
+                "a1_x_pixel": 0,
+                "a1_y_pixel": 0,
+                "well_size_mm": 0,
+                "well_spacing_mm": 0,
+                "number_of_skip": 0,
+                "rows": 1,
+                "cols": 1,
+            },
+        )
     else:
         raise ValueError(
             f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"

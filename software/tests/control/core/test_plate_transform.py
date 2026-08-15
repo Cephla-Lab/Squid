@@ -95,3 +95,76 @@ def test_apply_legacy_offset_false_is_plate_frame(monkeypatch):
     tf = plate_transform_for("96 well plate", apply_legacy_offset=False)
     s = _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]
     assert tf.well_center_mm(0, 0) == (s["a1_x_mm"], s["a1_y_mm"])
+
+
+def test_derived_geometry_broadcasts_and_shapes():
+    """Every shipped format: per-axis == scalar (SLAS pitch is isotropic), and
+    the shape default reproduces the old name-based mapping exactly."""
+    for format_, s in _def.WELLPLATE_FORMAT_SETTINGS.items():
+        full = _def.get_wellplate_settings(format_)
+        assert full["well_spacing_x_mm"] == full["well_spacing_mm"]
+        assert full["well_spacing_y_mm"] == full["well_spacing_mm"]
+        assert full["well_size_x_mm"] == full["well_size_mm"]
+        assert full["well_size_y_mm"] == full["well_size_mm"]
+        expected_shape = "rectangle" if format_ in ("384 well plate", "1536 well plate") else "circle"
+        assert full["well_shape"] == expected_shape, format_
+
+
+def test_runtime_added_custom_format_gets_derived_defaults():
+    """add_custom_format inserts plain dicts; access must fill the defaults."""
+    _def.WELLPLATE_FORMAT_SETTINGS["oracle custom"] = {
+        "a1_x_mm": 15.0,
+        "a1_y_mm": 12.0,
+        "a1_x_pixel": 177,
+        "a1_y_pixel": 142,
+        "well_size_mm": 9.0,
+        "well_spacing_mm": 12.0,
+        "number_of_skip": 0,
+        "rows": 2,
+        "cols": 4,
+    }
+    try:
+        full = _def.get_wellplate_settings("oracle custom")
+        assert full["well_spacing_x_mm"] == 12.0 and full["well_shape"] == "circle"
+        tf = plate_transform_for("oracle custom", apply_legacy_offset=False)
+        assert tf.well_center_mm(1, 2) == (15.0 + 2 * 12.0, 12.0 + 1 * 12.0)
+    finally:
+        del _def.WELLPLATE_FORMAT_SETTINGS["oracle custom"]
+
+
+def test_resolver_uses_per_axis_pitch_when_they_differ():
+    _def.WELLPLATE_FORMAT_SETTINGS["aniso test"] = {
+        "a1_x_mm": 0.0,
+        "a1_y_mm": 0.0,
+        "a1_x_pixel": 0,
+        "a1_y_pixel": 0,
+        "well_size_mm": 9.0,
+        "well_spacing_mm": 12.57,
+        "number_of_skip": 0,
+        "rows": 2,
+        "cols": 4,
+        "well_spacing_x_mm": 12.57,
+        "well_spacing_y_mm": 11.50,
+        "well_size_x_mm": 10.75,
+        "well_size_y_mm": 9.40,
+        "well_shape": "rectangle",
+    }
+    try:
+        tf = plate_transform_for("aniso test", apply_legacy_offset=False)
+        # column index scales by x-pitch, row index by y-pitch
+        assert tf.well_center_mm(1, 1) == (12.57, 11.50)
+    finally:
+        del _def.WELLPLATE_FORMAT_SETTINGS["aniso test"]
+
+
+def test_writer_does_not_warn_about_derived_keys(tmp_path, caplog):
+    import logging
+
+    settings = {"96 well plate": dict(_def.get_wellplate_settings("96 well plate"))}
+    settings["96 well plate"].pop("format", None)
+    with caplog.at_level(logging.WARNING):
+        _def.write_sample_formats_csv(str(tmp_path / "sample_formats.csv"), settings)
+    assert not caplog.records, [r.getMessage() for r in caplog.records]
+    # ...and the file keeps the frozen 10-column schema.
+    header = open(tmp_path / "sample_formats.csv").readline().strip()
+    assert header == ",".join(_def.SAMPLE_FORMAT_CSV_FIELDNAMES)
