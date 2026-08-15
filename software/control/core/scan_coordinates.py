@@ -77,6 +77,12 @@ class ScanCoordinates:
         self.region_centers = {}  # {region_id: [x, y, z]}
         self.region_shapes = {}  # {region_id: "Square"}
         self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
+        # {region_id: count} of planned FOVs that fell outside stage travel and
+        # were skipped. Dropping them is correct (the stage cannot go there) -
+        # doing it SILENTLY is not: a plate seated near the travel edge, or a
+        # measured rotation pushing an edge well over the limit, would otherwise
+        # just quietly image fewer FOVs than the user selected.
+        self.out_of_travel = {}
 
     def add_well_selector(self, well_selector):
         self.well_selector = well_selector
@@ -192,6 +198,7 @@ class ScanCoordinates:
         fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
+        dropped_out_of_travel = 0
 
         if shape == "Rectangle":
             # Use scan_size_mm as height, width is 0.6 * height
@@ -219,6 +226,8 @@ class ScanCoordinates:
                     x = center_x + (j - half_steps_width) * step_size_mm
                     if self.validate_coordinates(x, y):
                         row.append((x, y))
+                    else:
+                        dropped_out_of_travel += 1
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
                 scan_coordinates.extend(row)
@@ -262,6 +271,8 @@ class ScanCoordinates:
                     ):
                         if self.validate_coordinates(x, y):
                             row.append((x, y))
+                        else:
+                            dropped_out_of_travel += 1
 
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
@@ -270,7 +281,10 @@ class ScanCoordinates:
         if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
                 scan_coordinates.append((center_x, center_y))
+            else:
+                dropped_out_of_travel += 1
 
+        self._register_travel_drops(well_id, dropped_out_of_travel, len(scan_coordinates))
         self.region_shapes[well_id] = shape
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] = scan_coordinates
@@ -290,6 +304,7 @@ class ScanCoordinates:
                 for coord in region_scan_coordinates:
                     removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[1]))
 
+            self.out_of_travel.pop(well_id, None)
             self._log.info(f"Removed Region: {well_id}")
             self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
 
@@ -297,6 +312,7 @@ class ScanCoordinates:
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
+        self.out_of_travel.clear()
         self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
@@ -310,6 +326,7 @@ class ScanCoordinates:
         grid_height_mm = (Ny - 1) * step_size_mm
 
         scan_coordinates = []
+        dropped_out_of_travel = 0
         for i in range(Ny):
             row = []
             y = center_y - grid_height_mm / 2 + i * step_size_mm
@@ -317,12 +334,15 @@ class ScanCoordinates:
                 x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
                     row.append((x, y, center_z))
+                else:
+                    dropped_out_of_travel += 1
 
             if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()
             scan_coordinates.extend(row)
 
         # Region coordinates are already centered since center_x, center_y is grid center
+        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
@@ -353,14 +373,18 @@ class ScanCoordinates:
         y_steps = [center_y - grid_height_mm / 2 + i * dy for i in range(Ny)]
 
         scan_coordinates = []
+        dropped_out_of_travel = 0
         for i, y in enumerate(y_steps):
             row = []
             x_range = x_steps if i % 2 == 0 else reversed(x_steps)
             for x in x_range:
                 if self.validate_coordinates(x, y):
                     row.append((x, y))
+                else:
+                    dropped_out_of_travel += 1
             scan_coordinates.extend(row)
 
+        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
@@ -370,7 +394,7 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            print(f"Region Out of Bounds: {region_id}")
+            self._log.warning(f"Region Out of Bounds: {region_id}")
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""
@@ -419,8 +443,10 @@ class ScanCoordinates:
             )
 
         valid_points = []
+        dropped_out_of_travel = 0
         for x_center, y_center in grid_points:
             if not self.validate_coordinates(x_center, y_center):
+                dropped_out_of_travel += 1
                 self._log.debug(
                     f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
                 )
@@ -437,6 +463,11 @@ class ScanCoordinates:
                 continue
 
             valid_points.append((x_center, y_center))
+        if dropped_out_of_travel:
+            self._log.warning(
+                f"Manual region: {dropped_out_of_travel} planned FOVs fall outside the stage travel limits "
+                f"and were skipped."
+            )
         if not valid_points:
             return []
         valid_points = np.array(valid_points)
@@ -465,11 +496,15 @@ class ScanCoordinates:
     ):
         """Add a region based on a template of x and y coordinates"""
         scan_coordinates = []
+        dropped_out_of_travel = 0
         for i in range(len(template_x_mm)):
             x = float(x_mm + template_x_mm[i])
             y = float(y_mm + template_y_mm[i])
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
+            else:
+                dropped_out_of_travel += 1
+        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = scan_coordinates
@@ -534,6 +569,19 @@ class ScanCoordinates:
         return (
             control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= control._def.SOFTWARE_POS_LIMIT.X_POSITIVE
             and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        )
+
+    def _register_travel_drops(self, region_id, dropped: int, kept: int):
+        """Record and LOUDLY report FOVs skipped for being outside stage travel."""
+        if dropped <= 0:
+            self.out_of_travel.pop(region_id, None)
+            return
+        self.out_of_travel[region_id] = dropped
+        limits = control._def.SOFTWARE_POS_LIMIT
+        self._log.warning(
+            f"Region {region_id!r}: {dropped} of {dropped + kept} planned FOVs fall outside the stage travel "
+            f"limits (X [{limits.X_NEGATIVE}, {limits.X_POSITIVE}] mm, Y [{limits.Y_NEGATIVE}, {limits.Y_POSITIVE}] mm) "
+            f"and were skipped - the acquisition will image {kept} FOVs there."
         )
 
     def _is_manual_region(self, key: str) -> bool:
