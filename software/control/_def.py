@@ -1299,6 +1299,17 @@ def load_formats():
     else:
         log.info(f"Using cached sample formats from {cached_formats_path}")
 
+    # Layer the user's format edits and custom formats on top of the base
+    # (shipped catalog, or the legacy whole-table cache until it is migrated).
+    # Imported here because control.models imports pydantic; keep _def importable
+    # even if that stack is broken - the identity default is "no user file".
+    try:
+        from control.models.sample_format_config import apply_user_sample_formats, load_user_sample_formats
+
+        apply_user_sample_formats(sample_formats, load_user_sample_formats())
+    except Exception:
+        log.exception("Failed to load sample_formats_user.yaml; continuing without user format edits.")
+
     return objectives, sample_formats
 
 

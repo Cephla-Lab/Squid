@@ -13546,17 +13546,37 @@ class WellplateCalibration(QDialog):
             )
             print(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
 
-            # Update the settings
+            # Update the in-memory settings (scalars re-broadcast to per-axis)
             WELLPLATE_FORMAT_SETTINGS[selected_format].update(
                 {
                     "well_spacing_mm": new_spacing,
+                    "well_spacing_x_mm": new_spacing,
+                    "well_spacing_y_mm": new_spacing,
                     "well_size_mm": new_well_size,
+                    "well_size_x_mm": new_well_size,
+                    "well_size_y_mm": new_well_size,
                 }
             )
 
-            # Save and refresh; select_format_silently re-emits the settings
-            # exactly once (no spurious index-0 emission from the combo rebuild).
-            self.wellplateFormatWidget.save_formats_to_csv()
+            # Persist as a SPARSE override next to the shipped catalog: only the
+            # fields the user changed, so shipped corrections still reach this
+            # machine on every other field. (The legacy whole-table cache CSV is
+            # no longer written by this path.)
+            from control.models.sample_format_config import (
+                SampleFormatOverride,
+                load_user_sample_formats,
+                save_user_sample_formats,
+                UserSampleFormats,
+            )
+
+            user_formats = load_user_sample_formats() or UserSampleFormats()
+            user_formats.overrides[selected_format] = SampleFormatOverride(
+                well_spacing_mm=new_spacing, well_size_mm=new_well_size
+            )
+            save_user_sample_formats(user_formats)
+
+            # select_format_silently re-emits the settings exactly once (no
+            # spurious index-0 emission from the combo rebuild).
             self.wellplateFormatWidget.select_format_silently(selected_format)
 
             QMessageBox.information(
@@ -13633,7 +13653,28 @@ class WellplateCalibration(QDialog):
         }
 
         self.wellplateFormatWidget.add_custom_format(name, new_format)
-        self.wellplateFormatWidget.save_formats_to_csv()
+
+        # Persist to the user-formats YAML next to the shipped catalog (the
+        # legacy whole-table cache CSV is no longer written by this path).
+        from control.models.sample_format_config import (
+            CustomSampleFormat,
+            load_user_sample_formats,
+            save_user_sample_formats,
+            UserSampleFormats,
+        )
+
+        user_formats = load_user_sample_formats() or UserSampleFormats()
+        user_formats.custom_formats[name] = CustomSampleFormat(
+            rows=new_format["rows"],
+            cols=new_format["cols"],
+            well_spacing_mm=new_format["well_spacing_mm"],
+            well_size_mm=new_format["well_size_mm"],
+            a1_x_mm=new_format["a1_x_mm"],
+            a1_y_mm=new_format["a1_y_mm"],
+            a1_x_pixel=new_format["a1_x_pixel"],
+            a1_y_pixel=new_format["a1_y_pixel"],
+        )
+        save_user_sample_formats(user_formats)
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 
         self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
