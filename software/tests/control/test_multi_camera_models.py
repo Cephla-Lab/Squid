@@ -170,6 +170,22 @@ class TestCameraDefinitionDualCameraFields:
         with pytest.raises(ValidationError):
             CameraDefinition(serial_number="SN1", device_index=-1)
 
+    def test_default_roi_accepted(self):
+        cam = CameraDefinition(serial_number="SN1", default_roi=[240, 240, 2720, 2720])
+        assert cam.default_roi == [240, 240, 2720, 2720]
+
+    def test_default_roi_must_be_four_values(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_roi=[0, 0, 100])
+
+    def test_default_roi_rejects_negative_offsets(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_roi=[-1, 0, 100, 100])
+
+    def test_default_roi_rejects_nonpositive_size(self):
+        with pytest.raises(ValidationError):
+            CameraDefinition(serial_number="SN1", default_roi=[0, 0, 0, 100])
+
 
 class TestCameraRegistryConfig:
     """Tests for CameraRegistryConfig model."""

@@ -51,6 +51,19 @@ def test_device_index_defaults_to_none_in_config():
     assert cfg.device_index is None
 
 
+def test_default_roi_mapped_to_config():
+    defn = CameraDefinition(serial_number="SN-ROI", default_roi=[240, 240, 2720, 2720])
+    cfg = squid.config.camera_config_from_definition(defn)
+    assert cfg.default_roi == (240, 240, 2720, 2720)
+
+
+def test_absent_default_roi_inherits_ini_default():
+    base = squid.config.get_camera_config()
+    defn = CameraDefinition(serial_number="SN-NOROI")
+    cfg = squid.config.camera_config_from_definition(defn)
+    assert cfg.default_roi == base.default_roi
+
+
 def test_type_change_clears_ini_camera_model():
     base = squid.config.get_camera_config()
     other_type = "Hamamatsu" if base.camera_type != squid.config.CameraVariant.HAMAMATSU else "Toupcam"

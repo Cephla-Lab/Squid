@@ -644,6 +644,8 @@ def camera_config_from_definition(definition) -> CameraConfig:
         updates["default_pixel_format"] = CameraPixelFormat.from_string(definition.default_pixel_format)
     if definition.default_binning is not None:
         updates["default_binning"] = (definition.default_binning[0], definition.default_binning[1])
+    if definition.default_roi is not None:
+        updates["default_roi"] = tuple(definition.default_roi)
     return _camera_config.model_copy(update=updates)
 
 

@@ -59,6 +59,9 @@ class CameraDefinition(BaseModel):
         description="Driver enumeration index selecting the physical device, for drivers that "
         "cannot open by serial number (currently Photometrics/PVCAM)",
     )
+    default_roi: Optional[List[int]] = Field(
+        None, description="Per-camera hardware ROI override, [offset_x, offset_y, width, height]"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -73,6 +76,14 @@ class CameraDefinition(BaseModel):
         if self.default_binning is not None:
             if len(self.default_binning) != 2 or any(b < 1 for b in self.default_binning):
                 raise ValueError(f"default_binning must be [x, y] with positive ints, got {self.default_binning}")
+        if self.default_roi is not None:
+            offsets_ok = len(self.default_roi) == 4 and all(v >= 0 for v in self.default_roi[:2])
+            sizes_ok = len(self.default_roi) == 4 and all(v >= 1 for v in self.default_roi[2:])
+            if not (offsets_ok and sizes_ok):
+                raise ValueError(
+                    "default_roi must be [offset_x, offset_y, width, height] with non-negative "
+                    f"offsets and positive sizes, got {self.default_roi}"
+                )
         return self
 
 
