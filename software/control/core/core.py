@@ -1515,7 +1515,6 @@ class NavigationViewer(QFrame):
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -1694,7 +1693,8 @@ class NavigationViewer(QFrame):
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
         self.well_size_mm = well_size_mm
-        self.well_spacing_mm = well_spacing_mm
+        # well_spacing_mm parameter is accepted (fixed 10-arg signal) but not stored:
+        # NavigationViewer's mm<->pixel mapping never uses the pitch.
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols

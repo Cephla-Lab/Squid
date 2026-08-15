@@ -13024,20 +13024,6 @@ class WellplateFormatWidget(QWidget):
         cache_path = os.path.join("cache", self.csv_path)
         control._def.write_sample_formats_csv(cache_path, WELLPLATE_FORMAT_SETTINGS)
 
-    @staticmethod
-    def parse_csv_row(row):
-        return {
-            "a1_x_mm": float(row["a1_x_mm"]),
-            "a1_y_mm": float(row["a1_y_mm"]),
-            "a1_x_pixel": int(row["a1_x_pixel"]),
-            "a1_y_pixel": int(row["a1_y_pixel"]),
-            "well_size_mm": float(row["well_size_mm"]),
-            "well_spacing_mm": float(row["well_spacing_mm"]),
-            "number_of_skip": int(row["number_of_skip"]),
-            "rows": int(row["rows"]),
-            "cols": int(row["cols"]),
-        }
-
 
 class WellplateCalibration(QDialog):
 
@@ -14020,35 +14006,26 @@ class Well1536SelectionWidget(QWidget):
     signal_wellSelected = Signal(bool)
     signal_wellSelectedPos = Signal(float, float)
 
-    def __init__(self, wellplateFormatWidget):
+    def __init__(self, wellplateFormatWidget: "WellplateFormatWidget"):
         super().__init__()
         self.wellplateFormatWidget = wellplateFormatWidget
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
 
-        # defaults
-        self.rows = 32
-        self.columns = 48
-        self.spacing_mm = 2.25
-        self.number_of_skip = 0
-        self.well_size_mm = 1.5
-        self.a1_x_mm = 11.0  # measured stage position - to update
-        self.a1_y_mm = 7.86  # measured stage position - to update
-        self.a1_x_pixel = 144  # coordinate on the png - to update
-        self.a1_y_pixel = 108  # coordinate on the png - to update
-
-        if self.wellplateFormatWidget is not None:
-            s = self.wellplateFormatWidget.getWellplateSettings(self.format)
-            self.rows = s["rows"]
-            self.columns = s["cols"]
-            self.spacing_mm = s["well_spacing_mm"]
-            self.number_of_skip = s["number_of_skip"]
-            self.a1_x_mm = s["a1_x_mm"]
-            self.a1_y_mm = s["a1_y_mm"]
-            self.a1_x_pixel = s["a1_x_pixel"]
-            self.a1_y_pixel = s["a1_y_pixel"]
-            self.well_size_mm = s["well_size_mm"]
+        # Geometry always comes from the format settings; hardcoded fallbacks here
+        # had already drifted from sample_formats.csv (well_size 1.5 vs 1.53,
+        # a1 11.0/7.86 vs 11.01/7.87) and were dead on every reachable path.
+        s = self.wellplateFormatWidget.getWellplateSettings(self.format)
+        self.rows = s["rows"]
+        self.columns = s["cols"]
+        self.spacing_mm = s["well_spacing_mm"]
+        self.number_of_skip = s["number_of_skip"]
+        self.a1_x_mm = s["a1_x_mm"]
+        self.a1_y_mm = s["a1_y_mm"]
+        self.a1_x_pixel = s["a1_x_pixel"]
+        self.a1_y_pixel = s["a1_y_pixel"]
+        self.well_size_mm = s["well_size_mm"]
 
         self.initUI()
 
