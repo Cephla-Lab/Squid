@@ -14,7 +14,7 @@ import control.widgets
 from control.core import core as core_module
 from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
 from squid.abc import CameraFrame, CameraFrameFormat
-from squid.config import CameraPixelFormat
+from squid.config import CameraPixelFormat, CameraVariant
 
 import tests.control.test_stubs as ts
 
@@ -2661,3 +2661,61 @@ def test_toggle_auto_wb_off_path_swallows_driver_errors():
     control.widgets.CameraSettingsWidget.toggle_auto_wb(widget, False)
 
     widget.camera.set_white_balance_gains.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# camera_settings_widget_options
+#
+# Each camera's settings widget must be configured from that camera's own driver
+# type, not the global INI CAMERA_TYPE (whose old gate also checked the dead
+# string "Kinetix" - real Photometrics INIs say camera_type = Photometrics).
+# ---------------------------------------------------------------------------
+
+
+def test_photometrics_primary_gets_temperature_controls():
+    options = control.widgets.camera_settings_widget_options(CameraVariant.PHOTOMETRICS, primary=True)
+    assert options["include_camera_temperature_setting"] is True
+    assert options["include_camera_auto_wb_setting"] is False
+    assert options["include_gain_exposure_time"] is False
+
+
+def test_photometrics_secondary_gets_temperature_controls_and_keeps_wb():
+    options = control.widgets.camera_settings_widget_options(CameraVariant.PHOTOMETRICS, primary=False)
+    assert options["include_camera_temperature_setting"] is True
+    assert options["include_camera_auto_wb_setting"] is True
+
+
+def test_color_capable_secondary_keeps_auto_wb():
+    """Regression guard: a color Toupcam secondary must not lose its WB button."""
+    options = control.widgets.camera_settings_widget_options(CameraVariant.TOUPCAM, primary=False)
+    assert options["include_camera_auto_wb_setting"] is True
+    assert options["include_camera_temperature_setting"] is True
+
+
+def test_uncooled_primary_keeps_wb_and_gets_no_temperature_controls():
+    options = control.widgets.camera_settings_widget_options(CameraVariant.GXIPY, primary=True)
+    assert options["include_camera_temperature_setting"] is False
+    assert options["include_camera_auto_wb_setting"] is True
+
+
+def test_camera_settings_widget_survives_a_driver_without_temperature_callback(qtbot, monkeypatch):
+    """Photometrics implements set/get_temperature but not the reading callback
+    (it raises NotImplementedError); the temperature UI must still build."""
+    import squid.camera.utils
+    import squid.config
+
+    camera = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+    def _no_callback(callback):
+        raise NotImplementedError("Temperature reading callback is not supported by this camera.")
+
+    monkeypatch.setattr(camera, "set_temperature_reading_callback", _no_callback)
+
+    widget = control.widgets.CameraSettingsWidget(
+        camera,
+        include_gain_exposure_time=False,
+        include_camera_temperature_setting=True,
+        include_camera_auto_wb_setting=False,
+    )
+    qtbot.addWidget(widget)
+    assert widget.entry_temperature is not None

@@ -953,21 +953,14 @@ class HighContentScreeningGui(QMainWindow):
 
         # Settings are per-camera identity state, so this widget drives the primary
         # concrete camera, not the facade (which would retarget on a camera switch).
+        # Options come from each camera's own driver type: in a multi-camera build the
+        # cameras.yaml type wins over the INI CAMERA_TYPE (whose old gate also checked
+        # the dead string "Kinetix" - Photometrics INIs say camera_type = Photometrics).
         primary_camera = self.microscope.cameras[PRIMARY_CAMERA_ID]
-        if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                primary_camera,
-                include_gain_exposure_time=False,
-                include_camera_temperature_setting=True,
-                include_camera_auto_wb_setting=False,
-            )
-        else:
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                primary_camera,
-                include_gain_exposure_time=False,
-                include_camera_temperature_setting=False,
-                include_camera_auto_wb_setting=True,
-            )
+        self.cameraSettingWidget = widgets.CameraSettingsWidget(
+            primary_camera,
+            **widgets.camera_settings_widget_options(primary_camera._config.camera_type, primary=True),
+        )
 
         self._restore_cached_camera_settings()
 
@@ -981,9 +974,7 @@ class HighContentScreeningGui(QMainWindow):
                     continue
                 self.cameraSettingWidgets[camera_id] = widgets.CameraSettingsWidget(
                     concrete_camera,
-                    include_gain_exposure_time=False,
-                    include_camera_temperature_setting=False,
-                    include_camera_auto_wb_setting=True,
+                    **widgets.camera_settings_widget_options(concrete_camera._config.camera_type, primary=False),
                 )
         # Every per-camera lookup goes through this one map, primary included, so no caller
         # has to re-derive "extras plus the primary" and risk missing or double-counting it.

@@ -28,7 +28,7 @@ import control.utils as utils
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
-from squid.config import CameraPixelFormat
+from squid.config import CameraPixelFormat, CameraVariant
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -3806,6 +3806,26 @@ class ObjectivesWidget(QWidget):
         self.signal_objective_changed.emit()
 
 
+# Camera types whose drivers implement temperature control (cooled cameras).
+_TEMPERATURE_CONTROL_CAMERA_TYPES = {CameraVariant.TOUPCAM, CameraVariant.TUCSEN, CameraVariant.PHOTOMETRICS}
+
+
+def camera_settings_widget_options(camera_type: CameraVariant, primary: bool) -> dict:
+    """CameraSettingsWidget kwargs for a camera, from its own driver type.
+
+    The temperature controls only make sense for drivers that implement them. The
+    auto-WB button keeps its historical asymmetry: the primary pairs it off against
+    the temperature controls, while secondary tabs always allow it (the widget then
+    shows it only for color pixel formats).
+    """
+    has_temperature = camera_type in _TEMPERATURE_CONTROL_CAMERA_TYPES
+    return {
+        "include_gain_exposure_time": False,
+        "include_camera_temperature_setting": has_temperature,
+        "include_camera_auto_wb_setting": True if not primary else not has_temperature,
+    }
+
+
 class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
@@ -3964,7 +3984,9 @@ class CameraSettingsWidget(QFrame):
             try:
                 self.entry_temperature.valueChanged.connect(self.set_temperature)
                 self.camera.set_temperature_reading_callback(self.update_measured_temperature)
-            except AttributeError:
+            except (AttributeError, NotImplementedError):
+                # Some drivers (e.g. Photometrics) can set a temperature but offer no live
+                # readout; keep the setpoint control and leave the measured label blank.
                 pass
             self.camera_layout.addLayout(temp_line)
 
