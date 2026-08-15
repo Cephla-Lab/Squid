@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hint
 import squid.logging
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
+import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -720,9 +721,8 @@ class MicroscopeControlServer:
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
 
-        # Parse well coordinates
-        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        well_coords = self._parse_wells(wells, wellplate_settings)
+        # Parse well coordinates (raises on unknown formats)
+        well_coords = self._parse_wells(wells, wellplate_format)
 
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
@@ -808,7 +808,7 @@ class MicroscopeControlServer:
             self._log.error(traceback.format_exc())
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
-    def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
+    def _parse_wells(self, wells: str, wellplate_format: str) -> Dict[str, tuple]:
         """
         Parse well string into stage coordinates.
 
@@ -818,31 +818,24 @@ class MicroscopeControlServer:
 
         Args:
             wells: Well selection string (e.g., 'A1:B3' or 'A1,A2,B1').
-            wellplate_settings: Dict with 'a1_x_mm', 'a1_y_mm', 'well_spacing_mm'.
+            wellplate_format: Format name, e.g. '96 well plate'. Unknown formats
+                raise (via get_wellplate_settings) instead of silently using
+                invented defaults, per the no-arbitrary-numbers rule.
 
         Returns:
             Dict mapping well IDs to (x_mm, y_mm) coordinates.
         """
         import re
 
-        def row_to_index(row: str) -> int:
-            index = 0
-            for char in row.upper():
-                index = index * 26 + (ord(char) - ord("A") + 1)
-            return index - 1
+        from control.core.plate_transform import plate_transform_for
+        from control.core.scan_coordinates import ScanCoordinates
 
-        def index_to_row(index: int) -> str:
-            index += 1
-            row = ""
-            while index > 0:
-                index -= 1
-                row = chr(index % 26 + ord("A")) + row
-                index //= 26
-            return row
-
-        a1_x = wellplate_settings.get("a1_x_mm", 0)
-        a1_y = wellplate_settings.get("a1_y_mm", 0)
-        spacing = wellplate_settings.get("well_spacing_mm", 9)
+        # BEHAVIOR FIX: this path used to omit WELLPLATE_OFFSET entirely and
+        # fall back to a1=0 / spacing=9 when keys were missing, so wells
+        # addressed over MCP/remote landed at different stage positions than
+        # the same wells addressed through the GUI on any machine with a
+        # nonzero offset. It now uses the same resolver as everything else.
+        transform = plate_transform_for(wellplate_format)
 
         well_coords = {}
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
@@ -853,26 +846,22 @@ class MicroscopeControlServer:
                 continue
 
             start_row, start_col, end_row, end_col = match.groups()
-            start_row_idx = row_to_index(start_row)
+            start_row_idx = control.utils.row_to_index(start_row)
             start_col_idx = int(start_col) - 1
 
             if end_row and end_col:
                 # Range like A1:B3
-                end_row_idx = row_to_index(end_row)
+                end_row_idx = control.utils.row_to_index(end_row)
                 end_col_idx = int(end_col) - 1
 
                 for row_idx in range(start_row_idx, end_row_idx + 1):
                     for col_idx in range(start_col_idx, end_col_idx + 1):
-                        well_id = index_to_row(row_idx) + str(col_idx + 1)
-                        x_mm = a1_x + col_idx * spacing
-                        y_mm = a1_y + row_idx * spacing
-                        well_coords[well_id] = (x_mm, y_mm)
+                        well_id = ScanCoordinates._index_to_row(row_idx) + str(col_idx + 1)
+                        well_coords[well_id] = transform.well_center_mm(row_idx, col_idx)
             else:
                 # Single well like A1
                 well_id = start_row.upper() + start_col
-                x_mm = a1_x + start_col_idx * spacing
-                y_mm = a1_y + start_row_idx * spacing
-                well_coords[well_id] = (x_mm, y_mm)
+                well_coords[well_id] = transform.well_center_mm(start_row_idx, start_col_idx)
 
         return well_coords
 
@@ -1048,8 +1037,7 @@ class MicroscopeControlServer:
 
         if wells:
             wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
-            wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-            well_coords = self._parse_wells(wells, wellplate_settings)
+            well_coords = self._parse_wells(wells, wellplate_format)
 
             if not well_coords:
                 raise ValueError(f"Could not parse wells: {wells}")

@@ -6,10 +6,10 @@ this file pins their CURRENT behaviour with exact equality (==, never
 approx) so the refactor is provably a no-op where it claims to be, and the
 intentional divergences are written down rather than discovered:
 
-* The MCP server's ``_parse_wells`` deliberately disagrees today: it omits
-  WELLPLATE_OFFSET entirely. The oracle asserts that offset-free behaviour;
-  the commit that fixes the server flips the expectation here, in the same
-  diff.
+* The MCP server's ``_parse_wells`` used to omit WELLPLATE_OFFSET; the
+  server-fix commit made it resolve through plate_transform_for and flipped
+  the expectation here in the same diff (see
+  test_server_parse_wells_applies_offset).
 * The plate-PNG renderer (widgets.py create_wellplate_image) is a plate-frame
   display asset drawn offset-free; it is asserted at the pixel level when it
   is routed through the shared transform.
@@ -131,20 +131,26 @@ def test_sila2_selected_well_coordinates(monkeypatch, format_, off):
 
 @pytest.mark.parametrize("off", OFFSETS, ids=["offset0", "offsetXY"])
 @pytest.mark.parametrize("format_", PLATE_FORMATS)
-def test_server_parse_wells_is_offset_free_today(monkeypatch, format_, off):
-    """DOCUMENTED DIVERGENCE: the server omits WELLPLATE_OFFSET. When the
-    server-fix commit lands, this test's expectation flips to offset-applied
-    in the same diff."""
+def test_server_parse_wells_applies_offset(monkeypatch, format_, off):
+    """EXPECTATION FLIPPED by the server-fix commit: _parse_wells now resolves
+    through plate_transform_for, so it applies WELLPLATE_OFFSET like every
+    other site instead of omitting it (and no longer invents a1=0/spacing=9
+    fallbacks for missing keys - unknown formats raise instead)."""
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", off[0])
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
     s = _def.WELLPLATE_FORMAT_SETTINGS[format_]
-    coords = MicroscopeControlServer._parse_wells(None, range_string(s), s)
+    coords = MicroscopeControlServer._parse_wells(None, range_string(s), format_)
 
     assert len(coords) == s["rows"] * s["cols"]
     for row, col in all_wells(s):
         well_id = index_to_row_label(row) + str(col + 1)
-        assert coords[well_id] == expected_xy(s, row, col, 0.0, 0.0), (format_, well_id)
+        assert coords[well_id] == expected_xy(s, row, col, off[0], off[1]), (format_, well_id)
+
+
+def test_server_parse_wells_rejects_unknown_format():
+    with pytest.raises(ValueError):
+        MicroscopeControlServer._parse_wells(None, "A1", "no such plate")
 
 
 # ---- sites 4 & 5: the two well-selector widgets (Qt, emit straight to move) ----
