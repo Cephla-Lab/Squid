@@ -1658,6 +1658,26 @@ class NavigationViewer(QFrame):
     def update_fov_size(self):
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
+    def _current_rotation_deg(self) -> float:
+        """The measured plate rotation, resolved at CALL time (never cached).
+
+        The background image is a NOMINAL drawing - wells on an unrotated grid -
+        so under a measured rotation the stage<->pixel mapping must go through
+        the plate frame: pixels are always nominal, stage coordinates are
+        rotated about A1. Glass-slide samples have no well grid to rotate.
+        """
+        if self.sample in ("glass slide", "4 glass slide"):
+            return 0.0
+        try:
+            from control.core.plate_transform import resolve_rotation_deg
+
+            return resolve_rotation_deg(self.sample)[0]
+        except Exception:
+            self._log.exception(
+                f"Could not resolve plate rotation for {self.sample!r}; drawing the navigation view with 0.00 deg."
+            )
+            return 0.0
+
     def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
@@ -1730,7 +1750,12 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm, y_mm):
+    def get_FOV_pixel_coordinates(self, x_mm, y_mm, rotation_deg=None):
+        """Stage mm -> image pixel corners of the FOV box.
+
+        rotation_deg lets batch callers resolve the rotation once per redraw
+        instead of once per FOV (resolution reads the placement/holder files).
+        """
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
@@ -1749,13 +1774,34 @@ class NavigationViewer(QFrame):
                 ),
             )
         else:
+            if rotation_deg is None:
+                rotation_deg = self._current_rotation_deg()
+            if rotation_deg == 0.0:
+                # Legacy arithmetic kept verbatim (origin_pixel form) so the
+                # unrotated path is bit-for-bit what it always was.
+                center_x_pixel = self.origin_x_pixel + x_mm / self.mm_per_pixel
+                center_y_pixel = self.origin_y_pixel + y_mm / self.mm_per_pixel
+            else:
+                # Stage -> plate frame (R(-theta) about A1), then the nominal
+                # drawing's anchor. The pivot is the same composed a1 the
+                # planner rotates about, so a planned well-center FOV lands on
+                # the well's drawn (nominal) position.
+                rel_x = x_mm - self.a1_x_mm
+                rel_y = y_mm - self.a1_y_mm
+                c = math.cos(math.radians(rotation_deg))
+                s = math.sin(math.radians(rotation_deg))
+                plate_x = c * rel_x + s * rel_y
+                plate_y = -s * rel_x + c * rel_y
+                center_x_pixel = self.a1_x_pixel + plate_x / self.mm_per_pixel
+                center_y_pixel = self.a1_y_pixel + plate_y / self.mm_per_pixel
+            half_fov_pixel = self.fov_size_mm / 2 / self.mm_per_pixel
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel - half_fov_pixel),
+                round(center_y_pixel - half_fov_pixel),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel + half_fov_pixel),
+                round(center_y_pixel + half_fov_pixel),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
@@ -1786,6 +1832,7 @@ class NavigationViewer(QFrame):
             return
 
         color = (252, 174, 30, 128)  # Yellow RGBA
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1794,7 +1841,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
             )
@@ -1811,6 +1860,7 @@ class NavigationViewer(QFrame):
         if not fov_list:
             return
 
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1819,7 +1869,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
             )
@@ -1854,6 +1906,30 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
+    def pixel_to_stage_mm(self, x_pixel, y_pixel, rotation_deg=None):
+        """Image pixel -> stage mm: the inverse of get_FOV_pixel_coordinates.
+
+        The clicked pixel is a NOMINAL plate position (the drawing is unrotated),
+        so under a measured rotation the plate-frame point rotates forward
+        (R(+theta) about A1) into stage coordinates - a double-click on a drawn
+        well navigates to where that well actually sits.
+        """
+        if self.sample != "glass slide" and rotation_deg is None:
+            rotation_deg = self._current_rotation_deg()
+        if self.sample == "glass slide" or rotation_deg == 0.0:
+            # Legacy arithmetic kept verbatim for the unrotated path.
+            x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
+            y_mm = (y_pixel - self.origin_y_pixel) * self.mm_per_pixel
+            return x_mm, y_mm
+        plate_x = (x_pixel - self.a1_x_pixel) * self.mm_per_pixel
+        plate_y = (y_pixel - self.a1_y_pixel) * self.mm_per_pixel
+        c = math.cos(math.radians(rotation_deg))
+        s = math.sin(math.radians(rotation_deg))
+        return (
+            self.a1_x_mm + (c * plate_x - s * plate_y),
+            self.a1_y_mm + (s * plate_x + c * plate_y),
+        )
+
     def handle_mouse_click(self, evt):
         if not evt.double():
             return
@@ -1861,9 +1937,7 @@ class NavigationViewer(QFrame):
             # Get mouse position in image coordinates (independent of zoom)
             mouse_point = self.background_item.mapFromScene(evt.scenePos())
 
-            # Subtract origin offset before converting to mm
-            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
-            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
+            x_mm, y_mm = self.pixel_to_stage_mm(mouse_point.x(), mouse_point.y())
 
             self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)
