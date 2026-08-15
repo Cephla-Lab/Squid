@@ -143,8 +143,11 @@ static const float BLUE_ADJUSTMENT_FACTOR = 1;
 /******************************************* steppers **********************************************/
 /***************************************************************************************************/
 const uint32_t clk_Hz_TMC4361 = 16000000;
-const uint8_t lft_sw_pol[TOTAL_AXES] = {0, 0, 0, 0, 0};
-const uint8_t rht_sw_pol[TOTAL_AXES] = {0, 0, 0, 0, 0};
+// Limit switch active polarity per axis (0 = active low, 1 = active high).
+// Array index order is {y, x, z, w, w2} (see def_v1.h). Z (index 2) uses
+// active-high limit switches on the current stage; X/Y remain active low.
+const uint8_t lft_sw_pol[TOTAL_AXES] = {0, 0, 1, 0, 0};
+const uint8_t rht_sw_pol[TOTAL_AXES] = {0, 0, 1, 0, 0};
 const uint8_t TMC4361_homing_sw[TOTAL_AXES] = {LEFT_SW, LEFT_SW, RGHT_SW, LEFT_SW, LEFT_SW};
 const int32_t vslow = 0x04FFFC00;
 
