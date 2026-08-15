@@ -20,13 +20,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Select the Qt binding (PyQt6 preferred when installed) before anything
-# imports qtpy. Also keeps pytest-qt (PYTEST_QT_API) on the same binding —
-# left alone it prefers PyQt6 on its own and the process would load both.
-from squid.qt_binding import select_qt_api
-
-select_qt_api()
-
 import control.microcontroller
 import control.microscope
 from control.core.multi_point_controller import MultiPointController

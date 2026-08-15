@@ -1,13 +1,11 @@
+# set QT_API environment variable
 import argparse
 import logging
 import os
+
+os.environ["QT_API"] = "pyqt5"
 import signal
 import sys
-
-# Select the Qt binding (PyQt6 preferred when installed) before any qtpy import.
-from squid.qt_binding import select_qt_api
-
-select_qt_api()
 
 # qt libraries
 from qtpy.QtWidgets import *

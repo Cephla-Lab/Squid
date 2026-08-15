@@ -1531,7 +1531,8 @@ class HighContentScreeningGui(QMainWindow):
         We want our main window to fit on the primary screen, so grab the users primary screen and return
         something slightly smaller than that.
         """
-        primary_screen_size = QApplication.primaryScreen().size()
+        desktop_info = QDesktopWidget()
+        primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
 
         height_min = int(0.9 * primary_screen_size.height())
         width_min = int(0.96 * primary_screen_size.width())
