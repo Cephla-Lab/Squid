@@ -53,7 +53,7 @@ class CachedCameraSettings:
 
 
 def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
-    """Save current camera settings (binning and pixel format) to a YAML cache file.
+    """Save current camera settings (binning, pixel format, sensor mode) to a YAML cache file.
 
     Creates parent directories if they do not exist. This function is fail-safe -
     errors are logged but do not raise exceptions, allowing application shutdown

@@ -1163,29 +1163,17 @@ class HighContentScreeningGui(QMainWindow):
         return True
 
     def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:
-        """Apply sensor mode setting to camera and sync UI dropdown.
+        """Apply cached sensor mode via the camera settings widget.
 
         Returns True if successfully applied, False otherwise.
         """
         if not sensor_mode:
             return False
 
-        try:
-            self.camera.set_sensor_mode(sensor_mode)
-        except (NotImplementedError, ValueError) as e:
-            self.log.warning(f"Cannot restore sensor mode '{sensor_mode}' - not supported by this camera: {e}")
-            return False
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring sensor mode: {e}")
-            return False
-
-        # The dropdown only exists when the camera reported modes at widget build time.
-        dropdown = getattr(self.cameraSettingWidget, "dropdown_sensorMode", None)
-        if dropdown is not None:
-            dropdown.blockSignals(True)
-            dropdown.setCurrentText(sensor_mode)
-            dropdown.blockSignals(False)
-        return True
+        restored = self.cameraSettingWidget.restore_sensor_mode(sensor_mode)
+        if not restored:
+            self.log.warning(f"Cannot restore sensor mode '{sensor_mode}' - not supported by this camera")
+        return restored
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:

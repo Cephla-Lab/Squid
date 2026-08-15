@@ -3875,6 +3875,7 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(self.dropdown_binning)
 
         # Sensor mode dropdown: only shown when the camera implements mode selection.
+        self.dropdown_sensorMode = None
         sensor_modes = self.camera.get_available_sensor_modes()
         if sensor_modes:
             self.dropdown_sensorMode = QComboBox()
@@ -3961,6 +3962,19 @@ class CameraSettingsWidget(QFrame):
         # needs its min/max refreshed too, since this widget's own
         # entry_exposureTime is often hidden (include_gain_exposure_time=False).
         self.signal_sensor_mode_changed.emit()
+
+    def restore_sensor_mode(self, mode: str) -> bool:
+        """Apply a cached sensor mode by driving the dropdown, reusing set_sensor_mode's
+        error handling, revert, and exposure-limit refresh.
+
+        Returns True if the camera ends up in the requested mode.
+        """
+        if self.dropdown_sensorMode is None:
+            return False
+        # No-op (and no camera command) when the mode is already current; an unknown
+        # mode isn't in the item list, so the selection and camera stay unchanged.
+        self.dropdown_sensorMode.setCurrentText(mode)
+        return self.camera.get_sensor_mode() == mode
 
     def _revert_sensor_mode_dropdown(self):
         self.dropdown_sensorMode.blockSignals(True)
