@@ -90,8 +90,13 @@ def test_damaged_cache_falls_back_to_shipped(formats_tree, caplog, label, conten
     assert caplog.records, f"{label}: fell back silently — an operator must be able to find this"
 
 
-def test_valid_cache_is_still_preferred(formats_tree):
-    """The fallback must not cost us the cache's whole purpose: real calibrations win."""
+def test_valid_cache_calibration_survives_migration(formats_tree):
+    """EXPECTATION FLIPPED by the placement-sidecar commit: a valid legacy cache
+    is migrated on load - the catalog dict returns to the SHIPPED a1 and the
+    calibration lives on as a placement delta, composing to the exact same
+    coordinates. Real calibrations still win; they just have one owner now."""
+    from control.core.plate_transform import plate_transform_for
+
     shipped = _shipped_96_a1_x(formats_tree)
     calibrated = shipped + 1.234
     _write_cache(
@@ -101,7 +106,10 @@ def test_valid_cache_is_still_preferred(formats_tree):
 
     _, sample_formats = _def.load_formats()
 
-    assert sample_formats["96 well plate"]["a1_x_mm"] == pytest.approx(calibrated)
+    assert sample_formats["96 well plate"]["a1_x_mm"] == shipped  # catalog = shipped
+    assert plate_transform_for("96 well plate").well_center_mm(0, 0)[0] == calibrated  # composed
+    assert not os.path.exists(formats_tree / CACHE_DIR / CSV_NAME)  # cache retired
+    assert os.path.exists(formats_tree / CACHE_DIR / (CSV_NAME + ".migrated"))
 
 
 def test_absent_cache_uses_shipped(formats_tree):

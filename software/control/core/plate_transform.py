@@ -63,10 +63,15 @@ class WellplateSettings:
     @staticmethod
     def from_format(format_: str) -> "WellplateSettings":
         s = control._def.get_wellplate_settings(format_)
+        # The COMPOSED a1 (catalog + placement delta), so the navigation viewer
+        # and the planner agree; both compose through the same resolver rules.
+        placement = _placement_for(format_)
+        a1_x = s["a1_x_mm"] + (placement.a1_dx_mm if placement else 0.0)
+        a1_y = s["a1_y_mm"] + (placement.a1_dy_mm if placement else 0.0)
         return WellplateSettings(
             format=format_,
-            a1_x_mm=s["a1_x_mm"],
-            a1_y_mm=s["a1_y_mm"],
+            a1_x_mm=a1_x,
+            a1_y_mm=a1_y,
             a1_x_pixel=s["a1_x_pixel"],
             a1_y_pixel=s["a1_y_pixel"],
             well_size_mm=s["well_size_mm"],
@@ -143,19 +148,53 @@ class PlateTransform:
         return replace(self, rotation_deg=0.0, offset_x_mm=0.0, offset_y_mm=0.0)
 
 
-def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> PlateTransform:
-    """The single resolver: nominal geometry + the legacy global offset.
+def _placement_for(format_: str):
+    from control.models.plate_placement import load_plate_placements
 
-    Reads control._def at CALL time (never cache the result across calls -
-    the snapshot-at-__init__ pattern is the bug this module exists to end).
-    The placement sidecar and holder rotation compose here when they land.
+    stored = load_plate_placements()
+    if stored is None:
+        return None
+    return stored.placements.get(format_)
+
+
+def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> PlateTransform:
+    """The single resolver: nominal geometry + measured placement + legacy offset.
+
+    Reads control._def and the placement sidecar at CALL time (never cache the
+    result across calls - the snapshot-at-__init__ pattern is the bug this
+    module exists to end). Composition, one owner per quantity:
+
+      a1            <- catalog (shipped CSV + user YAML) + placement DELTA
+      pitch/shape   <- catalog (shipped CSV + user YAML)
+      rotation      <- placement override when measured (holder default later)
+      legacy offset <- WELLPLATE_OFFSET_*, SUPPRESSED for any format that has a
+                       placement entry: the delta is the whole measured
+                       correction, so exactly one offset is live per format and
+                       double-apply is unrepresentable.
     """
     settings = control._def.get_wellplate_settings(format_)
+    placement = _placement_for(format_)
+    if placement is not None:
+        a1_x = settings["a1_x_mm"] + placement.a1_dx_mm
+        a1_y = settings["a1_y_mm"] + placement.a1_dy_mm
+        rotation = placement.rotation_deg if placement.rotation_deg is not None else 0.0
+        offset_x = 0.0
+        offset_y = 0.0
+    else:
+        a1_x = settings["a1_x_mm"]
+        a1_y = settings["a1_y_mm"]
+        rotation = 0.0
+        offset_x = control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0
+        offset_y = control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0
+    if not apply_legacy_offset:
+        offset_x = 0.0
+        offset_y = 0.0
     return PlateTransform(
-        a1_x_mm=settings["a1_x_mm"],
-        a1_y_mm=settings["a1_y_mm"],
+        a1_x_mm=a1_x,
+        a1_y_mm=a1_y,
         pitch_x_mm=settings["well_spacing_x_mm"],
         pitch_y_mm=settings["well_spacing_y_mm"],
-        offset_x_mm=control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0,
-        offset_y_mm=control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0,
+        rotation_deg=rotation,
+        offset_x_mm=offset_x,
+        offset_y_mm=offset_y,
     )

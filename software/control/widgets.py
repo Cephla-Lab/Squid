@@ -13688,7 +13688,7 @@ class WellplateCalibration(QDialog):
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
 
-        existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        existing_settings = control._def.get_wellplate_settings(selected_format)
         display_name = self._format_display_name(selected_format)
 
         print(f"Updating existing format {display_name}")
@@ -13698,15 +13698,60 @@ class WellplateCalibration(QDialog):
         )
         print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
 
-        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
-            {
-                "a1_x_mm": a1_x_mm,
-                "a1_y_mm": a1_y_mm,
-                "well_size_mm": well_size_mm,
-            }
+        # a1 is measured PLACEMENT: persisted as a DELTA on the catalog value in
+        # cache/plate_placement.yaml. The catalog keeps sole ownership of the
+        # absolute origin; the in-memory settings dict stays at the catalog value
+        # and every consumer composes the delta through the resolver.
+        import datetime
+
+        from control.models.plate_placement import (
+            load_plate_placements,
+            MeasuredPoint,
+            PlacementFit,
+            PlatePlacement,
+            PlatePlacements,
+            save_plate_placements,
         )
 
-        self.wellplateFormatWidget.save_formats_to_csv()
+        placements = load_plate_placements() or PlatePlacements()
+        existing_entry = placements.placements.get(selected_format)
+        placements.placements[selected_format] = PlatePlacement(
+            a1_dx_mm=a1_x_mm - existing_settings["a1_x_mm"],
+            a1_dy_mm=a1_y_mm - existing_settings["a1_y_mm"],
+            # A single-well touch measures translation only; a measured rotation
+            # override (when the 4-well flow lands) is preserved.
+            rotation_deg=existing_entry.rotation_deg if existing_entry else None,
+            fit=PlacementFit(
+                points=[MeasuredPoint(well="A1", x_mm=a1_x_mm, y_mm=a1_y_mm)],
+                timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        save_plate_placements(placements)
+
+        # The measured well size is a plate-TYPE property: a sparse geometry
+        # override next to the catalog.
+        from control.models.sample_format_config import (
+            load_user_sample_formats,
+            SampleFormatOverride,
+            save_user_sample_formats,
+            UserSampleFormats,
+        )
+
+        user_formats = load_user_sample_formats() or UserSampleFormats()
+        previous = user_formats.overrides.get(selected_format)
+        merged = previous.model_dump(exclude_none=True) if previous else {}
+        merged["well_size_mm"] = well_size_mm
+        merged.pop("well_size_x_mm", None)
+        merged.pop("well_size_y_mm", None)
+        user_formats.overrides[selected_format] = SampleFormatOverride(**merged)
+        save_user_sample_formats(user_formats)
+        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+            {
+                "well_size_mm": well_size_mm,
+                "well_size_x_mm": well_size_mm,
+                "well_size_y_mm": well_size_mm,
+            }
+        )
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
 

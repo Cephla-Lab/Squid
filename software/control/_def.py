@@ -1260,6 +1260,102 @@ def write_sample_formats_csv(file_path, sample_formats):
         raise
 
 
+def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
+    """Split a legacy cache/sample_formats.csv into the new stores.
+
+    The legacy cache was a WHOLE-TABLE shadow: one calibration froze all seven
+    formats forever, so shipped corrections never reached a calibrated machine.
+    This converts it once:
+      - a1 differences vs shipped        -> placement deltas (cache/plate_placement.yaml)
+      - spacing/size differences         -> sparse geometry overrides (user YAML)
+      - formats unknown to the shipped   -> custom formats (user YAML)
+    and renames the cache to .migrated. Existing entries in the new stores are
+    never clobbered (first write wins - they are newer than the cache).
+    """
+    import datetime
+
+    from control.models.plate_placement import (
+        load_plate_placements,
+        MeasuredPoint,
+        PlacementFit,
+        PlatePlacement,
+        PlatePlacements,
+        save_plate_placements,
+    )
+    from control.models.sample_format_config import (
+        CustomSampleFormat,
+        load_user_sample_formats,
+        SampleFormatOverride,
+        save_user_sample_formats,
+        UserSampleFormats,
+    )
+
+    cached = read_sample_formats_csv(cached_formats_path)
+    if not cached:
+        # A cache that parses to zero formats is damage (a legitimate cache
+        # always carries the full table). Refuse to migrate it so the loader's
+        # loud damaged-cache ERROR path handles it instead.
+        raise ValueError(f"{cached_formats_path} parsed to zero formats; treating as damaged, not migrating")
+    shipped = read_sample_formats_csv(default_formats_path)
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
+    note = f"migrated_from_cache_csv (cache mtime {mtime})"
+
+    placements = load_plate_placements() or PlatePlacements()
+    user_formats = load_user_sample_formats() or UserSampleFormats()
+
+    for format_key, cached_settings in cached.items():
+        if format_key not in shipped:
+            if format_key not in user_formats.custom_formats:
+                user_formats.custom_formats[format_key] = CustomSampleFormat(
+                    rows=cached_settings["rows"],
+                    cols=cached_settings["cols"],
+                    well_spacing_mm=cached_settings["well_spacing_mm"],
+                    well_size_mm=cached_settings["well_size_mm"],
+                    number_of_skip=cached_settings["number_of_skip"],
+                    a1_x_mm=cached_settings["a1_x_mm"],
+                    a1_y_mm=cached_settings["a1_y_mm"],
+                    a1_x_pixel=cached_settings["a1_x_pixel"],
+                    a1_y_pixel=cached_settings["a1_y_pixel"],
+                )
+                log.info(f"migrated custom format {format_key!r} from the legacy cache")
+            continue
+
+        shipped_settings = shipped[format_key]
+
+        dx = cached_settings["a1_x_mm"] - shipped_settings["a1_x_mm"]
+        dy = cached_settings["a1_y_mm"] - shipped_settings["a1_y_mm"]
+        if (dx != 0.0 or dy != 0.0) and format_key not in placements.placements:
+            placements.placements[format_key] = PlatePlacement(
+                a1_dx_mm=dx,
+                a1_dy_mm=dy,
+                fit=PlacementFit(
+                    points=[MeasuredPoint(well="A1", x_mm=cached_settings["a1_x_mm"], y_mm=cached_settings["a1_y_mm"])],
+                    timestamp=mtime,
+                    note=note,
+                ),
+            )
+            log.info(f"migrated a1 calibration for {format_key!r}: delta ({dx:+.4f}, {dy:+.4f}) mm")
+
+        override_fields = {}
+        if cached_settings["well_spacing_mm"] != shipped_settings["well_spacing_mm"]:
+            override_fields["well_spacing_mm"] = cached_settings["well_spacing_mm"]
+        if cached_settings["well_size_mm"] != shipped_settings["well_size_mm"]:
+            override_fields["well_size_mm"] = cached_settings["well_size_mm"]
+        if cached_settings["number_of_skip"] != shipped_settings["number_of_skip"]:
+            override_fields["number_of_skip"] = cached_settings["number_of_skip"]
+        if override_fields and format_key not in user_formats.overrides:
+            user_formats.overrides[format_key] = SampleFormatOverride(**override_fields)
+            log.info(f"migrated geometry overrides for {format_key!r}: {sorted(override_fields)}")
+
+    save_plate_placements(placements)
+    save_user_sample_formats(user_formats)
+    os.replace(cached_formats_path, cached_formats_path + ".migrated")
+    log.info(
+        f"Legacy format cache migrated and renamed to {cached_formats_path}.migrated; "
+        f"calibrations now load from cache/plate_placement.yaml and sample_formats_user.yaml."
+    )
+
+
 def load_formats():
     """Load formats, prioritizing cache for sample formats."""
     cache_path = "cache"
@@ -1271,6 +1367,19 @@ def load_formats():
     # Try cache first for sample formats, fall back to default if not found
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
+
+    # One-time, idempotent migration of the legacy whole-table calibration
+    # cache into the split stores (geometry overrides + placement deltas).
+    # Renames the cache to .migrated on success so it never runs twice; on any
+    # failure the cache is left in place and keeps working as before.
+    if os.path.exists(cached_formats_path):
+        try:
+            _migrate_legacy_format_cache(cached_formats_path, default_formats_path)
+        except Exception:
+            log.exception(
+                f"Migration of {cached_formats_path} failed; keeping the legacy cache as-is. "
+                f"Calibrations continue to load from it."
+            )
 
     sample_formats = None
     if os.path.exists(cached_formats_path):
