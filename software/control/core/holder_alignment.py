@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple
 import control._def
 import control.utils
 from control.core.mosaic_utils import format_well_id
-from control.core.plate_fit import fit_plate_placement, PlateFitResult
+from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_placement, PlateFitError, PlateFitResult
 from control.core.plate_transform import PlateTransform, plate_transform_for, resolve_rotation_deg
 from control.models.plate_placement import load_plate_placements, save_plate_placements
 from control.models.plate_holder import (
@@ -45,23 +45,14 @@ class SessionError(ValueError):
 
 
 def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
-    """Center + radius of the circle through three rim touches.
-
-    The circumcenter cancels the touch-radius error the same way the corner
-    midpoint cancels fillet displacement. Collinear touches have no circle.
-    """
-    ax, ay = p1
-    bx, by = p2
-    cx, cy = p3
-    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    if abs(d) < 1e-9:
+    """plate_fit.circumcenter with the wizard's rim-touch copy on failure."""
+    try:
+        return _circumcenter(p1, p2, p3)
+    except PlateFitError:
         raise SessionError(
             "These three rim touches are (nearly) in a line - they don't define a circle. "
             "Re-touch the rim at three well-separated points."
         )
-    ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
-    uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d
-    return ux, uy, math.hypot(ax - ux, ay - uy)
 
 
 @dataclass

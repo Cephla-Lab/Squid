@@ -20,9 +20,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-import squid.logging
-
-log = squid.logging.get_logger(__name__)
+from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
 
 PLATE_HOLDER_PATH = os.path.join("machine_configs", "plate_holder.yaml")
 
@@ -66,8 +64,6 @@ class PlateHolder(BaseModel):
 def load_plate_holder(path: str = PLATE_HOLDER_PATH) -> Optional[PlateHolder]:
     """None when absent (rotation 0.0 - pre-feature behaviour). Damage logs
     loudly and returns None rather than raising."""
-    from control.models.yaml_store import load_yaml_model
-
     return load_yaml_model(
         path,
         PlateHolder,
@@ -78,6 +74,4 @@ def load_plate_holder(path: str = PLATE_HOLDER_PATH) -> Optional[PlateHolder]:
 
 
 def save_plate_holder(holder: PlateHolder, path: str = PLATE_HOLDER_PATH) -> None:
-    from control.models.yaml_store import save_yaml_model_atomic
-
     save_yaml_model_atomic(holder, path)

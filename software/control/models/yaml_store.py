@@ -1,8 +1,5 @@
 """Shared YAML persistence for the small pydantic sidecar models.
 
-One implementation of the two patterns plate_placement.py and plate_holder.py
-each carried a copy of:
-
 - guarded load: absent -> None; damage -> log the caller's message loudly and
   return None (the app keeps running on defaults rather than refusing to start)
 - atomic save: tmp file + fsync + os.replace, so an interrupted write can never
@@ -35,14 +32,15 @@ _cache: Dict[str, Tuple[Tuple[int, int, int], Optional[BaseModel]]] = {}
 
 def load_yaml_model(path: str, model_cls: Type[M], damage_message: str) -> Optional[M]:
     """None when absent; damage logs `damage_message` loudly and returns None."""
+    cache_key = os.path.abspath(path)  # callers pass cwd-relative paths; tests chdir
     try:
         stat = os.stat(path)
     except OSError:
-        _cache.pop(path, None)
+        _cache.pop(cache_key, None)
         return None
     signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
-    cached = _cache.get(path)
+    cached = _cache.get(cache_key)
     if cached is not None and cached[0] == signature:
         model = cached[1]
         return model.model_copy(deep=True) if model is not None else None
@@ -54,7 +52,7 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str) -> Optio
     except Exception:
         log.exception(damage_message)
         model = None
-    _cache[path] = (signature, model)
+    _cache[cache_key] = (signature, model)
     return model.model_copy(deep=True) if model is not None else None
 
 

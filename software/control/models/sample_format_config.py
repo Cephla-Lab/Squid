@@ -25,6 +25,8 @@ from typing import Dict, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
+
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
@@ -152,8 +154,6 @@ class UserSampleFormats(BaseModel):
 def load_user_sample_formats(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
     """None when absent (the identity default). Damage logs loudly and returns
     None rather than raising - this runs at import time via load_formats()."""
-    from control.models.yaml_store import load_yaml_model
-
     return load_yaml_model(
         path,
         UserSampleFormats,
@@ -164,8 +164,6 @@ def load_user_sample_formats(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[U
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:
-    from control.models.yaml_store import save_yaml_model_atomic
-
     save_yaml_model_atomic(user_formats, path)
 
 

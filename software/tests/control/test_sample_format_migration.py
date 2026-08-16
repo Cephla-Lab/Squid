@@ -22,15 +22,8 @@ CSV = "sample_formats.csv"
 
 
 @pytest.fixture
-def migration_tree(tmp_path, monkeypatch):
-    """tmp cwd with the real shipped catalog and an empty cache/."""
-    repo = os.getcwd()
-    (tmp_path / SHIPPED_DIR).mkdir()
-    (tmp_path / "cache").mkdir()
-    shutil.copy(os.path.join(repo, SHIPPED_DIR, CSV), tmp_path / SHIPPED_DIR / CSV)
-    shutil.copy(os.path.join(repo, SHIPPED_DIR, "objectives.csv"), tmp_path / SHIPPED_DIR / "objectives.csv")
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+def migration_tree(catalog_tree):
+    return catalog_tree
 
 
 def write_legacy_cache(tree, edit):

@@ -6,6 +6,8 @@ preventing background threads from causing segfaults in subsequent tests.
 """
 
 import logging
+import os
+import shutil
 from unittest.mock import patch
 
 import pytest
@@ -93,9 +95,6 @@ def catalog_tree(tmp_path, monkeypatch):
     """Isolated cwd holding the shipped catalog: sidecar writes (machine_configs/,
     cache/, objective_and_sample_formats/sample_formats_user.yaml) land in tmp,
     never in the repo. images/ is symlinked read-only for widgets that draw."""
-    import os
-    import shutil
-
     repo = os.getcwd()
     (tmp_path / "objective_and_sample_formats").mkdir()
     (tmp_path / "machine_configs").mkdir()

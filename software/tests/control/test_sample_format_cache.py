@@ -31,22 +31,10 @@ HEADER = "format,a1_x_mm,a1_y_mm,a1_x_pixel,a1_y_pixel,well_size_mm,well_spacing
 
 
 @pytest.fixture
-def formats_tree(tmp_path, monkeypatch):
-    """A tmp cwd containing a real shipped sample_formats.csv and an empty cache/.
-
-    `load_formats()` resolves both paths relative to the process cwd, so tests
-    chdir rather than injecting paths.
-    """
-    repo_shipped = os.path.join(os.getcwd(), SHIPPED_DIR, CSV_NAME)
-    repo_objectives = os.path.join(os.getcwd(), SHIPPED_DIR, "objectives.csv")
-
-    (tmp_path / SHIPPED_DIR).mkdir()
-    (tmp_path / CACHE_DIR).mkdir()
-    shutil.copy(repo_shipped, tmp_path / SHIPPED_DIR / CSV_NAME)
-    shutil.copy(repo_objectives, tmp_path / SHIPPED_DIR / "objectives.csv")
-
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+def formats_tree(catalog_tree):
+    """`load_formats()` resolves paths relative to the process cwd, so tests
+    run chdir'd into the shared catalog tree rather than injecting paths."""
+    return catalog_tree
 
 
 def _shipped_96_a1_x(tmp_path):

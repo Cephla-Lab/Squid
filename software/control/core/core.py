@@ -43,13 +43,12 @@ import time
 import csv
 import itertools
 import json
-import math
 import numpy as np
 import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
-from control.core.plate_transform import rotate_deg
+from control.core.plate_transform import resolve_rotation_deg, rotate_deg
 import scipy.ndimage
 
 if ENABLE_NL5:
@@ -1512,11 +1511,11 @@ class NavigationViewer(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.sample = sample
-        # Catalog identity, distinct from the display identity: self.sample may
-        # be a viewer-only alias ("4 glass slide" is an image choice, not a
-        # format), and rotation resolution needs the real format.
+        # Catalog identity vs display identity: "4 glass slide" is an image
+        # choice, not a format. Constructors may pass either; normalize to the
+        # format and derive the display name from the ONE owner of the alias.
         self.format = "glass slide" if sample in ("glass slide", "4 glass slide") else sample
+        self.sample = self._display_sample_for(self.format)
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
@@ -1545,9 +1544,9 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(self.image_paths.get(self.sample, "images/4 slide carrier_1509x1010.png"))
         self.create_layers()
-        self.update_display_properties(sample)
+        self.update_display_properties(self.sample)
         # self.update_display()
 
     def init_ui(self, invertX):
@@ -1663,6 +1662,14 @@ class NavigationViewer(QFrame):
     def update_fov_size(self):
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
+    @staticmethod
+    def _display_sample_for(format_: str) -> str:
+        """The display alias for a catalog format - the one owner of the
+        "4 glass slide is how an HCS machine DRAWS a glass slide" rule."""
+        if format_ == "glass slide" and IS_HCS:
+            return "4 glass slide"
+        return format_
+
     def _current_rotation_deg(self) -> float:
         """The measured plate rotation, resolved at CALL time (never cached).
 
@@ -1673,8 +1680,6 @@ class NavigationViewer(QFrame):
         resolver itself - no sample-name special cases here.
         """
         try:
-            from control.core.plate_transform import resolve_rotation_deg
-
             return resolve_rotation_deg(self.format)[0]
         except Exception:
             self._log.exception(
@@ -1698,13 +1703,7 @@ class NavigationViewer(QFrame):
         rows = settings.rows
         cols = settings.cols
 
-        if sample_format == "glass slide":
-            if IS_HCS:
-                sample = "4 glass slide"
-            else:
-                sample = "glass slide"
-        else:
-            sample = sample_format
+        sample = self._display_sample_for(sample_format)
 
         self.sample = sample
         self.format = sample_format  # catalog identity survives the display renaming
@@ -1914,8 +1913,8 @@ class NavigationViewer(QFrame):
         (R(+theta) about A1) into stage coordinates - a double-click on a drawn
         well navigates to where that well actually sits.
         """
-        rotation_deg = 0.0 if self.sample == "glass slide" else self._current_rotation_deg()
-        if self.sample == "glass slide" or rotation_deg == 0.0:
+        rotation_deg = self._current_rotation_deg()  # pitch-0 formats resolve to 0.0
+        if rotation_deg == 0.0:
             # Legacy arithmetic kept verbatim for the unrotated path.
             x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
             y_mm = (y_pixel - self.origin_y_pixel) * self.mm_per_pixel

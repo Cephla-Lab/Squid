@@ -16,9 +16,7 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-import squid.logging
-
-log = squid.logging.get_logger(__name__)
+from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
 
 PLATE_PLACEMENT_PATH = os.path.join("cache", "plate_placement.yaml")
 
@@ -54,8 +52,6 @@ class PlatePlacements(BaseModel):
 
 def load_plate_placements(path: str = PLATE_PLACEMENT_PATH) -> Optional[PlatePlacements]:
     """None when absent (identity). Damage logs loudly, returns None."""
-    from control.models.yaml_store import load_yaml_model
-
     return load_yaml_model(
         path,
         PlatePlacements,
@@ -66,6 +62,4 @@ def load_plate_placements(path: str = PLATE_PLACEMENT_PATH) -> Optional[PlatePla
 
 
 def save_plate_placements(placements: PlatePlacements, path: str = PLATE_PLACEMENT_PATH) -> None:
-    from control.models.yaml_store import save_yaml_model_atomic
-
     save_yaml_model_atomic(placements, path)

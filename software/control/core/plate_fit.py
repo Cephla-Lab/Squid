@@ -290,5 +290,22 @@ def fit_plate_placement(
     )
 
 
+def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
+    """Center + radius of the circle through three points.
+
+    The circumcenter cancels the touch-radius error the same way the corner
+    midpoint cancels fillet displacement. Collinear points have no circle.
+    """
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-9:
+        raise PlateFitError("the three points are (nearly) collinear - they do not define a circle")
+    ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
+    uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d
+    return ux, uy, math.hypot(ax - ux, ay - uy)
+
+
 def _signed_area(a, b, c) -> float:
     return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))

@@ -176,13 +176,19 @@ def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
     at the pivot, so an angle could not move anything anyway.
     """
     settings = control._def.get_wellplate_settings(format_)
+    return _resolve_rotation(settings, _placement_for(format_))
+
+
+def _resolve_rotation(settings, placement) -> Tuple[float, str]:
+    """The override-with-inherit chain, given already-loaded settings + placement.
+
+    Owns the pitch-0 short-circuit too, so both public entry points
+    (resolve_rotation_deg for stamps/status, plate_transform_for for the
+    planner) cannot drift on it - drift would mean a provenance stamp records
+    a rotation the transform does not apply.
+    """
     if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
-        return 0.0, "none"
-    return _resolve_rotation(_placement_for(format_))
-
-
-def _resolve_rotation(placement) -> Tuple[float, str]:
-    """The override-with-inherit chain, given an already-loaded placement."""
+        return 0.0, "none"  # a 1x1 grid's only well IS the pivot
     if placement is not None and placement.rotation_deg is not None:
         return placement.rotation_deg, "measured"
     from control.models.plate_holder import load_plate_holder
@@ -210,10 +216,7 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
     """
     settings = control._def.get_wellplate_settings(format_)
     placement = _placement_for(format_)
-    if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
-        rotation = 0.0  # pitch-0: the only well IS the pivot
-    else:
-        rotation, _source = _resolve_rotation(placement)  # no second placement read
+    rotation, _source = _resolve_rotation(settings, placement)  # no second placement read
     if placement is not None:
         a1_x = settings["a1_x_mm"] + placement.a1_dx_mm
         a1_y = settings["a1_y_mm"] + placement.a1_dy_mm

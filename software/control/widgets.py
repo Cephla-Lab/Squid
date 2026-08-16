@@ -30,7 +30,8 @@ from control.core.coordinate_provenance import (
     staleness_warning,
     write_scan_coordinates_csv,
 )
-from control.core.holder_alignment import circumcenter, CORNER_FEATURES, HolderAlignmentSession, SessionError
+from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
+from control.core.plate_fit import circumcenter, PlateFitError
 from control.core.plate_transform import PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
@@ -13456,8 +13457,7 @@ class WellplateCalibration(QDialog):
         # The per-A1 method/points UI and the Calibrate button belong to the
         # two format modes; the holder mode has its own flow and Save.
         self.calibration_method_group.setVisible(not is_holder)
-        self.points_widget.setVisible(not is_holder and self.edge_points_radio.isChecked())
-        self.center_point_widget.setVisible(not is_holder and self.center_point_radio.isChecked())
+        self._sync_method_panel()
         self.calibrateButton.setVisible(not is_holder)
         self.holder_widget.setVisible(is_holder)
 
@@ -13769,16 +13769,17 @@ class WellplateCalibration(QDialog):
 
         self.update_calibrate_button_state()
 
+    def _sync_method_panel(self):
+        """The ONE owner of the method-panel visibility rule: which points
+        widget shows follows the method radios, and neither shows in holder
+        mode. Both mode and method toggles route through here."""
+        is_holder = self.holder_rotation_radio.isChecked()
+        self.points_widget.setVisible(not is_holder and self.edge_points_radio.isChecked())
+        self.center_point_widget.setVisible(not is_holder and self.center_point_radio.isChecked())
+
     def toggle_calibration_method(self):
         """Toggle between 3 edge points and center point calibration methods."""
-        if self.holder_rotation_radio.isChecked():
-            return  # holder mode owns the panel; toggle_input_mode restores on exit
-        if self.edge_points_radio.isChecked():
-            self.points_widget.show()
-            self.center_point_widget.hide()
-        else:
-            self.points_widget.hide()
-            self.center_point_widget.show()
+        self._sync_method_panel()
         self.update_calibrate_button_state()
 
     def setCenterPoint(self):
@@ -13914,9 +13915,7 @@ class WellplateCalibration(QDialog):
                 self._calibrate_new_format()
             else:
                 self._calibrate_existing_format()
-        except (np.linalg.LinAlgError, SessionError):
-            # SessionError: circumcenter's collinearity guard (the shared
-            # solver); LinAlgError kept for any remaining numpy paths.
+        except PlateFitError:
             import traceback
 
             traceback.print_exc()
@@ -14179,10 +14178,8 @@ class WellplateCalibration(QDialog):
 
     @staticmethod
     def calculate_circle(points):
-        # ONE circle solver for the whole dialog: the holder mode's
-        # circumcenter (closed form, collinearity guard with user-facing
-        # copy). The old np.linalg.solve version accepted near-collinear
-        # points and returned a wildly-off circle silently.
+        # ONE circle solver for the whole dialog; collinear points raise
+        # PlateFitError, which calibrate() maps to the dialog's message.
         cx, cy, radius = circumcenter(tuple(points[0]), tuple(points[1]), tuple(points[2]))
         return (cx, cy), radius
 
