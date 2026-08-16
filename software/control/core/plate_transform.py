@@ -76,11 +76,12 @@ class WellplateSettings:
     @staticmethod
     def from_format(format_: str) -> "WellplateSettings":
         s = control._def.get_wellplate_settings(format_)
-        # The COMPOSED a1 (catalog + placement delta), so the navigation viewer
-        # and the planner agree; both compose through the same resolver rules.
-        placement = _placement_for(format_)
-        a1_x = s["a1_x_mm"] + (placement.a1_dx_mm if placement else 0.0)
-        a1_y = s["a1_y_mm"] + (placement.a1_dy_mm if placement else 0.0)
+        # The EFFECTIVE A1: well (0,0) under the full resolver rules (catalog +
+        # placement delta, legacy offset including its suppression when a
+        # placement exists). Composing only the delta here left the navigation
+        # viewer's plate registration off by wellplate_offset on machines that
+        # set one; rotation pivots on this point, so it is exact for any angle.
+        a1_x, a1_y = plate_transform_for(format_).well_center_mm(0, 0)
         return WellplateSettings(
             format=format_,
             a1_x_mm=a1_x,

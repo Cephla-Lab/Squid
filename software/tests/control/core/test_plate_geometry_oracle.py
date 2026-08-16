@@ -151,10 +151,12 @@ def test_server_parse_wells_rejects_unknown_format():
 def test_well_selection_widget_double_click(qtbot, monkeypatch, off):
     import control.widgets
 
-    # widgets.py binds WELLPLATE_OFFSET_* into its own namespace via star-import,
-    # so the patch must target control.widgets, not control._def.
-    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_X_mm", off[0])
-    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_Y_mm", off[1])
+    # The selectors resolve through plate_transform_for at CLICK time, which
+    # reads control._def - patch the resolver's source of truth. (They used to
+    # read a star-imported copy in the widgets namespace; positions for
+    # uncalibrated formats are unchanged, only the read moved.)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", off[0])
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
     stub_fmt = SimpleNamespace(getWellplateSettings=lambda fmt: _def.WELLPLATE_FORMAT_SETTINGS[fmt])
     widget = control.widgets.WellSelectionWidget("96 well plate", stub_fmt)
@@ -175,8 +177,9 @@ def test_well_selection_widget_double_click(qtbot, monkeypatch, off):
 def test_well1536_selection_widget_navigation(qtbot, monkeypatch, off):
     import control.widgets
 
-    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_X_mm", off[0])
-    monkeypatch.setattr(control.widgets, "WELLPLATE_OFFSET_Y_mm", off[1])
+    # Click-time resolution reads control._def (see the 96-well test above).
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", off[0])
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
     stub_fmt = SimpleNamespace(getWellplateSettings=lambda fmt: _def.WELLPLATE_FORMAT_SETTINGS[fmt])
     widget = control.widgets.Well1536SelectionWidget(stub_fmt)

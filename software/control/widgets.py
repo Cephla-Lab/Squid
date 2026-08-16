@@ -32,7 +32,7 @@ from control.core.coordinate_provenance import (
 )
 from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
 from control.core.plate_fit import circumcenter, PlateFitError
-from control.core.plate_transform import PlateTransform, WellplateSettings
+from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
@@ -5649,14 +5649,10 @@ class WellSelectionWidget(QTableWidget):
         if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
             col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
         ):
-            transform = PlateTransform(
-                a1_x_mm=self.a1_x_mm,
-                a1_y_mm=self.a1_y_mm,
-                pitch_x_mm=self.spacing_mm,
-                pitch_y_mm=self.spacing_mm,
-                offset_x_mm=WELLPLATE_OFFSET_X_mm,
-                offset_y_mm=WELLPLATE_OFFSET_Y_mm,
-            )
+            # Resolved at CLICK time: the snapshot-from-cached-fields transform
+            # this replaces missed calibration deltas, measured rotation, and
+            # per-axis pitch - double-click navigation disagreed with planning.
+            transform = plate_transform_for(self.format)
             x_mm, y_mm = transform.well_center_mm(row, col)
             self.signal_wellSelectedPos.emit(x_mm, y_mm)
             print("well location:", (x_mm, y_mm))
@@ -14797,14 +14793,8 @@ class Well1536SelectionWidget(QWidget):
         # Update cell_input with the correct label (e.g., A1, B2, AA1, etc.)
         self.cell_input.setText(self._cell_name(row, col))
 
-        transform = PlateTransform(
-            a1_x_mm=self.a1_x_mm,
-            a1_y_mm=self.a1_y_mm,
-            pitch_x_mm=self.spacing_mm,
-            pitch_y_mm=self.spacing_mm,
-            offset_x_mm=WELLPLATE_OFFSET_X_mm,
-            offset_y_mm=WELLPLATE_OFFSET_Y_mm,
-        )
+        # Resolved at CLICK time - same rule as WellSelectionWidget.onDoubleClick.
+        transform = plate_transform_for(self.format)
         x_mm, y_mm = transform.well_center_mm(row, col)
         self.signal_wellSelectedPos.emit(x_mm, y_mm)
 

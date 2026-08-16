@@ -771,8 +771,10 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         transform = PlateTransform(
             a1_x_mm=wellplate_settings["a1_x_mm"],
             a1_y_mm=wellplate_settings["a1_y_mm"],
-            pitch_x_mm=pitch,
-            pitch_y_mm=pitch,
+            # Per-axis when the settings carry it (anisotropic user formats);
+            # the scalar is the legacy fallback for caller-supplied dicts.
+            pitch_x_mm=wellplate_settings.get("well_spacing_x_mm", pitch),
+            pitch_y_mm=wellplate_settings.get("well_spacing_y_mm", pitch),
             offset_x_mm=control._def.WELLPLATE_OFFSET_X_mm,
             offset_y_mm=control._def.WELLPLATE_OFFSET_Y_mm,
         )
