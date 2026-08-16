@@ -504,8 +504,13 @@ class HamamatsuCamera(AbstractCamera):
             if not self._camera.cap_firetrigger():
                 raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
 
-            self._last_trigger_timestamp = time.time()
-            self._trigger_sent.set()
+        # Mark the trigger as sent for hardware triggers too, so get_ready_for_trigger()
+        # paces callers (e.g. LiveController) until the frame arrives or the frame-time
+        # timeout elapses. Without this, hw triggers are re-sent faster than the strobe
+        # delay, and the MCU restarts its strobe countdown on every trigger - with a long
+        # strobe delay (Ultra Quiet readout, ~200 ms) the illumination never turns on.
+        self._last_trigger_timestamp = time.time()
+        self._trigger_sent.set()
 
     def get_ready_for_trigger(self) -> bool:
         # Not ready while streaming is stopped (e.g. inside _pause_streaming() during a

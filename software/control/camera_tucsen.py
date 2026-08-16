@@ -789,8 +789,14 @@ class TucsenCamera(AbstractCamera):
                 self._set_genicam_parameter("TriggerSoftwarePulse", 1, TUELEM_TYPE.TU_ElemCommand.value)
             else:
                 TUCAM_Cap_DoSoftwareTrigger(self._camera)
-            self._last_trigger_timestamp = time.time()
-            self._trigger_sent.set()
+
+        # Mark the trigger as sent for hardware triggers too, so get_ready_for_trigger()
+        # paces callers (e.g. LiveController) until the frame arrives or the frame-time
+        # timeout elapses. Without this, hw triggers are re-sent faster than the strobe
+        # delay, and the MCU restarts its strobe countdown on every trigger, so the
+        # illumination never turns on.
+        self._last_trigger_timestamp = time.time()
+        self._trigger_sent.set()
 
     def get_ready_for_trigger(self) -> bool:
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
