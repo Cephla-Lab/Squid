@@ -138,3 +138,21 @@ def test_shipped_example_parses():
     parsed = UserSampleFormats.model_validate(data)
     assert "24 well plate" in parsed.overrides
     assert parsed.custom_formats["ibidi 8 well"].well_shape == "rectangle"
+
+
+def test_override_edits_a_custom_format():
+    """A user's own custom format is as editable as a shipped one: custom
+    formats insert before overrides apply, so an override naming a custom
+    format lands instead of being warned away (the old order dropped it)."""
+    user = UserSampleFormats(
+        custom_formats={
+            "my chamber slide": CustomSampleFormat(rows=2, cols=4, well_spacing_mm=12.5, well_size_mm=10.0)
+        },
+        overrides={"my chamber slide": SampleFormatOverride(well_spacing_mm=12.8)},
+    )
+    formats = {}
+    apply_user_sample_formats(formats, user)
+
+    assert formats["my chamber slide"]["well_spacing_mm"] == 12.8
+    assert formats["my chamber slide"]["well_spacing_x_mm"] == 12.8  # scalar re-broadcasts
+    assert formats["my chamber slide"]["well_size_mm"] == 10.0  # untouched fields keep the definition

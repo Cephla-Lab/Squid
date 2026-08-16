@@ -176,11 +176,10 @@ def apply_user_sample_formats(sample_formats: Dict[str, dict], user_formats: Opt
     """
     if user_formats is None:
         return
-    for format_key, override in user_formats.overrides.items():
-        if format_key not in sample_formats:
-            log.warning(f"sample_formats_user.yaml overrides {format_key!r}, which is not in the catalog; ignoring it.")
-            continue
-        sample_formats[format_key].update(override.applied_fields())
+    # Custom formats insert FIRST so overrides can then edit them like any
+    # other format - a user adjusting their own custom plate's spacing takes
+    # the same per-field path as adjusting a shipped one. (The old order
+    # silently dropped overrides that named a custom format.)
     for format_key, custom in user_formats.custom_formats.items():
         if format_key in sample_formats:
             log.warning(
@@ -188,3 +187,8 @@ def apply_user_sample_formats(sample_formats: Dict[str, dict], user_formats: Opt
                 f"the custom definition wins."
             )
         sample_formats[format_key] = custom.to_settings()
+    for format_key, override in user_formats.overrides.items():
+        if format_key not in sample_formats:
+            log.warning(f"sample_formats_user.yaml overrides {format_key!r}, which is not in the catalog; ignoring it.")
+            continue
+        sample_formats[format_key].update(override.applied_fields())

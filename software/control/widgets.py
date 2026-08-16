@@ -13874,9 +13874,21 @@ class WellplateCalibration(QDialog):
             )
 
             user_formats = load_user_sample_formats() or UserSampleFormats()
-            user_formats.overrides[selected_format] = SampleFormatOverride(
-                well_spacing_mm=new_spacing, well_size_mm=new_well_size
-            )
+            custom = user_formats.custom_formats.get(selected_format)
+            if custom is not None:
+                # A custom format's definition is user-owned wholesale: edit it
+                # in place so the YAML keeps ONE source of truth per custom
+                # format, instead of a custom entry shadowed by an override.
+                custom.well_spacing_mm = new_spacing
+                custom.well_spacing_x_mm = new_spacing
+                custom.well_spacing_y_mm = new_spacing
+                custom.well_size_mm = new_well_size
+                custom.well_size_x_mm = new_well_size
+                custom.well_size_y_mm = new_well_size
+            else:
+                user_formats.overrides[selected_format] = SampleFormatOverride(
+                    well_spacing_mm=new_spacing, well_size_mm=new_well_size
+                )
             save_user_sample_formats(user_formats)
 
             # select_format_silently re-emits the settings exactly once (no
