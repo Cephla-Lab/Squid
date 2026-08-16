@@ -326,7 +326,6 @@ class ScanCoordinates:
         grid_height_mm = (Ny - 1) * step_size_mm
 
         scan_coordinates = []
-        dropped_out_of_travel = 0
         for i in range(Ny):
             row = []
             y = center_y - grid_height_mm / 2 + i * step_size_mm
@@ -334,16 +333,15 @@ class ScanCoordinates:
                 x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
                     row.append((x, y, center_z))
-                else:
-                    dropped_out_of_travel += 1
 
             if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()
             scan_coordinates.extend(row)
 
         # Region coordinates are already centered since center_x, center_y is grid center
-        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
         if scan_coordinates:  # Only add region if there are valid coordinates
+            # travel is the only filter above, so the drop count is derivable
+            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_shapes[region_id] = "Square"
@@ -352,7 +350,7 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            self._log.info(f"Region Out of Bounds: {region_id}")
+            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
 
     def add_single_fov_region(self, region_id, center_x, center_y, center_z):
         if not self.validate_coordinates(center_x, center_y):
@@ -373,19 +371,17 @@ class ScanCoordinates:
         y_steps = [center_y - grid_height_mm / 2 + i * dy for i in range(Ny)]
 
         scan_coordinates = []
-        dropped_out_of_travel = 0
         for i, y in enumerate(y_steps):
             row = []
             x_range = x_steps if i % 2 == 0 else reversed(x_steps)
             for x in x_range:
                 if self.validate_coordinates(x, y):
                     row.append((x, y))
-                else:
-                    dropped_out_of_travel += 1
             scan_coordinates.extend(row)
 
-        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
         if scan_coordinates:  # Only add region if there are valid coordinates
+            # travel is the only filter above, so the drop count is derivable
+            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_shapes[region_id] = "Square"
@@ -394,7 +390,7 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            self._log.warning(f"Region Out of Bounds: {region_id}")
+            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""
@@ -496,15 +492,13 @@ class ScanCoordinates:
     ):
         """Add a region based on a template of x and y coordinates"""
         scan_coordinates = []
-        dropped_out_of_travel = 0
         for i in range(len(template_x_mm)):
             x = float(x_mm + template_x_mm[i])
             y = float(y_mm + template_y_mm[i])
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
-            else:
-                dropped_out_of_travel += 1
-        self._register_travel_drops(region_id, dropped_out_of_travel, len(scan_coordinates))
+        # travel is the only filter above, so the drop count is derivable
+        self._register_travel_drops(region_id, len(template_x_mm) - len(scan_coordinates), len(scan_coordinates))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = scan_coordinates

@@ -1,7 +1,6 @@
 """HolderAlignmentSession: the wizard's logic, tested without Qt."""
 
 import math
-import os
 
 import numpy as np
 import pytest
@@ -24,26 +23,8 @@ RNG = np.random.default_rng(20260815)
 
 
 @pytest.fixture
-def tree(tmp_path, monkeypatch):
-    import shutil
-
-    repo = os.getcwd()
-    (tmp_path / "objective_and_sample_formats").mkdir()
-    (tmp_path / "machine_configs").mkdir()
-    (tmp_path / "cache").mkdir()
-    for f in ("sample_formats.csv", "objectives.csv"):
-        shutil.copy(
-            os.path.join(repo, "objective_and_sample_formats", f), tmp_path / "objective_and_sample_formats" / f
-        )
-    monkeypatch.chdir(tmp_path)
-    # The limits the design table's reference rings were derived against.
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", 5.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_POSITIVE", 115.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_NEGATIVE", 4.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_POSITIVE", 76.0)
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
-    return tmp_path
+def tree(catalog_tree, design_travel_limits):
+    return catalog_tree
 
 
 def rot(theta_deg, x, y):

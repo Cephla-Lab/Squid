@@ -7,37 +7,20 @@ rotation anywhere, both paths must be bit-for-bit the legacy arithmetic.
 """
 
 import math
-import os
 from unittest.mock import MagicMock
 
 import pytest
-from qtpy.QtWidgets import QApplication
 
 import control._def as _def
 from control.core.plate_transform import plate_transform_for, WellplateSettings
 from control.models.plate_holder import HolderMeasuredPoint, HolderMeasurement, PlateHolder, save_plate_holder
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
-
-
+# qapp comes from pytest-qt; catalog_tree/design_travel_limits from conftest
+# (the composed-pivot equivalence below needs the zero legacy offset).
 @pytest.fixture
-def repo_tree(tmp_path, monkeypatch):
-    """tmp cwd with the repo's images and catalog visible, so the viewer can
-    load plate drawings while machine_configs/ and cache/ stay isolated."""
-    repo = os.getcwd()
-    os.symlink(os.path.join(repo, "images"), tmp_path / "images")
-    os.symlink(os.path.join(repo, "objective_and_sample_formats"), tmp_path / "objective_and_sample_formats")
-    (tmp_path / "machine_configs").mkdir()
-    (tmp_path / "cache").mkdir()
-    monkeypatch.chdir(tmp_path)
-    # The composed-pivot equivalence below assumes no legacy machine offset.
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
-    return tmp_path
+def repo_tree(catalog_tree, design_travel_limits):
+    return catalog_tree
 
 
 def measured_holder(rotation_deg):

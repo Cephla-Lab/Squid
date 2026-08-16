@@ -199,10 +199,10 @@ def fit_plate_placement(
         query = [(f"ref{i}", float(x), float(y)) for i, (x, y) in enumerate(p)]
     else:
         query = [(w, float(x), float(y)) for w, x, y in query_wells]
+    lever_sqs = [(x - p_bar[0]) ** 2 + (y - p_bar[1]) ** 2 for _, x, y in query]
     worst_rms_mm = 0.0
     worst_well = query[0][0] if query else ""
-    for well_id, x, y in query:
-        lever_sq = (x - p_bar[0]) ** 2 + (y - p_bar[1]) ** 2
+    for (well_id, _x, _y), lever_sq in zip(query, lever_sqs):
         var_noise = 2 * sigma_hat_mm**2 / n + sigma_hat_mm**2 * lever_sq / s_pp
         bias_scale = ((scale - 1.0) ** 2) * lever_sq  # the term the hybrid discards
         rms = math.sqrt(var_noise + bias_scale)
@@ -213,7 +213,8 @@ def fit_plate_placement(
     # --- gates ---
     gates: List[GateFinding] = []
 
-    g_factor = max(math.sqrt(2 / n + ((x - p_bar[0]) ** 2 + (y - p_bar[1]) ** 2) / s_pp) for _, x, y in query)
+    # sqrt is monotonic: max of sqrts == sqrt at the max lever arm
+    g_factor = math.sqrt(2 / n + max(lever_sqs) / s_pp)
     if g_factor > SPREAD_GATE_G:
         gates.append(
             GateFinding(

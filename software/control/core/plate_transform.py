@@ -32,6 +32,19 @@ class PlateGeometryError(ValueError):
     """The format has no grid to transform (e.g. glass slide, pitch 0)."""
 
 
+def rotate_deg(theta_deg: float, x: float, y: float) -> Tuple[float, float]:
+    """R(theta) applied to (x, y): + = CCW in the stage XY math frame.
+
+    The ONE implementation of the rotation leg - the viewer, the wizard, and
+    this module's own transform all call it, so the sign/pivot convention
+    cannot drift between them. Callers own the theta == 0 short-circuit when
+    they need a bit-for-bit legacy path.
+    """
+    c = math.cos(math.radians(theta_deg))
+    s = math.sin(math.radians(theta_deg))
+    return (c * x - s * y, s * x + c * y)
+
+
 @dataclass(frozen=True)
 class WellplateSettings:
     """The payload of signalWellplateSettings.
@@ -115,11 +128,10 @@ class PlateTransform:
                 self.a1_x_mm + dx + self.offset_x_mm,
                 self.a1_y_mm + dy + self.offset_y_mm,
             )
-        c = math.cos(math.radians(self.rotation_deg))
-        s = math.sin(math.radians(self.rotation_deg))
+        rx, ry = rotate_deg(self.rotation_deg, dx, dy)
         return (
-            self.a1_x_mm + (c * dx - s * dy) + self.offset_x_mm,
-            self.a1_y_mm + (s * dx + c * dy) + self.offset_y_mm,
+            self.a1_x_mm + rx + self.offset_x_mm,
+            self.a1_y_mm + ry + self.offset_y_mm,
         )
 
     def well_index_at(self, x_mm: float, y_mm: float) -> Tuple[float, float]:
@@ -134,9 +146,7 @@ class PlateTransform:
         px = x_mm - self.a1_x_mm - self.offset_x_mm
         py = y_mm - self.a1_y_mm - self.offset_y_mm
         if self.rotation_deg != 0.0:
-            c = math.cos(math.radians(self.rotation_deg))
-            s = math.sin(math.radians(self.rotation_deg))
-            px, py = c * px + s * py, -s * px + c * py  # R(-theta)
+            px, py = rotate_deg(-self.rotation_deg, px, py)
         return (py / self.pitch_y_mm, px / self.pitch_x_mm)
 
     def nominal(self) -> "PlateTransform":
@@ -168,7 +178,11 @@ def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
     settings = control._def.get_wellplate_settings(format_)
     if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
         return 0.0, "none"
-    placement = _placement_for(format_)
+    return _resolve_rotation(_placement_for(format_))
+
+
+def _resolve_rotation(placement) -> Tuple[float, str]:
+    """The override-with-inherit chain, given an already-loaded placement."""
     if placement is not None and placement.rotation_deg is not None:
         return placement.rotation_deg, "measured"
     from control.models.plate_holder import load_plate_holder
@@ -196,7 +210,10 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
     """
     settings = control._def.get_wellplate_settings(format_)
     placement = _placement_for(format_)
-    rotation, _source = resolve_rotation_deg(format_)
+    if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
+        rotation = 0.0  # pitch-0: the only well IS the pivot
+    else:
+        rotation, _source = _resolve_rotation(placement)  # no second placement read
     if placement is not None:
         a1_x = settings["a1_x_mm"] + placement.a1_dx_mm
         a1_y = settings["a1_y_mm"] + placement.a1_dy_mm

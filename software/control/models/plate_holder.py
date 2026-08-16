@@ -18,7 +18,6 @@ wizard, which handles overrides at write time.
 import os
 from typing import List, Optional
 
-import yaml
 from pydantic import BaseModel, Field, model_validator
 
 import squid.logging
@@ -67,37 +66,18 @@ class PlateHolder(BaseModel):
 def load_plate_holder(path: str = PLATE_HOLDER_PATH) -> Optional[PlateHolder]:
     """None when absent (rotation 0.0 - pre-feature behaviour). Damage logs
     loudly and returns None rather than raising."""
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        if data is None:
-            return None
-        return PlateHolder.model_validate(data)
-    except Exception:
-        log.exception(
-            f"Plate holder record at {path} is unreadable; ignoring the file - "
-            f"HOLDER ROTATION IS NOT BEING APPLIED (0.00 deg assumed). Re-run the "
-            f"holder alignment or fix the file to clear this."
-        )
-        return None
+    from control.models.yaml_store import load_yaml_model
+
+    return load_yaml_model(
+        path,
+        PlateHolder,
+        f"Plate holder record at {path} is unreadable; ignoring the file - "
+        f"HOLDER ROTATION IS NOT BEING APPLIED (0.00 deg assumed). Re-run the "
+        f"holder alignment or fix the file to clear this.",
+    )
 
 
 def save_plate_holder(holder: PlateHolder, path: str = PLATE_HOLDER_PATH) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp_path = path + ".tmp"
-    try:
-        with open(tmp_path, "w") as f:
-            yaml.safe_dump(holder.model_dump(exclude_none=True), f, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    from control.models.yaml_store import save_yaml_model_atomic
+
+    save_yaml_model_atomic(holder, path)

@@ -13,14 +13,17 @@ the discarded translation.
 """
 
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 import control._def
 import control.utils
+from control.core.mosaic_utils import format_well_id
 from control.core.plate_fit import fit_plate_placement, PlateFitResult
-from control.core.plate_transform import plate_transform_for, resolve_rotation_deg
+from control.core.plate_transform import PlateTransform, plate_transform_for, resolve_rotation_deg
+from control.models.plate_placement import load_plate_placements, save_plate_placements
 from control.models.plate_holder import (
     HolderMeasuredPoint,
     HolderMeasurement,
@@ -39,16 +42,6 @@ CORNER_FEATURES = ("corner_top_left", "corner_top_right", "corner_bottom_left", 
 
 class SessionError(ValueError):
     """The session cannot proceed as asked; .args[0] is user-facing copy."""
-
-
-def index_to_row_label(index: int) -> str:
-    index += 1
-    row = ""
-    while index > 0:
-        index -= 1
-        row = chr(index % 26 + ord("A")) + row
-        index //= 26
-    return row
 
 
 def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
@@ -108,14 +101,15 @@ class HolderAlignmentSession:
     # ------------------------------------------------------------------ wells
 
     def _make_well(self, row: int, col: int) -> ReferenceWell:
-        return ReferenceWell(well_id=f"{index_to_row_label(row)}{col + 1}", row=row, col=col)
+        return ReferenceWell(well_id=format_well_id(row, col), row=row, col=col)
 
     def _in_window(self, row: int, col: int) -> bool:
         return self.skip <= row <= self.rows - 1 - self.skip and self.skip <= col <= self.cols - 1 - self.skip
 
-    def _reachable(self, row: int, col: int) -> bool:
-        """Can the stage drive to this well under the CURRENT transform?"""
-        x, y = plate_transform_for(self.format).well_center_mm(row, col)
+    def _reachable(self, transform: PlateTransform, row: int, col: int) -> bool:
+        """Can the stage drive to this well? (Transform hoisted by callers:
+        resolving it is file IO, and the reference/query scans loop all wells.)"""
+        x, y = transform.well_center_mm(row, col)
         limits = control._def.SOFTWARE_POS_LIMIT
         return limits.X_NEGATIVE <= x <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y <= limits.Y_POSITIVE
 
@@ -123,11 +117,12 @@ class HolderAlignmentSession:
         """The extreme reachable corners of the skip window - computed, never
         hardcoded: there is no clamp on the move path, so a hardcoded corner
         (e.g. AF48 on 1536) would command an out-of-limit move."""
+        transform = plate_transform_for(self.format)
         candidates = [
             (r, c)
             for r in range(self.rows)
             for c in range(self.cols)
-            if self._in_window(r, c) and self._reachable(r, c)
+            if self._in_window(r, c) and self._reachable(transform, r, c)
         ]
         if len(candidates) < 3:
             raise SessionError(
@@ -156,15 +151,16 @@ class HolderAlignmentSession:
         row, col = parsed
         if not (0 <= row < self.rows and 0 <= col < self.cols):
             raise SessionError(f"{well_id} is outside the {self.format} grid.")
-        if not self._reachable(row, col):
+        if not self._reachable(plate_transform_for(self.format), row, col):
             raise SessionError(f"{well_id} is outside the stage travel limits.")
         if any(i != index and w.row == row and w.col == col for i, w in enumerate(self.reference_wells)):
             raise SessionError(f"{well_id} is already one of the reference wells.")
         self.reference_wells[index] = self._make_well(row, col)
 
     def _parse_well_id(self, well_id: str) -> Optional[Tuple[int, int]]:
-        import re
-
+        # Stricter than mosaic_utils.parse_well_id on purpose: that parser
+        # accepts interleaved forms like "12A"; a typo here must not silently
+        # resolve to a well.
         match = re.match(r"^([A-Za-z]+)(\d+)$", well_id.strip())
         if not match:
             return None
@@ -229,11 +225,16 @@ class HolderAlignmentSession:
         if not self.can_fit:
             raise SessionError(f"Only {self.wells_measured} wells measured - at least 3 are required.")
         measured = [w for w in self.reference_wells if w.point_mm is not None]
+        # Query only wells the stage can DRIVE to: predicted error at an
+        # unreachable well is moot (the planner drops those FOVs), and
+        # worst_well doubles as the Drive-to-Test target - it must never
+        # command an out-of-limit move.
+        transform = plate_transform_for(self.format)
         query = [
-            (f"{index_to_row_label(r)}{c + 1}", c * self.pitch_x_mm, r * self.pitch_y_mm)
+            (format_well_id(r, c), c * self.pitch_x_mm, r * self.pitch_y_mm)
             for r in range(self.rows)
             for c in range(self.cols)
-            if self._in_window(r, c)
+            if self._in_window(r, c) and self._reachable(transform, r, c)
         ]
         return fit_plate_placement(
             [self._nominal_mm(w) for w in measured],
@@ -259,12 +260,16 @@ class HolderAlignmentSession:
             raise SessionError(f"{well_id!r} is not a well name.")
         row, col = parsed
         result = self.fit()
-        theta = math.radians(result.rotation_deg)
-        px, py = col * self.pitch_x_mm, row * self.pitch_y_mm
-        return (
-            result.a1_x_mm + math.cos(theta) * px - math.sin(theta) * py,
-            result.a1_y_mm + math.sin(theta) * px + math.cos(theta) * py,
+        # A fit result IS a placement - evaluate it through the one owner of
+        # the well -> stage math instead of re-rolling the trig here.
+        fitted = PlateTransform(
+            a1_x_mm=result.a1_x_mm,
+            a1_y_mm=result.a1_y_mm,
+            pitch_x_mm=self.pitch_x_mm,
+            pitch_y_mm=self.pitch_y_mm,
+            rotation_deg=result.rotation_deg,
         )
+        return fitted.well_center_mm(row, col)
 
     def holdout_residual_um(self, well_id: str, measured_xy: Tuple[float, float]) -> float:
         """The only number in the report that is not a model: the miss distance
@@ -280,8 +285,6 @@ class HolderAlignmentSession:
         """Formats whose placement carries a rotation measured under the
         PREVIOUS mounting - offered for clearing at save time (the write-time
         staleness handling; there is no counter to expire them otherwise)."""
-        from control.models.plate_placement import load_plate_placements
-
         stored = load_plate_placements()
         if stored is None:
             return []
@@ -317,8 +320,6 @@ class HolderAlignmentSession:
         return holder
 
     def _clear_rotation_overrides(self, formats: Tuple[str, ...]):
-        from control.models.plate_placement import load_plate_placements, save_plate_placements
-
         stored = load_plate_placements()
         if stored is None:
             return

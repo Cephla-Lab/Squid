@@ -2,42 +2,19 @@
 session - these tests drive the dialog exactly as an operator would."""
 
 import math
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qtpy.QtWidgets import QApplication, QMessageBox
+from qtpy.QtWidgets import QMessageBox
 
 import control._def as _def
 from control.models.plate_holder import load_plate_holder
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
-
-
+# qapp comes from pytest-qt; catalog_tree/design_travel_limits from conftest.
 @pytest.fixture
-def tree(tmp_path, monkeypatch):
-    import shutil
-
-    repo = os.getcwd()
-    (tmp_path / "objective_and_sample_formats").mkdir()
-    (tmp_path / "machine_configs").mkdir()
-    (tmp_path / "cache").mkdir()
-    for f in ("sample_formats.csv", "objectives.csv"):
-        shutil.copy(
-            os.path.join(repo, "objective_and_sample_formats", f), tmp_path / "objective_and_sample_formats" / f
-        )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", 5.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_POSITIVE", 115.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_NEGATIVE", 4.0)
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_POSITIVE", 76.0)
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
-    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
-    return tmp_path
+def tree(catalog_tree, design_travel_limits):
+    return catalog_tree
 
 
 def make_dialog(qapp, format_="1536 well plate"):

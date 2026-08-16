@@ -14,7 +14,6 @@ catalog keeps sole ownership of the absolute origin, so "absence of the file
 import os
 from typing import Dict, List, Optional
 
-import yaml
 from pydantic import BaseModel, Field
 
 import squid.logging
@@ -55,37 +54,18 @@ class PlatePlacements(BaseModel):
 
 def load_plate_placements(path: str = PLATE_PLACEMENT_PATH) -> Optional[PlatePlacements]:
     """None when absent (identity). Damage logs loudly, returns None."""
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        if data is None:
-            return None
-        return PlatePlacements.model_validate(data)
-    except Exception:
-        log.exception(
-            f"Plate placements at {path} are unreadable; ignoring the file - "
-            f"YOUR A1 CALIBRATION IS NOT BEING APPLIED, so stage positions will "
-            f"differ from your last session. Recalibrate or move the file aside."
-        )
-        return None
+    from control.models.yaml_store import load_yaml_model
+
+    return load_yaml_model(
+        path,
+        PlatePlacements,
+        f"Plate placements at {path} are unreadable; ignoring the file - "
+        f"YOUR A1 CALIBRATION IS NOT BEING APPLIED, so stage positions will "
+        f"differ from your last session. Recalibrate or move the file aside.",
+    )
 
 
 def save_plate_placements(placements: PlatePlacements, path: str = PLATE_PLACEMENT_PATH) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp_path = path + ".tmp"
-    try:
-        with open(tmp_path, "w") as f:
-            yaml.safe_dump(placements.model_dump(exclude_none=True), f, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    from control.models.yaml_store import save_yaml_model_atomic
+
+    save_yaml_model_atomic(placements, path)

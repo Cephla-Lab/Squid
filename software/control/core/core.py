@@ -49,6 +49,7 @@ import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
+from control.core.plate_transform import rotate_deg
 import scipy.ndimage
 
 if ENABLE_NL5:
@@ -1512,6 +1513,10 @@ class NavigationViewer(QFrame):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
+        # Catalog identity, distinct from the display identity: self.sample may
+        # be a viewer-only alias ("4 glass slide" is an image choice, not a
+        # format), and rotation resolution needs the real format.
+        self.format = "glass slide" if sample in ("glass slide", "4 glass slide") else sample
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
@@ -1664,17 +1669,16 @@ class NavigationViewer(QFrame):
         The background image is a NOMINAL drawing - wells on an unrotated grid -
         so under a measured rotation the stage<->pixel mapping must go through
         the plate frame: pixels are always nominal, stage coordinates are
-        rotated about A1. Glass-slide samples have no well grid to rotate.
+        rotated about A1. Pitch-0 formats (glass slides) resolve to 0.0 in the
+        resolver itself - no sample-name special cases here.
         """
-        if self.sample in ("glass slide", "4 glass slide"):
-            return 0.0
         try:
             from control.core.plate_transform import resolve_rotation_deg
 
-            return resolve_rotation_deg(self.sample)[0]
+            return resolve_rotation_deg(self.format)[0]
         except Exception:
             self._log.exception(
-                f"Could not resolve plate rotation for {self.sample!r}; drawing the navigation view with 0.00 deg."
+                f"Could not resolve plate rotation for {self.format!r}; drawing the navigation view with 0.00 deg."
             )
             return 0.0
 
@@ -1703,6 +1707,7 @@ class NavigationViewer(QFrame):
             sample = sample_format
 
         self.sample = sample
+        self.format = sample_format  # catalog identity survives the display renaming
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
@@ -1786,12 +1791,7 @@ class NavigationViewer(QFrame):
                 # drawing's anchor. The pivot is the same composed a1 the
                 # planner rotates about, so a planned well-center FOV lands on
                 # the well's drawn (nominal) position.
-                rel_x = x_mm - self.a1_x_mm
-                rel_y = y_mm - self.a1_y_mm
-                c = math.cos(math.radians(rotation_deg))
-                s = math.sin(math.radians(rotation_deg))
-                plate_x = c * rel_x + s * rel_y
-                plate_y = -s * rel_x + c * rel_y
+                plate_x, plate_y = rotate_deg(-rotation_deg, x_mm - self.a1_x_mm, y_mm - self.a1_y_mm)
                 center_x_pixel = self.a1_x_pixel + plate_x / self.mm_per_pixel
                 center_y_pixel = self.a1_y_pixel + plate_y / self.mm_per_pixel
             half_fov_pixel = self.fov_size_mm / 2 / self.mm_per_pixel
@@ -1906,7 +1906,7 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
-    def pixel_to_stage_mm(self, x_pixel, y_pixel, rotation_deg=None):
+    def pixel_to_stage_mm(self, x_pixel, y_pixel):
         """Image pixel -> stage mm: the inverse of get_FOV_pixel_coordinates.
 
         The clicked pixel is a NOMINAL plate position (the drawing is unrotated),
@@ -1914,8 +1914,7 @@ class NavigationViewer(QFrame):
         (R(+theta) about A1) into stage coordinates - a double-click on a drawn
         well navigates to where that well actually sits.
         """
-        if self.sample != "glass slide" and rotation_deg is None:
-            rotation_deg = self._current_rotation_deg()
+        rotation_deg = 0.0 if self.sample == "glass slide" else self._current_rotation_deg()
         if self.sample == "glass slide" or rotation_deg == 0.0:
             # Legacy arithmetic kept verbatim for the unrotated path.
             x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
@@ -1923,12 +1922,8 @@ class NavigationViewer(QFrame):
             return x_mm, y_mm
         plate_x = (x_pixel - self.a1_x_pixel) * self.mm_per_pixel
         plate_y = (y_pixel - self.a1_y_pixel) * self.mm_per_pixel
-        c = math.cos(math.radians(rotation_deg))
-        s = math.sin(math.radians(rotation_deg))
-        return (
-            self.a1_x_mm + (c * plate_x - s * plate_y),
-            self.a1_y_mm + (s * plate_x + c * plate_y),
-        )
+        dx, dy = rotate_deg(rotation_deg, plate_x, plate_y)
+        return (self.a1_x_mm + dx, self.a1_y_mm + dy)
 
     def handle_mouse_click(self, evt):
         if not evt.double():

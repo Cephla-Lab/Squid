@@ -25,6 +25,12 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
+from control.core.coordinate_provenance import (
+    read_scan_coordinates_csv,
+    staleness_warning,
+    write_scan_coordinates_csv,
+)
+from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
 from control.core.plate_transform import PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
@@ -7183,6 +7189,16 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
+def _warn_if_coordinates_stale(widget, stamp):
+    """Shared by both load_coordinates widgets: stamped file + changed placement -> warn, still load."""
+    if stamp is None:
+        return
+    stale = staleness_warning(stamp, widget.scanCoordinates.format)
+    if stale:
+        widget._log.warning(stale)
+        QMessageBox.warning(widget, "Coordinates may be stale", stale)
+
+
 class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
@@ -9149,8 +9165,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         """
         try:
             # Read coordinates from CSV (stamped or legacy-unstamped)
-            from control.core.coordinate_provenance import read_scan_coordinates_csv, staleness_warning
-
             df, stamp = read_scan_coordinates_csv(file_path)
 
             # Validate CSV format
@@ -9186,11 +9200,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # The file stores ABSOLUTE stage positions: warn (but still load) if
             # the placement changed since it was saved.
-            if stamp is not None:
-                stale = staleness_warning(stamp, self.scanCoordinates.format)
-                if stale:
-                    self._log.warning(stale)
-                    QMessageBox.warning(self, "Coordinates may be stale", stale)
+            _warn_if_coordinates_stale(self, stamp)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
@@ -9224,8 +9234,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
                 # Save to CSV with headers and a provenance stamp (the placement
                 # these absolute positions were computed under)
-                from control.core.coordinate_provenance import write_scan_coordinates_csv
-
                 df = pd.DataFrame(coordinates, columns=["region", "x (mm)", "y (mm)"])
                 write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
 
@@ -9854,8 +9862,6 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
         """
         try:
             # Read coordinates from CSV (stamped or legacy-unstamped)
-            from control.core.coordinate_provenance import read_scan_coordinates_csv, staleness_warning
-
             df, stamp = read_scan_coordinates_csv(file_path)
 
             # Validate CSV format
@@ -9884,11 +9890,7 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
 
             # The file stores ABSOLUTE stage positions: warn (but still load) if
             # the placement changed since it was saved.
-            if stamp is not None:
-                stale = staleness_warning(stamp, self.scanCoordinates.format)
-                if stale:
-                    self._log.warning(stale)
-                    QMessageBox.warning(self, "Coordinates may be stale", stale)
+            _warn_if_coordinates_stale(self, stamp)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
@@ -13438,16 +13440,18 @@ class WellplateCalibration(QDialog):
             self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self):
-        is_new_format = self.new_format_radio.isChecked()
+        # The mode radios share an exclusive QButtonGroup: exactly one is true.
+        is_new = self.new_format_radio.isChecked()
+        is_existing = self.calibrate_format_radio.isChecked()
         is_holder = self.holder_rotation_radio.isChecked()
 
-        self.new_format_widget.setVisible(is_new_format and not is_holder)
-        self.center_well_size_label.setVisible(is_new_format and not is_holder)
-        self.center_well_size_input.setVisible(is_new_format and not is_holder)
+        self.new_format_widget.setVisible(is_new)
+        self.center_well_size_label.setVisible(is_new)
+        self.center_well_size_input.setVisible(is_new)
 
-        self.existing_format_combo.setVisible(not is_new_format and not is_holder)
-        self.existing_params_group.setVisible(not is_new_format and not is_holder)
-        self.update_params_button.setVisible(not is_new_format and not is_holder)
+        self.existing_format_combo.setVisible(is_existing)
+        self.existing_params_group.setVisible(is_existing)
+        self.update_params_button.setVisible(is_existing)
 
         # The per-A1 method/points UI and the Calibrate button belong to the
         # two format modes; the holder mode has its own flow and Save.
@@ -13459,7 +13463,7 @@ class WellplateCalibration(QDialog):
 
         if is_holder:
             self._enter_holder_mode()
-        elif not is_new_format:
+        elif is_existing:
             self.load_existing_format_values()
 
     # ------------------------------------------------------------------------
@@ -13467,8 +13471,6 @@ class WellplateCalibration(QDialog):
     # ------------------------------------------------------------------------
 
     def _build_holder_widget(self):
-        from control.core.holder_alignment import CORNER_FEATURES
-
         self.holder_widget = QWidget()
         layout = QVBoxLayout(self.holder_widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -13538,8 +13540,6 @@ class WellplateCalibration(QDialog):
 
     def _enter_holder_mode(self):
         """(Re)create the session for the CURRENTLY selected plate format."""
-        from control.core.holder_alignment import HolderAlignmentSession, SessionError
-
         format_ = self.wellplateFormatWidget.wellplate_format
         try:
             self.holder_session = HolderAlignmentSession(format_)
@@ -13614,8 +13614,6 @@ class WellplateCalibration(QDialog):
         QMessageBox.warning(self, "Holder Alignment", str(exc))
 
     def _holder_corner_changed(self):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None:
             return
         try:
@@ -13624,8 +13622,6 @@ class WellplateCalibration(QDialog):
             self._holder_error(e)
 
     def _holder_nominate(self, index):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None:
             return
         well = self.holder_session.reference_wells[index]
@@ -13641,8 +13637,6 @@ class WellplateCalibration(QDialog):
         self._holder_refresh()
 
     def _holder_record(self, index):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None:
             return
         pos = self.stage.get_pos()
@@ -13654,8 +13648,6 @@ class WellplateCalibration(QDialog):
         self._holder_refresh()
 
     def _holder_record_holdout(self):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None or not self.holder_session.can_fit:
             return
         pos = self.stage.get_pos()
@@ -13672,8 +13664,6 @@ class WellplateCalibration(QDialog):
         )
 
     def _holder_drive_to_test(self):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None or not self.holder_session.can_fit:
             return
         try:
@@ -13686,8 +13676,6 @@ class WellplateCalibration(QDialog):
         self.stage.move_y_to(y_mm)
 
     def _holder_save(self):
-        from control.core.holder_alignment import SessionError
-
         if self.holder_session is None:
             return
         session = self.holder_session
@@ -13783,6 +13771,8 @@ class WellplateCalibration(QDialog):
 
     def toggle_calibration_method(self):
         """Toggle between 3 edge points and center point calibration methods."""
+        if self.holder_rotation_radio.isChecked():
+            return  # holder mode owns the panel; toggle_input_mode restores on exit
         if self.edge_points_radio.isChecked():
             self.points_widget.show()
             self.center_point_widget.hide()

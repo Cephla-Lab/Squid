@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-import control._def
+from control.core.plate_fit import ROTATION_QUANTUM_DEG
 from control.core.plate_transform import plate_transform_for, resolve_rotation_deg
 import squid.logging
 
@@ -28,9 +28,10 @@ log = squid.logging.get_logger(__name__)
 
 STAMP_PREFIX = "# squid-scan-coordinates v1 "
 
-# Comparison tolerances: half the fit's rotation quantum, and 1 um on a1 -
-# anything below these cannot move a well by a visible amount.
-ROTATION_TOL_DEG = 0.005
+# Comparison tolerances: half the fit's rotation quantum (derived, so the two
+# cannot drift apart), and 1 um on a1 - anything below these cannot move a
+# well by a visible amount.
+ROTATION_TOL_DEG = ROTATION_QUANTUM_DEG / 2
 A1_TOL_MM = 0.001
 
 
@@ -38,11 +39,13 @@ def make_stamp(format_: str) -> dict:
     """The placement the coordinates are being computed under, right now."""
     transform = plate_transform_for(format_)
     rotation_deg, rotation_source = resolve_rotation_deg(format_)
+    # well (0,0) IS the effective A1 (composed a1 + any legacy offset; the
+    # rotation pivots there, so this is exact for any angle)
+    a1_x_mm, a1_y_mm = transform.well_center_mm(0, 0)
     return {
         "format": format_,
-        # the effective A1 stage position (composed a1 + any legacy offset):
-        "a1_x_mm": transform.a1_x_mm + transform.offset_x_mm,
-        "a1_y_mm": transform.a1_y_mm + transform.offset_y_mm,
+        "a1_x_mm": a1_x_mm,
+        "a1_y_mm": a1_y_mm,
         "rotation_deg": rotation_deg,
         "rotation_source": rotation_source,
         "saved": datetime.now().isoformat(timespec="seconds"),
@@ -85,8 +88,7 @@ def staleness_warning(stamp: dict, current_format: str) -> Optional[str]:
                     f"the plate rotation changed from {stamp['rotation_deg']:.2f} deg at save time "
                     f"to {rotation_now:.2f} deg now"
                 )
-            a1_x_now = transform.a1_x_mm + transform.offset_x_mm
-            a1_y_now = transform.a1_y_mm + transform.offset_y_mm
+            a1_x_now, a1_y_now = transform.well_center_mm(0, 0)
             if "a1_x_mm" in stamp and (
                 abs(stamp["a1_x_mm"] - a1_x_now) > A1_TOL_MM or abs(stamp["a1_y_mm"] - a1_y_now) > A1_TOL_MM
             ):

@@ -2,8 +2,6 @@
 placement they were computed under, and loading under a different placement
 says so instead of silently replaying stale positions."""
 
-import os
-
 import pandas as pd
 import pytest
 
@@ -19,19 +17,8 @@ from control.models.plate_holder import HolderMeasuredPoint, HolderMeasurement, 
 
 
 @pytest.fixture
-def tree(tmp_path, monkeypatch):
-    import shutil
-
-    repo = os.getcwd()
-    (tmp_path / "objective_and_sample_formats").mkdir()
-    (tmp_path / "machine_configs").mkdir()
-    (tmp_path / "cache").mkdir()
-    for f in ("sample_formats.csv", "objectives.csv"):
-        shutil.copy(
-            os.path.join(repo, "objective_and_sample_formats", f), tmp_path / "objective_and_sample_formats" / f
-        )
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+def tree(catalog_tree):
+    return catalog_tree
 
 
 def holder(rotation_deg):
