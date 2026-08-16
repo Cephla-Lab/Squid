@@ -76,11 +76,10 @@ class WellplateSettings:
     @staticmethod
     def from_format(format_: str) -> "WellplateSettings":
         s = control._def.get_wellplate_settings(format_)
-        # The EFFECTIVE A1: well (0,0) under the full resolver rules (catalog +
-        # placement delta, legacy offset including its suppression when a
-        # placement exists). Composing only the delta here left the navigation
-        # viewer's plate registration off by wellplate_offset on machines that
-        # set one; rotation pivots on this point, so it is exact for any angle.
+        # The EFFECTIVE A1: well (0,0) under the full resolver rules (the
+        # definition's a1 plus the legacy offset, including its suppression
+        # when the format was measured). Rotation pivots on this point, so it
+        # is exact for any angle.
         a1_x, a1_y = plate_transform_for(format_).well_center_mm(0, 0)
         return WellplateSettings(
             format=format_,
@@ -159,13 +158,14 @@ class PlateTransform:
         return replace(self, rotation_deg=0.0, offset_x_mm=0.0, offset_y_mm=0.0)
 
 
-def _placement_for(format_: str):
-    from control.models.plate_placement import load_plate_placements
+def _user_format_for(format_: str):
+    """This format's user definition, or None if only the shipped example."""
+    from control.models.sample_format_config import load_user_sample_formats
 
-    stored = load_plate_placements()
+    stored = load_user_sample_formats()
     if stored is None:
         return None
-    return stored.placements.get(format_)
+    return stored.formats.get(format_)
 
 
 def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
@@ -177,10 +177,10 @@ def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
     at the pivot, so an angle could not move anything anyway.
     """
     settings = control._def.get_wellplate_settings(format_)
-    return _resolve_rotation(settings, _placement_for(format_))
+    return _resolve_rotation(settings, _user_format_for(format_))
 
 
-def _resolve_rotation(settings, placement) -> Tuple[float, str]:
+def _resolve_rotation(settings, definition) -> Tuple[float, str]:
     """The override-with-inherit chain, given already-loaded settings + placement.
 
     Owns the pitch-0 short-circuit too, so both public entry points
@@ -190,8 +190,8 @@ def _resolve_rotation(settings, placement) -> Tuple[float, str]:
     """
     if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
         return 0.0, "none"  # a 1x1 grid's only well IS the pivot
-    if placement is not None and placement.rotation_deg is not None:
-        return placement.rotation_deg, "measured"
+    if definition is not None and definition.rotation_deg is not None:
+        return definition.rotation_deg, "measured"
     from control.models.plate_holder import load_plate_holder
 
     holder = load_plate_holder()
@@ -207,25 +207,27 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
     result across calls - the snapshot-at-__init__ pattern is the bug this
     module exists to end). Composition, one owner per quantity:
 
-      a1            <- catalog (shipped CSV + user YAML) + placement DELTA
-      pitch/shape   <- catalog (shipped CSV + user YAML)
-      rotation      <- placement override when measured, else the holder record
-      legacy offset <- WELLPLATE_OFFSET_*, SUPPRESSED for any format that has a
-                       placement entry: the delta is the whole measured
-                       correction, so exactly one offset is live per format and
-                       double-apply is unrepresentable.
+      a1/pitch/shape <- the format's definition: the shipped example, or the
+                        user entry that REPLACED it (which carries the measured
+                        a1 absolutely - there is no delta to compose).
+      rotation       <- the definition's per-format override when measured,
+                        else the machine's holder record.
+      legacy offset  <- WELLPLATE_OFFSET_*, SUPPRESSED for any format whose
+                        definition carries a `measured` block: the measured a1
+                        is the whole correction, so exactly one offset is live
+                        per format and double-apply is unrepresentable.
     """
     settings = control._def.get_wellplate_settings(format_)
-    placement = _placement_for(format_)
-    rotation, _source = _resolve_rotation(settings, placement)  # no second placement read
-    if placement is not None:
-        a1_x = settings["a1_x_mm"] + placement.a1_dx_mm
-        a1_y = settings["a1_y_mm"] + placement.a1_dy_mm
+    definition = _user_format_for(format_)
+    rotation, _source = _resolve_rotation(settings, definition)  # no second read
+    # a1 comes from the settings dict either way: apply_user_sample_formats has
+    # already replaced the example with the user definition at load time.
+    a1_x = settings["a1_x_mm"]
+    a1_y = settings["a1_y_mm"]
+    if definition is not None and definition.measured is not None:
         offset_x = 0.0
         offset_y = 0.0
     else:
-        a1_x = settings["a1_x_mm"]
-        a1_y = settings["a1_y_mm"]
         offset_x = control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0
         offset_y = control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0
     if not apply_legacy_offset:

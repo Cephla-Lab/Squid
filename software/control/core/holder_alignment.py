@@ -23,7 +23,7 @@ import control.utils
 from control.core.mosaic_utils import format_well_id
 from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_placement, PlateFitError, PlateFitResult
 from control.core.plate_transform import PlateTransform, plate_transform_for, resolve_rotation_deg
-from control.models.plate_placement import load_plate_placements, save_plate_placements
+from control.models.sample_format_config import load_user_sample_formats, save_user_sample_formats
 from control.models.plate_holder import (
     HolderMeasuredPoint,
     HolderMeasurement,
@@ -273,13 +273,13 @@ class HolderAlignmentSession:
     # ------------------------------------------------------------------- save
 
     def formats_with_measured_overrides(self) -> List[str]:
-        """Formats whose placement carries a rotation measured under the
+        """Formats whose definition carries a rotation measured under the
         PREVIOUS mounting - offered for clearing at save time (the write-time
         staleness handling; there is no counter to expire them otherwise)."""
-        stored = load_plate_placements()
+        stored = load_user_sample_formats()
         if stored is None:
             return []
-        return sorted(fmt for fmt, p in stored.placements.items() if p.rotation_deg is not None)
+        return sorted(fmt for fmt, d in stored.formats.items() if d.rotation_deg is not None)
 
     def save(self, confirm_warnings: bool = False, clear_overrides: Tuple[str, ...] = ()) -> PlateHolder:
         """Write the minimal holder record. Nothing else is written: the
@@ -311,15 +311,16 @@ class HolderAlignmentSession:
         return holder
 
     def _clear_rotation_overrides(self, formats: Tuple[str, ...]):
-        stored = load_plate_placements()
+        stored = load_user_sample_formats()
         if stored is None:
             return
         for fmt in formats:
-            placement = stored.placements.get(fmt)
-            if placement is not None and placement.rotation_deg is not None:
-                placement.rotation_deg = None
+            definition = stored.formats.get(fmt)
+            if definition is not None and definition.rotation_deg is not None:
+                definition.rotation_deg = None
+                definition.rotation_measured = None
                 log.info(f"Cleared the measured rotation override for {fmt!r}; it now inherits the holder angle.")
-        save_plate_placements(stored)
+        save_user_sample_formats(stored)
 
     # ------------------------------------------------------------------ status
 

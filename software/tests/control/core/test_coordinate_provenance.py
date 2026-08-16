@@ -14,6 +14,7 @@ from control.core.coordinate_provenance import (
     write_scan_coordinates_csv,
 )
 from control.models.plate_holder import HolderMeasuredPoint, HolderMeasurement, PlateHolder, save_plate_holder
+from control.models.sample_format_config import load_user_sample_formats
 
 
 @pytest.fixture
@@ -73,23 +74,83 @@ def test_rotation_change_is_flagged(tree):
     assert "0.21" in msg and "0.34" in msg and "rotation" in msg
 
 
-def test_a1_change_is_flagged(tree):
+def test_a1_change_is_flagged(tree, monkeypatch):
     write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
 
-    from control.models.plate_placement import PlatePlacement, PlatePlacements, save_plate_placements
+    from control.models.sample_format_config import (
+        FormatMeasurement,
+        MeasuredPoint,
+        SampleFormat,
+        save_user_sample_formats,
+        UserSampleFormats,
+    )
 
-    save_plate_placements(PlatePlacements(placements={"96 well plate": PlatePlacement(a1_dx_mm=0.5)}))
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "96 well plate": SampleFormat(
+                    rows=8,
+                    cols=12,
+                    well_spacing_mm=9.0,
+                    well_size_mm=6.21,
+                    a1_x_mm=11.81,
+                    a1_y_mm=10.75,
+                    measured=FormatMeasurement(
+                        points=[MeasuredPoint(well="A1", x_mm=11.81, y_mm=10.75)],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                )
+            }
+        )
+    )
+    import control._def as _def_mod
+
+    monkeypatch.setitem(
+        _def_mod.WELLPLATE_FORMAT_SETTINGS,
+        "96 well plate",
+        load_user_sample_formats().formats["96 well plate"].to_settings(),
+    )
     _, stamp = read_scan_coordinates_csv("coords.csv")
     msg = staleness_warning(stamp, "96 well plate")
     assert msg is not None and "A1 position changed" in msg
 
 
-def test_sub_tolerance_drift_is_not_flagged(tree):
+def test_sub_tolerance_drift_is_not_flagged(tree, monkeypatch):
     write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
 
-    from control.models.plate_placement import PlatePlacement, PlatePlacements, save_plate_placements
+    from control.models.sample_format_config import (
+        FormatMeasurement,
+        MeasuredPoint,
+        SampleFormat,
+        save_user_sample_formats,
+        UserSampleFormats,
+    )
 
-    save_plate_placements(PlatePlacements(placements={"96 well plate": PlatePlacement(a1_dx_mm=0.0005)}))
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "96 well plate": SampleFormat(
+                    rows=8,
+                    cols=12,
+                    well_spacing_mm=9.0,
+                    well_size_mm=6.21,
+                    a1_x_mm=11.3105,
+                    a1_y_mm=10.75,
+                    measured=FormatMeasurement(
+                        points=[MeasuredPoint(well="A1", x_mm=11.3105, y_mm=10.75)],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                )
+            }
+        )
+    )
+    import control._def as _def_mod
+
+    monkeypatch.setitem(
+        _def_mod.WELLPLATE_FORMAT_SETTINGS,
+        "96 well plate",
+        load_user_sample_formats().formats["96 well plate"].to_settings(),
+    )
     _, stamp = read_scan_coordinates_csv("coords.csv")
     assert staleness_warning(stamp, "96 well plate") is None
 

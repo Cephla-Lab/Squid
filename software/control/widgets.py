@@ -13862,34 +13862,19 @@ class WellplateCalibration(QDialog):
                 }
             )
 
-            # Persist as a SPARSE override next to the shipped catalog: only the
-            # fields the user changed, so shipped corrections still reach this
-            # machine on every other field. (The legacy whole-table cache CSV is
-            # no longer written by this path.)
-            from control.models.sample_format_config import (
-                SampleFormatOverride,
-                load_user_sample_formats,
-                save_user_sample_formats,
-                UserSampleFormats,
+            # One path for every format: the edited definition replaces the
+            # shipped example (or the previous user entry) wholesale.
+            self._save_format_definition(
+                selected_format,
+                {
+                    "well_spacing_mm": new_spacing,
+                    "well_spacing_x_mm": new_spacing,
+                    "well_spacing_y_mm": new_spacing,
+                    "well_size_mm": new_well_size,
+                    "well_size_x_mm": new_well_size,
+                    "well_size_y_mm": new_well_size,
+                },
             )
-
-            user_formats = load_user_sample_formats() or UserSampleFormats()
-            custom = user_formats.custom_formats.get(selected_format)
-            if custom is not None:
-                # A custom format's definition is user-owned wholesale: edit it
-                # in place so the YAML keeps ONE source of truth per custom
-                # format, instead of a custom entry shadowed by an override.
-                custom.well_spacing_mm = new_spacing
-                custom.well_spacing_x_mm = new_spacing
-                custom.well_spacing_y_mm = new_spacing
-                custom.well_size_mm = new_well_size
-                custom.well_size_x_mm = new_well_size
-                custom.well_size_y_mm = new_well_size
-            else:
-                user_formats.overrides[selected_format] = SampleFormatOverride(
-                    well_spacing_mm=new_spacing, well_size_mm=new_well_size
-                )
-            save_user_sample_formats(user_formats)
 
             # select_format_silently re-emits the settings exactly once (no
             # spurious index-0 emission from the combo rebuild).
@@ -13970,27 +13955,9 @@ class WellplateCalibration(QDialog):
 
         self.wellplateFormatWidget.add_custom_format(name, new_format)
 
-        # Persist to the user-formats YAML next to the shipped catalog (the
-        # legacy whole-table cache CSV is no longer written by this path).
-        from control.models.sample_format_config import (
-            CustomSampleFormat,
-            load_user_sample_formats,
-            save_user_sample_formats,
-            UserSampleFormats,
-        )
-
-        user_formats = load_user_sample_formats() or UserSampleFormats()
-        user_formats.custom_formats[name] = CustomSampleFormat(
-            rows=new_format["rows"],
-            cols=new_format["cols"],
-            well_spacing_mm=new_format["well_spacing_mm"],
-            well_size_mm=new_format["well_size_mm"],
-            a1_x_mm=new_format["a1_x_mm"],
-            a1_y_mm=new_format["a1_y_mm"],
-            a1_x_pixel=new_format["a1_x_pixel"],
-            a1_y_pixel=new_format["a1_y_pixel"],
-        )
-        save_user_sample_formats(user_formats)
+        # Same writer as every other calibration: a complete definition, with
+        # the measured A1 stored absolutely and its provenance alongside.
+        self._save_format_definition(name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm))
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 
         self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
@@ -14014,62 +13981,75 @@ class WellplateCalibration(QDialog):
         )
         print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
 
-        # a1 is measured PLACEMENT: persisted as a DELTA on the catalog value in
-        # cache/plate_placement.yaml. The catalog keeps sole ownership of the
-        # absolute origin; the in-memory settings dict stays at the catalog value
-        # and every consumer composes the delta through the resolver.
+        # Identical treatment to a brand-new format: the measured A1 and well
+        # size are stored ABSOLUTELY in a complete definition that replaces the
+        # shipped example. No deltas, no second file.
+        self._save_format_definition(
+            selected_format,
+            {
+                "a1_x_mm": a1_x_mm,
+                "a1_y_mm": a1_y_mm,
+                "well_size_mm": well_size_mm,
+                "well_size_x_mm": well_size_mm,
+                "well_size_y_mm": well_size_mm,
+            },
+            measured=self._measurement_record(a1_x_mm, a1_y_mm),
+        )
+
+        self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
+
+    def _measurement_record(self, a1_x_mm, a1_y_mm):
+        """Raw provenance for a stored A1: the points the user actually set."""
         import datetime
 
-        from control.models.plate_placement import (
-            load_plate_placements,
-            MeasuredPoint,
-            PlacementFit,
-            PlatePlacement,
-            PlatePlacements,
-            save_plate_placements,
+        from control.models.sample_format_config import FormatMeasurement, MeasuredPoint
+
+        if self.edge_points_radio.isChecked() and all(self.corners):
+            points = [MeasuredPoint(well="A1", x_mm=float(x), y_mm=float(y)) for x, y in self.corners]
+            method = "3 edge points"
+        else:
+            points = [MeasuredPoint(well="A1", x_mm=float(a1_x_mm), y_mm=float(a1_y_mm))]
+            method = "center point"
+        return FormatMeasurement(
+            points=points, method=method, timestamp=datetime.datetime.now().isoformat(timespec="seconds")
         )
 
-        placements = load_plate_placements() or PlatePlacements()
-        existing_entry = placements.placements.get(selected_format)
-        placements.placements[selected_format] = PlatePlacement(
-            a1_dx_mm=a1_x_mm - existing_settings["a1_x_mm"],
-            a1_dy_mm=a1_y_mm - existing_settings["a1_y_mm"],
-            # A single-well touch measures translation only; a measured rotation
-            # override (when the 4-well flow lands) is preserved.
-            rotation_deg=existing_entry.rotation_deg if existing_entry else None,
-            fit=PlacementFit(
-                points=[MeasuredPoint(well="A1", x_mm=a1_x_mm, y_mm=a1_y_mm)],
-                timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        save_plate_placements(placements)
+    def _save_format_definition(self, format_key, updates, measured=None):
+        """Write a COMPLETE definition for `format_key` to the user file.
 
-        # The measured well size is a plate-TYPE property: a sparse geometry
-        # override next to the catalog.
+        Every calibration and every parameter edit goes through here, for
+        shipped and user formats alike: shipped rows are examples, and the
+        moment a lab measures or edits one, their definition replaces it
+        wholesale (owner decision, 2026-08-16). `updates` are the newly
+        measured/edited settings keys; everything else is carried over from
+        what the app currently knows about the format.
+        """
         from control.models.sample_format_config import (
             load_user_sample_formats,
-            SampleFormatOverride,
+            SampleFormat,
             save_user_sample_formats,
             UserSampleFormats,
         )
 
-        user_formats = load_user_sample_formats() or UserSampleFormats()
-        previous = user_formats.overrides.get(selected_format)
-        merged = previous.model_dump(exclude_none=True) if previous else {}
-        merged["well_size_mm"] = well_size_mm
-        merged.pop("well_size_x_mm", None)
-        merged.pop("well_size_y_mm", None)
-        user_formats.overrides[selected_format] = SampleFormatOverride(**merged)
-        save_user_sample_formats(user_formats)
-        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
-            {
-                "well_size_mm": well_size_mm,
-                "well_size_x_mm": well_size_mm,
-                "well_size_y_mm": well_size_mm,
-            }
-        )
+        settings = dict(WELLPLATE_FORMAT_SETTINGS.get(format_key, {}))
+        settings.update(updates)
 
-        self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
+        user_formats = load_user_sample_formats() or UserSampleFormats()
+        previous = user_formats.formats.get(format_key)
+        # A translation-only touch must not drop a previously measured
+        # per-format rotation override.
+        rotation_deg = previous.rotation_deg if previous is not None else None
+        rotation_measured = previous.rotation_measured if previous is not None else None
+        if measured is None and previous is not None:
+            measured = previous.measured
+        user_formats.formats[format_key] = SampleFormat.from_settings(
+            settings, rotation_deg=rotation_deg, rotation_measured=rotation_measured, measured=measured
+        )
+        save_user_sample_formats(user_formats)
+
+        # Keep the live table in step so the current session sees the edit
+        # without a reload.
+        WELLPLATE_FORMAT_SETTINGS[format_key] = user_formats.formats[format_key].to_settings()
 
     def _finish_calibration(self, format_id, success_message: str):
         """Complete calibration by updating UI and showing success message."""

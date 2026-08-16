@@ -12,11 +12,13 @@ from control.core.holder_alignment import (
     SessionError,
 )
 from control.models.plate_holder import load_plate_holder
-from control.models.plate_placement import (
-    load_plate_placements,
-    PlatePlacement,
-    PlatePlacements,
-    save_plate_placements,
+from control.models.sample_format_config import (
+    FormatMeasurement,
+    load_user_sample_formats,
+    MeasuredPoint,
+    SampleFormat,
+    save_user_sample_formats,
+    UserSampleFormats,
 )
 
 RNG = np.random.default_rng(20260815)
@@ -192,8 +194,9 @@ def test_save_writes_minimal_holder_record_and_nothing_else(tree):
     assert holder.measured.feature == "corner_top_left"
     assert [p.well for p in holder.measured.points] == ["A1", "A47", "AE1", "AE47"]
     assert holder.measured.timestamp  # provenance present
-    # the fitted translation died here: no placement entry was written
-    assert load_plate_placements() is None or "1536 well plate" not in load_plate_placements().placements
+    # the fitted translation died here: no format definition was written
+    stored = load_user_sample_formats()
+    assert stored is None or "1536 well plate" not in stored.formats
 
 
 def test_save_refuses_rejected_fit(tree):
@@ -219,11 +222,28 @@ def test_save_warn_gate_requires_confirmation(tree):
 
 
 def test_save_offers_and_clears_stale_overrides(tree):
-    save_plate_placements(
-        PlatePlacements(
-            placements={
-                "96 well plate": PlatePlacement(a1_dx_mm=0.1, rotation_deg=0.5),
-                "384 well plate": PlatePlacement(a1_dx_mm=0.2),
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "96 well plate": SampleFormat(
+                    rows=8,
+                    cols=12,
+                    well_spacing_mm=9.0,
+                    well_size_mm=6.21,
+                    a1_x_mm=11.41,
+                    rotation_deg=0.5,
+                    rotation_measured=FormatMeasurement(
+                        points=[
+                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
+                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
+                        ],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                    measured=FormatMeasurement(
+                        points=[MeasuredPoint(well="A1", x_mm=11.31, y_mm=10.75)], timestamp="2026-08-16T00:00:00"
+                    ),
+                ),
+                "384 well plate": SampleFormat(rows=16, cols=24, well_spacing_mm=4.5, well_size_mm=3.3, a1_x_mm=12.25),
             }
         )
     )
@@ -233,10 +253,10 @@ def test_save_offers_and_clears_stale_overrides(tree):
     touch_all_square(session, theta_deg=0.37)
     session.save(clear_overrides=("96 well plate",))
 
-    placements = load_plate_placements().placements
-    assert placements["96 well plate"].rotation_deg is None  # now inherits the holder
-    assert placements["96 well plate"].a1_dx_mm == 0.1  # the a1 delta survives
-    assert placements["384 well plate"].a1_dx_mm == 0.2
+    formats = load_user_sample_formats().formats
+    assert formats["96 well plate"].rotation_deg is None  # now inherits the holder
+    assert formats["96 well plate"].a1_x_mm == 11.41  # the measured a1 survives
+    assert formats["384 well plate"].a1_x_mm == 12.25
 
 
 # -------------------------------------------------------------------- verify
@@ -271,5 +291,29 @@ def test_status_line_tracks_provenance(tree):
     other.save()
     assert "0.37 deg (holder record)" in session.status_line()
 
-    save_plate_placements(PlatePlacements(placements={"96 well plate": PlatePlacement(rotation_deg=0.5)}))
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "96 well plate": SampleFormat(
+                    rows=8,
+                    cols=12,
+                    well_spacing_mm=9.0,
+                    well_size_mm=6.21,
+                    a1_x_mm=11.31,
+                    a1_y_mm=10.75,
+                    rotation_deg=0.5,
+                    rotation_measured=FormatMeasurement(
+                        points=[
+                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
+                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
+                        ],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                    measured=FormatMeasurement(
+                        points=[MeasuredPoint(well="A1", x_mm=11.31, y_mm=10.75)], timestamp="2026-08-16T00:00:00"
+                    ),
+                )
+            }
+        )
+    )
     assert "0.50 deg (measured for this format)" in session.status_line()

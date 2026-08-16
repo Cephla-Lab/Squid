@@ -81,15 +81,45 @@ def test_inherit_chain(holder_tree):
     assert resolve_rotation_deg("6 well plate") == (0.21, "holder")
 
     # 3. a measured per-format override wins, without any arithmetic
-    from control.models.plate_placement import PlatePlacement, PlatePlacements, save_plate_placements
+    from control.models.sample_format_config import (
+        FormatMeasurement,
+        MeasuredPoint,
+        SampleFormat,
+        save_user_sample_formats,
+        UserSampleFormats,
+    )
 
-    save_plate_placements(PlatePlacements(placements={"1536 well plate": PlatePlacement(rotation_deg=0.31)}))
+    def _def_1536(**kw):
+        return SampleFormat(
+            rows=32, cols=48, well_spacing_mm=2.25, well_size_mm=1.53, a1_x_mm=11.01, a1_y_mm=7.87, **kw
+        )
+
+    measured = FormatMeasurement(
+        points=[MeasuredPoint(well="A1", x_mm=11.01, y_mm=7.87)], timestamp="2026-08-16T00:00:00"
+    )
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "1536 well plate": _def_1536(
+                    rotation_deg=0.31,
+                    rotation_measured=FormatMeasurement(
+                        points=[
+                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
+                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
+                        ],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                    measured=measured,
+                )
+            }
+        )
+    )
     assert resolve_rotation_deg("1536 well plate") == (0.31, "measured")
     # other formats still inherit
     assert resolve_rotation_deg("96 well plate") == (0.21, "holder")
 
-    # 4. a placement entry with rotation UNSET (a1-only touch) still inherits
-    save_plate_placements(PlatePlacements(placements={"1536 well plate": PlatePlacement(a1_dx_mm=0.1)}))
+    # 4. a definition with rotation UNSET (a1-only touch) still inherits
+    save_user_sample_formats(UserSampleFormats(formats={"1536 well plate": _def_1536(measured=measured)}))
     assert resolve_rotation_deg("1536 well plate") == (0.21, "holder")
 
 

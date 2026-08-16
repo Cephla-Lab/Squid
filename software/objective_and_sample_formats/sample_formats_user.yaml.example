@@ -1,26 +1,50 @@
-# User sample-format geometry: sparse overrides of the shipped catalog, and
-# complete custom formats. Copy to sample_formats_user.yaml and REMOVE the
-# examples you do not need - values must come from vendor drawings or
-# measurement, never estimated.
+# The lab's own plate definitions. Copy this file to
+# sample_formats_user.yaml to use it.
 #
-# Absent file == shipped catalog only. a1 positions are calibrated in the app
-# (placement), not authored here.
-version: 1
+# THIS FILE IS THE PORTABLE ONE: copy it to another microscope and every
+# format arrives complete - geometry AND its measured A1. What must NOT
+# travel lives in machine_configs/plate_holder.yaml (the holder rotation is
+# bolted to one instrument).
+#
+# The shipped sample_formats.csv rows are EXAMPLES. The moment you calibrate
+# or edit a format - shipped or your own - the calibration dialog writes a
+# complete definition here that replaces the example wholesale. Editing this
+# file by hand does the same thing.
+#
+# Every field is yours to set: spacing (scalar or per-axis), well size, shape,
+# skip, rows/cols, and the A1 position. The one guarded field is rotation_deg:
+# an angle must carry the multi-well fit that produced it (rotation_measured),
+# because a hand-typed angle is indistinguishable from a typo. Measure it with
+# the holder-alignment mode instead.
+version: 2
+formats:
+  # A vendor whose pitch differs from the shipped example (NEST 24-well is
+  # 18.0 mm, not 19.3), recalibrated on this machine.
+  24 well plate:
+    rows: 4
+    cols: 6
+    a1_x_mm: 17.05          # measured, absolute - no deltas anywhere
+    a1_y_mm: 13.67
+    well_spacing_mm: 18.0
+    well_size_mm: 15.54
+    number_of_skip: 0
+    well_shape: circle
+    measured:               # provenance for the A1 above
+      points:
+        - {well: A1, x_mm: 17.05, y_mm: 13.67}
+      method: 3 edge points
+      timestamp: "2026-08-16T12:00:00"
 
-overrides:
-  # Example: this lab's 24-well plates are Millipore (18.90 mm pitch), not the
-  # shipped Corning value. Only the fields present are overridden.
-  "24 well plate":
-    well_spacing_mm: 18.90
-
-custom_formats:
-  # Example: an anisotropic chamber slide. Per-axis spacing/size and shape;
-  # x multiplies the column index, y the row index.
-  "ibidi 8 well":
+  # A carrier with rectangular wells and different X/Y pitch, from the
+  # vendor drawing.
+  ibidi 8 well:
     rows: 2
     cols: 4
-    well_spacing_x_mm: 12.57
-    well_spacing_y_mm: 11.50
-    well_size_x_mm: 10.75
-    well_size_y_mm: 9.40
+    a1_x_mm: 20.0
+    a1_y_mm: 15.0
+    well_spacing_x_mm: 12.5
+    well_spacing_y_mm: 11.2
+    well_size_x_mm: 10.4
+    well_size_y_mm: 9.4
     well_shape: rectangle
+    number_of_skip: 0
