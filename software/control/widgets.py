@@ -30,7 +30,7 @@ from control.core.coordinate_provenance import (
     staleness_warning,
     write_scan_coordinates_csv,
 )
-from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
+from control.core.holder_alignment import circumcenter, CORNER_FEATURES, HolderAlignmentSession, SessionError
 from control.core.plate_transform import PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
@@ -13825,8 +13825,6 @@ class WellplateCalibration(QDialog):
                 QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
                 return None
             center, radius = self.calculate_circle(self.corners)
-            # Cast: calculate_circle returns numpy float64, and these values are
-            # stored into WELLPLATE_FORMAT_SETTINGS and written to the CSV.
             well_size_mm = float(radius * 2)
             a1_x_mm, a1_y_mm = float(center[0]), float(center[1])
         return a1_x_mm, a1_y_mm, well_size_mm
@@ -13916,7 +13914,9 @@ class WellplateCalibration(QDialog):
                 self._calibrate_new_format()
             else:
                 self._calibrate_existing_format()
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, SessionError):
+            # SessionError: circumcenter's collinearity guard (the shared
+            # solver); LinAlgError kept for any remaining numpy paths.
             import traceback
 
             traceback.print_exc()
@@ -14179,18 +14179,12 @@ class WellplateCalibration(QDialog):
 
     @staticmethod
     def calculate_circle(points):
-        # Convert points to numpy array
-        points = np.array(points)
-
-        # Calculate the center and radius of the circle
-        A = np.array([points[1] - points[0], points[2] - points[0]])
-        b = np.sum(A * (points[1:3] + points[0]) / 2, axis=1)
-        center = np.linalg.solve(A, b)
-
-        # Calculate the radius
-        radius = np.mean(np.linalg.norm(points - center, axis=1))
-
-        return center, radius
+        # ONE circle solver for the whole dialog: the holder mode's
+        # circumcenter (closed form, collinearity guard with user-facing
+        # copy). The old np.linalg.solve version accepted near-collinear
+        # points and returned a wildly-off circle silently.
+        cx, cy, radius = circumcenter(tuple(points[0]), tuple(points[1]), tuple(points[2]))
+        return (cx, cy), radius
 
     def closeEvent(self, event):
         # Stop live view if it wasn't initially on
