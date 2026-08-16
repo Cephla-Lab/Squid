@@ -23,7 +23,6 @@ asset registration).
 import os
 from typing import Dict, Optional
 
-import yaml
 from pydantic import BaseModel, Field, model_validator
 
 import squid.logging
@@ -153,41 +152,21 @@ class UserSampleFormats(BaseModel):
 def load_user_sample_formats(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
     """None when absent (the identity default). Damage logs loudly and returns
     None rather than raising - this runs at import time via load_formats()."""
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        if data is None:
-            return None
-        return UserSampleFormats.model_validate(data)
-    except Exception:
-        log.exception(
-            f"User sample formats at {path} are unreadable; ignoring the file - "
-            f"YOUR FORMAT EDITS AND CUSTOM FORMATS ARE NOT BEING APPLIED. "
-            f"Fix or move the file aside to clear this."
-        )
-        return None
+    from control.models.yaml_store import load_yaml_model
+
+    return load_yaml_model(
+        path,
+        UserSampleFormats,
+        f"User sample formats at {path} are unreadable; ignoring the file - "
+        f"YOUR FORMAT EDITS AND CUSTOM FORMATS ARE NOT BEING APPLIED. "
+        f"Fix or move the file aside to clear this.",
+    )
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:
-    """Atomic, same pattern as write_sample_formats_csv."""
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp_path = path + ".tmp"
-    try:
-        with open(tmp_path, "w") as f:
-            yaml.safe_dump(user_formats.model_dump(exclude_none=True), f, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    from control.models.yaml_store import save_yaml_model_atomic
+
+    save_yaml_model_atomic(user_formats, path)
 
 
 def apply_user_sample_formats(sample_formats: Dict[str, dict], user_formats: Optional[UserSampleFormats]) -> None:
