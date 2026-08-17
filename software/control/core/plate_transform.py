@@ -32,6 +32,20 @@ class PlateGeometryError(ValueError):
     """The format has no grid to transform (e.g. glass slide, pitch 0)."""
 
 
+def legacy_offset_for(settings, apply_legacy_offset: bool = True) -> Tuple[float, float]:
+    """The legacy WELLPLATE_OFFSET this format should carry.
+
+    Zero once the format's a1 was MEASURED on this machine - the measurement
+    is the whole correction, so exactly one is live per format and a
+    double-apply is unrepresentable. Takes the settings dict (which carries
+    `a1_measured`) rather than reading the store, so every site that builds a
+    PlateTransform can apply the rule without a disk read.
+    """
+    if not apply_legacy_offset or settings.get("a1_measured", False):
+        return 0.0, 0.0
+    return control._def.WELLPLATE_OFFSET_X_mm, control._def.WELLPLATE_OFFSET_Y_mm
+
+
 def rotate_deg(theta_deg: float, x: float, y: float) -> Tuple[float, float]:
     """R(theta) applied to (x, y): + = CCW in the stage XY math frame.
 
@@ -159,10 +173,14 @@ class PlateTransform:
 
 
 def _user_format_for(format_: str):
-    """This format's user definition, or None if only the shipped example."""
-    from control.models.sample_format_config import load_user_sample_formats
+    """This format's user definition, or None if only the shipped example.
 
-    stored = load_user_sample_formats()
+    Read-only: the resolver never mutates what it reads, and the defensive
+    deep copy dominated the cost on the stage-update-rate path.
+    """
+    from control.models.sample_format_config import load_user_sample_formats_readonly
+
+    stored = load_user_sample_formats_readonly()
     if stored is None:
         return None
     return stored.formats.get(format_)
@@ -171,8 +189,8 @@ def _user_format_for(format_: str):
 def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
     """One branch, zero arithmetic between stored angles (override-with-inherit).
 
-    Returns (angle, source) where source is "measured" (this format's placement
-    entry), "holder" (the machine's holder record), or "none". Pitch-0 formats
+    Returns (angle, source) where source is "measured" (this format's own
+    definition), "holder" (the machine's holder record), or "none". Pitch-0 formats
     (glass slide, '0') always resolve to 0.0: with a 1x1 grid the only well sits
     at the pivot, so an angle could not move anything anyway.
     """
@@ -181,7 +199,7 @@ def resolve_rotation_deg(format_: str) -> Tuple[float, str]:
 
 
 def _resolve_rotation(settings, definition) -> Tuple[float, str]:
-    """The override-with-inherit chain, given already-loaded settings + placement.
+    """The override-with-inherit chain, given already-loaded settings + definition.
 
     Owns the pitch-0 short-circuit too, so both public entry points
     (resolve_rotation_deg for stamps/status, plate_transform_for for the
@@ -203,7 +221,7 @@ def _resolve_rotation(settings, definition) -> Tuple[float, str]:
 def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> PlateTransform:
     """The single resolver: nominal geometry + measured placement + legacy offset.
 
-    Reads control._def and the placement sidecar at CALL time (never cache the
+    Reads control._def and the user format store at CALL time (never cache the
     result across calls - the snapshot-at-__init__ pattern is the bug this
     module exists to end). Composition, one owner per quantity:
 
@@ -212,27 +230,19 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
                         a1 absolutely - there is no delta to compose).
       rotation       <- the definition's per-format override when measured,
                         else the machine's holder record.
-      legacy offset  <- WELLPLATE_OFFSET_*, SUPPRESSED for any format whose
-                        definition carries a `measured` block: the measured a1
-                        is the whole correction, so exactly one offset is live
-                        per format and double-apply is unrepresentable.
+      legacy offset  <- WELLPLATE_OFFSET_*, SUPPRESSED once the format's a1
+                        was measured (settings carry `a1_measured`): the
+                        measurement is the whole correction, so exactly one
+                        offset is live per format.
     """
     settings = control._def.get_wellplate_settings(format_)
-    definition = _user_format_for(format_)
-    rotation, _source = _resolve_rotation(settings, definition)  # no second read
-    # a1 comes from the settings dict either way: apply_user_sample_formats has
-    # already replaced the example with the user definition at load time.
+    # a1, pitch and the suppression flag all come from the settings dict:
+    # apply_user_sample_formats replaced the example with the user definition
+    # at load time, and to_settings() carries a1_measured along with it.
     a1_x = settings["a1_x_mm"]
     a1_y = settings["a1_y_mm"]
-    if definition is not None and definition.measured is not None:
-        offset_x = 0.0
-        offset_y = 0.0
-    else:
-        offset_x = control._def.WELLPLATE_OFFSET_X_mm if apply_legacy_offset else 0.0
-        offset_y = control._def.WELLPLATE_OFFSET_Y_mm if apply_legacy_offset else 0.0
-    if not apply_legacy_offset:
-        offset_x = 0.0
-        offset_y = 0.0
+    rotation, _source = _resolve_rotation(settings, _user_format_for(format_))
+    offset_x, offset_y = legacy_offset_for(settings, apply_legacy_offset)
     return PlateTransform(
         a1_x_mm=a1_x,
         a1_y_mm=a1_y,

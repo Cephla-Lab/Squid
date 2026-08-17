@@ -30,8 +30,15 @@ M = TypeVar("M", bound=BaseModel)
 _cache: Dict[str, Tuple[Tuple[int, int, int], Optional[BaseModel]]] = {}
 
 
-def load_yaml_model(path: str, model_cls: Type[M], damage_message: str) -> Optional[M]:
-    """None when absent; damage logs `damage_message` loudly and returns None."""
+def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy: bool = True) -> Optional[M]:
+    """None when absent; damage logs `damage_message` loudly and returns None.
+
+    copy=False returns the CACHED object itself - callers must treat it as
+    read-only. It exists because the rotation resolver runs at stage-update
+    rate and reads two scalars: deep-copying the whole store for that was 97%
+    of its cost and grew with every format a lab calibrates. Edit->save flows
+    keep the default deep copy, so a mutation can never poison the cache.
+    """
     cache_key = os.path.abspath(path)  # callers pass cwd-relative paths; tests chdir
     try:
         stat = os.stat(path)
@@ -43,7 +50,9 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str) -> Optio
     cached = _cache.get(cache_key)
     if cached is not None and cached[0] == signature:
         model = cached[1]
-        return model.model_copy(deep=True) if model is not None else None
+        if model is None:
+            return None
+        return model.model_copy(deep=True) if copy else model
 
     try:
         with open(path, "r") as f:
@@ -53,7 +62,9 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str) -> Optio
         log.exception(damage_message)
         model = None
     _cache[cache_key] = (signature, model)
-    return model.model_copy(deep=True) if model is not None else None
+    if model is None:
+        return None
+    return model.model_copy(deep=True) if copy else model
 
 
 def save_yaml_model_atomic(model: BaseModel, path: str) -> None:

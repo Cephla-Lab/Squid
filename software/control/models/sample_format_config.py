@@ -135,6 +135,17 @@ class SampleFormat(BaseModel):
         fields.update(extra)
         return SampleFormat(**fields)
 
+    @property
+    def is_measured(self) -> bool:
+        """Whether this definition's a1 came from a stage measurement here.
+
+        The legacy WELLPLATE_OFFSET applies only where it did NOT, so exactly
+        one correction is live per format. Hand-authoring a nominal a1 (from a
+        vendor drawing) deliberately does NOT set this: an unmeasured a1 is
+        still a nominal one, and the machine offset still corrects it.
+        """
+        return self.measured is not None
+
     def to_settings(self) -> Dict[str, object]:
         spacing_x = self.well_spacing_x_mm if self.well_spacing_x_mm is not None else self.well_spacing_mm
         spacing_y = self.well_spacing_y_mm if self.well_spacing_y_mm is not None else self.well_spacing_mm
@@ -157,6 +168,11 @@ class SampleFormat(BaseModel):
             "well_size_x_mm": size_x,
             "well_size_y_mm": size_y,
             "well_shape": self.well_shape,
+            # Rides in the settings dict so EVERY site that builds a
+            # PlateTransform sees it without a second disk read - the SiLA2
+            # path used to add the legacy offset on top of a measured a1
+            # because it could not consult the rule.
+            "a1_measured": self.is_measured,
         }
 
 
@@ -165,16 +181,43 @@ class UserSampleFormats(BaseModel):
     formats: Dict[str, SampleFormat] = Field(default_factory=dict)
 
 
+SCHEMA_VERSION = 2
+
+_DAMAGE_MESSAGE = (
+    "User sample formats at {path} are unreadable; ignoring the file - "
+    "YOUR FORMAT DEFINITIONS AND CALIBRATIONS ARE NOT BEING APPLIED. "
+    "Fix or move the file aside to clear this."
+)
+
+
 def load_user_sample_formats(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
     """None when absent (shipped examples only). Damage logs loudly and returns
     None rather than raising - this runs at import time via load_formats()."""
-    return load_yaml_model(
-        path,
-        UserSampleFormats,
-        f"User sample formats at {path} are unreadable; ignoring the file - "
-        f"YOUR FORMAT DEFINITIONS AND CALIBRATIONS ARE NOT BEING APPLIED. "
-        f"Fix or move the file aside to clear this.",
-    )
+    loaded = load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path))
+    if loaded is not None and loaded.version != SCHEMA_VERSION:
+        # pydantic ignores unknown keys, so a file from another schema would
+        # otherwise load as ZERO formats and silently discard every definition.
+        log.error(
+            f"User sample formats at {path} declare version {loaded.version}, but this build reads version "
+            f"{SCHEMA_VERSION} - IGNORING THE FILE rather than silently dropping its contents. "
+            f"YOUR FORMAT DEFINITIONS AND CALIBRATIONS ARE NOT BEING APPLIED. Move the file aside and "
+            f"re-create your formats, or restore a build that reads version {loaded.version}."
+        )
+        return None
+    return loaded
+
+
+def load_user_sample_formats_readonly(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
+    """load_user_sample_formats without the defensive deep copy.
+
+    For hot read-only paths (the rotation resolver). NEVER mutate the result.
+    """
+    from control.models.yaml_store import load_yaml_model
+
+    loaded = load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path), copy=False)
+    if loaded is not None and loaded.version != SCHEMA_VERSION:
+        return None
+    return loaded
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:
@@ -192,16 +235,3 @@ def apply_user_sample_formats(sample_formats: Dict[str, dict], user_formats: Opt
         return
     for format_key, definition in user_formats.formats.items():
         sample_formats[format_key] = definition.to_settings()
-
-
-def is_measured(format_key: str, user_formats: Optional[UserSampleFormats]) -> bool:
-    """Whether this format's A1 was measured on this machine.
-
-    The legacy WELLPLATE_OFFSET applies only to formats where it was NOT, so
-    exactly one correction is live per format and a double-apply is
-    unrepresentable.
-    """
-    if user_formats is None:
-        return False
-    definition = user_formats.formats.get(format_key)
-    return definition is not None and definition.measured is not None

@@ -13850,18 +13850,6 @@ class WellplateCalibration(QDialog):
             )
             print(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
 
-            # Update the in-memory settings (scalars re-broadcast to per-axis)
-            WELLPLATE_FORMAT_SETTINGS[selected_format].update(
-                {
-                    "well_spacing_mm": new_spacing,
-                    "well_spacing_x_mm": new_spacing,
-                    "well_spacing_y_mm": new_spacing,
-                    "well_size_mm": new_well_size,
-                    "well_size_x_mm": new_well_size,
-                    "well_size_y_mm": new_well_size,
-                }
-            )
-
             # One path for every format: the edited definition replaces the
             # shipped example (or the previous user entry) wholesale.
             self._save_format_definition(
@@ -13998,6 +13986,8 @@ class WellplateCalibration(QDialog):
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
 
+    _CARRIED_MEASUREMENTS = {"rotation_deg", "rotation_measured", "measured"}
+
     def _measurement_record(self, a1_x_mm, a1_y_mm):
         """Raw provenance for a stored A1: the points the user actually set."""
         import datetime
@@ -14031,20 +14021,21 @@ class WellplateCalibration(QDialog):
             UserSampleFormats,
         )
 
-        settings = dict(WELLPLATE_FORMAT_SETTINGS.get(format_key, {}))
+        try:
+            settings = dict(control._def.get_wellplate_settings(format_key))
+        except ValueError:
+            settings = {}  # brand-new format: `updates` carries the whole definition
         settings.update(updates)
 
         user_formats = load_user_sample_formats() or UserSampleFormats()
         previous = user_formats.formats.get(format_key)
-        # A translation-only touch must not drop a previously measured
-        # per-format rotation override.
-        rotation_deg = previous.rotation_deg if previous is not None else None
-        rotation_measured = previous.rotation_measured if previous is not None else None
-        if measured is None and previous is not None:
-            measured = previous.measured
-        user_formats.formats[format_key] = SampleFormat.from_settings(
-            settings, rotation_deg=rotation_deg, rotation_measured=rotation_measured, measured=measured
-        )
+        # Everything measured survives an unrelated edit: a spacing tweak must
+        # never erase a calibration. Named once, so a future measurement kind
+        # is added in the model rather than remembered at every call site.
+        carried = previous.model_dump(include=self._CARRIED_MEASUREMENTS) if previous is not None else {}
+        if measured is not None:
+            carried["measured"] = measured
+        user_formats.formats[format_key] = SampleFormat.from_settings(settings, **carried)
         save_user_sample_formats(user_formats)
 
         # Keep the live table in step so the current session sees the edit

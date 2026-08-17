@@ -8,7 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
-from control.core.plate_transform import PlateTransform, WellplateSettings, plate_transform_for
+from control.core.plate_transform import legacy_offset_for, PlateTransform, WellplateSettings, plate_transform_for
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -768,6 +768,10 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         # ScanCoordinates' snapshot-at-__init__ behaviour, and the golden oracle
         # pins that disagreement until compute-time resolution unifies them.
         pitch = wellplate_settings["well_spacing_mm"]
+        # legacy_offset_for applies the SAME suppression rule as the resolver:
+        # once a1 is measured the offset is already accounted for, and adding
+        # it here double-applied it on every calibrated format.
+        offset_x, offset_y = legacy_offset_for(wellplate_settings)
         transform = PlateTransform(
             a1_x_mm=wellplate_settings["a1_x_mm"],
             a1_y_mm=wellplate_settings["a1_y_mm"],
@@ -775,8 +779,8 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             # the scalar is the legacy fallback for caller-supplied dicts.
             pitch_x_mm=wellplate_settings.get("well_spacing_x_mm", pitch),
             pitch_y_mm=wellplate_settings.get("well_spacing_y_mm", pitch),
-            offset_x_mm=control._def.WELLPLATE_OFFSET_X_mm,
-            offset_y_mm=control._def.WELLPLATE_OFFSET_Y_mm,
+            offset_x_mm=offset_x,
+            offset_y_mm=offset_y,
         )
 
         for desc in descriptions:

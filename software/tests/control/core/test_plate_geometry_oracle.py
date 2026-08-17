@@ -117,6 +117,30 @@ def test_sila2_selected_well_coordinates(monkeypatch, format_, off):
     assert sc.region_centers[single] == expected_xy(s, last_row, last_col, off[0], off[1])
 
 
+def test_sila2_honours_the_offset_suppression_rule(monkeypatch):
+    """Cross-site check the oracle could not make before: with a MEASURED a1,
+    the legacy offset is already accounted for, and the SiLA2 path must not
+    add it on top. It used to, silently double-correcting every calibrated
+    format on any machine with a nonzero wellplate_offset."""
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 3.0)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 3.0)
+
+    sc = ScanCoordinatesSiLA2(
+        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
+    )
+    measured = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
+    measured["a1_measured"] = True  # what a calibrated definition carries
+
+    sc.get_selected_well_coordinates("A1", measured)
+
+    assert sc.region_centers["A1"] == (measured["a1_x_mm"], measured["a1_y_mm"])  # no offset added
+    # ...while an uncalibrated format still gets it, exactly as before.
+    sc.region_centers.clear()
+    nominal = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
+    sc.get_selected_well_coordinates("A1", nominal)
+    assert sc.region_centers["A1"] == (nominal["a1_x_mm"] + 3.0, nominal["a1_y_mm"] + 3.0)
+
+
 # ---- site 3: MicroscopeControlServer._parse_wells (MCP/remote) ----
 
 

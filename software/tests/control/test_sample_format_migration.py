@@ -1,20 +1,24 @@
-"""Legacy calibration-cache migration and placement composition.
+"""Legacy calibration-cache migration into complete format definitions.
 
 The legacy cache/sample_formats.csv was a whole-table shadow of the shipped
-catalog. The migration splits it once - a1 differences become placement deltas,
-every row that differs from its shipped example becomes a COMPLETE user
-formats - and the composed coordinates must be NUMERICALLY IDENTICAL to what
-the cache produced. That equivalence is the whole safety argument.
+catalog. The migration converts it once: every row that differs from its
+shipped example becomes a COMPLETE definition in sample_formats_user.yaml,
+a1 stored absolutely. Rows identical to the example are dropped so they keep
+tracking future examples.
+
+The safety argument: coordinates after migration are IDENTICAL to what the
+cache produced - with one deliberate exception, a machine carrying a legacy
+wellplate_offset, where a calibrated format now suppresses that offset instead
+of adding it to a measured a1 (see test_measured_definition_suppresses_legacy_offset).
 """
 
 import os
-import shutil
 
 import pytest
 
 import control._def as _def
 from control.core.plate_transform import plate_transform_for, WellplateSettings
-from control.models.sample_format_config import load_user_sample_formats, USER_SAMPLE_FORMATS_PATH
+from control.models.sample_format_config import load_user_sample_formats
 
 SHIPPED_DIR = "objective_and_sample_formats"
 CSV = "sample_formats.csv"
@@ -36,10 +40,6 @@ def write_legacy_cache(tree, edit):
     _def.write_sample_formats_csv(os.path.join("cache", CSV), ten)
 
 
-def run_migration():
-    _def._migrate_legacy_format_cache(os.path.join("cache", CSV), os.path.join(SHIPPED_DIR, CSV))
-
-
 def test_a1_recalibration_becomes_a_measured_definition(migration_tree):
     write_legacy_cache(migration_tree, lambda f: f["96 well plate"].update({"a1_x_mm": 11.604, "a1_y_mm": 10.638}))
 
@@ -51,8 +51,11 @@ def test_a1_recalibration_becomes_a_measured_definition(migration_tree):
     assert definition.measured is not None  # provenance carried over
     assert definition.measured.method == "migrated"
     assert definition.measured.points[0].x_mm == 11.604
-    # the rest of the definition came along, so the entry is self-contained
-    assert definition.rows == 8 and definition.cols == 12 and definition.well_spacing_mm == 9.0
+    # the rest of the definition came along, so the entry is self-contained -
+    # including well_shape, which the hand-built construction used to drop
+    assert definition.rows == 8 and definition.cols == 12
+    assert definition.well_spacing_x_mm == definition.well_spacing_y_mm == 9.0
+    assert definition.well_shape == "circle"
 
 
 def test_composed_coordinates_equal_legacy_cache(migration_tree, monkeypatch):
@@ -118,9 +121,22 @@ def test_geometry_edit_becomes_a_definition_without_measured(migration_tree, mon
     monkeypatch.setattr(_def, "WELLPLATE_FORMAT_SETTINGS", formats)
 
     definition = load_user_sample_formats().formats["24 well plate"]
-    assert definition.well_spacing_mm == 18.90
+    assert definition.well_spacing_x_mm == definition.well_spacing_y_mm == 18.90
     assert definition.a1_x_mm == formats["24 well plate"]["a1_x_mm"]
     assert definition.measured is None  # a1 was never touched
+
+
+def test_migration_preserves_derived_geometry(migration_tree):
+    """Regression: the migration used to hand-list the CSV's 10 columns, so
+    384/1536 came across as well_shape "circle" - and since a definition
+    replaces the example wholesale, the rectangle was gone for good."""
+    write_legacy_cache(migration_tree, lambda f: f["384 well plate"].update({"a1_x_mm": 12.34}))
+
+    _def.load_formats()
+
+    definition = load_user_sample_formats().formats["384 well plate"]
+    assert definition.well_shape == "rectangle"
+    assert definition.number_of_skip == 1  # the shipped skip window survived too
 
 
 def test_custom_format_migrates(migration_tree):
@@ -138,29 +154,34 @@ def test_custom_format_migrates(migration_tree):
         }
 
     write_legacy_cache(migration_tree, edit)
-    run_migration()
+    _def.load_formats()
 
     user = load_user_sample_formats()
     custom = user.formats["my custom plate"]
     assert (custom.rows, custom.cols, custom.a1_x_mm) == (2, 4, 15.0)
 
 
-def test_migration_is_idempotent_and_preserves_newer_entries(migration_tree):
+def test_migration_never_clobbers_a_newer_definition(migration_tree):
+    """The guard that matters: if a legacy cache reappears (restored backup,
+    a second machine's file) after the user has recalibrated, migrating it
+    must NOT overwrite the newer definition."""
     write_legacy_cache(migration_tree, lambda f: f["96 well plate"].update({"a1_x_mm": 11.604}))
     _def.load_formats()
+    assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 11.604
 
-    # a later, newer definition for the same format must survive a re-run
+    # the user recalibrates afterwards...
     from control.models.sample_format_config import save_user_sample_formats
 
     stored = load_user_sample_formats()
     stored.formats["96 well plate"].a1_x_mm = 12.9
     save_user_sample_formats(stored)
 
-    # the cache was renamed, so a second load cannot migrate again
-    assert not os.path.exists(os.path.join("cache", CSV))
+    # ...and a stale cache turns up again and gets migrated a second time
+    write_legacy_cache(migration_tree, lambda f: f["96 well plate"].update({"a1_x_mm": 11.604}))
     _def.load_formats()
 
-    assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 12.9
+    assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 12.9  # newer entry wins
+    assert not os.path.exists(os.path.join("cache", CSV))  # and the cache retired again
 
 
 def test_identical_cache_migrates_to_nothing(migration_tree):

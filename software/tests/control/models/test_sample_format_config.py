@@ -13,7 +13,6 @@ import control._def as _def
 from control.models.sample_format_config import (
     apply_user_sample_formats,
     FormatMeasurement,
-    is_measured,
     load_user_sample_formats,
     MeasuredPoint,
     SampleFormat,
@@ -105,19 +104,32 @@ def test_shipped_and_custom_formats_are_handled_identically():
     assert catalog["96 well plate"]["a1_x_mm"] == 11.6
     assert catalog["my chamber slide"]["a1_x_mm"] == 20.0
     assert catalog["my chamber slide"]["rows"] == 2
-    # both are "measured", so both suppress the legacy offset
-    assert is_measured("96 well plate", user) and is_measured("my chamber slide", user)
+    # both are "measured", so both suppress the legacy offset - and the flag
+    # rides in the settings dict, where every transform builder can see it
+    assert catalog["96 well plate"]["a1_measured"] and catalog["my chamber slide"]["a1_measured"]
 
 
 def test_is_measured_distinguishes_edited_from_calibrated():
     """A geometry edit alone does not claim the A1 was measured - the legacy
     offset must keep applying until someone actually touches A1."""
-    user = UserSampleFormats(
-        formats={"96 well plate": SampleFormat(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.5)}
-    )
-    assert not is_measured("96 well plate", user)
-    assert not is_measured("384 well plate", user)
-    assert not is_measured("96 well plate", None)
+    edited = SampleFormat(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.5)
+    assert not edited.is_measured
+    assert edited.to_settings()["a1_measured"] is False
+
+    calibrated = SampleFormat(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.5, measured=a1_touch())
+    assert calibrated.is_measured
+    assert calibrated.to_settings()["a1_measured"] is True
+
+
+def test_unknown_schema_version_is_refused_loudly(tmp_path, caplog):
+    """A file from another schema must not load as ZERO formats - pydantic
+    ignores unknown keys, so a v1 file would silently discard every entry."""
+    path = tmp_path / "sample_formats_user.yaml"
+    path.write_text("version: 1\noverrides: {'96 well plate': {well_spacing_mm: 18.0}}\ncustom_formats: {}\n")
+
+    with caplog.at_level(logging.ERROR):
+        assert load_user_sample_formats(str(path)) is None
+    assert any("version 1" in r.getMessage() for r in caplog.records)
 
 
 def test_scalar_and_per_axis_together_is_an_error():

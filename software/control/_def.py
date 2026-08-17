@@ -1311,16 +1311,12 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
             cached_settings["a1_x_mm"] != shipped_settings["a1_x_mm"]
             or cached_settings["a1_y_mm"] != shipped_settings["a1_y_mm"]
         )
-        user_formats.formats[format_key] = SampleFormat(
-            rows=cached_settings["rows"],
-            cols=cached_settings["cols"],
-            a1_x_mm=cached_settings["a1_x_mm"],
-            a1_y_mm=cached_settings["a1_y_mm"],
-            a1_x_pixel=cached_settings["a1_x_pixel"],
-            a1_y_pixel=cached_settings["a1_y_pixel"],
-            well_spacing_mm=cached_settings["well_spacing_mm"],
-            well_size_mm=cached_settings["well_size_mm"],
-            number_of_skip=cached_settings["number_of_skip"],
+        # from_settings is the ONE dict -> model converter: cached_settings has
+        # already been through _with_derived_geometry, so per-axis pitch and
+        # well_shape come across too. Hand-listing the CSV's 10 columns here
+        # silently dropped well_shape, migrating 384/1536 to "circle".
+        user_formats.formats[format_key] = SampleFormat.from_settings(
+            cached_settings,
             measured=(
                 FormatMeasurement(
                     points=[MeasuredPoint(well="A1", x_mm=cached_settings["a1_x_mm"], y_mm=cached_settings["a1_y_mm"])],
@@ -1355,7 +1351,7 @@ def load_formats():
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
     # One-time, idempotent migration of the legacy whole-table calibration
-    # cache into the split stores (geometry overrides + placement deltas).
+    # cache into complete per-format definitions in the user YAML.
     # Renames the cache to .migrated on success so it never runs twice; on any
     # failure the cache is left in place and keeps working as before.
     if os.path.exists(cached_formats_path):
