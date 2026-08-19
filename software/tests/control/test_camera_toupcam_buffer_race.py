@@ -44,6 +44,11 @@ def _make_callback_camera(reassign_buffer_during_pull: bool):
     cam._trigger_sent = True
     cam._raw_camera_stream_started = False
     cam._config = types.SimpleNamespace(rotate_image_angle=None, flip=None, crop_width=None, crop_height=None)
+    # AbstractCamera.__init__ is skipped here, so set the software-crop ratios _process_raw_frame
+    # -> get_crop_size() would otherwise read. With crop_width/crop_height None they are currently
+    # short-circuited, but this keeps the test asserting the race rather than an AttributeError.
+    cam._software_crop_width_ratio = 1.0
+    cam._software_crop_height_ratio = 1.0
     cam._diag_frame_log_every = 30  # keep high so the per-frame diagnostic branch never runs
     cam._log = squid.logging.get_logger("test_toupcam_buffer_race")
 
