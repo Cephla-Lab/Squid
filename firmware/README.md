@@ -151,28 +151,57 @@ PLATFORMIO_BUILD_FLAGS="-DDISABLE_LASER_INTERLOCK" pio run -e teensy41 -t upload
 
 ```
 controller/
-├── main_controller_teensy41.ino    # Entry point
-├── platformio.ini                   # PlatformIO config
+├── main_controller_teensy41.ino    # Entry point (v1 protocol — still the live path)
+├── platformio.ini                   # PlatformIO config (teensy41, teensy41_boardv2, native)
+├── fuzz/
+│   └── fuzz_framer.cpp             # libFuzzer/ASAN harness for the protocol-v2 path
 ├── test/                            # Unit tests (run with pio test -e native)
-│   ├── test_crc8/                  # CRC8 checksum tests
-│   └── test_protocol/              # Protocol/command ID tests
+│   ├── test_crc8/                  # CRC8 checksum tests (v1)
+│   ├── test_protocol/              # Protocol/command ID tests (v1)
+│   ├── test_crc16/ test_cobs/      # protocol-v2 framing codec
+│   ├── test_frames/                # protocol-v2 wire-struct layout
+│   ├── test_framer/                # protocol-v2 COBS framer
+│   ├── test_claims/ test_slots/    # protocol-v2 claims + slot manager
+│   ├── test_dispatch/              # protocol-v2 dispatcher + system commands
+│   ├── test_boot/                  # boot/fault module core
+│   ├── test_board/ test_board_v2/  # board descriptors (v1/v2)
+│   └── test_golden/                # C<->Python golden vectors (generated)
 └── src/
-    ├── commands/                    # Command handlers
-    │   ├── commands.cpp/h          # General commands
-    │   ├── light_commands.cpp/h    # Illumination control
-    │   └── stage_commands.cpp/h    # Motion control
-    ├── def/
-    │   └── def_v1.h                # Hardware configuration
+    ├── commands/                    # Command handlers (v1)
+    ├── def/                         # Hardware configuration (v1)
     ├── tmc/                         # TMC stepper driver library
-    ├── utils/
-    │   └── crc8.cpp/h              # CRC calculation
-    ├── init.cpp/h                   # Initialization routines
-    ├── operations.cpp/h             # Main loop operations
-    ├── serial_communication.cpp/h   # Serial protocol handling
+    ├── utils/                       # crc8 and other pure utilities
+    ├── protocol/                    # protocol-v2 core (NOT yet wired to serial — Phase C)
+    │   ├── crc16, cobs, frames      #   CRC-16/CCITT-FALSE, COBS codec, wire contract
+    │   ├── framer                   #   COBS framer (resync + non-blocking TX)
+    │   ├── claims, claims_table     #   resource-claims table + conflict checker
+    │   ├── slots                    #   5-slot manager + completion ring (RETRY dedup)
+    │   └── dispatch_v2              #   claims-gated dispatcher + HELLO/GET_INFO/GET_STATE/DIAG
+    ├── boot/                        # boot/fault module (NOT yet wired — Phase C)
+    │   ├── boot.cpp/h              #   watchdog/safe-state/reset-cause/nonce/fault-ring (native-tested)
+    │   └── boot_bind_teensy41.cpp  #   RT1062 binding (WDOG1/SRC_SRSR/EEPROM/DWT; teensy41 build only)
+    ├── hal/                         # board profiles (compile-time selected)
+    │   ├── board.h                 #   GET_INFO descriptor + board-scoped pin constants
+    │   └── boards/                 #   board_squid_v1.cpp, board_squid_v2.cpp
+    ├── init.cpp/h                   # Initialization routines (v1)
+    ├── operations.cpp/h             # Main loop operations (v1)
+    ├── serial_communication.cpp/h   # Serial protocol handling (v1 — the live path)
     ├── functions.cpp/h              # Utility functions
     ├── globals.cpp/h                # Global state variables
     └── constants.h                  # Constants and pin definitions
 ```
+
+### Protocol v2 (Phase B — native-tested, not yet live)
+
+`src/protocol/`, `src/boot/`, and `src/hal/` implement the protocol-v2 core
+(COBS + CRC-16 framing, claims-gated 5-slot command dispatch with a completion
+ring, system commands, and per-board GET_INFO descriptors). These modules
+compile into the firmware binary but are **not wired to `SerialUSB`** — the v1
+protocol in `serial_communication.cpp` remains the live path. Phase C performs
+the single-PR switchover. The mirrored host codec lives in
+`software/control/protocol_v2/`, and C↔Python agreement is enforced by the
+golden vectors in `test/test_golden/` (regenerate with
+`software/tools/gen_protocol_golden.py`).
 
 ## Joystick
 
