@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import control._def
 from control.objective_changer_2_pos_controller import (
+    ObjectiveChanger2PosController,
     ObjectiveChanger2PosController_Simulation,
 )
 
@@ -56,3 +59,22 @@ def test_move_to_objective_unknown_raises(monkeypatch):
     sim = ObjectiveChanger2PosController_Simulation(sn="SIM", stage=FakeStage())
     with pytest.raises(KeyError):
         sim.move_to_objective("999x")
+
+
+def _controller_with_fake_xeryon() -> ObjectiveChanger2PosController:
+    # __init__ opens a serial port, so bypass it and inject only what close() touches.
+    changer = ObjectiveChanger2PosController.__new__(ObjectiveChanger2PosController)
+    changer.controller = Mock()
+    return changer
+
+
+def test_close_stops_the_xeryon_controller():
+    changer = _controller_with_fake_xeryon()
+    changer.close()
+    changer.controller.stop.assert_called_once()
+
+
+def test_close_swallows_stop_errors():
+    changer = _controller_with_fake_xeryon()
+    changer.controller.stop.side_effect = RuntimeError("port already gone")
+    changer.close()  # must not raise during teardown

@@ -158,8 +158,38 @@ def move_to_scanning_position(
 
 
 def move_z_axis_to_safety_position(stage: AbstractStage):
-    if _def.USE_PI_FOCUS_STAGE:
-        # The V-308 has no Z_HOME_SAFETY_POINT concept; its retracted position is the safe Z.
+    if _def.uses_external_z_stage():
+        # External Z focus stages have no Z_HOME_SAFETY_POINT concept; near-retracted is the safe Z.
         stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
     else:
         stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
+
+
+def resolve_serial_port_by_sn(serialnum, missing_hint: str = "") -> str:
+    """Resolve a USB serial number to a serial device path via pyserial's port list.
+
+    Compares as strings: the config reader may coerce an all-digit serial to int, so both
+    sides are normalised. (A leading-zero numeric serial loses its zero at config-read time
+    and cannot be recovered here -- keep such serials quoted, or use the explicit-port flag.)
+    missing_hint is appended to the not-found error for vendor-specific guidance.
+    """
+    import serial.tools.list_ports  # lazy: real-hardware path only
+
+    target = str(serialnum)
+    matches = [p.device for p in serial.tools.list_ports.comports() if str(p.serial_number) == target]
+    if not matches:
+        message = f"No serial port with serial_number={serialnum!r}."
+        if missing_hint:
+            message = f"{message} {missing_hint}"
+        raise RuntimeError(message)
+    return matches[0]
+
+
+def resolve_port(serial_port, serial_number, missing_hint: str = "", unset_message: str = "") -> str:
+    """The standard port-selection ladder: explicit port wins, else resolve by serial number,
+    else raise ``unset_message`` (which should name the config flags to set)."""
+    if serial_port:
+        return serial_port
+    if serial_number:
+        return resolve_serial_port_by_sn(serial_number, missing_hint=missing_hint)
+    raise RuntimeError(unset_message or "No serial port or serial number configured.")
