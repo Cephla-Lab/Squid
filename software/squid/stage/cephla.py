@@ -16,8 +16,10 @@ class CephlaStage(AbstractStage):
         # We arbitrarily guess that if a move takes 3x the naive "infinite acceleration" time, then it
         # probably timed out.  But always use a minimum timeout of at least 3 seconds.
         #
-        # Also protect against divide by zero.
-        return max((3, 3 * abs(distance) / min(0.1, abs(max_speed))))
+        # The max(0.1, ...) protects against divide by zero.  It used to be min(0.1, ...), which pinned
+        # the divisor at 0.1 [mm/s] no matter how fast the axis is and made every timeout 38x (z) to
+        # 300x (x/y) longer than intended - a wedged controller froze the gui for minutes.
+        return max((3, 3 * abs(distance) / max(0.1, abs(max_speed))))
 
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)

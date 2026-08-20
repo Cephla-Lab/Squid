@@ -8,6 +8,8 @@ from control.core.scan_coordinates import (
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
+from control.core.core import FocusMap
+from control.core.core import FocusMap
 from control.microscope import Microscope
 
 
@@ -155,3 +157,23 @@ def test_sort_coordinates_keeps_non_well_region_names():
     sc.sort_coordinates()
 
     assert list(sc.region_centers.keys()) == ["A1", "B1", "current", "my region"]
+
+
+def test_focus_grid_and_shape_for_loaded_coordinates():
+    """Coordinates loaded from a csv are an arbitrary fov list, with no well shape to fall back on."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+
+    # Mimic load_coordinate_regions_from_dataframe()
+    sc.region_fov_coordinates = {"loaded": [(20.0 + 0.5 * i, 20.0 + 0.5 * j) for i in range(4) for j in range(4)]}
+    sc.region_centers = {"loaded": [20.75, 20.75]}
+    sc.region_shapes = {"loaded": "Manual"}
+
+    # Enabling the focus map widget generates a grid over every region
+    grid = FocusMap().generate_grid_coordinates(sc, rows=3, cols=3)
+    assert len(grid["loaded"]) == 9
+
+    # A region registered without any shape is treated as a bounding box instead of raising
+    del sc.region_shapes["loaded"]
+    assert sc.get_region_shape("loaded") == "Square"
+    assert sc.region_contains_coordinate("loaded", 20.75, 20.75)

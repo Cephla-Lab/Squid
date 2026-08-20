@@ -2769,6 +2769,18 @@ def test_load_regions_with_z_column_builds_3tuples_and_list_centers():
     assert fovs == sc.region_fov_coordinates
 
 
+def test_load_regions_registers_manual_shape_for_every_region():
+    # Enabling the focus map calls get_region_shape() on every region; a loaded region
+    # with no shape raised KeyError.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1", "A1", "left"], "x (mm)": [10.0, 10.5, 20.0], "y (mm)": [10.0, 10.0, 20.0]})
+
+    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert sc.region_shapes == {"A1": "Manual", "left": "Manual"}
+    assert sc.get_region_shape("left") == "Manual"
+
+
 def test_load_regions_without_z_column_builds_2tuples():
     sc = _scan_coordinates_for_test()
     df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
