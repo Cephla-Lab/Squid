@@ -387,17 +387,19 @@ def test_init_calibrates_factory_params(monkeypatch):
     controller.close()
 
 
-def test_init_microstep_mismatch_writes_factory_value_and_raises(monkeypatch):
-    # A wrong microstep invalidates calibrated pulses and the homing math, and the
-    # register only takes effect after a power cycle: write it, save, fail fast.
+def test_init_microstep_mismatch_raises_without_writing(monkeypatch):
+    # A wrong microstep invalidates the slot spacing and the homing math. The
+    # register reads back the PENDING value, not the active one (vendor-confirmed),
+    # so a corrective write from init would make the next start pass this check
+    # while the drive still runs the old scale: raise only, never write.
     fake = _FakeModbus()
     fake.microstep_raw = 7
     monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
     with pytest.raises(RuntimeError, match="[Pp]ower-cycle"):
         ObjectiveTurret4PosController(serial_number="SIM", stage=None)
-    assert (REG_MICROSTEP, MICROSTEP_REG_VALUE) in fake.writes
-    assert (REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC) in fake.writes
+    assert not any(addr == REG_MICROSTEP for (addr, _) in fake.writes)
+    assert not any(addr == REG_SAVE_PARAMS for (addr, _) in fake.writes)
 
 
 def test_deenergize_is_best_effort(monkeypatch):
@@ -473,59 +475,35 @@ def test_sim_accepts_offset_kwarg():
     sim.close()
 
 
-# --- per-slot calibration ---
+# --- slot targets ---
 
 
-def test_calibrated_slots_used_verbatim_others_fall_back(monkeypatch):
-    # A calibrated slot targets its calibrated value (global offset NOT added);
-    # uncalibrated slots keep the theoretical (slot-1)*pp + offset behavior.
-    controller, fake = _make_real_controller(monkeypatch, offset_pulses=25, calibrated_pulses={2: 2210, 4: 6585})
-    pp = controller.pulses_per_position
-    expected = {"4x": 0 * pp + 25, "10x": 2210, "20x": 2 * pp + 25, "40x": 6585}
-    for name, target in expected.items():
+def test_slot_targets_uniform_spacing_from_single_offset(monkeypatch):
+    # All four slots derive from one measured offset: offset + (slot-1) x PULSES_PER_SLOT.
+    controller, fake = _make_real_controller(monkeypatch, offset_pulses=25)
+    for slot, name in enumerate(["4x", "10x", "20x", "40x"], start=1):
         fake.writes.clear()
         controller.move_to_objective(name)
-        assert fake.target_position_writes()[-1] == target
+        assert fake.target_position_writes()[-1] == (slot - 1) * otc.PULSES_PER_SLOT + 25
     controller.close()
 
 
-def test_calibration_accepts_string_keys_from_ini(monkeypatch):
-    # .ini JSON parsing yields string keys; they must be normalized to int slots.
-    controller, fake = _make_real_controller(monkeypatch, calibrated_pulses={"3": 4415})
-    fake.writes.clear()
-    controller.move_to_objective("20x")  # slot 3
-    assert fake.target_position_writes()[-1] == 4415
-    controller.close()
+def test_pulses_per_slot_matches_microstep_derivation():
+    # The named 2200 must stay linked to the mechanics: 200 full steps x 16
+    # microsteps x 132/48 gear / 4 slots. Fails when one is edited without the other.
+    assert otc.PULSES_PER_SLOT == int(
+        otc.MOTOR_STEPS_PER_REV * 2**otc.MICROSTEP_REG_VALUE * otc.GEAR_RATIO / otc.POSITIONS_PER_REV
+    )
 
 
-def test_calibration_falls_back_to_def_when_not_passed(monkeypatch):
-    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_CALIBRATED_PULSES", {1: -12})
-    controller, fake = _make_real_controller(monkeypatch)
-    fake.writes.clear()
-    controller.move_to_objective("4x")  # slot 1
-    assert fake.target_position_writes()[-1] == -12
-    controller.close()
-
-
-@pytest.mark.parametrize(
-    "bad_calibration",
-    [{"x": 100}, {0: 100}, {5: 100}, {2: 100.5}, {2: True}, {2: "100"}],
-    ids=["non-int-key", "slot-0", "slot-5", "float-value", "bool-value", "str-value"],
-)
-def test_invalid_calibration_raises(monkeypatch, bad_calibration):
+def test_init_raises_when_slot_spacing_inconsistent_with_mechanics(monkeypatch):
+    # The same link enforced at init against the microstep readback: if the derived
+    # pulses/slot ever disagrees with PULSES_PER_SLOT, refuse to run on a wrong scale.
+    monkeypatch.setattr(otc, "GEAR_RATIO", 2.0)
     monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
-    with pytest.raises(ValueError):
-        ObjectiveTurret4PosController(serial_number="SIM", stage=None, calibrated_pulses=bad_calibration)
-
-
-def test_calibration_deviating_more_than_one_slot_raises(monkeypatch):
-    # Slot 2's theoretical target is 2200 (microstep 16); a calibrated value a full
-    # slot away means it was measured at another microstep or against the wrong slot.
-    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
-    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
-    with pytest.raises(ValueError):
-        ObjectiveTurret4PosController(serial_number="SIM", stage=None, calibrated_pulses={2: 4500})
+    with pytest.raises(RuntimeError, match="PULSES_PER_SLOT"):
+        ObjectiveTurret4PosController(serial_number="SIM", stage=None)
 
 
 # --- backlash compensation ---
@@ -552,16 +530,6 @@ def test_zero_backlash_moves_directly(monkeypatch):
     controller.close()
 
 
-def test_backlash_applies_to_calibrated_slots_too(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch, calibrated_pulses={2: 2210}, backlash_deg=1.0)
-    pp = controller.pulses_per_position
-    comp = round(1.0 / 360 * 4 * pp)
-    fake.writes.clear()
-    controller.move_to_objective("10x")  # slot 2, calibrated
-    assert fake.target_position_writes() == [2210 - comp, 2210]
-    controller.close()
-
-
 def test_backlash_falls_back_to_def_when_not_passed(monkeypatch):
     monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_BACKLASH_DEG", 0.5)
     controller, fake = _make_real_controller(monkeypatch)
@@ -581,13 +549,12 @@ def test_invalid_backlash_raises(monkeypatch, bad_deg):
         ObjectiveTurret4PosController(serial_number="SIM", stage=None, backlash_deg=bad_deg)
 
 
-def test_sim_accepts_calibration_and_backlash_kwargs():
+def test_sim_accepts_offset_and_backlash_kwargs():
     # Constructor parity: microscope.py builds one turret_kwargs dict for both twins.
     sim = ObjectiveTurret4PosControllerSimulation(
         serial_number="SIM-001",
         positions=OBJECTIVE_TURRET_POSITIONS,
         offset_pulses=42,
-        calibrated_pulses={2: 2210},
         backlash_deg=0.5,
     )
     assert sim.is_open
@@ -602,11 +569,9 @@ def test_sim_accepts_calibration_and_backlash_kwargs():
 def test_inverted_move_writes_negated_target(monkeypatch):
     # Slot targets stay logical; only the register write is negated. The move still
     # completes because the position readback is flipped back symmetrically.
-    # Explicit offset/calibration keep the theoretical targets independent of any
-    # machine .ini values loaded into _def.
-    controller, fake = _make_real_controller(
-        monkeypatch, direction_inverted=True, offset_pulses=0, calibrated_pulses={}
-    )
+    # An explicit offset keeps the theoretical targets independent of any machine
+    # .ini values loaded into _def.
+    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True, offset_pulses=0)
     pp = controller.pulses_per_position
     fake.writes.clear()
     controller.move_to_objective("20x")  # slot 3 -> logical target 2*pp
@@ -617,9 +582,7 @@ def test_inverted_move_writes_negated_target(monkeypatch):
 def test_inverted_backlash_order_preserved_logically(monkeypatch):
     # Undershoot-then-target stays expressed in logical coordinates; both writes
     # come out negated but the logical approach-from-below order is unchanged.
-    controller, fake = _make_real_controller(
-        monkeypatch, backlash_deg=0.5, direction_inverted=True, offset_pulses=0, calibrated_pulses={}
-    )
+    controller, fake = _make_real_controller(monkeypatch, backlash_deg=0.5, direction_inverted=True, offset_pulses=0)
     pp = controller.pulses_per_position
     comp = round(0.5 / 360 * 4 * pp)
     fake.writes.clear()
@@ -673,7 +636,7 @@ def test_inverted_init_expects_direction_zero(monkeypatch):
 
 def test_direction_inverted_falls_back_to_def_when_not_passed(monkeypatch):
     monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DIRECTION_INVERTED", True)
-    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0, calibrated_pulses={})
+    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0)
     fake.writes.clear()
     controller.move_to_objective("40x")  # slot 4 -> logical target 3*pp
     assert fake.target_position_writes() == [-3 * controller.pulses_per_position]
@@ -692,7 +655,7 @@ def test_non_bool_direction_inverted_raises(monkeypatch, bad_inverted):
 def test_default_not_inverted_keeps_current_behavior(monkeypatch):
     # Regression guard: with the default (False), targets, direction writes and
     # position readback are exactly the pre-inversion behavior.
-    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0, calibrated_pulses={})
+    controller, fake = _make_real_controller(monkeypatch, offset_pulses=0)
     assert (REG_DIRECTION, 1) in fake.writes  # init still calibrates direction to 1
     pp = controller.pulses_per_position
     fake.writes.clear()
@@ -782,9 +745,7 @@ def test_non_bool_di_invert_raises(monkeypatch, bad_invert):
     monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
     with pytest.raises(ValueError):
-        ObjectiveTurret4PosController(
-            serial_number="SIM", stage=None, direction_inverted=False, di_invert=bad_invert
-        )
+        ObjectiveTurret4PosController(serial_number="SIM", stage=None, direction_inverted=False, di_invert=bad_invert)
 
 
 def test_sim_accepts_di_invert_kwarg():

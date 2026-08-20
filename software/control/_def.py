@@ -1245,20 +1245,13 @@ OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # Global pulse offset added to every turret slot target, shifting the whole slot
-# frame relative to the homing switch (pulse 0). Corrects units whose limit switch
-# does not sit exactly at slot 1. 0 on all normal units; set per machine (may be
-# negative).
-OBJECTIVE_TURRET_OFFSET_PULSES = 0
-# Per-slot calibrated absolute pulse targets: slot index (1..4) -> pulses from the
-# homing zero, measured by jogging each slot into alignment (e.g. with the
-# SingleMotor tool). Slots absent from the dict fall back to the theoretical
-# (slot-1)*pulses_per_position + OBJECTIVE_TURRET_OFFSET_PULSES; a listed slot uses
-# its calibrated value verbatim (the global offset is not added). Empty on all
-# normal units; set per machine in the .ini, e.g. {"1": -12, "3": 4415}.
+# frame relative to the homing zero (the origin sensor's trigger edge). Corrects
+# units whose sensor does not sit exactly at slot 1; the remaining slots follow at
+# PULSES_PER_SLOT spacing. 0 on all normal units; set per machine (may be negative).
 # NOTE: software homing (2026-07) zeroes at the sensor's fine-search trigger edge,
-# which sits slightly differently from the old driver-homing zero — re-measure
-# calibrated slots after upgrading a machine that had values from the old scheme.
-OBJECTIVE_TURRET_CALIBRATED_PULSES = {}
+# which sits slightly differently from the old driver-homing zero — re-measure this
+# offset after upgrading a machine that had a value from the old scheme.
+OBJECTIVE_TURRET_OFFSET_PULSES = 0
 # Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
 # slot change first overshoots below the target by this angle and then approaches
 # it from below, so the final approach direction is always the same and gear
@@ -1267,11 +1260,10 @@ OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
 # Set True for turret motor models wired with the opposite phase order (same
 # commands spin the other way). The controller then negates move targets, jog
 # signs and the homing-sweep direction bit, and flips position readbacks, so
-# slot mapping, calibration and backlash logic keep working in the same logical
-# coordinate system — OBJECTIVE_TURRET_CALIBRATED_PULSES values are always
-# logical-coordinate pulses. After toggling on an existing machine, re-home and
-# re-measure the calibrated slots: the physical zero moves with the sweep
-# direction.
+# slot mapping, offset and backlash logic keep working in the same logical
+# coordinate system — OBJECTIVE_TURRET_OFFSET_PULSES is always logical-coordinate
+# pulses. After toggling on an existing machine, re-home and re-measure the
+# offset: the physical zero moves with the sweep direction.
 OBJECTIVE_TURRET_DIRECTION_INVERTED = False
 # Set True for objective changers whose origin-switch sensor triggers on the
 # opposite logic level (port of SingleMotor's "原点开关极性取反" option, 2026-08-12).
